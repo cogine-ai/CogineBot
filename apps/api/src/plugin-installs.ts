@@ -284,15 +284,12 @@ export function createPluginInstallsService(deps: Deps) {
     }
     return prepared;
   }
-  async function fail(context: Context, id: string, written: SecretRecord[]) {
+  async function fail(context: Context, id: string) {
     let row = await deps.prisma.capabilityInstall.findFirst({
       where: { id, userId: context.actor.userId, spaceId: context.actor.spaceId },
       include: includeChildren,
     });
     if (!row) {
-      // Parent cascades cannot retain the private ledger. Compensate every known
-      // prepared ref using the same reference-aware cleanup as other secret writes.
-      await persistPreparedSecret(deps.prisma, deps.secrets, written, async () => undefined);
       throw new ORPCError("CONFLICT", {
         message: "Could not confirm installation. Check its status before retrying.",
       });
@@ -439,88 +436,94 @@ export function createPluginInstallsService(deps: Deps) {
       });
       if (!claimed.owned) return pluginInstallReceipt(claimed.row);
       const written: SecretRecord[] = [];
-      try {
-        const servers = await prepare(context, claimed.row.id, plugin, written);
-        await authorized(context);
-        return await deps.prisma.$transaction(async (tx) => {
-          await lockScope(tx, context);
-          await lockPluginInstall(tx, claimed.row.id);
-          const row = await readInstalling(tx, context, claimed.row.id);
-          await conflictNames(tx, context.actor, plugin);
-          const skills = [];
-          for (const skill of plugin.skills) {
-            const created = await tx.agentSkill.create({
-              data: {
-                ...skill,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                source: "plugin",
-                installId: row.id,
-              },
-            });
-            skills.push({ id: created.id, name: created.name });
-          }
-          const mcpServers = [];
-          for (const { server, stored, index } of servers) {
-            if (stored)
-              await tx.secret.create({
+      // Cover every exit, including a cascade after failure handling read the parent.
+      // Committed children retain their refs through the existing adoption checks.
+      return persistPreparedSecret(deps.prisma, deps.secrets, written, async () => {
+        try {
+          const servers = await prepare(context, claimed.row.id, plugin, written);
+          await authorized(context);
+          return await deps.prisma.$transaction(async (tx) => {
+            await lockScope(tx, context);
+            await lockPluginInstall(tx, claimed.row.id);
+            const row = await readInstalling(tx, context, claimed.row.id);
+            await conflictNames(tx, context.actor, plugin);
+            const skills = [];
+            for (const skill of plugin.skills) {
+              const created = await tx.agentSkill.create({
                 data: {
-                  id: stored.id,
-                  userId: context.actor.userId,
+                  ...skill,
                   spaceId: context.actor.spaceId,
-                  kind: "mcp",
-                  ciphertext: stored.ciphertext,
+                  userId: context.actor.userId,
+                  source: "plugin",
+                  installId: row.id,
                 },
               });
-            const suffix = createHash("sha256")
-              .update(`${row.id}:${index}`)
-              .digest("hex")
-              .slice(0, 12);
-            const created = await tx.mcpServer.create({
-              data: {
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                installId: row.id,
-                slug: `${plugin.name.replace(/\./g, "-").slice(0, 48)}-${suffix}`,
-                name: `${plugin.name}: ${server.name}`.slice(0, 120),
-                description: `Installed from plugin ${plugin.name}`,
-                transport: server.transport,
+              skills.push({ id: created.id, name: created.name });
+            }
+            const mcpServers = [];
+            for (const { server, stored, index } of servers) {
+              if (stored)
+                await tx.secret.create({
+                  data: {
+                    id: stored.id,
+                    userId: context.actor.userId,
+                    spaceId: context.actor.spaceId,
+                    kind: "mcp",
+                    ciphertext: stored.ciphertext,
+                  },
+                });
+              const suffix = createHash("sha256")
+                .update(`${row.id}:${index}`)
+                .digest("hex")
+                .slice(0, 12);
+              const created = await tx.mcpServer.create({
+                data: {
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  installId: row.id,
+                  slug: `${plugin.name.replace(/\./g, "-").slice(0, 48)}-${suffix}`,
+                  name: `${plugin.name}: ${server.name}`.slice(0, 120),
+                  description: `Installed from plugin ${plugin.name}`,
+                  transport: server.transport,
+                  endpoint: server.endpoint,
+                  headers: Object.fromEntries(
+                    Object.keys(server.headers).map((key) => [key, true]),
+                  ),
+                  secretId: stored?.id,
+                  enabled: false,
+                  allowAllTools: false,
+                  allowedTools: [],
+                  args: [],
+                  env: {},
+                },
+              });
+              mcpServers.push({
+                id: created.id,
+                name: created.name,
                 endpoint: server.endpoint,
-                headers: Object.fromEntries(Object.keys(server.headers).map((key) => [key, true])),
-                secretId: stored?.id,
-                enabled: false,
-                allowAllTools: false,
-                allowedTools: [],
-                args: [],
-                env: {},
-              },
-            });
-            mcpServers.push({
-              id: created.id,
-              name: created.name,
-              endpoint: server.endpoint,
-              transport: server.transport,
-            });
-          }
-          context.signal?.throwIfAborted();
-          return pluginInstallReceipt(
-            await tx.capabilityInstall.update({
-              where: { id: row.id },
-              data: {
-                status: "installed",
-                installedAt: new Date(),
-                cleanupRefs: [],
-                revision: { increment: 1 },
-                config: { ...publicConfig(plugin), installedChildren: { skills, mcpServers } },
-              },
-              include: includeChildren,
-            }),
-          );
-        });
-      } catch {
-        // Read the durable outcome before compensating an uncertain transaction acknowledgement.
-        return fail(context, claimed.row.id, written);
-      }
+                transport: server.transport,
+              });
+            }
+            context.signal?.throwIfAborted();
+            return pluginInstallReceipt(
+              await tx.capabilityInstall.update({
+                where: { id: row.id },
+                data: {
+                  status: "installed",
+                  installedAt: new Date(),
+                  cleanupRefs: [],
+                  revision: { increment: 1 },
+                  config: { ...publicConfig(plugin), installedChildren: { skills, mcpServers } },
+                },
+                include: includeChildren,
+              }),
+            );
+          });
+        } catch {
+          // Read the durable outcome before compensating an uncertain transaction acknowledgement.
+          return fail(context, claimed.row.id);
+        }
+      });
     },
   };
 }

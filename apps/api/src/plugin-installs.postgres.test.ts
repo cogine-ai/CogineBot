@@ -139,6 +139,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   });
   let pauseRead: Barrier | undefined;
   let secondChildFailure = false;
+  let pauseFailureRead: Barrier | undefined;
   const held: Barrier[] = [];
   const read = vi.fn<PluginRead>(async (url, maxBytes, signal) => {
     const paused = pauseRead;
@@ -182,13 +183,39 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     return body;
   });
 
-  // Every query and transaction runs on real PG. Only the second child write can fail.
+  // All queries use real PG; faults and barriers only control the tested lifecycle boundaries.
   function faultablePrisma(prisma: PrismaClient): PrismaClient {
     return new Proxy(prisma, {
       get(client, property, receiver) {
         if (property === "$extends")
           return (...args: unknown[]) =>
             faultablePrisma(Reflect.apply(client.$extends, client, args) as PrismaClient);
+        if (property === "capabilityInstall") {
+          return new Proxy(client.capabilityInstall, {
+            get(model, key, modelReceiver) {
+              if (key !== "findFirst") return Reflect.get(model, key, modelReceiver);
+              return async (...queryArgs: unknown[]) => {
+                const row = await Reflect.apply(model.findFirst, model, queryArgs);
+                const query = queryArgs[0] as {
+                  where?: { id?: string; status?: string };
+                  include?: { agentSkills?: boolean };
+                };
+                const paused = pauseFailureRead;
+                if (
+                  paused &&
+                  query.where?.id &&
+                  !query.where.status &&
+                  query.include?.agentSkills
+                ) {
+                  pauseFailureRead = undefined;
+                  paused.enter();
+                  await paused.released;
+                }
+                return row;
+              };
+            },
+          });
+        }
         if (property !== "$transaction") return Reflect.get(client, property, receiver);
         return (...args: unknown[]) => {
           if (typeof args[0] === "function") {
@@ -415,6 +442,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     secrets.reconcileWrites = false;
     secrets.inlineRecovery = false;
     secondChildFailure = false;
+    pauseFailureRead = undefined;
     expect(outbound).not.toHaveBeenCalled();
   });
   afterAll(async () => {
@@ -1036,7 +1064,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     },
   );
 
-  it.each(["install", "MCP update"] as const)(
+  it.each(["install", "MCP update", "compensation"] as const)(
     "cleans every known prepared credential after Space deletion races with %s",
     async (operation) => {
       const owner = await account();
@@ -1045,24 +1073,41 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       });
       const scoped = { ...owner, actor: { ...owner.actor, spaceId: space.id } };
       const input = intent(
-        await preview(scoped, fixture({ servers: operation === "install" ? 2 : 1 })),
+        await preview(scoped, fixture({ servers: operation === "MCP update" ? 1 : 2 })),
       );
       const existing = operation === "MCP update" ? await install(scoped, input) : undefined;
       const paused = barrier();
       held.push(paused);
+      const failedSnapshot = operation === "compensation" ? barrier() : undefined;
+      const manager = failedSnapshot ? await share(scoped, await account()) : owner;
+      if (failedSnapshot) {
+        held.push(failedSnapshot);
+        pauseFailureRead = failedSnapshot;
+        await database.prisma.spaceMember.update({
+          where: { spaceId_userId: { spaceId: space.id, userId: manager.actor.userId } },
+          data: { role: "owner" },
+        });
+      }
       secrets.nextPut = paused;
-      secrets.pauseAtPut = secrets.puts + (operation === "install" ? 2 : 1);
+      secrets.pauseAtPut = secrets.puts + (operation === "MCP update" ? 1 : 2);
       const writing =
-        operation === "install"
-          ? request(scoped, "plugins/install", input)
-          : request(scoped, "mcp/servers/update", {
+        operation === "MCP update"
+          ? request(scoped, "mcp/servers/update", {
               id: existing!.mcpServers[0]!.id,
               secret: "replacement-fixture",
-            });
+            })
+          : request(scoped, "plugins/install", input);
       void writing.catch(() => undefined);
       let ids: string[] = [];
       try {
         await paused.entered;
+        if (failedSnapshot) {
+          await database.prisma.spaceMember.delete({
+            where: { spaceId_userId: { spaceId: space.id, userId: owner.actor.userId } },
+          });
+          paused.release();
+          await failedSnapshot.entered;
+        }
         const parent = await database.prisma.capabilityInstall.findFirstOrThrow({
           where: { spaceId: space.id, clientNonce: input.clientNonce },
         });
@@ -1077,13 +1122,14 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         expect(ids).toHaveLength(2);
         expect(ids.every((id) => secrets.records.has(id))).toBe(true);
         expect(
-          await call<{ ok: boolean }>(owner, "spaces/remove", { spaceId: space.id }),
+          await call<{ ok: boolean }>(manager, "spaces/remove", { spaceId: space.id }),
         ).toMatchObject({ ok: true });
         expect(
           await database.prisma.capabilityInstall.findUnique({ where: { id: parent.id } }),
         ).toBeNull();
       } finally {
         paused.release();
+        failedSnapshot?.release();
       }
       const result = await writing;
       expect(result.ok).toBe(false);

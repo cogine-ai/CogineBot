@@ -727,4 +727,171 @@ describe("plugin installation review", () => {
     });
     expect(f.manager.canUninstall(acknowledged)).toBe(true);
   });
+
+  const outcomeCases = (["owned", "managed"] as const).flatMap((origin) =>
+    (["read-first", "write-first"] as const).flatMap((order) =>
+      (
+        ["newer-removed", "same-revision-other-status", "newer-nonterminal", "missing"] as const
+      ).flatMap((fresh) =>
+        (["success", "error"] as const).map((outcome) => ({ origin, order, fresh, outcome })),
+      ),
+    ),
+  );
+  it.each(outcomeCases)(
+    "keeps monotonic $origin removal with $order $fresh $outcome",
+    async ({ origin, order, fresh, outcome }) => {
+      const f = fixture();
+      const base = origin === "owned" ? receipt : { ...receipt, id: "member-install" };
+      if (origin === "owned") {
+        await f.manager.preview("https://github.com/example/plugin");
+        await f.manager.install();
+      } else {
+        f.list.mockResolvedValue(listing([], [{ receipt: base, ownerName: "Alex" }]));
+        await f.manager.refresh();
+      }
+      const read = deferred<ReturnType<typeof listing>>();
+      const write = deferred<PluginInstallReceipt>();
+      f.list.mockReturnValueOnce(read.promise);
+      f.uninstall.mockReturnValueOnce(write.promise);
+      const refreshing = f.manager.refresh();
+      const signal = f.list.mock.calls.at(-1)![0];
+      const removing = f.manager.uninstall(base);
+      const reply = { ...base, status: "cleanup_failed" as const, revision: 3 };
+      const latest =
+        fresh === "missing"
+          ? null
+          : {
+              ...base,
+              status:
+                fresh === "newer-nonterminal" ? ("cleanup_failed" as const) : ("removed" as const),
+              revision: fresh === "same-revision-other-status" ? 3 : 5,
+            };
+      const readback =
+        origin === "owned"
+          ? listing(latest ? [latest] : [])
+          : listing([], latest ? [{ receipt: latest, ownerName: "Fresh name" }] : []);
+      const settleWrite = () =>
+        outcome === "success" ? write.resolve(reply) : write.reject(new Error("reply lost"));
+      if (order === "read-first") {
+        read.resolve(readback);
+        await refreshing;
+        settleWrite();
+        await removing;
+      } else {
+        settleWrite();
+        await removing;
+        expect(signal.aborted).toBe(false);
+        read.resolve(readback);
+        await refreshing;
+      }
+      const expected = latest ?? (origin === "owned" && outcome === "success" ? reply : null);
+      const state = f.manager.state();
+      expect(state.installations).toEqual(expected ? [expected] : []);
+      expect(state.installationOwners).toEqual(
+        origin === "managed" && latest ? { [base.id]: "Fresh name" } : {},
+      );
+      const provenRemoved = latest?.status === "removed";
+      expect(state.removalUnknownId).toBe(outcome === "error" && !provenRemoved ? base.id : null);
+      if (provenRemoved) {
+        expect(state.error).toBeNull();
+        expect(f.manager.canUninstall(latest)).toBe(false);
+      }
+      if (origin === "owned" && expected) {
+        expect(state.receipt).toEqual(expected);
+        expect(state.phase).toBe("terminal");
+      }
+      if (origin === "managed") expect(state.receipt).toBeNull();
+      expect(f.uninstall).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  const unprovenErrorCases = (["owned", "managed"] as const).flatMap((origin) =>
+    (["read-first", "write-first"] as const).flatMap((order) =>
+      (["wrong-nonce", "wrong-origin"] as const).map((proof) => ({ origin, order, proof })),
+    ),
+  );
+  it.each(unprovenErrorCases)(
+    "does not settle $origin late error from $order $proof tombstone",
+    async ({ origin, order, proof }) => {
+      const f = fixture();
+      const base = origin === "owned" ? receipt : { ...receipt, id: "member-install" };
+      if (origin === "owned") {
+        await f.manager.preview("https://github.com/example/plugin");
+        await f.manager.install();
+      } else {
+        f.list.mockResolvedValue(listing([], [{ receipt: base, ownerName: "Alex" }]));
+        await f.manager.refresh();
+      }
+      const read = deferred<ReturnType<typeof listing>>();
+      const write = deferred<PluginInstallReceipt>();
+      f.list.mockReturnValueOnce(read.promise);
+      f.uninstall.mockReturnValueOnce(write.promise);
+      const refreshing = f.manager.refresh();
+      const removing = f.manager.uninstall(base);
+      const tombstone = {
+        ...base,
+        clientNonce: proof === "wrong-nonce" ? "other-nonce" : base.clientNonce,
+        status: "removed" as const,
+        revision: 99,
+      };
+      const inOwned = proof === "wrong-origin" ? origin !== "owned" : origin === "owned";
+      const readback = inOwned
+        ? listing([tombstone])
+        : listing([], [{ receipt: tombstone, ownerName: "Alex" }]);
+      if (order === "read-first") {
+        read.resolve(readback);
+        await refreshing;
+        write.reject(new Error("reply lost"));
+        await removing;
+      } else {
+        write.reject(new Error("reply lost"));
+        await removing;
+        read.resolve(readback);
+        await refreshing;
+      }
+      expect(f.manager.state().removalUnknownId).toBe(base.id);
+      expect(f.manager.state().error).toBeInstanceOf(Error);
+      expect(f.uninstall).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(
+    (["owned", "managed"] as const).flatMap((origin) =>
+      (["read-first", "write-first"] as const).map((order) => ({ origin, order })),
+    ),
+  )(
+    "does not settle $origin $order error from an older removed revision",
+    async ({ origin, order }) => {
+      const f = fixture();
+      const base = { ...receipt, status: "cleanup_failed" as const, revision: 3 };
+      const initial =
+        origin === "owned" ? listing([base]) : listing([], [{ receipt: base, ownerName: "Alex" }]);
+      f.list.mockResolvedValue(initial);
+      await f.manager.refresh();
+      const read = deferred<ReturnType<typeof listing>>();
+      const write = deferred<PluginInstallReceipt>();
+      f.list.mockReturnValueOnce(read.promise);
+      f.uninstall.mockReturnValueOnce(write.promise);
+      const refreshing = f.manager.refresh();
+      const removing = f.manager.uninstall(base);
+      const older = { ...base, status: "removed" as const, revision: 1 };
+      const readback =
+        origin === "owned"
+          ? listing([older])
+          : listing([], [{ receipt: older, ownerName: "Alex" }]);
+      if (order === "read-first") {
+        read.resolve(readback);
+        await refreshing;
+        write.reject(new Error("reply lost"));
+        await removing;
+      } else {
+        write.reject(new Error("reply lost"));
+        await removing;
+        read.resolve(readback);
+        await refreshing;
+      }
+      expect(f.manager.state()).toMatchObject({ installations: [base], removalUnknownId: base.id });
+      expect(f.manager.canUninstall(base)).toBe(false);
+    },
+  );
 });

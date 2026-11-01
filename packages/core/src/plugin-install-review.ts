@@ -65,13 +65,18 @@ export function createPluginInstallReview(options: {
   let active: AbortController | null = null;
   let listing: AbortController | null = null;
   let ownIds = new Set<string>();
+  let appliedListing: PluginInstallListing | null = null;
+  const ownedOutcomesForPendingReads = new Map<
+    string,
+    { receipt: PluginInstallReceipt; throughGeneration: number }
+  >();
   type RemovalIntent = {
     receipt: PluginInstallReceipt;
     owned: boolean;
     ownerName: string | null;
     listingGeneration: number;
   };
-  let unknownRemoval: RemovalIntent | null = null;
+  let unknownRemoval: (RemovalIntent & { checkAfterGeneration: number }) | null = null;
   const current = () => !closed && api.isCurrent();
   function publish(patch: Partial<PluginInstallReviewState>) {
     state = { ...state, ...patch };
@@ -81,8 +86,9 @@ export function createPluginInstallReview(options: {
     receipt: PluginInstallReceipt,
     owned = false,
     ownerName: string | null = null,
+    preserveListing = false,
   ) {
-    if (owned) {
+    if (owned && !preserveListing) {
       listGeneration += 1;
       listing?.abort();
     }
@@ -94,7 +100,7 @@ export function createPluginInstallReview(options: {
       installationOwners[receipt.id] = ownerName;
     }
     publish({
-      loading: owned ? false : state.loading,
+      loading: owned && !preserveListing ? false : state.loading,
       installations: [receipt, ...state.installations.filter((row) => row.id !== receipt.id)],
       installationOwners,
     });
@@ -121,6 +127,47 @@ export function createPluginInstallReview(options: {
       left.status === right.status &&
       sameRequest(left, right)
     );
+  }
+  function sameInstallation(left: PluginInstallReceipt, right: PluginInstallReceipt) {
+    return left.id === right.id && sameRequest(left, right);
+  }
+  function listedReceipt(result: PluginInstallListing, intent: RemovalIntent) {
+    return (intent.owned ? result.owned : result.managed.map((row) => row.receipt)).find(
+      (row) => row.id === intent.receipt.id,
+    );
+  }
+  function confirmsRemoval(intent: RemovalIntent, row: PluginInstallReceipt | undefined) {
+    return Boolean(
+      row &&
+        sameInstallation(row, intent.receipt) &&
+        row.status === "removed" &&
+        row.revision >= intent.receipt.revision,
+    );
+  }
+  function canAdoptOutcome(intent: RemovalIntent, result: PluginInstallReceipt) {
+    if (!appliedListing || appliedListingGeneration === intent.listingGeneration) return true;
+    const latest = listedReceipt(appliedListing, intent);
+    if (!latest) {
+      const opposite = intent.owned
+        ? appliedListing.managed.map((row) => row.receipt)
+        : appliedListing.owned;
+      return intent.owned && !opposite.some((row) => row.id === result.id);
+    }
+    return (
+      sameInstallation(latest, result) &&
+      (result.revision > latest.revision || exactReceipt(latest, result))
+    );
+  }
+  function retainNewerKnown(row: PluginInstallReceipt, owned: boolean) {
+    const known = state.installations.find(
+      (candidate) =>
+        (owned
+          ? ownIds.has(candidate.id)
+          : Object.hasOwn(state.installationOwners, candidate.id)) &&
+        sameInstallation(candidate, row) &&
+        candidate.revision > row.revision,
+    );
+    return known ?? row;
   }
   function canUninstall(receipt: PluginInstallReceipt) {
     if (
@@ -160,29 +207,30 @@ export function createPluginInstallReview(options: {
       const result = PluginInstallListingSchema.parse(await api.list(controller.signal));
       if (!current() || token !== listGeneration) return null;
       appliedListingGeneration = token;
-      ownIds = new Set(result.owned.map((row) => row.id));
+      appliedListing = result;
+      const owned = result.owned.map((row) => retainNewerKnown(row, true));
+      const listedIds = new Set([
+        ...result.owned.map((row) => row.id),
+        ...result.managed.map((row) => row.receipt.id),
+      ]);
+      for (const [id, acknowledged] of ownedOutcomesForPendingReads) {
+        if (token <= acknowledged.throughGeneration && !listedIds.has(id))
+          owned.push(acknowledged.receipt);
+        ownedOutcomesForPendingReads.delete(id);
+      }
       const managed = result.managed
-        .filter((row) => !ownIds.has(row.receipt.id))
-        .map((row) => {
-          const acknowledged = state.installations.find(
-            (known) =>
-              Object.hasOwn(state.installationOwners, known.id) &&
-              known.id === row.receipt.id &&
-              sameRequest(known, row.receipt) &&
-              known.revision > row.receipt.revision,
-          );
-          return acknowledged ? { ...row, receipt: acknowledged } : row;
-        });
-      const rows = [...result.owned, ...managed.map((row) => row.receipt)];
+        .filter((row) => !owned.some((own) => own.id === row.receipt.id))
+        .map((row) => ({ ...row, receipt: retainNewerKnown(row.receipt, false) }));
+      ownIds = new Set(owned.map((row) => row.id));
+      const rows = [...owned, ...managed.map((row) => row.receipt)];
       const pendingRemoval = unknownRemoval;
+      const readback = pendingRemoval && listedReceipt(result, pendingRemoval);
       const confirmedRemoval =
         pendingRemoval &&
-        (pendingRemoval.owned ? result.owned : result.managed.map((row) => row.receipt)).some(
-          (row) =>
-            row.id === pendingRemoval.receipt.id &&
-            row.revision >= pendingRemoval.receipt.revision &&
-            sameRequest(row, pendingRemoval.receipt),
-        );
+        readback &&
+        sameInstallation(readback, pendingRemoval.receipt) &&
+        readback.revision >= pendingRemoval.receipt.revision &&
+        (confirmsRemoval(pendingRemoval, readback) || token > pendingRemoval.checkAfterGeneration);
       if (confirmedRemoval) unknownRemoval = null;
       publish({
         installations: rows,
@@ -197,11 +245,11 @@ export function createPluginInstallReview(options: {
       const known = state.receipt;
       const latest =
         known &&
-        result.owned.find(
+        owned.find(
           (row) => row.id === known.id && row.revision >= known.revision && sameRequest(row, known),
         );
       if (latest) publish({ receipt: latest, phase: receiptPhase(latest) });
-      return result;
+      return { owned, managed };
     } catch (error) {
       if (current() && token === listGeneration) publish({ loading: false, listError: error });
       return null;
@@ -350,23 +398,19 @@ export function createPluginInstallReview(options: {
         ) {
           throw new Error("Removal receipt does not match this installation");
         }
-        if (!intent.owned && appliedListingGeneration !== intent.listingGeneration) {
-          const latest = state.installations.find((row) => row.id === result.id);
-          if (
-            !Object.hasOwn(state.installationOwners, result.id) ||
-            !latest ||
-            !sameRequest(latest, result) ||
-            latest.revision > result.revision ||
-            (latest.revision === result.revision && latest.status !== result.status)
-          )
-            return;
-        }
+        if (!canAdoptOutcome(intent, result)) return;
+        if (intent.owned && listing && state.loading)
+          ownedOutcomesForPendingReads.set(result.id, {
+            receipt: result,
+            throughGeneration: listGeneration,
+          });
         acceptReceipt(
           result,
           intent.owned,
           appliedListingGeneration === intent.listingGeneration
             ? intent.ownerName
             : (state.installationOwners[result.id] ?? null),
+          true,
         );
         unknownRemoval = null;
         publish({
@@ -377,7 +421,16 @@ export function createPluginInstallReview(options: {
         });
       } catch (error) {
         if (current()) {
-          unknownRemoval = intent;
+          if (
+            appliedListing &&
+            appliedListingGeneration !== intent.listingGeneration &&
+            confirmsRemoval(intent, listedReceipt(appliedListing, intent))
+          ) {
+            unknownRemoval = null;
+            publish({ error: null, removalUnknownId: null });
+            return;
+          }
+          unknownRemoval = { ...intent, checkAfterGeneration: listGeneration };
           publish({ error, removalUnknownId: intent.receipt.id });
         }
       } finally {
