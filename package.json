@@ -51,7 +51,8 @@
       "e2b>undici8": "npm:undici@8.10.2"
     },
     "patchedDependencies": {
-      "app-builder-lib@26.15.3": "patches/app-builder-lib@26.15.3.patch"
+      "app-builder-lib@26.15.3": "patches/app-builder-lib@26.15.3.patch",
+      "@earendil-works/pi-ai@0.87.1": "patches/@earendil-works__pi-ai@0.87.1.patch"
     }
   }
 }

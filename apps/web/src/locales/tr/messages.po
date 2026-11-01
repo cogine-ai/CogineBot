@@ -6379,3 +6379,9 @@ msgstr "{name} taşınamadı"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "Taşıma iptal edildi"
+
+msgid "Add your own API key to continue."
+msgstr "Devam etmek için kendi API anahtarınızı ekleyin."
+
+msgid "Add API key"
+msgstr "API anahtarı ekle"

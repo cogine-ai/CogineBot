@@ -5,7 +5,9 @@ import {
   secretStoreOptionsFromEnv,
 } from "@rakazo/adapters";
 import type { OidcConfig } from "@rakazo/auth";
+import type { PlatformModelAllowlist } from "@rakazo/core";
 import {
+  parsePlatformModelAllowlist,
   resolveAuthSecret,
   resolveEncryptionKey,
   resolveScreenProxySecret,
@@ -42,6 +44,7 @@ export interface AppEnv {
   cloudAgentSpaceId: string | undefined;
   cursorApiKey: string | undefined;
   agentRuntime: string;
+  platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey: string | undefined;
   /** The deployment default model can run; see resolveDeploymentModel. */
   deploymentModelConfigured: boolean;
@@ -183,6 +186,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     cloudAgentSpaceId: optional(source.CLOUD_AGENT_SPACE_ID),
     cursorApiKey: optional(source.CURSOR_API_KEY),
     agentRuntime: source.AGENT_RUNTIME ?? "pi",
+    platformModelAllowlist: parsePlatformModelAllowlist(source.PLATFORM_MODEL_ALLOWLIST),
     // Provider, model and key resolve together: see resolveDeploymentModel.
     deploymentModelKey: deploymentModel.key,
     deploymentModelConfigured: deploymentModel.configured,

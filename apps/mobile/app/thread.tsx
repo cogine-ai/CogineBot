@@ -2268,7 +2268,14 @@ function Thread({
   }
 
   const answerableAskMessageId = latestAnswerableAskMessageId(snap);
-  const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
+  const modelPolicyRefusal =
+    error === "platform_model_forbidden" ||
+    feedback.unsentSends.some((attempt) => attempt.error === "platform_model_forbidden");
+  const runError = modelPolicyRefusal
+    ? "platform_model_forbidden"
+    : snap?.run?.status === "failed"
+      ? (snap.run.error ?? null)
+      : null;
   useSyncExternalStore(
     subscribeRejectedSessionDraft,
     rejectedSessionDraftRevision,
@@ -2742,7 +2749,7 @@ function Thread({
       keyboardVerticalOffset={Platform.OS === "android" ? nativeHeaderHeight : 0}
       style={{ flex: 1, backgroundColor: tokens.background, paddingHorizontal: 20 }}
     >
-      {error ? (
+      {error && error !== "platform_model_forbidden" ? (
         <Text style={{ color: tokens.mutedForeground, marginTop: headerHeight + 28 }}>
           {showingSaved ? t("Couldn't refresh — showing the last loaded messages.") : error}
         </Text>
@@ -2758,7 +2765,9 @@ function Thread({
             snap?.run?.id,
           ])}
           error={runError}
-          style={{ marginTop: error ? 12 : headerHeight + 28 }}
+          style={{
+            marginTop: error && error !== "platform_model_forbidden" ? 12 : headerHeight + 28,
+          }}
         />
       ) : null}
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}

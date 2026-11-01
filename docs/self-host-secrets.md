@@ -112,3 +112,8 @@ later" item.
 
 Stored credentials can use self-hosted Infisical while short-lived secrets stay
 encrypted in Postgres. See [Infisical setup, migration, and rollback](./infisical-secrets.md).
+
+`PLATFORM_MODEL_ALLOWLIST` is an optional deployment policy, not a secret. Blank
+preserves shared model access; `none` permits only the deployment owner; mailbox
+and `@domain` grants require verified email. Apply the same value to API and worker
+and restart both after changes. User-owned model credentials are independent.

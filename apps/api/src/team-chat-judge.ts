@@ -7,14 +7,18 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import {
+  canUsePlatformModel,
   enabledOpenAiCompatibleModelIds,
   formatCurrentTimeInstruction,
+  LOCAL_PROVIDER_ID,
   matchesFailedOAuthSecret,
+  platformModelAuthorization,
   resolveModelAuth,
   serializeModelSecret,
   toOAuthCredential,
 } from "@rakazo/adapters";
 import { usableModelId } from "@rakazo/contracts";
+import type { PlatformModelAllowlist } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import {
   findBoundModelCredential,
@@ -123,6 +127,7 @@ interface ModelTeamChatEngagementJudgeDeps {
   secrets: SecretStore;
   deploymentProvider: string;
   deploymentModel: string;
+  platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   providerOverride?: string;
   modelOverride?: string;
@@ -249,9 +254,28 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
     if (!provider || !modelId) return null;
 
     if (!credential) {
+      if (
+        provider !== LOCAL_PROVIDER_ID &&
+        !(await canUsePlatformModel(this.deps.prisma, this.deps.platformModelAllowlist, bot.userId))
+      )
+        return null;
       const apiKey =
         provider === this.deps.deploymentProvider ? this.deps.deploymentModelKey : undefined;
-      return { model: { provider, id: modelId, ...(apiKey ? { apiKey } : {}) } };
+      return {
+        model: {
+          provider,
+          id: modelId,
+          authorize:
+            provider === LOCAL_PROVIDER_ID
+              ? undefined
+              : platformModelAuthorization(
+                  this.deps.prisma,
+                  this.deps.platformModelAllowlist,
+                  bot.userId,
+                ),
+          ...(apiKey ? { apiKey } : {}),
+        },
+      };
     }
 
     const secret = await this.deps.prisma.secret.findFirst({

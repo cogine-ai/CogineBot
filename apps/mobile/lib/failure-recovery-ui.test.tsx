@@ -251,3 +251,15 @@ it("retries a failed history read and fences an obsolete chat link", async () =>
   expect(state.push).not.toHaveBeenCalled();
   expect(state.rpc).toHaveBeenCalledTimes(2);
 });
+
+it("opens existing Models for policy recovery without replaying a failed request", async () => {
+  await render(<RunErrorNotice error="platform_model_forbidden" />);
+  expect(container.textContent).toContain("Add your own API key to continue.");
+  expect(state.push).not.toHaveBeenCalled();
+  await press("Add API key");
+  expect(state.push).toHaveBeenCalledExactlyOnceWith("/(settings)/models");
+  expect(state.rpc).not.toHaveBeenCalled();
+  expect(state.openURL).not.toHaveBeenCalled();
+  await render(<RunErrorNotice error="403: platform_model_forbidden" />);
+  expect(container.textContent).not.toContain("Add API key");
+});

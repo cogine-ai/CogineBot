@@ -40,6 +40,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { RunErrorDetails } from "../components/RunErrorDetails";
 import { rpc } from "../lib/rpc";
 import { RoutineNativeEvents } from "./RoutineNativeEvents";
 import { RoutineRunHistory } from "./RoutineRunHistory";
@@ -247,6 +248,7 @@ export function RoutineEditor({
   connectionsRevision,
   scopeKey,
   onOpenApplications,
+  onAddKey,
   saving,
   running,
   error,
@@ -267,6 +269,7 @@ export function RoutineEditor({
   connectionsRevision: number;
   scopeKey: string;
   onOpenApplications: () => void;
+  onAddKey?: () => void;
   saving: boolean;
   running: boolean;
   error: string | null;
@@ -676,12 +679,18 @@ export function RoutineEditor({
         </Button>
       </div>
       {error ? (
-        <p role="alert" className="mt-3 text-[13px] text-destructive">
-          {error}
-        </p>
+        <div role="alert" className="mt-3 text-[13px] text-destructive">
+          {error === "platform_model_forbidden" ? (
+            <RunErrorDetails error={error} onAddKey={onAddKey} />
+          ) : (
+            error
+          )}
+        </div>
       ) : null}
 
-      {editing ? <RoutineRunHistory key={editing.id} routineId={editing.id} /> : null}
+      {editing ? (
+        <RoutineRunHistory key={editing.id} routineId={editing.id} onAddKey={onAddKey} />
+      ) : null}
     </div>
   );
 }

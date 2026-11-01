@@ -6,6 +6,39 @@ export function parseAllowlist(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Blank preserves unrestricted self-hosting; `none` reserves shared models for the owner. */
+export type PlatformModelAllowlist = string[] | "owner_only";
+
+export function parsePlatformModelAllowlist(raw: string | undefined): PlatformModelAllowlist {
+  return raw?.trim().toLowerCase() === "none" ? "owner_only" : parseAllowlist(raw);
+}
+
+/** A mailbox grant requires current proof; deployment ownership is a separate authority. */
+export function platformModelAllowed(input: {
+  allowlist?: PlatformModelAllowlist;
+  email: string;
+  emailVerified: boolean;
+  isOwner: boolean;
+}): boolean {
+  if (input.isOwner) return true;
+  if (input.allowlist === "owner_only") return false;
+  if (!input.allowlist?.length) return true;
+  if (!input.emailVerified || isMessagingEmail(input.email)) return false;
+  const normalized = input.email.trim().toLowerCase();
+  // Domain grants match one complete mailbox domain, never suffixes or malformed addresses.
+  if (!/^[^\s@]+@[^\s@]+$/.test(normalized)) return false;
+  return emailAllowed(normalized, input.allowlist);
+}
+
+export class PlatformModelForbiddenError extends Error {
+  readonly code = "platform_model_forbidden";
+
+  constructor() {
+    super("platform_model_forbidden");
+    this.name = "PlatformModelForbiddenError";
+  }
+}
+
 export function emailAllowed(email: string, allowlist: string[]): boolean {
   if (allowlist.length === 0) return true;
   const normalized = email.trim().toLowerCase();

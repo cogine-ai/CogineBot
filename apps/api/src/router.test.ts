@@ -17,6 +17,7 @@ import {
 } from "@rakazo/adapters";
 import type { Actor, Bot, ProductEvent } from "@rakazo/contracts";
 import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
+import { parsePlatformModelAllowlist } from "@rakazo/core";
 import { openScreenCapability } from "@rakazo/core/node/screen-capability";
 import type { PrismaClient } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
@@ -279,7 +280,7 @@ describe("model setup gate", () => {
       email: "user@rakazo.test",
       isDeploymentOwner: true,
     } satisfies Actor;
-    return { actor, handler: new RPCHandler(createRouter(deps)) };
+    return { actor, deps, handler: new RPCHandler(createRouter(deps)) };
   }
 
   async function call(handler: RPCHandler<never>, actor: Actor, path: string, body: unknown) {
@@ -372,6 +373,87 @@ describe("model setup gate", () => {
     });
   });
 
+  it("reflects current mailbox proof rather than cached caller identity in me", async () => {
+    const f = modelGateDeps({
+      agentRuntime: "pi",
+      deploymentModelConfigured: true,
+      deploymentModelHostCredentials: true,
+    });
+    f.deps.env.platformModelAllowlist = parsePlatformModelAllowlist("@allowed.test");
+    const account = { email: "member@allowed.test", emailVerified: true };
+    Object.assign(f.deps.prisma.user, { findUnique: vi.fn(async () => account) });
+    f.actor.email = "cached@outside.test";
+    f.actor.isDeploymentOwner = false;
+    const allowed = await call(f.handler, f.actor, "me", null);
+    await expect(allowed.json()).resolves.toMatchObject({
+      json: {
+        needsModel: false,
+        defaultProvider: "openrouter",
+        defaultModel: "test-model",
+        hostCredentialProvider: "openrouter",
+      },
+    });
+    account.emailVerified = false;
+    f.actor.email = "cached@allowed.test";
+    f.actor.isDeploymentOwner = true;
+    const revoked = await call(f.handler, f.actor, "me", null);
+    await expect(revoked.json()).resolves.toMatchObject({
+      json: {
+        needsModel: true,
+        defaultProvider: null,
+        defaultModel: null,
+        hostCredentialProvider: null,
+        hostCredentialSource: null,
+      },
+    });
+  });
+
+  it.each([true, false])(
+    "uses stored owner authority with cached owner flag %s",
+    async (isOwner) => {
+      const f = modelGateDeps({ agentRuntime: "pi", deploymentModelConfigured: true });
+      f.deps.env.platformModelAllowlist = "owner_only";
+      Object.assign(f.deps.prisma.user, {
+        findUnique: vi.fn(async () => ({ email: "owner@messaging.invalid", emailVerified: false })),
+      });
+      vi.mocked(f.deps.prisma.deploymentSettings.findUnique).mockResolvedValue({
+        ownerUserId: isOwner ? f.actor.userId : "different-owner",
+      } as never);
+      f.actor.isDeploymentOwner = !isOwner;
+      const response = await call(f.handler, f.actor, "me", null);
+      await expect(response.json()).resolves.toMatchObject({
+        json: { needsModel: !isOwner, defaultProvider: isOwner ? "openrouter" : null },
+      });
+    },
+  );
+
+  it("does not grant platform access to a missing current account", async () => {
+    const f = modelGateDeps({ agentRuntime: "pi", deploymentModelConfigured: true });
+    f.deps.env.platformModelAllowlist = "owner_only";
+    Object.assign(f.deps.prisma.user, { findUnique: vi.fn(async () => null) });
+    vi.mocked(f.deps.prisma.deploymentSettings.findUnique).mockResolvedValue({
+      ownerUserId: f.actor.userId,
+    } as never);
+    const response = await call(f.handler, f.actor, "me", null);
+    await expect(response.json()).resolves.toMatchObject({
+      json: { needsModel: true, defaultProvider: null },
+    });
+  });
+
+  it.each(["none", undefined])("keeps local defaults usable with policy %s", async (policy) => {
+    const f = modelGateDeps({ agentRuntime: "pi" });
+    f.deps.env.platformModelAllowlist = parsePlatformModelAllowlist(policy);
+    f.deps.env.defaultProvider = "local";
+    f.deps.env.defaultModel = "local-model";
+    Object.assign(f.deps.prisma.user, {
+      findUnique: vi.fn(async () => ({ email: "member@outside.test", emailVerified: false })),
+    });
+    const response = await call(f.handler, f.actor, "me", null);
+    await expect(response.json()).resolves.toMatchObject({
+      json: { needsModel: false, defaultProvider: "local", defaultModel: "local-model" },
+    });
+  });
+
   it("rejects a reply quote without a reply target", async () => {
     const { actor, handler } = modelGateDeps({ agentRuntime: "scripted" });
 
@@ -409,6 +491,266 @@ describe("model setup gate", () => {
         }),
       }),
     });
+  });
+});
+
+describe("platform model target send authorization", () => {
+  function targetSendFixture(kind: "owned" | "foreign" | "missing-secret", accepted = false) {
+    const actor = {
+      userId: "member",
+      spaceId: "space",
+      email: "member@example.test",
+      isDeploymentOwner: false,
+    } satisfies Actor;
+    const connection = {
+      id: "connection",
+      userId: kind === "foreign" ? "different-user" : actor.userId,
+      provider: "openai",
+      secretId: "user-secret",
+      connectionRevision: 1,
+      preferences: [],
+    };
+    const bot = {
+      id: "bot",
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      archivedAt: null,
+      name: "Test Bot",
+      thread: { id: "thread" },
+      computer: null,
+      modelProvider: "openai",
+      modelId: "user-model",
+      modelCredentialId: connection.id,
+    };
+    const createMessage = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      id: "message",
+      seq: 0,
+      ...data,
+    }));
+    const active = {
+      id: "active-run",
+      taskId: "task",
+      botId: bot.id,
+      status: "running",
+      trigger: "user",
+    };
+    const prisma = {
+      user: { findUnique: vi.fn(async () => ({ email: actor.email, emailVerified: true })) },
+      deploymentSettings: { findUnique: vi.fn(async () => ({ ownerUserId: "owner" })) },
+      spaceModelPreference: { findFirst: vi.fn(async () => null) },
+      userModelCredential: {
+        findFirst: vi.fn(
+          async ({ where }: { where: { id?: string; userId: string; provider?: string } }) =>
+            (!where.id || where.id === connection.id) &&
+            where.userId === connection.userId &&
+            (!where.provider || where.provider === connection.provider)
+              ? connection
+              : null,
+        ),
+      },
+      secret: {
+        findFirst: vi.fn(
+          async ({ where }: { where: { id: string; userId: string; spaceId: null } }) =>
+            kind !== "missing-secret" &&
+            where.id === connection.secretId &&
+            where.userId === actor.userId &&
+            where.spaceId === null
+              ? {
+                  id: connection.secretId,
+                  userId: actor.userId,
+                  spaceId: null,
+                  ciphertext: "fake-user-cipher",
+                }
+              : null,
+        ),
+      },
+      bot: {
+        findFirst: vi.fn(
+          async ({ where }: { where: { id: string; userId: string; spaceId: string } }) =>
+            where.id === bot.id && where.userId === actor.userId && where.spaceId === actor.spaceId
+              ? bot
+              : null,
+        ),
+      },
+      taughtSkill: { findFirst: vi.fn(async () => null) },
+      thread: { update: vi.fn(async () => ({ nextMessageSeq: 1, nextEventSeq: 1 })) },
+      message: {
+        create: createMessage,
+        update: vi.fn(async () => ({})),
+        findUnique: vi.fn(
+          async ({
+            where,
+          }: {
+            where: { threadId_clientNonce: { threadId: string; clientNonce: string } };
+          }) =>
+            accepted &&
+            where.threadId_clientNonce.threadId === "thread" &&
+            where.threadId_clientNonce.clientNonce === "accepted"
+              ? { id: "accepted-message", seq: 7, runId: active.id, sourceRuns: [active] }
+              : null,
+        ),
+      },
+      task: { create: vi.fn(async () => ({ id: "unexpected-new-task" })) },
+      run: {
+        findMany: vi.fn(async () => [active]),
+        findUnique: vi.fn(async () => ({ status: "running", startedAt: new Date(0) })),
+        create: vi.fn(async () => ({ id: "unexpected-new-run" })),
+      },
+      steeringMessage: { create: vi.fn(async () => ({ id: "steering" })) },
+      event: {
+        create: vi.fn(async () => ({ seq: 0 })),
+        findFirst: vi.fn(async ({ where }: { where: { type?: string } }) =>
+          where.type
+            ? { payload: { messageId: "accepted-message", runIds: [active.id] } }
+            : { seq: 9 },
+        ),
+      },
+    };
+    Object.assign(prisma, {
+      $transaction: async (operation: (tx: typeof prisma) => unknown) => operation(prisma),
+    });
+    const notify = vi.fn(async () => undefined);
+    const deps = {
+      prisma,
+      env: {
+        agentRuntime: "pi",
+        deploymentModelConfigured: true,
+        defaultProvider: "openai",
+        defaultModel: "host-model",
+        platformModelAllowlist: "owner_only",
+      },
+      secrets: { load: vi.fn(async () => "fake-user-key") },
+      events: { notify },
+      jobs: { enqueue: vi.fn(async () => undefined) },
+    } as unknown as RouterDeps;
+    return {
+      actor,
+      bot,
+      createMessage,
+      notify,
+      prisma,
+      deps,
+      handler: new RPCHandler(createRouter(deps)),
+    };
+  }
+
+  it.each(["owned", "foreign", "missing-secret"] as const)(
+    "checks the target's %s BYOK binding independently of a missing Space default",
+    async (kind) => {
+      const f = targetSendFixture(kind);
+      const { response } = await f.handler.handle(
+        new Request("http://127.0.0.1/rpc/threads/send", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ json: { botId: "bot", text: "hello" } }),
+        }),
+        { prefix: "/rpc", context: { actor: f.actor } },
+      );
+      const body = await response!.json();
+      expect(response!.status, JSON.stringify(body)).toBe(kind === "owned" ? 200 : 403);
+      if (kind === "owned") {
+        expect(body).toEqual({
+          json: expect.objectContaining({ runId: "active-run", taskId: "task", seq: 0 }),
+        });
+        expect(f.createMessage).toHaveBeenCalledExactlyOnceWith({
+          data: expect.objectContaining({
+            threadId: "thread",
+            role: "user",
+            blocks: [{ kind: "text", text: "hello" }],
+          }),
+        });
+        expect(f.notify).toHaveBeenCalledWith("thread", 0);
+      } else {
+        expect(body).toEqual({
+          json: expect.objectContaining({ message: "platform_model_forbidden" }),
+        });
+        expect(f.createMessage).not.toHaveBeenCalled();
+        expect(f.notify).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("returns an accepted send receipt before checking newly revoked model access", async () => {
+    const f = targetSendFixture("missing-secret", true);
+    const { response } = await f.handler.handle(
+      new Request("http://127.0.0.1/rpc/threads/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ json: { botId: "bot", text: "hello", clientNonce: "accepted" } }),
+      }),
+      { prefix: "/rpc", context: { actor: f.actor } },
+    );
+    const body = await response!.json();
+    expect(response!.status, JSON.stringify(body)).toBe(200);
+    expect(body).toEqual({
+      json: { runId: "active-run", taskId: "task", seq: 7, runIds: ["active-run"] },
+    });
+    expect(f.prisma.message.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { threadId_clientNonce: { threadId: "thread", clientNonce: "accepted" } },
+      }),
+    );
+    expect(f.prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(f.prisma.secret.findFirst).not.toHaveBeenCalled();
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.prisma.task.create).not.toHaveBeenCalled();
+    expect(f.prisma.run.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { text: "hello", mentions: [{ kind: "bot", id: "bot" }], allowed: true },
+    { text: "@Unconfigured hello", mentions: [], allowed: false },
+    { text: "@everyone hello", mentions: [], allowed: false },
+  ])("authorizes only the actual group targets for $text", async ({ text, mentions, allowed }) => {
+    const f = targetSendFixture("owned");
+    const group = {
+      id: "group",
+      name: "Team",
+      thread: { id: "thread" },
+      members: [
+        { bot: { ...f.bot, color: "blue", runs: [] } },
+        {
+          bot: {
+            id: "unconfigured",
+            name: "Unconfigured",
+            color: "red",
+            archivedAt: null,
+            runs: [],
+          },
+        },
+      ],
+    };
+    const updateGroup = vi.fn(async () => group);
+    Object.assign(f.prisma, {
+      chatGroup: { findFirst: vi.fn(async () => group), update: updateGroup },
+      $queryRaw: vi.fn(async () => [{ id: group.id }]),
+    });
+    const { response } = await f.handler.handle(
+      new Request("http://127.0.0.1/rpc/threads/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ json: { groupId: group.id, text, mentions } }),
+      }),
+      { prefix: "/rpc", context: { actor: f.actor } },
+    );
+    const body = await response!.json();
+    expect(response!.status, JSON.stringify(body)).toBe(allowed ? 200 : 403);
+    if (allowed) {
+      expect(body).toMatchObject({ json: { runIds: ["active-run"] } });
+      expect(f.prisma.steeringMessage.create).toHaveBeenCalledExactlyOnceWith({
+        data: expect.objectContaining({ botId: "bot", runId: "active-run" }),
+      });
+      expect(f.prisma.bot.findFirst).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ id: "unconfigured" }) }),
+      );
+      expect(f.createMessage).toHaveBeenCalledTimes(1);
+    } else {
+      expect(body).toMatchObject({ json: { message: "platform_model_forbidden" } });
+      expect(f.createMessage).not.toHaveBeenCalled();
+      expect(updateGroup).not.toHaveBeenCalled();
+    }
+    expect(f.prisma.task.create).not.toHaveBeenCalled();
+    expect(f.prisma.run.create).not.toHaveBeenCalled();
   });
 });
 

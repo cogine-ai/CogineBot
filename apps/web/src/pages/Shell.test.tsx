@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@lingui/core";
 import type { AgentSkillCatalogEntry, ThreadMessage } from "@rakazo/contracts";
 import type { ComposerMention } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
@@ -17,7 +18,10 @@ import { useComposerDraft } from "../lib/use-composer-draft";
 vi.mock("@lingui/react/macro", () => {
   const t = (parts: TemplateStringsArray, ...values: unknown[]) =>
     parts.reduce((text, part, index) => `${text}${index > 0 ? values[index - 1] : ""}${part}`, "");
-  return { useLingui: () => ({ t }), Trans: ({ children }: { children: ReactNode }) => children };
+  return {
+    useLingui: () => ({ t, i18n: { locale: "en" } }),
+    Trans: ({ children }: { children: ReactNode }) => children,
+  };
 });
 
 import { Composer } from "./Shell";
@@ -63,6 +67,8 @@ function rerender(overrides: Partial<HarnessProps> = {}) {
   act(() => root?.render(<Harness />));
 }
 function renderComposer(onSend: ComposerProps["onSend"]) {
+  i18n.load("en", {});
+  i18n.activate("en");
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.ResizeObserver ??= class {
     observe() {}
@@ -235,3 +241,34 @@ it("keeps newly selected reply context after the old send succeeds", async () =>
   expect(textarea.value).toBe("follow-up");
   expect(readComposerDraft(draftKey).replyTarget?.id).toBe("message-1");
 });
+
+it.each(["run", "send"])(
+  "opens Models from a %s policy refusal while keeping the current draft",
+  async (source) => {
+    const onSend = vi.fn().mockResolvedValue(false);
+    const textarea = renderComposer(onSend);
+    type(textarea, "Keep this draft");
+    const original = readComposerDraft(draftKey);
+    const onAddKey = vi.fn();
+    rerender({
+      runError: source === "run" ? "platform_model_forbidden" : null,
+      runErrorId: source === "run" ? "run-policy" : null,
+      sendError: source === "send" ? "platform_model_forbidden" : null,
+      onAddKey,
+    });
+    expect(container?.querySelector('[data-testid="composer-error"]')?.textContent).toContain(
+      "Add your own API key to continue.",
+    );
+    const action = Array.from(container!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Add API key",
+    );
+    expect(action).toBeDefined();
+    await act(async () => action!.click());
+    expect(onAddKey).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(readComposerDraft(draftKey)).toEqual(original);
+    expect(textarea.value).toBe("Keep this draft");
+    rerender({ runError: null, runErrorId: null, sendError: null });
+    expect(container?.textContent).not.toContain("Add API key");
+  },
+);

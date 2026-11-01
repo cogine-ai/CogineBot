@@ -354,6 +354,8 @@ describe("lingui catalogs", () => {
       );
       const messages = [
         "Manage usage",
+        "Add API key",
+        "Add your own API key to continue.",
         "ChatGPT account",
         "Could not load ChatGPT accounts",
         "Disconnected locally. Remote revocation was not confirmed; disconnect the app in ChatGPT settings.",

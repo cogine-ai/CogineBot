@@ -254,6 +254,30 @@ describe("scoped mobile outbox", () => {
     const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
     expect(sends[0]).toEqual(sends[1]);
   });
+  it("retains a policy-refused payload and never resends it during background recovery", async () => {
+    const attempt = feedback.sendAttempt(payload("Keep the rejected draft"));
+    request
+      .mockResolvedValueOnce({ id: "artifact-a" })
+      .mockRejectedValueOnce(Object.assign(new Error("platform_model_forbidden"), { status: 403 }));
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    const nonce = attempt.clientNonce;
+    const artifacts = Array.from(attempt.artifactIds);
+    expect(attempt.state).toBe("refused");
+    expect(attempt.payload.displayText).toBe("Keep the rejected draft");
+    expect(attempt.payload.attachments[0]?.name).toBeTruthy();
+    expect(disk.forget).not.toHaveBeenCalled();
+    expect(notDelivered).toHaveBeenCalledWith(attempt);
+    const calls = request.mock.calls.length;
+    await act(async () => {
+      await sendWaitingMessages(true);
+      await feedback.send(attempt, true);
+    });
+    expect(request).toHaveBeenCalledTimes(calls);
+    expect(attempt.clientNonce).toBe(nonce);
+    expect(Array.from(attempt.artifactIds)).toEqual(artifacts);
+  });
   it.each([false, true])("pauses the ordered queue on HTTP 429 (wrapped: %s)", async (wrapped) => {
     reachable = false;
     const first = feedback.sendAttempt(payload("First"));

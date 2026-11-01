@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { serializeModelSecret } from "@rakazo/adapters";
+import {
+  canUsePlatformModel,
+  platformModelAuthorization,
+  serializeModelSecret,
+} from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb, Prisma } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -225,5 +229,64 @@ describe.skipIf(!enabled)("ChatGPT model binding removal lock (PostgreSQL)", () 
       meta: { driverAdapterError: { cause: { originalCode: "40001" } } },
     });
     expect(await first.prisma.bot.count({ where: { modelCredentialId: f.credential.id } })).toBe(0);
+  });
+});
+
+describe.skipIf(!enabled)("platform model funding authority (PostgreSQL)", () => {
+  let db: ReturnType<typeof createDb>;
+  let userId: string;
+
+  beforeAll(async () => {
+    db = createDb(databaseUrl!, { poolMax: 2, applicationName: "model-policy-fixture" });
+    userId = randomUUID();
+    await db.prisma.user.create({
+      data: {
+        id: userId,
+        name: "Policy fixture",
+        email: `${userId}@example.test`,
+        emailVerified: false,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    try {
+      await db?.prisma.deploymentSettings.updateMany({
+        where: { id: "default", ownerUserId: userId },
+        data: { ownerUserId: null },
+      });
+      await db?.prisma.user.deleteMany({ where: { id: userId } });
+    } finally {
+      await db?.prisma.$disconnect();
+      await db?.pool.end();
+    }
+  });
+
+  it("rechecks current mailbox proof instead of retaining an earlier authorization", async () => {
+    const authorize = platformModelAuthorization(db.prisma, ["@example.test"], userId)!;
+    await expect(authorize()).rejects.toMatchObject({ code: "platform_model_forbidden" });
+    await db.prisma.user.update({ where: { id: userId }, data: { emailVerified: true } });
+    await expect(authorize()).resolves.toBeUndefined();
+    await db.prisma.user.update({ where: { id: userId }, data: { emailVerified: false } });
+    await expect(authorize()).rejects.toMatchObject({ code: "platform_model_forbidden" });
+    expect(await canUsePlatformModel(db.prisma, ["@example.test"], "missing-fixture-user")).toBe(
+      false,
+    );
+  });
+
+  it("uses current deployment ownership independently of mailbox grants", async () => {
+    const authorize = platformModelAuthorization(db.prisma, "owner_only", userId)!;
+    await expect(authorize()).rejects.toMatchObject({ code: "platform_model_forbidden" });
+    await db.prisma.deploymentSettings.upsert({
+      where: { id: "default" },
+      create: { id: "default", ownerUserId: userId },
+      update: { ownerUserId: userId },
+    });
+    await expect(authorize()).resolves.toBeUndefined();
+    await db.prisma.deploymentSettings.update({
+      where: { id: "default" },
+      data: { ownerUserId: null },
+    });
+    await expect(authorize()).rejects.toMatchObject({ code: "platform_model_forbidden" });
   });
 });

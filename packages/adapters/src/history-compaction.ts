@@ -1,6 +1,7 @@
 import type { AgentRunRequest, AgentRuntime, JobPublisher } from "@rakazo/adapter-kit";
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
+import type { PlatformModelAllowlist } from "@rakazo/core";
 import { blocksToAgentHistoryText } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { recordUsage } from "@rakazo/db";
@@ -11,6 +12,8 @@ import type {
   ConfiguredMemoryProvider,
   MemoryProviderResolver,
 } from "./memory-provider-factory.js";
+import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
+import { canUsePlatformModel, platformModelAuthorization } from "./platform-model-access.js";
 
 /**
  * Sentinel for "nothing compacted yet". Message `seq` is 0-based, so an exclusive lower bound of
@@ -210,6 +213,7 @@ export interface CompactHistoryDeps {
   runtime: AgentRuntime;
   jobs: JobPublisher;
   memoryProviders: MemoryProviderResolver;
+  platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   deploymentModelConfigured?: boolean;
   resolveModel?: (scope: {
@@ -353,6 +357,15 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
             apiKey: undefined,
           };
         })();
+  if (!deps.resolveModel && model.provider !== LOCAL_PROVIDER_ID && model.provider !== "scripted") {
+    if (!(await canUsePlatformModel(deps.prisma, deps.platformModelAllowlist, thread.userId)))
+      return;
+    model.authorize = platformModelAuthorization(
+      deps.prisma,
+      deps.platformModelAllowlist,
+      thread.userId,
+    );
+  }
   if (!deps.runtime.describe().capabilities.compaction || model.provider === "scripted") {
     getLogger().info(`history.compact skipped for thread ${threadId}: no usable summarizer model`);
     return;

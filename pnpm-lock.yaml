@@ -11,6 +11,9 @@ overrides:
   e2b>undici8: npm:undici@8.10.2
 
 patchedDependencies:
+  '@earendil-works/pi-ai@0.87.1':
+    hash: qefhjhzcaapl7cnibtro47xqda
+    path: patches/@earendil-works__pi-ai@0.87.1.patch
   app-builder-lib@26.15.3:
     hash: etbhenc3wnsl43rdtwvgrimboq
     path: patches/app-builder-lib@26.15.3.patch
@@ -582,7 +585,7 @@ importers:
         version: 0.87.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)
       '@earendil-works/pi-ai':
         specifier: 0.87.1
-        version: 0.87.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)
+        version: 0.87.1(patch_hash=qefhjhzcaapl7cnibtro47xqda)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2)
@@ -11411,7 +11414,7 @@ snapshots:
   '@earendil-works/pi-agent-core@0.87.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)':
     dependencies:
       '@earendil-works/chord': 0.87.1
-      '@earendil-works/pi-ai': 0.87.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)
+      '@earendil-works/pi-ai': 0.87.1(patch_hash=qefhjhzcaapl7cnibtro47xqda)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)
       '@earendil-works/pi-telemetry': 0.87.1
       diff: 8.0.4
       ignore: 7.0.8
@@ -11426,7 +11429,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.87.1(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)':
+  '@earendil-works/pi-ai@0.87.1(patch_hash=qefhjhzcaapl7cnibtro47xqda)(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2))(ws@8.21.3)(zod@4.6.2)':
     dependencies:
       '@anthropic-ai/sdk': 0.124.0(zod@4.6.2)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0

@@ -625,6 +625,8 @@ export async function sendThreadMessage(
     prisma: PrismaClient;
     events: ThreadEvents;
     jobs: JobPublisher;
+    /** New sends are admitted after an existing nonce receipt has been returned. */
+    beforeSend?: () => Promise<void>;
   },
   actor: Actor,
   target: ThreadTarget,
@@ -639,6 +641,7 @@ export async function sendThreadMessage(
 ) {
   const existing = await replayExistingSend(deps, target.threadId, input.clientNonce);
   if (existing) return existing;
+  await deps.beforeSend?.();
   // Live events carry the call id so a spoken turn joins the call card on first
   // paint; without it the bubble shows loose until a refetch reads the nonce.
   const callId = callIdFromClientNonce(input.clientNonce);

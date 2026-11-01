@@ -130,3 +130,60 @@ test("a covered run error is not remembered until it is presented", async ({ pag
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
   await expect(error).toBeHidden();
 });
+
+for (const width of [1280, 390]) {
+  test(`policy recovery opens Models and retains the refused draft at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await signup(
+      page,
+      `model-policy-${width}-${Date.now()}@rakazo.test`,
+      "password12",
+      "Model Policy",
+    );
+    await completeOnboarding(page);
+    await page.setViewportSize({ width, height: 844 });
+    let sends = 0;
+    // A controlled transport refusal exercises recovery; backend grants are tested separately.
+    await page.route("**/rpc/threads/send", async (route) => {
+      sends += 1;
+      await route.fulfill({
+        status: 403,
+        json: {
+          json: {
+            defined: false,
+            code: "FORBIDDEN",
+            status: 403,
+            message: "platform_model_forbidden",
+          },
+        },
+      });
+    });
+    const composer = page.getByPlaceholder(/^Message /);
+    await composer.fill("Keep my rejected message");
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "policy-note.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Retain this attachment"),
+    });
+    const attachment = page.getByRole("button", { name: /^Remove policy-note\.txt/ });
+    await expect(attachment).toBeVisible();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const error = page.getByTestId("composer-error");
+    await expect(error).toContainText("Add your own API key to continue.");
+    await expect(composer).toHaveValue("Keep my rejected message");
+    await expect(attachment).toBeVisible();
+    expect(sends).toBe(1);
+    await captureScreenshot(page, testInfo, `model-policy-recovery-${width}`);
+    await error.getByRole("button", { name: "Add API key", exact: true }).click();
+    const settings = page.getByTestId("user-settings");
+    await expect(settings).toHaveAttribute("data-settings-section", "models");
+    expect(sends).toBe(1);
+    await captureScreenshot(page, testInfo, `model-policy-settings-${width}`);
+    await settings.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await expect(settings).toBeHidden();
+    await expect(composer).toHaveValue("Keep my rejected message");
+    await expect(attachment).toBeVisible();
+    expect(sends).toBe(1);
+  });
+}

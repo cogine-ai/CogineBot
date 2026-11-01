@@ -48,6 +48,7 @@ import {
   CodexCatalogCache,
   ComputerBusyError,
   cancelComputerRunWork,
+  canUsePlatformModel,
   checkpointAndRecordComputerWorkspace,
   clearInactiveUserComputerControl,
   codexLiveCatalogsForSpace,
@@ -76,6 +77,7 @@ import {
   isSandboxGoneError,
   isScratchpadStatus,
   kickModelCredentialRefresh,
+  LOCAL_PROVIDER_ID,
   listAvailablePiCatalog,
   listBotSecretMetadata,
   listNativeRoutineTriggers,
@@ -158,6 +160,7 @@ import {
   parseTicketRef,
   usableModelId,
 } from "@rakazo/contracts";
+import type { PlatformModelAllowlist } from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   AttachmentValidationError,
@@ -169,6 +172,7 @@ import {
   hasMixedOneShotSchedule,
   isOneShotRoutineCrons,
   nextCronDateAcrossStrict,
+  resolveGroupTargetBotIds,
 } from "@rakazo/core";
 import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
@@ -312,6 +316,7 @@ import {
   projectPeerThreadEvent,
   shouldForwardBackgroundThreadEvent,
 } from "./thread-message-pages.js";
+import type { ThreadTarget } from "./thread-target.js";
 import {
   reactToThreadMessage,
   resolveThreadTarget,
@@ -656,6 +661,7 @@ export interface RouterDeps {
     teamChatJudgeModel?: string;
     defaultProvider: string;
     defaultModel: string;
+    platformModelAllowlist?: PlatformModelAllowlist;
     deploymentModelConfigured?: boolean;
     deploymentModelHostCredentials?: boolean;
     webOrigin: string;
@@ -2482,14 +2488,25 @@ export function createRouter(deps: RouterDeps) {
         }
       }),
       send: newWork.threads.send.handler(async ({ context, input }) => {
-        if ((await modelSetup(deps, context.actor)).needsModel) {
+        const policy = deps.env.platformModelAllowlist;
+        const restricted = policy === "owner_only" || Boolean(policy?.length);
+        if (!restricted && (await modelSetup(deps, context.actor)).needsModel)
           throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
-        }
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         if (target.kind === "bot") {
           await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
         }
-        return sendThreadMessage(deps, context.actor, target, input);
+        return sendThreadMessage(
+          {
+            ...deps,
+            beforeSend: restricted
+              ? () => requireTargetModelAccess(deps, context.actor, target, input)
+              : undefined,
+          },
+          context.actor,
+          target,
+          input,
+        );
       }),
       react: authed.threads.react.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
@@ -7034,7 +7051,14 @@ function partitionBySpace<T extends { spaceId: string }>(rows: T[]): Map<string,
 }
 
 async function loadAutoReviewSettings(deps: RouterDeps, actor: Actor) {
-  const environmentAvailable = isAutoReviewCheckerConfigured({ env: process.env });
+  const environmentAvailable = isAutoReviewCheckerConfigured({
+    env: process.env,
+    platformModelAllowed: await canUsePlatformModel(
+      deps.prisma,
+      deps.env.platformModelAllowlist,
+      actor.userId,
+    ),
+  });
   const checker = environmentAvailable ? null : resolveAutoReviewChecker(process.env);
   const requiredUserProvider = checker?.provider === "scripted" ? null : checker?.provider;
   const [preference, credential] = await Promise.all([
@@ -7079,15 +7103,22 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     isDeploymentOwner: actor.isDeploymentOwner,
     needsModel: setup.needsModel,
     defaultProvider:
-      setup.credential?.provider ??
-      setup.settings?.defaultModelProvider ??
-      deps.env.defaultProvider,
+      setup.credential || setup.platformAllowed || setup.hasLocal
+        ? (setup.credential?.provider ??
+          setup.settings?.defaultModelProvider ??
+          deps.env.defaultProvider)
+        : null,
     defaultModel:
-      setup.credential?.defaultModel ?? setup.settings?.defaultModelId ?? deps.env.defaultModel,
+      setup.credential || setup.platformAllowed || setup.hasLocal
+        ? (setup.credential?.defaultModel ??
+          setup.settings?.defaultModelId ??
+          deps.env.defaultModel)
+        : null,
     // Set only while the active default is the deployment's own, running on host credentials.
     ...hostCredentials(
       !setup.credential &&
         !setup.settings?.defaultModelProvider &&
+        setup.hasDeployment &&
         Boolean(deps.env.deploymentModelHostCredentials),
       deps.env.defaultProvider,
     ),
@@ -7105,16 +7136,77 @@ function requireBilling(deps: RouterDeps): BillingService {
   return deps.billing;
 }
 
+/** Admission is advisory; the worker revalidates the actual credential before each request. */
+async function requireTargetModelAccess(
+  deps: RouterDeps,
+  actor: Actor,
+  target: ThreadTarget,
+  input: { text?: string; mentions?: Array<string | { kind: string; id: string }> },
+): Promise<void> {
+  const setup = await modelSetup(deps, actor);
+  if (!setup.needsModel) return;
+  const botIds =
+    target.kind === "bot"
+      ? [target.botId]
+      : resolveGroupTargetBotIds({
+          text: input.text ?? "",
+          members: target.members.map((member) => ({ id: member.botId, name: member.name })),
+          explicitMentions: (input.mentions ?? []).flatMap((mention) =>
+            typeof mention === "string" ? [mention] : mention.kind === "bot" ? [mention.id] : [],
+          ),
+        });
+  for (const botId of botIds) {
+    const bot = await deps.prisma.bot.findFirst({
+      where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
+      select: { modelProvider: true, modelId: true, modelCredentialId: true },
+    });
+    const provider = bot?.modelProvider;
+    const modelId = usableModelId(bot?.modelId);
+    const credential =
+      provider && modelId && bot?.modelCredentialId
+        ? await findBoundModelCredential(deps.prisma, actor, {
+            provider,
+            modelId,
+            modelCredentialId: bot.modelCredentialId,
+          })
+        : null;
+    const secret = credential
+      ? await deps.prisma.secret.findFirst({
+          where: { id: credential.secretId, userId: actor.userId, spaceId: null },
+          select: { id: true },
+        })
+      : null;
+    if (!secret) {
+      if (!setup.platformAllowed)
+        throw new ORPCError("FORBIDDEN", {
+          message: "platform_model_forbidden",
+          data: { reason: "platform_model_forbidden", action: "add_key" },
+        });
+      throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
+    }
+  }
+}
+
 async function modelSetup(deps: RouterDeps, actor: Actor) {
   const [credential, settings] = await Promise.all([
     findDefaultModelCredential(deps.prisma, actor),
     deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
   ]);
-  const hasDeployment = Boolean(deps.env.deploymentModelConfigured);
+  const platformAllowed = await canUsePlatformModel(
+    deps.prisma,
+    deps.env.platformModelAllowlist,
+    actor.userId,
+  );
+  const hasDeployment = Boolean(deps.env.deploymentModelConfigured) && platformAllowed;
+  const hasLocal =
+    (settings?.defaultModelProvider ?? deps.env.defaultProvider) === LOCAL_PROVIDER_ID;
   return {
     credential,
     settings,
-    needsModel: deps.env.agentRuntime !== "scripted" && !credential && !hasDeployment,
+    platformAllowed,
+    hasDeployment,
+    hasLocal,
+    needsModel: deps.env.agentRuntime !== "scripted" && !credential && !hasDeployment && !hasLocal,
   };
 }
 

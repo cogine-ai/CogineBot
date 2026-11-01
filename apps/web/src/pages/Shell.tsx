@@ -5781,6 +5781,7 @@ export function ShellPage() {
               sendError={sendError}
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
+              onAddKey={() => openSettings("models")}
               onRunErrorPresented={handleRunErrorPresented}
               onDismissError={dismissComposerError}
               sending={sending}
@@ -6111,6 +6112,7 @@ export function ShellPage() {
                 connectionsRevision={connectionsRevision}
                 scopeKey={active.id}
                 onOpenApplications={() => setPluginsOpen(true)}
+                onAddKey={() => openSettings("models")}
                 saving={savingRoutine}
                 running={runningRoutine}
                 error={routineError}
@@ -7598,6 +7600,7 @@ export const Composer = memo(function Composer({
   sendError,
   runError,
   runErrorId,
+  onAddKey,
   onRunErrorPresented,
   onDismissError,
   sending,
@@ -7628,6 +7631,7 @@ export const Composer = memo(function Composer({
   sendError: string | null;
   runError: string | null;
   runErrorId: string | null;
+  onAddKey?: () => void;
   onRunErrorPresented: (runId: string) => void;
   onDismissError: () => void;
   sending: boolean;
@@ -8015,9 +8019,13 @@ export const Composer = memo(function Composer({
           className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive"
         >
           {sendError ? (
-            <span className="min-w-0 flex-1">{sendError}</span>
+            sendError === "platform_model_forbidden" ? (
+              <RunErrorDetails key={sendError} error={sendError} onAddKey={onAddKey} />
+            ) : (
+              <span className="min-w-0 flex-1">{sendError}</span>
+            )
           ) : runError ? (
-            <RunErrorDetails key={runError} error={runError} />
+            <RunErrorDetails key={runError} error={runError} onAddKey={onAddKey} />
           ) : null}
           <button
             type="button"

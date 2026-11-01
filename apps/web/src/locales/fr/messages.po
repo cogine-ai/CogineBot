@@ -6379,3 +6379,9 @@ msgstr "Impossible de déplacer {name}"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "Déplacement annulé"
+
+msgid "Add your own API key to continue."
+msgstr "Ajoutez votre propre clé API pour continuer."
+
+msgid "Add API key"
+msgstr "Ajouter une clé API"

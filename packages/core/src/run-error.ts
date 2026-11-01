@@ -98,8 +98,17 @@ export function normalizeRunError(
   details: string,
   translate: RunErrorTranslator = english,
   locale = "en-US",
-): { summary: string; details: string; action?: "chatgpt-usage" } {
+): { summary: string; details: string; action?: "chatgpt-usage" | "add_key" } {
   details = sanitizeRunErrorDetails(details);
+  // Only the controlled application token carries policy recovery advice.
+  // Provider status/prose must never decide whether a deployment grant exists.
+  if (details === "platform_model_forbidden") {
+    return {
+      summary: safeSummary(translate("Add your own API key to continue.")),
+      details,
+      action: "add_key",
+    };
+  }
   const chatgptUsageCode = details.match(
     /\bsubscription_sharing_usage_(limit_exceeded|unavailable)\b/,
   )?.[1];

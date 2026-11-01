@@ -1,4 +1,6 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Add your own API key to continue.": "添加你自己的 API 密钥以继续。",
+  "Add API key": "添加 API 密钥",
   "Back to chats": "返回聊天",
   "Subscription required": "需要订阅",
   "Contact your organization owner": "请联系组织所有者",

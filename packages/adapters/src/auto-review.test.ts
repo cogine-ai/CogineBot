@@ -401,3 +401,30 @@ describe("runAutoReviewJudge timeout", () => {
     expect(seen?.aborted).toBe(true);
   });
 });
+
+describe("platform funding for automatic review", () => {
+  it("withholds deployment-funded LLM checking while retaining a matching user connection", () => {
+    const env = {
+      OPENROUTER_API_KEY: "fake-platform-key",
+      PI_DEFAULT_PROVIDER: "openrouter",
+      PI_DEFAULT_MODEL: "fixture-model",
+    };
+    expect(isAutoReviewCheckerConfigured({ env, platformModelAllowed: false })).toBe(false);
+    expect(
+      isAutoReviewCheckerConfigured({
+        env,
+        platformModelAllowed: false,
+        hasUserCredentialForProvider: (provider) => provider === "openrouter",
+      }),
+    ).toBe(true);
+  });
+
+  it("retains separate offline, local and optional verifier configuration", () => {
+    for (const env of [
+      { AGENT_RUNTIME: "scripted", RAKAZO_AUTO_REVIEW_PROVIDER: "scripted" },
+      { RAKAZO_LOCAL_MODELS: "fixture-local" },
+      { RAKAZO_AUTO_REVIEW_PROVIDER: "jev", TYPESAFE_API_KEY: "fake-verifier-key" },
+    ])
+      expect(isAutoReviewCheckerConfigured({ env, platformModelAllowed: false })).toBe(true);
+  });
+});

@@ -1,5 +1,6 @@
 import type { AgentRunRequest, AgentRuntime, AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { PiAgentRuntime, serializeModelSecret } from "@rakazo/adapters";
+import { parsePlatformModelAllowlist } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { startModelEmulator } from "../../../packages/testkit/src/model-emulator.js";
@@ -349,6 +350,108 @@ function bindingFixture() {
     judge,
   };
 }
+
+describe("team chat judge platform model policy", () => {
+  function policyFixture(raw: string, email: string, verified: boolean, owner = false) {
+    const f = bindingFixture();
+    const account = { email, emailVerified: verified, timezone: "UTC" };
+    const findUser = vi.fn(async () => account);
+    Object.assign(f.prisma, { user: { findUnique: findUser } });
+    Object.assign(f.prisma.deploymentSettings, {
+      findUnique: vi.fn(async () => ({
+        defaultModelProvider: "openai-compatible",
+        defaultModelId: "deployment-model",
+        ownerUserId: owner ? "user-1" : "different-owner",
+      })),
+    });
+    const judge = () => f.judge({ platformModelAllowlist: parsePlatformModelAllowlist(raw) });
+    return { ...f, account, findUser, judge };
+  }
+  const unpinned = () =>
+    judgeInput({ modelProvider: null, modelId: null, modelCredentialId: null });
+
+  it.each([
+    ["none", "member@allowed.test", true],
+    ["@allowed.test", "member@allowed.test", false],
+    ["@allowed.test", "member@allowed.test.attacker.invalid", true],
+  ] as const)(
+    "does not run a denied deployment judge (%s / %s / proof=%s)",
+    async (raw, email, verified) => {
+      const f = policyFixture(raw, email, verified);
+      f.preferences.length = 0;
+      await expect(f.judge().decide(unpinned())).resolves.toEqual({ act: false });
+      expect(f.run).not.toHaveBeenCalled();
+      expect(f.secretStore.load).not.toHaveBeenCalled();
+      expect(f.findUser).toHaveBeenCalledWith({
+        where: { id: "user-1" },
+        select: { email: true, emailVerified: true },
+      });
+    },
+  );
+
+  it("allows the stored deployment owner without requiring mailbox proof", async () => {
+    const f = policyFixture("none", "owner@messaging.invalid", false, true);
+    f.preferences.length = 0;
+    await expect(f.judge().decide(unpinned())).resolves.toMatchObject({ act: true });
+    expect(f.run.mock.calls[0]?.[0].model).toMatchObject({
+      provider: "openai-compatible",
+      id: "deployment-model",
+      apiKey: "fake-deployment-key",
+      authorize: expect.any(Function),
+    });
+  });
+
+  it("rechecks mailbox proof through the model authorization callback", async () => {
+    const f = policyFixture("@allowed.test", "member@allowed.test", true);
+    f.preferences.length = 0;
+    await expect(f.judge().decide(unpinned())).resolves.toMatchObject({ act: true });
+    const authorize = f.run.mock.calls[0]?.[0].model?.authorize;
+    expect(authorize).toBeTypeOf("function");
+    f.account.emailVerified = false;
+    await expect(authorize!()).rejects.toMatchObject({ code: "platform_model_forbidden" });
+  });
+
+  it("keeps an owned BYOK judge independent of deployment access", async () => {
+    const f = policyFixture("none", "member@outside.test", false);
+    await expect(f.judge().decide(judgeInput())).resolves.toMatchObject({ act: true });
+    expect(f.run.mock.calls[0]?.[0].model).toMatchObject({
+      modelCredentialId: "connection-a",
+      apiKey: "fake-key-0",
+    });
+    expect(f.findUser).not.toHaveBeenCalledWith(
+      expect.objectContaining({ select: { email: true, emailVerified: true } }),
+    );
+  });
+
+  it("does not fall back to a deployment key when the bound BYOK secret is missing", async () => {
+    const f = policyFixture("none", "member@outside.test", false);
+    f.secrets.delete("secret-a");
+    await expect(f.judge().decide(judgeInput())).resolves.toEqual({ act: false });
+    expect(f.run).not.toHaveBeenCalled();
+    expect(f.findUser).not.toHaveBeenCalled();
+  });
+
+  it("allows a configured local judge without a platform grant", async () => {
+    const f = policyFixture("none", "member@outside.test", false);
+    f.preferences.length = 0;
+    Object.assign(f.prisma.deploymentSettings, {
+      findUnique: vi.fn(async () => ({
+        defaultModelProvider: "local",
+        defaultModelId: "local-model",
+        ownerUserId: "different-owner",
+      })),
+    });
+    await expect(f.judge().decide(unpinned())).resolves.toMatchObject({ act: true });
+    expect(f.run.mock.calls[0]?.[0].model).toMatchObject({
+      provider: "local",
+      id: "local-model",
+      authorize: undefined,
+    });
+    expect(f.findUser).not.toHaveBeenCalledWith(
+      expect.objectContaining({ select: { email: true, emailVerified: true } }),
+    );
+  });
+});
 
 describe("team chat judge connection bindings", () => {
   it("uses the Bot's exact endpoint, key and connection ID despite a different default/newest connection", async () => {

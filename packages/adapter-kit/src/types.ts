@@ -448,6 +448,8 @@ export interface AgentSteeringMessage {
 export type CacheCapabilities = ConnectionCacheCapabilities;
 
 export interface AgentRunModel {
+  /** Revalidate deployment-funded access before requests and during an active request. */
+  authorize?: () => Promise<void>;
   cacheCapabilities?: CacheCapabilities;
   provider: string;
   id: string;

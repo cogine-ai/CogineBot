@@ -6379,3 +6379,9 @@ msgstr "{name}을(를) 이동할 수 없습니다"
 #: src/lib/use-sidebar-announcements.ts
 msgid "Move cancelled"
 msgstr "이동 취소됨"
+
+msgid "Add your own API key to continue."
+msgstr "계속하려면 본인의 API 키를 추가하세요."
+
+msgid "Add API key"
+msgstr "API 키 추가"

@@ -1121,3 +1121,21 @@ The optional marketing site in `apps/www` can be hosted separately.
 ## Connect mobile clients
 
 The iOS and Android app can also point at a self-hosted origin at runtime. On the sign-in screen, tap **Use a custom server** and enter the same HTTPS origin as `WEB_ORIGIN` (for example `https://app.example.com`). Store builds still default to `EXPO_PUBLIC_API_URL`; the in-app setting is an override for people running their own API. Changing the server signs the device out of any previous session.
+
+## Shared model funding
+
+`PLATFORM_MODEL_ALLOWLIST` controls access to deployment-funded models, including host
+credentials. Leave it blank to preserve unrestricted self-hosting, set `none` to
+reserve those models for the deployment owner, or provide comma-separated verified
+mailboxes and exact `@domain` entries. Signup admission is configured separately.
+Unverified mailboxes and internal messaging identities cannot claim a mailbox grant.
+The deployment owner is authorized independently of mailbox verification.
+
+User-owned model connections remain available. A denied run offers the existing
+model connection settings; connecting a model does not automatically replay work.
+API and worker must use the same policy configuration and both restart after it
+changes. Current identity and ownership are checked before each model request.
+An active request is checked once per second and cancellation is best effort;
+usage already reported by the provider is retained. Completed results are not
+replayed or removed when access changes. Local models, offline scripted runs and
+the separately configured optional verifier retain their existing behavior.

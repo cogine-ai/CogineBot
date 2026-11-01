@@ -1,7 +1,7 @@
 import type { JobPublisher, NotificationProvider } from "@rakazo/adapter-kit";
 import { messagingDeliverJob, routineWakeupJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { stuckWorkStatusMessages } from "@rakazo/core";
+import { normalizeRunError, stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { PoolClient } from "pg";
@@ -289,7 +289,7 @@ export function createJobReconciler(
             const text = stuckCancel
               ? (run.error ?? "")
               : run.status === "failed"
-                ? `Could not complete the delegated request: ${run.error ?? "unknown error"}`
+                ? `Could not complete the delegated request: ${run.error === "platform_model_forbidden" ? normalizeRunError(run.error).summary : (run.error ?? "unknown error")}`
                 : transcript.text ||
                   "The delegated bot completed its turn without a written summary.";
             // Same stable delivery key as the executor path (auto-outcome:<runId>), so a

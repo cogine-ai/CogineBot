@@ -75,7 +75,11 @@ configureUnsentSends({
   scope,
   disk: outboxDisk,
   errorText: (error) => errorText(error, t("Failed to send message")),
-  notDelivered: (attempt) => Alert.alert(t("Failed to send message"), attempt.error),
+  notDelivered: (attempt) => {
+    // The scoped thread keeps the refused payload and offers Models without replaying it.
+    if (attempt.error === "platform_model_forbidden") return;
+    Alert.alert(t("Failed to send message"), attempt.error);
+  },
 });
 export function startUnsentSends(): () => void {
   let stopped = false;
