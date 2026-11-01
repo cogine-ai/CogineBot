@@ -1,3 +1,5 @@
+import type { UpdateRevocationStatus } from "./update-revocations.js";
+
 /**
  * `unsupported` covers an unpackaged build and a repository with no published releases, which is
  * the normal state for a fork. It is not an error the user needs to act on. Automatic checks stay
@@ -21,6 +23,8 @@ export interface DesktopUpdateState {
   percent: number | null;
   message: string | null;
   checkedAt: string | null;
+  /** Present only in the explicit offline update-withdrawal prototype. */
+  revocation?: UpdateRevocationStatus | null;
 }
 
 export interface RakazoDesktopUpdate {
