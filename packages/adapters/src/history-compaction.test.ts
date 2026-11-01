@@ -6,6 +6,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
+import { PlatformModelForbiddenError } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger, wrapJobPayload } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
@@ -1246,5 +1247,35 @@ describe("compaction funding policy", () => {
     await compactHistory(harness.deps, "thread-1");
     expect(harness.thread.historyCompactionSummary).toBe("Summary of 50 messages.");
     expect(harness.runtime.run.mock.calls[0]![0].model.apiKey).toBe("fake-owned-key");
+  });
+});
+
+describe("compaction resolver denials", () => {
+  it("skips a permanent funding denial without changing history or retrying the job", async () => {
+    const harness = compactionHarness({
+      platformModelAllowlist: "owner_only",
+      resolveModel: async () => {
+        throw new PlatformModelForbiddenError();
+      },
+    });
+    const original = { ...harness.thread };
+    await expect(compactHistory(harness.deps, "thread-1")).resolves.toBeUndefined();
+    expect(harness.thread).toEqual(original);
+    expect(harness.runtime.run).not.toHaveBeenCalled();
+    expect(harness.saveMemory).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps other resolver failures retryable without advancing the cursor", async () => {
+    const failure = new Error("Synthetic credential store unavailable");
+    const harness = compactionHarness({
+      resolveModel: async () => {
+        throw failure;
+      },
+    });
+    const original = { ...harness.thread };
+    await expect(compactHistory(harness.deps, "thread-1")).rejects.toBe(failure);
+    expect(harness.thread).toEqual(original);
+    expect(harness.runtime.run).not.toHaveBeenCalled();
   });
 });

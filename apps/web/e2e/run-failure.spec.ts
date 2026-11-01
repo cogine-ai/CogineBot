@@ -159,7 +159,7 @@ for (const width of [1280, 390]) {
         },
       });
     });
-    const composer = page.getByPlaceholder(/^Message /);
+    const composer = page.getByRole("combobox", { name: /^Message / });
     await composer.fill("Keep my rejected message");
     await page.locator('input[type="file"]').setInputFiles({
       name: "policy-note.txt",

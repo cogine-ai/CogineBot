@@ -2,7 +2,7 @@ import type { AgentRunRequest, AgentRuntime, JobPublisher } from "@rakazo/adapte
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
-import { blocksToAgentHistoryText } from "@rakazo/core";
+import { blocksToAgentHistoryText, PlatformModelForbiddenError } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { recordUsage } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
@@ -335,11 +335,16 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   // advance the cursor past messages that are then lost from both stores. Skip instead.
   const deploymentFallback = resolveDeploymentModel();
   const model = deps.resolveModel
-    ? await deps.resolveModel({
-        userId: thread.userId,
-        spaceId: thread.spaceId,
-        botId: thread.botId,
-      })
+    ? await deps
+        .resolveModel({
+          userId: thread.userId,
+          spaceId: thread.spaceId,
+          botId: thread.botId,
+        })
+        .catch((error: unknown) => {
+          if (error instanceof PlatformModelForbiddenError) return null;
+          throw error;
+        })
     : deps.deploymentModelConfigured
       ? {
           // Provider must come from the same resolver as the key, not a hardcoded one.
@@ -357,6 +362,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
             apiKey: undefined,
           };
         })();
+  if (!model) return;
   if (!deps.resolveModel && model.provider !== LOCAL_PROVIDER_ID && model.provider !== "scripted") {
     if (!(await canUsePlatformModel(deps.prisma, deps.platformModelAllowlist, thread.userId)))
       return;

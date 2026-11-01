@@ -45,3 +45,29 @@ export function RunErrorNotice({ error, style }: { error: string; style?: StyleP
     </View>
   );
 }
+
+/** Keep send recovery and the current Run bound to the thread that owns them. */
+export function ThreadErrorNotices({
+  scopeKey,
+  sendError,
+  run,
+  style,
+}: {
+  scopeKey: string;
+  sendError: string | null;
+  run: { id: string; error: string } | null;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const showSendError = sendError === "platform_model_forbidden" && run?.error !== sendError;
+  if (!showSendError && !run) return null;
+  return (
+    <View style={[{ gap: 12 }, style]}>
+      {showSendError ? (
+        <RunErrorNotice key={JSON.stringify([scopeKey, "send"])} error={sendError} />
+      ) : null}
+      {run ? (
+        <RunErrorNotice key={JSON.stringify([scopeKey, "run", run.id])} error={run.error} />
+      ) : null}
+    </View>
+  );
+}

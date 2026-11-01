@@ -601,6 +601,7 @@ export async function createApp(
     env: {
       ticketBoardEnabled,
       agentRuntime: env.agentRuntime,
+      platformModelAllowlist: env.platformModelAllowlist,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,
       teamChatJudgeProvider: env.teamChatJudgeProvider,

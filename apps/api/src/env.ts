@@ -44,7 +44,7 @@ export interface AppEnv {
   cloudAgentSpaceId: string | undefined;
   cursorApiKey: string | undefined;
   agentRuntime: string;
-  platformModelAllowlist?: PlatformModelAllowlist;
+  platformModelAllowlist: PlatformModelAllowlist;
   deploymentModelKey: string | undefined;
   /** The deployment default model can run; see resolveDeploymentModel. */
   deploymentModelConfigured: boolean;

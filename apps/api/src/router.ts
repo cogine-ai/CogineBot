@@ -661,7 +661,7 @@ export interface RouterDeps {
     teamChatJudgeModel?: string;
     defaultProvider: string;
     defaultModel: string;
-    platformModelAllowlist?: PlatformModelAllowlist;
+    platformModelAllowlist: PlatformModelAllowlist;
     deploymentModelConfigured?: boolean;
     deploymentModelHostCredentials?: boolean;
     webOrigin: string;
