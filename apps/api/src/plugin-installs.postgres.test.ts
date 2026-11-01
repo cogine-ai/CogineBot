@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -589,6 +589,50 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toBe(1);
     expect(await database.prisma.agentSkill.count({ where: { installId: installed.id } })).toBe(1);
     expect(await database.prisma.mcpServer.count({ where: { installId: installed.id } })).toBe(1);
+  });
+
+  it("cleans an interrupted durable claim without replaying its installation", async () => {
+    const actor = await account();
+    const f = fixture();
+    const p = await preview(actor, f);
+    const input = intent(p);
+    // Exact durable state left by a process exit after claim and before any credential/child write.
+    const claimed = await database.prisma.capabilityInstall.create({
+      data: {
+        spaceId: actor.actor.spaceId,
+        userId: actor.actor.userId,
+        kind: "plugin",
+        name: p.name,
+        source: p.source,
+        version: p.sourceSha,
+        digest: p.digest,
+        clientNonce: input.clientNonce,
+        requestBinding: createHash("sha256")
+          .update(JSON.stringify([input.source.trim(), input.sourceSha, input.digest]))
+          .digest("hex"),
+        status: "installing",
+        config: {
+          repositorySource: `${f.source}#`,
+          installedChildren: { skills: [], mcpServers: [] },
+        },
+      },
+    });
+    const reads = read.mock.calls.length;
+    const puts = secrets.puts;
+    const pending = (await list(actor))[0]!;
+    expect(pending).toMatchObject({ id: claimed.id, status: "installing", installedAt: null });
+    expect(await install(actor, input)).toEqual(pending);
+    expect(read.mock.calls).toHaveLength(reads);
+    const removed = await uninstall(actor, pending);
+    expect(removed).toMatchObject({ id: claimed.id, status: "removed", installedAt: null });
+    await noChildren(claimed.id);
+    expect(await install(actor, input)).toEqual(removed);
+    expect(read.mock.calls).toHaveLength(reads);
+    expect(secrets.puts).toBe(puts);
+    const replacement = await install(actor, intent(p));
+    expect(replacement).toMatchObject({ status: "installed" });
+    expect(replacement.id).not.toBe(claimed.id);
+    expect((await list(actor)).find((row) => row.id === claimed.id)).toEqual(removed);
   });
 
   it("rejects a competing plugin's same-name skill at final commit without replacing either receipt", async () => {

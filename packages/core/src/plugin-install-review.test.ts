@@ -43,11 +43,16 @@ function fixture(makeNonce = () => "nonce-one") {
       }),
     ),
     list: vi.fn(async (_signal: AbortSignal) => [] as PluginInstallReceipt[]),
-    uninstall: vi.fn(async (_input: PluginUninstallInput, _signal: AbortSignal) => ({
-      ...receipt,
-      status: "removed" as const,
-      revision: 3,
-    })),
+    uninstall: vi.fn(
+      async (
+        _input: PluginUninstallInput,
+        _signal: AbortSignal,
+      ): Promise<PluginInstallReceipt> => ({
+        ...receipt,
+        status: "removed",
+        revision: 3,
+      }),
+    ),
   };
   const manager = createPluginInstallReview({
     ...transport,
@@ -215,6 +220,8 @@ describe("plugin installation review", () => {
 
   it("refreshes an uncertain removal before retrying with the latest revision", async () => {
     const f = fixture();
+    f.list.mockResolvedValue([receipt]);
+    await f.manager.refresh();
     f.uninstall.mockRejectedValueOnce(new Error("reply lost"));
     await f.manager.uninstall(receipt);
     expect(f.manager.state().removalUnknownId).toBe(receipt.id);
@@ -271,6 +278,160 @@ describe("plugin installation review", () => {
     expect(f.manager.state()).toMatchObject({
       phase: "terminal",
       receipt: { status: "removed", revision: 3 },
+    });
+  });
+
+  it("moves the current installed receipt to a terminal phase after explicit removal", async () => {
+    const f = fixture();
+    await f.manager.preview("https://github.com/example/plugin");
+    await f.manager.install();
+    await f.manager.uninstall(receipt);
+    expect(f.manager.state()).toMatchObject({
+      phase: "terminal",
+      receipt: { id: receipt.id, status: "removed", revision: 3 },
+    });
+  });
+
+  it("does not change the active review when a different persisted installation is removed", async () => {
+    const f = fixture();
+    const other = { ...receipt, id: "other-install", clientNonce: "other-nonce" };
+    f.list.mockResolvedValue([receipt, other]);
+    f.uninstall.mockResolvedValue({ ...other, status: "removed", revision: 3 });
+    await f.manager.preview("https://github.com/example/plugin");
+    await f.manager.install();
+    await f.manager.refresh();
+    await f.manager.uninstall(other);
+    expect(f.manager.state()).toMatchObject({ phase: "installed", receipt });
+    expect(f.manager.state().installations).toContainEqual({
+      ...other,
+      status: "removed",
+      revision: 3,
+    });
+  });
+
+  it("allows explicit cleanup of a durable pending receipt after reopening the list", async () => {
+    const f = fixture();
+    const pending = { ...receipt, status: "installing" as const, installedAt: null };
+    f.list.mockResolvedValue([pending]);
+    f.uninstall.mockResolvedValue({ ...pending, status: "removed", revision: 3 });
+    await f.manager.refresh();
+    expect(f.manager.canUninstall(pending)).toBe(true);
+    await f.manager.uninstall(pending);
+    expect(f.uninstall).toHaveBeenCalledWith(
+      { installId: pending.id, expectedRevision: pending.revision },
+      expect.any(AbortSignal),
+    );
+    expect(f.manager.state()).toMatchObject({ phase: "idle", receipt: null });
+    expect(f.manager.state().installations[0]?.status).toBe("removed");
+    expect(f.install).not.toHaveBeenCalled();
+  });
+
+  it("allows cleanup of the exact current pending outcome without replaying its install", async () => {
+    const f = fixture();
+    const pending = { ...receipt, status: "installing" as const, installedAt: null };
+    f.install.mockResolvedValue(pending);
+    f.uninstall.mockResolvedValue({ ...pending, status: "removed", revision: 3 });
+    await f.manager.preview("https://github.com/example/plugin");
+    await f.manager.install();
+    expect(f.manager.canUninstall(pending)).toBe(true);
+    await f.manager.uninstall(pending);
+    expect(f.manager.state()).toMatchObject({
+      phase: "terminal",
+      receipt: { status: "removed", revision: 3 },
+    });
+    await f.manager.install();
+    expect(f.install).toHaveBeenCalledTimes(1);
+  });
+
+  it("never removes another list row while the active write has no exact receipt", async () => {
+    const f = fixture();
+    const pending = {
+      ...receipt,
+      clientNonce: "another-nonce",
+      status: "installing" as const,
+      installedAt: null,
+    };
+    f.install.mockRejectedValueOnce(new Error("reply lost"));
+    await f.manager.preview("https://github.com/example/plugin");
+    await f.manager.install();
+    f.list.mockResolvedValue([pending]);
+    await f.manager.refresh();
+    expect(f.manager.state()).toMatchObject({ phase: "unknown", receipt: null });
+    expect(f.manager.canUninstall(pending)).toBe(false);
+    await f.manager.uninstall(pending);
+    expect(f.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("requires the exact persisted identity, binding, revision and status for cleanup", async () => {
+    const f = fixture();
+    f.list.mockResolvedValue([receipt]);
+    await f.manager.refresh();
+    expect(f.manager.canUninstall(receipt)).toBe(true);
+    const stale = [
+      { ...receipt, id: "other-id" },
+      { ...receipt, clientNonce: "other-nonce" },
+      { ...receipt, source: "https://github.com/example/other" },
+      { ...receipt, sourceSha: "c".repeat(40) },
+      { ...receipt, digest: `sha256:${"d".repeat(64)}` },
+      { ...receipt, revision: 2 },
+      { ...receipt, status: "installing" as const },
+    ];
+    for (const value of stale) {
+      expect(f.manager.canUninstall(value)).toBe(false);
+      await f.manager.uninstall(value);
+    }
+    expect(f.uninstall).not.toHaveBeenCalled();
+    f.list.mockResolvedValue([{ ...receipt, status: "removed", revision: 3 }]);
+    await f.manager.refresh();
+    expect(f.manager.canUninstall({ ...receipt, status: "removed", revision: 3 })).toBe(false);
+  });
+
+  it("does not dispatch cleanup while a write is busy or duplicate its own cleanup", async () => {
+    const f = fixture();
+    f.list.mockResolvedValue([receipt]);
+    await f.manager.refresh();
+    let installed!: (value: PluginInstallReceipt) => void;
+    f.install.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          installed = done;
+        }),
+    );
+    await f.manager.preview("https://github.com/example/plugin");
+    const install = f.manager.install();
+    expect(f.manager.canUninstall(receipt)).toBe(false);
+    await f.manager.uninstall(receipt);
+    expect(f.uninstall).not.toHaveBeenCalled();
+    installed(receipt);
+    await install;
+    let removed!: (value: PluginInstallReceipt) => void;
+    f.uninstall.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          removed = done;
+        }),
+    );
+    const first = f.manager.uninstall(receipt);
+    expect(f.manager.canUninstall(receipt)).toBe(false);
+    const second = f.manager.uninstall(receipt);
+    expect(f.uninstall).toHaveBeenCalledTimes(1);
+    removed({ ...receipt, status: "removed", revision: 3 });
+    await Promise.all([first, second]);
+  });
+
+  it("keeps a new preview intact when another persisted row is removed", async () => {
+    const f = fixture();
+    const other = { ...receipt, id: "other-install", clientNonce: "other-nonce" };
+    f.list.mockResolvedValue([other]);
+    f.uninstall.mockResolvedValue({ ...other, status: "removed", revision: 3 });
+    await f.manager.refresh();
+    await f.manager.preview("https://github.com/example/new-draft");
+    await f.manager.uninstall(other);
+    expect(f.manager.state()).toMatchObject({
+      phase: "review",
+      source: "https://github.com/example/new-draft",
+      preview,
+      receipt: null,
     });
   });
 });

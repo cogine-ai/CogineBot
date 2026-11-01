@@ -357,3 +357,68 @@ it.each(["cleanup_failed", "uninstalling"] as const)(
     expect(write[1]).toEqual({ installId: second.id, expectedRevision: 3 });
   },
 );
+
+it("explicitly confirms cleanup of a persisted pending receipt after reopening", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const pending = { ...receipt, status: "installing", installedAt: null };
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list") return [pending];
+    if (procedure === "plugins/uninstall") return { ...pending, status: "removed", revision: 3 };
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  expect(node.textContent).toContain("Installation pending.");
+  await click("Remove plugin");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
+  await click("Confirm removal");
+  const write = api.rpc.mock.calls.find((call) => call[0] === "plugins/uninstall")!;
+  expect(write[1]).toEqual({ installId: pending.id, expectedRevision: 1 });
+  expect(node.textContent).toContain("No plugins installed");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/install")).toHaveLength(0);
+});
+
+it("settles the current pending review after confirmed cleanup without replaying installation", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  let pending: PluginInstallReceipt | null = null;
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/install") {
+      pending = {
+        ...receipt,
+        clientNonce: input.clientNonce,
+        status: "installing",
+        installedAt: null,
+      };
+      return pending;
+    }
+    if (procedure === "plugins/uninstall") return { ...pending!, status: "removed", revision: 3 };
+    return normal(procedure, input, options);
+  });
+  await openPreview();
+  await click("Install plugin");
+  await click("Remove plugin");
+  await click("Confirm removal");
+  expect(node.textContent).toContain("This installation was removed.");
+  expect(node.textContent).not.toContain("Installation pending.");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/install")).toHaveLength(1);
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(1);
+});
+
+it("disables unrelated cleanup while an installation acknowledgement is unknown", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const pending = { ...receipt, clientNonce: "old-nonce", status: "installing", installedAt: null };
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list") return [pending];
+    if (procedure === "plugins/install") throw new Error("reply lost");
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  expect(button("Remove plugin").disabled).toBe(false);
+  await openPreview();
+  await click("Install plugin");
+  expect(button("Remove plugin").disabled).toBe(true);
+  await click("Remove plugin");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
+  await click("Check status");
+  expect(button("Remove plugin").disabled).toBe(true);
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(0);
+});

@@ -310,37 +310,35 @@ function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onC
                 {server.name} · {server.endpoint}
               </p>
             ))}
-            {row.status !== "installing" ? (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={locked || Boolean(state.removalUnknownId)}
-                  onClick={() =>
-                    row.status === "cleanup_failed" ||
-                    row.status === "uninstalling" ||
-                    removal?.id === row.id
-                      ? void remove(removal?.id === row.id ? removal : row)
-                      : setRemoval(row)
-                  }
-                >
-                  {state.removingId === row.id ? (
-                    <Trans>Removing…</Trans>
-                  ) : row.status === "cleanup_failed" || row.status === "uninstalling" ? (
-                    <Trans>Retry cleanup</Trans>
-                  ) : removal?.id === row.id ? (
-                    <Trans>Confirm removal</Trans>
-                  ) : (
-                    <Trans>Remove plugin</Trans>
-                  )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!manager.current?.canUninstall(removal?.id === row.id ? removal : row)}
+                onClick={() =>
+                  row.status === "cleanup_failed" ||
+                  row.status === "uninstalling" ||
+                  removal?.id === row.id
+                    ? void remove(removal?.id === row.id ? removal : row)
+                    : setRemoval(row)
+                }
+              >
+                {state.removingId === row.id ? (
+                  <Trans>Removing…</Trans>
+                ) : row.status === "cleanup_failed" || row.status === "uninstalling" ? (
+                  <Trans>Retry cleanup</Trans>
+                ) : removal?.id === row.id ? (
+                  <Trans>Confirm removal</Trans>
+                ) : (
+                  <Trans>Remove plugin</Trans>
+                )}
+              </Button>
+              {removal?.id === row.id ? (
+                <Button variant="ghost" size="sm" onClick={() => setRemoval(null)}>
+                  <Trans>Cancel</Trans>
                 </Button>
-                {removal?.id === row.id ? (
-                  <Button variant="ghost" size="sm" onClick={() => setRemoval(null)}>
-                    <Trans>Cancel</Trans>
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </article>
         ))}
       </section>

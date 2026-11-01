@@ -337,3 +337,63 @@ it("never uses another plugin's pending confirmation when retrying cleanup", asy
     expect.anything(),
   );
 });
+
+it("explicitly confirms cleanup of a persisted pending receipt after reopening", async () => {
+  const pending = {
+    ...receipt,
+    clientNonce: "nonce-installed",
+    status: "installing",
+    installedAt: null,
+  };
+  api.list.mockResolvedValue([pending]);
+  api.uninstall.mockResolvedValue({ ...pending, status: "removed", revision: 3 });
+  await click("Refresh");
+  expect(node.textContent).toContain("Installation pending.");
+  await click("Remove plugin");
+  expect(api.uninstall).not.toHaveBeenCalled();
+  await click("Confirm removal");
+  expect(api.uninstall).toHaveBeenCalledWith(
+    { installId: pending.id, expectedRevision: 1 },
+    expect.anything(),
+  );
+  expect(node.textContent).toContain("No plugins installed");
+  expect(api.install).not.toHaveBeenCalled();
+});
+
+it("settles the current pending review after confirmed cleanup without replaying installation", async () => {
+  let pending: PluginInstallReceipt | null = null;
+  api.install.mockImplementation(async (value: { clientNonce: string }) => {
+    pending = {
+      ...receipt,
+      clientNonce: value.clientNonce,
+      status: "installing",
+      installedAt: null,
+    };
+    return pending;
+  });
+  api.uninstall.mockImplementation(async () => ({ ...pending!, status: "removed", revision: 3 }));
+  await openPreview();
+  await click("Install plugin");
+  await click("Remove plugin");
+  await click("Confirm removal");
+  expect(node.textContent).toContain("This installation was removed.");
+  expect(node.textContent).not.toContain("Installation pending.");
+  expect(api.install).toHaveBeenCalledTimes(1);
+  expect(api.uninstall).toHaveBeenCalledTimes(1);
+});
+
+it("disables unrelated cleanup while an installation acknowledgement is unknown", async () => {
+  const pending = { ...receipt, clientNonce: "old-nonce", status: "installing", installedAt: null };
+  api.list.mockResolvedValue([pending]);
+  await click("Refresh");
+  expect(button("Remove plugin").disabled).toBe(false);
+  api.install.mockRejectedValueOnce(new Error("reply lost"));
+  await openPreview();
+  await click("Install plugin");
+  expect(button("Remove plugin").disabled).toBe(true);
+  await click("Remove plugin");
+  expect(api.uninstall).not.toHaveBeenCalled();
+  await click("Check status");
+  expect(button("Remove plugin").disabled).toBe(true);
+  expect(api.uninstall).not.toHaveBeenCalled();
+});

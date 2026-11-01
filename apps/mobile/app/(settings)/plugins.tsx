@@ -311,38 +311,36 @@ export default function Plugins() {
                 {server.name} · {server.endpoint}
               </Text>
             ))}
-            {row.status !== "installing" ? (
-              <View style={styles.actions}>
+            <View style={styles.actions}>
+              <NativeActionButton
+                label={
+                  state.removingId === row.id
+                    ? t("Removing…")
+                    : row.status === "cleanup_failed" || row.status === "uninstalling"
+                      ? t("Retry cleanup")
+                      : removal?.id === row.id
+                        ? t("Confirm removal")
+                        : t("Remove plugin")
+                }
+                disabled={!manager.current?.canUninstall(removal?.id === row.id ? removal : row)}
+                prominence="destructive"
+                fill={false}
+                onPress={() =>
+                  row.status === "cleanup_failed" ||
+                  row.status === "uninstalling" ||
+                  removal?.id === row.id
+                    ? void remove(removal?.id === row.id ? removal : row)
+                    : setRemoval(row)
+                }
+              />
+              {removal?.id === row.id ? (
                 <NativeActionButton
-                  label={
-                    state.removingId === row.id
-                      ? t("Removing…")
-                      : row.status === "cleanup_failed" || row.status === "uninstalling"
-                        ? t("Retry cleanup")
-                        : removal?.id === row.id
-                          ? t("Confirm removal")
-                          : t("Remove plugin")
-                  }
-                  disabled={locked || Boolean(state.removalUnknownId)}
-                  prominence="destructive"
-                  fill={false}
-                  onPress={() =>
-                    row.status === "cleanup_failed" ||
-                    row.status === "uninstalling" ||
-                    removal?.id === row.id
-                      ? void remove(removal?.id === row.id ? removal : row)
-                      : setRemoval(row)
-                  }
+                  label={t("Cancel")}
+                  prominence="quiet"
+                  onPress={() => setRemoval(null)}
                 />
-                {removal?.id === row.id ? (
-                  <NativeActionButton
-                    label={t("Cancel")}
-                    prominence="quiet"
-                    onPress={() => setRemoval(null)}
-                  />
-                ) : null}
-              </View>
-            ) : null}
+              ) : null}
+            </View>
           </View>
         ))}
       </View>

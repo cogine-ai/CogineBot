@@ -84,6 +84,29 @@ export function createPluginInstallReview(options: {
         ? "installed"
         : "terminal";
   }
+  function exactReceipt(left: PluginInstallReceipt, right: PluginInstallReceipt) {
+    return (
+      left.id === right.id &&
+      left.revision === right.revision &&
+      left.status === right.status &&
+      sameRequest(left, right)
+    );
+  }
+  function canUninstall(receipt: PluginInstallReceipt) {
+    if (
+      !current() ||
+      busy ||
+      state.removingId ||
+      state.removalUnknownId ||
+      receipt.status === "removed" ||
+      !state.installations.some((row) => exactReceipt(row, receipt))
+    )
+      return false;
+    return (
+      state.phase !== "unknown" ||
+      (state.receipt?.status === "installing" && exactReceipt(state.receipt, receipt))
+    );
+  }
   function receive(receipt: PluginInstallReceipt) {
     acceptReceipt(receipt);
     publish({
@@ -132,6 +155,7 @@ export function createPluginInstallReview(options: {
   }
   return {
     state: () => ({ ...state }),
+    canUninstall,
     refresh,
     changeSource(source: string) {
       if (
@@ -244,15 +268,7 @@ export function createPluginInstallReview(options: {
       }
     },
     async uninstall(receipt: PluginInstallReceipt) {
-      if (
-        !current() ||
-        busy ||
-        state.phase === "unknown" ||
-        state.removalUnknownId ||
-        receipt.status === "removed" ||
-        receipt.status === "installing"
-      )
-        return;
+      if (!canUninstall(receipt)) return;
       const controller = new AbortController();
       active = controller;
       busy = true;
@@ -275,7 +291,9 @@ export function createPluginInstallReview(options: {
         acceptReceipt(result);
         publish({
           removalUnknownId: null,
-          ...(state.receipt?.id === result.id ? { receipt: result } : {}),
+          ...(state.receipt?.id === result.id
+            ? { receipt: result, phase: receiptPhase(result), retryChecked: false }
+            : {}),
         });
       } catch (error) {
         if (current()) publish({ error, removalUnknownId: receipt.id });

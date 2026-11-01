@@ -170,3 +170,51 @@ test("a lost plugin installation reply requires a read-only status check before 
   expect(nonces).toHaveLength(2);
   expect(nonces[0]).toBe(nonces[1]);
 });
+
+test("a reopened pending installation can be explicitly cleaned up without replaying its install", async ({
+  page,
+}) => {
+  let pending: PluginInstallReceipt | null = null;
+  let installs = 0;
+  const removals: number[] = [];
+  await page.route("**/rpc/plugins/list", (route) =>
+    route.fulfill({ json: { json: pending ? [pending] : [] } }),
+  );
+  await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
+  await page.route("**/rpc/plugins/install", (route) => {
+    installs += 1;
+    const input = route.request().postDataJSON().json;
+    pending = { ...receipt(input.clientNonce), status: "installing", installedAt: null };
+    return route.fulfill({ json: { json: pending } });
+  });
+  await page.route("**/rpc/plugins/uninstall", (route) => {
+    const input = route.request().postDataJSON().json;
+    expect(input.installId).toBe(pending!.id);
+    expect(input.expectedRevision).toBe(pending!.revision);
+    removals.push(input.expectedRevision);
+    pending = { ...pending!, status: "removed", revision: 3 };
+    return route.fulfill({ json: { json: pending } });
+  });
+  const { panel } = await openPlugins(page);
+  await panel.getByRole("button", { name: "Install plugin", exact: true }).click();
+  await expect(panel.getByRole("article", { name: preview.name, exact: true })).toContainText(
+    "Installation pending.",
+  );
+  await expect(panel.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  await panel.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await page
+    .getByTestId("integrations-advanced")
+    .getByRole("button", { name: "GitHub plugins", exact: true })
+    .click();
+  const reopened = page.getByTestId("github-plugin-installs");
+  const row = reopened.getByRole("article", { name: preview.name, exact: true });
+  await expect(row).toContainText("Installation pending.");
+  await row.getByRole("button", { name: "Remove plugin", exact: true }).click();
+  expect(removals).toEqual([]);
+  await row.getByRole("button", { name: "Confirm removal", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await expect(reopened.getByText("No plugins installed", { exact: true })).toBeVisible();
+  expect(removals).toEqual([1]);
+  expect(installs).toBe(1);
+});

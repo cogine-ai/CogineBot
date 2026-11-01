@@ -32,6 +32,10 @@ it cannot reinstall a removed plugin. A new preview creates a new installation
 intent. Closing a preview writes nothing; closing after installation begins does
 not undo a committed installation.
 
+If a server restart leaves an installation pending, refresh its durable receipt and
+choose **Remove plugin** to clean it up explicitly. A request with no confirmed
+receipt still requires **Check status** first. Removal does not restart the install.
+
 The installation owner or current Space owner can remove a plugin. Removal first
 disables its servers and instructions and closes its pending connection/tool approval
 cards. Never-dispatched tool requests receive a removal result; a waiting Run resumes
