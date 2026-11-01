@@ -1,9 +1,12 @@
 import type { DesktopUpdateState } from "@rakazo/contracts";
+import type { DownloadedUpdateRevocationGate } from "./update-revocation-gate.js";
 
 /** Long enough that a cold launch is never competing with the update feed for bandwidth. */
 export const LAUNCH_CHECK_DELAY_MS = 8_000;
 /** A connected server drives the renderer, so a manual check cannot become a request loop. */
 export const MIN_CHECK_INTERVAL_MS = 60_000;
+/** Refresh only while a prototype download is ready; normal update checks remain separate. */
+export const REVOCATION_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 export interface UpdaterEnvironment {
   packaged: boolean;
@@ -253,21 +256,37 @@ export class DesktopUpdateController {
   private downloadPromise: Promise<DesktopUpdateState> | null = null;
   private checkWasRequested = false;
   private installStarted = false;
+  private revocationTimer: ReturnType<typeof setInterval> | null = null;
+  private disposed = false;
+  private replacementCheckRequested = false;
 
   constructor(
     private readonly environment: UpdaterEnvironment,
     private readonly loadUpdater: () => Promise<ElectronAutoUpdater>,
     private readonly clock: UpdateClock = systemClock,
     private readonly onInstallFailure?: () => void,
+    private readonly revocations?: DownloadedUpdateRevocationGate,
   ) {
     this.current = initialUpdateState(environment);
   }
 
   state() {
-    return this.current;
+    if (!this.revocations || this.current.phase !== "ready") return this.current;
+    const revocation = this.revocations.state();
+    return {
+      ...this.current,
+      revocation,
+      message:
+        revocation?.status === "revoked"
+          ? `This update was withdrawn. ${revocation.reason ?? "Check for a new version."}`
+          : revocation?.status !== "clear"
+            ? "Could not confirm this update. Check again before installing."
+            : this.current.message,
+    };
   }
 
   private push(event: UpdaterEvent) {
+    if (this.disposed) return;
     this.current = reduceUpdateState(this.current, event, this.clock.iso());
     if (event.type === "not-available" || event.type === "downloaded" || event.type === "failed") {
       this.checkWasRequested = false;
@@ -281,7 +300,8 @@ export class DesktopUpdateController {
     const loading = this.loadUpdater()
       .then((updater) => {
         updater.autoDownload = false;
-        updater.autoInstallOnAppQuit = true;
+        // A PoC never hands an unguarded update to the native quit/staging path.
+        updater.autoInstallOnAppQuit = this.revocations === undefined;
         updater.allowPrerelease = false;
         updater.allowDowngrade = false;
         updater.disableWebInstaller = true;
@@ -296,6 +316,14 @@ export class DesktopUpdateController {
             });
             return;
           }
+          if (
+            this.replacementCheckRequested &&
+            this.current.phase === "ready" &&
+            this.revocations?.state()?.status === "revoked" &&
+            !this.installStarted
+          ) {
+            this.current = { ...this.current, phase: "idle" };
+          }
           this.push({ type: "available", version });
           void this.download();
         });
@@ -305,6 +333,17 @@ export class DesktopUpdateController {
           if (percent !== null) this.push({ type: "progress", percent });
         });
         updater.on("update-downloaded", (payload) => {
+          if (this.disposed) return;
+          if (this.revocations) {
+            updater.autoInstallOnAppQuit = false;
+            void this.revocations.downloaded(payload);
+            if (this.revocationTimer === null) {
+              this.revocationTimer = setInterval(() => {
+                if (this.current.phase === "ready") void this.revocations?.refresh();
+              }, REVOCATION_RECHECK_INTERVAL_MS);
+              this.revocationTimer.unref();
+            }
+          }
           const version = versionFrom(payload);
           if (version !== null) {
             this.push({ type: "downloaded", version });
@@ -329,13 +368,35 @@ export class DesktopUpdateController {
   }
 
   check(userInitiated: boolean) {
+    if (this.disposed) return Promise.resolve(this.state());
     if (userInitiated) this.checkWasRequested = true;
     if (this.checkPromise !== null) return this.checkPromise;
-    const checking = this.runCheck().finally(() => {
+    const checking = (
+      this.revocations && this.current.phase === "ready" ? this.runReadyCheck() : this.runCheck()
+    ).finally(() => {
       if (this.checkPromise === checking) this.checkPromise = null;
     });
     this.checkPromise = checking;
     return checking;
+  }
+
+  private async runReadyCheck() {
+    try {
+      await this.revocations?.refresh();
+      if (!this.checkWasRequested || this.revocations?.state()?.status !== "revoked") {
+        return this.state();
+      }
+      const updater = await this.updater();
+      if (updater === null || this.disposed || this.installStarted) return this.state();
+      this.replacementCheckRequested = true;
+      await updater.checkForUpdates();
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      this.replacementCheckRequested = false;
+      this.checkWasRequested = false;
+    }
+    return this.state();
   }
 
   private async runCheck() {
@@ -382,7 +443,7 @@ export class DesktopUpdateController {
   }
 
   private async runDownload() {
-    if (this.current.phase !== "available") return this.current;
+    if (this.disposed || this.current.phase !== "available") return this.current;
     const updater = await this.updater();
     if (updater === null || this.current.phase !== "available") return this.current;
     this.push({ type: "download-start" });
@@ -398,7 +459,10 @@ export class DesktopUpdateController {
 
   private fail(error: unknown) {
     const installFailed = this.installStarted;
-    if (installFailed) this.installStarted = false;
+    if (installFailed) {
+      this.installStarted = false;
+      this.revocations?.installationFailed();
+    }
     this.push({
       type: "failed",
       error,
@@ -408,19 +472,49 @@ export class DesktopUpdateController {
     if (installFailed) this.onInstallFailure?.();
   }
 
-  async install() {
-    if (this.installStarted || this.current.phase !== "ready") return this.current;
+  /** Called only by the prototype host's foreground lifecycle, never by a server RPC. */
+  foreground() {
+    if (!this.revocations || this.current.phase !== "ready") return Promise.resolve(this.state());
+    return this.revocations.refresh().then(() => this.state());
+  }
+
+  dispose() {
+    this.disposed = true;
+    if (this.revocationTimer !== null) clearInterval(this.revocationTimer);
+    this.revocationTimer = null;
+    this.revocations?.dispose();
+  }
+
+  /** Offline quit simulation. The production host does not enable this prototype path. */
+  installOnQuit() {
+    if (!this.revocations) return Promise.resolve(this.state());
+    return this.runInstall(false);
+  }
+
+  install() {
+    return this.runInstall(true);
+  }
+
+  private async runInstall(manual: boolean) {
+    if (this.disposed || this.installStarted || this.current.phase !== "ready") return this.state();
     const updater = await this.updater();
     if (updater === null || this.installStarted || this.current.phase !== "ready") {
       return this.current;
     }
-    this.installStarted = true;
-    this.current = { ...this.current, message: null };
     try {
-      updater.quitAndInstall();
+      const effect = () => {
+        this.installStarted = true;
+        this.current = { ...this.current, message: null };
+        updater.quitAndInstall();
+      };
+      if (this.revocations) {
+        await this.revocations.install(effect, manual);
+      } else {
+        effect();
+      }
     } catch (error) {
       this.fail(error);
     }
-    return this.current;
+    return this.state();
   }
 }
