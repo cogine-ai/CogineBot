@@ -92,8 +92,8 @@ function sourceObject(source: string): RecordValue {
       "A public share link does not contain the setup. Paste a JSON export.",
     );
   const candidates = [raw];
-  for (const match of raw.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/gi)) {
-    candidates.push(match[1] ?? "");
+  for (const match of raw.matchAll(/```(?:json)?([\s\S]*?)```/gi)) {
+    candidates.push((match[1] ?? "").trimStart());
     if (candidates.length >= 10) break;
   }
   const open = raw.indexOf("{");

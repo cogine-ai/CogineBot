@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_BYTES,
@@ -81,6 +82,57 @@ describe("bounded portable Bot JSON", () => {
       );
     },
   );
+  it.each(["", "json", "JsOn"])(
+    "preserves fenced JSON with the %j label and JavaScript leading whitespace",
+    (label) => {
+      const source = `Before:\n\`\`\`${label}\t\r\n\uFEFF\u00A0\u2028\u2029${JSON.stringify(document())}\n\`\`\`\n{"outside":"not the export"}`;
+      expect(parseBotPackageSource(source, { includeMemory: false }).document.profile.name).toBe(
+        "Example",
+      );
+    },
+  );
+  it("keeps the fenced candidate limit and skips invalid earlier fences", () => {
+    const fence = `\`\`\`json\n${JSON.stringify(document())}\n\`\`\``;
+    const prefix = "```not a package```\n";
+    const suffix = '\n{"outside":"not the export"}';
+    expect(
+      parseBotPackageSource(`${prefix.repeat(8)}${fence}${suffix}`, { includeMemory: false })
+        .document.profile.name,
+    ).toBe("Example");
+    expect(() =>
+      parseBotPackageSource(`${prefix.repeat(9)}${fence}${suffix}`, { includeMemory: false }),
+    ).toThrow("Paste a supported JSON");
+  });
+  it("bounds malformed fenced exports in a child process without losing JSON fallback", () => {
+    const moduleUrl = new URL("./bot-package.ts", import.meta.url).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      import { parseBotPackageSource } from ${JSON.stringify(moduleUrl)};
+      const prefix = String.fromCharCode(96).repeat(3) + 'json\\n' + ' '.repeat(1024 * 1024);
+      assert.throws(() => parseBotPackageSource(prefix + '!', { includeMemory: false }),
+        /Paste a supported JSON/);
+      const json = ${JSON.stringify(JSON.stringify(document()))};
+      assert.equal(parseBotPackageSource(prefix + json, { includeMemory: false })
+        .document.profile.name, 'Example');
+      assert.throws(() => parseBotPackageSource(String.fromCharCode(96).repeat(1024 * 1024),
+        { includeMemory: false }), /Paste a supported JSON/);
+      process.stdout.write('bounded and faithful');
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ["--import=tsx", "--input-type=module", "-e", script],
+      {
+        encoding: "utf8",
+        timeout: 8000,
+        killSignal: "SIGKILL",
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, NODE_OPTIONS: "" },
+      },
+    );
+    expect(child.error, child.stderr).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toBe("bounded and faithful");
+  });
   it("reports omitted fields by path and never echoes credential values", () => {
     const value = {
       ...document(),
