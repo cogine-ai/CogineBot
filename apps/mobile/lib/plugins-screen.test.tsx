@@ -111,6 +111,7 @@ vi.mock("./native", () => ({ native: {}, useThemedStyles: <T,>(factory: () => T)
 vi.mock("./appearance", () => ({ mobileTokens: () => ({ destructive: "red" }) }));
 
 import Plugins from "../app/(settings)/plugins";
+import { authorizeMobilePluginMcp } from "../components/plugin-setup";
 
 function listing(
   owned: PluginInstallReceipt[] = [],
@@ -604,7 +605,7 @@ it("opens a discovered entry in the pinned native review without installing or e
     ),
   ).toHaveLength(0);
 });
-it("uses native credential entry and external OAuth with explicit status readback", async () => {
+it("uses native credential entry and a web-app handoff with explicit status readback", async () => {
   const normal = api.rpc.getMockImplementation()!;
   let current: McpServer = setupServer;
   api.rpc.mockImplementation(async (procedure, input, options) => {
@@ -634,12 +635,6 @@ it("uses native credential entry and external OAuth with explicit status readbac
         providers: [],
         webUrl: "https://web.example.test/integrations/setup",
       };
-    if (procedure === "mcp/oauth/begin")
-      return {
-        status: "authorization_required",
-        sessionId: "mobile-session",
-        authorizationUrl: "https://auth.example.test/authorize",
-      };
     return normal(procedure, input, options);
   });
   await click("Refresh");
@@ -660,14 +655,12 @@ it("uses native credential entry and external OAuth with explicit status readbac
     },
   });
   expect(node.querySelector('input[aria-label="Authorization"]')).toBeNull();
-  await click("Sign in");
-  expect(api.openURL).toHaveBeenCalledWith("https://auth.example.test/authorize");
-  const begin = api.rpc.mock.calls.find((call) => call[0] === "mcp/oauth/begin")!;
-  expect(begin[1]).toEqual({
-    serverId: setupServer.id,
-    redirectUri: "https://web.example.test/mcp/oauth/callback",
-  });
-  expect(begin[2]).toMatchObject({
+  expect(node.textContent).toContain("Finish MCP authorization in the web app.");
+  await click("Open web app");
+  expect(api.openURL).toHaveBeenCalledExactlyOnceWith("https://web.example.test/app");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "mcp/oauth/begin")).toHaveLength(0);
+  const setup = api.rpc.mock.calls.find((call) => call[0] === "integrationSetup/get")!;
+  expect(setup[2]).toMatchObject({
     skipSpaceAuthRecovery: true,
     requestContext: { headers: { "x-rakazo-space-id": "space-a" } },
   });
@@ -678,6 +671,83 @@ it("uses native credential entry and external OAuth with explicit status readbac
   expect(node.textContent).toContain("Connected");
   await click("Tool access");
   expect(api.navigate).toHaveBeenCalledWith("/mcp");
+});
+
+it.each([null, "not a URL", "javascript:alert(1)", "https://user:password@web.example.test/setup"])(
+  "rejects an unavailable or unsafe web-app URL (%s) without starting authorization",
+  async (webUrl) => {
+    const request = vi.fn().mockResolvedValue({ webUrl });
+    await expect(
+      authorizeMobilePluginMcp({ request, isCurrent: () => true }, new AbortController().signal),
+    ).rejects.toThrow();
+    expect(request.mock.calls.map((call) => call[0])).toEqual(["integrationSetup/get"]);
+    expect(api.openURL).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["scope", "abort"] as const)(
+  "does not open a web app after %s changes while reading its address",
+  async (change) => {
+    let resolve!: (value: { webUrl: string }) => void;
+    let current = true;
+    const controller = new AbortController();
+    const request = vi.fn().mockImplementation(() => new Promise((done) => (resolve = done)));
+    const pending = authorizeMobilePluginMcp(
+      { request, isCurrent: () => current },
+      controller.signal,
+    );
+    if (change === "scope") current = false;
+    else controller.abort();
+    resolve({ webUrl: "https://web.example.test/integrations/setup" });
+    await expect(pending).resolves.toBe("cancelled");
+    expect(request.mock.calls.map((call) => call[0])).toEqual(["integrationSetup/get"]);
+    expect(api.openURL).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  [
+    "https://web.example.test/integrations/setup?session=fake#private",
+    "https://web.example.test/app",
+  ],
+  ["http://127.0.0.1:3000/integrations/setup", "http://127.0.0.1:3000/app"],
+])("hands off only the web-app address for %s", async (webUrl, expected) => {
+  const request = vi.fn().mockResolvedValue({ webUrl });
+  await expect(
+    authorizeMobilePluginMcp({ request, isCurrent: () => true }, new AbortController().signal),
+  ).resolves.toBe("pending");
+  expect(api.openURL).toHaveBeenCalledExactlyOnceWith(expected);
+  expect(request.mock.calls.map((call) => call[0])).toEqual(["integrationSetup/get"]);
+});
+
+it("discards a handoff receipt after the native request scope is cancelled", async () => {
+  const controller = new AbortController();
+  const request = vi.fn().mockResolvedValue({ webUrl: "https://web.example.test/setup" });
+  api.openURL.mockImplementationOnce(async () => controller.abort());
+  await expect(
+    authorizeMobilePluginMcp({ request, isCurrent: () => true }, controller.signal),
+  ).resolves.toBe("cancelled");
+  expect(request.mock.calls.map((call) => call[0])).toEqual(["integrationSetup/get"]);
+});
+
+it("retains unconfirmed status when the native browser handoff fails", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const current = { ...setupServer, enabled: true };
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list") return listing([{ ...receipt, mcpServers: [current] }]);
+    if (procedure === "mcp/servers/list") return [current];
+    if (procedure === "integrationSetup/get")
+      return { webUrl: "https://web.example.test/integrations/setup" };
+    return normal(procedure, input, options);
+  });
+  api.openURL.mockRejectedValueOnce(new Error("No browser available"));
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Open web app");
+  expect(node.textContent).not.toContain("Connected");
+  expect(node.textContent).toContain("Could not confirm sign-in.");
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "mcp/oauth/begin")).toHaveLength(0);
+  expect(button("Check status").disabled).toBe(false);
 });
 it("does not expose managed member connection credentials on the native route", async () => {
   const normal = api.rpc.getMockImplementation()!;

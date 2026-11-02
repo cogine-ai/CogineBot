@@ -120,27 +120,16 @@ export function PluginDiscovery({
   );
 }
 
-type BeginResult =
-  | { status: "authorization_required"; sessionId: string; authorizationUrl: string }
-  | { status: "already_connected" | "authorization_not_requested" };
-export async function authorizeMobilePluginMcp(
-  client: PluginRequests,
-  serverId: string,
-  signal: AbortSignal,
-) {
+export async function authorizeMobilePluginMcp(client: PluginRequests, signal: AbortSignal) {
   const setup = await client.request<IntegrationSetupState>("integrationSetup/get", {}, signal);
   if (signal.aborted || !client.isCurrent()) return "cancelled" as const;
   if (!setup.webUrl) throw new Error("Could not open sign-in.");
-  const redirectUri = new URL("/mcp/oauth/callback", setup.webUrl).toString();
-  const started = await client.request<BeginResult>(
-    "mcp/oauth/begin",
-    { serverId, redirectUri },
-    signal,
-  );
+  const webUrl = new URL(setup.webUrl);
+  if (!["https:", "http:"].includes(webUrl.protocol) || webUrl.username || webUrl.password)
+    throw new Error("Could not open sign-in.");
+  // The system browser has its own session. Start and finish authorization in the web app.
+  await Linking.openURL(new URL("/app", webUrl).toString());
   if (signal.aborted || !client.isCurrent()) return "cancelled" as const;
-  if (started.status !== "authorization_required") return started.status;
-  await Linking.openURL(started.authorizationUrl);
-  // Native callback routing is not configured. Only a scoped backend read may confirm completion.
   return "pending" as const;
 }
 
@@ -175,7 +164,7 @@ export function PluginServerSetup({
       serverId,
       list: (signal) => client.request("mcp/servers/list", {}, signal),
       save: (input, signal) => client.request("mcp/servers/update", input, signal),
-      authorize: (id, signal) => authorizeMobilePluginMcp(client, id, signal),
+      authorize: (_id, signal) => authorizeMobilePluginMcp(client, signal),
       isCurrent: client.isCurrent,
       changed: setState,
     });
@@ -311,12 +300,15 @@ export function PluginServerSetup({
           {server.enabled &&
           server.oauthStatus !== "connected" &&
           server.oauthStatus !== "unknown" ? (
-            <NativeActionButton
-              label={server.oauthStatus === "reconnect" ? t("Reconnect") : t("Sign in")}
-              disabled={locked}
-              prominence="secondary"
-              onPress={() => void manager.current?.connectOAuth()}
-            />
+            <>
+              <Text style={styles.secondary}>{t("Finish MCP authorization in the web app.")}</Text>
+              <NativeActionButton
+                label={t("Open web app")}
+                disabled={locked}
+                prominence="secondary"
+                onPress={() => void manager.current?.connectOAuth()}
+              />
+            </>
           ) : null}
           <NativeActionButton label={t("Tool access")} prominence="quiet" onPress={onToolAccess} />
         </>

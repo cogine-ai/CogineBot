@@ -42,12 +42,16 @@ saved values. Enter the header name required by that service instead of assuming
 particular authorization scheme. Credential edits preserve other headers and OAuth
 state. A stale settings revision requires a fresh status read before another save.
 
-Use **Sign in** when the server supports browser authorization. A returned or closed
-browser window does not establish a connection: the app reads the server status before
-showing **Connected**. If a popup is blocked, an authorization is interrupted, or the
-mobile browser does not return to the app, choose **Check status** and retry as needed.
-The mobile app can save credentials and enable individual connections; its OAuth flow
-uses the configured web callback. **Tool access** remains a separate permission review.
+On web and Electron, use **Sign in** when the server supports browser authorization.
+A returned or closed browser window does not establish a connection: the app reads
+the server status before showing **Connected**. If a popup is blocked or authorization
+is interrupted, choose **Check status** and retry as needed.
+The mobile app can save credentials and enable individual connections. Choose
+**Open web app**, sign in there if needed, and open the installed plugin's connection
+settings to authorize it. The system browser has its own session; the mobile app
+does not start OAuth or transfer its session to that browser. Return to the app and
+choose **Check status** to read the same server's state.
+**Tool access** remains a separate permission review.
 Configuring a connection never grants tools to a Bot or expands account authorization.
 Space-owner removal rights do not grant access to another member's credentials.
 
