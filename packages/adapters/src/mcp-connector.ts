@@ -9,6 +9,7 @@ import type {
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { isLocalMcpHost } from "@rakazo/contracts";
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
+import { assertManagedPluginActive, lockPluginInstall } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { catalogToolPrefix } from "./approval-effect.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
@@ -155,8 +156,14 @@ export class McpConnector implements ConnectorProvider {
         if (!server.allowAllTools && !allowed.some((name) => typeof name === "string")) return [];
         const startedAt = Date.now();
         try {
+          if (server.installId) {
+            await assertManagedPluginActive(this.prisma, server.installId, context);
+          }
           const session = await this.sessionFor(server, context);
           const listed = await session.listTools({ signal: context.signal });
+          if (server.installId) {
+            await assertManagedPluginActive(this.prisma, server.installId, context);
+          }
           reportAllowlistDrift(server, listed.tools, context);
           return listed.tools
             .filter((tool) => server.allowAllTools || allowed.includes(tool.name))
@@ -284,19 +291,69 @@ export class McpConnector implements ConnectorProvider {
     // drop this call's OAuth secrets from model-visible redaction. Recompute via
     // oauthMaterialSecrets(material) so in-place token refresh stays covered.
     let material: OAuthMaterial | undefined;
+    let admissionRejected = false;
     const sessionKey = this.sessionKey(server, context);
     try {
       const session = await this.sessionFor(server, context);
       material = this.sessions.get(sessionKey)?.material;
-      const result = await session.callTool(call.route.toolName, call.args, {
-        signal: context.signal,
-      });
+      let dispatched: ReturnType<McpSession["callTool"]> | undefined;
+      const dispatch = () => {
+        context.signal.throwIfAborted();
+        dispatched = session.callTool(call.route!.toolName, call.args, {
+          signal: context.signal,
+        });
+        // The transport may reject before the DB admission transaction has returned.
+        void dispatched.catch(() => undefined);
+      };
+      if (server.installId) {
+        try {
+          await this.prisma.$transaction(async (tx) => {
+            await lockPluginInstall(tx, server.installId!);
+            await assertManagedPluginActive(tx, server.installId!, context);
+            const current = await tx.mcpServer.findFirst({
+              where: {
+                id: server.id,
+                installId: server.installId,
+                spaceId: context.spaceId,
+                userId: context.userId,
+                enabled: true,
+              },
+            });
+            if (
+              !current?.enabled ||
+              current.revision !== call.route!.resourceRevision ||
+              (!current.allowAllTools &&
+                !(
+                  Array.isArray(current.allowedTools) &&
+                  current.allowedTools.includes(call.route!.toolName)
+                ))
+            ) {
+              throw new Error("MCP server permissions or credentials changed; retry");
+            }
+            // Invocation is the dispatch boundary. Do not await network work under
+            // this lock: OAuth refresh needs its own parent/material transaction.
+            dispatch();
+          });
+        } catch (error) {
+          // Once invoked, a transaction acknowledgement failure must not discard
+          // the original outcome or dispatch the tool a second time.
+          if (!dispatched) {
+            admissionRejected = true;
+            throw error;
+          }
+        }
+      } else {
+        dispatch();
+      }
+      const result = await dispatched!;
       const secrets = material ? oauthMaterialSecrets(material) : [];
       yield { type: "result", data: redactConnectorPayload(result, secrets) };
     } catch (error) {
       // A thrown call means the transport or auth broke; drop the session so the next call reconnects.
       const secrets = material ? oauthMaterialSecrets(material) : [];
-      await this.evict(sessionKey);
+      // Rejecting queued work must not close a session another already-dispatched
+      // call is using. Permission changes are enforced by DB checks on every call.
+      if (!admissionRejected) await this.evict(sessionKey);
       yield { type: "error", message: sanitizeConnectorError(error, secrets) };
     }
   }

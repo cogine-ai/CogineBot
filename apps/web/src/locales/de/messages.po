@@ -6417,3 +6417,115 @@ msgstr "Diese Einstellung wurde anderswo geändert. Vor dem Speichern aktualisie
 #: src/pages/Shell.tsx
 msgid "Automatic collaboration stopped"
 msgstr "Automatische Zusammenarbeit gestoppt"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Cleanup incomplete"
+msgstr "Bereinigung unvollständig"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Confirm removal"
+msgstr "Entfernen bestätigen"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not complete this request."
+msgstr "Diese Anfrage konnte nicht abgeschlossen werden."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not confirm removal. Refresh before retrying."
+msgstr "Das Entfernen konnte nicht bestätigt werden. Vor dem Wiederholen aktualisieren."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Could not load installed plugins."
+msgstr "Installierte Plugins konnten nicht geladen werden."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "GitHub plugins"
+msgstr "GitHub-Plugins"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Install plugin"
+msgstr "Plugin installieren"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed"
+msgstr "Installiert"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin installations"
+msgstr "Plugin-Installationen"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installing…"
+msgstr "Wird installiert…"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "MCP tools require separate approval."
+msgstr "MCP-Werkzeuge erfordern eine separate Freigabe."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "No plugins installed"
+msgstr "Keine Plugins installiert"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Plugin GitHub URL"
+msgstr "GitHub-URL des Plugins"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Remove plugin"
+msgstr "Plugin entfernen"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Retry cleanup"
+msgstr "Bereinigung wiederholen"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills"
+msgstr "Skills"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skills are available to your Bots in this Space."
+msgstr "Skills stehen deinen Bots in diesem Space zur Verfügung."
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Skipped components"
+msgstr "Übersprungene Komponenten"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Version details"
+msgstr "Versionsdetails"
+
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "View instructions"
+msgstr "Anweisungen anzeigen"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installation failed."
+msgstr "Installation fehlgeschlagen."
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Another member"
+msgstr "Anderes Mitglied"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Installed by {name}"
+msgstr "Installiert von {name}"

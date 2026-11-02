@@ -62,6 +62,7 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretRecord,
+  SecretWriteReconciliation,
   SemanticMemoryCapabilities,
   SemanticMemoryForgetRequest,
   SemanticMemoryPurgeHistoryRequest,
@@ -320,6 +321,10 @@ export interface ArtifactStore {
 
 export interface SecretStore {
   describe(): AdapterDescriptor<{ rotate: boolean; degraded?: boolean }>;
+  /** No external side effect. Callers must persist this before invoking put. */
+  prepareWrite?(recordId: string, options?: { ephemeral?: boolean }): string;
+  /** Remote absence is unknown unless this provider can exclude a late create. */
+  reconcileWrite?(recoveryRef: string, context: SecretContext): Promise<SecretWriteReconciliation>;
   put(
     plaintext: string,
     context: AdapterContext,

@@ -165,11 +165,14 @@ export async function resolveMcpApprovalCards<T>(
   actor: Actor,
   input: McpApprovalResolution,
   effect?: (tx: Prisma.TransactionClient, decision: McpApprovalDecision) => Promise<T>,
+  admit?: (tx: Prisma.TransactionClient) => Promise<void>,
 ): Promise<T | undefined> {
   const threads = await threadsForDecision(deps, actor, input);
   const committed = await withTransactionRetry(() =>
     deps.prisma.$transaction(
       async (tx) => {
+        // Managed resource admission precedes card/thread locks, matching uninstall order.
+        await admit?.(tx);
         const selectable =
           input.threadId === undefined
             ? (block: ApprovalBlock) => block.status !== "connected"

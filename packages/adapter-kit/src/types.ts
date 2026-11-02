@@ -770,7 +770,13 @@ export type SecretContext = string | { recordId: string; signal?: AbortSignal };
 export interface SecretPutOptions {
   recordId?: string;
   ephemeral?: boolean;
+  /** Provider-prepared opaque locator, persisted before a tracked write starts. */
+  recoveryRef?: string;
 }
+export type SecretWriteReconciliation =
+  | { state: "found"; ref: string }
+  | { state: "absent" }
+  | { state: "unknown" };
 export type SecretChangeListener = (ref: string) => void;
 
 export interface ArtifactPut {

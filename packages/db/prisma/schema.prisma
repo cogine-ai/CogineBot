@@ -904,10 +904,13 @@ model AgentSkill {
   content     String
   /// user | builtin | plugin — only user skills are writable via API/tools.
   source      String   @default("user")
+  installId   String?
+  install     CapabilityInstall? @relation(fields: [installId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([spaceId, userId])
+  @@index([installId])
   // Case-insensitive unique index agent_skills_spaceId_userId_name_lower_key is created in SQL.
   @@map("agent_skills")
 }
@@ -953,8 +956,20 @@ model CapabilityInstall {
   digest    String?
   secretId  String?
   config    Json     @default("{}")
+  /// Non-null nonce identifies a managed plugin receipt, including removed tombstones.
+  clientNonce String?
+  requestBinding String?
+  status String @default("installed")
+  revision Int @default(1)
+  /// Internal encrypted credential references awaiting strict cleanup; never a public DTO.
+  cleanupRefs Json @default("[]")
+  installedAt DateTime?
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  agentSkills AgentSkill[]
+  mcpServers McpServer[]
 
+  @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId])
   @@map("capability_installs")
 }
@@ -1264,10 +1279,13 @@ model McpServer {
   assignments   BotMcpServer[]
   oauthSessions McpOAuthSession[]
   nativeAppId String?
+  installId String?
+  install CapabilityInstall? @relation(fields: [installId], references: [id], onDelete: Cascade)
   nativeConnections Connection[]
 
   @@unique([spaceId, userId, slug])
   @@index([spaceId, userId])
+  @@index([installId])
   @@map("mcp_servers")
 }
 

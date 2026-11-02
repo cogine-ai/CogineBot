@@ -6,12 +6,27 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretStore,
+  SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
 import type { InfisicalSecretStoreOptions } from "./infisical-secret-store.js";
 import { INFISICAL_REF_PREFIX, InfisicalSecretStore } from "./infisical-secret-store.js";
 import { SecretChanges } from "./secret-changes.js";
-import { EncryptedSecretStore } from "./secrets.js";
+import { ENCRYPTED_RECOVERY_PREFIX, EncryptedSecretStore } from "./secrets.js";
+
+/** Unsupported providers and legacy pending entries remain explicitly unknown. */
+export async function reconcileSecretWrite(
+  store: SecretStore,
+  recoveryRef: string | undefined,
+  context: SecretContext,
+): Promise<SecretWriteReconciliation> {
+  if (!recoveryRef || !store.reconcileWrite) return { state: "unknown" };
+  const result = await store.reconcileWrite(recoveryRef, context);
+  if (result.state === "found" && (!result.ref || result.ref.length > 4_000_000))
+    throw new Error("Invalid credential recovery result");
+  return result;
+}
 
 const deferredNotifications = new AsyncLocalStorage<Array<() => Promise<void>>>();
 /** Publish cache invalidations after a caller releases its database transaction. */
@@ -88,6 +103,23 @@ export class ComposedSecretStore extends SecretChanges implements SecretStore {
   describe() {
     return (this.remote ?? this.encrypted).describe();
   }
+  prepareWrite(recordId: string, options: { ephemeral?: boolean } = {}): string {
+    const store = options.ephemeral || !this.remote ? this.encrypted : this.remote;
+    if (!store.prepareWrite) throw new SecretStoreUnavailableError();
+    return store.prepareWrite(recordId, options);
+  }
+  async reconcileWrite(
+    recoveryRef: string,
+    context: SecretContext,
+  ): Promise<SecretWriteReconciliation> {
+    const store = recoveryRef.startsWith(INFISICAL_REF_PREFIX)
+      ? this.remote
+      : recoveryRef.startsWith(ENCRYPTED_RECOVERY_PREFIX)
+        ? this.encrypted
+        : undefined;
+    if (!store) return { state: "unknown" };
+    return reconcileSecretWrite(store, recoveryRef, context);
+  }
   start(): Promise<void> {
     this.starting ??= this.startOnce();
     return this.starting;
@@ -129,11 +161,17 @@ export class ComposedSecretStore extends SecretChanges implements SecretStore {
     }
   }
   async put(value: string, context: AdapterContext, options: SecretPutOptions = {}) {
-    const record = await (options.ephemeral || !this.remote ? this.encrypted : this.remote).put(
-      value,
-      context,
-      options,
-    );
+    const selected = options.recoveryRef
+      ? options.recoveryRef.startsWith(INFISICAL_REF_PREFIX)
+        ? this.remote
+        : options.recoveryRef.startsWith(ENCRYPTED_RECOVERY_PREFIX)
+          ? this.encrypted
+          : undefined
+      : options.ephemeral || !this.remote
+        ? this.encrypted
+        : this.remote;
+    if (!selected) throw new SecretStoreUnavailableError();
+    const record = await selected.put(value, context, options);
     await this.publish(record.ref);
     return record;
   }
