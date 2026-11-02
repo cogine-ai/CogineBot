@@ -286,3 +286,148 @@ test("a Space owner reviews attribution and explicitly cleans a member installat
   expect(removals).toEqual([1, 3]);
   expect(installs).toBe(0);
 });
+
+test("plugin discovery keeps pinned review and guides an explicitly enabled owned connection", async ({
+  page,
+}, testInfo) => {
+  let installed: PluginInstallReceipt | null = null;
+  let server = {
+    id: "synthetic-mcp",
+    spaceId: "synthetic-space",
+    slug: "research",
+    name: "Research service",
+    description: "",
+    transport: "streamable_http",
+    endpoint: "https://research.example.test/mcp",
+    command: null,
+    args: [],
+    envKeys: [],
+    headerKeys: ["Authorization", "X-Workspace"],
+    hasSecret: true,
+    enabled: false,
+    oauthStatus: "none",
+    allowAllTools: false,
+    allowedTools: [],
+    revision: 1,
+    createdAt: "2026-11-02T00:00:00.000Z",
+    updatedAt: "2026-11-02T00:00:00.000Z",
+  };
+  const writes: unknown[] = [];
+  let authorizations = 0;
+  await page.route("**/rpc/plugins/list", (route) =>
+    route.fulfill({ json: { json: listing(installed ? [installed] : []) } }),
+  );
+  await page.route("**/rpc/plugins/search", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          entries: [
+            {
+              id: "fixture-discovery",
+              name: "Research listing",
+              description: "Plan and research with linked sources.",
+              registry: "Cursor",
+              source: "https://github.com/example/discovered",
+              installedSource: "https://github.com/example/discovered",
+              keywords: [],
+            },
+          ],
+          nextCursor: null,
+          unavailableRegistries: ["xAI"],
+          skippedEntries: 0,
+        },
+      },
+    }),
+  );
+  await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
+  await page.route("**/rpc/plugins/install", (route) => {
+    expect(route.request().postDataJSON().json).toMatchObject({
+      sourceSha: preview.sourceSha,
+      digest: preview.digest,
+    });
+    installed = receipt(route.request().postDataJSON().json.clientNonce);
+    return route.fulfill({ json: { json: installed } });
+  });
+  await page.route("**/rpc/mcp/servers/list", (route) =>
+    route.fulfill({ json: { json: installed ? [server] : [] } }),
+  );
+  await page.route("**/rpc/mcp/servers/update", (route) => {
+    const value = route.request().postDataJSON().json;
+    expect(value.id).toBe(server.id);
+    expect(value.connection.revision).toBe(server.revision);
+    expect(value.config).toBeUndefined();
+    writes.push(value);
+    server = { ...server, enabled: value.connection.enabled, revision: server.revision + 1 };
+    return route.fulfill({ json: { json: server } });
+  });
+  await page.route("**/rpc/mcp/oauth/begin", (route) => {
+    authorizations += 1;
+    return route.fulfill({
+      json: {
+        json: {
+          status: "authorization_required",
+          sessionId: "synthetic-session",
+          authorizationUrl: "https://auth.example.test/authorize",
+        },
+      },
+    });
+  });
+  const { panel } = await openPlugins(page);
+  await panel.getByRole("textbox", { name: "Search plugins", exact: true }).fill("research");
+  await panel.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(panel.getByText("Some registries are unavailable.", { exact: true })).toBeVisible();
+  const discovery = panel.getByTestId("plugin-discovery");
+  await discovery.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "d012-plugin-discovery");
+  await discovery.getByRole("button", { name: "Preview Research listing", exact: true }).click();
+  await expect(
+    panel.getByTestId("plugin-preview").getByRole("heading", { name: preview.name, exact: true }),
+  ).toBeVisible();
+  expect(installed).toBeNull();
+  expect(writes).toEqual([]);
+  expect(authorizations).toBe(0);
+  await panel.getByRole("button", { name: "Install plugin", exact: true }).click();
+  const row = panel.getByRole("article", { name: preview.name, exact: true });
+  await row.getByRole("button", { name: "Set up connections", exact: true }).click();
+  const guide = row.getByTestId("plugin-server-setup");
+  await expect(guide.getByText("Disabled", { exact: true })).toBeVisible();
+  await expect(guide.getByRole("button", { name: "Sign in", exact: true })).toHaveCount(0);
+  await guide.getByRole("button", { name: "Enable connection", exact: true }).click();
+  expect(writes).toEqual([{ id: server.id, connection: { revision: 1, enabled: true } }]);
+  await guide.getByRole("button", { name: "Edit credentials", exact: true }).click();
+  await guide.getByLabel("Authorization", { exact: true }).fill("fake-replacement");
+  await guide.getByRole("button", { name: "Save credentials", exact: true }).click();
+  expect(writes[1]).toEqual({
+    id: server.id,
+    connection: {
+      revision: 2,
+      enabled: true,
+      headerUpdates: { Authorization: "fake-replacement" },
+    },
+  });
+  await expect(guide.getByLabel("Authorization", { exact: true })).toHaveCount(0);
+  await guide.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "d012-plugin-guided");
+  await page.setViewportSize({ width: 320, height: 900 });
+  expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
+    true,
+  );
+  await guide.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "d012-plugin-guided-320");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => {
+    window.open = () => null;
+  });
+  await guide.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    guide.getByText("Could not confirm sign-in. Check status or try again.", { exact: true }),
+  ).toBeVisible();
+  await expect(guide.getByText("Connected", { exact: true })).toHaveCount(0);
+  expect(authorizations).toBe(1);
+  await guide.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "d012-plugin-oauth-uncertain");
+  server = { ...server, oauthStatus: "connected" };
+  await guide.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(guide.getByText("Connected", { exact: true })).toBeVisible();
+  expect(authorizations).toBe(1);
+});

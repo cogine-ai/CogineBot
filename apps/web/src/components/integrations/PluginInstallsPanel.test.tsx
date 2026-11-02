@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { PluginInstallReceipt, PluginPreview } from "@rakazo/contracts";
+import type { McpServer, PluginInstallReceipt, PluginPreview } from "@rakazo/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -11,6 +11,10 @@ const api = vi.hoisted(() => ({
   install: vi.fn(),
   list: vi.fn(),
   uninstall: vi.fn(),
+  search: vi.fn(),
+  servers: vi.fn(),
+  update: vi.fn(),
+  begin: vi.fn(),
   space: "space-a",
   generation: 1,
   session: 1,
@@ -23,7 +27,9 @@ vi.mock("../../lib/rpc", () => ({
       install: api.install,
       list: api.list,
       uninstall: api.uninstall,
+      search: api.search,
     },
+    mcp: { servers: { list: api.servers, update: api.update }, oauth: { begin: api.begin } },
   }),
   currentRpcSessionGeneration: () => api.session,
   currentSpaceSelectionGeneration: () => api.generation,
@@ -123,6 +129,13 @@ beforeEach(async () => {
   api.session = 1;
   api.listeners.clear();
   api.preview.mockResolvedValue(preview);
+  api.search.mockResolvedValue({
+    entries: [],
+    nextCursor: null,
+    unavailableRegistries: [],
+    skippedEntries: 0,
+  });
+  api.servers.mockResolvedValue([]);
   api.list.mockResolvedValue(listing([]));
   api.install.mockImplementation(async (input: { clientNonce: string }) => ({
     ...receipt,
@@ -154,7 +167,7 @@ function button(label: string) {
 }
 async function input(value: string) {
   await act(async () => {
-    const field = node.querySelector("input")!;
+    const field = node.querySelector<HTMLInputElement>('input[aria-label="Plugin GitHub URL"]')!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
@@ -226,7 +239,9 @@ it("does not reset the draft on an unrelated parent rerender", async () => {
   await act(async () =>
     root.render(<PluginInstallsPanel ownerKey="owner-a" spaceId="space-a" onClose={() => {}} />),
   );
-  expect(node.querySelector("input")!.value).toBe("https://github.com/example/draft");
+  expect(node.querySelector<HTMLInputElement>('input[aria-label="Plugin GitHub URL"]')!.value).toBe(
+    "https://github.com/example/draft",
+  );
 });
 
 it("aborts a late preview across Space A to B to A and preserves the new draft", async () => {
@@ -253,7 +268,9 @@ it("aborts a late preview across Space A to B to A and preserves the new draft",
   await input("https://github.com/example/new");
   await act(async () => resolve(preview));
   expect(options.signal.aborted).toBe(true);
-  expect(node.querySelector("input")!.value).toBe("https://github.com/example/new");
+  expect(node.querySelector<HTMLInputElement>('input[aria-label="Plugin GitHub URL"]')!.value).toBe(
+    "https://github.com/example/new",
+  );
   expect(node.querySelector('[data-testid="plugin-preview"]')).toBeNull();
 });
 
@@ -492,4 +509,195 @@ it("does not restore a revoked member row when cleanup replies after a concurren
   expect(node.textContent).not.toContain("Installed by");
   expect(node.textContent).toContain("No plugins installed");
   expect(api.uninstall).toHaveBeenCalledTimes(1);
+});
+
+const guideReceipt = { ...receipt, clientNonce: "nonce-installed" };
+const serverFixture = {
+  id: "mcp-one",
+  spaceId: "space-a",
+  slug: "research",
+  name: "Research service",
+  description: "",
+  transport: "streamable_http" as const,
+  endpoint: preview.mcpServers[0]!.endpoint,
+  command: null,
+  args: [],
+  envKeys: [],
+  headerKeys: ["Authorization", "X-Workspace"],
+  hasSecret: true,
+  oauthStatus: "none" as const,
+  enabled: false,
+  allowAllTools: false,
+  allowedTools: [],
+  revision: 1,
+  createdAt: "2026-11-01T00:00:00.000Z",
+  updatedAt: "2026-11-01T00:00:00.000Z",
+};
+async function fillField(label: string, value: string) {
+  await act(async () => {
+    const field = node.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+it("uses registry entries only to request the existing pinned review", async () => {
+  api.search.mockResolvedValue({
+    entries: [
+      {
+        id: "registry-one",
+        name: "Research listing",
+        description: "Registry description",
+        source: "https://github.com/example/discovered",
+        installedSource: "https://github.com/example/discovered",
+        registry: "Cursor",
+        keywords: [],
+      },
+    ],
+    nextCursor: null,
+    unavailableRegistries: ["xAI"],
+    skippedEntries: 0,
+  });
+  await fillField("Search plugins", "research");
+  await click("Search");
+  expect(api.search.mock.calls[0]?.[0]).toEqual({ query: "research" });
+  expect(node.textContent).toContain("Some registries are unavailable.");
+  const result = node.querySelector<HTMLButtonElement>(
+    'button[aria-label="Preview Research listing"]',
+  )!;
+  await act(async () => result.click());
+  expect(api.preview.mock.calls[0]?.[0]).toEqual({
+    source: "https://github.com/example/discovered",
+  });
+  expect(node.textContent).toContain("Full instructions");
+  expect(api.install).not.toHaveBeenCalled();
+  expect(api.update).not.toHaveBeenCalled();
+});
+it("guides an owned imported server with explicit secret-preserving enable and named header updates", async () => {
+  let current = serverFixture;
+  api.list.mockResolvedValue(listing([guideReceipt]));
+  api.servers.mockImplementation(async () => [
+    current,
+    { ...serverFixture, id: "unrelated", name: "Unrelated" },
+  ]);
+  api.update.mockImplementation(async ({ connection }) => {
+    current = { ...current, enabled: connection.enabled, revision: current.revision + 1 };
+    return current;
+  });
+  await click("Refresh");
+  await click("Set up connections");
+  expect(node.textContent).not.toContain("Unrelated");
+  expect(button("Enable connection")).toBeTruthy();
+  expect(api.update).not.toHaveBeenCalled();
+  await click("Enable connection");
+  expect(api.update.mock.calls[0]?.[0]).toEqual({
+    id: serverFixture.id,
+    connection: { revision: 1, enabled: true },
+  });
+  await click("Edit credentials");
+  await fillField("Authorization", "fake-replacement");
+  await click("Save credentials");
+  expect(api.update.mock.calls[1]?.[0]).toEqual({
+    id: serverFixture.id,
+    connection: {
+      revision: 2,
+      enabled: true,
+      headerUpdates: { Authorization: "fake-replacement" },
+    },
+  });
+  expect(node.querySelector('input[aria-label="Authorization"]')).toBeNull();
+  expect(JSON.stringify(api.update.mock.calls)).not.toContain('"X-Workspace":');
+});
+it("keeps sign-in uncertain until the exact server is read back as connected", async () => {
+  let current: McpServer = { ...serverFixture, enabled: true };
+  api.list.mockResolvedValue(listing([guideReceipt]));
+  api.servers.mockImplementation(async () => [current]);
+  api.begin.mockResolvedValue({ status: "already_connected" });
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Sign in");
+  expect(node.textContent).toContain("Could not confirm sign-in.");
+  expect(node.textContent).not.toContain("Connected");
+  current = { ...current, oauthStatus: "connected" };
+  await click("Check status");
+  expect(node.textContent).toContain("Connected");
+});
+it("never offers connection configuration for an installation managed for another member", async () => {
+  api.list.mockResolvedValue(listing([], [{ receipt: guideReceipt, ownerName: "Alex" }]));
+  await click("Refresh");
+  expect(node.textContent).toContain("Installed by Alex");
+  expect(node.textContent).not.toContain("Set up connections");
+  expect(api.servers).not.toHaveBeenCalled();
+});
+it("clears mounted secret drafts and aborts setup when the selected Space changes", async () => {
+  api.list.mockResolvedValue(listing([guideReceipt]));
+  api.servers.mockResolvedValue([serverFixture]);
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Edit credentials");
+  await fillField("Authorization", "fake-unsaved");
+  await act(async () => {
+    api.space = "space-b";
+    api.generation += 1;
+    for (const listener of api.listeners) listener();
+  });
+  expect(node.querySelector('input[aria-label="Authorization"]')).toBeNull();
+  expect(api.update).not.toHaveBeenCalled();
+});
+
+it("lets a server without predefined headers save an explicitly named credential", async () => {
+  const current = { ...serverFixture, headerKeys: [] };
+  api.list.mockResolvedValue(listing([guideReceipt]));
+  api.servers.mockResolvedValue([current]);
+  api.update.mockResolvedValue({ ...current, revision: 2, headerKeys: ["X-Api-Key"] });
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Add header");
+  await fillField("Header name", "X-Api-Key");
+  await fillField("Header value", "fake-explicit-key");
+  await click("Save credentials");
+  expect(api.update.mock.calls[0]?.[0]).toEqual({
+    id: current.id,
+    connection: {
+      revision: 1,
+      enabled: false,
+      headerUpdates: { "X-Api-Key": "fake-explicit-key" },
+    },
+  });
+  expect(node.querySelector('input[aria-label="Header value"]')).toBeNull();
+});
+
+it("requires status readback before offering sign-in for an unread credential", async () => {
+  api.list.mockResolvedValue(listing([guideReceipt]));
+  api.servers.mockResolvedValue([{ ...serverFixture, enabled: true, oauthStatus: "unknown" }]);
+  await click("Refresh");
+  await click("Set up connections");
+  expect(node.textContent).toContain("Connection status unavailable.");
+  expect([...node.querySelectorAll("button")].some((item) => item.textContent === "Sign in")).toBe(
+    false,
+  );
+  expect(api.begin).not.toHaveBeenCalled();
+  api.servers.mockResolvedValue([{ ...serverFixture, enabled: true }]);
+  await click("Check status");
+  expect(button("Sign in")).toBeTruthy();
+});
+
+it("distinguishes unavailable registry results from a healthy empty catalog", async () => {
+  api.search.mockResolvedValue({
+    entries: [],
+    nextCursor: null,
+    unavailableRegistries: ["Cursor", "xAI"],
+    skippedEntries: 0,
+  });
+  await click("Search");
+  expect(node.textContent).toContain("Some registries are unavailable.");
+  expect(node.textContent).not.toContain("No plugins found");
+  api.search.mockResolvedValue({
+    entries: [],
+    nextCursor: null,
+    unavailableRegistries: [],
+    skippedEntries: 0,
+  });
+  await click("Search");
+  expect(node.textContent).toContain("No plugins found");
+  expect(node.textContent).not.toContain("Some registries are unavailable.");
 });

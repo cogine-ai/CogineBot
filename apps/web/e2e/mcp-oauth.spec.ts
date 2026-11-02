@@ -8,8 +8,9 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
   await signup(page, `mcp-oauth-${stamp}@rakazo.test`, "password12", "MCP OAuth");
   await completeOnboarding(page);
 
-  let oauthStatus: McpServer["oauthStatus"] = "none";
-  let hasSecret = false;
+  let oauthStatus: McpServer["oauthStatus"] = "unknown";
+  let hasSecret = true;
+  let authorizationBegins = 0;
   const server: McpServer = {
     id: "mcp-oauth-server",
     spaceId: "mcp-oauth-workspace",
@@ -51,6 +52,7 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ json: [] }) });
   });
   await page.context().route("**/rpc/mcp/oauth/begin", async (route) => {
+    authorizationBegins += 1;
     expect(route.request().postDataJSON()).toEqual({
       json: {
         serverId: server.id,
@@ -92,6 +94,13 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
   await page.getByRole("button", { name: "Manage MCP servers", exact: true }).click();
   await expect(page.getByRole("heading", { name: "MCP servers" })).toBeVisible();
   await expect(page.getByText("Linear MCP", { exact: true })).toBeVisible();
+  await expect(page.getByText("Connection status unavailable.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toHaveCount(0);
+  oauthStatus = "none";
+  hasSecret = false;
+  await page.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Connect OAuth", exact: true })).toBeVisible();
+  expect(authorizationBegins).toBe(0);
   await expect(page.getByLabel("Access token (optional)")).toBeHidden();
   await captureScreenshot(page, testInfo, "mcp-oauth-ready");
 

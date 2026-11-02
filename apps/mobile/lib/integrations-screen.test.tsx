@@ -1267,3 +1267,27 @@ it.each(["kind", "actor-space"])(
     expect(state.rpc.mock.calls.filter(([proc]) => proc === "capabilities/list")).toHaveLength(1);
   },
 );
+
+it("shows unknown MCP credential status without claiming saved credentials or OAuth access", async () => {
+  state.rpc.mockResolvedValue([
+    {
+      id: "server-a",
+      name: "Fixture",
+      revision: 2,
+      allowAllTools: false,
+      allowedTools: [],
+      oauthStatus: "unknown",
+      hasSecret: true,
+    },
+  ]);
+  await render(<McpSettings />);
+  await act(async () => {
+    const picker = container.querySelector("select")!;
+    picker.value = "server-a";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("Connection status unavailable.");
+  expect(container.textContent).not.toContain("Credential saved");
+  expect(container.textContent).not.toContain("No OAuth connection");
+  expect(state.rpc.mock.calls.filter((call) => call[0] === "mcp/oauth/begin")).toHaveLength(0);
+});

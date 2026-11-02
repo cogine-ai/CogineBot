@@ -6529,3 +6529,87 @@ msgstr "다른 멤버"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installed by {name}"
 msgstr "{name}님이 설치함"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Browser authorization was not requested."
+msgstr "브라우저 인증이 요청되지 않았습니다."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm connection changes."
+msgstr "연결 변경 사항을 확인하지 못했습니다."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm sign-in. Check status or try again."
+msgstr "로그인을 확인하지 못했습니다. 상태를 확인하거나 다시 시도하세요."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not update this connection."
+msgstr "이 연결을 업데이트하지 못했습니다."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Disable connection"
+msgstr "연결 비활성화"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Discover plugins"
+msgstr "플러그인 찾기"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Edit credentials"
+msgstr "인증 정보 편집"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Enable connection"
+msgstr "연결 활성화"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Leave blank to keep saved credentials."
+msgstr "저장된 인증 정보를 유지하려면 비워 두세요."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "MCP connection"
+msgstr "MCP 연결"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "No plugins found"
+msgstr "플러그인을 찾을 수 없습니다"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Reconnect"
+msgstr "다시 연결"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Registry listings are discovery hints. Review the exact version before installing."
+msgstr "레지스트리 목록은 플러그인 검색을 위한 참고 자료입니다. 설치 전에 정확한 버전을 검토하세요."
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Retry search"
+msgstr "다시 검색"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Save credentials"
+msgstr "인증 정보 저장"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Search plugins"
+msgstr "플러그인 검색"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Set up connections"
+msgstr "연결 설정"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Sign-in required"
+msgstr "로그인 필요"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Some registries are unavailable."
+msgstr "일부 레지스트리를 사용할 수 없습니다."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Add header"
+msgstr "헤더 추가"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Connection status unavailable."
+msgstr "연결 상태를 확인할 수 없습니다."

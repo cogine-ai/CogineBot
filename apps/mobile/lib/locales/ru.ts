@@ -1125,4 +1125,33 @@ export const RU_MESSAGES: Record<string, string> = {
   "Installation failed.": "Установка не удалась.",
   "Another member": "Другой участник",
   "Installed by {name}": "Установлено участником {name}",
+
+  "Browser authorization was not requested.": "Авторизация в браузере не запрашивалась.",
+  "Could not confirm connection changes.": "Не удалось подтвердить изменения подключения.",
+  "Could not confirm sign-in. Check status or try again.":
+    "Не удалось подтвердить вход. Проверьте статус или повторите попытку.",
+  "Could not update this connection.": "Не удалось обновить это подключение.",
+  "Disable connection": "Отключить соединение",
+  "Discover plugins": "Найти плагины",
+  "Edit credentials": "Изменить учётные данные",
+  "Enable connection": "Включить соединение",
+  "Leave blank to keep saved credentials.":
+    "Оставьте пустым, чтобы сохранить текущие учётные данные.",
+  "MCP connection": "Подключение MCP",
+  "No plugins found": "Плагины не найдены",
+  Reconnect: "Подключить повторно",
+  "Registry listings are discovery hints. Review the exact version before installing.":
+    "Списки реестров помогают найти плагины. Проверьте точную версию перед установкой.",
+  "Retry search": "Повторить поиск",
+  "Save credentials": "Сохранить учётные данные",
+  "Search plugins": "Поиск плагинов",
+  "Set up connections": "Настроить подключения",
+  "Sign-in required": "Требуется вход",
+  "Some registries are unavailable.": "Некоторые реестры недоступны.",
+  "Preview {name}": "Предпросмотр: {name}",
+
+  "Add header": "Добавить заголовок",
+  "Header name": "Имя заголовка",
+  "Header value": "Значение заголовка",
+  "Connection status unavailable.": "Статус подключения недоступен.",
 };

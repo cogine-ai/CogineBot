@@ -5,6 +5,34 @@ export const PluginDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const PluginSourceSchema = z.string().min(1).max(2048);
 export const PluginNonceSchema = z.string().min(1).max(128);
 
+/** Discovery metadata is only a hint; install still requires a reviewed SHA and digest. */
+export const PluginMarketplaceEntrySchema = z.object({
+  id: z.string().min(1).max(2200),
+  name: z.string().min(1).max(120),
+  description: z.string().max(4000),
+  keywords: z.array(z.string().max(120)).max(50),
+  registry: z.string().min(1).max(120),
+  source: PluginSourceSchema,
+  installedSource: PluginSourceSchema,
+});
+export type PluginMarketplaceEntry = z.infer<typeof PluginMarketplaceEntrySchema>;
+
+export const PluginSearchInputSchema = z
+  .object({
+    query: z.string().trim().max(200).default(""),
+    cursor: z.string().min(1).max(1024).optional(),
+  })
+  .strict();
+export type PluginSearchInput = z.infer<typeof PluginSearchInputSchema>;
+
+export const PluginSearchResultSchema = z.object({
+  entries: z.array(PluginMarketplaceEntrySchema).max(50),
+  nextCursor: z.string().min(1).max(1024).nullable(),
+  unavailableRegistries: z.array(z.string().min(1).max(120)).max(2),
+  skippedEntries: z.number().int().nonnegative(),
+});
+export type PluginSearchResult = z.infer<typeof PluginSearchResultSchema>;
+
 export const PluginSkippedSchema = z.object({
   kind: z.enum([
     "mcp_stdio",

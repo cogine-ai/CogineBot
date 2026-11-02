@@ -1387,6 +1387,7 @@ export function PluginsOverlay({
                       ownerKey={ownerKey}
                       spaceId={spaceId}
                       onClose={() => setPluginsOpen(false)}
+                      onOpenMcp={onOpenMcp}
                     />
                   ) : null}
                   {catalogFeedEnabled ? (

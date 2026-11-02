@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { PluginInstallReceipt, PluginPreview } from "@rakazo/contracts";
+import type { McpServer, PluginInstallReceipt, PluginPreview } from "@rakazo/contracts";
 import type { EffectCallback, ReactNode } from "react";
 import { act, createElement, useEffect } from "react";
 import type { Root } from "react-dom/client";
@@ -9,6 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   rpc: vi.fn(),
   context: vi.fn(),
+  openURL: vi.fn(),
+  navigate: vi.fn(),
+  focusCleanup: undefined as undefined | (() => void),
   space: "space-a" as string | null,
   session: 1,
   generation: 1,
@@ -36,9 +39,16 @@ vi.mock("./mobile-scope", () => ({
   },
 }));
 vi.mock("expo-router", () => ({
-  useFocusEffect: (callback: EffectCallback) => useEffect(callback, [callback]),
+  useFocusEffect: (callback: EffectCallback) =>
+    useEffect(() => {
+      const cleanup = callback();
+      api.focusCleanup = typeof cleanup === "function" ? cleanup : undefined;
+      return cleanup;
+    }, [callback]),
+  useRouter: () => ({ push: api.navigate }),
 }));
 vi.mock("react-native", () => ({
+  Linking: { openURL: api.openURL },
   ScrollView: ({ children, testID }: { children?: ReactNode; testID?: string }) =>
     createElement("div", { "data-testid": testID }, children),
   View: ({
@@ -149,6 +159,7 @@ let root: Root;
 let node: HTMLDivElement;
 beforeEach(async () => {
   vi.clearAllMocks();
+  api.openURL.mockResolvedValue(undefined);
   api.space = "space-a";
   api.session = 1;
   api.generation = 1;
@@ -182,7 +193,7 @@ function button(label: string) {
 }
 async function input(value: string) {
   await act(async () => {
-    const field = node.querySelector("input")!;
+    const field = node.querySelector<HTMLInputElement>('input[aria-label="Plugin GitHub URL"]')!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
@@ -262,7 +273,9 @@ it("invalidates preview and aborts requests across a Space ABA change", async ()
   await input("https://github.com/example/new");
   await act(async () => resolve(preview));
   expect((request[2] as { signal: AbortSignal }).signal.aborted).toBe(true);
-  expect(node.querySelector("input")!.value).toBe("https://github.com/example/new");
+  expect(node.querySelector<HTMLInputElement>('input[aria-label="Plugin GitHub URL"]')!.value).toBe(
+    "https://github.com/example/new",
+  );
   expect(node.querySelector('[data-testid="plugin-preview"]')).toBeNull();
 });
 
@@ -527,4 +540,258 @@ it("does not restore a revoked member row when cleanup replies after a concurren
   expect(node.textContent).not.toContain("Installed by");
   expect(node.textContent).toContain("No plugins installed");
   expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/uninstall")).toHaveLength(1);
+});
+
+const setupServer = {
+  id: "mcp-one",
+  spaceId: "space-a",
+  slug: "research",
+  name: "Research service",
+  description: "",
+  transport: "sse" as const,
+  endpoint: "https://service.example.test/events",
+  command: null,
+  args: [],
+  envKeys: [],
+  headerKeys: ["Authorization", "X-Workspace"],
+  hasSecret: true,
+  oauthStatus: "none" as const,
+  enabled: false,
+  allowAllTools: false,
+  allowedTools: [],
+  revision: 1,
+  createdAt: "2026-11-01T00:00:00.000Z",
+  updatedAt: "2026-11-01T00:00:00.000Z",
+};
+async function fillField(label: string, value: string) {
+  await act(async () => {
+    const field = node.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+it("opens a discovered entry in the pinned native review without installing or enabling", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  api.rpc.mockImplementation(async (procedure, input, options) =>
+    procedure === "plugins/search"
+      ? {
+          entries: [
+            {
+              id: "registry-one",
+              name: "Research listing",
+              description: "Registry description",
+              source: "https://github.com/example/discovered",
+              installedSource: "https://github.com/example/discovered",
+              registry: "Cursor",
+              keywords: [],
+            },
+          ],
+          nextCursor: null,
+          unavailableRegistries: [],
+          skippedEntries: 0,
+        }
+      : normal(procedure, input, options),
+  );
+  await fillField("Search plugins", "research");
+  await click("Search");
+  await click("Preview Research listing");
+  const previewCall = api.rpc.mock.calls.find((call) => call[0] === "plugins/preview")!;
+  expect(previewCall[1]).toEqual({ source: "https://github.com/example/discovered" });
+  expect(node.textContent).toContain("Research a topic");
+  expect(
+    api.rpc.mock.calls.filter(
+      (call) => call[0] === "plugins/install" || call[0] === "mcp/servers/update",
+    ),
+  ).toHaveLength(0);
+});
+it("uses native credential entry and external OAuth with explicit status readback", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  let current: McpServer = setupServer;
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list")
+      return listing([
+        {
+          ...receipt,
+          mcpServers: [
+            {
+              id: current.id,
+              name: current.name,
+              endpoint: setupServer.endpoint,
+              transport: setupServer.transport,
+            },
+          ],
+        },
+      ]);
+    if (procedure === "mcp/servers/list") return [current];
+    if (procedure === "mcp/servers/update") {
+      current = { ...current, enabled: input.connection.enabled, revision: current.revision + 1 };
+      return current;
+    }
+    if (procedure === "integrationSetup/get")
+      return {
+        canConfigure: true,
+        needsSetup: false,
+        providers: [],
+        webUrl: "https://web.example.test/integrations/setup",
+      };
+    if (procedure === "mcp/oauth/begin")
+      return {
+        status: "authorization_required",
+        sessionId: "mobile-session",
+        authorizationUrl: "https://auth.example.test/authorize",
+      };
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Enable connection");
+  let update = api.rpc.mock.calls.find((call) => call[0] === "mcp/servers/update")!;
+  expect(update[1]).toEqual({ id: setupServer.id, connection: { revision: 1, enabled: true } });
+  await click("Edit credentials");
+  await fillField("Authorization", "fake-mobile-secret");
+  await click("Save credentials");
+  update = api.rpc.mock.calls.filter((call) => call[0] === "mcp/servers/update").at(-1)!;
+  expect(update[1]).toEqual({
+    id: setupServer.id,
+    connection: {
+      revision: 2,
+      enabled: true,
+      headerUpdates: { Authorization: "fake-mobile-secret" },
+    },
+  });
+  expect(node.querySelector('input[aria-label="Authorization"]')).toBeNull();
+  await click("Sign in");
+  expect(api.openURL).toHaveBeenCalledWith("https://auth.example.test/authorize");
+  const begin = api.rpc.mock.calls.find((call) => call[0] === "mcp/oauth/begin")!;
+  expect(begin[1]).toEqual({
+    serverId: setupServer.id,
+    redirectUri: "https://web.example.test/mcp/oauth/callback",
+  });
+  expect(begin[2]).toMatchObject({
+    skipSpaceAuthRecovery: true,
+    requestContext: { headers: { "x-rakazo-space-id": "space-a" } },
+  });
+  expect(node.textContent).toContain("Could not confirm sign-in.");
+  expect(node.textContent).not.toContain("Connected");
+  current = { ...current, oauthStatus: "connected" };
+  await click("Check status");
+  expect(node.textContent).toContain("Connected");
+  await click("Tool access");
+  expect(api.navigate).toHaveBeenCalledWith("/mcp");
+});
+it("does not expose managed member connection credentials on the native route", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  api.rpc.mockImplementation(async (procedure, input, options) =>
+    procedure === "plugins/list"
+      ? listing(
+          [],
+          [
+            {
+              receipt: {
+                ...receipt,
+                mcpServers: [
+                  {
+                    id: setupServer.id,
+                    name: setupServer.name,
+                    endpoint: setupServer.endpoint,
+                    transport: setupServer.transport,
+                  },
+                ],
+              },
+              ownerName: "Alex",
+            },
+          ],
+        )
+      : normal(procedure, input, options),
+  );
+  await click("Refresh");
+  expect(node.textContent).toContain("Installed by Alex");
+  expect(node.textContent).not.toContain("Set up connections");
+});
+
+it("accepts an explicitly named native header when the imported server has no header keys", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const current = { ...setupServer, headerKeys: [] };
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list")
+      return listing([
+        {
+          ...receipt,
+          mcpServers: [
+            {
+              id: current.id,
+              name: current.name,
+              endpoint: setupServer.endpoint,
+              transport: setupServer.transport,
+            },
+          ],
+        },
+      ]);
+    if (procedure === "mcp/servers/list") return [current];
+    if (procedure === "mcp/servers/update")
+      return { ...current, revision: 2, headerKeys: ["X-Api-Key"] };
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Add header");
+  await fillField("Header name", "X-Api-Key");
+  await fillField("Header value", "fake-native-key");
+  await click("Save credentials");
+  const write = api.rpc.mock.calls.find((call) => call[0] === "mcp/servers/update")!;
+  expect(write[1]).toEqual({
+    id: current.id,
+    connection: { revision: 1, enabled: false, headerUpdates: { "X-Api-Key": "fake-native-key" } },
+  });
+  expect(node.querySelector('input[aria-label="Header value"]')).toBeNull();
+});
+
+it("clears native credential forms on route blur while its screen remains mounted", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  const current = { ...setupServer, headerKeys: [] };
+  api.rpc.mockImplementation(async (procedure, input, options) => {
+    if (procedure === "plugins/list")
+      return listing([
+        {
+          ...receipt,
+          mcpServers: [
+            {
+              id: current.id,
+              name: current.name,
+              endpoint: current.endpoint,
+              transport: current.transport,
+            },
+          ],
+        },
+      ]);
+    if (procedure === "mcp/servers/list") return [current];
+    return normal(procedure, input, options);
+  });
+  await click("Refresh");
+  await click("Set up connections");
+  await click("Add header");
+  await fillField("Header name", "X-Api-Key");
+  await fillField("Header value", "fake-unsaved-native");
+  await act(async () => api.focusCleanup?.());
+  expect(node.querySelector('[data-testid="github-plugin-installs"]')).not.toBeNull();
+  expect(node.querySelector('input[aria-label="Header value"]')).toBeNull();
+  expect(node.querySelector('[data-testid="plugin-server-setup"]')).toBeNull();
+  expect(api.rpc.mock.calls.filter((call) => call[0] === "mcp/servers/update")).toHaveLength(0);
+});
+
+it("distinguishes unavailable registry results from a healthy empty catalog", async () => {
+  const normal = api.rpc.getMockImplementation()!;
+  let unavailableRegistries = ["Cursor", "xAI"];
+  api.rpc.mockImplementation(async (procedure, input, options) =>
+    procedure === "plugins/search"
+      ? { entries: [], nextCursor: null, unavailableRegistries, skippedEntries: 0 }
+      : normal(procedure, input, options),
+  );
+  await click("Search");
+  expect(node.textContent).toContain("Some registries are unavailable.");
+  expect(node.textContent).not.toContain("No plugins found");
+  unavailableRegistries = [];
+  await click("Search");
+  expect(node.textContent).toContain("No plugins found");
+  expect(node.textContent).not.toContain("Some registries are unavailable.");
 });

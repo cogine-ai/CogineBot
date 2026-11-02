@@ -15,15 +15,19 @@ import {
   subscribeSelectedSpace,
 } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
+import { PluginDiscovery } from "./PluginDiscovery";
+import { PluginServerSetup } from "./PluginServerSetup";
 
 export function PluginInstallsPanel({
   ownerKey,
   spaceId,
   onClose,
+  onOpenMcp,
 }: {
   ownerKey: string | null;
   spaceId: string | null;
   onClose(): void;
+  onOpenMcp?(): void;
 }) {
   const [, updateSelection] = useState(0);
   useEffect(() => subscribeSelectedSpace(() => updateSelection((value) => value + 1)), []);
@@ -36,13 +40,27 @@ export function PluginInstallsPanel({
   );
   if (!ownerKey || !spaceId) return null;
   return (
-    <PluginInstallsEditor key={JSON.stringify([ownerKey, scope])} scope={scope} onClose={onClose} />
+    <PluginInstallsEditor
+      key={JSON.stringify([ownerKey, scope])}
+      scope={scope}
+      onClose={onClose}
+      onOpenMcp={onOpenMcp}
+    />
   );
 }
 
-function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onClose(): void }) {
+function PluginInstallsEditor({
+  scope,
+  onClose,
+  onOpenMcp,
+}: {
+  scope: RpcRecoveryScope;
+  onClose(): void;
+  onOpenMcp?(): void;
+}) {
   const { t } = useLingui();
   const [state, setState] = useState<PluginInstallReviewState>(initialPluginInstallReview);
+  const [setupId, setSetupId] = useState<string | null>(null);
   const [removal, setRemoval] = useState<PluginInstallReceipt | null>(null);
   const manager = useRef<PluginInstallReview | null>(null);
   useLayoutEffect(() => {
@@ -88,6 +106,11 @@ function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onC
           <Trans>Close</Trans>
         </Button>
       </div>
+      <PluginDiscovery
+        scope={scope}
+        disabled={locked}
+        onPreview={(source) => void manager.current?.preview(source)}
+      />
       <form
         className="flex flex-wrap gap-2"
         onSubmit={(event) => {
@@ -313,6 +336,31 @@ function PluginInstallsEditor({ scope, onClose }: { scope: RpcRecoveryScope; onC
                 {server.name} · {server.endpoint}
               </p>
             ))}
+            {row.status === "installed" &&
+            row.mcpServers.length &&
+            !Object.hasOwn(state.installationOwners, row.id) ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={locked}
+                  onClick={() => setSetupId((id) => (id === row.id ? null : row.id))}
+                >
+                  <Trans>Set up connections</Trans>
+                </Button>
+                {setupId === row.id
+                  ? row.mcpServers.map((server) => (
+                      <PluginServerSetup
+                        key={server.id}
+                        serverId={server.id}
+                        scope={scope}
+                        onOpenMcp={onOpenMcp}
+                        disabled={locked}
+                      />
+                    ))
+                  : null}
+              </>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"

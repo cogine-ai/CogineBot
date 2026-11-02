@@ -121,6 +121,7 @@ export * from "./pi-session.js";
 export * from "./pipedream-connector.js";
 export * from "./platform-model-access.js";
 export * from "./plugin-connectors.js";
+export * from "./plugin-marketplace.js";
 export * from "./private-endpoint.js";
 export * from "./realtime.js";
 export * from "./release-watch.js";

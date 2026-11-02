@@ -1,10 +1,12 @@
 import type { PluginInstallReceipt } from "@rakazo/contracts";
 import type { PluginInstallReview, PluginInstallReviewState } from "@rakazo/core";
 import { createPluginInstallReview, initialPluginInstallReview } from "@rakazo/core";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { NativeActionButton } from "../../components/native-action-button";
+import type { PluginRequests } from "../../components/plugin-setup";
+import { PluginDiscovery, PluginServerSetup } from "../../components/plugin-setup";
 import { captureApiRequestContext, rpc } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
@@ -18,6 +20,9 @@ import { errorText } from "../../lib/user-error";
 
 export default function Plugins() {
   const { t } = useI18n();
+  const router = useRouter();
+  const [client, setClient] = useState<PluginRequests | null>(null);
+  const [setupId, setSetupId] = useState<string | null>(null);
   const styles = useThemedStyles(createStyles);
   const [state, setState] = useState<PluginInstallReviewState>(initialPluginInstallReview);
   const [removal, setRemoval] = useState<PluginInstallReceipt | null>(null);
@@ -38,6 +43,8 @@ export default function Plugins() {
         setRemoval(null);
         setExpanded(new Set());
         setReady(false);
+        setClient(null);
+        setSetupId(null);
         let review: PluginInstallReview | null = null;
         closeOwner = () => {
           active = false;
@@ -88,6 +95,7 @@ export default function Plugins() {
               changed: setState,
             });
             manager.current = review;
+            setClient({ request, isCurrent });
             setReady(true);
             void review.refresh();
           })
@@ -101,6 +109,8 @@ export default function Plugins() {
         focused = false;
         unsubscribe();
         closeOwner();
+        setClient(null);
+        setSetupId(null);
       };
     }, [retry]),
   );
@@ -119,6 +129,14 @@ export default function Plugins() {
       keyboardShouldPersistTaps="handled"
       style={styles.screen}
     >
+      {client ? (
+        <PluginDiscovery
+          key={retry}
+          client={client}
+          disabled={locked}
+          onPreview={(source) => void manager.current?.preview(source)}
+        />
+      ) : null}
       <View style={styles.card}>
         <TextInput
           accessibilityLabel={t("Plugin GitHub URL")}
@@ -318,6 +336,30 @@ export default function Plugins() {
                 {server.name} · {server.endpoint}
               </Text>
             ))}
+            {client &&
+            row.status === "installed" &&
+            row.mcpServers.length &&
+            !Object.hasOwn(state.installationOwners, row.id) ? (
+              <>
+                <NativeActionButton
+                  label={t("Set up connections")}
+                  disabled={locked}
+                  prominence="secondary"
+                  onPress={() => setSetupId((id) => (id === row.id ? null : row.id))}
+                />
+                {setupId === row.id
+                  ? row.mcpServers.map((server) => (
+                      <PluginServerSetup
+                        key={server.id}
+                        serverId={server.id}
+                        client={client}
+                        disabled={locked}
+                        onToolAccess={() => router.push("/mcp")}
+                      />
+                    ))
+                  : null}
+              </>
+            ) : null}
             <View style={styles.actions}>
               <NativeActionButton
                 label={

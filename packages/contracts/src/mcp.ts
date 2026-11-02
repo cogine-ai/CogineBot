@@ -36,3 +36,36 @@ export const McpHeadersSchema = z
       ctx.addIssue({ code: "custom", message: "At most 32 headers are allowed" });
     }
   });
+
+/** A connection edit preserves configuration and separately approved tool access. */
+export const McpConnectionHeadersSchema = McpHeadersSchema.superRefine((headers, context) => {
+  const names = new Set<string>();
+  for (const [name, value] of Object.entries(headers)) {
+    const normalized = name.toLowerCase();
+    if (
+      name.length > 120 ||
+      /^(connection|content-length|host|proxy-authorization|proxy-connection|te|trailer|transfer-encoding|upgrade)$/.test(
+        normalized,
+      ) ||
+      /[\r\n\0]/.test(value) ||
+      names.has(normalized)
+    ) {
+      context.addIssue({ code: "custom", message: "Invalid MCP connection headers" });
+    }
+    names.add(normalized);
+  }
+});
+
+export const PluginServerConnectionInputSchema = z
+  .object({
+    id: z.string().min(1),
+    connection: z
+      .object({
+        revision: z.number().int().positive(),
+        enabled: z.boolean(),
+        headerUpdates: McpConnectionHeadersSchema.optional(),
+      })
+      .strict(),
+  })
+  .strict();
+export type PluginServerConnectionInput = z.infer<typeof PluginServerConnectionInputSchema>;

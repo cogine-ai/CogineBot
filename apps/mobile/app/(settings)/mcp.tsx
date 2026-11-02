@@ -171,13 +171,15 @@ export default function McpSettings() {
               {selected.transport} · {selected.endpoint ?? selected.command ?? selected.slug}
             </Text>
             <Text style={styles.secondary}>
-              {selected.oauthStatus === "connected"
-                ? t("OAuth connected")
-                : selected.oauthStatus === "reconnect"
-                  ? t("OAuth expired")
-                  : selected.hasSecret
-                    ? t("Credential saved")
-                    : t("No OAuth connection")}
+              {selected.oauthStatus === "unknown"
+                ? t("Connection status unavailable.")
+                : selected.oauthStatus === "connected"
+                  ? t("OAuth connected")
+                  : selected.oauthStatus === "reconnect"
+                    ? t("OAuth expired")
+                    : selected.hasSecret
+                      ? t("Credential saved")
+                      : t("No OAuth connection")}
             </Text>
             <View style={styles.switchRow}>
               <Text style={styles.grow}>{t("Share all tools with this space")}</Text>
