@@ -243,52 +243,55 @@ function jsonStringSpans(text: string): { start: number; end: number }[] {
 type TextRedactionPolicy = "diagnostic" | "portable";
 
 type QuotedFieldMatch = { index: number; 0: string; 1: string; 2: string };
+type QuotedFieldSpan = { index: number; closing: number; end: number };
 
-/** Walk each quote kind monotonically; failed candidates cannot rescan a long suffix. */
-function* fieldsWithQuote(text: string, quote: string): Generator<QuotedFieldMatch> {
-  let start = -1;
-  for (let index = 0; index < text.length; index++) {
-    if (start < 0) {
-      if (text[index] === quote) start = index;
-      continue;
+/** Cache viable suffixes, including the shorter escape when a doubled quote cannot finish. */
+function* fieldsWithQuote(
+  text: string,
+  quote: string,
+  separatorEnds: Uint32Array,
+): Generator<QuotedFieldSpan> {
+  const firstQuote = text.indexOf(quote);
+  if (firstQuote < 0) return;
+  const closingAfter = new Uint32Array(text.length + 3);
+  for (let index = text.length - 1; index > firstQuote; index--) {
+    const character = text[index];
+    if (character === quote) {
+      const closing = separatorEnds[index] ? index + 1 : 0;
+      closingAfter[index] =
+        quote === "'" && text[index + 1] === "'" ? closingAfter[index + 2]! || closing : closing;
+    } else if (character !== "\\") {
+      closingAfter[index] = closingAfter[index + 1]!;
+    } else if (index + 1 < text.length && !/[\r\n\u2028\u2029]/.test(text[index + 1]!)) {
+      closingAfter[index] =
+        quote === "'" && text[index + 1] === "'" && text[index + 2] === "'"
+          ? closingAfter[index + 3]! || closingAfter[index + 2]!
+          : closingAfter[index + 2]!;
     }
-    if (text[index] === "\\") {
-      index += quote === "'" && text.slice(index + 1, index + 3) === "''" ? 2 : 1;
-      continue;
-    }
+  }
+  // Keep all starts: an earlier match of the other quote kind can hide an overlapping candidate.
+  for (let index = firstQuote; index < text.length; index++) {
     if (text[index] !== quote) continue;
-    if (quote === "'" && text[index + 1] === "'") {
-      index++;
-      continue;
-    }
-    QUOTED_FIELD_SEPARATOR.lastIndex = index + 1;
-    const separator = QUOTED_FIELD_SEPARATOR.exec(text);
-    if (!separator) {
-      // A closing quote without a separator may open the next actual field.
-      start = index;
-      continue;
-    }
-    const end = QUOTED_FIELD_SEPARATOR.lastIndex;
-    const match = {
-      index: start,
-      0: text.slice(start, end),
-      1: text.slice(start, index + 1),
-      2: separator[0],
-    };
-    start = -1;
-    index = end - 1;
-    yield match;
+    const closing = closingAfter[index + 1]!;
+    if (closing) yield { index, closing, end: separatorEnds[closing - 1]! };
   }
 }
 
 function* quotedFields(text: string): Generator<QuotedFieldMatch> {
-  const single = fieldsWithQuote(text, "'");
-  const double = fieldsWithQuote(text, '"');
+  if (!text.includes("'") && !text.includes('"')) return;
+  const separatorEnds = new Uint32Array(text.length);
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] !== "'" && text[index] !== '"') continue;
+    QUOTED_FIELD_SEPARATOR.lastIndex = index + 1;
+    if (QUOTED_FIELD_SEPARATOR.exec(text)) separatorEnds[index] = QUOTED_FIELD_SEPARATOR.lastIndex;
+  }
+  const single = fieldsWithQuote(text, "'", separatorEnds);
+  const double = fieldsWithQuote(text, '"', separatorEnds);
   let a = single.next();
   let b = double.next();
   let end = 0;
   while (!a.done || !b.done) {
-    let match: QuotedFieldMatch;
+    let match: QuotedFieldSpan;
     if (b.done || (!a.done && a.value.index < b.value.index)) {
       match = a.value!;
       a = single.next();
@@ -297,8 +300,13 @@ function* quotedFields(text: string): Generator<QuotedFieldMatch> {
       b = double.next();
     }
     if (match.index < end) continue;
-    end = match.index + match[0].length;
-    yield match;
+    end = match.end;
+    yield {
+      index: match.index,
+      0: text.slice(match.index, match.end),
+      1: text.slice(match.index, match.closing),
+      2: text.slice(match.closing, match.end),
+    };
   }
 }
 

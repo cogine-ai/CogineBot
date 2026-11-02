@@ -65,17 +65,27 @@ describe("portable credential redaction", () => {
     expect(redactSecretText(value)).toBe(value);
   });
 
-  it.each(["'pa''ssword'", "'pass\\u0077ord'", '"pass\\u0077ord"'])(
-    "retains quoted credential-key coverage for %s",
-    (key) => {
-      for (const redact of [redactSecretText, redactSensitiveText]) {
-        const cleaned = redact(`${key}: SYNTHETIC_PRIVATE_VALUE\nnext: safe`);
+  it.each([
+    "'pa''ssword'",
+    "'pass\\u0077ord'",
+    '"pass\\u0077ord"',
+    String.fromCharCode(39) + "password" + String.fromCharCode(92, 39, 39),
+    `"x'y": ''password'`,
+  ])("retains quoted credential-key coverage for %s", (key) => {
+    for (const redact of [redactSecretText, redactSensitiveText]) {
+      const raw = `${key}: SYNTHETIC_PRIVATE_VALUE\nnext: safe`;
+      for (const input of [
+        raw,
+        JSON.stringify({ note: raw }),
+        JSON.stringify({ note: JSON.stringify({ note: raw }) }),
+      ]) {
+        const cleaned = redact(input);
         expect(cleaned).not.toContain("SYNTHETIC_PRIVATE_VALUE");
         expect(cleaned).toContain("next: safe");
         expect(redact(cleaned)).toBe(cleaned);
       }
-    },
-  );
+    }
+  });
 
   it.each([
     "single-quotes",
@@ -86,6 +96,7 @@ describe("portable credential redaction", () => {
     "lf-assignments",
     "cr-assignments",
     "quote-prefix-before-field",
+    "single-quote-fallbacks",
   ])("bounds synchronous work for large %s input without changing its meaning", (kind) => {
     const moduleUrl = new URL("./redaction.ts", import.meta.url).href;
     const script = `
@@ -102,6 +113,9 @@ describe("portable credential redaction", () => {
         'cr-assignments': 'token=x' + String.fromCharCode(13),
         'quote-prefix-before-field': "'".repeat(200000) + String.fromCharCode(10) +
           '"password":"SYNTHETIC_PRIVATE_VALUE"' + String.fromCharCode(10) + 'next: safe',
+        'single-quote-fallbacks': String.fromCharCode(39) + 'password' +
+          String.fromCharCode(92,39,39).repeat(50000) + ': SYNTHETIC_PRIVATE_VALUE' +
+          String.fromCharCode(10) + 'next: safe',
       };
       const assignments = kind.endsWith('-assignments');
       const input = assignments ? inputs[kind].repeat(25000) : inputs[kind];
@@ -110,7 +124,7 @@ describe("portable credential redaction", () => {
         if (assignments) {
           const newline = kind.startsWith('lf') ? String.fromCharCode(10) : String.fromCharCode(13);
           assert.equal(output, ('token=[Redacted]' + newline).repeat(25000));
-        } else if (kind === 'quote-prefix-before-field') {
+        } else if (kind === 'quote-prefix-before-field' || kind === 'single-quote-fallbacks') {
           assert.ok(!output.includes('SYNTHETIC_PRIVATE_VALUE'));
           assert.ok(output.includes('next: safe'));
         } else {
