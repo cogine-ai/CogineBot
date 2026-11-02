@@ -34,6 +34,17 @@ import {
 } from "./bot-package.js";
 import { BotSecretMetadata, BotSecretPutInput, StoredBotSecretName } from "./bot-secrets.js";
 import {
+  DeploymentTransferApproveInput,
+  DeploymentTransferCancelInput,
+  DeploymentTransferCommitInput,
+  DeploymentTransferPreviewInput,
+  DeploymentTransferProposeInput,
+  DeploymentTransferRecentSchema,
+  DeploymentTransferStartInput,
+  DeploymentTransferStatusInput,
+  DeploymentTransferStatusSchema,
+} from "./deployment-transfer.js";
+import {
   ActionApprovalRuleSchema,
   ActionAutoReviewSettingsSchema,
   AgentSecretInputSchema,
@@ -398,6 +409,20 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true), remoteRevocationConfirmed: z.boolean().optional() })),
+  },
+  transfer: {
+    start: oc.input(DeploymentTransferStartInput).output(DeploymentTransferStatusSchema),
+    preview: oc.input(DeploymentTransferPreviewInput).output(DeploymentTransferStatusSchema),
+    propose: oc.input(DeploymentTransferProposeInput).output(DeploymentTransferStatusSchema),
+    approve: oc.input(DeploymentTransferApproveInput).output(DeploymentTransferStatusSchema),
+    commit: oc.input(DeploymentTransferCommitInput).output(DeploymentTransferStatusSchema),
+    status: oc
+      .input(DeploymentTransferStatusInput)
+      .output(DeploymentTransferStatusSchema.nullable()),
+    recent: oc
+      .input(z.object({ botId: Id }))
+      .output(z.array(DeploymentTransferRecentSchema).max(20)),
+    cancel: oc.input(DeploymentTransferCancelInput).output(DeploymentTransferStatusSchema),
   },
   botPackages: {
     preview: oc.input(BotPackagePreviewInput).output(BotPackagePreviewSchema),

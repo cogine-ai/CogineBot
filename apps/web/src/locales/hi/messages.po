@@ -6776,3 +6776,257 @@ msgstr "यह आयातित बॉट हटा दिया गया ह
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "पैकेज का पूर्वावलोकन"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "पहुँच बदल गई है"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "खातों का मिलान"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "इस स्थानांतरण को मंज़ूरी दें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "गंतव्य पर दोबारा अनुमति दें।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "समीक्षा के बाद बदल गया है।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "आगे बढ़ने से पहले स्थिति जाँचें।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "HTTPS डिप्लॉयमेंट का पता चुनें।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "क्रेडेंशियल चुनें"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "अपना स्रोत बॉट चुनें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "यह स्थानांतरण जारी रखें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "मंज़ूर क्रेडेंशियल कॉपी करें"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "पासवर्ड और API कुंजियाँ कॉपी करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "कॉपी हो रहा है…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "नतीजे की पुष्टि नहीं हुई है। आगे बढ़ने से पहले स्थिति जाँचें।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "कॉपी नहीं हो सका"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "प्राप्ति अनुरोध बनाएँ"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "क्रेडेंशियल की सीमा पूरी हो गई"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "समय समाप्त"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "समाप्ति समय"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "अतिरिक्त साइन-इन तरीके स्रोत पर ही रहेंगे।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "फ़िंगरप्रिंट"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "जारी रखें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "गंतव्य को रखा गया"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "अभी पुष्टि नहीं मिली है। स्थिति जाँचें या प्राप्तकर्ता डिप्लॉयमेंट से पेयरिंग दोबारा खोलें।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth के लिए गंतव्य पर अनुमति देनी होगी। TOTP और 1Password टोकन स्रोत पर ही रहेंगे।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "केवल न भेजे गए आइटम रुकेंगे। प्राप्त आइटम गंतव्य पर ही रहेंगे।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "स्रोत डिप्लॉयमेंट खोलें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "आंशिक रूप से कॉपी हुआ"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "कॉपी करने के लिए तैयार"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "पासवर्ड और API कुंजियाँ प्राप्त करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "हाल के स्थानांतरण"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "बॉट दोबारा लोड करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "{0} बदलें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "गंतव्य बदलें"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "क्रेडेंशियल की समीक्षा करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "चयन की समीक्षा करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "स्थानांतरण की समीक्षा करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "{0} चुनें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "चयन मंज़ूरी के लिए भेजें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "छोड़ दिया गया"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "स्रोत"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "स्रोत बॉट"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "स्रोत के क्रेडेंशियल वहीं रहेंगे। प्राप्त आइटम वापस नहीं लिए जा सकते।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "स्रोत डिप्लॉयमेंट"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "स्थिति की पुष्टि नहीं हुई"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "स्थानांतरण रोकें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "न भेजे गए आइटम रोकें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "गंतव्य"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "स्रोत की सुरक्षा के लिए गंतव्य को रखा गया है।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "इस प्रकार का क्रेडेंशियल स्रोत पर ही रहेगा।"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "यह स्थानांतरण लिंक मान्य नहीं है।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "कॉपी किए जाने हैं"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "असमर्थित क्रेडेंशियल"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "समीक्षा अपडेट करें"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "स्रोत की प्रतीक्षा है"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "गंतव्य की प्रतीक्षा है"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "लिखने की अनुमति समाप्त हो गई है। मौजूदा नतीजे अब भी जाँचे जा सकते हैं।"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "रोकने का फिर प्रयास करें"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "कॉपी हो गया"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "रोक दिया गया"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "गंतव्य पर बदला गया"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "गंतव्य पर हटाया गया"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "लक्ष्य की स्थिति की पुष्टि नहीं हुई"

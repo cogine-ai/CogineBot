@@ -12,6 +12,7 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretRecord,
+  SecretResourceIdentity,
   SecretStore,
   SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
@@ -83,6 +84,22 @@ export class EncryptedSecretStore extends SecretChanges implements SecretStore {
 
   prepareWrite(recordId: string): string {
     return ENCRYPTED_RECOVERY_PREFIX + createHash("sha256").update(recordId).digest("hex");
+  }
+
+  resourceIdentity(ref: string, context: SecretContext): SecretResourceIdentity {
+    if (typeof context !== "string") context.signal?.throwIfAborted();
+    if (ref.startsWith(ENCRYPTED_RECOVERY_PREFIX)) {
+      const recordId = typeof context === "string" ? context : context.recordId;
+      return ref === this.prepareWrite(recordId) ? { kind: "inline" } : { kind: "unknown" };
+    }
+    if (ref.startsWith(VERSION_PREFIX)) return { kind: "inline" };
+    // Legacy inline ciphertext has no scheme. Unknown provider schemes are not inline.
+    if (
+      /^[A-Za-z0-9+/]+={0,2}$/.test(ref) &&
+      Buffer.from(ref, "base64").length >= IV_BYTES + TAG_BYTES
+    )
+      return { kind: "inline" };
+    return { kind: "unknown" };
   }
 
   async reconcileWrite(

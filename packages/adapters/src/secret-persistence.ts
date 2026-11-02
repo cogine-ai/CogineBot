@@ -23,6 +23,11 @@ async function cleanupUnreferenced(
         (await prisma.nativeAppConfig.count({
           where: { ciphertext: row.ciphertext },
         })) ||
+        (await prisma.deploymentIdentity.count({ where: { ciphertext: row.ciphertext } })) ||
+        (await prisma.deploymentTransferSession.count({ where: { ciphertext: row.ciphertext } })) ||
+        (await prisma.deploymentTransferItem.count({
+          where: { OR: [{ ciphertext: row.ciphertext }, { recoveryRef: row.ciphertext }] },
+        })) ||
         (
           await prisma.$queryRaw<Array<{ referenced: boolean }>>(
             Prisma.sql`/*native-hook:credential-reference*/ SELECT (EXISTS(SELECT 1 FROM native_notion_hooks WHERE ciphertext=${row.ciphertext}) OR EXISTS(SELECT 1 FROM native_slack_hooks WHERE ciphertext=${row.ciphertext})) AS referenced`,
@@ -72,7 +77,18 @@ const secretTables = {
   NativeAppConfig: "native_app_configs",
   NativeNotionHook: "native_notion_hooks",
   NativeSlackHook: "native_slack_hooks",
+  DeploymentIdentity: "deployment_identities",
+  DeploymentTransferSession: "deployment_transfer_sessions",
+  DeploymentTransferItem: "deployment_transfer_items",
 };
+const separateAadModels: ReadonlySet<string> = new Set([
+  "NativeAppConfig",
+  "NativeNotionHook",
+  "NativeSlackHook",
+  "DeploymentIdentity",
+  "DeploymentTransferSession",
+  "DeploymentTransferItem",
+]);
 const parentTables = { User: "user", Space: "spaces", Bot: "bots", Organization: "organization" };
 
 /** Cleanup is coordinated with the DB transaction, including parent cascades.
@@ -92,13 +108,18 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
     state: Cleanup,
     model: string,
     where?: Record<string, unknown>,
+    deleting = false,
+    unique = false,
   ): Promise<Candidate[]> {
     const client = state.client!;
     const delegateName = model[0]!.toLowerCase() + model.slice(1);
     const delegate = Reflect.get(client, delegateName);
-    const rows = (await Reflect.apply(delegate.findMany, delegate, [
-      { where, select: { id: true } },
-    ])) as Array<{ id: string }>;
+    const selected = await Reflect.apply(
+      unique ? delegate.findUnique : delegate.findMany,
+      delegate,
+      [{ where, select: { id: true } }],
+    );
+    const rows = (unique ? (selected ? [selected] : []) : selected) as Array<{ id: string }>;
     if (!rows.length) return [];
     const table =
       secretTables[model as keyof typeof secretTables] ??
@@ -106,17 +127,25 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
     // Static table allowlist; values remain bound parameters. Locks capture the actual
     // replaced ref even if another writer committed between selection and the lock.
     const fields =
-      model === "NativeAppConfig" || model === "NativeNotionHook" || model === "NativeSlackHook"
-        ? Prisma.raw('id, ciphertext, "secretRecordId"')
-        : model in secretTables
-          ? Prisma.raw("id, ciphertext")
-          : Prisma.raw("id");
-    const locked = await client.$queryRaw<Array<Candidate & { secretRecordId?: string | null }>>(
+      model === "DeploymentTransferItem"
+        ? Prisma.raw('id, ciphertext, "secretRecordId", "recoveryRef"')
+        : separateAadModels.has(model)
+          ? Prisma.raw('id, ciphertext, "secretRecordId"')
+          : model in secretTables
+            ? Prisma.raw("id, ciphertext")
+            : Prisma.raw("id");
+    const locked = await client.$queryRaw<
+      Array<Candidate & { secretRecordId?: string | null; recoveryRef?: string | null }>
+    >(
       Prisma.sql`SELECT ${fields} FROM ${Prisma.raw(`"${table}"`)} WHERE id IN (${Prisma.join(rows.map((row) => row.id))}) ORDER BY id FOR UPDATE`,
     );
-    return model === "NativeAppConfig" ||
-      model === "NativeNotionHook" ||
-      model === "NativeSlackHook"
+    if (
+      model === "DeploymentTransferItem" &&
+      deleting &&
+      locked.some((row) => row.ciphertext || row.recoveryRef)
+    )
+      throw new Error("Reconcile the pending credential write before removing its receipt");
+    return separateAadModels.has(model)
       ? locked
           .filter((row) => row.ciphertext && row.secretRecordId)
           .map((row) => ({ id: row.secretRecordId!, ciphertext: row.ciphertext }))
@@ -137,9 +166,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
           id:
             model === "IntegrationProviderConfig"
               ? `integration-provider:${id}`
-              : model === "NativeAppConfig" ||
-                  model === "NativeNotionHook" ||
-                  model === "NativeSlackHook"
+              : separateAadModels.has(model)
                 ? String(value.secretRecordId ?? "")
                 : id,
           ciphertext: value.ciphertext,
@@ -161,7 +188,13 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
             ...(await lockedRows(state, "NativeSlackHook", { config: { is: input.where ?? {} } })),
           );
         }
-        const old = await lockedRows(state, model, input.where);
+        const old = await lockedRows(
+          state,
+          model,
+          input.where,
+          operation.startsWith("delete"),
+          operation === "update" || operation === "delete" || operation === "upsert",
+        );
         state.old.push(
           ...old.map((row) =>
             model === "IntegrationProviderConfig"
@@ -172,7 +205,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
       }
       return;
     }
-    const parents = await lockedRows(state, model, input.where);
+    const parents = await lockedRows(state, model, input.where, false, operation === "delete");
     let filter: Record<string, unknown> = {
       [model === "User" ? "userId" : model === "Space" ? "spaceId" : "botId"]: {
         in: parents.map((row) => row.id),

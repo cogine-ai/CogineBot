@@ -2,6 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { LinkFavicons } from "@rakazo/chat-ui/web";
 import { LinkFaviconsContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
 import { LOCAL_SETTINGS_PAGE } from "@rakazo/contracts";
+import { parseDeploymentTransferPage } from "@rakazo/core";
 import { Button, Skeleton } from "@rakazo/ui-web";
 import {
   lazy,
@@ -12,7 +13,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Navigate, Outlet, Route, Routes, useSearchParams } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
@@ -58,6 +59,22 @@ const ArtifactsPage = lazy(() =>
 const BoardPage = lazy(() =>
   import("./pages/Board").then((module) => ({ default: module.BoardPage })),
 );
+const DeploymentTransferPage = lazy(() =>
+  import("./pages/DeploymentTransfer").then((module) => ({
+    default: module.DeploymentTransferPage,
+  })),
+);
+
+function TransferRoute({ ownerKey }: { ownerKey: string | null }) {
+  const location = useLocation();
+  const path = location.pathname + location.search + location.hash;
+  if (!parseDeploymentTransferPage(path)) return <Navigate to="/app" replace />;
+  return ownerKey ? (
+    <DeploymentTransferPage key={ownerKey} />
+  ) : (
+    <Navigate to={`/sign-in?next=${encodeURIComponent(path)}`} replace />
+  );
+}
 
 function BoardRoute() {
   const enabled = useSyncExternalStore(
@@ -127,6 +144,7 @@ export function App() {
 }
 
 function SessionApp() {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const signInDestination = authDestination(searchParams.get("next"));
   const session = authClient.useSession();
@@ -164,6 +182,9 @@ function SessionApp() {
   }
 
   const user = session.data?.user;
+  const retained = window.location.pathname + window.location.search + window.location.hash;
+  if (!user && location.pathname !== "/sign-in" && parseDeploymentTransferPage(retained))
+    return <Navigate to={`/sign-in?next=${encodeURIComponent(retained)}`} replace />;
   return (
     <div className="h-full" data-rakazo-app-state="ready">
       <Suspense fallback={<div className="h-full bg-background" />}>
@@ -190,6 +211,14 @@ function SessionApp() {
             }
           />
           <Route path="/reset-password" element={<PasswordResetPage />} />
+          <Route
+            path="/transfers/*"
+            element={
+              <TransferRoute
+                ownerKey={user ? `${user.id}:${session.data?.session?.id ?? ""}` : null}
+              />
+            }
+          />
           <Route
             path="/mcp/oauth/callback"
             element={user ? <McpOAuthCallbackPage /> : <Navigate to="/sign-in" replace />}

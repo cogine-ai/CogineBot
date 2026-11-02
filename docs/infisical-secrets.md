@@ -100,3 +100,11 @@ store instance pointing to the reverse migration. Restore `SECRET_STORE=infisica
 and access to Infisical, then complete the reverse migration before disabling it.
 Forward migration can run alongside normal edits; the Infisical selection reads
 both formats throughout the transition.
+
+Pending credential-transfer writes block changing storage so their recovery references stay usable.
+Finish or stop live transfers first. If the owning account, Space or bot was removed, operators
+can inspect orphaned confirmed writes with
+`pnpm --filter @rakazo/api secrets:infisical --cleanup-orphaned-transfers --dry-run`, then repeat
+without `--dry-run` to retire eligible writes. This separate mode uses the current store, supports
+encrypted-only deployments and does not start a migration. Accepted credentials, restore-fenced
+evidence and unknown reservations are retained. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery).

@@ -6776,3 +6776,257 @@ msgstr "Este bot importado se ha eliminado."
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "Vista previa del paquete"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "El acceso ha cambiado"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "Correspondencia de cuentas"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "Aprobar esta transferencia"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "Vuelve a autorizar en el destino."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "Ha cambiado desde la revisión."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "Comprueba el estado antes de continuar."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "Elige una dirección de despliegue HTTPS."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "Elegir credenciales"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "Elige tu bot de origen"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "Continuar esta transferencia"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "Copiar las credenciales aprobadas"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "Copiar contraseñas y claves API"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "Copiando…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "No se ha confirmado el resultado. Comprueba el estado antes de continuar."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "No se pudo copiar"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "Crear solicitud de recepción"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "Se alcanzó el límite de credenciales"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "Caducado"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "Caduca"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "Los métodos de acceso adicionales permanecen en el origen."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "Huella digital"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "Continuar"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "Se conserva el destino"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "Aún no hay confirmación. Comprueba el estado o vuelve a abrir el emparejamiento desde el despliegue receptor."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth requiere autorización en el destino. Los tokens TOTP y de 1Password permanecen en el origen."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "Solo se detienen los elementos no enviados. Los recibidos permanecen en el destino."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "Abrir el despliegue de origen"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "Copiado parcialmente"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "Listo para copiar"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "Recibir contraseñas y claves API"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "Transferencias recientes"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "Volver a cargar bots"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "Reemplazar {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "Reemplazar el destino"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "Revisar credenciales"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "Revisar selección"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "Revisar transferencia"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "Seleccionar {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "Enviar selección para aprobación"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "Omitido"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "Origen"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "Bot de origen"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "Las credenciales permanecen en el origen. Los elementos recibidos no se pueden retirar."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "Despliegue de origen"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "Estado sin confirmar"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "Detener transferencia"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "Detener elementos no enviados"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "Destino"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "Se conserva el destino para proteger el origen."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "Este tipo de credencial permanece en el origen."
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "Este enlace de transferencia no es válido."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "Por copiar"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "Credencial no compatible"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "Actualizar revisión"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "Esperando al origen"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "Esperando al destino"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "La autorización de escritura ha caducado. Los resultados existentes aún se pueden comprobar."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "Reintentar la detención"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "Copiado"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "Detenido"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "Modificado en el destino"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "Eliminado en el destino"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "Estado en el destino sin confirmar"

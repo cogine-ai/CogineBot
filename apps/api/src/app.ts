@@ -17,6 +17,7 @@ import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import type {
   ComposioProvider,
   ConnectorRegistry,
+  DeploymentTransferPeer,
   DestinationEmulator,
   PluginRead,
   RemoteConnectorDependencies,
@@ -29,6 +30,7 @@ import {
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
+  createDeploymentTransferPeer,
   createJobReconciler,
   createMessagingContextLoader,
   createMessagingTeamChatSender,
@@ -106,6 +108,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createBillingService } from "./billing.js";
 import { mountBillingRoutes } from "./billing-webhook.js";
+import { createDeploymentTransferService } from "./deployment-transfer.js";
+import { mountDeploymentTransferHttp } from "./deployment-transfer-http.js";
 import { mountDiagramScript } from "./diagram-script.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
@@ -181,6 +185,7 @@ export async function createApp(
     secretStore?: SecretStore;
     openApiNow?: () => number;
     pluginRead?: PluginRead;
+    deploymentTransferPeer?: DeploymentTransferPeer;
   } = {},
 ): Promise<AppHandles> {
   const {
@@ -200,6 +205,7 @@ export async function createApp(
     secretStore: secretStoreOverride,
     openApiNow,
     pluginRead,
+    deploymentTransferPeer,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -570,7 +576,14 @@ export async function createApp(
     : undefined;
   reconciler?.start();
 
+  const deploymentTransfer = createDeploymentTransferService({
+    prisma,
+    secrets,
+    origin: env.webOrigin,
+    peer: deploymentTransferPeer ?? createDeploymentTransferPeer(),
+  });
   const router = createRouter({
+    deploymentTransfer,
     pluginRead,
     openApiPreviewKey: env.encryptionKey,
     openApiNow,
@@ -727,6 +740,7 @@ export async function createApp(
     );
   }
   mountApiRequestBodyLimits(app);
+  mountDeploymentTransferHttp(app, deploymentTransfer);
   mountScreenTarget(app, prisma, env.screenProxySecret);
   app.on(["GET", "POST"], "/api/auth/*", async (c) => {
     const path = new URL(c.req.url).pathname.replace("/api/auth", "");
@@ -742,7 +756,7 @@ export async function createApp(
     const actor = await actorFromMembership(
       requireMembership(prisma, session.user.id, request.headers.get("x-rakazo-space-id")),
     );
-    return { actor, sessionId: session.session.id };
+    return { actor, sessionId: session.session.id, sessionUserId: session.user.id };
   };
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
   app.use("/rpc/*", async (c, next) => {
@@ -757,6 +771,7 @@ export async function createApp(
         actor,
         sessionId: session?.sessionId,
         sessionAuthenticated: Boolean(session),
+        sessionUserId: session?.sessionUserId,
         signal: c.req.raw.signal,
         // Same user in the same space, so leaving the space also ends a stream.
         // A database failure rejects this check; only a missing membership is unauthorized.
@@ -1127,6 +1142,7 @@ export async function createApp(
       await email?.drain?.();
       await reconciler?.stop();
       await jobs.close();
+      await deploymentTransfer.close();
       await secrets.close();
       await realtime.close();
       await connector.stop();

@@ -777,6 +777,11 @@ export type SecretWriteReconciliation =
   | { state: "found"; ref: string }
   | { state: "absent" }
   | { state: "unknown" };
+/** Backend-only resource metadata. Never expose fingerprints in model or browser DTOs. */
+export type SecretResourceIdentity =
+  | { kind: "inline" }
+  | { kind: "external"; fingerprint: string; deletionKeyFingerprint: string }
+  | { kind: "unknown" };
 export type SecretChangeListener = (ref: string) => void;
 
 export interface ArtifactPut {

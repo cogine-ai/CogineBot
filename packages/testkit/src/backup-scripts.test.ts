@@ -72,6 +72,7 @@ function fixture() {
   for (const script of [
     "scripts/backup.sh",
     "scripts/restore.sh",
+    "scripts/restore-transfer-fence.sql",
     "infra/compose/backup-prod.sh",
   ]) {
     let source = readFileSync(path.join(repoRoot, script), "utf8");
@@ -119,6 +120,10 @@ if (args[0] === "inspect") {
   console.log("fake custom-format dump");
 } else if (args.includes("psql")) {
   fs.writeFileSync(process.env.SQL_INPUT, fs.readFileSync(0));
+  if (process.env.FAIL_TRANSFER_FENCE === "1" && args.includes("--command")) {
+    console.error("ERROR: transfer write revocation failed");
+    process.exit(3);
+  }
   if (process.env.FAIL_SQL === "1") {
     console.error("ERROR: relation example already exists");
     // psql normally exits successfully after SQL errors unless explicitly told to stop.
@@ -506,6 +511,8 @@ describe("development restore failures", () => {
         ]),
       );
       expect(readFileSync(f.env.SQL_INPUT, "utf8")).toContain("CREATE TABLE example");
+      expect(f.commands().filter((args) => args.includes("psql"))).toHaveLength(1);
+      expect(command!.indexOf("--command")).toBeGreaterThan(command!.indexOf("--file=-"));
       expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe(
         fail ? "current home" : "backed-up home",
       );
@@ -514,6 +521,18 @@ describe("development restore failures", () => {
       if (fail) expect(result.stderr).toContain("already exists");
     },
   );
+
+  it("does not restore files or start services when restored transfer revocation fails", () => {
+    const f = restoreFixture();
+    const result = f.run("scripts/restore.sh", [path.join(f.checkout, "backups/example")], {
+      FAIL_TRANSFER_FENCE: "1",
+    });
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain("transfer write revocation failed");
+    expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe("current home");
+    expect(f.commands().some((args) => args.slice(-2).join(" ") === "up -d")).toBe(false);
+    expect(result.stdout).not.toContain("Restore complete");
+  });
 
   it("fails rather than starting services after an invalid homes archive", () => {
     const f = restoreFixture();

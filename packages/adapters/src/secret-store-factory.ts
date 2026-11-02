@@ -5,6 +5,7 @@ import type {
   RealtimeFanout,
   SecretContext,
   SecretPutOptions,
+  SecretResourceIdentity,
   SecretStore,
   SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
@@ -102,6 +103,10 @@ export class ComposedSecretStore extends SecretChanges implements SecretStore {
   }
   describe() {
     return (this.remote ?? this.encrypted).describe();
+  }
+  resourceIdentity(ref: string, context: SecretContext): SecretResourceIdentity {
+    const store = ref.startsWith(INFISICAL_REF_PREFIX) ? this.remote : this.encrypted;
+    return store?.resourceIdentity?.(ref, context) ?? { kind: "unknown" };
   }
   prepareWrite(recordId: string, options: { ephemeral?: boolean } = {}): string {
     const store = options.ephemeral || !this.remote ? this.encrypted : this.remote;

@@ -28,6 +28,7 @@ export * from "./computer-updates.js";
 export * from "./connection-catalog.js";
 export * from "./connection-selection.js";
 export * from "./cron.js";
+export * from "./deployment-transfer.js";
 export * from "./echo.js";
 export * from "./events.js";
 export * from "./farewell.js";

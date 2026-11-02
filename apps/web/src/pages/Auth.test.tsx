@@ -72,26 +72,33 @@ async function render(mode: "in" | "up" | "forgot" = "in", path = "/sign-in") {
     ),
   );
 }
-it("retains the same native attempt after an SSO cancellation or error and retry", async () => {
-  vi.mocked(fetchAuthCapabilities).mockResolvedValue(capabilities);
-  vi.mocked(authClient.signIn.social).mockResolvedValue({
-    data: null,
-    error: { message: "Cancelled", status: 400, statusText: "Bad Request" },
-  });
-  const kickoff = `/api/connectors/oauth/start?state=${"a".repeat(43)}`;
-  const signIn = `/sign-in?next=${encodeURIComponent(kickoff)}`;
-  for (const path of [signIn, `${signIn}&error=access_denied`]) {
-    await render("in", path);
-    const sso = [...host.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Continue with"),
-    )!;
-    await act(async () => sso.click());
-    expect(authClient.signIn.social).toHaveBeenLastCalledWith(
-      expect.objectContaining({ callbackURL: kickoff, errorCallbackURL: signIn }),
-    );
-  }
-  expect(authClient.signIn.social).toHaveBeenCalledTimes(2);
-});
+it.each([
+  `/api/connectors/oauth/start?state=${"a".repeat(43)}`,
+  `/transfers/source?targetOrigin=https%3A%2F%2Ftarget.example.test&locator=${"a".repeat(43)}`,
+  `/transfers/receive/${"a".repeat(43)}`,
+  "/transfers/receive/request/pending-one",
+])(
+  "retains the same protected destination after SSO cancellation or retry: %s",
+  async (kickoff) => {
+    vi.mocked(fetchAuthCapabilities).mockResolvedValue(capabilities);
+    vi.mocked(authClient.signIn.social).mockResolvedValue({
+      data: null,
+      error: { message: "Cancelled", status: 400, statusText: "Bad Request" },
+    });
+    const signIn = `/sign-in?next=${encodeURIComponent(kickoff)}`;
+    for (const path of [signIn, `${signIn}&error=access_denied`]) {
+      await render("in", path);
+      const sso = [...host.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Continue with"),
+      )!;
+      await act(async () => sso.click());
+      expect(authClient.signIn.social).toHaveBeenLastCalledWith(
+        expect.objectContaining({ callbackURL: kickoff, errorCallbackURL: signIn }),
+      );
+    }
+    expect(authClient.signIn.social).toHaveBeenCalledTimes(2);
+  },
+);
 it("shows no credential form while capabilities load", async () => {
   vi.mocked(fetchAuthCapabilities).mockReturnValue(new Promise(() => undefined));
   await render();

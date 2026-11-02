@@ -59,6 +59,7 @@ import {
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
+  createDeploymentTransferPeer,
   createFaviconResolver,
   createPluginMarketplace,
   createTicket,
@@ -275,6 +276,7 @@ import {
   resolveBusyBotName,
   toComputerStatus,
 } from "./computer-status.js";
+import { createDeploymentTransferService } from "./deployment-transfer.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
 import {
   connectPendingMcpApprovals,
@@ -650,6 +652,7 @@ function mcpAssignmentDto(row: {
 }
 
 export interface RouterDeps {
+  deploymentTransfer?: ReturnType<typeof createDeploymentTransferService>;
   /** Offline public GitHub acquisition boundary for repositories and fixed registries. */
   pluginRead?: PluginRead;
   openApiPreviewKey?: string;
@@ -941,6 +944,8 @@ export function createRouter(deps: RouterDeps) {
     sessionId?: string;
     /** A verified session without a Space still needs membership recovery, not sign-out. */
     sessionAuthenticated?: boolean;
+    /** Server-authenticated user, independent of the currently selected Space. */
+    sessionUserId?: string;
     signal?: AbortSignal;
     /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
     stillAuthorized?: () => Promise<boolean>;
@@ -965,6 +970,14 @@ export function createRouter(deps: RouterDeps) {
   });
   const agentSkills = createAgentSkillsService(deps.prisma);
   const botPackages = createBotPackagesService(deps);
+  const transfer =
+    deps.deploymentTransfer ??
+    createDeploymentTransferService({
+      prisma: deps.prisma,
+      secrets: deps.secrets,
+      origin: deps.env.webOrigin,
+      peer: createDeploymentTransferPeer(),
+    });
   const openApiImports = createOpenApiImportService(deps);
   const pluginUninstaller = createPluginUninstaller({ ...deps, mcpOAuth });
   const pluginInstalls = createPluginInstallsService({
@@ -4472,6 +4485,22 @@ export function createRouter(deps: RouterDeps) {
       remove: authed.agentSkills.remove.handler(async ({ context, input }) =>
         agentSkills.remove(context.actor, input.skillId),
       ),
+    },
+    transfer: {
+      start: os.transfer.start.handler(({ context, input }) => transfer.start(context, input)),
+      preview: os.transfer.preview.handler(({ context, input }) =>
+        transfer.preview(context, input),
+      ),
+      propose: os.transfer.propose.handler(({ context, input }) =>
+        transfer.propose(context, input),
+      ),
+      approve: os.transfer.approve.handler(({ context, input }) =>
+        transfer.approve(context, input),
+      ),
+      commit: os.transfer.commit.handler(({ context, input }) => transfer.commit(context, input)),
+      status: os.transfer.status.handler(({ context, input }) => transfer.status(context, input)),
+      recent: os.transfer.recent.handler(({ context, input }) => transfer.recent(context, input)),
+      cancel: os.transfer.cancel.handler(({ context, input }) => transfer.cancel(context, input)),
     },
     botPackages: {
       preview: authed.botPackages.preview.handler(({ context, input }) =>

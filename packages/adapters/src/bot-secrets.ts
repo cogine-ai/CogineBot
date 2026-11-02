@@ -8,6 +8,7 @@ import {
   commandVariableName,
   commandVariableProblem,
   decodeLoginSecret,
+  encodeLoginSecret,
   isPrivateNetworkHost,
   SecretHttpRequest,
 } from "@rakazo/contracts";
@@ -377,23 +378,13 @@ export async function prepareBotSecret(input: {
   plaintext: string;
 }) {
   const { prisma, secretStore, scope, plaintext } = input;
-  if (!plaintext || plaintext.length > 16_384) throw new Error("Invalid credential length");
   const destination = normalizeSecretDestination(input.destination);
-  if (destination.auth.type === "login") decodeLoginSecret(plaintext);
-  else if (destination.auth.type === "command") {
-    // NUL cannot be an environment value. An unpaired surrogate cannot be percent-encoded
-    // later, and that throw would abort every subsequent shell command for this bot.
-    if (plaintext.includes("\0") || percentEncoded(plaintext) === undefined) {
-      throw new Error(UNUSABLE_CREDENTIAL);
-    }
-  } else credentialHeader(destination, plaintext);
+  validateBotSecretValue(destination, plaintext);
   const existing = await prisma.botSecret.findFirst({
     where: { ...scopeFields(scope), name: destination.name },
   });
   function validate(row: typeof existing, count: number) {
-    if (row && !sameSecretDestination(normalizeSecretDestination(row), destination))
-      throw new Error("Remove the existing credential before changing its destination");
-    if (!row && count >= 100) throw new Error("Credential limit reached");
+    validateBotSecretSlot(row, count, destination);
   }
   validate(existing, await prisma.botSecret.count({ where: scopeFields(scope) }));
   const id = existing?.id ?? randomBytes(12).toString("hex");
@@ -433,6 +424,111 @@ export async function prepareBotSecret(input: {
         });
     },
   };
+}
+
+function validateBotSecretValue(destination: BotSecretDestination, plaintext: string) {
+  if (typeof plaintext !== "string" || !plaintext || plaintext.length > 16_384)
+    throw new Error("Invalid credential length");
+  if (destination.auth.type === "login") return decodeLoginSecret(plaintext);
+  else if (destination.auth.type === "command") {
+    // NUL cannot be an environment value. An unpaired surrogate cannot be percent-encoded
+    // later, and that throw would abort every subsequent shell command for this bot.
+    if (plaintext.includes("\0") || percentEncoded(plaintext) === undefined) {
+      throw new Error(UNUSABLE_CREDENTIAL);
+    }
+  } else credentialHeader(destination, plaintext);
+}
+
+function validateBotSecretSlot(
+  row: { name: string; origin: string; auth: unknown } | null,
+  count: number,
+  destination: BotSecretDestination,
+) {
+  if (row && !sameSecretDestination(normalizeSecretDestination(row), destination))
+    throw new Error("Remove the existing credential before changing its destination");
+  if (!row && count >= 100) throw new Error("Credential limit reached");
+}
+
+/** Transfer only typed credentials; login extras and both protected fields stay out of metadata. */
+export function validateTransferBotSecret(destination: unknown, plaintext: string) {
+  const normalized = normalizeSecretDestination(destination);
+  if (normalized.auth.type === "command")
+    throw new Error("This credential type cannot be transferred");
+  try {
+    const login = validateBotSecretValue(normalized, plaintext);
+    return { destination: normalized, plaintext: login ? encodeLoginSecret(login) : plaintext };
+  } catch {
+    throw new Error(UNUSABLE_CREDENTIAL);
+  }
+}
+
+export type ExpectedBotSecret =
+  | { kind: "absent" }
+  | { kind: "present"; id: string; revision: string };
+
+export class BotSecretConflictError extends Error {
+  constructor() {
+    super("The saved credential changed. Review the transfer again.");
+    this.name = "BotSecretConflictError";
+  }
+}
+
+/** Adopt a provider-prepared value inside the caller's authorization/receipt transaction. No I/O. */
+export async function adoptPreparedBotSecret(
+  tx: Prisma.TransactionClient,
+  input: {
+    scope: BotSecretScope;
+    destination: BotSecretDestination;
+    recordId: string;
+    ciphertext: string;
+    expected: ExpectedBotSecret;
+  },
+): Promise<{ id: string; revision: string }> {
+  const { scope, recordId, ciphertext, expected } = input;
+  if (!recordId || !ciphertext || ciphertext.length > 4_000_000) throw new BotSecretConflictError();
+  const destination = normalizeSecretDestination(input.destination);
+  const bots = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM bots WHERE id=${scope.botId} AND "userId"=${scope.userId}
+      AND "spaceId"=${scope.spaceId} AND "archivedAt" IS NULL FOR UPDATE`;
+  if (bots.length !== 1) throw new BotSecretConflictError();
+  const current = await tx.botSecret.findFirst({
+    where: { ...scopeFields(scope), name: destination.name },
+  });
+  if (
+    (expected.kind === "absent" && current !== null) ||
+    (expected.kind === "present" &&
+      (!current ||
+        current.id !== expected.id ||
+        current.revision !== expected.revision ||
+        recordId !== current.id))
+  )
+    throw new BotSecretConflictError();
+  validateBotSecretSlot(
+    current,
+    await tx.botSecret.count({ where: scopeFields(scope) }),
+    destination,
+  );
+  if (await findCommandVariableConflict(tx, scope, destination)) throw new BotSecretConflictError();
+  if (!current) {
+    return tx.botSecret.create({
+      data: { id: recordId, ...scopeFields(scope), ...destination, ciphertext },
+      select: { id: true, revision: true },
+    });
+  }
+  const changed = await tx.botSecret.updateMany({
+    where: {
+      id: current.id,
+      ...scopeFields(scope),
+      revision: expected.kind === "present" ? expected.revision : "",
+      ciphertext: current.ciphertext,
+    },
+    data: { ciphertext },
+  });
+  if (changed.count !== 1) throw new BotSecretConflictError();
+  return tx.botSecret.findUniqueOrThrow({
+    where: { id: current.id },
+    select: { id: true, revision: true },
+  });
 }
 
 export async function storeBotSecret(input: Parameters<typeof prepareBotSecret>[0]) {

@@ -22,7 +22,7 @@ const context: AdapterContext = {
 };
 type Row = {
   id: string;
-  ciphertext?: string;
+  ciphertext?: string | null;
   userId?: string;
   spaceId?: string;
   botId?: string;
@@ -32,8 +32,11 @@ type Row = {
   allowAllTools?: boolean;
   allowedTools?: string[];
   revision?: number;
-  secretRecordId?: string;
+  secretRecordId?: string | null;
+  recoveryRef?: string | null;
   organizationId?: string;
+  sessionId?: string;
+  itemKey?: string;
 };
 type Args = { where?: Record<string, unknown>; data?: Row; create?: Row; update?: Row };
 type Hook = (input: {
@@ -50,14 +53,20 @@ function database() {
     ["nativeAppConfig", []],
     ["nativeNotionHook", []],
     ["nativeSlackHook", []],
+    ["deploymentIdentity", []],
+    ["deploymentTransferSession", []],
+    ["deploymentTransferItem", []],
     ["user", [{ id: "user" }]],
     ["space", [{ id: "space", organizationId: "organization" }]],
     ["organization", [{ id: "organization" }]],
     ["bot", []],
     ["mcpServer", []],
   ]);
-  const matches = (row: Row, where: Record<string, unknown> = {}) =>
+  const matches = (row: Row, where: Record<string, unknown> = {}): boolean =>
     Object.entries(where).every(([key, value]) => {
+      if (key === "OR")
+        return (value as Record<string, unknown>[]).some((clause) => matches(row, clause));
+      if (key === "sessionId_itemKey") return matches(row, value as Record<string, unknown>);
       const actual = row[key as keyof Row];
       if (value && typeof value === "object" && "in" in value)
         return (value.in as unknown[]).includes(actual);
@@ -67,6 +76,10 @@ function database() {
   for (const [table, rows] of tables) {
     client[table] = {
       findFirst: async (args: Args) => {
+        const row = rows.find((row) => matches(row, args.where));
+        return row ? { ...row } : null;
+      },
+      findUnique: async (args: Args) => {
         const row = rows.find((row) => matches(row, args.where));
         return row ? { ...row } : null;
       },
@@ -91,6 +104,12 @@ function database() {
         }
         rows.push({ ...args.create! });
         return args.create;
+      },
+      delete: async (args: Args) => {
+        const row = rows.find((row) => matches(row, args.where));
+        if (!row) throw new Error("Missing row");
+        rows.splice(rows.indexOf(row), 1);
+        return row;
       },
       deleteMany: async (args: Args) => {
         const removed = rows.filter((row) => matches(row, args.where));
@@ -146,6 +165,9 @@ function database() {
       native_app_configs: "nativeAppConfig",
       native_notion_hooks: "nativeNotionHook",
       native_slack_hooks: "nativeSlackHook",
+      deployment_identities: "deploymentIdentity",
+      deployment_transfer_sessions: "deploymentTransferSession",
+      deployment_transfer_items: "deploymentTransferItem",
       user: "user",
       spaces: "space",
       bots: "bot",
@@ -203,6 +225,181 @@ function database() {
 }
 
 describe("secret persistence cleanup", () => {
+  it.each(["update", "upsert", "delete"] as const)(
+    "captures a compound unique selector and its complete predicate before %s",
+    async (operation) => {
+      const f = database(),
+        fake = infisicalFake(),
+        store = new InfisicalSecretStore(fake.options);
+      const written = await store.put("pending-transfer-value", context, { recordId: "item-aad" });
+      f.tables.get("deploymentTransferItem")!.push({
+        id: "receipt",
+        sessionId: "transfer",
+        itemKey: "item",
+        revision: 1,
+        ciphertext: written.ref,
+        secretRecordId: written.id,
+        recoveryRef: written.ref,
+      });
+      const unique = vi.spyOn(f.prisma.deploymentTransferItem, "findUnique");
+      const many = vi.spyOn(f.prisma.deploymentTransferItem, "findMany").mockImplementation(() => {
+        throw new Error("Compound unique selectors are not list filters");
+      });
+      const prisma = withSecretPersistence(f.prisma, store);
+      const where = { sessionId_itemKey: { sessionId: "transfer", itemKey: "item" }, revision: 1 };
+      const args = {
+        where,
+        ...(operation === "update" ? { data: { revision: 2 } } : {}),
+        ...(operation === "upsert"
+          ? { create: { id: "unexpected-new-receipt" }, update: { revision: 2 } }
+          : {}),
+      };
+      try {
+        const write = () =>
+          Reflect.apply(prisma.deploymentTransferItem[operation], prisma.deploymentTransferItem, [
+            args,
+          ]);
+        if (operation === "delete")
+          await expect(write()).rejects.toThrow("Reconcile the pending credential write");
+        else {
+          await write();
+          expect(f.tables.get("deploymentTransferItem")![0]!.revision).toBe(2);
+          await expect(
+            prisma.deploymentTransferItem.update({
+              where: { ...where, revision: 99 },
+              data: { revision: 3 },
+            }),
+          ).rejects.toThrow("Missing row");
+        }
+        expect(unique).toHaveBeenCalledWith({ where, select: { id: true } });
+        expect(many).not.toHaveBeenCalled();
+        expect(f.tables.get("deploymentTransferItem")).toHaveLength(1);
+        expect(await store.load(written.ref, written.id)).toBe("pending-transfer-value");
+      } finally {
+        await store.close();
+      }
+    },
+  );
+
+  it.each(["deploymentIdentity", "deploymentTransferSession"] as const)(
+    "preserves %s through parent deletion and cleans its explicit deletion with the independent AAD",
+    async (table) => {
+      const f = database(),
+        fake = infisicalFake(),
+        store = new InfisicalSecretStore(fake.options);
+      const prisma = withSecretPersistence(f.prisma, store);
+      const written = await store.put("fake-deployment-material", context, {
+        recordId: "independent-deployment-aad",
+      });
+      await persistPreparedSecret(prisma, store, written, () =>
+        Reflect.apply(prisma[table].create, prisma[table], [
+          {
+            data: { id: "deployment-row", ciphertext: written.ref, secretRecordId: written.id },
+          },
+        ]),
+      );
+      await prisma.user.deleteMany({ where: { id: "user" } });
+      await prisma.space.deleteMany({ where: { id: "space" } });
+      expect(fake.values.size).toBe(1);
+      expect(f.tables.get(table)).toHaveLength(1);
+      await Reflect.apply(prisma[table].deleteMany, prisma[table], [
+        { where: { id: "deployment-row" } },
+      ]);
+      expect(fake.values.size).toBe(0);
+      await store.close();
+    },
+  );
+  it("protects a pending recoveryRef before an actual ref was acknowledged and refuses to discard its receipt", async () => {
+    const f = database(),
+      fake = infisicalFake(),
+      store = new InfisicalSecretStore(fake.options);
+    const prisma = withSecretPersistence(f.prisma, store);
+    const recordId = "reserved-transfer-aad",
+      recoveryRef = store.prepareWrite(recordId);
+    await prisma.deploymentTransferItem.create({
+      data: { id: "item", secretRecordId: recordId, recoveryRef } as never,
+    });
+    const written = await store.put("fake-transfer-value", context, { recordId, recoveryRef });
+    await expect(
+      persistPreparedSecret(prisma, store, written, async () => {
+        throw new Error("synthetic missing adoption acknowledgement");
+      }),
+    ).rejects.toThrow("missing adoption");
+    expect(fake.values.size).toBe(1);
+    await expect(
+      prisma.deploymentTransferItem.deleteMany({ where: { id: "item" } }),
+    ).rejects.toThrow("Reconcile the pending credential write");
+    await prisma.space.deleteMany({ where: { id: "space" } });
+    expect(f.tables.get("deploymentTransferItem")).toHaveLength(1);
+    expect(fake.values.size).toBe(1);
+    await store.close();
+  });
+  it("hands the ref from staging to BotSecret atomically so a later forget can retire it", async () => {
+    const f = database(),
+      fake = infisicalFake(),
+      store = new InfisicalSecretStore(fake.options);
+    const prisma = withSecretPersistence(f.prisma, store);
+    const written = await store.put("fake-transfer-value", context, { recordId: "target-secret" });
+    await prisma.deploymentTransferItem.create({
+      data: { id: "item", ciphertext: written.ref, secretRecordId: written.id } as never,
+    });
+    await persistPreparedSecret(prisma, store, written, () =>
+      prisma.$transaction(async (tx) => {
+        await tx.botSecret.create({
+          data: {
+            id: written.id,
+            ciphertext: written.ref,
+            userId: "user",
+            spaceId: "space",
+            botId: "bot",
+          } as never,
+        });
+        await tx.deploymentTransferItem.update({
+          where: { id: "item" },
+          data: { ciphertext: null, recoveryRef: null, status: "accepted" },
+        });
+      }),
+    );
+    expect(fake.values.size).toBe(1);
+    await prisma.botSecret.deleteMany({ where: { id: written.id } });
+    expect(f.tables.get("deploymentTransferItem")).toHaveLength(1);
+    expect(fake.values.size).toBe(0);
+    await store.close();
+  });
+  it("retains the staged ref when an attempted adoption rolls back", async () => {
+    const f = database(),
+      fake = infisicalFake(),
+      store = new InfisicalSecretStore(fake.options);
+    const prisma = withSecretPersistence(f.prisma, store);
+    const written = await store.put("fake-transfer-value", context, { recordId: "target-secret" });
+    await prisma.deploymentTransferItem.create({
+      data: { id: "item", ciphertext: written.ref, secretRecordId: written.id } as never,
+    });
+    await expect(
+      persistPreparedSecret(prisma, store, written, () =>
+        prisma.$transaction(async (tx) => {
+          await tx.botSecret.create({
+            data: {
+              id: written.id,
+              ciphertext: written.ref,
+              userId: "user",
+              spaceId: "space",
+              botId: "bot",
+            } as never,
+          });
+          await tx.deploymentTransferItem.update({
+            where: { id: "item" },
+            data: { ciphertext: null, recoveryRef: null },
+          });
+          throw new Error("synthetic receipt failure");
+        }),
+      ),
+    ).rejects.toThrow("receipt failure");
+    expect(f.tables.get("botSecret")).toHaveLength(0);
+    expect(f.tables.get("deploymentTransferItem")?.[0]?.ciphertext).toBe(written.ref);
+    expect(fake.values.size).toBe(1);
+    await store.close();
+  });
   it("deletes a replaced ref only after commit and removes refs on row deletion", async () => {
     const fake = infisicalFake();
     const store = new InfisicalSecretStore(fake.options);

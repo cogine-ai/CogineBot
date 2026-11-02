@@ -852,13 +852,19 @@ docker compose --env-file .env \
 
 For backups created by `scripts/backup.sh`, use an empty `rakazo` database in the development
 Compose stack, with application services stopped. The SQL import runs in one transaction and
-stops on the first error, including conflicts with existing tables. Files are restored and
-application services started only after the import succeeds. This script does not consume the
+stops on the first error, including conflicts with existing tables. The same transaction revokes
+old credential-transfer grants and rotates credential revisions, retaining completed receipts and
+unresolved write evidence. Files are restored and application services started only after both
+the import and this fence succeed. This script does not consume the
 production snapshot's custom-format `rakazo.dump` or `appdata.tgz`.
 
 ```bash
 ./scripts/restore.sh backups/<stamp>
 ```
+
+For other database restore tooling, keep application writers stopped and apply
+`scripts/restore-transfer-fence.sql` to the restored database with SQL errors treated as fatal
+before restarting them. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery).
 
 ## Upgrade
 

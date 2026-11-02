@@ -1510,6 +1510,7 @@ model BotSecret {
   origin     String
   auth       Json
   ciphertext String
+  revision   String   @default(dbgenerated("gen_random_uuid()::text"))
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -1517,6 +1518,113 @@ model BotSecret {
   @@index([botId])
   @@index([spaceId])
   @@map("bot_secrets")
+}
+
+/// Deployment keys survive account and Space lifecycle changes.
+model DeploymentIdentity {
+  id             String @id @default("primary")
+  deploymentId   String @unique
+  publicKey      String
+  fingerprint    String
+  ciphertext     String
+  secretRecordId String @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("deployment_identities")
+}
+
+/// Scope ids are provenance, not authority. Unsettled provider writes must survive scope deletion.
+model DeploymentTransferSession {
+  id                   String @id
+  side                 String
+  targetTransferId     String
+  localUserId          String
+  localSpaceId         String
+  localBotId           String
+  localSessionId       String
+  sourceOrigin         String
+  targetOrigin         String
+  sourceDeploymentId   String?
+  sourcePublicKey      String?
+  sourceFingerprint    String?
+  targetDeploymentId   String
+  targetPublicKey      String
+  targetFingerprint    String
+  remoteOwnerId        String?
+  remoteSpaceId        String?
+  remoteBotId          String?
+  remoteOwnerGrantNonce String?
+  localNonce           String
+  peerNonce            String?
+  targetBindingDigest  String
+  proposalDigest       String?
+  planDigest           String?
+  proposalJson         Json?
+  planJson             Json?
+  revision             Int @default(1)
+  status               String @default("created")
+  clientNonce          String
+  requestBinding       String
+  tokenHash            String?
+  ciphertext           String?
+  secretRecordId       String?
+  grantDelivery        String @default("none")
+  acceptedNonce        String?
+  consumedAt           DateTime?
+  expiresAt            DateTime
+  cancelRequestedAt    DateTime?
+  writeRevokedAt       DateTime?
+  writeRevokedReason   String?
+  terminalAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  items                DeploymentTransferItem[]
+
+  @@unique([localUserId, side, clientNonce])
+  @@unique([side, targetOrigin, targetTransferId, localUserId, localSpaceId], map: "deployment_transfer_sessions_peer_owner_key")
+  @@index([localUserId, localSpaceId, updatedAt], map: "deployment_transfer_sessions_owner_updated_idx")
+  @@index([status, expiresAt], map: "deployment_transfer_sessions_status_expires_idx")
+  @@map("deployment_transfer_sessions")
+}
+
+model DeploymentTransferItem {
+  id                     String @id
+  sessionId              String
+  session                DeploymentTransferSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  itemKey                String
+  sourceBotId            String
+  sourceSecretId         String
+  sourceRevision         String
+  targetBotId            String?
+  targetName             String
+  origin                 String
+  auth                   Json
+  expectedTargetId       String?
+  expectedTargetRevision String?
+  decision               String
+  status                 String @default("pending")
+  revision               Int @default(1)
+  writeState             String @default("none")
+  dispatchClaimId        String? @unique
+  writeFence             Int @default(0)
+  claimedAt              DateTime?
+  secretRecordId         String?
+  recoveryRef            String?
+  ciphertext             String?
+  targetSecretId         String?
+  acceptedRevision       String?
+  acceptedAt             DateTime?
+  receiptJson            Json?
+  cleanupState           String @default("none")
+  reasonCode             String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([sessionId, itemKey])
+  @@index([writeState, updatedAt])
+  @@index([recoveryRef])
+  @@map("deployment_transfer_items")
 }
 
 

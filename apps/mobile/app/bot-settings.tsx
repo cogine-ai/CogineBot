@@ -54,6 +54,11 @@ const NativeBotPackageTools = lazy(() =>
     default: module.NativeBotPackageTools,
   })),
 );
+const NativeDeploymentTransferTools = lazy(() =>
+  import("../components/deployment-transfer-tools").then((module) => ({
+    default: module.NativeDeploymentTransferTools,
+  })),
+);
 
 type BotSettingsRecord = MobileBot & {
   description?: string;
@@ -674,6 +679,11 @@ export default function BotSettingsScreen() {
           onPress={() => void save()}
           style={{ marginTop: 24 }}
         />
+        {bot ? (
+          <Suspense fallback={null}>
+            <NativeDeploymentTransferTools botId={bot.id} />
+          </Suspense>
+        ) : null}
         {bot ? (
           <NativeActionButton
             label={t("Bot package")}

@@ -13,7 +13,10 @@ const capability = vi.hoisted(() => ({
   peek: vi.fn<() => Promise<unknown> | undefined>(),
   take: vi.fn<() => Promise<unknown>>(),
   pathname: "",
-  userId: "user-1",
+  search: "",
+  pending: false,
+  transferMounted: vi.fn(),
+  userId: "user-1" as string | null,
   sessionId: "session-1",
   ownerSync: vi.fn(),
   navigationType: "",
@@ -34,8 +37,10 @@ vi.mock("./lib/bootstrap", () => ({
 vi.mock("./lib/auth", () => ({
   authClient: {
     useSession: () => ({
-      isPending: false,
-      data: { user: { id: capability.userId }, session: { id: capability.sessionId } },
+      isPending: capability.pending,
+      data: capability.userId
+        ? { user: { id: capability.userId }, session: { id: capability.sessionId } }
+        : null,
       refetch: vi.fn(),
     }),
   },
@@ -63,6 +68,16 @@ vi.mock("./pages/Board", () => {
   capability.boardLoaded();
   return { BoardPage: () => <div>Board page</div> };
 });
+vi.mock("./pages/DeploymentTransfer", () => ({
+  DeploymentTransferPage: () => {
+    capability.transferMounted();
+    return <div>Transfer page</div>;
+  },
+}));
+vi.mock("./pages/Auth", () => ({
+  AuthPage: () => <div>Sign in</div>,
+  PasswordResetPage: () => null,
+}));
 vi.mock("./pages/IntegrationSetup", () => ({ IntegrationSetupPage: () => null }));
 vi.mock("./pages/LocalSettings", () => ({ LocalSettingsPage: () => null }));
 vi.mock("./pages/McpOAuthCallback", () => ({ McpOAuthCallbackPage: () => null }));
@@ -76,6 +91,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   capability.userId = "user-1";
   capability.sessionId = "session-1";
+  capability.pending = false;
+  capability.transferMounted.mockClear();
   capability.ownerSync.mockClear();
   capability.enabled = undefined;
   capability.listeners.clear();
@@ -88,11 +105,13 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root?.unmount());
   root = undefined;
+  window.history.replaceState({}, "", "/");
   vi.unstubAllGlobals();
 });
 
 function LocationProbe() {
   capability.pathname = useLocation().pathname;
+  capability.search = useLocation().search;
   capability.navigationType = useNavigationType();
   return null;
 }
@@ -209,4 +228,47 @@ it("publishes account and exact session changes including A to B to A to the tra
     ["authenticated", "user-2", "session-2"],
     ["authenticated", "user-1", "session-1"],
   ]);
+});
+
+it.each([
+  `/transfers/receive/${"a".repeat(43)}`,
+  `/transfers/source/${"a".repeat(43)}`,
+  "/transfers/receive/request/pending-receipt",
+])("opens an authenticated transfer receipt independently of Shell and Board: %s", async (path) => {
+  const loaded = capability.boardLoaded.mock.calls.length;
+  await renderAt(path);
+  expect(container.textContent).toBe("Transfer page");
+  expect(capability.shellRendered).not.toHaveBeenCalled();
+  expect(capability.boardLoaded).toHaveBeenCalledTimes(loaded);
+});
+it("retains a pending receipt through anonymous sign-in instead of losing its request", async () => {
+  capability.userId = null;
+  const path = "/transfers/source/request/pending-receipt";
+  await renderAt(path);
+  expect(capability.pathname).toBe("/sign-in");
+  expect(new URLSearchParams(capability.search).get("next")).toBe(path);
+  expect(capability.transferMounted).not.toHaveBeenCalled();
+});
+it("holds a transfer URL during session loading without an authentication redirect", async () => {
+  capability.userId = null;
+  capability.pending = true;
+  const path = `/transfers/receive/${"a".repeat(43)}`;
+  await renderAt(path);
+  expect(capability.pathname).toBe(path);
+  expect(capability.transferMounted).not.toHaveBeenCalled();
+});
+
+it("keeps the stored request address when authentication leaves before its route settles", async () => {
+  const retained = "/transfers/receive/request/in-flight-before-login";
+  window.history.replaceState({}, "", retained);
+  capability.userId = null;
+  await renderAt("/app/bot-1");
+  expect(capability.pathname).toBe("/sign-in");
+  expect(new URLSearchParams(capability.search).get("next")).toBe(retained);
+});
+
+it("rejects a transfer page fragment instead of treating it as pairing input", async () => {
+  await renderAt(`/transfers/receive/${"a".repeat(43)}#unexpected`);
+  expect(capability.pathname).toBe("/app");
+  expect(capability.transferMounted).not.toHaveBeenCalled();
 });

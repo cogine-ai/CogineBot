@@ -8,11 +8,27 @@ const tables = [
   "nativeAppConfig",
   "nativeNotionHook",
   "nativeSlackHook",
+  "deploymentIdentity",
+  "deploymentTransferSession",
 ] as const;
+const separateAadTables: ReadonlySet<string> = new Set([
+  "nativeAppConfig",
+  "nativeNotionHook",
+  "nativeSlackHook",
+  "deploymentIdentity",
+  "deploymentTransferSession",
+]);
 
 export function createSecretMigrationRepository(prisma: PrismaClient): SecretMigrationRepository {
   return {
     async *rows() {
+      // Prepared external writes cannot be moved or forgotten while their outcome is unknown.
+      if (
+        await prisma.deploymentTransferItem.count({
+          where: { OR: [{ recoveryRef: { not: null } }, { ciphertext: { not: null } }] },
+        })
+      )
+        throw new Error("Settle pending credential transfers before changing secret storage");
       for (const label of tables) {
         let cursor: string | undefined;
         while (true) {
@@ -31,16 +47,13 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
           }>;
           for (const row of batch) {
             if (!row.ciphertext) continue;
-            if (
-              (label === "nativeAppConfig" ||
-                label === "nativeNotionHook" ||
-                label === "nativeSlackHook") &&
-              !row.secretRecordId
-            )
+            if (separateAadTables.has(label) && !row.secretRecordId)
               throw new Error(
                 label === "nativeNotionHook" || label === "nativeSlackHook"
                   ? "Native webhook material has no SecretStore identity"
-                  : "Native application material has no SecretStore identity",
+                  : label === "deploymentIdentity" || label === "deploymentTransferSession"
+                    ? "Deployment material has no SecretStore identity"
+                    : "Native application material has no SecretStore identity",
               );
             yield {
               id: row.id,
@@ -49,12 +62,13 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
               recordId:
                 label === "integrationProviderConfig"
                   ? `integration-provider:${row.id}`
-                  : label === "nativeAppConfig" ||
-                      label === "nativeNotionHook" ||
-                      label === "nativeSlackHook"
+                  : separateAadTables.has(label)
                     ? row.secretRecordId!
                     : row.id,
-              ephemeral: row.kind?.startsWith("run-secret:"),
+              ephemeral:
+                label === "deploymentIdentity" ||
+                label === "deploymentTransferSession" ||
+                row.kind?.startsWith("run-secret:"),
             };
           }
           if (batch.length < 100) break;
@@ -69,11 +83,7 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
           where: {
             id: row.id,
             ciphertext: row.ref,
-            ...(row.label === "nativeAppConfig" ||
-            row.label === "nativeNotionHook" ||
-            row.label === "nativeSlackHook"
-              ? { secretRecordId: row.recordId }
-              : {}),
+            ...(separateAadTables.has(row.label) ? { secretRecordId: row.recordId } : {}),
           },
           data: { ciphertext: ref },
         },
@@ -91,7 +101,12 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
             where: { ciphertext: ref },
           })) ||
           (await prisma.nativeNotionHook.count({ where: { ciphertext: ref } })) ||
-          (await prisma.nativeSlackHook.count({ where: { ciphertext: ref } })),
+          (await prisma.nativeSlackHook.count({ where: { ciphertext: ref } })) ||
+          (await prisma.deploymentIdentity.count({ where: { ciphertext: ref } })) ||
+          (await prisma.deploymentTransferSession.count({ where: { ciphertext: ref } })) ||
+          (await prisma.deploymentTransferItem.count({
+            where: { OR: [{ ciphertext: ref }, { recoveryRef: ref }] },
+          })),
       );
     },
   };
@@ -101,5 +116,5 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
 export function secretMigrationReportIdentity(
   row: Pick<SecretMigrationRow, "id" | "label">,
 ): string {
-  return `${row.label} ${row.label === "nativeNotionHook" || row.label === "nativeSlackHook" ? "[redacted]" : row.id}`;
+  return `${row.label} ${["nativeNotionHook", "nativeSlackHook", "deploymentIdentity", "deploymentTransferSession"].includes(row.label) ? "[redacted]" : row.id}`;
 }
