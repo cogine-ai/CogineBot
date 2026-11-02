@@ -119,7 +119,7 @@ export function resolveSkillContent(input: {
   };
 }
 
-export function createAgentSkillsService(prisma: PrismaClient) {
+export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill">) {
   async function owned(actor: Actor, skillId: string) {
     const row = await prisma.agentSkill.findFirst({
       where: {

@@ -199,7 +199,7 @@ function rawKeyStart(text: string, end: number, boundary: number): number {
   return identifierStart;
 }
 
-function redactNamedValues(text: string, json: boolean): string {
+function jsonStringSpans(text: string): { start: number; end: number }[] {
   const encodedStrings: { start: number; end: number }[] = [];
   for (const token of text.matchAll(JSON_STRING)) {
     try {
@@ -209,6 +209,13 @@ function redactNamedValues(text: string, json: boolean): string {
       // Invalid quoted diagnostics remain inspectable as raw text.
     }
   }
+  return encodedStrings;
+}
+
+type TextRedactionPolicy = "diagnostic" | "portable";
+
+function redactNamedValues(text: string, json: boolean, policy: TextRedactionPolicy): string {
+  const encodedStrings = jsonStringSpans(text);
   const jsonContainers: { start: number; end: number }[] = [];
   let stringIndex = 0;
   for (let index = 0; index < text.length; index += 1) {
@@ -256,7 +263,14 @@ function redactNamedValues(text: string, json: boolean): string {
       if (!key) continue;
     }
     const normalized = normalizeKey(key);
-    if (!SECRET_KEY.test(normalized) && !(json && normalized === "email")) continue;
+    const portableKeyAssignment =
+      policy === "portable" && !json && match[0].trim() === "=" && /[_-]keys?$/i.test(key);
+    if (
+      !SECRET_KEY.test(normalized) &&
+      !portableKeyAssignment &&
+      !(json && policy === "diagnostic" && normalized === "email")
+    )
+      continue;
     const separator = (json ? match[2]! : match[0]).trim();
     if (
       /^(?:is\b|->)/i.test(separator) &&
@@ -265,7 +279,11 @@ function redactNamedValues(text: string, json: boolean): string {
     )
       continue;
     const start = match.index + match[0].length;
-    if (!json && TOKEN_COUNT_KEY.test(normalized) && NUMERIC_VALUE.test(text.slice(start)))
+    if (
+      (!json || policy === "portable") &&
+      TOKEN_COUNT_KEY.test(normalized) &&
+      NUMERIC_VALUE.test(text.slice(start))
+    )
       continue;
     const blockEnd = blockScalarEnd(text, start, index);
     let next = blockEnd ?? valueEnd(text, start);
@@ -334,8 +352,40 @@ function redactPrivateKeyBlocks(text: string): string {
   return output + text.slice(end);
 }
 
-function redactText(text: string, depth: number): string {
-  const named = redactNamedValues(redactPrivateKeyBlocks(text).replace(EMAIL, REDACTED), true);
+const PORTABLE_SECRET =
+  /\bom[dg]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bxox[abposr]-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|\bLLM\|\d{6,}\|[A-Za-z0-9_-]{16,}|\bAIza[0-9A-Za-z_-]{30,}|\bnpm_[A-Za-z0-9]{20,}/g;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:'"?#]*:)([^\s/'"?#]+)(@)/gi;
+const SECRET_FLAG =
+  /--(?:token|password|passwd|api-key|apikey|secret|access-key|auth-token)(?:=|[ \t]+)/gi;
+
+function redactSecretFlags(text: string): string {
+  const encodedStrings = jsonStringSpans(text);
+  let stringIndex = 0;
+  let end = 0;
+  let output = "";
+  for (const match of text.matchAll(SECRET_FLAG)) {
+    while (encodedStrings[stringIndex] && encodedStrings[stringIndex]!.end <= match.index)
+      stringIndex += 1;
+    const encoded = encodedStrings[stringIndex];
+    if (encoded && encoded.start < match.index && match.index < encoded.end) continue;
+    const start = match.index + match[0].length;
+    if (text.slice(start, start + 2) === "--") continue;
+    const next = valueEnd(text, start);
+    if (next <= start || ["''", '""'].includes(text.slice(start, next))) continue;
+    output += text.slice(end, start) + REDACTED;
+    end = next;
+  }
+  return output + text.slice(end);
+}
+
+function redactText(text: string, depth: number, policy: TextRedactionPolicy): string {
+  let prepared = redactPrivateKeyBlocks(text);
+  if (policy === "diagnostic") prepared = prepared.replace(EMAIL, REDACTED);
+  else {
+    prepared = prepared.replace(PORTABLE_SECRET, REDACTED).replace(URL_PASSWORD, `$1${REDACTED}$3`);
+    prepared = redactSecretFlags(prepared);
+  }
+  const named = redactNamedValues(prepared, true, policy);
   const decoded = named.replace(JSON_STRING, (token) => {
     let value: string;
     try {
@@ -344,15 +394,21 @@ function redactText(text: string, depth: number): string {
       return token;
     }
     // Uninspectable deeper encoded values must not pass through with credentials intact.
-    const cleaned = depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1);
+    const cleaned =
+      depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1, policy);
     return cleaned === value ? token : JSON.stringify(cleaned);
   });
-  const headers = redactNamedValues(decoded, false);
+  const headers = redactNamedValues(decoded, false, policy);
   return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, `$1${REDACTED}`);
 }
 
 export function redactSensitiveText(text: string): string {
-  return redactText(text, 0);
+  return redactText(text, 0, "diagnostic");
+}
+
+/** Remove recognized credential material while preserving ordinary portable content, including email. */
+export function redactSecretText(text: string): string {
+  return redactText(text, 0, "portable");
 }
 
 function normalizeKey(key: string): string {

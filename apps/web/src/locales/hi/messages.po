@@ -6613,3 +6613,166 @@ msgstr "हेडर जोड़ें"
 #: src/components/integrations/PluginServerSetup.tsx
 msgid "Connection status unavailable."
 msgstr "कनेक्शन की स्थिति उपलब्ध नहीं है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot imported"
+msgstr "बॉट आयात हो गया"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot package or Grok JSON"
+msgstr "बॉट पैकेज या Grok JSON"
+
+#: src/components/BotPackageImport.tsx
+msgid "Cancel import"
+msgstr "आयात रद्द करें"
+
+#: src/components/BotPackageTools.tsx
+msgid "Check imported skills"
+msgstr "आयातित कौशल जाँचें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose package file"
+msgstr "पैकेज फ़ाइल चुनें"
+
+#: src/components/BotPackageTools.tsx
+msgid "Clear selection"
+msgstr "चयन हटाएँ"
+
+#: src/components/BotPackageDocumentView.tsx
+msgid "Connections"
+msgstr "कनेक्शन"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not confirm import. Check status before trying again."
+msgstr "आयात की पुष्टि नहीं हो सकी। दोबारा प्रयास करने से पहले स्थिति जाँचें।"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Could not enable skill. Check status or choose another name."
+msgstr "कौशल सक्षम नहीं हो सका। स्थिति जाँचें या दूसरा नाम चुनें।"
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not export this package."
+msgstr "यह पैकेज निर्यात नहीं हो सका।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not load recent imports."
+msgstr "हाल के आयात लोड नहीं हो सके।"
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not load skills."
+msgstr "कौशल लोड नहीं हो सके।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not preview this package."
+msgstr "इस पैकेज का पूर्वावलोकन नहीं हो सका।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
+msgstr "यह पैकेज पढ़ा नहीं जा सका। अधिकतम 4 MiB की UTF-8 JSON फ़ाइल उपयोग करें।"
+
+#: src/components/BotPackageTools.tsx
+msgid "Download package"
+msgstr "पैकेज डाउनलोड करें"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enable shared skill"
+msgstr "साझा कौशल सक्षम करें"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enabling a skill shares it with your bots in this space."
+msgstr "कौशल सक्षम करने पर वह इस स्पेस में आपके सभी बॉट के साथ साझा होगा।"
+
+#: src/components/BotPackageTools.tsx
+msgid "Export package"
+msgstr "पैकेज निर्यात करें"
+
+#: src/components/BotPackageTools.tsx
+msgid "Exporting…"
+msgstr "निर्यात हो रहा है…"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import another bot"
+msgstr "दूसरा बॉट आयात करें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import as new bot"
+msgstr "नए बॉट के रूप में आयात करें"
+
+#: src/components/BotPackageImport.tsx
+#: src/pages/shell/bot-panel.tsx
+msgid "Import bot"
+msgstr "बॉट आयात करें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import cancelled."
+msgstr "आयात रद्द कर दिया गया।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import needs attention."
+msgstr "आयात पर ध्यान देने की आवश्यकता है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported bot name"
+msgstr "आयातित बॉट का नाम"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Imported skills"
+msgstr "आयातित कौशल"
+
+#: src/components/BotPackageImport.tsx
+#: src/components/BotPackageTools.tsx
+msgid "Include memory"
+msgstr "स्मृति शामिल करें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Models, credentials, files, and chat history are not imported."
+msgstr "मॉडल, क्रेडेंशियल, फ़ाइलें और चैट इतिहास आयात नहीं होते।"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Pending"
+msgstr "लंबित"
+
+#: src/components/BotPackageImport.tsx
+msgid "Recent imports"
+msgstr "हाल के आयात"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Removed"
+msgstr "हटाया गया"
+
+#: src/components/BotPackageImport.tsx
+msgid "Resume import"
+msgstr "आयात जारी रखें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Review import"
+msgstr "आयात की समीक्षा करें"
+
+#: src/components/BotPackageTools.tsx
+msgid "Search shared skills"
+msgstr "साझा कौशल खोजें"
+
+#. placeholder {0}: selection.size
+#: src/components/BotPackageTools.tsx
+msgid "Selected skills: {0}"
+msgstr "चुने गए कौशल: {0}"
+
+#: src/components/BotPackageTools.tsx
+msgid "Shared skills (optional)"
+msgstr "साझा कौशल (वैकल्पिक)"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Skill name"
+msgstr "कौशल का नाम"
+
+#: src/components/BotPackageImport.tsx
+msgid "Skills stay off. Routines stay paused. Connections need setup."
+msgstr "कौशल बंद और रूटीन रुके रहेंगे। कनेक्शन अलग से सेट करने होंगे।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This imported bot was removed."
+msgstr "यह आयातित बॉट हटा दिया गया है।"
+
+#: src/components/BotPackageTools.tsx
+msgid "Preview package"
+msgstr "पैकेज का पूर्वावलोकन"

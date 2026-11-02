@@ -6613,3 +6613,166 @@ msgstr "Header hinzufügen"
 #: src/components/integrations/PluginServerSetup.tsx
 msgid "Connection status unavailable."
 msgstr "Verbindungsstatus nicht verfügbar."
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot imported"
+msgstr "Bot importiert"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot package or Grok JSON"
+msgstr "Bot-Paket oder Grok-JSON"
+
+#: src/components/BotPackageImport.tsx
+msgid "Cancel import"
+msgstr "Import abbrechen"
+
+#: src/components/BotPackageTools.tsx
+msgid "Check imported skills"
+msgstr "Importierte Skills prüfen"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose package file"
+msgstr "Paketdatei auswählen"
+
+#: src/components/BotPackageTools.tsx
+msgid "Clear selection"
+msgstr "Auswahl aufheben"
+
+#: src/components/BotPackageDocumentView.tsx
+msgid "Connections"
+msgstr "Verbindungen"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not confirm import. Check status before trying again."
+msgstr "Import konnte nicht bestätigt werden. Prüfe vor einem erneuten Versuch den Status."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Could not enable skill. Check status or choose another name."
+msgstr "Skill konnte nicht aktiviert werden. Prüfe den Status oder wähle einen anderen Namen."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not export this package."
+msgstr "Dieses Paket konnte nicht exportiert werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not load recent imports."
+msgstr "Letzte Importe konnten nicht geladen werden."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not load skills."
+msgstr "Skills konnten nicht geladen werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not preview this package."
+msgstr "Dieses Paket konnte nicht in der Vorschau angezeigt werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
+msgstr "Paket konnte nicht gelesen werden. Verwende eine UTF-8-JSON-Datei bis 4 MiB."
+
+#: src/components/BotPackageTools.tsx
+msgid "Download package"
+msgstr "Paket herunterladen"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enable shared skill"
+msgstr "Geteilten Skill aktivieren"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enabling a skill shares it with your bots in this space."
+msgstr "Ein aktivierter Skill steht deinen Bots in diesem Space gemeinsam zur Verfügung."
+
+#: src/components/BotPackageTools.tsx
+msgid "Export package"
+msgstr "Paket exportieren"
+
+#: src/components/BotPackageTools.tsx
+msgid "Exporting…"
+msgstr "Wird exportiert…"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import another bot"
+msgstr "Weiteren Bot importieren"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import as new bot"
+msgstr "Als neuen Bot importieren"
+
+#: src/components/BotPackageImport.tsx
+#: src/pages/shell/bot-panel.tsx
+msgid "Import bot"
+msgstr "Bot importieren"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import cancelled."
+msgstr "Import abgebrochen."
+
+#: src/components/BotPackageImport.tsx
+msgid "Import needs attention."
+msgstr "Der Import muss geprüft werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported bot name"
+msgstr "Name des importierten Bots"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Imported skills"
+msgstr "Importierte Skills"
+
+#: src/components/BotPackageImport.tsx
+#: src/components/BotPackageTools.tsx
+msgid "Include memory"
+msgstr "Erinnerungen einschließen"
+
+#: src/components/BotPackageImport.tsx
+msgid "Models, credentials, files, and chat history are not imported."
+msgstr "Modelle, Zugangsdaten, Dateien und Chatverlauf werden nicht importiert."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Pending"
+msgstr "Ausstehend"
+
+#: src/components/BotPackageImport.tsx
+msgid "Recent imports"
+msgstr "Letzte Importe"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Removed"
+msgstr "Entfernt"
+
+#: src/components/BotPackageImport.tsx
+msgid "Resume import"
+msgstr "Import fortsetzen"
+
+#: src/components/BotPackageImport.tsx
+msgid "Review import"
+msgstr "Import prüfen"
+
+#: src/components/BotPackageTools.tsx
+msgid "Search shared skills"
+msgstr "Geteilte Skills suchen"
+
+#. placeholder {0}: selection.size
+#: src/components/BotPackageTools.tsx
+msgid "Selected skills: {0}"
+msgstr "Ausgewählte Skills: {0}"
+
+#: src/components/BotPackageTools.tsx
+msgid "Shared skills (optional)"
+msgstr "Geteilte Skills (optional)"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Skill name"
+msgstr "Skill-Name"
+
+#: src/components/BotPackageImport.tsx
+msgid "Skills stay off. Routines stay paused. Connections need setup."
+msgstr "Skills bleiben deaktiviert, Routinen pausiert. Verbindungen müssen eingerichtet werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "This imported bot was removed."
+msgstr "Dieser importierte Bot wurde entfernt."
+
+#: src/components/BotPackageTools.tsx
+msgid "Preview package"
+msgstr "Paketvorschau"

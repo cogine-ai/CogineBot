@@ -21,6 +21,17 @@ import {
   TicketSchema,
   UpdateTicketInput,
 } from "./board.js";
+import {
+  BotPackageActivateSkillInput,
+  BotPackageExportInput,
+  BotPackageExportSchema,
+  BotPackageImportInput,
+  BotPackageNonceSchema,
+  BotPackagePreviewInput,
+  BotPackagePreviewSchema,
+  BotPackageReceiptSchema,
+  BotPackageRecentReceiptSchema,
+} from "./bot-package.js";
 import { BotSecretMetadata, BotSecretPutInput, StoredBotSecretName } from "./bot-secrets.js";
 import {
   ActionApprovalRuleSchema,
@@ -387,6 +398,23 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true), remoteRevocationConfirmed: z.boolean().optional() })),
+  },
+  botPackages: {
+    preview: oc.input(BotPackagePreviewInput).output(BotPackagePreviewSchema),
+    import: oc.input(BotPackageImportInput).output(BotPackageReceiptSchema),
+    status: oc
+      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .output(BotPackageReceiptSchema.nullable()),
+    recent: oc.output(z.array(BotPackageRecentReceiptSchema)),
+    forBot: oc.input(z.object({ botId: Id })).output(BotPackageReceiptSchema.nullable()),
+    resume: oc
+      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .output(BotPackageReceiptSchema),
+    cancel: oc
+      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .output(BotPackageReceiptSchema),
+    activateSkill: oc.input(BotPackageActivateSkillInput).output(BotPackageReceiptSchema),
+    export: oc.input(BotPackageExportInput).output(BotPackageExportSchema),
   },
   bots: {
     list: oc.output(z.array(BotSchema)),

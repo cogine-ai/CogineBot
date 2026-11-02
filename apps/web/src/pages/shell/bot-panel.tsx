@@ -41,6 +41,7 @@ import {
   Toggle,
 } from "@rakazo/ui-web";
 import { X } from "lucide-react";
+import type { ComponentProps, ReactNode } from "react";
 import {
   lazy,
   Suspense,
@@ -51,6 +52,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { BotPackageImport } from "../../components/BotPackageImport";
 import { ErrorBoundary, SectionLoadFailed } from "../../components/ErrorBoundary";
 import { botProfilePatch } from "../../lib/bot-profile-patch";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
@@ -111,12 +113,14 @@ export function CreateBotForm({
   onOpen,
   onConnectEmail,
   onCancel,
+  packageImport,
 }: {
   creation: ReturnType<typeof createBotCreation>;
   onCreated: (receipt: BotCreationReceipt) => void;
   onOpen: (bot: Bot) => void;
   onConnectEmail: () => void;
   onCancel: () => void;
+  packageImport?: Omit<ComponentProps<typeof BotPackageImport>, "onCancel">;
 }) {
   const { t } = useLingui();
   const ids = useId();
@@ -136,6 +140,7 @@ export function CreateBotForm({
   }, []);
   const [receipt, setReceipt] = useState<BotCreationReceipt | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [importingPackage, setImportingPackage] = useState(false);
   function edit(patch: Partial<BotCreationDraft>) {
     draftRef.current = { ...draftRef.current, ...patch };
     version.current += 1;
@@ -192,6 +197,8 @@ export function CreateBotForm({
   }
   const { name, title, description, instructions, computerMode } = draft;
   const confirmed = creation.status() === "confirmed";
+  if (importingPackage && packageImport)
+    return <BotPackageImport {...packageImport} onCancel={() => setImportingPackage(false)} />;
   return (
     <div data-testid="create-bot-form">
       <div className="mb-4 flex items-center justify-between">
@@ -202,6 +209,15 @@ export function CreateBotForm({
           <X size={16} strokeWidth={1.8} />
         </Button>
       </div>
+      {packageImport ? (
+        <Button
+          variant="outline"
+          disabled={submitting || creation.status() !== "idle"}
+          onClick={() => setImportingPackage(true)}
+        >
+          <Trans>Import bot</Trans>
+        </Button>
+      ) : null}
       <div className="mb-4 grid gap-2" data-testid="bot-template-choices">
         {BOT_TEMPLATES.map((choice) => (
           <Button
@@ -341,6 +357,7 @@ export function BotSettings({
   onSave,
   onExport,
   onClear,
+  packageTools,
 }: {
   bot: Bot;
   onSkillsChange: (skills: AgentSkillCatalogEntry[]) => void;
@@ -366,6 +383,7 @@ export function BotSettings({
   }) => Promise<void>;
   onExport: () => Promise<void>;
   onClear: () => void;
+  packageTools?: ReactNode;
 }) {
   const { t } = useLingui();
   const [advancedOpened, setAdvancedOpened] = useState(false);
@@ -1084,6 +1102,7 @@ export function BotSettings({
             <Trans>Save</Trans>
           )}
         </Button>
+        {packageTools}
         <Button variant="ghost" size="sm" className="-ms-2.5" onClick={() => void onExport()}>
           <Trans>Export</Trans>
         </Button>

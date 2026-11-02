@@ -143,6 +143,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
+import { BotPackageTools } from "../components/BotPackageTools";
 import { CloudAgentCard } from "../components/CloudAgentCard";
 import { ComputerMaintenanceActions } from "../components/ComputerMaintenanceActions";
 import {
@@ -6050,6 +6051,23 @@ export function ShellPage() {
                 onCreated={publishCreatedBot}
                 onOpen={openCreatedBot}
                 onConnectEmail={() => setCreationAppsEditor(botCreationEditor)}
+                packageImport={
+                  creationSpaceId
+                    ? {
+                        spaceId: creationSpaceId,
+                        isCurrent: botCreationEditor.isCurrent,
+                        onImported: () => {
+                          void refreshBots().catch(() => undefined);
+                        },
+                        onOpen: (botId) => {
+                          if (!botCreationEditor.isCurrent()) return;
+                          navigate(`/app/${botId}`);
+                          setPanel(null);
+                        },
+                        onConnections: () => setCreationAppsEditor(botCreationEditor),
+                      }
+                    : undefined
+                }
                 onCancel={() => setPanel(null)}
               />
             ) : null}
@@ -6058,6 +6076,16 @@ export function ShellPage() {
                 key={active.id}
                 bot={active}
                 memoryProviderConfigured={memoryProviderConfig != null}
+                packageTools={
+                  creationSpaceId === active.spaceId ? (
+                    <BotPackageTools
+                      key={`${creationScope.scopeKey}:${active.id}`}
+                      botId={active.id}
+                      spaceId={active.spaceId}
+                      isCurrent={creationScope.scopeCurrent}
+                    />
+                  ) : undefined
+                }
                 onSkillsChange={setAgentSkills}
                 onSave={async ({ computerMode, ...patch }) => {
                   if (computerMode !== undefined && computerMode !== active.computerMode) {
