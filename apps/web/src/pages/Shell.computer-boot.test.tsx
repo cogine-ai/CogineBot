@@ -2543,8 +2543,10 @@ it("keeps one message-jump intent while routine metadata refreshes during an aro
   await render();
   await act(async () => navigate("/app/chief?m=card"));
   expect(jump.requests).toHaveLength(1);
+  const routineReadsBeforeStreamEnd = jump.routineReads();
+  expect(routineReadsBeforeStreamEnd).toBeGreaterThan(0);
   await act(async () => jump.streamEnded.resolve());
-  expect(jump.routineReads()).toBeGreaterThan(0);
+  expect(jump.routineReads()).toBeGreaterThan(routineReadsBeforeStreamEnd);
   expect(jump.requests).toHaveLength(1);
   await act(async () => jump.resolve(0));
   expect(jump.scrolled).toContain("card");

@@ -609,6 +609,7 @@ function redactSecretFlags(text: string): string {
   let end = 0;
   let output = "";
   for (const match of text.matchAll(SECRET_FLAG)) {
+    if (match.index < end) continue;
     while (encodedStrings[stringIndex] && encodedStrings[stringIndex]!.end <= match.index)
       stringIndex += 1;
     const encoded = encodedStrings[stringIndex];

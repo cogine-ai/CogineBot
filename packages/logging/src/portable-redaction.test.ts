@@ -60,6 +60,92 @@ describe("portable credential redaction", () => {
     expect(redactSecretText(cleaned)).toBe(cleaned);
   });
 
+  it.each([
+    "--token '--password first SYNTHETIC_PRIVATE_VALUE'",
+    "--token '--password=first SYNTHETIC_PRIVATE_VALUE'",
+    "--token='--password first SYNTHETIC_PRIVATE_VALUE'",
+    "--secret '--api-key=first SYNTHETIC_PRIVATE_VALUE'",
+    "--password '--token first SYNTHETIC_PRIVATE_VALUE'",
+    "--token '\t--password first --api-key second SYNTHETIC_PRIVATE_VALUE'",
+    "--token '--PASSWORD\tfirst SYNTHETIC_PRIVATE_VALUE'",
+    "--token '''--password first SYNTHETIC_PRIVATE_VALUE'''",
+    "--token 'before\\' --password first SYNTHETIC_PRIVATE_VALUE'",
+    "--token '--password \"first SYNTHETIC_PRIVATE_VALUE\"'",
+    '--token "--password first SYNTHETIC_PRIVATE_VALUE"',
+  ])("does not restore a consumed credential value containing another flag: %s", (raw) => {
+    const value = `${raw}\nnext: safe`;
+    for (const input of [
+      value,
+      JSON.stringify({ note: value }),
+      JSON.stringify({ note: JSON.stringify({ note: value }) }),
+    ]) {
+      const cleaned = redactSecretText(input);
+      expect(cleaned).not.toContain("SYNTHETIC_PRIVATE_VALUE");
+      expect(cleaned).toContain("next: safe");
+      expect(redactSecretText(cleaned)).toBe(cleaned);
+    }
+  });
+
+  it("still redacts separate credential flags after a consumed value", () => {
+    const value =
+      "--token '--password first SYNTHETIC_PRIVATE_VALUE'--api-key=SECOND_PRIVATE_VALUE\nnext: safe";
+    expect(redactSecretText(value)).toBe("--token [Redacted]--api-key=[Redacted]\nnext: safe");
+  });
+
+  it.each([
+    ["token: 123456", "123456"],
+    ["token=123456", "123456"],
+    ["TOKEN is 123456", "123456"],
+    ["token -> 123456", "123456"],
+    ['"token": 123456', "123456"],
+    ["'token': 123456", "123456"],
+    ['{"token":123456,"next":"safe"}', "123456"],
+    ['{"to\\u006ben":123456,"next":"safe"}', "123456"],
+    ['"token": "123456"', "123456"],
+    ["token: 0", "0"],
+    ["token: +.5", "+.5"],
+    ["token: -1e3", "-1e3"],
+  ])(
+    "masks singular numeric token credentials rather than treating them as counts: %s",
+    (raw, secret) => {
+      for (const redact of [redactSecretText, redactSensitiveText]) {
+        for (const input of [
+          raw,
+          JSON.stringify({ note: raw }),
+          JSON.stringify({ note: JSON.stringify({ note: raw }) }),
+        ]) {
+          const cleaned = redact(input);
+          expect(cleaned).toContain("[Redacted]");
+          expect(cleaned).not.toContain(secret);
+          expect(redact(cleaned)).toBe(cleaned);
+        }
+      }
+    },
+  );
+
+  it.each([
+    "max_tokens",
+    "minimumTokens",
+    "prompt_tokens",
+    "completionTokens",
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "reasoning_tokens",
+    "cached_tokens",
+    "tokenCount",
+    "tokens_limit",
+    "tokens_used",
+    "token_usage",
+    "tokens",
+    "usage",
+  ])("preserves ordinary portable numeric %s counters", (key) => {
+    const raw = `${key}=123456; next=safe`;
+    const json = JSON.stringify({ [key]: 123456, next: "safe" });
+    expect(redactSecretText(raw)).toBe(raw);
+    expect(redactSecretText(json)).toBe(json);
+  });
+
   it("preserves short prefix examples and ordinary key names", () => {
     const value = `npm_${"a".repeat(19)} AIza${"a".repeat(29)} hotkey=example keyboard=example`;
     expect(redactSecretText(value)).toBe(value);
@@ -145,6 +231,7 @@ describe("portable credential redaction", () => {
     "quote-prefix-before-field",
     "single-quote-fallbacks",
     "multiline-keys",
+    "nested-secret-flags",
   ])("bounds synchronous work for large %s input without changing its meaning", (kind) => {
     const moduleUrl = new URL("./redaction.ts", import.meta.url).href;
     const script = `
@@ -167,16 +254,20 @@ describe("portable credential redaction", () => {
         'multiline-keys': "? 'pass" + String.fromCharCode(92,10) + "  word'" +
           String.fromCharCode(10) + ': SYNTHETIC_PRIVATE_VALUE' + String.fromCharCode(10) +
           'next: safe' + String.fromCharCode(10),
+        'nested-secret-flags': "--token '" + '--password first '.repeat(12000) +
+          "SYNTHETIC_PRIVATE_VALUE'" + String.fromCharCode(10) + 'next: safe',
       };
       const assignments = kind.endsWith('-assignments');
       const input = assignments ? inputs[kind].repeat(25000) :
         kind === 'multiline-keys' ? inputs[kind].repeat(3000) : inputs[kind];
-      for (const redact of [redactSecretText, redactSensitiveText]) {
+      const policies = kind === 'nested-secret-flags' ? [redactSecretText] :
+        [redactSecretText, redactSensitiveText];
+      for (const redact of policies) {
         const output = redact(input);
         if (assignments) {
           const newline = kind.startsWith('lf') ? String.fromCharCode(10) : String.fromCharCode(13);
           assert.equal(output, ('token=[Redacted]' + newline).repeat(25000));
-        } else if (['quote-prefix-before-field','single-quote-fallbacks','multiline-keys'].includes(kind)) {
+        } else if (['quote-prefix-before-field','single-quote-fallbacks','multiline-keys','nested-secret-flags'].includes(kind)) {
           assert.ok(!output.includes('SYNTHETIC_PRIVATE_VALUE'));
           assert.ok(output.includes('next: safe'));
         } else {
