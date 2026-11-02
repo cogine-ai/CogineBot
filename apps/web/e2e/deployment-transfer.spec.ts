@@ -153,6 +153,10 @@ test("protected transfer review binds both approvals and restores uncertain rece
   ).toBeDisabled();
   await panel.getByRole("button", { name: "Update review", exact: true }).click();
   await expect(replace).toBeChecked();
+  await expect(panel.getByTestId("transfer-plan")).toContainText("To copy: 2 · Kept target: 1");
+  await expect(
+    panel.getByRole("button", { name: "Approve this transfer", exact: true }),
+  ).toBeEnabled();
   await expect(panel.getByTestId("transfer-plan")).toContainText(
     "Target retained to protect the source.",
   );

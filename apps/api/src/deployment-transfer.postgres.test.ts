@@ -44,7 +44,7 @@ postgres(
     const remote = new Map<string, string>();
     const targetPuts = vi.fn();
     const sourceLoads = vi.fn();
-    const targetDeletes = vi.fn();
+    const targetDeletes = vi.fn<(ref: string, recordId: string) => void>();
     const users: Array<{ side: Side; userId: string; organizationId: string }> = [];
     const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
@@ -139,7 +139,8 @@ postgres(
           return inline.put(value, context, options);
         },
         delete: async (ref, context) => {
-          if (receiving) targetDeletes(ref);
+          if (receiving)
+            targetDeletes(ref, typeof context === "string" ? context : context.recordId);
           if (ref.startsWith("fixture-remote:")) remote.delete(ref);
           else await inline.delete(ref, context);
           if (receiving && loseDeleteAck) {
@@ -148,6 +149,17 @@ postgres(
           }
         },
       };
+    }
+    function expectOnlyGrantRetirement(pending: {
+      secretRecordId: string | null;
+      recoveryRef: string | null;
+    }) {
+      for (const [ref, recordId] of targetDeletes.mock.calls) {
+        expect(recordId).not.toBe(pending.secretRecordId);
+        expect(ref).not.toBe(pending.recoveryRef);
+        expect(recordId).toMatch(/^transfer-grant:/);
+        expect(ref.startsWith("v2:")).toBe(true);
+      }
     }
     async function makeSide(
       origin: string,
@@ -1089,6 +1101,140 @@ postgres(
       expect(state.items[0]!.status).toBe("cancelled");
       expect(targetPuts).toHaveBeenCalledTimes(1);
     });
+    it("reconciles a later found remote reservation for explicit cancel and trusted orphan cleanup", async () => {
+      for (const mode of ["cancel", "orphan"] as const) {
+        const p = await pair();
+        remoteMode = true;
+        remoteVisible = false;
+        loseRemotePutAck = true;
+        const puts = targetPuts.mock.calls.length;
+        p.sending = await commit(p);
+        const pending = await target.database.prisma.deploymentTransferItem.findFirstOrThrow({
+          where: { sessionId: p.receiving.transferId },
+        });
+        expect(pending.ciphertext).toBeNull();
+        expect(pending.recoveryRef).not.toBeNull();
+        remoteVisible = true;
+        targetDeletes.mockClear();
+        await call(source, p.s, "status", { transferId: p.sending.transferId });
+        expect(
+          (
+            await target.database.prisma.deploymentTransferItem.findUniqueOrThrow({
+              where: { id: pending.id },
+            })
+          ).ciphertext,
+        ).toBeNull();
+        expect(targetDeletes).not.toHaveBeenCalled();
+        if (mode === "cancel") {
+          const state = await call(target, p.t, "status", {
+            transferId: p.receiving.transferId,
+          });
+          await call(target, p.t, "cancel", {
+            transferId: state.transferId,
+            expectedRevision: state.revision,
+          });
+        } else {
+          await target.database.prisma.bot.delete({ where: { id: p.t.botId } });
+          const dry = await cleanupOrphanedTransfers({
+            prisma: target.database.prisma,
+            secrets: target.secrets,
+            dryRun: true,
+          });
+          expect(dry.candidates).toBeGreaterThan(0);
+          expect(targetDeletes).not.toHaveBeenCalled();
+          await cleanupOrphanedTransfers({
+            prisma: target.database.prisma,
+            secrets: target.secrets,
+          });
+        }
+        const retired = await target.database.prisma.deploymentTransferItem.findUniqueOrThrow({
+          where: { id: pending.id },
+        });
+        expect(retired.cleanupState).toBe("done");
+        expect(retired.ciphertext).toBeNull();
+        expect(retired.recoveryRef).toBeNull();
+        expect(remote.has(pending.recoveryRef!)).toBe(false);
+        expect(
+          targetDeletes.mock.calls.filter(([ref]) => ref === pending.recoveryRef),
+        ).toHaveLength(1);
+        expect(targetPuts).toHaveBeenCalledTimes(puts + 1);
+        expect(await targetRows(p)).toHaveLength(0);
+        expect(await source.database.prisma.botSecret.count({ where: { botId: p.s.botId } })).toBe(
+          1,
+        );
+      }
+    });
+    it("keeps unknown, mismatched and remotely absent reservations and never cleans a restored intent", async () => {
+      const p = await pair();
+      remoteMode = true;
+      remoteVisible = false;
+      loseRemotePutAck = true;
+      await commit(p);
+      const pending = await target.database.prisma.deploymentTransferItem.findFirstOrThrow({
+        where: { sessionId: p.receiving.transferId },
+      });
+      const probe = vi.spyOn(target.secrets, "reconcileWrite");
+      const cancel = async () => {
+        const state = await call(target, p.t, "status", {
+          transferId: p.receiving.transferId,
+        });
+        await call(target, p.t, "cancel", {
+          transferId: state.transferId,
+          expectedRevision: state.revision,
+        });
+        const retained = await target.database.prisma.deploymentTransferItem.findUniqueOrThrow({
+          where: { id: pending.id },
+        });
+        expect(retained.ciphertext).toBeNull();
+        expect(retained.recoveryRef).toBe(pending.recoveryRef);
+        expect(retained.secretRecordId).toBe(pending.secretRecordId);
+        expect(retained.cleanupState).toBe("unknown");
+        expect(remote.get(pending.recoveryRef!)).toBe("protected-value-api_key");
+        expect(await targetRows(p)).toHaveLength(0);
+        expectOnlyGrantRetirement(pending);
+        expect(targetPuts).toHaveBeenCalledTimes(1);
+      };
+      await cancel();
+      probe.mockResolvedValue({ state: "found", ref: "fixture-remote:unrelated" });
+      await cancel();
+      probe.mockResolvedValue({ state: "absent" });
+      await cancel();
+      await target.database.prisma.deploymentTransferSession.update({
+        where: { id: p.receiving.transferId },
+        data: { writeRevokedAt: new Date(), writeRevokedReason: "restore" },
+      });
+      probe.mockResolvedValue({ state: "found", ref: pending.recoveryRef! });
+      probe.mockClear();
+      await cancel();
+      expect(probe).not.toHaveBeenCalled();
+    });
+    it("retires a matching empty inline reservation on explicit cancel without a put or delete", async () => {
+      const p = await pair();
+      failInlinePut = true;
+      await commit(p);
+      const pending = await target.database.prisma.deploymentTransferItem.findFirstOrThrow({
+        where: { sessionId: p.receiving.transferId },
+      });
+      expect(pending.ciphertext).toBeNull();
+      expect(pending.recoveryRef).not.toBeNull();
+      const state = await call(target, p.t, "status", { transferId: p.receiving.transferId });
+      expectOnlyGrantRetirement(pending);
+      const cancelled = await call(target, p.t, "cancel", {
+        transferId: state.transferId,
+        expectedRevision: state.revision,
+      });
+      const retired = await target.database.prisma.deploymentTransferItem.findUniqueOrThrow({
+        where: { id: pending.id },
+      });
+      expect(cancelled.items[0]!.status).toBe("cancelled");
+      expect(retired.cleanupState).toBe("done");
+      expect(retired.ciphertext).toBeNull();
+      expect(retired.recoveryRef).toBeNull();
+      expect(retired.writeFence).toBeGreaterThan(pending.writeFence);
+      expect(targetPuts).toHaveBeenCalledTimes(1);
+      expectOnlyGrantRetirement(pending);
+      expect(await targetRows(p)).toHaveLength(0);
+    });
     it("does not let signing out and signing back in silently renew an old target approval", async () => {
       const p = await pair();
       await target.database.prisma.session.deleteMany({ where: { userId: p.t.actor.userId } });
@@ -1440,7 +1586,7 @@ postgres(
       await commit(unknown);
       await target.database.prisma.bot.delete({ where: { id: unknown.t.botId } });
       remoteMode = false;
-      remoteVisible = true;
+      remoteVisible = false;
       const accepted = await pair();
       await commit(accepted);
       await target.database.prisma.bot.delete({ where: { id: accepted.t.botId } });
@@ -1467,20 +1613,31 @@ postgres(
         orderBy: { id: "asc" },
       });
       await cleanupOrphanedTransfers({ prisma: target.database.prisma, secrets: target.secrets });
-      expect(
-        await target.database.prisma.deploymentTransferItem.findMany({
-          where: {
-            sessionId: {
-              in: [
-                unknown.receiving.transferId,
-                accepted.receiving.transferId,
-                restored.receiving.transferId,
-              ],
-            },
+      const after = await target.database.prisma.deploymentTransferItem.findMany({
+        where: {
+          sessionId: {
+            in: [
+              unknown.receiving.transferId,
+              accepted.receiving.transferId,
+              restored.receiving.transferId,
+            ],
           },
-          orderBy: { id: "asc" },
-        }),
-      ).toEqual(before);
+        },
+        orderBy: { id: "asc" },
+      });
+      const evidence = (items: typeof before) =>
+        items.map(({ id, ciphertext, recoveryRef, secretRecordId, status, targetSecretId }) => ({
+          id,
+          ciphertext,
+          recoveryRef,
+          secretRecordId,
+          status,
+          targetSecretId,
+        }));
+      expect(evidence(after)).toEqual(evidence(before));
+      expect(
+        after.find((item) => item.sessionId === unknown.receiving.transferId)!.cleanupState,
+      ).toBe("unknown");
     });
     it("retains a confirmed write when the target changes during put and only permits cleanup", async () => {
       const t = await account(target);

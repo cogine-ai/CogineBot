@@ -1,10 +1,11 @@
 import type { SecretStore } from "@rakazo/adapter-kit";
+import { reconcileSecretWrite } from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
 import { lockSpaceLifecycle, Prisma } from "@rakazo/db";
 import type { TransferContext, TransferRow } from "./deployment-transfer-store.js";
 import { lockTransferRow, transferItems } from "./deployment-transfer-store.js";
 
-/** Explicit cancellation retires only a confirmed, unadopted, owned write. */
+/** Explicit cancellation retires confirmed owned writes or authoritatively empty inline reservations. */
 type OwnerCleanup = {
   prisma: PrismaClient;
   secrets: SecretStore;
@@ -48,13 +49,22 @@ async function cleanupKnownTransfer(input: OwnerCleanup | InternalCleanup) {
   if (row.side !== "target" || (!internal && !row.cancelRequestedAt) || row.writeRevokedAt)
     return row;
   for (const candidate of row.items) {
-    // A reservation alone does not exclude a late remote create. Never delete it.
-    if (!candidate.ciphertext || !candidate.secretRecordId || candidate.status === "accepted")
+    if (
+      (!candidate.ciphertext && !candidate.recoveryRef) ||
+      !candidate.secretRecordId ||
+      candidate.status === "accepted"
+    )
       continue;
     const authorizeClaim = async (tx: Prisma.TransactionClient, current: TransferRow) => {
       if ((!current.cancelRequestedAt && !internal) || current.writeRevokedAt) return null;
       const item = current.items.find((item) => item.id === candidate.id);
-      if (!item?.ciphertext || !item.secretRecordId || item.status === "accepted") return null;
+      if (
+        !item ||
+        (!item.ciphertext && !item.recoveryRef) ||
+        !item.secretRecordId ||
+        item.status === "accepted"
+      )
+        return null;
       // An explicit retry can fence an interrupted delete. Repeating retirement of
       // this confirmed owned ref cannot create a resource or revive an adoption.
       const claimed = await tx.deploymentTransferItem.update({
@@ -81,12 +91,74 @@ async function cleanupKnownTransfer(input: OwnerCleanup | InternalCleanup) {
       });
       return claimed;
     };
-    const claim = await prisma.$transaction(async (tx) => {
+    let claim = await prisma.$transaction(async (tx) => {
       await lockSpaceLifecycle(tx, row.localSpaceId);
       const current = await lockTransferRow(tx, row.id);
       if (internal && !(await orphanedScope(tx, current))) return null;
       return authorizeClaim(tx, current);
     });
+    if (!claim?.secretRecordId) continue;
+    if (!claim.ciphertext && claim.recoveryRef) {
+      const prepared = claim;
+      let found: string | null = null;
+      let emptyInline = false;
+      try {
+        const observed = await reconcileSecretWrite(secrets, prepared.recoveryRef!, {
+          recordId: prepared.secretRecordId!,
+          signal,
+        });
+        // A provider may confirm only this immutable prepared locator and its AAD.
+        if (observed.state === "found" && observed.ref === prepared.recoveryRef)
+          found = observed.ref;
+        else if (observed.state === "absent")
+          emptyInline =
+            secrets.resourceIdentity?.(prepared.recoveryRef!, {
+              recordId: prepared.secretRecordId!,
+              signal,
+            }).kind === "inline";
+      } catch {
+        /* A remote 404 or an unavailable provider cannot exclude a late create. */
+      }
+      const settled = await prisma.$transaction(async (tx) => {
+        const current = await lockTransferRow(tx, row.id);
+        const item = current.items.find((item) => item.id === prepared.id);
+        if (
+          !current.cancelRequestedAt ||
+          current.writeRevokedAt ||
+          !item ||
+          item.status === "accepted" ||
+          item.writeFence !== prepared.writeFence ||
+          item.cleanupState !== "pending" ||
+          item.ciphertext !== null ||
+          item.secretRecordId !== prepared.secretRecordId ||
+          item.recoveryRef !== prepared.recoveryRef
+        )
+          return { row: current, item: null };
+        const resolved = await tx.deploymentTransferItem.update({
+          where: { id: item.id },
+          data: emptyInline
+            ? {
+                recoveryRef: null,
+                cleanupState: "done",
+                writeState: "settled",
+                status: "cancelled",
+                reasonCode: "cancelled",
+                revision: { increment: 1 },
+              }
+            : found
+              ? { ciphertext: found, writeState: "stored", revision: { increment: 1 } }
+              : { cleanupState: "unknown", revision: { increment: 1 } },
+        });
+        const updated = await tx.deploymentTransferSession.update({
+          where: { id: current.id },
+          data: { revision: { increment: 1 } },
+          include: transferItems,
+        });
+        return { row: updated, item: found ? resolved : null };
+      });
+      row = settled.row;
+      claim = settled.item;
+    }
     if (!claim?.ciphertext || !claim.secretRecordId) continue;
     let deleted = false;
     try {
@@ -153,7 +225,12 @@ export async function cleanupOrphanedTransfers(input: {
         side: "target",
         writeRevokedAt: null,
         ...(cursor ? { id: { gt: cursor } } : {}),
-        items: { some: { ciphertext: { not: null }, status: { not: "accepted" } } },
+        items: {
+          some: {
+            status: { not: "accepted" },
+            OR: [{ ciphertext: { not: null } }, { recoveryRef: { not: null } }],
+          },
+        },
       },
       orderBy: { id: "asc" },
       take: 100,
@@ -164,7 +241,10 @@ export async function cleanupOrphanedTransfers(input: {
       cursor = row.id;
       if (!(await orphanedScope(input.prisma, row))) continue;
       const candidates = row.items.filter(
-        (item) => item.status !== "accepted" && item.ciphertext && item.secretRecordId,
+        (item) =>
+          item.status !== "accepted" &&
+          (item.ciphertext || item.recoveryRef) &&
+          item.secretRecordId,
       );
       result.candidates += candidates.length;
       if (input.dryRun) continue;
