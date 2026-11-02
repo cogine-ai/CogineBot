@@ -10,12 +10,17 @@ export * from "./billing-emulator.js";
 export * from "./bot-avatar.js";
 export * from "./bot-messages.js";
 export * from "./bot-package.js";
+export type { ExpectedBotSecret } from "./bot-secrets.js";
 export {
+  adoptPreparedBotSecret,
+  BotSecretConflictError,
   forgetBotSecret,
   getBotSecretMetadata,
   listBotSecretMetadata,
   normalizeSecretDestination,
+  sameSecretDestination,
   storeBotSecret,
+  validateTransferBotSecret,
 } from "./bot-secrets.js";
 export * from "./box-emulator.js";
 export * from "./box-sandbox.js";
@@ -54,7 +59,11 @@ export * from "./current-time.js";
 export * from "./cursor-cloud-agent.js";
 export * from "./daytona-emulator.js";
 export * from "./daytona-sandbox.js";
+export * from "./deployment-identity.js";
 export * from "./deployment-model.js";
+export * from "./deployment-transfer-crypto.js";
+export * from "./deployment-transfer-peer.js";
+export * from "./deployment-transfer-protocol.js";
 export * from "./desktop-sandbox.js";
 export * from "./destination-emulator.js";
 export * from "./docker-sandbox.js";

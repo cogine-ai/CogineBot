@@ -6776,3 +6776,257 @@ msgstr "가져온 이 봇은 제거되었습니다."
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "패키지 미리 보기"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "접근 권한이 변경됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "계정 매핑"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "이 전송 승인"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "대상에서 다시 인증하세요."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "검토 후 변경되었습니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "계속하기 전에 상태를 확인하세요."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "HTTPS 배포 주소를 선택하세요."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "인증 정보 선택"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "원본 봇 선택"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "이 전송 계속"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "승인된 인증 정보 복사"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "비밀번호 및 API 키 복사"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "복사 중…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "결과가 확인되지 않았습니다. 계속하기 전에 상태를 확인하세요."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "복사할 수 없음"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "수신 요청 만들기"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "인증 정보 한도에 도달함"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "만료됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "만료 시간"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "추가 로그인 방식은 원본에 유지됩니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "지문"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "계속"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "대상 유지됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "아직 결과가 없습니다. 상태를 확인하거나 수신 배포에서 페어링을 다시 여세요."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth는 대상에서 인증해야 합니다. TOTP 및 1Password 토큰은 원본에 유지됩니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "전송되지 않은 항목만 중지됩니다. 수신된 항목은 대상에 유지됩니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "원본 배포 열기"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "일부 복사됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "복사 준비됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "비밀번호 및 API 키 수신"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "최근 전송"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "봇 새로고침"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "{0} 교체"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "대상 교체"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "인증 정보 검토"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "선택 항목 검토"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "전송 검토"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "{0} 선택"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "승인을 위해 선택 항목 보내기"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "건너뜀"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "원본"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "원본 봇"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "원본 인증 정보는 유지됩니다. 수신된 항목은 회수할 수 없습니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "원본 배포"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "상태 미확인"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "전송 중지"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "미전송 항목 중지"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "대상"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "원본을 보호하기 위해 대상이 유지됩니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "이 유형의 인증 정보는 원본에 유지됩니다."
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "유효하지 않은 전송 링크입니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "복사할 항목"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "지원되지 않는 인증 정보"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "검토 업데이트"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "원본 대기 중"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "대상 대기 중"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "쓰기 권한이 만료되었습니다. 기존 결과는 계속 확인할 수 있습니다."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "중지 다시 시도"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "복사됨"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "중지됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "대상에서 변경됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "대상에서 삭제됨"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "대상 상태 확인 안 됨"

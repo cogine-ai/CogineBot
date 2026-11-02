@@ -2,8 +2,24 @@ import { expect, vi } from "vitest";
 import type { InfisicalSecretStoreOptions } from "./infisical-secret-store.js";
 
 /** Strict offline REST fake shared by provider and credential-boundary tests. */
-export function infisicalFake() {
-  const values = new Map<string, string>();
+export function infisicalFake(
+  input: Partial<
+    Pick<
+      InfisicalSecretStoreOptions,
+      "baseUrl" | "clientId" | "clientSecret" | "projectId" | "environment" | "folder"
+    >
+  > & { values?: Map<string, string> } = {},
+) {
+  const values = input.values ?? new Map<string, string>();
+  const config = {
+    baseUrl: "https://secrets.example.test",
+    clientId: "fake-client",
+    clientSecret: "fake-client-secret",
+    projectId: "fake-project",
+    environment: "test",
+    folder: "/rakazo",
+    ...input,
+  };
   const statuses: number[] = [];
   const loginStatuses: number[] = [];
   let logins = 0;
@@ -12,7 +28,7 @@ export function infisicalFake() {
   let gate: (() => Promise<void>) | undefined;
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input));
-    expect(url.origin).toBe("https://secrets.example.test");
+    expect(url.origin).toBe(new URL(config.baseUrl).origin);
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     init?.signal?.throwIfAborted();
     if (offline) throw new Error("private response value");
@@ -23,8 +39,8 @@ export function infisicalFake() {
     if (url.pathname === "/api/v1/auth/universal-auth/login") {
       expect(init?.method).toBe("POST");
       expect(JSON.parse(String(init?.body))).toEqual({
-        clientId: "fake-client",
-        clientSecret: "fake-client-secret",
+        clientId: config.clientId,
+        clientSecret: config.clientSecret,
       });
       logins++;
       const status = loginStatuses.shift() ?? 200;
@@ -35,9 +51,9 @@ export function infisicalFake() {
     expect(url.pathname).toMatch(/^\/api\/v3\/secrets\/raw\/rakazo_[a-f0-9]{24}_[a-f0-9-]{36}$/);
     const key = url.pathname.split("/").at(-1)!;
     const scope = {
-      workspaceId: "fake-project",
-      environment: "test",
-      secretPath: "/rakazo",
+      workspaceId: config.projectId,
+      environment: config.environment,
+      secretPath: config.folder,
       type: "shared",
     };
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -69,12 +85,12 @@ export function infisicalFake() {
     signal.throwIfAborted();
   });
   const options: InfisicalSecretStoreOptions = {
-    baseUrl: "https://secrets.example.test",
-    clientId: "fake-client",
-    clientSecret: "fake-client-secret",
-    projectId: "fake-project",
-    environment: "test",
-    folder: "/rakazo",
+    baseUrl: config.baseUrl,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    projectId: config.projectId,
+    environment: config.environment,
+    folder: config.folder,
     fetch: fetcher,
     sleep,
   };

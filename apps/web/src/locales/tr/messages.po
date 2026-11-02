@@ -6776,3 +6776,257 @@ msgstr "İçe aktarılan bu bot kaldırıldı."
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "Paket önizlemesi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "Erişim değişti"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "Hesap eşleştirmesi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "Bu aktarımı onayla"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "Hedefte yeniden yetkilendirin."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "İncelemeden sonra değişti."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "Devam etmeden önce durumu kontrol edin."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "Bir HTTPS dağıtım adresi seçin."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "Kimlik bilgilerini seç"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "Kaynak botunuzu seçin"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "Bu aktarımı sürdür"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "Onaylanan kimlik bilgilerini kopyala"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "Parolaları ve API anahtarlarını kopyala"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "Kopyalanıyor…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "Sonuç doğrulanamadı. Devam etmeden önce durumu kontrol edin."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "Kopyalanamadı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "Alım isteği oluştur"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "Kimlik bilgisi sınırına ulaşıldı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "Süresi doldu"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "Bitiş zamanı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "Ek oturum açma yöntemleri kaynakta kalır."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "Parmak izi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "Devam et"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "Hedef korundu"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "Henüz sonuç kaydı yok. Durumu kontrol edin veya alıcı dağıtımdan eşleştirmeyi yeniden açın."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth için hedefte yetkilendirme gerekir. TOTP ve 1Password belirteçleri kaynakta kalır."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "Yalnızca gönderilmemiş öğeler durdurulur. Alınan öğeler hedefte kalır."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "Kaynak dağıtımı aç"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "Kısmen kopyalandı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "Kopyalamaya hazır"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "Parolaları ve API anahtarlarını al"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "Son aktarımlar"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "Botları yeniden yükle"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "{0} değiştir"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "Hedefi değiştir"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "Kimlik bilgilerini incele"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "Seçimi incele"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "Aktarımı incele"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "{0} seç"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "Seçimi onaya gönder"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "Atlandı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "Kaynak"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "Kaynak bot"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "Kaynak kimlik bilgileri yerinde kalır. Alınan öğeler geri çağrılamaz."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "Kaynak dağıtım"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "Durum doğrulanmadı"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "Aktarımı durdur"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "Gönderilmemiş öğeleri durdur"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "Hedef"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "Kaynağı korumak için hedef korundu."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "Bu kimlik bilgisi türü kaynakta kalır."
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "Bu aktarım bağlantısı geçersiz."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "Kopyalanacak"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "Desteklenmeyen kimlik bilgisi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "İncelemeyi güncelle"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "Kaynak bekleniyor"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "Hedef bekleniyor"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "Yazma yetkisi sona erdi. Mevcut sonuçlar hâlâ kontrol edilebilir."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "Durdurmayı yeniden dene"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "Kopyalandı"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "Durduruldu"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "Hedefte değiştirildi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "Hedefte silindi"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "Hedef durumu doğrulanmadı"

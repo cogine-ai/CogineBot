@@ -7,7 +7,11 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { authClient } from "../lib/auth";
 import type { AuthCapabilities } from "../lib/auth-capabilities";
 import { fetchAuthCapabilities } from "../lib/auth-capabilities";
-import { authDestination, isNativeAuthDestination } from "../lib/auth-destination";
+import {
+  authDestination,
+  isNativeAuthDestination,
+  isTransferAuthDestination,
+} from "../lib/auth-destination";
 import { clearSpaceSelection } from "../lib/rpc";
 import { runSsoFlow } from "../lib/sso-flow";
 import { authErrorText, credentialIssueText } from "../lib/user-error";
@@ -131,9 +135,10 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     setError(null);
     try {
       const destination = authDestination(searchParams.get("next"));
-      const errorDestination = isNativeAuthDestination(destination)
-        ? `/sign-in?next=${encodeURIComponent(destination)}`
-        : "/sign-in";
+      const errorDestination =
+        isNativeAuthDestination(destination) || isTransferAuthDestination(destination)
+          ? `/sign-in?next=${encodeURIComponent(destination)}`
+          : "/sign-in";
       const result = await runSsoFlow(
         (disableRedirect, callbackURL) =>
           authClient.signIn.social({

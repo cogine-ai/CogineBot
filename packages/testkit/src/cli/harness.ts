@@ -59,6 +59,7 @@ async function main() {
     "packages/testkit/src/catalog-alias-approval.postgres.test.ts",
     "packages/testkit/src/openapi-import.postgres.test.ts",
     "apps/api/src/bot-packages.postgres.test.ts",
+    "apps/api/src/deployment-transfer.postgres.test.ts",
     "apps/api/src/plugin-installs.postgres.test.ts",
     "apps/api/src/plugin-uninstall.postgres.test.ts",
     "apps/api/src/plugin-uninstall-worker.postgres.test.ts",
@@ -204,6 +205,12 @@ async function main() {
         await databaseCommand(`CREATE DATABASE "${database}" TEMPLATE "${template}"`);
         const suiteUrl = new URL(databaseUrl);
         suiteUrl.pathname = `/${database}`;
+        const peerDatabase = `${database}_transfer_peer`;
+        const peerUrl = new URL(databaseUrl);
+        peerUrl.pathname = `/${peerDatabase}`;
+        const dualDeployment = suite === "apps/api/src/deployment-transfer.postgres.test.ts";
+        if (dualDeployment)
+          await databaseCommand(`CREATE DATABASE "${peerDatabase}" TEMPLATE "${template}"`);
         try {
           await runProcess(
             "pnpm",
@@ -212,6 +219,7 @@ async function main() {
               ...process.env,
               DATABASE_URL: suiteUrl.toString(),
               REALTIME_DATABASE_URL: suiteUrl.toString(),
+              DEPLOYMENT_TRANSFER_PEER_DATABASE_URL: dualDeployment ? peerUrl.toString() : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE:
                 suite === remainingLifecycleSuite ? "harness_isolated" : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE:
@@ -221,6 +229,8 @@ async function main() {
             },
           );
         } finally {
+          if (dualDeployment)
+            await databaseCommand(`DROP DATABASE IF EXISTS "${peerDatabase}" WITH (FORCE)`);
           await databaseCommand(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
         }
       }

@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:?usage: restore.sh backups/<stamp>}"
+restore_fence_sql="$(cat "$ROOT/scripts/restore-transfer-fence.sql")"
 compose=(docker compose -f "$ROOT/infra/compose/docker-compose.yml")
 # Compose resolves its default env file relative to the compose file, not the
 # repo root; point it at the root .env when one exists (vars may also come
@@ -14,7 +15,8 @@ done
 # Stop on SQL errors and roll back the dump before restoring files or starting
 # the application. -f is required for psql's single-transaction mode.
 "${compose[@]}" exec -T postgres psql -X -U rakazo -d rakazo \
-  --set=ON_ERROR_STOP=on --single-transaction --file=- < "$SRC/rakazo.sql"
+  --set=ON_ERROR_STOP=on --single-transaction --file=- \
+  --command "$restore_fence_sql" < "$SRC/rakazo.sql"
 if [[ -f "$SRC/homes.tgz" ]]; then
   tar -xzf "$SRC/homes.tgz" -C "$ROOT"
 fi

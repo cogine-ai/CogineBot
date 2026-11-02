@@ -154,6 +154,7 @@ import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
+import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { LoadFailureNotice } from "../components/LoadFailureNotice";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
@@ -6084,12 +6085,20 @@ export function ShellPage() {
                 memoryProviderConfigured={memoryProviderConfig != null}
                 packageTools={
                   creationSpaceId === active.spaceId ? (
-                    <BotPackageTools
-                      key={`${creationScope.scopeKey}:${active.id}`}
-                      botId={active.id}
-                      spaceId={active.spaceId}
-                      isCurrent={creationScope.scopeCurrent}
-                    />
+                    <>
+                      <BotPackageTools
+                        key={`${creationScope.scopeKey}:${active.id}`}
+                        botId={active.id}
+                        spaceId={active.spaceId}
+                        isCurrent={creationScope.scopeCurrent}
+                      />
+                      <DeploymentTransferTools
+                        key={`transfer:${creationScope.scopeKey}:${active.id}`}
+                        botId={active.id}
+                        spaceId={active.spaceId}
+                        isCurrent={creationScope.scopeCurrent}
+                      />
+                    </>
                   ) : undefined
                 }
                 onSkillsChange={setAgentSkills}

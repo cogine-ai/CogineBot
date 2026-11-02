@@ -6776,3 +6776,257 @@ msgstr "此导入的 Bot 已被移除。"
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "预览包"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "访问权限已变更"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "账户映射"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "批准此次复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "请在目标端重新授权。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "自预览后已变更。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "请先核对状态再继续。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "请选择 HTTPS 部署地址。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "选择凭据"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "选择你的源 Bot"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "继续此次复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "复制已批准的凭据"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "复制密码和 API 密钥"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "正在复制…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "尚未确认结果，请先核对状态再继续。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "无法复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "创建接收请求"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "已达到凭据数量上限"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "已过期"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "到期时间"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "附加登录方式保留在源端。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "指纹"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "继续进行"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "保留目标项"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "暂未查到回执。请核对状态，或从接收端重新打开配对。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth 需在目标端授权。TOTP 和 1Password 令牌保留在源端。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "仅停止尚未发送的项目。已接收的项目保留在目标端。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "打开源部署"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "部分已复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "可以复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "接收密码和 API 密钥"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "最近的复制"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "重新加载 Bot"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "替换 {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "替换目标项"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "核对凭据"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "核对选择"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "核对此次复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "选择 {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "发送所选项目以待批准"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "已跳过"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "源端"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "源 Bot"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "源端凭据仍保留。已接收的项目无法撤回。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "源部署"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "状态待确认"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "停止复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "停止未发送的项目"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "目标端"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "为保护源端，已保留目标项。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "此类凭据保留在源端。"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "此复制链接无效。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "待复制"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "不支持的凭据"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "更新预览"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "等待源端"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "等待目标端"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "写入授权已失效，仍可核验已有结果。"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "重试停止"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "已复制"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "已停止"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "目标端已变更"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "目标端已移除"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "接收端状态未确认"

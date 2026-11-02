@@ -62,6 +62,7 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretRecord,
+  SecretResourceIdentity,
   SecretWriteReconciliation,
   SemanticMemoryCapabilities,
   SemanticMemoryForgetRequest,
@@ -325,6 +326,8 @@ export interface SecretStore {
   prepareWrite?(recordId: string, options?: { ephemeral?: boolean }): string;
   /** Remote absence is unknown unless this provider can exclude a late create. */
   reconcileWrite?(recoveryRef: string, context: SecretContext): Promise<SecretWriteReconciliation>;
+  /** Pure metadata; unknown providers must not be treated as having no external resource. */
+  resourceIdentity?(ref: string, context: SecretContext): SecretResourceIdentity;
   put(
     plaintext: string,
     context: AdapterContext,

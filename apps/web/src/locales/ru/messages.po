@@ -6776,3 +6776,257 @@ msgstr "Этот импортированный бот был удалён."
 #: src/components/BotPackageTools.tsx
 msgid "Preview package"
 msgstr "Предпросмотр пакета"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Access changed"
+msgstr "Доступ изменился"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Account mapping"
+msgstr "Сопоставление аккаунтов"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Approve this transfer"
+msgstr "Одобрить этот перенос"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Authorize again at the destination."
+msgstr "Выполните авторизацию на стороне назначения заново."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed since review."
+msgstr "Изменено после проверки."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Check status before continuing."
+msgstr "Перед продолжением проверьте статус."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose an HTTPS deployment origin."
+msgstr "Выберите HTTPS-адрес развёртывания."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Choose credentials"
+msgstr "Выбрать учётные данные"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Choose your source bot"
+msgstr "Выберите исходного бота"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Continue this transfer"
+msgstr "Продолжить этот перенос"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copy approved credentials"
+msgstr "Копировать одобренные учётные данные"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Copy passwords and API keys"
+msgstr "Копировать пароли и ключи API"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Copying…"
+msgstr "Копирование…"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not confirm the result. Check status before continuing."
+msgstr "Результат не подтверждён. Перед продолжением проверьте статус."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Could not copy"
+msgstr "Не удалось скопировать"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Create receiver"
+msgstr "Создать запрос на получение"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Credential limit reached"
+msgstr "Достигнут лимит учётных данных"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expired"
+msgstr "Срок истёк"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Expires"
+msgstr "Истекает"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Extra sign-in methods stay at the source."
+msgstr "Дополнительные способы входа остаются в источнике."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Fingerprint"
+msgstr "Отпечаток"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Keep going"
+msgstr "Продолжить"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Kept target"
+msgstr "Назначение сохранено"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "No receipt yet. Check status or reopen pairing from the receiving deployment."
+msgstr "Подтверждения пока нет. Проверьте статус или заново откройте сопряжение на принимающей стороне."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "OAuth needs authorization at the target. TOTP and 1Password tokens stay at the source."
+msgstr "OAuth требует авторизации на стороне назначения. Токены TOTP и 1Password остаются в источнике."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Only unsent items stop. Received items stay at the target."
+msgstr "Останавливаются только неотправленные элементы. Полученные элементы остаются на стороне назначения."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Open source deployment"
+msgstr "Открыть исходное развёртывание"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Partially copied"
+msgstr "Скопировано частично"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Ready to copy"
+msgstr "Готово к копированию"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Receive passwords and API keys"
+msgstr "Получить пароли и ключи API"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Recent transfers"
+msgstr "Недавние переносы"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Reload bots"
+msgstr "Перезагрузить ботов"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace {0}"
+msgstr "Заменить {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Replace target"
+msgstr "Заменить на стороне назначения"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Review credentials"
+msgstr "Проверить учётные данные"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review selection"
+msgstr "Проверить выбор"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Review transfer"
+msgstr "Проверить перенос"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Select {0}"
+msgstr "Выбрать {0}"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Send selection for approval"
+msgstr "Отправить выбранное на одобрение"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Skipped"
+msgstr "Пропущено"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source"
+msgstr "Источник"
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "Source bot"
+msgstr "Исходный бот"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source credentials stay in place. Received items cannot be recalled."
+msgstr "Исходные учётные данные сохраняются. Полученные элементы нельзя отозвать."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Source deployment"
+msgstr "Исходное развёртывание"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Status not confirmed"
+msgstr "Статус не подтверждён"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop transfer"
+msgstr "Остановить перенос"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Stop unsent items"
+msgstr "Остановить неотправленные элементы"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target"
+msgstr "Назначение"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target retained to protect the source."
+msgstr "Назначение сохранено для защиты источника."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "This credential type stays at the source."
+msgstr "Этот тип учётных данных остаётся в источнике."
+
+#: src/pages/DeploymentTransfer.tsx
+msgid "This transfer link is invalid."
+msgstr "Эта ссылка переноса недействительна."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "To copy"
+msgstr "К копированию"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Unsupported credential"
+msgstr "Неподдерживаемые учётные данные"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Update review"
+msgstr "Обновить проверку"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the source"
+msgstr "Ожидание источника"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Waiting for the target"
+msgstr "Ожидание назначения"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Write authorization expired. Existing results can still be checked."
+msgstr "Разрешение на запись истекло. Существующие результаты по-прежнему можно проверить."
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Retry stopping"
+msgstr "Повторить остановку"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.copied"
+msgstr "Скопировано"
+
+#. js-lingui-explicit-id
+#: src/components/DeploymentTransfer.tsx
+msgid "deployment-transfer.stopped"
+msgstr "Остановлено"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Changed at target"
+msgstr "Изменено на стороне назначения"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Removed at target"
+msgstr "Удалено на стороне назначения"
+
+#: src/components/DeploymentTransfer.tsx
+msgid "Target status not confirmed"
+msgstr "Состояние на целевой стороне не подтверждено"

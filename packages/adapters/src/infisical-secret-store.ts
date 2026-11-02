@@ -4,6 +4,7 @@ import type {
   SecretContext,
   SecretPutOptions,
   SecretRecord,
+  SecretResourceIdentity,
   SecretStore,
   SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
@@ -161,6 +162,47 @@ export class InfisicalSecretStore extends SecretChanges implements SecretStore {
   prepareWrite(recordId: string): string {
     const key = `rakazo_${credentialDigest(recordId).slice(0, 24)}_${randomUUID()}`;
     return `${SCOPED_REF_PREFIX}${this.scopeDigest()}:${key}`;
+  }
+  resourceIdentity(ref: string, context: SecretContext): SecretResourceIdentity {
+    if (typeof context !== "string") context.signal?.throwIfAborted();
+    try {
+      const key = this.key(ref, context);
+      const base = new URL(this.options.baseUrl);
+      const folder = this.options.folder;
+      // Ambiguous path spellings are not evidence that two external keys are independent.
+      if (
+        !["https:", "http:"].includes(base.protocol) ||
+        base.username ||
+        base.password ||
+        base.search ||
+        base.hash ||
+        !folder.startsWith("/") ||
+        folder.includes("\\") ||
+        (folder !== "/" && (folder.endsWith("/") || folder.includes("//"))) ||
+        folder.split("/").some((part) => part === "." || part === "..")
+      )
+        return { kind: "unknown" };
+      return {
+        kind: "external",
+        fingerprint: credentialDigest(
+          JSON.stringify([
+            "secret-resource:v1",
+            "infisical",
+            base.href.replace(/\/$/, ""),
+            this.options.projectId,
+            this.options.environment,
+            folder,
+            key,
+          ]),
+        ),
+        // A proxy/namespace alias may address the same key. A false collision keeps data.
+        deletionKeyFingerprint: credentialDigest(
+          JSON.stringify(["secret-resource-delete:v1", "infisical", key]),
+        ),
+      };
+    } catch {
+      return { kind: "unknown" };
+    }
   }
   async reconcileWrite(
     recoveryRef: string,

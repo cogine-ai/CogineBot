@@ -38,6 +38,22 @@ function fixture() {
       },
       { id: "native-without-secret", ciphertext: null, secretRecordId: null },
     ],
+    deploymentIdentity: [] as Array<{
+      id: string;
+      ciphertext: string | null;
+      secretRecordId: string | null;
+    }>,
+    deploymentTransferSession: [] as Array<{
+      id: string;
+      ciphertext: string | null;
+      secretRecordId: string | null;
+    }>,
+    deploymentTransferItem: [] as Array<{
+      id: string;
+      ciphertext: string | null;
+      secretRecordId: string | null;
+      recoveryRef: string | null;
+    }>,
   };
   const client = Object.fromEntries(
     Object.entries(tables).map(([name, rows]) => [
@@ -73,8 +89,19 @@ function fixture() {
           },
         ),
         count: vi.fn(
-          async (args: { where: { ciphertext: string } }) =>
-            rows.filter((row) => row.ciphertext === args.where.ciphertext).length,
+          async (args: { where: { ciphertext?: string; OR?: Array<Record<string, unknown>> } }) =>
+            rows.filter((row) =>
+              args.where.OR
+                ? args.where.OR.some((clause) =>
+                    Object.entries(clause).every(([key, value]) => {
+                      const actual = (row as unknown as Record<string, unknown>)[key];
+                      return typeof value === "object" && value !== null && "not" in value
+                        ? actual != null
+                        : actual === value;
+                    }),
+                  )
+                : row.ciphertext === args.where.ciphertext,
+            ).length,
         ),
       },
     ]),
@@ -86,6 +113,64 @@ function fixture() {
   };
 }
 describe("migration persistence", () => {
+  it.each(["deploymentIdentity", "deploymentTransferSession"] as const)(
+    "rejects %s material without its actual AAD",
+    async (label) => {
+      const f = fixture();
+      f.tables[label].push({
+        id: "deployment-row",
+        ciphertext: "encrypted-material",
+        secretRecordId: null,
+      });
+      await expect(
+        (async () => {
+          for await (const _row of f.repository.rows()) {
+            /* consume */
+          }
+        })(),
+      ).rejects.toThrow("Deployment material has no SecretStore identity");
+    },
+  );
+  it.each(["deploymentIdentity", "deploymentTransferSession"] as const)(
+    "keeps %s deployment material inline with its independent AAD",
+    async (label) => {
+      const f = fixture();
+      f.tables[label].push({
+        id: "deployment-row",
+        ciphertext: "encrypted-material",
+        secretRecordId: "material-aad",
+      });
+      const rows = [];
+      for await (const row of f.repository.rows()) rows.push(row);
+      expect(rows.find((row) => row.label === label)).toMatchObject({
+        id: "deployment-row",
+        recordId: "material-aad",
+        ref: "encrypted-material",
+        ephemeral: true,
+      });
+      expect(await f.repository.referenced("encrypted-material")).toBe(true);
+      expect(secretMigrationReportIdentity({ label, id: "deployment-row" })).toBe(
+        `${label} [redacted]`,
+      );
+    },
+  );
+  it.each(["ciphertext", "recoveryRef"] as const)(
+    "blocks all store switching for a retained transfer %s before any row is yielded",
+    async (field) => {
+      const f = fixture();
+      f.tables.deploymentTransferItem.push({
+        id: "item",
+        secretRecordId: "aad",
+        ciphertext: null,
+        recoveryRef: null,
+        [field]: "pending-ref",
+      });
+      expect(await f.repository.referenced("pending-ref")).toBe(true);
+      const iterator = f.repository.rows()[Symbol.asyncIterator]();
+      await expect(iterator.next()).rejects.toThrow("Settle pending credential transfers");
+      expect(f.client.secret!.findMany).not.toHaveBeenCalled();
+    },
+  );
   it("paginates every credential table, binds config ids, and marks short-lived rows", async () => {
     const f = fixture();
     const rows = [];
