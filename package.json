@@ -52,7 +52,7 @@
     },
     "patchedDependencies": {
       "app-builder-lib@26.15.3": "patches/app-builder-lib@26.15.3.patch",
-      "@earendil-works/pi-ai@0.87.1": "patches/@earendil-works__pi-ai@0.87.1.patch"
+      "@earendil-works/pi-ai@1.3.0": "patches/@earendil-works__pi-ai@1.3.0.patch"
     }
   }
 }

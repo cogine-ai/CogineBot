@@ -2765,7 +2765,7 @@ describe("model credential persistence", () => {
 
   it.each([
     ["github-copilot", "GitHub Copilot"],
-    ["openai-codex", "OpenAI Codex"],
+    ["openai-codex", "OpenAI Codex (legacy)"],
     ["anthropic", "Anthropic"],
   ])("labels a %s subscription sign-in with its own provider name", async (provider, label) => {
     const { finish, deps, handler } = persistDeps();

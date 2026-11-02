@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai";
+import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
@@ -32,13 +33,13 @@ const sse = (usage?: object) =>
     .map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
     .join("")}data: [DONE]\n\n`;
 
-async function run(usage?: object) {
+async function run(usage?: object, selectedModel = model) {
   const events: AgentRuntimeEvent[] = [];
   const beforeCall = vi.fn((_call: { inputTokensEstimate: number }) => "reservation");
   const afterCall = vi.fn();
   const stream = await observedPiStream(
     builtinModels(),
-    model,
+    selectedModel,
     { systemPrompt: "Fixture", messages: [{ role: "user", content: "test", timestamp: 1 }] },
     {
       apiKey: "fake-fixture-key",
@@ -504,6 +505,136 @@ describe("Pi usage accounting", () => {
         { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
       ).costUsd,
     ).toBeNull();
+  });
+  it.each([
+    { input: 7, cost: 0.000011 },
+    { input: 8, cost: 0.000035 },
+    { input: 27, cost: 0.000092 },
+    { input: 28, cost: 0.000158 },
+  ])("retains Pi's tiered estimate for $input uncached tokens", ({ input, cost }) => {
+    const tieredModel: Model<Api> = {
+      ...model,
+      cost: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        tiers: [
+          { inputTokensAbove: 30, input: 5, output: 6, cacheRead: 2, cacheWrite: 0 },
+          { inputTokensAbove: 10, input: 3, output: 4, cacheRead: 1, cacheWrite: 0 },
+        ],
+      },
+    };
+    const usage: Usage = {
+      input,
+      output: 2,
+      cacheRead: 3,
+      cacheWrite: 0,
+      totalTokens: input + 5,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    calculateCost(tieredModel, usage);
+    const normalized = normalizePiUsage(usage, tieredModel, new Set(["cacheWriteTokens"]));
+    expect(normalized.costUsd).toBe(usage.cost.total);
+    expect(normalized.costUsd).toBeCloseTo(cost, 12);
+    expect(normalized).toMatchObject({
+      costSource: "pi-catalog-estimate",
+      pricingVersion: "pi-ai-1.3.0",
+    });
+  });
+  it("recognizes a priced tier above a zero-priced base", () => {
+    expect(
+      normalizePiUsage(
+        {
+          input: 11,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: { input: 0.000033, output: 0.000008, cacheRead: 0, cacheWrite: 0, total: 0.000041 },
+        },
+        {
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            tiers: [{ inputTokensAbove: 10, input: 3, output: 4, cacheRead: 1, cacheWrite: 1 }],
+          },
+        },
+        new Set(["cacheReadTokens", "cacheWriteTokens"]),
+      ),
+    ).toMatchObject({ costUsd: 0.000041, costSource: "pi-catalog-estimate" });
+  });
+  it.each(["cacheReadTokens", "cacheWriteTokens"] as const)(
+    "keeps a tier estimate unknown without measured %s",
+    (missing) => {
+      expect(
+        normalizePiUsage(
+          {
+            input: 9,
+            output: 2,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: {
+              input: 0.000009,
+              output: 0.000004,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0.000013,
+            },
+          },
+          {
+            cost: {
+              input: 1,
+              output: 2,
+              cacheRead: 0,
+              cacheWrite: 0,
+              tiers: [{ inputTokensAbove: 10, input: 3, output: 4, cacheRead: 1, cacheWrite: 1 }],
+            },
+          },
+          new Set([missing === "cacheReadTokens" ? "cacheWriteTokens" : "cacheReadTokens"]),
+        ),
+      ).toMatchObject({ costUsd: null, costSource: null, pricingVersion: null });
+    },
+  );
+  it("keeps a tier estimate unknown when the input sum is unsafe", () => {
+    expect(
+      normalizePiUsage(
+        {
+          input: Number.MAX_SAFE_INTEGER,
+          output: 2,
+          cacheRead: 1,
+          cacheWrite: 0,
+          cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 },
+        },
+        {
+          cost: {
+            ...model.cost,
+            tiers: [{ inputTokensAbove: 10, input: 3, output: 4, cacheRead: 1, cacheWrite: 1 }],
+          },
+        },
+        new Set(["cacheWriteTokens"]),
+      ),
+    ).toMatchObject({ costUsd: null, costSource: null, pricingVersion: null });
+  });
+  it("preserves provider-reported zero cost when a tier cannot be selected", async () => {
+    const { events } = await run(
+      { prompt_tokens: 9, completion_tokens: 2, cost: 0 },
+      {
+        ...model,
+        cost: {
+          ...model.cost,
+          tiers: [{ inputTokensAbove: 10, input: 3, output: 4, cacheRead: 1, cacheWrite: 1 }],
+        },
+      },
+    );
+    expect(events[0]).toMatchObject({
+      costUsd: 0,
+      costSource: "provider-reported",
+      pricingVersion: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+    });
   });
   it("does not start model work when budget reservation fails", async () => {
     const fetcher = vi.fn();

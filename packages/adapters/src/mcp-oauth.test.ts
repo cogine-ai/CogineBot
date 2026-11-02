@@ -146,7 +146,10 @@ function oauthSessionStore() {
   };
 }
 
-function trackedClone(response: Response): { response: Response; bytesRead: () => number } {
+function trackedClone(response: Response): {
+  response: Response;
+  bytesRead: () => number;
+} {
   let bytes = 0;
   const clone = response.clone.bind(response);
   response.clone = () => {
@@ -341,6 +344,7 @@ describe("MCP OAuth", () => {
                 refresh_token: "new-refresh",
                 token_type: "Bearer",
                 expires_in: 7200,
+                issuer: "https://untrusted.example.test",
               }),
               { status: 200, headers: { "content-type": "application/json" } },
             );
@@ -352,7 +356,11 @@ describe("MCP OAuth", () => {
 
     const [first, second] = await Promise.all([provider.tokens(), provider.tokens()]);
 
-    expect(first).toMatchObject({ access_token: "new-access", refresh_token: "new-refresh" });
+    expect(first).toMatchObject({
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      issuer: "https://auth.example.test",
+    });
     expect(second).toMatchObject({ access_token: "new-access" });
     expect(tokenRequests).toHaveLength(1);
     expect(tokenRequests[0]?.get("grant_type")).toBe("refresh_token");
@@ -361,6 +369,58 @@ describe("MCP OAuth", () => {
     expect(tokenRequests[0]?.get("resource")).toBe("https://mcp.example.test/");
     expect(persisted.at(-1)?.oauth?.tokens?.access_token).toBe("new-access");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["tokens", "client"] as const)(
+    "does not refresh credentials bound to a different issuer (%s)",
+    async (field) => {
+      const material: OAuthMaterial = expiringMaterial(1);
+      if (field === "tokens")
+        material.oauth!.tokens!.issuer = "https://auth.example.test/other-tenant";
+      else material.oauth!.clientInformation!.issuer = "https://auth.example.test/other-tenant";
+      const refreshNetwork = vi.fn();
+      const provider = new StoredMcpOAuthProvider("server-1", material, async () => {}, {
+        refreshNetwork,
+      });
+
+      await expect(provider.tokens()).rejects.toBeInstanceOf(McpReauthorizationRequiredError);
+      expect(refreshNetwork).not.toHaveBeenCalled();
+      expect(material.oauth?.tokens).toBeUndefined();
+      expect(material.oauth?.obtainedAt).toBeUndefined();
+      await expect(provider.tokens()).resolves.toBeUndefined();
+    },
+  );
+
+  it("preserves a known legacy issuer when discovery changes before refresh", async () => {
+    const material: OAuthMaterial = expiringMaterial(1);
+    const refreshNetwork = vi.fn();
+    const provider = new StoredMcpOAuthProvider("server-1", material, async () => {}, {
+      refreshNetwork,
+    });
+    await provider.saveDiscoveryState({
+      authorizationServerUrl: "https://auth.example.test/other-tenant",
+    });
+
+    expect(provider.clientInformation()?.issuer).toBe("https://auth.example.test");
+    await expect(provider.tokens()).rejects.toBeInstanceOf(McpReauthorizationRequiredError);
+    expect(refreshNetwork).not.toHaveBeenCalled();
+  });
+
+  it("accepts equivalent issuer URL spelling and keeps its path binding on refresh", async () => {
+    const material: OAuthMaterial = expiringMaterial(1);
+    material.oauth!.tokens!.issuer = "https://AUTH.example.test:443/tenant/";
+    material.oauth!.clientInformation!.issuer = "https://auth.example.test/tenant";
+    material.oauth!.discoveryState!.authorizationServerUrl = "https://auth.example.test/tenant";
+    const provider = new StoredMcpOAuthProvider("server-1", material, async () => {}, {
+      refreshNetwork: async () => ({
+        fetch: async () => Response.json({ access_token: "new-access", token_type: "Bearer" }),
+        close: async () => {},
+      }),
+    });
+    await expect(provider.tokens()).resolves.toMatchObject({
+      access_token: "new-access",
+      issuer: "https://auth.example.test/tenant",
+    });
   });
 
   it("does not renew a token that is still inside its lifetime", async () => {
@@ -445,7 +505,10 @@ describe("MCP OAuth", () => {
     const persisted = persist.mock.calls[0]?.[0] as OAuthMaterial | undefined;
     expect(persisted?.oauth?.tokens).toBeUndefined();
     expect(persisted?.oauth?.obtainedAt).toBeUndefined();
-    expect(provider.clientInformation()).toEqual({ client_id: "client-1" });
+    expect(provider.clientInformation()).toEqual({
+      client_id: "client-1",
+      issuer: "https://auth.example.test",
+    });
     expect(provider.discoveryState()).toBeDefined();
   });
 
@@ -523,7 +586,10 @@ describe("MCP OAuth", () => {
     await provider.invalidateCredentials("tokens");
 
     expect(await provider.tokens()).toBeUndefined();
-    expect(provider.clientInformation()).toEqual({ client_id: "client-1" });
+    expect(provider.clientInformation()).toEqual({
+      client_id: "client-1",
+      issuer: "https://auth.example.test",
+    });
     expect(provider.discoveryState()).toMatchObject({
       authorizationServerUrl: "https://auth.example.test",
     });
@@ -618,38 +684,47 @@ describe("MCP OAuth", () => {
       );
       let secretCounter = 0;
       const storedPayloads: string[] = [];
+      const storedMaterial = new Map<string, string>();
+      const records = new Map<string, { id: string; ciphertext: string }>();
+      const server = {
+        endpoint: `${mcpOrigin}/mcp`,
+        secretId: null as string | null,
+      };
       const put = vi.fn(async (plaintext: string) => {
         storedPayloads.push(plaintext);
         secretCounter += 1;
-        return { id: `secret-${secretCounter}`, ciphertext: `encrypted-${secretCounter}` };
+        storedMaterial.set(`encrypted-${secretCounter}`, plaintext);
+        return {
+          id: `secret-${secretCounter}`,
+          ciphertext: `encrypted-${secretCounter}`,
+        };
       });
       const tx = {
         $executeRaw: vi.fn().mockResolvedValue(1),
         $queryRaw: vi.fn().mockResolvedValue([]),
         mcpServer: {
-          findFirst: vi.fn().mockResolvedValue({
-            endpoint: `${mcpOrigin}/mcp`,
-            secretId: null,
+          findFirst: vi.fn(async () => ({ ...server })),
+          update: vi.fn(async ({ data }: { data: { secretId?: string | null } }) => {
+            if (data.secretId !== undefined) server.secretId = data.secretId;
           }),
-          update: vi.fn().mockResolvedValue({}),
         },
         secret: {
-          findFirst: vi.fn(),
-          create: vi.fn().mockResolvedValue({}),
-          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findFirst: vi.fn(async ({ where }: { where: { id: string } }) => records.get(where.id)),
+          create: vi.fn(async ({ data }: { data: { id: string; ciphertext: string } }) =>
+            records.set(data.id, data),
+          ),
+          deleteMany: vi.fn(async ({ where }: { where: { id: string } }) => ({
+            count: Number(records.delete(where.id)),
+          })),
         },
       };
       const prisma = {
         mcpServer: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "server-1",
-            endpoint: `${mcpOrigin}/mcp`,
-            secretId: null,
-          }),
+          findFirst: vi.fn(async () => ({ id: "server-1", ...server })),
           update: vi.fn().mockResolvedValue({}),
         },
         secret: {
-          findFirst: vi.fn(),
+          findFirst: tx.secret.findFirst,
           create: vi.fn().mockResolvedValue({}),
           deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
@@ -657,7 +732,14 @@ describe("MCP OAuth", () => {
         deploymentSettings: deploymentOwner("user-1"),
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       };
-      const broker = new McpOAuthBroker(prisma as never, { put } as never, TEST_NETWORK);
+      const broker = new McpOAuthBroker(
+        prisma as never,
+        {
+          put,
+          load: async (ref: string) => storedMaterial.get(ref)!,
+        } as never,
+        TEST_NETWORK,
+      );
 
       const started = await broker.begin({
         serverId: "server-1",
@@ -1209,7 +1291,9 @@ describe("MCP OAuth", () => {
       {
         material: {
           secret: "stale-static-token",
-          oauth: { tokens: { access_token: "stale-oauth", token_type: "bearer" } },
+          oauth: {
+            tokens: { access_token: "previous-oauth", token_type: "bearer" },
+          },
         },
         secretId: "secret-before-edit",
       },

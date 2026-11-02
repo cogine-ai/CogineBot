@@ -185,6 +185,8 @@ describe("native CogineX detached MCP authorization", () => {
       refreshToken: "refresh-1",
     });
     expect(auth.tokens.mcp?.oauth?.codeVerifier).toBeUndefined();
+    expect(auth.tokens.mcp?.oauth?.clientInformation?.issuer).toBe(base);
+    expect(auth.tokens.mcp?.oauth?.tokens?.issuer).toBe(base);
   });
   it("rejects a different advertised resource before registration", async () => {
     const { protocol, calls } = setup({ resource: `${base}/other` });
@@ -206,6 +208,58 @@ describe("native CogineX detached MCP authorization", () => {
     const { auth } = await connected(protocol);
     expect(auth.identity.authority).not.toBe(context().accountIssuer);
     expect(auth.identity.context.xConnectionContext).toMatchObject({
+      accountIssuer: context().accountIssuer,
+    });
+    expect(auth.tokens.mcp?.oauth?.tokens?.issuer).toBe(base);
+  });
+  it("rejects a client bound to another issuer path before exchanging a code", async () => {
+    const { protocol, calls } = setup();
+    const pending = await protocol.begin(config(), "fixture-state", signal());
+    pending.material.oauth!.clientInformation!.issuer = `${base}/other-tenant`;
+    const before = calls.length;
+    await expect(
+      protocol.exchange(config(), pending, "fixture-code", "fixture-state", signal()),
+    ).rejects.toMatchObject({ kind: "authorization_required" });
+    expect(calls).toHaveLength(before);
+  });
+  it.each(["clientInformation", "tokens"] as const)(
+    "rejects a refreshed grant bound to another issuer (%s) before sending credentials",
+    async (field) => {
+      const { protocol, calls } = setup();
+      const { auth } = await connected(protocol);
+      auth.tokens.mcp!.oauth![field]!.issuer = `${base}/other-tenant`;
+      const before = calls.length;
+      await expect(protocol.refresh(config(), auth, signal())).rejects.toMatchObject({
+        kind: "authorization_required",
+      });
+      expect(calls).toHaveLength(before);
+    },
+  );
+  it("stamps primitive exchange and refresh results with the verified authority instead of wire issuer", async () => {
+    const { protocol } = setup({
+      exchange: Response.json({
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        token_type: "Bearer",
+        issuer: "https://untrusted.example.test",
+        scope: "mcp",
+        expires_in: 3600,
+      }),
+      refresh: Response.json({
+        access_token: "access-2",
+        refresh_token: "refresh-2",
+        token_type: "Bearer",
+        issuer: "https://untrusted.example.test",
+        scope: "mcp",
+        expires_in: 3600,
+      }),
+    });
+    const { auth } = await connected(protocol);
+    expect(auth.tokens.mcp?.oauth?.tokens?.issuer).toBe(base);
+    const next = await protocol.refresh(config(), auth, signal());
+    expect(next.tokens.mcp?.oauth?.tokens?.issuer).toBe(base);
+    expect(next.tokens.mcp?.oauth?.clientInformation?.issuer).toBe(base);
+    expect(next.identity.context.xConnectionContext).toMatchObject({
       accountIssuer: context().accountIssuer,
     });
   });
