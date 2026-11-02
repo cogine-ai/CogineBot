@@ -16,6 +16,7 @@ let closed = false;
 function makePopup() {
   return {
     name: "",
+    opener: window as Window | null,
     get closed() {
       return closed;
     },
@@ -79,6 +80,7 @@ it("opens synchronously before a slow begin and navigates the same owned popup a
   popup.location.replace.mockImplementation(() => {
     expect(channels).toHaveLength(1);
     expect(channels[0]!.onmessage).toBeTypeOf("function");
+    expect(popup.opener).toBeNull();
   });
   release(required);
   await Promise.resolve();
@@ -221,5 +223,20 @@ it("keeps a missing completion uncertain until timeout and cleans navigation err
   });
   await expect(start()).rejects.toThrow("navigation blocked");
   expect(channels[1]!.close).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
+});
+it("does not navigate the provider when clearing the opener fails and cleans owned resources", async () => {
+  Object.defineProperty(popup, "opener", {
+    set() {
+      throw new DOMException("opener isolation denied", "SecurityError");
+    },
+  });
+  const controller = new AbortController();
+  const remove = vi.spyOn(controller.signal, "removeEventListener");
+  await expect(start(() => true, controller.signal)).rejects.toThrow("opener isolation denied");
+  expect(popup.location.replace).not.toHaveBeenCalled();
+  expect(popup.close).toHaveBeenCalledOnce();
+  expect(channels[0]!.close).toHaveBeenCalledOnce();
+  expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
   expect(vi.getTimerCount()).toBe(0);
 });

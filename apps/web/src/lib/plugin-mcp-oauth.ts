@@ -99,6 +99,8 @@ export function authorizePluginMcp(options: {
           if (!current()) return abort();
           finish("returned");
         };
+        // Completion uses the correlated channel; the provider must not control this app window.
+        ownedPopup.opener = null;
         ownedPopup.location.replace(started.authorizationUrl);
         // COOP can report closed while the provider window is still open. Only a correlated
         // completion, explicit scope cancellation, or timeout ends this wait.

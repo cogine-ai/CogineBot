@@ -432,125 +432,167 @@ test("plugin discovery keeps pinned review and guides an explicitly enabled owne
   expect(authorizations).toBe(0);
 });
 
-test("plugin guided sign-in opens before a delayed begin and waits through a severed provider window proxy", async ({
-  page,
-}, testInfo) => {
-  const installed = receipt("guided-oauth-nonce");
-  let oauthStatus = "none";
-  const server = {
-    id: "synthetic-mcp",
-    spaceId: "synthetic-space",
-    slug: "research",
-    name: "Research service",
-    description: "",
-    transport: "streamable_http",
-    endpoint: "https://research.example.test/mcp",
-    command: null,
-    args: [],
-    envKeys: [],
-    headerKeys: [],
-    hasSecret: false,
-    enabled: true,
-    allowAllTools: false,
-    allowedTools: [],
-    revision: 1,
-    createdAt: "2026-11-02T00:00:00.000Z",
-    updatedAt: "2026-11-02T00:00:00.000Z",
-  };
-  let releaseBegin!: () => void;
-  const beginGate = new Promise<void>((resolve) => {
-    releaseBegin = resolve;
-  });
-  let signalBegin!: () => void;
-  const beginStarted = new Promise<void>((resolve) => {
-    signalBegin = resolve;
-  });
-  let begins = 0;
-  let completions = 0;
-  let callbackUrl = "";
-  await page.route("**/rpc/plugins/list", (route) =>
-    route.fulfill({ json: { json: listing([installed]) } }),
-  );
-  await page.route("**/rpc/plugins/preview", (route) => route.fulfill({ json: { json: preview } }));
-  await page
-    .context()
-    .route("**/rpc/mcp/servers/list", (route) =>
-      route.fulfill({ json: { json: [{ ...server, oauthStatus }] } }),
-    );
-  await page.context().route("**/rpc/mcp/oauth/begin", async (route) => {
-    begins += 1;
-    const input = route.request().postDataJSON().json;
-    expect(input.serverId).toBe(server.id);
-    callbackUrl = `${input.redirectUri}?code=fake-guided-code&state=guided-session`;
-    signalBegin();
-    await beginGate;
-    return route.fulfill({
-      json: {
-        json: {
-          status: "authorization_required",
-          sessionId: "guided-session",
-          authorizationUrl: "https://plugin-auth.example.test/authorize",
-        },
-      },
-    });
-  });
-  await page.context().route("https://plugin-auth.example.test/authorize", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      headers: { "cross-origin-opener-policy": "same-origin" },
-      body: `<h1>Fixture sign-in</h1><a href="${callbackUrl}">Finish sign-in</a>`,
-    }),
-  );
-  await page.context().route("**/rpc/mcp/oauth/complete", (route) => {
-    expect(route.request().postDataJSON().json).toEqual({
-      sessionId: "guided-session",
-      state: "guided-session",
-      code: "fake-guided-code",
-    });
-    completions += 1;
-    oauthStatus = "connected";
-    return route.fulfill({ json: { json: { ok: true } } });
-  });
-  const { panel } = await openPlugins(page);
-  await panel
-    .getByRole("article", { name: preview.name, exact: true })
-    .getByRole("button", { name: "Set up connections", exact: true })
-    .click();
-  const guide = panel.getByTestId("plugin-server-setup");
-  await page.evaluate(() => {
-    const original = window.open.bind(window);
-    window.open = (...args) => {
-      const opened = original(...args);
-      if (args[1]?.startsWith("rakazo-mcp-oauth-pending-"))
-        (window as Window & { fixturePluginPopup?: Window | null }).fixturePluginPopup = opened;
-      return opened;
+for (const coop of [true, false]) {
+  test(`plugin guided sign-in opens before a delayed begin with ${coop ? "COOP" : "non-COOP"} provider isolation`, async ({
+    page,
+  }, testInfo) => {
+    const installed = receipt("guided-oauth-nonce");
+    let oauthStatus = "none";
+    const server = {
+      id: "synthetic-mcp",
+      spaceId: "synthetic-space",
+      slug: "research",
+      name: "Research service",
+      description: "",
+      transport: "streamable_http",
+      endpoint: "https://research.example.test/mcp",
+      command: null,
+      args: [],
+      envKeys: [],
+      headerKeys: [],
+      hasSecret: false,
+      enabled: true,
+      allowAllTools: false,
+      allowedTools: [],
+      revision: 1,
+      createdAt: "2026-11-02T00:00:00.000Z",
+      updatedAt: "2026-11-02T00:00:00.000Z",
     };
+    let releaseBegin!: () => void;
+    const beginGate = new Promise<void>((resolve) => {
+      releaseBegin = resolve;
+    });
+    let signalBegin!: () => void;
+    const beginStarted = new Promise<void>((resolve) => {
+      signalBegin = resolve;
+    });
+    let begins = 0;
+    let completions = 0;
+    let callbackUrl = "";
+    await page.route("**/rpc/plugins/list", (route) =>
+      route.fulfill({ json: { json: listing([installed]) } }),
+    );
+    await page.route("**/rpc/plugins/preview", (route) =>
+      route.fulfill({ json: { json: preview } }),
+    );
+    await page
+      .context()
+      .route("**/rpc/mcp/servers/list", (route) =>
+        route.fulfill({ json: { json: [{ ...server, oauthStatus }] } }),
+      );
+    await page.context().route("**/rpc/mcp/oauth/begin", async (route) => {
+      begins += 1;
+      const input = route.request().postDataJSON().json;
+      expect(input.serverId).toBe(server.id);
+      callbackUrl = `${input.redirectUri}?code=fake-guided-code&state=guided-session`;
+      signalBegin();
+      await beginGate;
+      return route.fulfill({
+        json: {
+          json: {
+            status: "authorization_required",
+            sessionId: "guided-session",
+            authorizationUrl: "https://plugin-auth.example.test/authorize",
+          },
+        },
+      });
+    });
+    await page.context().route("https://plugin-auth.example.test/authorize", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        headers: coop ? { "cross-origin-opener-policy": "same-origin" } : {},
+        body: `<h1>Fixture sign-in</h1><a href="${callbackUrl}">Finish sign-in</a>${
+          coop
+            ? ""
+            : `<button id="probe">Test parent isolation</button><p id="isolation"></p><script>
+            document.querySelector("#probe").onclick = () => {
+              if (window.opener) {
+                window.opener.location = ${JSON.stringify(`${new URL(callbackUrl).origin}/fixture-parent-takeover`)};
+                document.querySelector("#isolation").textContent = "Parent navigation attempted";
+              } else document.querySelector("#isolation").textContent = "Parent isolated";
+            };
+          </script>`
+        }`,
+      }),
+    );
+    await page.context().route("**/rpc/mcp/oauth/complete", (route) => {
+      expect(route.request().postDataJSON().json).toEqual({
+        sessionId: "guided-session",
+        state: "guided-session",
+        code: "fake-guided-code",
+      });
+      completions += 1;
+      oauthStatus = "connected";
+      return route.fulfill({ json: { json: { ok: true } } });
+    });
+    const { panel } = await openPlugins(page);
+    await panel
+      .getByRole("article", { name: preview.name, exact: true })
+      .getByRole("button", { name: "Set up connections", exact: true })
+      .click();
+    const guide = panel.getByTestId("plugin-server-setup");
+    await page.evaluate(() => {
+      const original = window.open.bind(window);
+      window.open = (...args) => {
+        const opened = original(...args);
+        if (args[1]?.startsWith("rakazo-mcp-oauth-pending-"))
+          (window as Window & { fixturePluginPopup?: Window | null }).fixturePluginPopup = opened;
+        return opened;
+      };
+    });
+    const popupPromise = page.waitForEvent("popup");
+    await guide.getByRole("button", { name: "Sign in", exact: true }).click();
+    const popup = await popupPromise;
+    await beginStarted;
+    expect(popup.url()).toBe("about:blank");
+    expect(await popup.evaluate(() => window.name)).toMatch(/^rakazo-mcp-oauth-pending-/);
+    expect(begins).toBe(1);
+    expect(completions).toBe(0);
+    await expect(guide.getByText("Connected", { exact: true })).toHaveCount(0);
+    releaseBegin();
+    await expect(
+      popup.getByRole("heading", { name: "Fixture sign-in", exact: true }),
+    ).toBeVisible();
+    if (coop) {
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as Window & { fixturePluginPopup?: Window | null }).fixturePluginPopup
+                ?.closed,
+          ),
+        )
+        .toBe(true);
+    } else {
+      const parentUrl = page.url();
+      const openerPresent = await popup.evaluate(() => window.opener !== null);
+      if (openerPresent) {
+        const takeover = page.waitForURL("**/fixture-parent-takeover");
+        await popup.getByRole("button", { name: "Test parent isolation", exact: true }).click();
+        await takeover;
+        await testInfo.attach("provider-opener-probe", {
+          body: JSON.stringify({ openerPresent, parentNavigated: true }),
+          contentType: "application/json",
+        });
+        expect(page.url(), "Third-party provider navigated its opener").toBe(parentUrl);
+      } else {
+        await popup.getByRole("button", { name: "Test parent isolation", exact: true }).click();
+        await expect(popup.getByText("Parent isolated", { exact: true })).toBeVisible();
+        expect(page.url()).toBe(parentUrl);
+        await testInfo.attach("provider-opener-probe", {
+          body: JSON.stringify({ openerPresent, parentNavigated: false }),
+          contentType: "application/json",
+        });
+      }
+      expect(openerPresent).toBe(false);
+    }
+    await expect(guide.getByText("Connecting…", { exact: true })).toBeVisible();
+    await expect(guide.getByText("Connected", { exact: true })).toHaveCount(0);
+    if (coop) await captureScreenshot(popup, testInfo, "d012-plugin-oauth-popup");
+    await popup.getByRole("link", { name: "Finish sign-in", exact: true }).click();
+    await expect(guide.getByText("Connected", { exact: true })).toBeVisible();
+    expect(begins).toBe(1);
+    expect(completions).toBe(1);
+    if (!popup.isClosed()) await popup.close();
   });
-  const popupPromise = page.waitForEvent("popup");
-  await guide.getByRole("button", { name: "Sign in", exact: true }).click();
-  const popup = await popupPromise;
-  await beginStarted;
-  expect(popup.url()).toBe("about:blank");
-  expect(await popup.evaluate(() => window.name)).toMatch(/^rakazo-mcp-oauth-pending-/);
-  expect(begins).toBe(1);
-  expect(completions).toBe(0);
-  await expect(guide.getByText("Connected", { exact: true })).toHaveCount(0);
-  releaseBegin();
-  await expect(popup.getByRole("heading", { name: "Fixture sign-in", exact: true })).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as Window & { fixturePluginPopup?: Window | null }).fixturePluginPopup?.closed,
-      ),
-    )
-    .toBe(true);
-  await expect(guide.getByText("Connecting…", { exact: true })).toBeVisible();
-  await expect(guide.getByText("Connected", { exact: true })).toHaveCount(0);
-  await captureScreenshot(popup, testInfo, "d012-plugin-oauth-popup");
-  await popup.getByRole("link", { name: "Finish sign-in", exact: true }).click();
-  await expect(guide.getByText("Connected", { exact: true })).toBeVisible();
-  expect(begins).toBe(1);
-  expect(completions).toBe(1);
-  if (!popup.isClosed()) await popup.close();
-});
+}
