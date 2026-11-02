@@ -114,6 +114,7 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
+import { PluginServerConnectionInputSchema } from "./mcp.js";
 import {
   NativeBeginInputSchema,
   NativeConfigEditableSchema,
@@ -152,6 +153,8 @@ import {
   PluginInstallReceiptSchema,
   PluginPreviewInputSchema,
   PluginPreviewSchema,
+  PluginSearchInputSchema,
+  PluginSearchResultSchema,
   PluginUninstallInputSchema,
 } from "./plugins.js";
 import { MessageReactionSchema } from "./reactions.js";
@@ -746,6 +749,7 @@ export const appContract = {
     remove: oc.input(z.object({ skillId: Id })).output(z.object({ ok: z.literal(true) })),
   },
   plugins: {
+    search: oc.input(PluginSearchInputSchema).output(PluginSearchResultSchema),
     list: oc.output(PluginInstallListingSchema),
     preview: oc.input(PluginPreviewInputSchema).output(PluginPreviewSchema),
     install: oc.input(PluginInstallInputSchema).output(PluginInstallReceiptSchema),
@@ -805,6 +809,7 @@ export const appContract = {
           z.union([
             z.object({ id: Id, config: McpServerConfigInput }),
             z.object({ id: Id, secret: z.string().min(1).max(16384) }),
+            PluginServerConnectionInputSchema,
           ]),
         )
         .output(McpServerSchema),

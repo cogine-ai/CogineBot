@@ -6529,3 +6529,87 @@ msgstr "Otro miembro"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installed by {name}"
 msgstr "Instalado por {name}"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Browser authorization was not requested."
+msgstr "No se solicitó autorización en el navegador."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm connection changes."
+msgstr "No se pudieron confirmar los cambios de conexión."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm sign-in. Check status or try again."
+msgstr "No se pudo confirmar el inicio de sesión. Comprueba el estado o vuelve a intentarlo."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not update this connection."
+msgstr "No se pudo actualizar esta conexión."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Disable connection"
+msgstr "Desactivar conexión"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Discover plugins"
+msgstr "Descubrir plugins"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Edit credentials"
+msgstr "Editar credenciales"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Enable connection"
+msgstr "Activar conexión"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Leave blank to keep saved credentials."
+msgstr "Déjalo en blanco para conservar las credenciales guardadas."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "MCP connection"
+msgstr "Conexión MCP"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "No plugins found"
+msgstr "No se encontraron plugins"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Reconnect"
+msgstr "Volver a conectar"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Registry listings are discovery hints. Review the exact version before installing."
+msgstr "Los listados de registros ayudan a descubrir plugins. Revisa la versión exacta antes de instalar."
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Retry search"
+msgstr "Reintentar búsqueda"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Save credentials"
+msgstr "Guardar credenciales"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Search plugins"
+msgstr "Buscar plugins"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Set up connections"
+msgstr "Configurar conexiones"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Sign-in required"
+msgstr "Se requiere iniciar sesión"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Some registries are unavailable."
+msgstr "Algunos registros no están disponibles."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Add header"
+msgstr "Añadir cabecera"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Connection status unavailable."
+msgstr "Estado de conexión no disponible."

@@ -6,9 +6,8 @@ import { MCP_OAUTH_CHANNEL } from "../lib/mcp-connect";
 import { rpc } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 
-// The window.open name set by the OAuth popup flow. Providers whose login
-// pages send COOP sever window.opener mid-flow, but the window name survives,
-// so it is the reliable "we are the popup" marker.
+// Session-scoped window names survive providers that sever window.opener.
+// The unsuffixed name remains supported for existing connection entry points.
 const POPUP_NAME = MCP_OAUTH_CHANNEL;
 
 export function McpOAuthCallbackPage() {
@@ -18,6 +17,10 @@ export function McpOAuthCallbackPage() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const handledState = useRef<string | null>(null);
+  const callbackSession = params.get("state");
+  const isPopup =
+    window.name === POPUP_NAME ||
+    (Boolean(callbackSession) && window.name === `${POPUP_NAME}-${callbackSession}`);
   useEffect(() => {
     const code = params.get("code");
     const state = params.get("state");
@@ -31,9 +34,9 @@ export function McpOAuthCallbackPage() {
       .complete({ sessionId: state, code, state })
       .then(() => {
         const channel = new BroadcastChannel(POPUP_NAME);
-        channel.postMessage({ type: "mcp-oauth-complete" });
+        channel.postMessage({ type: "mcp-oauth-complete", sessionId: state });
         channel.close();
-        if (window.name === POPUP_NAME) {
+        if (isPopup) {
           setDone(true);
           window.close();
           return;
@@ -41,8 +44,8 @@ export function McpOAuthCallbackPage() {
         navigate("/app?mcp_oauth=connected", { replace: true });
       })
       .catch((err: unknown) => setError(errorText(err, t`Could not complete OAuth`)));
-  }, [navigate, params, t]);
-  const showReturn = Boolean(error) && window.name !== POPUP_NAME;
+  }, [navigate, params, t, isPopup]);
+  const showReturn = Boolean(error) && !isPopup;
   return (
     <div className="grid min-h-screen place-items-center bg-background p-6 text-center">
       <div>

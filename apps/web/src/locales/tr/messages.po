@@ -6529,3 +6529,87 @@ msgstr "Başka bir üye"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Installed by {name}"
 msgstr "{name} tarafından yüklendi"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Browser authorization was not requested."
+msgstr "Tarayıcı yetkilendirmesi istenmedi."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm connection changes."
+msgstr "Bağlantı değişiklikleri doğrulanamadı."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not confirm sign-in. Check status or try again."
+msgstr "Oturum açma doğrulanamadı. Durumu kontrol edin veya tekrar deneyin."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Could not update this connection."
+msgstr "Bu bağlantı güncellenemedi."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Disable connection"
+msgstr "Bağlantıyı devre dışı bırak"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Discover plugins"
+msgstr "Eklentileri keşfet"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Edit credentials"
+msgstr "Kimlik bilgilerini düzenle"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Enable connection"
+msgstr "Bağlantıyı etkinleştir"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Leave blank to keep saved credentials."
+msgstr "Kayıtlı kimlik bilgilerini korumak için boş bırakın."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "MCP connection"
+msgstr "MCP bağlantısı"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "No plugins found"
+msgstr "Eklenti bulunamadı"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Reconnect"
+msgstr "Yeniden bağlan"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Registry listings are discovery hints. Review the exact version before installing."
+msgstr "Kayıt listeleri eklentileri keşfetmeye yardımcı olur. Yüklemeden önce tam sürümü inceleyin."
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Retry search"
+msgstr "Aramayı tekrarla"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Save credentials"
+msgstr "Kimlik bilgilerini kaydet"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Search plugins"
+msgstr "Eklenti ara"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Set up connections"
+msgstr "Bağlantıları ayarla"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Sign-in required"
+msgstr "Oturum açmak gerekiyor"
+
+#: src/components/integrations/PluginDiscovery.tsx
+msgid "Some registries are unavailable."
+msgstr "Bazı kayıtlar kullanılamıyor."
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Add header"
+msgstr "Üst bilgi ekle"
+
+#: src/components/integrations/PluginServerSetup.tsx
+msgid "Connection status unavailable."
+msgstr "Bağlantı durumu kullanılamıyor."

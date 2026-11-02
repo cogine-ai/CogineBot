@@ -6,6 +6,12 @@ plugin subdirectory, and choose **Preview**. Review the original Skill instructi
 remote MCP endpoints, skipped components and version details before installing.
 Electron uses the same panel as the web app.
 
+Use **Search plugins** to discover packages in the Cursor and xAI public registries.
+Listings are discovery hints, not approval or proof of the package contents. Choose
+**Preview** on a result to enter the same fixed-version review before installing.
+If one registry is unavailable, the other results remain visible with **Retry search**.
+Search pages belong to one catalog snapshot; retry the search if that snapshot changes.
+
 Preview does not install anything. Installation re-fetches the exact reviewed commit
 and verifies its content digest. It imports self-contained `SKILL.md` files as
 read-only Skills in the current user's Space and remote HTTPS HTTP/SSE MCP server
@@ -17,8 +23,7 @@ Only public github.com sources are supported. The importer limits acquisition to
 30 seconds, 200 files, 4,000,000 total bytes, 100,000 bytes per file and 200 supported
 components. Symlinks, submodules and paths outside the selected plugin directory
 are rejected. Local processes, hooks, companion files and variable templates are
-not imported; the preview lists skipped components. Marketplace discovery and a
-guided connection flow are not included in this version.
+not imported; the preview lists skipped components.
 
 Repository reads are unauthenticated and share GitHub's rate limits across the
 deployment's egress address. A temporary limit can delay imports; this version does
@@ -29,6 +34,26 @@ public preview or installation receipt. A package that repeats a detected header
 credential in public content is rejected. Inspect all instructions before installing;
 the importer does not certify their intent. Existing or built-in Skill names cannot
 be overwritten.
+
+After installation, choose **Set up connections** on your own installation. Review
+each server's endpoint and explicitly enable its connection. **Edit credentials**
+updates named HTTP headers through the existing encrypted store; blank fields keep
+saved values. Enter the header name required by that service instead of assuming a
+particular authorization scheme. Credential edits preserve other headers and OAuth
+state. A stale settings revision requires a fresh status read before another save.
+
+On web and Electron, use **Sign in** when the server supports browser authorization.
+A returned or closed browser window does not establish a connection: the app reads
+the server status before showing **Connected**. If a popup is blocked or authorization
+is interrupted, choose **Check status** and retry as needed.
+The mobile app can save credentials and enable individual connections. Choose
+**Open web app**, sign in there if needed, and open the installed plugin's connection
+settings to authorize it. The system browser has its own session; the mobile app
+does not start OAuth or transfer its session to that browser. Return to the app and
+choose **Check status** to read the same server's state.
+**Tool access** remains a separate permission review.
+Configuring a connection never grants tools to a Bot or expands account authorization.
+Space-owner removal rights do not grant access to another member's credentials.
 
 If an installation response is interrupted, choose **Check status** before retrying.
 The same request identifies its durable outcome, including failures and removals;
@@ -61,7 +86,9 @@ pending, including when a lookup has not found a resource that could still appea
 
 ## Offline validation
 
-The parser and shared UI controller have deterministic unit fixtures. PostgreSQL
+The parsers, catalog cache/pagination and shared UI controllers have deterministic
+unit fixtures. Registry failures are not cached and no discovery result installs
+anything automatically. PostgreSQL
 acceptance uses authenticated application HTTP, real transactions and a real durable
 worker, with synthetic repository data and local emulated MCP transports:
 

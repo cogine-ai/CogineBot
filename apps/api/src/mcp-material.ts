@@ -1,4 +1,6 @@
 import type { McpServerConfigInput } from "@rakazo/contracts";
+import { McpConnectionHeadersSchema } from "@rakazo/contracts";
+import { z } from "zod";
 
 /** Shape of the encrypted MCP credential blob. `oauth` holds SDK OAuth state
  * (tokens, client registration, PKCE verifier) managed by McpOAuthBroker. */
@@ -12,6 +14,39 @@ export type McpSecretMaterial = {
 export type McpMaterialUpdate =
   | { action: "keep" }
   | { action: "store"; material: McpSecretMaterial };
+
+const ConnectionMaterialSchema = z
+  .object({
+    secret: z.string().optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    headers: McpConnectionHeadersSchema.optional(),
+    oauth: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+/** Connection patches must never replace unreadable credential material. */
+export function parseMcpConnectionMaterial(value: string): McpSecretMaterial {
+  const parsed = ConnectionMaterialSchema.safeParse(JSON.parse(value));
+  if (!parsed.success) throw new Error("Stored MCP credentials are unavailable");
+  return parsed.data;
+}
+
+/** Omitted/empty patches keep the exact stored credential, including OAuth. */
+export function buildMcpConnectionMaterial(
+  existing: McpSecretMaterial,
+  headerUpdates?: Record<string, string>,
+): McpMaterialUpdate {
+  if (!headerUpdates || Object.keys(headerUpdates).length === 0) return { action: "keep" };
+  const updates = McpConnectionHeadersSchema.parse(headerUpdates);
+  const headers = McpConnectionHeadersSchema.parse(existing.headers ?? {});
+  for (const [name, value] of Object.entries(updates)) {
+    const previous = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
+    if (previous) delete headers[previous];
+    headers[name] = value;
+  }
+  McpConnectionHeadersSchema.parse(headers);
+  return { action: "store", material: { ...existing, headers } };
+}
 
 /** Compute the next encrypted credential blob for an MCP server update.
  *

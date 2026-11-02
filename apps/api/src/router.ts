@@ -60,6 +60,7 @@ import {
   computerSupportsUpdate,
   computerUpdateView,
   createFaviconResolver,
+  createPluginMarketplace,
   createTicket,
   createVoiceProvider,
   defaultCatalogModelId,
@@ -92,6 +93,7 @@ import {
   modelCredentialDto,
   nativeSourceJob,
   normalizeSecretDestination,
+  PluginMarketplaceCursorError,
   PushSessionEndedError,
   parseModelSecret,
   persistPreparedSecret,
@@ -279,7 +281,12 @@ import {
   resolveMcpApprovalCards,
   revertConnectedMcpApprovals,
 } from "./mcp-approval.js";
-import { buildMcpUpdateMaterial } from "./mcp-material.js";
+import type { McpMaterialUpdate, McpSecretMaterial } from "./mcp-material.js";
+import {
+  buildMcpConnectionMaterial,
+  buildMcpUpdateMaterial,
+  parseMcpConnectionMaterial,
+} from "./mcp-material.js";
 import {
   disconnectMemoryProvider,
   persistMemoryProviderConfig,
@@ -473,6 +480,27 @@ async function lockProviderConnectionScope(
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
 }
 
+async function lockMcpConnectionScope(
+  tx: Prisma.TransactionClient,
+  actor: Actor,
+  sessionId?: string,
+): Promise<void> {
+  const users = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM "user" WHERE id=${actor.userId} FOR SHARE`;
+  const spaces = await tx.$queryRaw<Array<{ id: string; deletingAt: Date | null }>>`
+    SELECT id, "deletingAt" FROM spaces WHERE id=${actor.spaceId} FOR SHARE`;
+  const members = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM space_members WHERE "spaceId"=${actor.spaceId} AND "userId"=${actor.userId} FOR SHARE`;
+  if (!users.length || !spaces.length || spaces[0]!.deletingAt || !members.length)
+    throw new ORPCError("FORBIDDEN");
+  if (sessionId) {
+    const sessions = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "session" WHERE id=${sessionId} AND "userId"=${actor.userId}
+        AND "expiresAt">(clock_timestamp() AT TIME ZONE 'UTC') FOR SHARE`;
+    if (!sessions.length) throw new ORPCError("UNAUTHORIZED");
+  }
+}
+
 function computerContext(actor: Actor, botId: string, operationId: string): AdapterContext {
   return {
     operationId,
@@ -620,7 +648,7 @@ function mcpAssignmentDto(row: {
 }
 
 export interface RouterDeps {
-  /** Offline repository acquisition boundary; production uses pinned public HTTPS reads. */
+  /** Offline public GitHub acquisition boundary for repositories and fixed registries. */
   pluginRead?: PluginRead;
   openApiPreviewKey?: string;
   openApiNow?: () => number;
@@ -952,6 +980,7 @@ export function createRouter(deps: RouterDeps) {
     uninstall: pluginUninstaller.uninstall,
     assertEndpoint: (endpoint, actor) => assertMcpRemoteEndpoint(endpoint, actor, deps),
   });
+  const pluginMarketplace = createPluginMarketplace(deps.pluginRead);
 
   async function lockActivePluginChild(
     tx: Prisma.TransactionClient,
@@ -4453,6 +4482,22 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     plugins: {
+      search: authed.plugins.search.handler(async ({ context, input }) => {
+        context.signal?.throwIfAborted();
+        if (context.stillAuthorized && !(await context.stillAuthorized()))
+          throw new ORPCError("UNAUTHORIZED");
+        try {
+          const result = await pluginMarketplace.search(input, context.signal);
+          context.signal?.throwIfAborted();
+          if (context.stillAuthorized && !(await context.stillAuthorized()))
+            throw new ORPCError("UNAUTHORIZED");
+          return result;
+        } catch (error) {
+          if (error instanceof PluginMarketplaceCursorError)
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          throw error;
+        }
+      }),
       list: authed.plugins.list.handler(({ context }) => pluginInstalls.list(context)),
       preview: authed.plugins.preview.handler(({ context, input }) =>
         pluginInstalls.preview(context, input),
@@ -4701,15 +4746,21 @@ export function createRouter(deps: RouterDeps) {
             : [];
           const ciphertextById = new Map(secrets.map((secret) => [secret.id, secret.ciphertext]));
           return Promise.all(
-            rows.map(async (row) =>
-              mcpServerDto(
-                row,
-                await mcpOAuth.statusForCiphertext(
-                  row.secretId ? ciphertextById.get(row.secretId) : undefined,
-                  row.secretId ?? undefined,
-                ),
-              ),
-            ),
+            rows.map(async (row) => {
+              let oauthStatus: McpServer["oauthStatus"] = "none";
+              if (row.secretId) {
+                const ciphertext = ciphertextById.get(row.secretId);
+                if (!ciphertext) oauthStatus = "unknown";
+                else {
+                  try {
+                    oauthStatus = await mcpOAuth.statusForCiphertext(ciphertext, row.secretId);
+                  } catch {
+                    oauthStatus = "unknown";
+                  }
+                }
+              }
+              return mcpServerDto(row, oauthStatus);
+            }),
           );
         }),
         create: authed.mcp.servers.create.handler(async ({ context, input }) => {
@@ -4818,8 +4869,21 @@ export function createRouter(deps: RouterDeps) {
           return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
         }),
         update: authed.mcp.servers.update.handler(async ({ context, input }) => {
-          for (let attempt = 0; attempt < 5; attempt++) {
+          const connection = "connection" in input ? input.connection : undefined;
+          const credentialActor = {
+            userId: context.actor.userId,
+            spaceId: context.actor.spaceId,
+          };
+          const patchHeaders = Object.keys(connection?.headerUpdates ?? {}).length > 0;
+          const assertAuthorized = async () => {
+            context.signal?.throwIfAborted();
+            if (context.stillAuthorized && !(await context.stillAuthorized()))
+              throw new ORPCError("UNAUTHORIZED");
+          };
+          if (connection) await assertAuthorized();
+          for (let attempt = 0; attempt < (connection ? 1 : 5); attempt++) {
             const { existing, existingSecret } = await deps.prisma.$transaction(async (tx) => {
+              if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
               const existing = await tx.mcpServer.findFirst({
                 where: {
                   id: input.id,
@@ -4829,26 +4893,46 @@ export function createRouter(deps: RouterDeps) {
               });
               if (!existing) throw new IsolationError();
               await lockActivePluginChild(tx, existing, context.actor);
-              const existingSecret = existing.secretId
-                ? await tx.secret.findFirst({
-                    where: {
-                      id: existing.secretId,
-                      spaceId: context.actor.spaceId,
-                      userId: context.actor.userId,
-                    },
-                  })
-                : null;
+              if (connection && existing.revision !== connection.revision)
+                throw new ORPCError("CONFLICT", {
+                  message: "MCP server changed; reload its connection settings",
+                });
+              if (connection && existing.transport === "stdio")
+                throw new ORPCError("BAD_REQUEST", { message: "A remote MCP server is required" });
+              const existingSecret =
+                existing.secretId && (!connection || patchHeaders)
+                  ? await tx.secret.findFirst({
+                      where: {
+                        id: existing.secretId,
+                        spaceId: context.actor.spaceId,
+                        userId: context.actor.userId,
+                      },
+                    })
+                  : null;
               return { existing, existingSecret };
             });
-            let existingMaterial: Record<string, unknown> = {};
+            let existingMaterial: McpSecretMaterial = {};
+            if (connection && patchHeaders && existing.secretId && !existingSecret)
+              throw new ORPCError("SERVICE_UNAVAILABLE", {
+                message: "Stored MCP credentials are unavailable. Retry this setting.",
+              });
             if (existingSecret) {
               try {
-                const value = JSON.parse(
-                  await deps.secrets.load(existingSecret.ciphertext, existingSecret.id),
+                const plaintext = await deps.secrets.load(
+                  existingSecret.ciphertext,
+                  existingSecret.id,
                 );
-                if (value && typeof value === "object" && !Array.isArray(value))
-                  existingMaterial = value as Record<string, unknown>;
+                if (connection) existingMaterial = parseMcpConnectionMaterial(plaintext);
+                else {
+                  const value = JSON.parse(plaintext);
+                  if (value && typeof value === "object" && !Array.isArray(value))
+                    existingMaterial = value as McpSecretMaterial;
+                }
               } catch {
+                if (connection)
+                  throw new ORPCError("SERVICE_UNAVAILABLE", {
+                    message: "Stored MCP credentials are unavailable. Retry this setting.",
+                  });
                 /* Existing malformed secrets are replaced only when new credentials are supplied. */
               }
             }
@@ -4859,11 +4943,11 @@ export function createRouter(deps: RouterDeps) {
                     slug: existing.slug,
                     name: existing.name,
                     description: existing.description,
-                    enabled: existing.enabled,
+                    enabled: connection?.enabled ?? existing.enabled,
                     transport: existing.transport as "streamable_http" | "sse",
                     endpoint: existing.endpoint!,
                     headers: (existingMaterial.headers ?? {}) as Record<string, string>,
-                    secret: input.secret,
+                    ...("secret" in input ? { secret: input.secret } : {}),
                   };
             if (!("config" in input) && existing.transport === "stdio") {
               throw new ORPCError("BAD_REQUEST", { message: "A remote MCP server is required" });
@@ -4872,14 +4956,24 @@ export function createRouter(deps: RouterDeps) {
             if (existing.endpoint !== nextEndpoint) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
-            const update = buildMcpUpdateMaterial(existingMaterial, config, {
-              clearOAuth: existing.endpoint !== nextEndpoint,
-            });
+            let update: McpMaterialUpdate;
+            if (connection) {
+              try {
+                update = buildMcpConnectionMaterial(existingMaterial, connection.headerUpdates);
+              } catch {
+                throw new ORPCError("BAD_REQUEST", { message: "Invalid MCP connection headers" });
+              }
+            } else {
+              update = buildMcpUpdateMaterial(existingMaterial, config, {
+                clearOAuth: existing.endpoint !== nextEndpoint,
+              });
+            }
+            if (connection) await assertAuthorized();
             const hasPreparedMaterial =
               update.action === "store" && Object.keys(update.material).length > 0;
             const reservation =
               hasPreparedMaterial && existing.installId
-                ? await mcpOAuth.reservePluginCredential(existing.installId, context.actor)
+                ? await mcpOAuth.reservePluginCredential(existing.installId, credentialActor)
                 : undefined;
             let retired: string | undefined;
             try {
@@ -4907,11 +5001,14 @@ export function createRouter(deps: RouterDeps) {
                       });
                     await mcpOAuth.resolvePluginCredential(
                       existing.installId,
-                      context.actor,
+                      credentialActor,
                       stored,
                     );
                   }
+                  if (connection) await assertAuthorized();
                   return deps.prisma.$transaction(async (tx) => {
+                    if (connection)
+                      await lockMcpConnectionScope(tx, context.actor, context.sessionId);
                     const parent = await lockActivePluginChild(tx, existing, context.actor);
                     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
                     const current = await tx.mcpServer.findFirst({
@@ -4939,7 +5036,11 @@ export function createRouter(deps: RouterDeps) {
                           },
                         })
                       : null;
-                    if (secret?.ciphertext !== existingSecret?.ciphertext) return null;
+                    if (
+                      (!connection || patchHeaders) &&
+                      secret?.ciphertext !== existingSecret?.ciphertext
+                    )
+                      return null;
                     if (stored) {
                       await tx.secret.create({
                         data: {
@@ -4954,21 +5055,38 @@ export function createRouter(deps: RouterDeps) {
                     const updated = await tx.mcpServer.update({
                       where: { id: existing.id },
                       data: {
-                        slug: config.slug,
-                        name: config.name,
-                        description: config.description,
-                        transport: config.transport,
-                        endpoint: nextEndpoint,
-                        command: "command" in config ? config.command : null,
-                        args: ("args" in config ? config.args : []) as Prisma.InputJsonValue,
-                        env: ("env" in config
-                          ? Object.fromEntries(Object.keys(config.env).map((key) => [key, true]))
-                          : {}) as Prisma.InputJsonValue,
-                        headers: ("headers" in config
-                          ? Object.fromEntries(
-                              Object.keys(config.headers).map((key) => [key, true]),
-                            )
-                          : {}) as Prisma.InputJsonValue,
+                        ...(connection
+                          ? {
+                              ...(patchHeaders && update.action === "store"
+                                ? {
+                                    headers: Object.fromEntries(
+                                      Object.keys(update.material.headers ?? {}).map((key) => [
+                                        key,
+                                        true,
+                                      ]),
+                                    ) as Prisma.InputJsonValue,
+                                  }
+                                : {}),
+                            }
+                          : {
+                              slug: config.slug,
+                              name: config.name,
+                              description: config.description,
+                              transport: config.transport,
+                              endpoint: nextEndpoint,
+                              command: "command" in config ? config.command : null,
+                              args: ("args" in config ? config.args : []) as Prisma.InputJsonValue,
+                              env: ("env" in config
+                                ? Object.fromEntries(
+                                    Object.keys(config.env).map((key) => [key, true]),
+                                  )
+                                : {}) as Prisma.InputJsonValue,
+                              headers: ("headers" in config
+                                ? Object.fromEntries(
+                                    Object.keys(config.headers).map((key) => [key, true]),
+                                  )
+                                : {}) as Prisma.InputJsonValue,
+                            }),
                         enabled: config.enabled,
                         revision: { increment: 1 },
                         ...(stored ? { secretId: stored.id } : clearing ? { secretId: null } : {}),
@@ -5014,23 +5132,33 @@ export function createRouter(deps: RouterDeps) {
               );
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
-                return mcpServerDto(
-                  row.server,
-                  await mcpOAuth.statusFor(row.server, context.actor),
-                );
+                let oauthStatus: McpServer["oauthStatus"];
+                if (!connection) oauthStatus = await mcpOAuth.statusFor(row.server, context.actor);
+                else {
+                  oauthStatus = row.server.secretId ? "unknown" : "none";
+                  if (patchHeaders && update.action === "store") {
+                    try {
+                      oauthStatus = mcpOAuth.statusForMaterial(update.material);
+                    } catch {
+                      // Saving succeeded; unreadable OAuth state is not a failed write.
+                      oauthStatus = "unknown";
+                    }
+                  }
+                }
+                return mcpServerDto(row.server, oauthStatus);
               }
             } finally {
               if (existing.installId) {
                 if (reservation)
                   await mcpOAuth.releasePluginCredential(
                     existing.installId,
-                    context.actor,
+                    credentialActor,
                     reservation.id,
                   );
                 if (retired)
                   await mcpOAuth.releasePluginCredential(
                     existing.installId,
-                    context.actor,
+                    credentialActor,
                     retired,
                   );
               }

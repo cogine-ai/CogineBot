@@ -9,14 +9,17 @@ import type {
   SecretRecord,
   SecretWriteReconciliation,
 } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { PluginRead } from "@rakazo/adapters";
 import { BUILTIN_AGENT_SKILLS, EncryptedSecretStore } from "@rakazo/adapters";
 import type {
   Actor,
+  McpServer,
   PluginInstallInput,
   PluginInstallListing,
   PluginInstallReceipt,
   PluginPreview,
+  PluginSearchResult,
 } from "@rakazo/contracts";
 import { McpServerConfigInput } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
@@ -52,6 +55,8 @@ class FixtureSecretStore extends EncryptedSecretStore {
   readonly records = new Map<string, SecretRecord>();
   puts = 0;
   deletes = 0;
+  loads = 0;
+  failLoad = false;
   unknownAck = false;
   failDelete = false;
   reconcileWrites = false;
@@ -59,6 +64,12 @@ class FixtureSecretStore extends EncryptedSecretStore {
   readonly unsettled = new Set<string>();
   nextPut: Barrier | undefined;
   pauseAtPut: number | undefined;
+
+  override async load(ciphertext: string, context: SecretContext): Promise<string> {
+    this.loads++;
+    if (this.failLoad) throw new SecretStoreUnavailableError("Fixture provider unavailable");
+    return super.load(ciphertext, context);
+  }
 
   override prepareWrite(recordId: string, options: { ephemeral?: boolean } = {}): string {
     return this.inlineRecovery || options.ephemeral
@@ -141,6 +152,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   let secondChildFailure = false;
   let pauseFailureRead: Barrier | undefined;
   const held: Barrier[] = [];
+  let registrySource: string | undefined;
+  let loseUpdateCommitAck = false;
   const read = vi.fn<PluginRead>(async (url, maxBytes, signal) => {
     const paused = pauseRead;
     pauseRead = undefined;
@@ -151,6 +164,23 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     signal?.throwIfAborted();
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
+    if (
+      parsed.hostname === "raw.githubusercontent.com" &&
+      ["cursor", "xai-org"].includes(parts[0]!)
+    ) {
+      expect(maxBytes).toBe(2_000_000);
+      return JSON.stringify({
+        plugins:
+          registrySource && parts[0] === "cursor"
+            ? [
+                {
+                  name: "Offline discovery",
+                  source: { source: "url", url: registrySource, sha: sourceSha },
+                },
+              ]
+            : [],
+      });
+    }
     const repository =
       parsed.hostname === "api.github.com" ? `${parts[1]}/${parts[2]}` : `${parts[0]}/${parts[1]}`;
     const fixture = fixtures.get(repository);
@@ -244,7 +274,15 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
               return callback(wrapped);
             };
           }
-          return Reflect.apply(client.$transaction, client, args);
+          return (Reflect.apply(client.$transaction, client, args) as Promise<unknown>).then(
+            (value) => {
+              if (loseUpdateCommitAck && value && typeof value === "object" && "server" in value) {
+                loseUpdateCommitAck = false;
+                throw new Error("Synthetic committed connection acknowledgement lost");
+              }
+              return value;
+            },
+          );
         };
       },
     });
@@ -439,11 +477,405 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     secrets.pauseAtPut = undefined;
     secrets.unknownAck = false;
     secrets.failDelete = false;
+    secrets.failLoad = false;
     secrets.reconcileWrites = false;
     secrets.inlineRecovery = false;
     secondChildFailure = false;
     pauseFailureRead = undefined;
+    loseUpdateCommitAck = false;
     expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("D01.2 discovers public hints through authenticated HTTP without installing", async () => {
+    const actor = await account();
+    const f = fixture();
+    registrySource = f.source;
+    const puts = secrets.puts;
+    expect(
+      (await request(actor, "plugins/search", { query: "" }, { anonymous: true })).status,
+    ).toBe(401);
+    const result = await call<PluginSearchResult>(actor, "plugins/search", { query: "offline" });
+    expect(result).toMatchObject({
+      entries: [{ name: "Offline discovery", source: `${f.source}@${sourceSha}` }],
+      nextCursor: null,
+      unavailableRegistries: [],
+    });
+    const p = await call<PluginPreview>(actor, "plugins/preview", {
+      source: result.entries[0]!.source,
+    });
+    expect(p.sourceSha).toBe(sourceSha);
+    expect(p.skills[0]!.content).toBe(f.skill);
+    expect(secrets.puts).toBe(puts);
+    expect(
+      await database.prisma.capabilityInstall.count({ where: { userId: actor.actor.userId } }),
+    ).toBe(0);
+  });
+
+  it("D01.2 keeps metadata readable and can disable without provider access", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const before = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    secrets.failLoad = true;
+    const listed = await call<McpServer[]>(actor, "mcp/servers/list");
+    expect(listed).toMatchObject([
+      {
+        id,
+        revision: 1,
+        enabled: false,
+        oauthStatus: "unknown",
+        headerKeys: expect.arrayContaining(["Authorization", "X-Tenant"]),
+      },
+    ]);
+    const loads = secrets.loads;
+    const puts = secrets.puts;
+    const enabled = await call<McpServer>(actor, "mcp/servers/update", {
+      id,
+      connection: { revision: 1, enabled: true },
+    });
+    expect(enabled).toMatchObject({
+      revision: 2,
+      enabled: true,
+      oauthStatus: "unknown",
+      allowAllTools: false,
+      allowedTools: [],
+    });
+    const disabled = await call<McpServer>(actor, "mcp/servers/update", {
+      id,
+      connection: { revision: 2, enabled: false, headerUpdates: {} },
+    });
+    expect(disabled).toMatchObject({ revision: 3, enabled: false, oauthStatus: "unknown" });
+    expect(secrets.loads).toBe(loads);
+    expect(secrets.puts).toBe(puts);
+    const after = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    expect(after.secretId).toBe(before.secretId);
+    expect(after.secret!.ciphertext).toBe(before.secret!.ciphertext);
+    expect(after.headers).toEqual(before.headers);
+    expect(after.allowedTools).toEqual(before.allowedTools);
+    const rejected = await request(actor, "mcp/servers/update", {
+      id,
+      connection: { revision: 3, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+    });
+    expect(rejected.ok).toBe(false);
+    expect(secrets.puts).toBe(puts);
+    expect((await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } })).revision).toBe(3);
+  });
+
+  it("D01.2 patches encrypted named headers while preserving OAuth, metadata and independent tool policy", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const before = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    const material = JSON.parse(await secrets.load(before.secret!.ciphertext, before.secret!.id));
+    const seeded = {
+      ...material,
+      secret: "fixture-bearer",
+      env: { KEEP: "value" },
+      oauth: { tokens: { access_token: "fixture-oauth", token_type: "bearer" } },
+      metadata: { v: 2 },
+    };
+    const record = await secrets.put(
+      JSON.stringify(seeded),
+      {
+        operationId: "fixture-seed",
+        traceId: "fixture",
+        botId: "fixture",
+        spaceId: actor.actor.spaceId,
+        userId: actor.actor.userId,
+        signal: new AbortController().signal,
+      },
+      { recordId: before.secret!.id },
+    );
+    secrets.records.set(record.id, record);
+    await database.prisma.secret.update({
+      where: { id: record.id },
+      data: { ciphertext: record.ciphertext },
+    });
+    const policy = await call<McpServer>(actor, "mcp/servers/setTools", {
+      id,
+      revision: 1,
+      allowAllTools: false,
+      allowedTools: ["read"],
+    });
+    const input = {
+      id,
+      connection: {
+        revision: policy.revision,
+        enabled: false,
+        headerUpdates: { authorization: "replacement-fixture", "X-Key": "new-fixture" },
+      },
+    };
+    const puts = secrets.puts;
+    const response = await request(actor, "mcp/servers/update", input);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { json: McpServer }).json.oauthStatus).toBe("connected");
+    expect((await request(actor, "mcp/servers/update", input)).status).toBe(409);
+    expect(secrets.puts).toBe(puts + 1);
+    const after = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    expect(after).toMatchObject({
+      revision: policy.revision + 1,
+      enabled: false,
+      allowAllTools: false,
+      allowedTools: ["read"],
+    });
+    const saved = JSON.parse(await secrets.load(after.secret!.ciphertext, after.secret!.id));
+    expect(saved).toEqual({
+      ...seeded,
+      headers: {
+        authorization: "replacement-fixture",
+        "X-Tenant": "fixture-routing",
+        "X-Key": "new-fixture",
+      },
+    });
+    expect(JSON.stringify((await call<McpServer[]>(actor, "mcp/servers/list"))[0])).not.toContain(
+      "replacement-fixture",
+    );
+  });
+
+  it("D01.2 rejects a concurrent revision without retrying and compensates the prepared loser", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const paused = barrier();
+    held.push(paused);
+    secrets.nextPut = paused;
+    const puts = secrets.puts;
+    const writing = request(actor, "mcp/servers/update", {
+      id,
+      connection: { revision: 1, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+    });
+    await paused.entered;
+    const parent = await database.prisma.capabilityInstall.findUniqueOrThrow({
+      where: { id: receipt.id },
+    });
+    const pendingId = (parent.cleanupRefs as { id: string }[])[0]!.id;
+    await call(actor, "mcp/servers/setTools", {
+      id,
+      revision: 1,
+      allowAllTools: false,
+      allowedTools: ["read"],
+    });
+    paused.release();
+    expect((await writing).status).toBe(409);
+    expect(secrets.puts).toBe(puts + 1);
+    expect(secrets.records.has(pendingId)).toBe(false);
+    expect(await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      revision: 2,
+      enabled: false,
+      allowedTools: ["read"],
+    });
+  });
+
+  it("D01.2 keeps ordinary managed bearer updates working through scoped credential recovery", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const before = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    const original = JSON.parse(await secrets.load(before.secret!.ciphertext, before.secret!.id));
+    const saved = await call<McpServer>(actor, "mcp/servers/update", {
+      id,
+      secret: "replacement-bearer-fixture",
+    });
+    expect(saved).toMatchObject({
+      id,
+      revision: 2,
+      enabled: false,
+      allowAllTools: false,
+      allowedTools: [],
+    });
+    const after = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    expect(JSON.parse(await secrets.load(after.secret!.ciphertext, after.secret!.id))).toEqual({
+      ...original,
+      secret: "replacement-bearer-fixture",
+    });
+    expect(secrets.records.has(before.secretId!)).toBe(false);
+    expect(
+      (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: receipt.id } }))
+        .cleanupRefs,
+    ).toEqual([]);
+    expect(
+      await database.prisma.secret.count({
+        where: { userId: actor.actor.userId, spaceId: actor.actor.spaceId },
+      }),
+    ).toBe(1);
+    expect((await uninstall(actor, (await listOwned(actor))[0]!)).status).toBe("removed");
+    await noChildren(receipt.id);
+  });
+
+  it("D01.2 preserves an adopted credential after a committed response is lost and rejects replay", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const input = {
+      id,
+      connection: { revision: 1, enabled: false, headerUpdates: { "X-Key": "ack-fixture" } },
+    };
+    const puts = secrets.puts;
+    loseUpdateCommitAck = true;
+    expect((await request(actor, "mcp/servers/update", input)).ok).toBe(false);
+    const committed = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    expect(committed.revision).toBe(2);
+    expect(secrets.records.has(committed.secretId!)).toBe(true);
+    expect(
+      JSON.parse(await secrets.load(committed.secret!.ciphertext, committed.secret!.id)),
+    ).toMatchObject({ headers: { "X-Key": "ack-fixture" } });
+    expect((await request(actor, "mcp/servers/update", input)).status).toBe(409);
+    expect(secrets.puts).toBe(puts + 1);
+    expect((await uninstall(actor, (await listOwned(actor))[0]!)).status).toBe("removed");
+    expect(secrets.records.has(committed.secretId!)).toBe(false);
+    await noChildren(receipt.id);
+  });
+
+  it("D01.2 keeps Space-owner uninstall authority separate from another member's connection credentials", async () => {
+    const owner = await account();
+    const member = await share(owner, await account());
+    const receipt = await install(member, intent(await preview(member, fixture({ servers: 1 }))));
+    expect((await call<PluginInstallListing>(owner, "plugins/list")).managed).toMatchObject([
+      { receipt: { id: receipt.id } },
+    ]);
+    const puts = secrets.puts;
+    expect(
+      (
+        await request(owner, "mcp/servers/update", {
+          id: receipt.mcpServers[0]!.id,
+          connection: { revision: 1, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+        })
+      ).ok,
+    ).toBe(false);
+    expect(secrets.puts).toBe(puts);
+    expect(
+      await database.prisma.mcpServer.findUniqueOrThrow({
+        where: { id: receipt.mcpServers[0]!.id },
+      }),
+    ).toMatchObject({ revision: 1, enabled: false, userId: member.actor.userId });
+    expect((await uninstall(owner, receipt)).status).toBe("removed");
+  });
+
+  it.each(["membership", "session"] as const)(
+    "D01.2 rejects %s revocation after provider I/O",
+    async (withdrawal) => {
+      const actor = await account();
+      const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+      const id = receipt.mcpServers[0]!.id;
+      const before = await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } });
+      const paused = barrier();
+      held.push(paused);
+      secrets.nextPut = paused;
+      const writing = request(actor, "mcp/servers/update", {
+        id,
+        connection: { revision: 1, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+      });
+      await paused.entered;
+      const parent = await database.prisma.capabilityInstall.findUniqueOrThrow({
+        where: { id: receipt.id },
+      });
+      const pendingId = (parent.cleanupRefs as { id: string }[])[0]!.id;
+      if (withdrawal === "membership")
+        await database.prisma.spaceMember.deleteMany({
+          where: { userId: actor.actor.userId, spaceId: actor.actor.spaceId },
+        });
+      else await database.prisma.session.deleteMany({ where: { userId: actor.actor.userId } });
+      paused.release();
+      expect((await writing).ok).toBe(false);
+      expect(secrets.records.has(pendingId)).toBe(false);
+      expect(await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        revision: 1,
+        enabled: false,
+        secretId: before.secretId,
+      });
+    },
+  );
+
+  it("D01.2 never revives an uninstalled parent after a late header acknowledgement", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const paused = barrier();
+    held.push(paused);
+    secrets.nextPut = paused;
+    const writing = request(actor, "mcp/servers/update", {
+      id,
+      connection: { revision: 1, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+    });
+    await paused.entered;
+    const parent = await database.prisma.capabilityInstall.findUniqueOrThrow({
+      where: { id: receipt.id },
+    });
+    const pendingId = (parent.cleanupRefs as { id: string }[])[0]!.id;
+    const removing = await uninstall(actor, receipt);
+    expect(removing.status).toBe("cleanup_failed");
+    paused.release();
+    expect((await writing).ok).toBe(false);
+    expect(secrets.records.has(pendingId)).toBe(false);
+    expect(await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      enabled: false,
+      allowAllTools: false,
+      allowedTools: [],
+    });
+    const latest = (await listOwned(actor)).find((item) => item.id === receipt.id)!;
+    expect((await uninstall(actor, latest)).status).toBe("removed");
+    await noChildren(receipt.id);
+    expect(
+      (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: receipt.id } }))
+        .cleanupRefs,
+    ).toEqual([]);
+  });
+
+  it("D01.2 cleans known connection writes after actual Space removal", async () => {
+    const owner = await account();
+    const space = await call<{ id: string }>(owner, "spaces/create", {
+      name: "Connection cascade fixture",
+    });
+    const actor = { ...owner, actor: { ...owner.actor, spaceId: space.id } };
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const paused = barrier();
+    held.push(paused);
+    secrets.nextPut = paused;
+    const writing = request(actor, "mcp/servers/update", {
+      id: receipt.mcpServers[0]!.id,
+      connection: { revision: 1, enabled: true, headerUpdates: { "X-Key": "fixture" } },
+    });
+    await paused.entered;
+    const parent = await database.prisma.capabilityInstall.findUniqueOrThrow({
+      where: { id: receipt.id },
+    });
+    const child = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id: receipt.mcpServers[0]!.id },
+    });
+    const ids = [
+      ...(parent.cleanupRefs as { id: string }[]).map((item) => item.id),
+      child.secretId!,
+    ];
+    expect(ids).toHaveLength(2);
+    expect(ids.every((id) => secrets.records.has(id))).toBe(true);
+    await call(owner, "spaces/remove", { spaceId: space.id });
+    paused.release();
+    expect((await writing).ok).toBe(false);
+    expect(ids.every((id) => !secrets.records.has(id))).toBe(true);
+    expect(await database.prisma.secret.count({ where: { spaceId: space.id } })).toBe(0);
+    expect(await database.prisma.mcpServer.count({ where: { spaceId: space.id } })).toBe(0);
+    expect(await database.prisma.agentSkill.count({ where: { spaceId: space.id } })).toBe(0);
   });
   afterAll(async () => {
     if (database) {

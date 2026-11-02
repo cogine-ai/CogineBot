@@ -1126,4 +1126,37 @@ export const DE_MESSAGES: Record<string, string> = {
   "Installation failed.": "Installation fehlgeschlagen.",
   "Another member": "Anderes Mitglied",
   "Installed by {name}": "Installiert von {name}",
+
+  "Browser authorization was not requested.": "Eine Browser-Autorisierung wurde nicht angefordert.",
+  "Could not confirm connection changes.": "Verbindungsänderungen konnten nicht bestätigt werden.",
+  "Could not confirm sign-in. Check status or try again.":
+    "Anmeldung konnte nicht bestätigt werden. Status prüfen oder erneut versuchen.",
+  "Could not update this connection.": "Diese Verbindung konnte nicht aktualisiert werden.",
+  "Disable connection": "Verbindung deaktivieren",
+  "Discover plugins": "Plugins entdecken",
+  "Edit credentials": "Zugangsdaten bearbeiten",
+  "Enable connection": "Verbindung aktivieren",
+  "Leave blank to keep saved credentials.":
+    "Leer lassen, um gespeicherte Zugangsdaten beizubehalten.",
+  "MCP connection": "MCP-Verbindung",
+  "No plugins found": "Keine Plugins gefunden",
+  Reconnect: "Erneut verbinden",
+  "Registry listings are discovery hints. Review the exact version before installing.":
+    "Registry-Einträge dienen der Suche. Prüfe vor der Installation die genaue Version.",
+  "Retry search": "Suche wiederholen",
+  "Save credentials": "Zugangsdaten speichern",
+  "Search plugins": "Plugins suchen",
+  "Set up connections": "Verbindungen einrichten",
+  "Sign-in required": "Anmeldung erforderlich",
+  "Some registries are unavailable.": "Einige Registries sind nicht verfügbar.",
+  "Preview {name}": "Vorschau: {name}",
+
+  "Add header": "Header hinzufügen",
+  "Header name": "Headername",
+  "Header value": "Headerwert",
+  "Connection status unavailable.": "Verbindungsstatus nicht verfügbar.",
+
+  Enabled: "Aktiviert",
+  Disabled: "Deaktiviert",
+  "Tool access": "Tool-Zugriff",
 };

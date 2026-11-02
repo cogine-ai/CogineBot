@@ -1,5 +1,65 @@
 import { describe, expect, it } from "vitest";
-import { buildMcpUpdateMaterial } from "./mcp-material.js";
+import {
+  buildMcpConnectionMaterial,
+  buildMcpUpdateMaterial,
+  parseMcpConnectionMaterial,
+} from "./mcp-material.js";
+
+describe("MCP connection header patches", () => {
+  const material = {
+    secret: "fixture-secret",
+    env: { KEEP: "fixture-env" },
+    headers: { Authorization: "old", "X-Static": "preserved" },
+    oauth: { tokens: { access_token: "fixture-token" } },
+  };
+
+  it.each([undefined, {}])("keeps the exact credential for an empty patch (%s)", (patch) => {
+    expect(buildMcpConnectionMaterial(material, patch)).toEqual({ action: "keep" });
+  });
+
+  it("merges case-insensitively without losing other encrypted material or mutating it", () => {
+    expect(buildMcpConnectionMaterial(material, { authorization: "new", "X-Key": "key" })).toEqual({
+      action: "store",
+      material: {
+        ...material,
+        headers: { authorization: "new", "X-Static": "preserved", "X-Key": "key" },
+      },
+    });
+    expect(material.headers.Authorization).toBe("old");
+  });
+
+  it("validates the merged count, including existing headers", () => {
+    const headers = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`X-${i}`, "v"]));
+    expect(() => buildMcpConnectionMaterial({ headers }, { "X-Next": "v" })).toThrow();
+    expect(buildMcpConnectionMaterial({ headers }, { "x-0": "replacement" })).toMatchObject({
+      action: "store",
+      material: { headers: { "x-0": "replacement" } },
+    });
+  });
+
+  it.each([
+    { Host: "other.example.test" },
+    { "Proxy-Authorization": "fixture" },
+    { Authorization: "a", authorization: "b" },
+    { "X-Key": "fixture\r\ninjected: value" },
+    { "X-Key": "x".repeat(4097) },
+  ])("rejects unsafe or ambiguous header updates", (headers) => {
+    expect(() => buildMcpConnectionMaterial(material, headers)).toThrow();
+  });
+
+  it.each(["not json", "null", "[]", '{"headers":{"X-Key":false}}', '{"oauth":false}'])(
+    "refuses malformed stored material before writing a patch (%s)",
+    (value) => expect(() => parseMcpConnectionMaterial(value)).toThrow(),
+  );
+
+  it("preserves provider-neutral OAuth and unrecognized stored metadata", () => {
+    const parsed = parseMcpConnectionMaterial(JSON.stringify({ ...material, metadata: { v: 2 } }));
+    expect(buildMcpConnectionMaterial(parsed, { "X-Key": "key" })).toMatchObject({
+      action: "store",
+      material: { metadata: { v: 2 }, oauth: material.oauth },
+    });
+  });
+});
 
 describe("buildMcpUpdateMaterial", () => {
   it("keeps the stored blob untouched when the update carries no credential data", () => {

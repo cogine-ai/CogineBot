@@ -30,12 +30,14 @@ import { rpc } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 
 function oauthStatusText(server: McpServer): string | null {
+  if (server.oauthStatus === "unknown") return t`Connection status unavailable.`;
   if (server.oauthStatus === "connected") return t`OAuth connected`;
   if (server.oauthStatus === "reconnect") return t`OAuth expired`;
   return server.hasSecret ? t`credential saved` : null;
 }
 
 function oauthActionLabel(server: McpServer, pending: boolean): string {
+  if (server.oauthStatus === "unknown") return t`Check status`;
   if (pending) return t`Connecting…`;
   return server.oauthStatus === "none" ? t`Connect OAuth` : t`Reconnect OAuth`;
 }
@@ -135,6 +137,11 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
     setError(null);
     setOauthPending(server.id);
     try {
+      if (server.oauthStatus === "unknown") {
+        await refresh();
+        setOauthPending(null);
+        return;
+      }
       const result = await connectMcpOauth(server.id);
       if (result !== "cancelled") setOauthPending(null);
       await refresh();
@@ -376,7 +383,8 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
                               >
                                 {oauthActionLabel(server, oauthPending === server.id)}
                               </Button>
-                              {server.oauthStatus !== "none" ? (
+                              {server.oauthStatus === "connected" ||
+                              server.oauthStatus === "reconnect" ? (
                                 <Button
                                   type="button"
                                   variant="outline"

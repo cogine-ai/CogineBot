@@ -861,7 +861,7 @@ export const McpServerSchema = z.object({
   envKeys: z.array(z.string()),
   headerKeys: z.array(z.string()),
   hasSecret: z.boolean(),
-  oauthStatus: z.enum(["none", "connected", "reconnect"]),
+  oauthStatus: z.enum(["none", "connected", "reconnect", "unknown"]),
   enabled: z.boolean(),
   allowAllTools: z.boolean(),
   allowedTools: z.array(z.string().min(1).max(200)),

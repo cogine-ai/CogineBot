@@ -301,7 +301,7 @@ jobs:
 
       - name: Require plugin acceptance views
         run: |
-          for view in d011-plugin-preview d011-plugin-preview-320 d011-plugin-installed d011-plugin-cleanup-failed d011-plugin-unknown d011-plugin-member-management; do
+          for view in d011-plugin-preview d011-plugin-preview-320 d011-plugin-installed d011-plugin-cleanup-failed d011-plugin-unknown d011-plugin-member-management d012-plugin-discovery d012-plugin-guided d012-plugin-guided-320 d012-plugin-oauth-uncertain d012-plugin-oauth-popup; do
             match="$(find apps/web/test-results -type f -path '*/github-plugins-*/*' -name "${view}.png" -print -quit)"
             if [ -z "$match" ]; then
               echo "Missing plugin screenshot: $view" >&2
@@ -312,7 +312,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: plugin-install-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/web/test-results/github-plugins-*/**/d011-plugin-*.png
+          path: |
+            apps/web/test-results/github-plugins-*/**/d011-plugin-*.png
+            apps/web/test-results/github-plugins-*/**/d012-plugin-*.png
           if-no-files-found: error
           retention-days: 7
 
