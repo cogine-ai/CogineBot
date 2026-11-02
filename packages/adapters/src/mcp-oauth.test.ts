@@ -1,3 +1,4 @@
+import { SecretNotFoundError } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
@@ -8,8 +9,114 @@ import {
   StoredMcpOAuthProvider,
 } from "./mcp-oauth.js";
 import { infisicalFake } from "./secret-store-fake.js";
+import { EncryptedSecretStore } from "./secrets.js";
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("MCP stored credential status", () => {
+  const context = {
+    operationId: "fixture-status",
+    traceId: "fixture",
+    botId: "fixture",
+    userId: "user",
+    spaceId: "space",
+    signal: new AbortController().signal,
+  };
+  const store = new EncryptedSecretStore("fixture-status-encryption-key");
+  const broker = new McpOAuthBroker({} as never, store);
+
+  it("reports none without a credential reference and does not load a secret", async () => {
+    const load = vi.fn();
+    const status = new McpOAuthBroker({} as never, { load } as never);
+    await expect(status.statusForCiphertext(undefined, undefined)).resolves.toBe("none");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, "known"],
+    ["known-ref", undefined],
+  ])("rejects an incomplete known reference", async (ref, id) => {
+    await expect(broker.statusForCiphertext(ref, id)).rejects.toThrow();
+  });
+
+  it("propagates a known missing provider record instead of reporting none", async () => {
+    const missing = new SecretNotFoundError();
+    const status = new McpOAuthBroker(
+      {} as never,
+      { load: vi.fn().mockRejectedValue(missing) } as never,
+    );
+    await expect(status.statusForCiphertext("remote-ref", "record")).rejects.toBe(missing);
+  });
+
+  it("keeps an offline Infisical GET404 unknown to the status caller", async () => {
+    const fake = infisicalFake();
+    const remote = new InfisicalSecretStore(fake.options);
+    const reader = new InfisicalSecretStore(fake.options);
+    try {
+      const record = await remote.put(JSON.stringify({ secret: "fixture" }), context);
+      fake.values.clear();
+      const status = new McpOAuthBroker({} as never, reader);
+      await expect(status.statusForCiphertext(record.ref, record.id)).rejects.toBeInstanceOf(
+        SecretNotFoundError,
+      );
+      expect(fake.fetcher.mock.calls.filter(([, init]) => init?.method === "GET")).toHaveLength(1);
+    } finally {
+      await reader.close();
+      await remote.close();
+    }
+  });
+
+  it("rejects a malformed encrypted reference", async () => {
+    await expect(broker.statusForCiphertext("v2:broken", "record")).rejects.toThrow();
+  });
+
+  it("rejects a real encrypted ref bound to another record id", async () => {
+    const record = await store.put(JSON.stringify({ secret: "fixture" }), context);
+    await expect(broker.statusForCiphertext(record.ref, "another-record")).rejects.toThrow();
+  });
+
+  it.each([
+    "not json",
+    "null",
+    "[]",
+    '"string"',
+    '{"secret":false}',
+    '{"env":[]}',
+    '{"headers":{"X-Key":false}}',
+    '{"oauth":null}',
+    '{"oauth":false}',
+    '{"oauth":[]}',
+    '{"oauth":{"tokens":{}}}',
+    '{"oauth":{"tokens":"fixture"}}',
+    '{"oauth":{"obtainedAt":"invalid"}}',
+    '{"oauth":{"clientInformation":false}}',
+    '{"oauth":{"discoveryState":false}}',
+    '{"oauth":{"redirectUri":false}}',
+  ])("rejects unreadable or structurally invalid encrypted material (%s)", async (plaintext) => {
+    const record = await store.put(plaintext, context);
+    await expect(broker.statusForCiphertext(record.ref, record.id)).rejects.toThrow();
+  });
+
+  it.each([
+    [{}, "none"],
+    [{ secret: "fixture", headers: { Authorization: "fixture" }, env: { KEY: "fixture" } }, "none"],
+    [{ oauth: {} }, "reconnect"],
+    [
+      { oauth: { clientInformation: { client_id: "client" }, codeVerifier: "fixture" } },
+      "reconnect",
+    ],
+    [
+      { oauth: { tokens: { access_token: "fixture", token_type: "bearer" }, obtainedAt: 123 } },
+      "connected",
+    ],
+  ])(
+    "reports the successfully decrypted material's actual OAuth state",
+    async (material, expected) => {
+      const record = await store.put(JSON.stringify(material), context);
+      await expect(broker.statusForCiphertext(record.ref, record.id)).resolves.toBe(expected);
+    },
+  );
+});
 
 const TEST_NETWORK = {
   // Read the global per call so a fetch stubbed after construction still wins.

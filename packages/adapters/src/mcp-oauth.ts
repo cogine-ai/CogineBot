@@ -12,6 +12,10 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import {
+  OAuthClientInformationSchema,
+  OAuthTokensSchema,
+} from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { isLocalMcpHost } from "@rakazo/contracts";
@@ -24,6 +28,7 @@ import {
   readPluginCleanupRefs,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { z } from "zod";
 import { sanitizeConnectorError } from "./connector-safety.js";
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
@@ -46,6 +51,23 @@ export type OAuthMaterial = {
   headers?: Record<string, string>;
   oauth?: OAuthState;
 };
+
+/** List status must distinguish unavailable/corrupt material from known no-OAuth credentials. */
+const StoredStatusMaterialSchema = z.object({
+  secret: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  oauth: z
+    .object({
+      tokens: OAuthTokensSchema.optional(),
+      obtainedAt: z.number().optional(),
+      clientInformation: OAuthClientInformationSchema.optional(),
+      discoveryState: z.record(z.string(), z.unknown()).optional(),
+      redirectUri: z.string().optional(),
+      codeVerifier: z.string().optional(),
+    })
+    .optional(),
+});
 
 /** Values that must never appear in model-visible tool results or errors. */
 export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
@@ -696,7 +718,11 @@ export class McpOAuthBroker {
     ciphertext: string | undefined,
     recordId: string | undefined,
   ): Promise<"none" | "connected" | "reconnect"> {
-    const material = ciphertext && recordId ? await this.read(ciphertext, recordId) : {};
+    if (ciphertext === undefined && recordId === undefined) return "none";
+    if (!ciphertext || !recordId) throw new Error("MCP credential reference is incomplete");
+    const material = StoredStatusMaterialSchema.parse(
+      JSON.parse(await this.secrets.load(ciphertext, recordId)),
+    );
     if (material.oauth?.tokens) return "connected";
     return material.oauth ? "reconnect" : "none";
   }
