@@ -145,7 +145,7 @@ test("protected transfer review binds both approvals and restores uncertain rece
   await page.goto(`/transfers/receive/${targetState.transferId}`);
   const panel = page.getByTestId("deployment-transfer-page");
   await panel.getByRole("button", { name: "Review selection", exact: true }).click();
-  const replace = panel.getByRole("switch", { name: `Replace ${candidate.name}`, exact: true });
+  const replace = panel.getByRole("switch", { name: /Replace research-login$/ });
   await expect(replace).not.toBeChecked();
   await replace.click();
   await expect(

@@ -98,6 +98,9 @@ vi.mock("./i18n", () => {
 });
 vi.mock("../components/bot-avatar", () => ({ BotAvatar: () => null }));
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
+vi.mock("../components/deployment-transfer-tools", () => ({
+  NativeDeploymentTransferTools: () => null,
+}));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({
     label,
