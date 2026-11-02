@@ -87,6 +87,53 @@ describe("portable credential redaction", () => {
     }
   });
 
+  it.each(
+    [
+      ["LF", "\n"],
+      ["CR", "\r"],
+      ["CRLF", "\r\n"],
+      ["LS", "\u2028"],
+      ["PS", "\u2029"],
+    ].flatMap(([kind, lineBreak]) =>
+      [1, 2, 3, 4].map((count) => [`${kind}/${count}`, lineBreak!, count] as const),
+    ),
+  )("masks declared multiline single-quoted credentials: %s", (label, lineBreak, count) => {
+    const raw = `? 'pass${"\\".repeat(count)}${lineBreak}  word'\n: SYNTHETIC_PRIVATE_VALUE\nnext: safe`;
+    const ordinary = raw
+      .replace("pass", "audit")
+      .replace("word", "label")
+      .replace("SYNTHETIC_PRIVATE_VALUE", "VISIBLE_NOTE");
+    for (const redact of [redactSecretText, redactSensitiveText]) {
+      for (const input of [
+        raw,
+        JSON.stringify({ note: raw }),
+        JSON.stringify({ note: JSON.stringify({ note: raw }) }),
+      ]) {
+        const cleaned = redact(input);
+        expect(cleaned, label).not.toContain("SYNTHETIC_PRIVATE_VALUE");
+        expect(cleaned).toContain("next: safe");
+        expect(redact(cleaned)).toBe(cleaned);
+      }
+      expect(redact(ordinary), label).toBe(ordinary);
+    }
+  });
+
+  it("preserves prior inner redactions when recognizing an outer multiline key", () => {
+    const raw = `? 'context\\\n  "password": "SYNTHETIC_PRIVATE_VALUE" tail'\n: visible\nnext: safe`;
+    for (const redact of [redactSecretText, redactSensitiveText]) {
+      for (const input of [
+        raw,
+        JSON.stringify({ note: raw }),
+        JSON.stringify({ note: JSON.stringify({ note: raw }) }),
+      ]) {
+        const cleaned = redact(input);
+        expect(cleaned).not.toContain("SYNTHETIC_PRIVATE_VALUE");
+        expect(cleaned).toContain("next: safe");
+        expect(redact(cleaned)).toBe(cleaned);
+      }
+    }
+  });
+
   it.each([
     "single-quotes",
     "escaped-quotes",
@@ -97,6 +144,7 @@ describe("portable credential redaction", () => {
     "cr-assignments",
     "quote-prefix-before-field",
     "single-quote-fallbacks",
+    "multiline-keys",
   ])("bounds synchronous work for large %s input without changing its meaning", (kind) => {
     const moduleUrl = new URL("./redaction.ts", import.meta.url).href;
     const script = `
@@ -116,15 +164,19 @@ describe("portable credential redaction", () => {
         'single-quote-fallbacks': String.fromCharCode(39) + 'password' +
           String.fromCharCode(92,39,39).repeat(50000) + ': SYNTHETIC_PRIVATE_VALUE' +
           String.fromCharCode(10) + 'next: safe',
+        'multiline-keys': "? 'pass" + String.fromCharCode(92,10) + "  word'" +
+          String.fromCharCode(10) + ': SYNTHETIC_PRIVATE_VALUE' + String.fromCharCode(10) +
+          'next: safe' + String.fromCharCode(10),
       };
       const assignments = kind.endsWith('-assignments');
-      const input = assignments ? inputs[kind].repeat(25000) : inputs[kind];
+      const input = assignments ? inputs[kind].repeat(25000) :
+        kind === 'multiline-keys' ? inputs[kind].repeat(3000) : inputs[kind];
       for (const redact of [redactSecretText, redactSensitiveText]) {
         const output = redact(input);
         if (assignments) {
           const newline = kind.startsWith('lf') ? String.fromCharCode(10) : String.fromCharCode(13);
           assert.equal(output, ('token=[Redacted]' + newline).repeat(25000));
-        } else if (kind === 'quote-prefix-before-field' || kind === 'single-quote-fallbacks') {
+        } else if (['quote-prefix-before-field','single-quote-fallbacks','multiline-keys'].includes(kind)) {
           assert.ok(!output.includes('SYNTHETIC_PRIVATE_VALUE'));
           assert.ok(output.includes('next: safe'));
         } else {

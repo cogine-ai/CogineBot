@@ -250,6 +250,7 @@ function* fieldsWithQuote(
   text: string,
   quote: string,
   separatorEnds: Uint32Array,
+  allowSingleMultiline: boolean,
 ): Generator<QuotedFieldSpan> {
   const firstQuote = text.indexOf(quote);
   if (firstQuote < 0) return;
@@ -267,6 +268,8 @@ function* fieldsWithQuote(
         quote === "'" && text[index + 1] === "'" && text[index + 2] === "'"
           ? closingAfter[index + 3]! || closingAfter[index + 2]!
           : closingAfter[index + 2]!;
+    } else if (allowSingleMultiline && quote === "'" && index + 1 < text.length) {
+      closingAfter[index] = closingAfter[index + 1]!;
     }
   }
   // Keep all starts: an earlier match of the other quote kind can hide an overlapping candidate.
@@ -277,7 +280,7 @@ function* fieldsWithQuote(
   }
 }
 
-function* quotedFields(text: string): Generator<QuotedFieldMatch> {
+function* quotedFields(text: string, allowSingleMultiline = false): Generator<QuotedFieldMatch> {
   if (!text.includes("'") && !text.includes('"')) return;
   const separatorEnds = new Uint32Array(text.length);
   for (let index = 0; index < text.length; index++) {
@@ -285,8 +288,8 @@ function* quotedFields(text: string): Generator<QuotedFieldMatch> {
     QUOTED_FIELD_SEPARATOR.lastIndex = index + 1;
     if (QUOTED_FIELD_SEPARATOR.exec(text)) separatorEnds[index] = QUOTED_FIELD_SEPARATOR.lastIndex;
   }
-  const single = fieldsWithQuote(text, "'", separatorEnds);
-  const double = fieldsWithQuote(text, '"', separatorEnds);
+  const single = fieldsWithQuote(text, "'", separatorEnds, allowSingleMultiline);
+  const double = fieldsWithQuote(text, '"', separatorEnds, allowSingleMultiline);
   let a = single.next();
   let b = double.next();
   let end = 0;
@@ -310,7 +313,26 @@ function* quotedFields(text: string): Generator<QuotedFieldMatch> {
   }
 }
 
-function redactNamedValues(text: string, json: boolean, policy: TextRedactionPolicy): string {
+function hasOddSlashLineBreak(text: string): boolean {
+  for (let index = 0; index < text.length; ) {
+    if (text[index] !== "\\") {
+      index++;
+      continue;
+    }
+    const start = index;
+    while (text[index] === "\\") index++;
+    if ((index - start) % 2 === 1 && /[\r\n\u2028\u2029]/.test(text[index] ?? "")) return true;
+  }
+  return false;
+}
+
+function redactNamedValues(
+  text: string,
+  json: boolean,
+  policy: TextRedactionPolicy,
+  allowSingleMultiline = false,
+): string {
+  if (allowSingleMultiline && !hasOddSlashLineBreak(text)) return text;
   const encodedStrings = jsonStringSpans(text);
   const jsonContainers: { start: number; end: number }[] = [];
   let stringIndex = 0;
@@ -336,7 +358,9 @@ function redactNamedValues(text: string, json: boolean, policy: TextRedactionPol
   let encodedIndex = 0;
   let output = "";
   let end = 0;
-  for (const match of json ? quotedFields(text) : text.matchAll(ASSIGNMENT_SEPARATOR)) {
+  for (const match of json
+    ? quotedFields(text, allowSingleMultiline)
+    : text.matchAll(ASSIGNMENT_SEPARATOR)) {
     let index = match.index;
     if (index < end) continue;
     while (encodedStrings[encodedIndex] && encodedStrings[encodedIndex]!.end <= index)
@@ -346,6 +370,8 @@ function redactNamedValues(text: string, json: boolean, policy: TextRedactionPol
     if (encoded && encoded.start < index && index < encoded.end) continue;
     let key: string;
     if (json) {
+      if (allowSingleMultiline && (!match[1]!.startsWith("'") || !hasOddSlashLineBreak(match[1]!)))
+        continue;
       try {
         key = decodeQuotedKey(match[1]!);
       } catch {
@@ -604,7 +630,9 @@ function redactText(text: string, depth: number, policy: TextRedactionPolicy): s
     prepared = redactUrlPasswords(prepared.replace(PORTABLE_SECRET, REDACTED));
     prepared = redactSecretFlags(prepared);
   }
-  const named = redactNamedValues(prepared, true, policy);
+  // Clean existing quoted fields before a broader single-quoted key can hide an inner field.
+  const legacyNamed = redactNamedValues(prepared, true, policy);
+  const named = redactNamedValues(legacyNamed, true, policy, true);
   let decoded = "";
   let end = 0;
   for (const { index, token } of jsonStrings(named)) {
