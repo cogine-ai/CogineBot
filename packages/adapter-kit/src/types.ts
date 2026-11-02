@@ -498,6 +498,10 @@ export interface AgentRunRequest {
   /** Awaited producer-side accounting, independent of event-consumer cancellation. */
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
   contextStrategy?: AgentContextStrategy;
+  /** Trusted runtime input; restored context must use bounded selection even in current mode. */
+  contextRestored?: boolean;
+  /** Trusted server identities whose results must remain whole; this grants no tool access. */
+  verbatimMcpServers?: { ids: string[]; slugs: string[] };
   /** Exclusive workflow cost bucket; retrieval tool turns are detected for answer calls. */
   usageOperationKind?: UsageOperationKind;
   botId: string;

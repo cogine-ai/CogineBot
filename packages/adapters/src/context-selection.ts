@@ -5,6 +5,16 @@ import type {
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
 
+import {
+  MODEL_CONTEXT_TOO_SMALL_ERROR,
+  shortenedTextLength,
+  textBoundary,
+  truncatePlainText,
+  VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
+} from "@rakazo/core";
+import type { VerbatimMcpServers } from "./verbatim-mcp-result.js";
+import { isVerbatimMcpResult, toolCallIdentity } from "./verbatim-mcp-result.js";
+
 export type ContextStrategy = AgentContextStrategy;
 export interface ContextMessage {
   role: string;
@@ -34,13 +44,23 @@ export interface ContextSelectionOptions {
   cacheWarmth?: "likely-warm" | "likely-cold" | "unknown";
   /** Keep tool protocol intact while shortening oversized result bodies. */
   truncateToolResults?: boolean;
+  /** Trusted configured servers whose results must remain whole. */
+  verbatimMcpServers?: VerbatimMcpServers;
 }
 export class ContextBudgetError extends Error {
   constructor(
     public readonly estimatedTokens: number,
     public readonly availableTokens: number,
+    /** Instructions and tools alone fill the window, so no conversation can fit. */
+    modelTooSmall = false,
+    message?: string,
   ) {
-    super("Required context exceeds the model context budget");
+    super(
+      message ??
+        (modelTooSmall
+          ? MODEL_CONTEXT_TOO_SMALL_ERROR
+          : "Required context exceeds the model context budget"),
+    );
     this.name = "ContextBudgetError";
   }
 }
@@ -76,8 +96,45 @@ function imageBlocks(value: unknown): object[] {
   } else visitMessage(value);
   return found;
 }
-/** Conservative byte bound plus framing, not a tokenizer. Only actual user/tool
- * image blocks receive an adapter estimate; image-shaped tool arguments remain text.
+/**
+ * Provider-neutral token estimate for text, without a tokenizer. The weights were calibrated
+ * against cl100k, o200k, Llama 3, Qwen 2.5 and Mistral's original tokenizer, landing at or a
+ * little above the least efficient of them for prose, code, JSON, IDs and non-Latin scripts:
+ * about 3.3 ASCII characters per token (English prose is nearer 4.5), one token per digit and
+ * per camelCase or letter-digit boundary (IDs, hashes, base64), 0.6 per accented Latin, Greek
+ * or Cyrillic letter, and 1.25 per UTF-16 unit of other scripts and emoji. Byte-level
+ * tokenizers never exceed one token per UTF-8 byte, so that bounds the estimate.
+ */
+export function estimateTextTokens(text: string): number {
+  let total = 0;
+  let previous = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    // 1 lowercase, 2 uppercase, 3 digit, 0 anything else.
+    const kind =
+      code >= 97 && code <= 122
+        ? 1
+        : code >= 65 && code <= 90
+          ? 2
+          : code >= 48 && code <= 57
+            ? 3
+            : 0;
+    if (code >= 128) total += code < 0x0590 ? 0.6 : 1.25;
+    else if (kind === 3) total += 1;
+    else if (kind === 0 && code > 32 && code < 127) total += 0.4;
+    else total += 0.3;
+    if (
+      (previous === 1 && kind === 2) ||
+      (previous === 3 && (kind === 1 || kind === 2)) ||
+      ((previous === 1 || previous === 2) && kind === 3)
+    )
+      total += 1;
+    previous = kind;
+  }
+  return Math.min(Math.ceil(total), Buffer.byteLength(text, "utf8"));
+}
+/** Text estimate plus framing. Actual user/tool image blocks receive an adapter estimate;
+ * images without one keep a serialized byte count, and image-shaped tool arguments remain text.
  */
 export function estimateContextTokens(
   value: unknown,
@@ -85,20 +142,24 @@ export function estimateContextTokens(
 ): number {
   const images = new Set<object>();
   let imageTotal = 0;
-  if (imageTokens !== undefined) {
-    for (const image of imageBlocks(value)) {
-      const estimate = typeof imageTokens === "number" ? imageTokens : imageTokens(image);
-      if (estimate !== undefined && Number.isFinite(estimate) && estimate > 0) {
-        images.add(image);
-        imageTotal += estimate;
-      }
-    }
+  for (const image of imageBlocks(value)) {
+    const estimate =
+      imageTokens === undefined
+        ? undefined
+        : typeof imageTokens === "number"
+          ? imageTokens
+          : imageTokens(image);
+    images.add(image);
+    imageTotal +=
+      estimate !== undefined && Number.isFinite(estimate) && estimate > 0
+        ? estimate
+        : Buffer.byteLength(JSON.stringify(image), "utf8");
   }
   const serialized =
     JSON.stringify(value, (_key, item: unknown) =>
       item && typeof item === "object" && images.has(item) ? { type: "image" } : item,
     ) ?? "";
-  return Buffer.byteLength(serialized, "utf8") + imageTotal + 16;
+  return estimateTextTokens(serialized) + imageTotal + 16;
 }
 function fixedTokens(budget: ContextBudget): number {
   for (const value of [
@@ -160,17 +221,21 @@ function shortenHistoryResult(
   // Snapshot text is only navigation; original reference offsets retain exact evidence.
   for (const snapshot of Array.isArray(payload.snapshots) ? payload.snapshots : []) {
     if (!snapshot || typeof snapshot !== "object") continue;
-    if (typeof snapshot.topic === "string") snapshot.topic = snapshot.topic.slice(0, 80);
-    if (typeof snapshot.outcome === "string") snapshot.outcome = snapshot.outcome.slice(0, 80);
+    if (typeof snapshot.topic === "string") snapshot.topic = truncatePlainText(snapshot.topic, 80);
+    if (typeof snapshot.outcome === "string")
+      snapshot.outcome = truncatePlainText(snapshot.outcome, 80);
   }
   payload.contextTruncated = true;
   let encoded = JSON.stringify(payload);
   while (encoded.length > size) {
     const longest = refs.reduce<HistoryTextReference | undefined>(
-      (best, ref) => (!best || ref.text.length > best.text.length ? ref : best),
+      (best, ref) =>
+        shortenedTextLength(ref.text) > 0 && (!best || ref.text.length > best.text.length)
+          ? ref
+          : best,
       undefined,
     );
-    if (!longest || longest.text.length < 2) {
+    if (!longest) {
       if (payload.toolResult)
         return JSON.stringify({
           untrusted: true,
@@ -197,7 +262,7 @@ function shortenHistoryResult(
         },
       });
     }
-    longest.text = longest.text.slice(0, Math.floor(longest.text.length / 2));
+    longest.text = longest.text.slice(0, shortenedTextLength(longest.text));
     longest.nextTextOffset = longest.textOffset + longest.text.length;
     longest.truncated = true;
     if (longest === payload.toolResult)
@@ -210,8 +275,19 @@ function shortenHistoryResult(
   }
   return encoded;
 }
+const OMITTED_BEFORE_USE =
+  "[Tool result truncated to fit context; omitted evidence is unavailable.]";
+const OMITTED_TEXT_BEFORE_USE =
+  "[Tool result truncated to fit context; inspect original evidence before claiming omitted details.]";
+const OMITTED_AFTER_USE =
+  "[Earlier result shortened after you read it; statements made from it stand. Re-run the tool only if you need the omitted text.]";
+
 /** Keep control fields and JSON shape while marking omitted long evidence strings. */
-function shortenStructuredResult(source: string, size: number): string | undefined {
+function shortenStructuredResult(
+  source: string,
+  size: number,
+  marker = OMITTED_BEFORE_USE,
+): string | undefined {
   let payload: unknown;
   try {
     payload = JSON.parse(source);
@@ -259,8 +335,13 @@ function shortenStructuredResult(source: string, size: number): string | undefin
     for (const leaf of leaves) {
       const value = (leaf.parent as Record<string, unknown>)[leaf.key];
       if (typeof value !== "string" || value.length <= 128) continue;
-      const keep = Math.max(8, Math.floor(value.length / 4));
-      const shortened = `${value.slice(0, keep)}\n[Tool result truncated to fit context; omitted evidence is unavailable.]\n${value.slice(-keep)}`;
+      const preferredKeep = Math.max(8, Math.floor(value.length / 4));
+      const keep =
+        2 * preferredKeep + marker.length + 2 < value.length
+          ? preferredKeep
+          : Math.floor((value.length - marker.length) / 4);
+      if (keep < 1) continue;
+      const shortened = `${truncatePlainText(value, keep)}\n${marker}\n${value.slice(textBoundary(value, value.length - keep))}`;
       if (shortened.length >= value.length) continue;
       (leaf.parent as Record<string, unknown>)[leaf.key] = shortened;
       changed = true;
@@ -292,7 +373,12 @@ function isJsonTextPart(part: { type?: string; text?: unknown } | undefined): pa
   }
 }
 
-function shortenMcpEnvelope(source: string, size: number): string | undefined {
+function shortenMcpEnvelope(
+  source: string,
+  size: number,
+  marker: string,
+  afterUse: boolean,
+): string | undefined {
   let payload: { content?: Array<{ type?: string; text?: unknown }> } & Record<string, unknown>;
   try {
     payload = JSON.parse(source);
@@ -312,7 +398,11 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
   delete outer.structuredContent;
   let outerSource = JSON.stringify(outer);
   if (outerSource.length > Math.max(64, Math.floor(size / 4))) {
-    const shortenedOuter = shortenStructuredResult(outerSource, Math.max(64, Math.floor(size / 4)));
+    const shortenedOuter = shortenStructuredResult(
+      outerSource,
+      Math.max(64, Math.floor(size / 4)),
+      marker,
+    );
     if (shortenedOuter !== undefined) {
       Object.assign(payload, JSON.parse(shortenedOuter));
       outerSource = shortenedOuter;
@@ -336,7 +426,7 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
     let changed = false;
     parts = parts.map((part) => {
       if (isJsonTextPart(part)) {
-        const shortened = shortenToolResultText(part.text, budget);
+        const shortened = shortenToolResultText(part.text, budget, {}, { afterUse });
         if (shortened === undefined || shortened === part.text) return part;
         changed = true;
         return { ...part, text: shortened };
@@ -346,6 +436,7 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
       const shortened = shortenStructuredResult(
         serialized,
         Math.min(budget, Math.max(128, Math.floor(size / 4))),
+        marker,
       );
       if (shortened === undefined || shortened === serialized) return part;
       try {
@@ -358,7 +449,7 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
       }
     });
     if (structuredSource !== undefined) {
-      const shortenedStructured = shortenToolResultText(structuredSource, budget);
+      const shortenedStructured = shortenToolResultText(structuredSource, budget, {}, { afterUse });
       try {
         payload.structuredContent = JSON.parse(shortenedStructured ?? "");
         if (shortenedStructured !== structuredSource) changed = true;
@@ -377,18 +468,35 @@ function shortenMcpEnvelope(source: string, size: number): string | undefined {
   return encoded;
 }
 
-/** Shorten evidence cheaply while keeping structured controls and original-history offsets. */
+/**
+ * Shorten evidence cheaply while keeping structured controls and original-history offsets.
+ * Pass afterUse when the model already read the result on an earlier step.
+ */
 export function shortenToolResultText(
   source: string,
   size: number,
   tool: { name?: string; arguments?: unknown } = {},
+  options: { afterUse?: boolean } = {},
 ): string {
+  const afterUse = options.afterUse || source.includes(OMITTED_AFTER_USE);
+  const marker = afterUse ? OMITTED_AFTER_USE : OMITTED_BEFORE_USE;
   return (
     shortenHistoryResult(source, size, tool) ??
-    shortenMcpEnvelope(source, size) ??
-    shortenStructuredResult(source, size) ??
-    `${source.slice(0, Math.floor(size / 2))}\n[Tool result truncated to fit context; inspect original evidence before claiming omitted details.]\n${source.slice(-Math.floor(size / 2))}`
+    shortenMcpEnvelope(source, size, marker, Boolean(afterUse)) ??
+    shortenStructuredResult(source, size, marker) ??
+    shortenPlainText(source, size, afterUse ? OMITTED_AFTER_USE : OMITTED_TEXT_BEFORE_USE)
   );
+}
+
+/** Keep the head and tail halves of plain text around an omission marker. */
+export function shortenPlainText(
+  source: string,
+  size: number,
+  marker = OMITTED_TEXT_BEFORE_USE,
+): string {
+  const half = Math.floor(size / 2);
+  const tail = textBoundary(source, source.length - half);
+  return `${truncatePlainText(source, half)}\n${marker}\n${source.slice(tail)}`;
 }
 // Context selection can shorten evidence above this minimum, including initially small results.
 export const TOOL_RESULT_HISTORY_MIN_LENGTH = 256;
@@ -443,6 +551,7 @@ interface ToolResultBoundOptions {
   fresh?: boolean;
   retained?: boolean;
   wrapped?: boolean;
+  afterUse?: boolean;
 }
 
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
@@ -469,7 +578,7 @@ export function boundToolResult(
   try {
     original = JSON.parse(source);
   } catch {
-    const marker = "\n[Tool result truncated to fit context; omitted evidence is unavailable.]";
+    const marker = `\n${tool.afterUse || source.includes(OMITTED_AFTER_USE) ? OMITTED_AFTER_USE : OMITTED_BEFORE_USE}`;
     return {
       text: source.slice(0, Math.max(0, size - marker.length)) + marker.slice(0, size),
       wrapped: false,
@@ -531,7 +640,9 @@ export function boundToolResult(
   }
   const overhead = JSON.stringify(wrap({})).length;
   try {
-    const shortened = shortenToolResultText(source, Math.max(0, size - overhead), tool);
+    const shortened = shortenToolResultText(source, Math.max(0, size - overhead), tool, {
+      afterUse: tool.afterUse,
+    });
     const candidate = wrap(JSON.parse(shortened));
     if (JSON.stringify(candidate).length <= size) return encode(candidate);
   } catch {
@@ -657,18 +768,39 @@ export function selectContext<T extends ContextMessage>(
   droppedMessages: number;
   truncatedToolResults: number;
   availableMessageTokens: number;
-  estimation: "utf8-byte-bound";
+  sourceIndexes: number[];
+  estimation: "text-estimate";
 } {
   const fixed = fixedTokens(options.budget);
   const available = Math.floor(options.budget.contextWindow - options.budget.outputReserve - fixed);
   const groups = messageGroups(messages, options.budget.imageTokens);
+  // Pi can carry mandatory instructions and tool schemas in system messages.
+  // A new conversation cannot make either representation fit a smaller model.
+  const requiredFixed =
+    fixed +
+    groups
+      .filter((group) => messages[group.indexes[0]!]!.role === "system")
+      .reduce((total, group) => total + group.tokens, 0);
+  if (requiredFixed > options.budget.contextWindow - options.budget.outputReserve) {
+    throw new ContextBudgetError(
+      requiredFixed,
+      options.budget.contextWindow - options.budget.outputReserve,
+      true,
+    );
+  }
+  // A result followed by any assistant message has been read, with or without a later tool call.
+  const latestAssistant = messages.findLastIndex((message) => message.role === "assistant");
   const protectedIndexes = new Set(options.protectedIndexes ?? []);
   for (const [index, message] of messages.entries()) {
     if (message.role === "system") protectedIndexes.add(index);
   }
   const lastUser = messages.findLastIndex((message) => message.role === "user");
   if (lastUser >= 0) protectedIndexes.add(lastUser);
-  // Keep the latest tool group intact. Earlier complete groups can be omitted.
+  // Keep the unread tool step intact even when user messages follow its results.
+  const latestContent = messages[latestAssistant]?.content;
+  if (Array.isArray(latestContent) && latestContent.some((part) => part?.type === "toolCall"))
+    protectedIndexes.add(latestAssistant);
+  // Keep the final group intact. Earlier complete groups can be omitted.
   for (const index of groups.at(-1)?.indexes ?? []) protectedIndexes.add(index);
   for (const index of protectedIndexes) {
     if (!Number.isInteger(index) || index < 0 || index >= messages.length)
@@ -687,6 +819,7 @@ export function selectContext<T extends ContextMessage>(
   if (used > available) {
     if (options.truncateToolResults !== false) {
       let shortenedCount = 0;
+      let keptVerbatimWhole = false;
       const shortened = messages.map((message, index) => {
         if (!protectedGroupIndexes.has(index) || message.role !== "toolResult") return message;
         const parts = Array.isArray(message.content) ? message.content : undefined;
@@ -705,11 +838,7 @@ export function selectContext<T extends ContextMessage>(
           : typeof message.content === "string"
             ? message.content
             : JSON.stringify(message.content);
-        if (!serialized || serialized.length <= TOOL_RESULT_HISTORY_MIN_LENGTH) return message;
-        const size = Math.max(
-          128,
-          Math.min(Math.floor(serialized.length / 2), Math.floor(available / 4)),
-        );
+        if (!serialized || serialized.length <= 256) return message;
         const group = groups.find((group) => group.indexes.includes(index));
         const assistant = group ? messages[group.indexes[0]!] : undefined;
         const nativeCall = Array.isArray(assistant?.content)
@@ -717,15 +846,25 @@ export function selectContext<T extends ContextMessage>(
               (part) => part?.type === "toolCall" && part.id === message.toolCallId,
             )
           : undefined;
+        const call = toolCallIdentity(nativeCall, message.toolName);
+        if (isVerbatimMcpResult(call.name, call.arguments, options.verbatimMcpServers)) {
+          keptVerbatimWhole = true;
+          return message;
+        }
+        const size = Math.max(
+          128,
+          Math.min(Math.floor(serialized.length / 2), Math.floor(available / 4)),
+        );
         const provenance = toolResultContentProvenance(message.content);
         const bounded = boundToolResult(
           serialized,
           size,
           {
-            name: nativeCall?.name ?? message.toolName,
-            arguments: nativeCall?.arguments,
+            name: call.name,
+            arguments: call.arguments,
             retained: Boolean(provenance),
             wrapped: provenance?.wrapped,
+            afterUse: index < latestAssistant,
           },
           provenance?.historyReference,
         );
@@ -746,10 +885,21 @@ export function selectContext<T extends ContextMessage>(
           truncatedToolResults: Math.max(retry.truncatedToolResults, shortenedCount),
         };
       }
+      if (keptVerbatimWhole) {
+        // Throws the generic error when shortening the kept results would not make it fit either.
+        selectContext(messages, { ...options, verbatimMcpServers: undefined });
+        throw new ContextBudgetError(
+          used + fixed,
+          options.budget.contextWindow - options.budget.outputReserve,
+          false,
+          VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
+        );
+      }
     }
     throw new ContextBudgetError(
       used + fixed,
       options.budget.contextWindow - options.budget.outputReserve,
+      available <= 0,
     );
   }
   const keepPrefix =
@@ -772,11 +922,14 @@ export function selectContext<T extends ContextMessage>(
   const selectedIndexes = new Set([...selected].flatMap((group) => group.indexes));
   return {
     messages: messages.filter((_message, index) => selectedIndexes.has(index)),
+    sourceIndexes: messages.flatMap((_message, index) =>
+      selectedIndexes.has(index) ? [index] : [],
+    ),
     estimatedInputTokens: fixed + used,
     droppedMessages: messages.length - selectedIndexes.size,
     truncatedToolResults: 0,
     availableMessageTokens: available,
-    estimation: "utf8-byte-bound" as const,
+    estimation: "text-estimate" as const,
   };
 }
 

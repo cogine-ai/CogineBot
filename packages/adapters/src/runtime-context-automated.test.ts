@@ -120,7 +120,7 @@ describe("automated source context policy", () => {
     // Required evidence with no verbose body cannot borrow room reserved for labels.
     result.content = [image];
     const tight = createRuntimeContextPolicy(request, undefined, { imageTokens: 10 });
-    expect(() => tight.prepareContext(context, { ...model, contextWindow: 1000 })).toThrow(
+    expect(() => tight.prepareContext(context, { ...model, contextWindow: 100 })).toThrow(
       ContextBudgetError,
     );
   });
@@ -144,7 +144,7 @@ describe("automated source context policy", () => {
           rakazoMessageId: message.id,
         })),
       );
-      request.prompt = `Current objective: ${"x".repeat(3180)}`;
+      request.prompt = `Current objective: ${"0123456789".repeat(390)}`;
       const current = context.messages.splice(12, 1)[0]!;
       (current as Extract<Message, { role: "user" }>).content = request.prompt;
       context.messages.push(current);

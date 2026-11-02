@@ -21,6 +21,11 @@ export function isProgressMessageTruncated(text: string): boolean {
   return text.trim().length > USER_PROGRESS_MESSAGE_MAX_LENGTH;
 }
 
+/** Preserve the message's source labels without guessing who sent it. */
+export function midTaskMessagePrompt(text: string): string {
+  return `A message arrived while you were working:\n\n${text}\n\nTake it into account and continue the task.`;
+}
+
 /**
  * Pull narration text out of the in-progress turn segments so it can be posted
  * as a durable mid-turn message. Tool/step blocks stay for the final publish.

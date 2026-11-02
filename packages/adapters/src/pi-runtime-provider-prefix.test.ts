@@ -150,10 +150,10 @@ describe("Pi outgoing provider prefixes", () => {
         expect(events).toContainEqual(expect.objectContaining({ type: "done", text: "Ready" }));
       }
       expect(requests).toHaveLength(3);
-      expect(requests[0]).toMatchObject({ max_completion_tokens: 8192 });
+      expect(requests[0]).toMatchObject({ max_completion_tokens: 4096 });
       expect(requests[1]!.max_completion_tokens).toBeGreaterThan(0);
-      expect(requests[1]!.max_completion_tokens).toBeLessThanOrEqual(2048);
-      expect(requests[2]).toMatchObject({ max_completion_tokens: 12_000 });
+      expect(requests[1]!.max_completion_tokens).toBeLessThanOrEqual(1024);
+      expect(requests[2]).toMatchObject({ max_completion_tokens: 8192 });
       expect(requests[0]!.messages?.length).toBeGreaterThan(0);
     } finally {
       vi.unstubAllGlobals();

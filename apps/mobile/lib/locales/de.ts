@@ -1,4 +1,8 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "This model's context window is too small. Choose another model.":
+    "Das Kontextfenster dieses Modells ist zu klein. Wähle ein anderes Modell.",
+  "This server's tool result does not fit the model. Choose another model.":
+    "Das Werkzeugergebnis dieses Servers passt nicht in das Modell. Wähle ein anderes Modell.",
   "Add your own API key to continue.": "Füge deinen eigenen API-Schlüssel hinzu, um fortzufahren.",
   "Add API key": "API-Schlüssel hinzufügen",
   "Back to chats": "Zurück zu Chats",

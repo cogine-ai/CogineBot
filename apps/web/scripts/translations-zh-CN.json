@@ -1,4 +1,6 @@
 {
+  "This model's context window is too small. Choose another model.": "此模型的上下文容量太小。请选择其他模型。",
+  "This server's tool result does not fit the model. Choose another model.": "此服务器的完整工具结果超出模型容量。请选择其他模型。",
   "Today": "今天",
   " (unread)": "（未读）",
   "macOS will not ask for extra permission if you let bots run on this Mac. They run as you.": "若让 Bot 在这台 Mac 上运行，它们会使用你的账户权限，macOS 不会再逐项询问。",

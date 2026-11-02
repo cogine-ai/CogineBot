@@ -1,5 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
-import { plainTextFromMarkdown, truncatedPlainText } from "./markdown-plain.js";
+import {
+  plainTextFromMarkdown,
+  shortenedTextLength,
+  textBoundary,
+  truncatedPlainText,
+  truncatePlainText,
+} from "./markdown-plain.js";
+
+describe("Unicode context cuts", () => {
+  it("cuts between complete code points at a surrogate boundary", () => {
+    expect(textBoundary("a😀b", 2)).toBe(1);
+    expect(truncatePlainText("a😀b", 2)).toBe("a");
+    expect(truncatePlainText("a😀b", 3)).toBe("a😀");
+    expect(truncatePlainText("a😀b", 4)).toBe("a😀b");
+  });
+
+  it.each(["", "a", "😀", "😀x", "😀😀", "中文😀text"])(
+    "repeated shortening terminates without a dangling surrogate: %j",
+    (input) => {
+      let text = input;
+      while (text.length) {
+        const next = text.slice(0, shortenedTextLength(text));
+        expect(next.length).toBeLessThan(text.length);
+        expect(new TextDecoder().decode(new TextEncoder().encode(next))).toBe(next);
+        text = next;
+      }
+    },
+  );
+});
 
 describe("plainTextFromMarkdown", () => {
   it("reads only a bounded preview of the source unless the caller raises the limit", () => {

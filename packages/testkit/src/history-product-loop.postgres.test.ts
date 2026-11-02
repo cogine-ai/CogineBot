@@ -28,7 +28,13 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
       outgoingBytes: number;
       toolResults: number;
     }> = [];
+    let previousMessages: ModelEmulatorRequest["messages"] = [];
+    const assertAppendOnly = (request: ModelEmulatorRequest) => {
+      expect(request.messages.slice(0, previousMessages.length)).toEqual(previousMessages);
+      previousMessages = structuredClone(request.messages);
+    };
     const latest = (request: ModelEmulatorRequest) => {
+      assertAppendOnly(request);
       expect(JSON.stringify(request.messages)).toContain("Do not deploy.");
       const tools = request.messages.filter((row) => row.role === "tool");
       const parsed = tools.map(
@@ -50,8 +56,8 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
         expect(JSON.parse(call!.function.arguments).cursor).toBe(
           index === 0 ? "start" : parsed[index - 1]!.nextCursor,
         );
-        if (index < tools.length - 1)
-          expect(Buffer.byteLength(String(row.content))).toBeLessThanOrEqual(1024);
+        // Appended steps preserve already-sent bodies and their original result budget.
+        expect(Buffer.byteLength(String(row.content))).toBeLessThanOrEqual(12_000);
       }
       const message = tools.at(-1);
       const content = String(message?.content);
@@ -84,6 +90,7 @@ describe.skipIf(!enabled)("product history diagnostic loop", () => {
         {
           usage: syntheticUsage,
           expect(request) {
+            assertAppendOnly(request);
             expect(JSON.stringify(request.messages)).toContain("Read the Aurora diagnostic chain");
             expect(JSON.stringify(request.messages)).toContain(
               "Start with the project name alone, or one distinctive topic word if no project is named",

@@ -6,6 +6,26 @@ const PAYLOAD_MARK = "\uE000";
  */
 const MAX_PREVIEW_SOURCE = 4_096;
 
+/** Move a UTF-16 cut left when it would split a surrogate pair. */
+export function textBoundary(text: string, offset: number): number {
+  const before = text.charCodeAt(offset - 1);
+  const after = text.charCodeAt(offset);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+    ? offset - 1
+    : offset;
+}
+
+/** Halve long text while preserving a complete leading code point when possible. */
+export function shortenedTextLength(text: string): number {
+  const half = textBoundary(text, Math.floor(text.length / 2));
+  return half || (text.length > 2 ? 2 : 0);
+}
+
+export function truncatePlainText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, textBoundary(text, maxChars));
+}
+
 /**
  * Markdown source → a single plain line for previews and notifications.
  * `maxSource` caps how much source is read; a caller that converts content the

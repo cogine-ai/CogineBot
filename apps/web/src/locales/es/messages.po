@@ -7030,3 +7030,11 @@ msgstr "Eliminado en el destino"
 #: src/components/DeploymentTransfer.tsx
 msgid "Target status not confirmed"
 msgstr "Estado en el destino sin confirmar"
+
+#: src/lib/run-error.ts
+msgid "This model's context window is too small. Choose another model."
+msgstr "La ventana de contexto de este modelo es demasiado pequeña. Elige otro modelo."
+
+#: src/lib/run-error.ts
+msgid "This server's tool result does not fit the model. Choose another model."
+msgstr "El resultado de la herramienta de este servidor supera la capacidad del modelo. Elige otro modelo."

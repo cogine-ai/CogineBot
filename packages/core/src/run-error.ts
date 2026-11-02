@@ -6,6 +6,11 @@ import { stuckWorkStatusMessages } from "./stuck-work.js";
 export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
   "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
 
+export const MODEL_CONTEXT_TOO_SMALL_ERROR =
+  "This model's context window is too small. Choose another model.";
+export const VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR =
+  "This server's tool result does not fit the model. Choose another model.";
+
 const APP_RUN_ERRORS = new Set([
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
   COMPUTER_RATE_LIMITED_ERROR_MESSAGE,
@@ -107,6 +112,22 @@ export function normalizeRunError(
       summary: safeSummary(translate("Add your own API key to continue.")),
       details,
       action: "add_key",
+    };
+  }
+  if (
+    details === MODEL_CONTEXT_TOO_SMALL_ERROR ||
+    details === "Required context exceeds the model context budget" ||
+    details === VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR
+  ) {
+    return {
+      summary: safeSummary(
+        translate(
+          details === VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR
+            ? VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR
+            : MODEL_CONTEXT_TOO_SMALL_ERROR,
+        ),
+      ),
+      details,
     };
   }
   const chatgptUsageCode = details.match(

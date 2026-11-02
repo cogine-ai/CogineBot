@@ -1,4 +1,8 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "This model's context window is too small. Choose another model.":
+    "Контекстное окно этой модели слишком мало. Выберите другую модель.",
+  "This server's tool result does not fit the model. Choose another model.":
+    "Результат инструмента этого сервера не помещается в модель. Выберите другую модель.",
   "Add your own API key to continue.": "Добавьте свой API-ключ, чтобы продолжить.",
   "Add API key": "Добавить API-ключ",
   "Back to chats": "Вернуться к чатам",

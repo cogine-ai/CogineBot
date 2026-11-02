@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentMessage, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type {
   Api,
@@ -42,9 +42,9 @@ import {
   registerChatGPTPlanRuntime,
 } from "./chatgpt-plan-provider.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
+import { ModelImageLimitError, pruneForRebuild } from "./context-pruning.js";
 import {
   boundToolResult,
-  copyToolResultProvenance,
   markToolResultContent,
   TOOL_RESULT_HISTORY_MIN_LENGTH,
   toolResultContentProvenance,
@@ -74,6 +74,7 @@ import {
   MODEL_STREAM_IDLE_TIMEOUT_MS,
   MODEL_STREAM_TIMEOUT_MS,
   modelStreamMaxRetries,
+  operatorMaxTokens,
   REASONING_MODEL_MAX_TOKENS,
   resolveCompletionMaxTokens,
 } from "./pi-runtime-limits.js";
@@ -85,8 +86,14 @@ import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-con
 import { SCHEDULE_TOOL_NAMES } from "./schedule-tools.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
-import { isThinkingSignatureMismatch, withoutThinkingBlocks } from "./thinking-signatures.js";
+import {
+  isThinkingSignatureMismatch,
+  withoutThinkingBlocks,
+  withoutThinkingFrom,
+} from "./thinking-signatures.js";
 import { textContentArg } from "./tool-text.js";
+import { midTaskMessagePrompt } from "./user-progress.js";
+import { isVerbatimMcpResult } from "./verbatim-mcp-result.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
 interface ToolCallBudget {
@@ -114,18 +121,21 @@ const MODEL_PROVIDER_RETRY_DELAYS_MS = [2_000, 8_000, 20_000] as const;
 // that provider quirk from making a long task look complete after one step.
 const MAX_SILENT_TOOL_CONTINUATIONS = 3;
 const SILENT_TOOL_CONTINUATION_PROMPT = automated(
-  "Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.",
+  "Your last turn ended right after a tool result, without a reply. Continue the original task from the latest tool result. If you need information or a decision from the user, ask them instead of guessing; otherwise use any remaining tools needed, then give the user the final answer.",
 );
 const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
-  "Continue the original task from the latest tool result. If you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply. Otherwise use any remaining tools needed, then give the user the final answer.",
+  "Your last turn ended right after a tool result, without a reply. Continue the original task from the latest tool result. If you need information or a decision from the user, ask them instead of guessing, even if you were told to stay silent. Otherwise, if you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply; if not, use any remaining tools needed, then give the user the final answer.",
 );
 
 // Shown as a failed-run error, not an assistant message. Asking the user to
 // continue stores that sentence as the reply, and the next "continue" runs
 // tools and misses a final answer again.
 export { MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
+export {
+  pruneComputerScreenshotContext,
+  pruneStalePageStateContext,
+} from "./context-pruning.js";
 
-const DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP = 2;
 // Reasoning-capable models must not start at "off": for OpenRouter, pi-ai maps
 // that to reasoning.effort "none", which 400s on endpoints that mandate
 // reasoning (e.g. google/gemini-3.7-flash). Keep a real level when model.reasoning
@@ -443,13 +453,6 @@ export class PiAgentRuntime implements AgentRuntime {
           getApiKey: hasBackups
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
-          transformContext: async (messages) =>
-            pruneComputerScreenshotContext(
-              pruneStalePageStateContext(messages),
-              hasBackups
-                ? activeStreamTarget.config.maxImagesPerPrompt
-                : request.model.maxImagesPerPrompt,
-            ),
           finishTurn: async (turn, turnSignal) => {
             await deliverFinishedShells(
               (text) => {
@@ -471,9 +474,10 @@ export class PiAgentRuntime implements AgentRuntime {
             seenSteeringIds.push(...steering.map((item) => item.id));
             for (const item of steering) {
               const images = toPiImages(item.images);
+              const text = midTaskMessagePrompt(item.text);
               agent.steer({
                 role: "user",
-                content: images.length ? [{ type: "text", text: item.text }, ...images] : item.text,
+                content: images.length ? [{ type: "text", text }, ...images] : text,
                 timestamp: Date.now(),
               });
             }
@@ -1338,6 +1342,15 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             }
             if (isAgentToolExecutionResult(result)) {
               if (isToolPauseResult(result)) host.pausePending = true;
+              if (isVerbatimMcpResult(tool.name, args, host.request.verbatimMcpServers)) {
+                return {
+                  ...result,
+                  content: markToolResultContent(result.content, {
+                    historyReference,
+                    wrapped: false,
+                  }),
+                };
+              }
               return boundAgentToolResult(result, historyReference, true);
             }
             const serialized = serializeToolResultView(
@@ -1347,6 +1360,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
               args,
               historyReference,
               Boolean(tool.route) || !["read_history", "search_history"].includes(tool.name),
+              host.request.verbatimMcpServers,
             );
             return {
               content: markToolResultContent([{ type: "text", text: serialized.text }], {
@@ -1366,7 +1380,11 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             details: { error: "no executor" },
           };
         })();
-        if (VERBATIM_TOOL_RESULTS.has(tool.name)) return result as AgentToolResult<unknown>;
+        if (
+          VERBATIM_TOOL_RESULTS.has(tool.name) ||
+          isVerbatimMcpResult(tool.name, args, host.request.verbatimMcpServers)
+        )
+          return result as AgentToolResult<unknown>;
         return boundAgentToolResult(result as AgentToolResult<unknown>);
       } catch (error) {
         failure = error;
@@ -1595,16 +1613,13 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       hasBackups
         ? (selectedModel.credentials?.accessToken ?? selectedModel.apiKey)
         : selectedModel.apiKey,
-    transformContext: async (messages) =>
-      pruneComputerScreenshotContext(
-        pruneStalePageStateContext(messages),
-        requestModel.maxImagesPerPrompt,
-      ),
     initialState: {
       systemPrompt: [
         `You are a Rakazo subagent named "${name}".`,
         "You run inside the parent bot's turn — you are not a separate bot chat.",
         "Complete the task and return a concise result. Do not spawn bots or further subagents.",
+        "Your task comes from the parent bot, not from the human user; report your result back to the parent bot.",
+        "Messages marked as automated come from CogineBot, not from the user.",
         extra,
       ]
         .filter(Boolean)
@@ -1859,136 +1874,6 @@ function builtinParameters(tool: ConnectorTool) {
   return undefined;
 }
 
-/**
- * Tools whose result is a view of the current page or screen. Each new result supersedes the
- * earlier ones, so older results only cost context: a long browsing run otherwise re-sends every
- * snapshot it ever took on every model call.
- */
-const PAGE_STATE_TOOL_NAMES = new Set([
-  "browser_navigate",
-  "browser_snapshot",
-  "browser_act",
-  "computer_observe",
-  "computer_act",
-]);
-const DEFAULT_PAGE_STATE_RESULTS_TO_KEEP = 3;
-/**
- * Only results that actually carry a page (a snapshot tree, an observation) are worth trimming
- * or counting. Navigation confirmations, action receipts and errors are a line or two: trimming
- * them saves nothing, and counting them would push real page state out of the kept set.
- */
-const STALE_PAGE_STATE_MIN_CHARS = 1_000;
-const STALE_PAGE_STATE_NOTE =
-  "[Earlier page state trimmed to save context. Facts you still need from that page should already be in your notes or tracker; otherwise take a fresh snapshot.]";
-
-/**
- * Replace all but the most recent large page-state tool results with a short note. Runs on
- * every request from the untransformed agent history, so the same history always trims the same
- * way and the cached prompt prefix stays stable up to the newest trimmed result.
- */
-export function pruneStalePageStateContext(
-  messages: AgentMessage[],
-  keep = DEFAULT_PAGE_STATE_RESULTS_TO_KEEP,
-): AgentMessage[] {
-  let remaining = Math.max(0, Math.floor(keep));
-  let transformed: AgentMessage[] | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "toolResult" || !PAGE_STATE_TOOL_NAMES.has(message.toolName)) continue;
-    // Failures are diagnostics, not fresh page state, even when their text is large.
-    const returnedError = (message.details as { error?: unknown } | undefined)?.error;
-    if (message.isError || (returnedError !== undefined && returnedError !== null)) continue;
-    if (textLength(message) < STALE_PAGE_STATE_MIN_CHARS) continue;
-    if (remaining > 0) {
-      remaining -= 1;
-      continue;
-    }
-    transformed ??= [...messages];
-    transformed[index] = {
-      ...message,
-      content: [{ type: "text", text: STALE_PAGE_STATE_NOTE }],
-    };
-  }
-  return transformed ?? messages;
-}
-
-function textLength(message: Extract<AgentMessage, { role: "toolResult" }>): number {
-  let total = 0;
-  for (const part of message.content) {
-    if (part.type === "text") total += part.text.length;
-  }
-  return total;
-}
-
-/** Keep recent visual state while respecting an optional model image budget. */
-export function pruneComputerScreenshotContext(
-  messages: AgentMessage[],
-  maxImagesPerPrompt?: number,
-): AgentMessage[] {
-  const imageLimit =
-    maxImagesPerPrompt === undefined
-      ? undefined
-      : Number.isFinite(maxImagesPerPrompt)
-        ? Math.max(0, Math.floor(maxImagesPerPrompt))
-        : DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP;
-  let remaining = imageLimit ?? DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP;
-  if (imageLimit !== undefined) {
-    const nonScreenshotImages = messages.reduce(
-      (count, message) =>
-        isComputerScreenshotMessage(message) ? count : count + imagePartCount(message),
-      0,
-    );
-    if (nonScreenshotImages > imageLimit) {
-      throw new Error(
-        `The configured model image limit is ${imageLimit}, but the prompt contains ${nonScreenshotImages} non-screenshot images.`,
-      );
-    }
-    remaining = imageLimit - nonScreenshotImages;
-  }
-  let transformed: AgentMessage[] | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!isComputerScreenshotMessage(message)) continue;
-    const images = imagePartCount(message);
-    if (remaining >= images) {
-      remaining -= images;
-      continue;
-    }
-    transformed ??= [...messages];
-    transformed[index] = {
-      ...message,
-      content: copyToolResultProvenance(
-        message.content,
-        message.content.filter((part) => part.type !== "image"),
-      ),
-    };
-  }
-  return transformed ?? messages;
-}
-
-function imagePartCount(message: AgentMessage): number {
-  if (!("content" in message) || !Array.isArray(message.content)) return 0;
-  return message.content.filter(
-    (part: unknown) =>
-      part !== null && typeof part === "object" && "type" in part && part.type === "image",
-  ).length;
-}
-
-function isComputerScreenshotMessage(
-  message: AgentMessage | undefined,
-): message is Extract<AgentMessage, { role: "toolResult" }> {
-  if (message?.role !== "toolResult" || !message.content.some((part) => part.type === "image")) {
-    return false;
-  }
-  const details = message.details;
-  return Boolean(
-    details &&
-      typeof details === "object" &&
-      "frameId" in details &&
-      typeof (details as { frameId?: unknown }).frameId === "string",
-  );
-}
-
 function isAgentToolExecutionResult(result: unknown): result is AgentToolExecutionResult {
   if (
     !result ||
@@ -2153,8 +2038,17 @@ export function serializeToolResult(
   args: Record<string, unknown>,
   historyReference?: ToolResultHistoryReference,
   fresh = !["read_history", "search_history"].includes(name),
+  verbatimMcpServers?: AgentRunRequest["verbatimMcpServers"],
 ) {
-  return serializeToolResultView(result, _strategy, name, args, historyReference, fresh).text;
+  return serializeToolResultView(
+    result,
+    _strategy,
+    name,
+    args,
+    historyReference,
+    fresh,
+    verbatimMcpServers,
+  ).text;
 }
 
 function serializeToolResultView(
@@ -2164,12 +2058,14 @@ function serializeToolResultView(
   args: Record<string, unknown>,
   historyReference?: ToolResultHistoryReference,
   fresh = !["read_history", "search_history"].includes(name),
+  verbatimMcpServers?: AgentRunRequest["verbatimMcpServers"],
 ): { text: string; wrapped: boolean } {
   try {
     const text = JSON.stringify(result);
     if (!text) return { text: "ok", wrapped: false };
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
-    if (VERBATIM_TOOL_RESULTS.has(name)) return { text, wrapped: false };
+    if (VERBATIM_TOOL_RESULTS.has(name) || isVerbatimMcpResult(name, args, verbatimMcpServers))
+      return { text, wrapped: false };
     if (fresh && !historyReference && text.length <= 12_000) {
       const value: unknown = JSON.parse(text);
       if (
@@ -2438,6 +2334,8 @@ function modelForCompletion(model: Model<Api>, configuredMaxTokens?: number): Mo
     configuredMaxTokens,
     undefined,
     model.reasoning,
+    undefined,
+    operatorMaxTokens(model),
   );
   if (maxTokens === model.maxTokens) return model;
   return { ...model, maxTokens };
@@ -2462,6 +2360,8 @@ interface FallbackStreamState {
   isRequestDeadlineExceeded(message: AssistantMessage): boolean;
   /** A rejected signature is stripped for subsequent completions in this run. */
   dropThinkingBlocks?: boolean;
+  /** Thinking written before a model switch belongs to the previous target. */
+  messagesBeforeSwitch?: number;
   stream(
     target: RuntimeModelTarget,
     context: TranscriptContext,
@@ -2608,12 +2508,23 @@ function fallbackSupportsContext(
   requestedThinkingLevel: AgentRunRequest["model"]["thinkingLevel"],
   tools: readonly ConnectorTool[],
 ): boolean {
+  try {
+    context = {
+      ...context,
+      messages: pruneForRebuild(context.messages, candidate.config.maxImagesPerPrompt),
+    };
+  } catch (error) {
+    if (error instanceof ModelImageLimitError) return false;
+    throw error;
+  }
   const inputTokens = estimateModelContextTokens(context, estimatePiImageTokens);
   const outputTokens = resolveCompletionMaxTokens(
     candidate.model.maxTokens,
     candidate.config.maxTokens,
     options?.maxTokens,
     candidate.model.reasoning,
+    candidate.model.contextWindow,
+    operatorMaxTokens(candidate.model),
   );
   // Token counts are estimates and can differ by provider/tokenizer. Reserve a
   // small input-relative margin, not a fixed 4096 tokens that would exclude
@@ -2651,8 +2562,13 @@ function fallbackAwareModelStream(
   const output = new AssistantMessageEventStream();
   let lastPartial: AssistantMessage | undefined;
   const signal = options?.signal ? AbortSignal.any([state.signal, options.signal]) : state.signal;
-  const requestContext = () =>
-    state.dropThinkingBlocks ? withoutThinkingBlocks(context) : context;
+  const requestContext = (switching = false) => {
+    if (state.dropThinkingBlocks) return withoutThinkingBlocks(context);
+    const before = switching ? context.messages.length : state.messagesBeforeSwitch;
+    if (!before) return context;
+    const messages = withoutThinkingFrom(context.messages, 0, before);
+    return messages === context.messages ? context : { ...context, messages };
+  };
   const signalAborted = () => signal.aborted;
   const finishWithThrownError = (target: RuntimeModelTarget, error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -2740,7 +2656,7 @@ function fallbackAwareModelStream(
         if (
           !fallbackSupportsContext(
             candidate,
-            requestContext(),
+            requestContext(true),
             options,
             state.request.model.thinkingLevel,
             state.request.tools,
@@ -2892,6 +2808,7 @@ function fallbackAwareModelStream(
               if (authorizationError) throw authorizationError;
               if (failIfAborted(target)) return;
               if (next) {
+                state.messagesBeforeSwitch = context.messages.length;
                 await state.onSwitch(next);
                 if (authorizationError) throw authorizationError;
                 if (failIfAborted(target)) return;
@@ -3252,7 +3169,8 @@ function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean 
 }
 
 export function reliableStreamOptions(
-  model: Pick<Model<Api>, "api" | "provider" | "maxTokens" | "reasoning">,
+  model: Pick<Model<Api>, "api" | "provider" | "maxTokens" | "reasoning"> &
+    Partial<Pick<Model<Api>, "contextWindow">>,
   options?: ModelsSimpleStreamOptions,
   configuredMaxTokens?: number,
   accessToken?: string | (() => string | undefined),
@@ -3268,6 +3186,8 @@ export function reliableStreamOptions(
       configuredMaxTokens,
       options?.maxTokens,
       model.reasoning,
+      model.contextWindow,
+      operatorMaxTokens(model),
     ),
   };
 

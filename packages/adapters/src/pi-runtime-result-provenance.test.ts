@@ -140,6 +140,99 @@ describe("real Pi tool-result content provenance", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    ["mcp__mail__read.events", { id: "record" }, true],
+    ["connectors_execute_tool", { id: "mail-server:read", arguments: {} }, true],
+    ["connectors_execute_tool", { id: "MAIL/read", arguments: {} }, true],
+    ["connectors_execute_tool", { id: "mail--read", arguments: {} }, false],
+    ["mcp__mailbox__read", { id: "record" }, false],
+    ["mcp__other__read", { id: "record" }, false],
+  ] as const)(
+    "preserves opted-in content and provenance for %s %j (whole: %s)",
+    async (name, args, whole) => {
+      const image = { type: "image" as const, data: "synthetic", mimeType: "image/png" };
+      const raw = {
+        kind: "agent_tool_result" as const,
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: "exact-id", evidence: "Original evidence ".repeat(1500) }),
+          },
+          { type: "text" as const, text: "Second original block ".repeat(700) },
+          image,
+        ],
+        details: { source: "offline" },
+        isError: false,
+      };
+      const stored = vi.fn(async () => reference);
+      const execute = vi.fn(async () => raw);
+      const contexts: Context[] = [];
+      providerState.stream.mockImplementation((_model: unknown, context: Context) => {
+        contexts.push(context);
+        const offered =
+          context.tools?.[0] ??
+          context.messages.find((message) => message.role === "system")?.toolsAdded?.[0];
+        if (!offered) throw new Error("Synthetic tool was not offered");
+        return contexts.length === 1
+          ? response([{ ...call("mcp-read"), name: offered.name, arguments: { ...args } }])
+          : response();
+      });
+
+      await run({
+        tools: [
+          {
+            name,
+            description: "Read synthetic evidence",
+            inputSchema: {
+              type: "object",
+              properties: { id: { type: "string" }, arguments: { type: "object" } },
+            },
+            route: { connectorId: "mcp", toolName: "read", connectionId: "mail-connection" },
+          },
+        ],
+        model: { provider: model.provider, id: model.id, contextWindow: 200_000 },
+        verbatimMcpServers: { ids: ["mail-server"], slugs: ["mail"] },
+        executeTool: execute,
+        storeToolResult: stored,
+      });
+
+      expect(execute).toHaveBeenCalledWith(
+        name,
+        args,
+        expect.any(String),
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(stored).toHaveBeenCalledWith(expect.objectContaining({ name, result: raw }));
+      expect(contexts).toHaveLength(2);
+      const sent = resultMessage(contexts[1]!, "mcp-read");
+      expect(toolResultContentProvenance(sent.content)?.historyReference).toEqual(reference);
+      expect(sent.content).toContainEqual(image);
+      if (whole) {
+        expect(
+          sent.content.filter(
+            (part) => part.type !== "text" || !part.text.startsWith("[Automated message"),
+          ),
+        ).toEqual(raw.content);
+        const retained = resultMessage(
+          { messages: providerState.agent!.state.messages as Context["messages"] },
+          "mcp-read",
+        );
+        expect(retained.content).toEqual(raw.content);
+        expect(toolResultContentProvenance(retained.content)?.historyReference).toEqual(reference);
+      } else {
+        const encoded = sent.content
+          .flatMap((part) =>
+            part.type === "text" && !part.text.startsWith("[Automated message") ? [part.text] : [],
+          )
+          .join("");
+        expect(encoded.length).toBeLessThan(12_000);
+        expect(JSON.parse(encoded)).toMatchObject({ historyReference: reference });
+      }
+      expect(JSON.stringify(raw.content).length).toBeGreaterThan(12_000);
+    },
+  );
   it("returns only a safe tool error when a stored read view cannot be redacted", async () => {
     let body: unknown = { id: "private-source-canary", body: "x".repeat(400) };
     for (let index = 0; index <= CONNECTOR_REDACTION_MAX_DEPTH; index += 1) body = { nested: body };
@@ -220,7 +313,11 @@ describe("real Pi tool-result content provenance", () => {
       })
       .mockImplementationOnce((_model, context: Context) => {
         const old = resultMessage(context, "old");
-        expect(decode(old)).toMatchObject({ error: "budget_error", historyReference: reference });
+        expect(old.content).toBe(actualContent);
+        expect(decode(old)).toEqual({
+          result: { nextCursor: "c".repeat(1800), body: "b".repeat(1000) },
+          historyReference: reference,
+        });
         expect(toolResultContentProvenance(old.content)).toEqual({
           historyReference: reference,
           wrapped: true,
@@ -275,7 +372,11 @@ describe("real Pi tool-result content provenance", () => {
         .mockImplementationOnce((_model, context: Context) => {
           const echo = resultMessage(context, "echo");
           if (healthy) expect(decode(echo).historyReference).toEqual(nextReference);
+          else if (outer) expect(decode(echo)).toEqual(echoed);
           else expect(decode(echo)).toMatchObject({ historyUnavailable: true });
+          expect(toolResultContentProvenance(echo.content)?.historyReference).toEqual(
+            healthy ? nextReference : undefined,
+          );
           expect(decode(echo).historyReference).not.toEqual(reference);
           if (outer) expect(JSON.stringify(decode(echo))).toContain("new-outer-evidence");
           return response();

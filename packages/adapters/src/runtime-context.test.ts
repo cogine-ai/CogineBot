@@ -1,4 +1,5 @@
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
@@ -55,12 +56,131 @@ function enableHistoryRetrieval(request: AgentRunRequest) {
   request.executeTool = async () => ({});
 }
 describe("runtime context policy", () => {
+  it.each([
+    { reusedId: false, identicalBodies: false },
+    { reusedId: true, identicalBodies: false },
+    { reusedId: true, identicalBodies: true },
+  ])(
+    "keeps shortened results attached to their own call occurrence (reused ID: $reusedId, identical body: $identicalBodies)",
+    ({ reusedId, identicalBodies }) => {
+      const { request, context } = fixture(0);
+      request.contextStrategy = "retrieval";
+      const oldId = "earlier-call";
+      const newId = reusedId ? oldId : "new-call";
+      const oldText = JSON.stringify({
+        id: "old-result",
+        evidence: "0123456789".repeat(identicalBodies ? 400 : 1000),
+      });
+      const newText = identicalBodies
+        ? oldText
+        : JSON.stringify({ id: "new-result", evidence: "new details ".repeat(300) });
+      context.messages.push(
+        fauxAssistantMessage([{ type: "toolCall", id: oldId, name: "shell", arguments: {} }]),
+        {
+          role: "toolResult",
+          toolCallId: oldId,
+          toolName: "shell",
+          content: [{ type: "text", text: oldText }],
+          isError: false,
+          timestamp: 1,
+        },
+        fauxAssistantMessage([{ type: "toolCall", id: newId, name: "shell", arguments: {} }]),
+        {
+          role: "toolResult",
+          toolCallId: newId,
+          toolName: "shell",
+          content: [{ type: "text", text: newText }],
+          isError: false,
+          timestamp: 2,
+        },
+      );
+      const policy = createRuntimeContextPolicy(request);
+      const selectedModel = { ...model, contextWindow: 6000, maxTokens: 512 };
+      const first = policy.prepareContext(context, selectedModel);
+      const firstResults = first.messages.filter((message) => message.role === "toolResult");
+      expect(firstResults).toHaveLength(2);
+      expect(JSON.stringify(firstResults[0]!.content)).toContain("contextTruncated");
+      expect(firstResults[1]!.content).toEqual([{ type: "text", text: newText }]);
+      const next = policy.prepareContext(
+        { ...context, systemPrompt: "Changed instructions" },
+        selectedModel,
+      );
+      const nextResults = next.messages.filter((message) => message.role === "toolResult");
+      expect(nextResults[1]!.content).toEqual([{ type: "text", text: newText }]);
+      expect(
+        context.messages.filter((message) => message.role === "toolResult")[0]!.content,
+      ).toEqual([{ type: "text", text: oldText }]);
+    },
+  );
+  it("isolates cache predictions and projections by connection ID even with identical provider credentials", () => {
+    const { request, context } = fixture(120);
+    enableHistoryRetrieval(request);
+    request.threadId = "same-key-distinct-connections";
+    request.model.apiKey = "fixture-same-key";
+    request.model.modelCredentialId = "connection-a";
+    request.model.cacheCapabilities = { scope: "connection", retentionMs: 300_000 };
+    const tracker = new ContextCacheTracker(() => 100);
+    const adapter = { userId: "same-user", spaceId: "same-space" };
+    const a = createRuntimeContextPolicy(request, adapter, {
+      cacheTracker: tracker,
+      credentialScope: "same-resolved-key",
+    });
+    a.prepareContext(context, model);
+    a.onUsage({ inputTokens: 100, outputTokens: 1, cacheReadTokens: 0 });
+    const same = createRuntimeContextPolicy(request, adapter, {
+      cacheTracker: tracker,
+      credentialScope: "same-resolved-key",
+    });
+    same.prepareContext(context, model);
+    expect(same.getDecision()?.predictedCache).toBe("likely-warm");
+    const otherRequest = {
+      ...request,
+      model: { ...request.model, modelCredentialId: "connection-b" },
+    };
+    const b = createRuntimeContextPolicy(otherRequest, adapter, {
+      cacheTracker: tracker,
+      credentialScope: "same-resolved-key",
+    });
+    const actual = b.prepareContext(context, model);
+    expect(b.getDecision()?.predictedCache).toBe("likely-cold");
+    const control = createRuntimeContextPolicy(otherRequest, adapter, {
+      cacheTracker: new ContextCacheTracker(() => 100),
+      credentialScope: "same-resolved-key",
+    });
+    expect(actual).toEqual(control.prepareContext(context, model));
+  });
+  it("bounds a restored diagnostic context only for the trusted boolean hint", () => {
+    const { request, context } = fixture(120);
+    const unbounded = createRuntimeContextPolicy({
+      ...request,
+      contextStrategy: "current",
+      contextRestored: false,
+    });
+    expect(unbounded.prepareContext(context, model).messages).toHaveLength(context.messages.length);
+    const restored = createRuntimeContextPolicy({
+      ...request,
+      contextStrategy: "current",
+      contextRestored: true,
+    });
+    expect(restored.prepareContext(context, model).messages.length).toBeLessThan(
+      context.messages.length,
+    );
+    expect(restored.getDecision()?.strategy).toBe(DEFAULT_CONTEXT_STRATEGY);
+    const notTrusted = createRuntimeContextPolicy({
+      ...request,
+      contextStrategy: "current",
+      contextRestored: "true" as unknown as boolean,
+    });
+    expect(notTrusted.prepareContext(context, model).messages).toHaveLength(
+      context.messages.length,
+    );
+  });
   it.each(["account", "connection"] as const)(
     "automatically preserves a selected prefix while a declared %s cache is warm",
     (scope) => {
       let now = 0;
       const tracker = new ContextCacheTracker(() => now);
-      const { request, context } = fixture(60);
+      const { request, context } = fixture(120);
       const original = JSON.stringify({ history: request.history, context });
       request.threadId = `automatic-prefix-${scope}`;
       enableHistoryRetrieval(request);
@@ -347,13 +467,15 @@ describe("runtime context policy", () => {
       context.messages.push(
         call("old"),
         result("old", initial),
-        call("new"),
-        result("new", "done"),
+        ...Array.from({ length: 3 }, (_, index) => [
+          call(`new-${index}`),
+          result(`new-${index}`, "0123456789".repeat(500)),
+        ]).flat(),
       );
       const prepared = createRuntimeContextPolicy({
         ...request,
         contextStrategy: strategy,
-      }).prepareContext(context, model);
+      }).prepareContext(context, { ...model, contextWindow: 20000, maxTokens: 512 });
       const prior = prepared.messages.find(
         (message) => message.role === "toolResult" && message.toolCallId === "old",
       ) as Extract<Message, { role: "toolResult" }>;
@@ -393,7 +515,7 @@ describe("runtime context policy", () => {
       readOnly: false,
       content: `---\nname: daily-brief\n---\n${"1. Step kept for skill_update.\n".repeat(80)}`,
     });
-    const shellOutput = "synthetic shell output ".repeat(100);
+    const shellOutput = "0123456789".repeat(400);
     context.messages.push(
       call("read", "skill_read"),
       result("read", "skill_read", skill),
@@ -401,12 +523,18 @@ describe("runtime context policy", () => {
       result("shell-1", "shell", shellOutput),
       call("shell-2", "shell"),
       result("shell-2", "shell", shellOutput),
+      call("shell-3", "shell"),
+      result("shell-3", "shell", shellOutput),
     );
     const policy = createRuntimeContextPolicy({
       ...request,
       contextStrategy: DEFAULT_CONTEXT_STRATEGY,
     });
-    const prepared = policy.prepareContext(context, model);
+    const prepared = policy.prepareContext(context, {
+      ...model,
+      contextWindow: 9000,
+      maxTokens: 512,
+    });
     const body = (id: string) => {
       const message = prepared.messages.find(
         (message) => message.role === "toolResult" && message.toolCallId === id,
@@ -415,9 +543,56 @@ describe("runtime context policy", () => {
     };
     expect(skill.length).toBeGreaterThan(2500);
     expect(body("read")).toBe(skill);
-    expect(body("shell-1")).toContain("[Tool result truncated to fit context");
-    expect(body("shell-2")).toBe(shellOutput);
+    expect(body("shell-1")).toContain("Earlier result shortened after you read it");
+    expect(body("shell-3")).toBe(shellOutput);
   });
+  it.each([
+    { contextWindow: 15000, firstWhole: 3 },
+    { contextWindow: 22000, firstWhole: 1 },
+    { contextWindow: 11000, firstWhole: 5 },
+  ])(
+    "keeps whole recent results within the available budget ($contextWindow)",
+    ({ contextWindow, firstWhole }) => {
+      const { request, context } = fixture(0);
+      const body = "0123456789".repeat(300);
+      for (let index = 0; index < 6; index++) {
+        const id = `step-${index}`;
+        context.messages.push(
+          fauxAssistantMessage([{ type: "toolCall", id, name: "shell", arguments: {} }]),
+          {
+            role: "toolResult",
+            toolCallId: id,
+            toolName: "shell",
+            content: [{ type: "text", text: body }],
+            isError: false,
+            timestamp: index + 1,
+          },
+        );
+      }
+      const original = structuredClone(context);
+      const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "retrieval" });
+      const prepared = policy.prepareContext(context, { ...model, contextWindow, maxTokens: 512 });
+      const results = prepared.messages.filter((message) => message.role === "toolResult");
+      expect(results).toHaveLength(6);
+      for (const [index, result] of results.entries()) {
+        if (index >= firstWhole) expect(result.content).toEqual([{ type: "text", text: body }]);
+        else
+          expect(JSON.stringify(result.content)).toContain(
+            "Earlier result shortened after you read it",
+          );
+      }
+      const rebuilt = policy.prepareContext(
+        { ...context, systemPrompt: "Changed instructions force a rebuild" },
+        { ...model, contextWindow: 30000, maxTokens: 512 },
+      );
+      expect(
+        rebuilt.messages
+          .filter((message) => message.role === "toolResult")
+          .map((message) => message.content),
+      ).toEqual(results.map((message) => message.content));
+      expect(context).toEqual(original);
+    },
+  );
   it("leaves the baseline provider payload untouched", () => {
     const { request, context } = fixture();
     const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "current" });
@@ -515,12 +690,12 @@ describe("runtime context policy", () => {
     expect(prepared.messages.at(-1)).toEqual(context.messages.at(-1));
   });
   it("creates navigation snapshots from originals with IDs and dates without inference", () => {
-    const { request, context } = fixture();
+    const { request, context } = fixture(120);
     const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "snapshots" });
     const prepared = policy.prepareContext(context, model);
     const first = prepared.messages[0]!.content;
     expect(first).toContain("Historical navigation snapshots");
-    expect(first).toContain("message message-10 at 2026-01-01T00:00:00Z");
+    expect(first).toContain("message message-100 at 2026-01-01T00:00:00Z");
     expect(first).toContain("read_history");
     expect(prepared.messages.at(-1)).toEqual(context.messages.at(-1));
     expect(policy.getDecision()!.estimatedInputTokens).toBeLessThan(32768);
@@ -528,7 +703,7 @@ describe("runtime context policy", () => {
   it("uses fake-clock warmth from matching model requests, expiry only selects existing snapshots", () => {
     let now = 0;
     const tracker = new ContextCacheTracker(() => now);
-    const { request, context } = fixture(30);
+    const { request, context } = fixture(120);
     request.model.cacheCapabilities = { scope: "account", retentionMs: 300000, minimumTokens: 1 };
     const baseline = createRuntimeContextPolicy(
       { ...request, contextStrategy: "current" },

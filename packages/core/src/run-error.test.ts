@@ -1,9 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
+  MODEL_CONTEXT_TOO_SMALL_ERROR,
   normalizeRunError,
   sanitizeRunErrorDetails,
+  VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
 } from "./run-error.js";
+
+describe("context capacity failures", () => {
+  it.each([
+    [MODEL_CONTEXT_TOO_SMALL_ERROR, MODEL_CONTEXT_TOO_SMALL_ERROR],
+    ["Required context exceeds the model context budget", MODEL_CONTEXT_TOO_SMALL_ERROR],
+    [VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR, VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR],
+  ])(
+    "localizes controlled capacity failure %s and preserves its diagnostics",
+    (details, summary) => {
+      expect(normalizeRunError(details, (text) => `localized:${text}`)).toEqual({
+        summary: `localized:${summary}`,
+        details,
+      });
+    },
+  );
+
+  it("does not use a provider's matching phrase to replace authentication recovery", () => {
+    const failure = normalizeRunError(`401: ${MODEL_CONTEXT_TOO_SMALL_ERROR} invalid API key`);
+    expect(failure.summary).toBe(
+      "Your model provider rejected the API key. Check your connection settings.",
+    );
+    expect(failure).not.toHaveProperty("action");
+  });
+});
 
 describe("platform model policy recovery", () => {
   it("offers only a Models action for the exact controlled policy token", () => {

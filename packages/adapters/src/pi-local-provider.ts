@@ -7,6 +7,8 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 
 import { declaredVisionModelIds, inputModalities } from "./model-modalities.js";
+import { LOCAL_PROVIDER_ID } from "./pi-local-provider-id.js";
+
 /**
  * Local OpenAI-compatible model server (Ollama, LM Studio, llama.cpp, MLX).
  *
@@ -17,7 +19,7 @@ import { declaredVisionModelIds, inputModalities } from "./model-modalities.js";
  * Models treats a provider with no resolvable auth as unconfigured and hides
  * its models.
  */
-export const LOCAL_PROVIDER_ID = "local";
+export { LOCAL_PROVIDER_ID } from "./pi-local-provider-id.js";
 
 /** Model ids the local server serves with vision, declared by the operator. */
 export const LOCAL_VISION_MODELS_ENV = "RAKAZO_LOCAL_VISION_MODELS";

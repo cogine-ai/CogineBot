@@ -490,11 +490,13 @@ describe("Pi connector tool dispatch", () => {
     expect(fakeAgentState.preparedMessages).toEqual([
       expect.objectContaining({
         role: "user",
-        content: "Use the newer customer totals.",
+        content:
+          "A message arrived while you were working:\n\nUse the newer customer totals.\n\nTake it into account and continue the task.",
       }),
       expect.objectContaining({
         role: "user",
-        content: "Keep the original date range.",
+        content:
+          "A message arrived while you were working:\n\nKeep the original date range.\n\nTake it into account and continue the task.",
       }),
     ]);
   });
@@ -544,8 +546,14 @@ describe("Pi connector tool dispatch", () => {
     expect(claimSteering).toHaveBeenNthCalledWith(2, []);
     expect(claimSteering).toHaveBeenNthCalledWith(3, ["steering-1"]);
     expect(fakeAgentState.preparedMessages).toEqual([
-      expect.objectContaining({ content: "First boundary context." }),
-      expect.objectContaining({ content: "Next boundary context." }),
+      expect.objectContaining({
+        content:
+          "A message arrived while you were working:\n\nFirst boundary context.\n\nTake it into account and continue the task.",
+      }),
+      expect.objectContaining({
+        content:
+          "A message arrived while you were working:\n\nNext boundary context.\n\nTake it into account and continue the task.",
+      }),
     ]);
   });
 
@@ -664,7 +672,10 @@ describe("Pi connector tool dispatch", () => {
     expect(fakeAgentState.steeredMessages).toContainEqual({
       role: "user",
       content: [
-        { type: "text", text: "Compare the second image." },
+        {
+          type: "text",
+          text: "A message arrived while you were working:\n\nCompare the second image.\n\nTake it into account and continue the task.",
+        },
         { type: "image", data: "BAUG", mimeType: "image/png" },
       ],
       timestamp: expect.any(Number),
@@ -944,7 +955,9 @@ describe("Pi connector tool dispatch", () => {
     expect(fakeAgentState.followUpMessages[0]).toEqual(
       expect.objectContaining({
         role: "user",
-        content: expect.stringContaining("Continue"),
+        content: expect.stringContaining(
+          "If you need information or a decision from the user, ask them instead of guessing; otherwise",
+        ),
       }),
     );
     expect(onToolCompleted).toHaveBeenCalledWith(
@@ -1473,6 +1486,9 @@ describe("Pi connector tool dispatch", () => {
       }),
     );
     expect(followUp.content).not.toContain("NO_RESPONSE");
+    expect(followUp.content).toContain(
+      "ask them instead of guessing, even if you were told to stay silent",
+    );
     expect(events).not.toContainEqual({
       type: "text",
       text: MISSING_TOOL_FINAL_RESPONSE_ERROR,

@@ -1558,7 +1558,7 @@ describe("Pi runtime ordered model fallback", () => {
       { provider: backupA.provider, id: backupA.id, apiKey: "small...key" },
       { provider: backupB.provider, id: backupB.id, apiKey: "fitti...key" },
     ]);
-    input.prompt = "x".repeat(8_000);
+    input.prompt = "0".repeat(8_000);
     providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
       target.provider === primary.provider
         ? stream(target, message(target, [], "error", "429 rate_limit_error"))
@@ -1992,6 +1992,77 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
     context.messages.flatMap((entry) =>
       entry.role === "assistant" ? entry.content.filter((part) => part.type === "thinking") : [],
     );
+
+  it("omits the primary's thinking on a direct switch and keeps thinking written by the backup", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key", maxTokens: 512 },
+    ]);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "thinking",
+                thinking: "Primary plan",
+                thinkingSignature: "primary-signature",
+              },
+              {
+                type: "toolCall",
+                id: "primary-write",
+                name: "write_effect",
+                arguments: { value: "a" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [], "error", "429 rate_limit_error")),
+      )
+      .mockImplementationOnce(() =>
+        stream(
+          backupA,
+          message(
+            backupA,
+            [
+              { type: "thinking", thinking: "Backup plan", thinkingSignature: "backup-signature" },
+              {
+                type: "toolCall",
+                id: "backup-write",
+                name: "write_effect",
+                arguments: { value: "b" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation(() =>
+        stream(backupA, message(backupA, [{ type: "text", text: "Done." }], "stop")),
+      );
+
+    expect((await run(input)).at(-1)).toEqual({ type: "done", text: "Done." });
+    const contexts = providerState.stream.mock.calls.map(([, context]) => context as Context);
+    expect(contexts).toHaveLength(4);
+    expect(thinkingParts(contexts[1]!)).toEqual([
+      { type: "thinking", thinking: "Primary plan", thinkingSignature: "primary-signature" },
+    ]);
+    expect(thinkingParts(contexts[2]!)).toEqual([]);
+    expect(thinkingParts(contexts[3]!)).toEqual([
+      { type: "thinking", thinking: "Backup plan", thinkingSignature: "backup-signature" },
+    ]);
+    expect(JSON.stringify(contexts[3]!.messages.slice(0, contexts[2]!.messages.length))).toBe(
+      JSON.stringify(contexts[2]!.messages),
+    );
+    expect(
+      (input.executeTool as ReturnType<typeof vi.fn>).mock.calls.map(([, args]) => args),
+    ).toEqual([{ value: "a" }, { value: "b" }]);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
 
   it("retries once without earlier thinking blocks and keeps dropping them for the run", async () => {
     providerState.stream
