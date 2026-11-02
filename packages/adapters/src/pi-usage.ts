@@ -53,13 +53,33 @@ export function normalizePiUsage(
     : derivedTotal !== null && Number.isSafeInteger(derivedTotal)
       ? derivedTotal
       : null;
+  let rates = model.cost;
+  let tierKnown = true;
+  if (rates?.tiers?.length) {
+    const tierInput =
+      inputTokens !== null && cacheReadTokens !== null && cacheWriteTokens !== null
+        ? inputTokens + cacheReadTokens + cacheWriteTokens
+        : null;
+    tierKnown = tierInput !== null && Number.isSafeInteger(tierInput);
+    if (tierKnown) {
+      // Match Pi's strict threshold and highest-tier selection; Pi still computes the amount.
+      let matchedThreshold = -1;
+      for (const tier of model.cost.tiers ?? []) {
+        if (tierInput! > tier.inputTokensAbove && tier.inputTokensAbove > matchedThreshold) {
+          rates = tier;
+          matchedThreshold = tier.inputTokensAbove;
+        }
+      }
+    }
+  }
   const costKnown =
-    !!model.cost &&
-    Object.values(model.cost).some((rate) => rate > 0) &&
+    !!rates &&
+    tierKnown &&
+    [rates.input, rates.output, rates.cacheRead, rates.cacheWrite].some((rate) => rate > 0) &&
     inputTokens !== null &&
     outputTokens !== null &&
-    (model.cost.cacheRead === 0 || cacheReadTokens !== null) &&
-    (model.cost.cacheWrite === 0 || cacheWriteTokens !== null);
+    (rates.cacheRead === 0 || cacheReadTokens !== null) &&
+    (rates.cacheWrite === 0 || cacheWriteTokens !== null);
   const providerCost = reportedCosts.get(reported);
   return {
     inputTokens,
@@ -76,7 +96,7 @@ export function normalizePiUsage(
         : null),
     costSource:
       providerCost !== undefined ? "provider-reported" : costKnown ? "pi-catalog-estimate" : null,
-    pricingVersion: providerCost !== undefined ? null : costKnown ? "pi-ai-0.87.1" : null,
+    pricingVersion: providerCost !== undefined ? null : costKnown ? "pi-ai-1.3.0" : null,
     usageSource: reported.size ? "provider-reported-via-pi" : "pi-normalized",
   };
 }

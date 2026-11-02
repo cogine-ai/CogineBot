@@ -1329,9 +1329,11 @@ describe("Pi runtime ordered model fallback", () => {
 
       expect(providerState.stream).toHaveBeenCalledTimes(1);
       expect(appendMessage).toHaveBeenCalledWith(
-        emptyTerminal
-          ? { ...targetMessage, content: [{ type: "text", text: "partial" }] }
-          : targetMessage,
+        expect.objectContaining(
+          emptyTerminal
+            ? { ...targetMessage, content: [{ type: "text", text: "partial" }] }
+            : targetMessage,
+        ),
       );
       expect(
         events

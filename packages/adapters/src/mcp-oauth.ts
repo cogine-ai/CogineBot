@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type {
   OAuthClientProvider,
   OAuthDiscoveryState,
@@ -44,6 +45,25 @@ type OAuthState = {
   redirectUri?: string;
   codeVerifier?: string;
 };
+
+function oauthAuthorization(state: OAuthState | undefined) {
+  const bound = structuredClone(state);
+  bindKnownIssuer(bound);
+  return {
+    clientInformation: bound?.clientInformation,
+    tokens: bound?.tokens,
+    obtainedAt: bound?.obtainedAt,
+  };
+}
+
+function bindKnownIssuer(oauth: OAuthState | undefined): void {
+  const issuer = oauth?.discoveryState?.authorizationServerUrl;
+  if (!oauth || !issuer) return;
+  if (oauth.clientInformation && typeof oauth.clientInformation.issuer !== "string")
+    oauth.clientInformation = { ...oauth.clientInformation, issuer };
+  if (oauth.tokens && typeof oauth.tokens.issuer !== "string")
+    oauth.tokens = { ...oauth.tokens, issuer };
+}
 
 export type OAuthMaterial = {
   secret?: string;
@@ -201,6 +221,7 @@ type ServerRef = {
   endpoint: string | null;
   secretId: string | null;
   installId?: string | null;
+  revision?: number;
 };
 type ActorRef = { spaceId: string; userId: string };
 
@@ -210,6 +231,26 @@ export class McpReauthorizationRequiredError extends Error {
     super("MCP authorization expired. Reconnect this server in MCP settings.");
     this.name = "McpReauthorizationRequiredError";
   }
+}
+
+class McpOAuthCredentialsChangedError extends McpReauthorizationRequiredError {}
+
+/** Compare authorization servers as URLs, preserving issuer paths. */
+export function matchesMcpOAuthIssuer(issuer: string | undefined, expected: string): boolean {
+  if (typeof issuer !== "string") return true;
+  let left = issuer;
+  let right = expected;
+  try {
+    left = new URL(left).href;
+    right = new URL(right).href;
+  } catch {
+    // Legacy non-URL identifiers are compared as written.
+  }
+  return (
+    left === right ||
+    (left.endsWith("/") && left.slice(0, -1) === right) ||
+    (right.endsWith("/") && right.slice(0, -1) === left)
+  );
 }
 
 type ProviderOptions = {
@@ -230,13 +271,22 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   private readonly runtimeState = randomUUID();
   private persistQueue = Promise.resolve();
   private refreshing?: Promise<void>;
+  private storedOAuth: OAuthState | undefined;
+  private persistenceConflict?: McpOAuthCredentialsChangedError;
 
   constructor(
     readonly serverId: string,
     private readonly material: OAuthMaterial,
-    private readonly persistMaterial: (material: OAuthMaterial) => Promise<void>,
+    private readonly persistMaterial: (
+      material: OAuthMaterial,
+      storedOAuth: OAuthState | undefined,
+    ) => Promise<void>,
     private readonly options: ProviderOptions = {},
   ) {
+    this.storedOAuth = structuredClone(material.oauth);
+    // Saved discovery is evidence of an existing legacy credential's issuer;
+    // new discovery must not silently rebind that credential to another server.
+    bindKnownIssuer(this.material.oauth);
     if (options.redirectUri) {
       this.material.oauth = { ...(this.material.oauth ?? {}), redirectUri: options.redirectUri };
     }
@@ -265,6 +315,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     return this.options.state ?? this.runtimeState;
   }
   clientInformation(): OAuthClientInformationMixed | undefined {
+    if (this.persistenceConflict) return undefined;
     return this.material.oauth?.clientInformation;
   }
   async saveClientInformation(value: OAuthClientInformationMixed): Promise<void> {
@@ -277,6 +328,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
    * expiry before returning a token that has lapsed.
    */
   async tokens(): Promise<OAuthTokens | undefined> {
+    if (this.persistenceConflict) throw this.persistenceConflict;
     if (this.options.refreshNetwork && this.accessTokenExpired()) {
       this.refreshing ??= this.refreshExpiredToken().finally(() => {
         this.refreshing = undefined;
@@ -299,7 +351,14 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     const discovery = oauth?.discoveryState;
     const clientInformation = oauth?.clientInformation;
     if (!refreshToken || !discovery?.authorizationServerUrl || !clientInformation) return;
+    const issuer = discovery.authorizationServerUrl;
+    if (
+      !matchesMcpOAuthIssuer(oauth.tokens?.issuer, issuer) ||
+      !matchesMcpOAuthIssuer(clientInformation.issuer, issuer)
+    )
+      throw new McpReauthorizationRequiredError(this.serverId);
     let network: { fetch: typeof fetch; close: () => Promise<void> } | undefined;
+    let next: OAuthTokens;
     try {
       network = await this.options.refreshNetwork?.();
       if (!network) return;
@@ -307,14 +366,13 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
         discovery.authorizationServerUrl,
         discovery.resourceMetadata?.resource,
       );
-      const next = await refreshAuthorization(discovery.authorizationServerUrl, {
+      next = await refreshAuthorization(discovery.authorizationServerUrl, {
         metadata: discovery.authorizationServerMetadata,
         clientInformation,
         refreshToken,
         resource,
         fetchFn: network.fetch,
       });
-      await this.saveTokens(next);
     } catch (error) {
       if (error instanceof InvalidGrantError) {
         // A revoked refresh token cannot recover through a second SDK attempt.
@@ -322,9 +380,13 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
         await this.invalidateCredentials("tokens");
       }
       // Transient setup or transport failures must not discard a usable token.
+      return;
     } finally {
       await network?.close().catch(() => undefined);
     }
+    // The primitive strips response-provided issuer; stamp the server we used.
+    // Persistence failures must reach the caller rather than expose an uncommitted grant.
+    await this.saveTokens({ ...next, issuer });
   }
 
   async saveTokens(value: OAuthTokens): Promise<void> {
@@ -357,6 +419,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     await this.persist();
   }
   codeVerifier(): string {
+    if (this.persistenceConflict) throw this.persistenceConflict;
     const verifier = this.material.oauth?.codeVerifier;
     if (!verifier) throw new Error("OAuth PKCE verifier is missing");
     return verifier;
@@ -400,13 +463,29 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   }
 
   private oauth(): OAuthState {
+    if (this.persistenceConflict) throw this.persistenceConflict;
     if (!this.material.oauth) this.material.oauth = {};
     return this.material.oauth;
   }
 
   private async persist(): Promise<void> {
     const snapshot = structuredClone(this.material);
-    const next = this.persistQueue.then(() => this.persistMaterial(snapshot));
+    const next = this.persistQueue.then(async () => {
+      if (this.persistenceConflict) throw this.persistenceConflict;
+      try {
+        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
+        this.storedOAuth = structuredClone(snapshot.oauth);
+      } catch (error) {
+        if (error instanceof McpOAuthCredentialsChangedError) {
+          this.persistenceConflict = error;
+          delete this.material.oauth;
+        } else if (isDeepStrictEqual(this.material.oauth, snapshot.oauth)) {
+          this.material.oauth = structuredClone(this.storedOAuth);
+          bindKnownIssuer(this.material.oauth);
+        }
+        throw error;
+      }
+    });
     this.persistQueue = next.catch(() => undefined);
     await next;
   }
@@ -1015,17 +1094,19 @@ export class McpOAuthBroker {
     options: ProviderOptions = {},
   ): StoredMcpOAuthProvider {
     const endpoint = server.endpoint;
+    const revision = server.revision;
     return new StoredMcpOAuthProvider(
       server.id,
       loaded.material,
-      async (material) => {
+      async (material, oauth) => {
         await this.replaceMaterial(
           server.id,
           material,
           context,
           false,
-          server.endpoint,
+          endpoint,
           options.onPersisted,
+          { oauth, revision },
         );
       },
       {
@@ -1056,14 +1137,25 @@ export class McpOAuthBroker {
     incrementRevision: boolean,
     expectedEndpoint?: string | null,
     onPersisted?: ProviderOptions["onPersisted"],
+    expected?: { oauth: OAuthState | undefined; revision?: number },
   ): Promise<string | undefined> {
     // Take a DB-only snapshot, then do provider I/O with no transaction open.
     // Recheck both the pointer and ciphertext under the existing advisory lock.
     for (let attempt = 0; attempt < 5; attempt++) {
       const snapshot = await this.prisma.$transaction(async (tx) => {
         const server = await tx.mcpServer.findFirst({
-          where: { id: serverId, spaceId: context.spaceId, userId: context.userId },
-          select: { endpoint: true, secretId: true, installId: true },
+          where: {
+            id: serverId,
+            spaceId: context.spaceId,
+            userId: context.userId,
+          },
+          select: {
+            endpoint: true,
+            secretId: true,
+            installId: true,
+            revision: true,
+            enabled: true,
+          },
         });
         if (!server) throw new Error("MCP server is unavailable");
         if (server.installId) {
@@ -1074,6 +1166,12 @@ export class McpOAuthBroker {
           throw new Error(
             "MCP server endpoint changed during authorization; reconnect this server",
           );
+        if (
+          expected &&
+          (server.enabled === false ||
+            (expected.revision !== undefined && server.revision !== expected.revision))
+        )
+          throw new McpOAuthCredentialsChangedError(serverId);
         const secret = server.secretId
           ? await tx.secret.findFirst({
               where: { id: server.secretId, spaceId: context.spaceId, userId: context.userId },
@@ -1084,6 +1182,23 @@ export class McpOAuthBroker {
       const nextMaterial = snapshot.secret
         ? await this.read(snapshot.secret.ciphertext, snapshot.secret.id)
         : {};
+      const unchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);
+      // An acknowledgement may have been lost after this exact intent committed.
+      // Confirm that no-op under the same commit fence before adopting its record.
+      // Pending sign-ins own their PKCE state, so another flow's metadata does
+      // not revoke this one. Client credentials and the full grant remain fenced.
+      if (
+        expected &&
+        !isDeepStrictEqual(
+          oauthAuthorization(nextMaterial.oauth),
+          oauthAuthorization(expected.oauth),
+        ) &&
+        !isDeepStrictEqual(
+          oauthAuthorization(nextMaterial.oauth),
+          oauthAuthorization(material.oauth),
+        )
+      )
+        throw new McpOAuthCredentialsChangedError(serverId);
       if (material.oauth) nextMaterial.oauth = structuredClone(material.oauth);
       else delete nextMaterial.oauth;
       const hasMaterial = Boolean(
@@ -1094,27 +1209,32 @@ export class McpOAuthBroker {
       );
       const installId = snapshot.server.installId;
       const reservation =
-        hasMaterial && installId
+        !unchanged && hasMaterial && installId
           ? await this.reservePluginCredential(installId, context)
           : undefined;
       // A pending marker survives a crash or an ambiguous provider write. It
       // cannot be mistaken for a resolved ref during plugin cleanup.
-      const stored = hasMaterial
-        ? await this.secrets.put(
-            JSON.stringify(nextMaterial),
-            {
-              operationId: "mcp.oauth.persist",
-              traceId: "mcp.oauth.persist",
-              spaceId: context.spaceId,
-              userId: context.userId,
-              botId: "mcp",
-              signal: new AbortController().signal,
-            },
-            reservation
-              ? { recordId: reservation.id, recoveryRef: reservation.recoveryRef }
-              : undefined,
-          )
-        : undefined;
+      const stored = unchanged
+        ? (snapshot.secret ?? undefined)
+        : hasMaterial
+          ? await this.secrets.put(
+              JSON.stringify(nextMaterial),
+              {
+                operationId: "mcp.oauth.persist",
+                traceId: "mcp.oauth.persist",
+                spaceId: context.spaceId,
+                userId: context.userId,
+                botId: "mcp",
+                signal: new AbortController().signal,
+              },
+              reservation
+                ? {
+                    recordId: reservation.id,
+                    recoveryRef: reservation.recoveryRef,
+                  }
+                : undefined,
+            )
+          : undefined;
       let retired: string | undefined;
       const commit = async () => {
         // The provider has acknowledged a known ref. Keep resolution and identity
@@ -1131,14 +1251,26 @@ export class McpOAuthBroker {
             : undefined;
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
           const server = await tx.mcpServer.findFirst({
-            where: { id: serverId, spaceId: context.spaceId, userId: context.userId },
-            select: { endpoint: true, secretId: true, installId: true },
+            where: {
+              id: serverId,
+              spaceId: context.spaceId,
+              userId: context.userId,
+            },
+            select: {
+              endpoint: true,
+              secretId: true,
+              installId: true,
+              revision: true,
+              enabled: true,
+            },
           });
           if (!server) throw new Error("MCP server is unavailable");
           if (
             server.endpoint !== snapshot.server.endpoint ||
             server.secretId !== snapshot.server.secretId ||
-            server.installId !== installId
+            server.installId !== installId ||
+            server.revision !== snapshot.server.revision ||
+            server.enabled !== snapshot.server.enabled
           )
             return false;
           if (server.secretId)
@@ -1149,6 +1281,14 @@ export class McpOAuthBroker {
               })
             : null;
           if (current?.ciphertext !== snapshot.secret?.ciphertext) return false;
+          if (unchanged) {
+            if (incrementRevision)
+              await tx.mcpServer.update({
+                where: { id: serverId },
+                data: { revision: { increment: 1 } },
+              });
+            return true;
+          }
           if (stored)
             await tx.secret.create({
               data: {
@@ -1193,7 +1333,7 @@ export class McpOAuthBroker {
         const committed = await persistPreparedSecret(
           this.prisma,
           this.secrets,
-          stored,
+          unchanged ? undefined : stored,
           commit,
           adopted,
         );

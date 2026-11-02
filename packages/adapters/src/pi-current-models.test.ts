@@ -7,21 +7,24 @@ import { modelsForRequest } from "./pi-runtime.js";
 
 describe("current model compatibility", () => {
   it.each([
-    ["anthropic", "claude-sonnet-5-5"],
-    ["openai-codex", "gpt-6.1-sol"],
-  ])("exposes %s/%s in the picker and runtime with valid efforts", (provider, id) => {
-    const model = modelsForRequest(
-      { model: { provider, id } } as Parameters<typeof modelsForRequest>[0],
-      provider,
-    ).getModel(provider, id);
-    expect(model).toBeDefined();
-    expect(getSupportedThinkingLevels(model!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(model?.input).toContain("image");
-    expect(
-      listPiCatalog().find((entry) => entry.provider === provider && entry.id === id)
-        ?.thinkingLevels,
-    ).toEqual(["low", "medium", "high", "xhigh", "max"]);
-  });
+    ["anthropic", "claude-sonnet-5-5", ["low", "medium", "high", "xhigh", "max"]],
+    ["openai-codex", "gpt-6.1-sol", ["minimal", "low", "medium", "high", "xhigh", "max"]],
+  ] as const)(
+    "exposes %s/%s in the picker and runtime with valid efforts",
+    (provider, id, efforts) => {
+      const model = modelsForRequest(
+        { model: { provider, id } } as Parameters<typeof modelsForRequest>[0],
+        provider,
+      ).getModel(provider, id);
+      expect(model).toBeDefined();
+      expect(getSupportedThinkingLevels(model!)).toEqual(efforts);
+      expect(model?.input).toContain("image");
+      expect(
+        listPiCatalog().find((entry) => entry.provider === provider && entry.id === id)
+          ?.thinkingLevels,
+      ).toEqual(efforts);
+    },
+  );
   it("does not replace a provider library model when applying the supplement again", () => {
     const models = supplementPiModels(builtinModels());
     const model = models.getModel("anthropic", "claude-sonnet-5-5");

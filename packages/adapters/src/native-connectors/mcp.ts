@@ -19,7 +19,7 @@ import { z } from "zod";
 import { asRecord } from "../connector-http.js";
 import { combineSignals } from "../connector-safety.js";
 import type { OAuthMaterial } from "../mcp-oauth.js";
-import { StoredMcpOAuthProvider } from "../mcp-oauth.js";
+import { matchesMcpOAuthIssuer, StoredMcpOAuthProvider } from "../mcp-oauth.js";
 import type { RemoteTransportDependencies, SafeRemoteFetch } from "../remote-mcp.js";
 import { limitRemoteMcpPayload } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
@@ -121,6 +121,14 @@ function assertDiscovery(value: OAuthDiscoveryState, endpoint: URL): void {
   }
   if (!metadata.code_challenge_methods_supported?.includes("S256"))
     throw new NativeActionError("authorization_required", "CogineX requires S256 PKCE.");
+}
+
+function assertCredentialIssuer(material: OAuthMaterial, issuer: string): void {
+  if (
+    !matchesMcpOAuthIssuer(material.oauth?.clientInformation?.issuer, issuer) ||
+    !matchesMcpOAuthIssuer(material.oauth?.tokens?.issuer, issuer)
+  )
+    throw unavailable();
 }
 
 /** Reuse the existing DCR/PKCE provider, with stricter binding only for Native X. */
@@ -313,6 +321,7 @@ export class NativeMcpProtocol {
     if (!oauth?.discoveryState || !oauth.codeVerifier || !oauth.clientInformation)
       throw unavailable();
     assertDiscovery(oauth.discoveryState, endpoint);
+    assertCredentialIssuer(pending.material, oauth.discoveryState.authorizationServerUrl);
     const url = new URL(pending.authorizationUrl);
     if (
       url.origin !== endpoint.origin ||
@@ -392,7 +401,10 @@ export class NativeMcpProtocol {
         resource: endpoint,
         fetchFn: network,
       });
-      await provider.saveTokens(tokens);
+      await provider.saveTokens({
+        ...tokens,
+        issuer: discovery.authorizationServerUrl,
+      });
       // PKCE verifier is one-use and does not belong in the long-lived grant.
       delete material.oauth?.codeVerifier;
       const identity = await this.identity(config, material, signal, allowPrivateEndpoint);
@@ -424,6 +436,7 @@ export class NativeMcpProtocol {
     )
       throw unavailable();
     assertDiscovery(discovery, endpoint);
+    assertCredentialIssuer(material, discovery.authorizationServerUrl);
     const network = this.network(endpoint, signal, allowPrivateEndpoint, true);
     let rotating = false;
     let receivedRefresh: string | undefined;
@@ -464,7 +477,14 @@ export class NativeMcpProtocol {
       // rotates token families, so only the actual successor on the wire is valid.
       if (!receivedRefresh || receivedRefresh === previous.tokens.refreshToken)
         throw unavailable("CogineX did not return a successor refresh token.");
-      material.oauth!.tokens = tokens;
+      material.oauth!.tokens = {
+        ...tokens,
+        issuer: discovery.authorizationServerUrl,
+      };
+      material.oauth!.clientInformation = {
+        ...clientInformation,
+        issuer: discovery.authorizationServerUrl,
+      };
       material.oauth!.obtainedAt = Date.now();
       const identity = await this.identity(
         config,
