@@ -355,8 +355,10 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     if (
       !matchesMcpOAuthIssuer(oauth.tokens?.issuer, issuer) ||
       !matchesMcpOAuthIssuer(clientInformation.issuer, issuer)
-    )
+    ) {
+      await this.invalidateCredentials("tokens");
       throw new McpReauthorizationRequiredError(this.serverId);
+    }
     let network: { fetch: typeof fetch; close: () => Promise<void> } | undefined;
     let next: OAuthTokens;
     try {
@@ -1182,7 +1184,7 @@ export class McpOAuthBroker {
       const nextMaterial = snapshot.secret
         ? await this.read(snapshot.secret.ciphertext, snapshot.secret.id)
         : {};
-      const unchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);
+      const oauthUnchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);
       // An acknowledgement may have been lost after this exact intent committed.
       // Confirm that no-op under the same commit fence before adopting its record.
       // Pending sign-ins own their PKCE state, so another flow's metadata does
@@ -1207,6 +1209,7 @@ export class McpOAuthBroker {
           Object.keys(nextMaterial.headers ?? {}).length ||
           nextMaterial.oauth,
       );
+      const unchanged = hasMaterial && oauthUnchanged;
       const installId = snapshot.server.installId;
       const reservation =
         !unchanged && hasMaterial && installId

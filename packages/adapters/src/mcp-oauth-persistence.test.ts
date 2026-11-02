@@ -1,5 +1,6 @@
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import type { OAuthMaterial } from "./mcp-oauth.js";
 import { McpOAuthBroker, McpReauthorizationRequiredError } from "./mcp-oauth.js";
@@ -293,6 +294,232 @@ describe("MCP OAuth persistence across SDK callbacks", () => {
     expect(f.server.secretId).toBe(initialSecretId);
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
+
+  it.each([
+    "empty",
+    "malformed",
+    "null",
+    "primitive",
+    "array",
+    "provider-missing",
+    "generic-failure",
+  ] as const)(
+    "disconnect removes an empty or unreadable credential reference (%s)",
+    async (failure) => {
+      const f = fixture({});
+      const initialSecretId = f.server.secretId;
+      if (failure === "malformed") f.secrets.load.mockResolvedValue("not valid JSON");
+      if (failure === "null") f.secrets.load.mockResolvedValue("null");
+      if (failure === "primitive") f.secrets.load.mockResolvedValue('"fixture-string"');
+      if (failure === "array") f.secrets.load.mockResolvedValue("[]");
+      if (failure === "provider-missing")
+        f.secrets.load.mockRejectedValue(new SecretNotFoundError());
+      if (failure === "generic-failure")
+        f.secrets.load.mockRejectedValue(new Error("Fixture decryption failed"));
+
+      await f.broker.disconnect({ serverId: f.server.id, ...actor });
+
+      expect(f.server.secretId).toBeNull();
+      expect(f.server.revision).toBe(2);
+      expect(f.prisma.secret.deleteMany).toHaveBeenCalledWith({ where: { id: initialSecretId } });
+      expect(f.secrets.put).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps disconnect state intact when secret storage is unavailable", async () => {
+    const f = fixture(granted("fixture-refresh-1"));
+    const initialServer = { ...f.server };
+    const unavailable = new SecretStoreUnavailableError(503);
+    f.secrets.load.mockRejectedValue(unavailable);
+
+    await expect(f.broker.disconnect({ serverId: f.server.id, ...actor })).rejects.toBe(
+      unavailable,
+    );
+
+    expect(f.server).toEqual(initialServer);
+    expect(f.prisma.secret.deleteMany).not.toHaveBeenCalled();
+    expect(f.prisma.mcpServer.update).not.toHaveBeenCalled();
+    expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it.each(["tokens", "clientInformation"] as const)(
+    "recovers the next explicit SDK authorization after an expired issuer mismatch (%s)",
+    async (field) => {
+      const material = granted("fixture-refresh-1");
+      Object.assign(material.oauth!, {
+        obtainedAt: 1,
+        redirectUri: "https://app.example.test/callback",
+        discoveryState: {
+          ...discovery,
+          resourceMetadata: { resource: endpoint, authorization_servers: [issuer] },
+          authorizationServerMetadata: {
+            ...discovery.authorizationServerMetadata,
+            registration_endpoint: `${issuer}/register`,
+            code_challenge_methods_supported: ["S256"],
+          },
+        },
+      });
+      material.oauth!.tokens!.expires_in = 60;
+      material.oauth!.tokens!.issuer = issuer;
+      material.oauth!.clientInformation!.issuer = issuer;
+      material.oauth![field]!.issuer = "https://auth.example.test/other-tenant";
+      const calls: { url: string; method: string; body: string }[] = [];
+      const f = fixture(material, async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        calls.push({ url: url.href, method: request.method, body: await request.text() });
+        if (url.href === endpoint)
+          return new Response(null, {
+            status: 401,
+            headers: {
+              "WWW-Authenticate": `Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/mcp"`,
+            },
+          });
+        if (url.pathname.includes("oauth-protected-resource"))
+          return Response.json({ resource: endpoint, authorization_servers: [issuer] });
+        if (url.pathname.includes("oauth-authorization-server"))
+          return Response.json(material.oauth!.discoveryState!.authorizationServerMetadata);
+        if (url.href === `${issuer}/register`)
+          return Response.json(
+            {
+              client_id: "fixture-new-client",
+              redirect_uris: ["https://app.example.test/callback"],
+            },
+            { status: 201 },
+          );
+        if (url.href === `${issuer}/token`)
+          return Response.json({
+            access_token: "fixture-reauthorized",
+            refresh_token: "fixture-refresh-2",
+            token_type: "bearer",
+            expires_in: 7200,
+          });
+        throw new Error("Unexpected fixture request");
+      });
+      await expect(
+        f.broker.begin({
+          serverId: f.server.id,
+          ...actor,
+          redirectUri: "https://app.example.test/callback",
+        }),
+      ).rejects.toThrow();
+      expect(calls).toHaveLength(0);
+      expect(await f.broker.statusFor({ ...f.server }, actor)).toBe("reconnect");
+      expect(f.current().oauth?.tokens).toBeUndefined();
+
+      const next = await f.broker.begin({
+        serverId: f.server.id,
+        ...actor,
+        redirectUri: "https://app.example.test/callback",
+      });
+      if (next.status !== "authorization_required")
+        throw new Error("Expected authorization recovery");
+      expect(new URL(next.authorizationUrl).origin).toBe(new URL(issuer).origin);
+      expect(new URL(next.authorizationUrl).searchParams.get("client_id")).toBe(
+        field === "clientInformation" ? "fixture-new-client" : "fixture-client",
+      );
+      await f.broker.complete({
+        sessionId: next.sessionId,
+        state: next.sessionId,
+        code: "fixture-new-code",
+        ...actor,
+      });
+      expect(f.current().oauth).toMatchObject({
+        tokens: { access_token: "fixture-reauthorized", issuer },
+        clientInformation: { issuer },
+      });
+      expect(await f.broker.statusFor({ ...f.server }, actor)).toBe("connected");
+      expect(calls.filter((call) => call.url === `${issuer}/register`)).toHaveLength(
+        field === "clientInformation" ? 1 : 0,
+      );
+      expect(
+        calls.some((call) => call.url.startsWith("https://auth.example.test/other-tenant")),
+      ).toBe(false);
+      expect(calls.filter((call) => call.url === `${issuer}/token`)).toHaveLength(1);
+      expect(
+        new URLSearchParams(calls.find((call) => call.url === `${issuer}/token`)!.body).get(
+          "grant_type",
+        ),
+      ).toBe("authorization_code");
+    },
+  );
+
+  it.each(["tokens", "clientInformation"] as const)(
+    "does not clear an issuer-mismatched grant while secret storage is unavailable (%s)",
+    async (field) => {
+      const material = granted("fixture-refresh-1");
+      Object.assign(material.oauth!, { obtainedAt: 1, discoveryState: discovery });
+      material.oauth!.tokens!.expires_in = 60;
+      material.oauth![field]!.issuer = "https://auth.example.test/other-tenant";
+      const f = fixture(material);
+      const provider = await f.provider();
+      const before = f.current();
+      const initialServer = { ...f.server };
+      const unavailable = new SecretStoreUnavailableError(503);
+      f.secrets.load.mockRejectedValueOnce(unavailable);
+
+      await expect(provider.tokens()).rejects.toBe(unavailable);
+
+      expect(f.current()).toEqual(before);
+      expect(f.server).toEqual(initialServer);
+      expect(f.secrets.put).not.toHaveBeenCalled();
+      expect(f.prisma.mcpServer.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["tokens", "new grant"],
+    ["tokens", "disconnect"],
+    ["clientInformation", "new grant"],
+    ["clientInformation", "disconnect"],
+  ] as const)(
+    "issuer-mismatch cleanup cannot overwrite a concurrent %s / %s",
+    async (field, change) => {
+      const material = granted("fixture-refresh-1");
+      Object.assign(material.oauth!, { obtainedAt: 1, discoveryState: discovery });
+      material.oauth!.tokens!.expires_in = 60;
+      material.oauth![field]!.issuer = "https://auth.example.test/other-tenant";
+      const f = fixture(material);
+      const provider = await f.provider();
+      let prepared!: () => void;
+      let release!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        prepared = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const put = f.secrets.put.getMockImplementation()!;
+      f.secrets.put.mockImplementationOnce(async (text) => {
+        const record = await put(text);
+        prepared();
+        await gate;
+        return record;
+      });
+      const clearing = Promise.allSettled([provider.tokens()]);
+      await ready;
+      if (change === "disconnect") await f.broker.disconnect({ serverId: f.server.id, ...actor });
+      else {
+        const peer = await f.provider();
+        await peer.saveClientInformation!({ client_id: "fixture-new-client", issuer });
+        await peer.saveTokens({
+          access_token: "fixture-access-2",
+          refresh_token: "fixture-refresh-2",
+          token_type: "bearer",
+          issuer,
+        });
+      }
+      const updated = f.current();
+      release();
+      const results = await clearing;
+      expect(results[0]).toMatchObject({
+        status: "rejected",
+        reason: expect.any(McpReauthorizationRequiredError),
+      });
+      expect(f.current()).toEqual(updated);
+      expect(f.secrets.put).toHaveBeenCalledTimes(change === "disconnect" ? 2 : 3);
+    },
+  );
 
   it("fences a first sign-in paused before discovery when disconnected", async () => {
     let ready!: () => void;

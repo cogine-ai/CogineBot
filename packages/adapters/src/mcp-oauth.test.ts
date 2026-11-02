@@ -385,6 +385,9 @@ describe("MCP OAuth", () => {
 
       await expect(provider.tokens()).rejects.toBeInstanceOf(McpReauthorizationRequiredError);
       expect(refreshNetwork).not.toHaveBeenCalled();
+      expect(material.oauth?.tokens).toBeUndefined();
+      expect(material.oauth?.obtainedAt).toBeUndefined();
+      await expect(provider.tokens()).resolves.toBeUndefined();
     },
   );
 
