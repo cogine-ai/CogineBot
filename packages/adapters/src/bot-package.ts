@@ -662,7 +662,7 @@ export function parseBotPackageSource(
     leftOut.push({
       kind: "memory",
       name: "memory",
-      reason: `${availableMemoryCount} memory notes were not selected.`,
+      reason: `Memory notes not selected: ${availableMemoryCount}.`,
     });
     document.memory = [];
   }
