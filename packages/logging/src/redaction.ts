@@ -51,7 +51,11 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
   return redactValue(bindings) as Record<string, unknown>;
 }
 
-const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iy;
+const WORD_CHARACTER = /[A-Za-z0-9_]/;
+const EMAIL_LOCAL_CHARACTER = /[A-Za-z0-9._%+-]/;
+const URL_SCHEME_CHARACTER = /[A-Za-z0-9+.-]/;
+const BASE64URL_CHARACTER = /[A-Za-z0-9_-]/;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*|->[ \t]*|[ \t]is(?:[ \t]*[:=][ \t]*|[ \t]+)/gi;
 const RAW_KEY_QUALIFIER = /^(?:access|(?:key|value|header|material|id|identifier|data)s?)$/i;
@@ -60,13 +64,18 @@ const NATURAL_CREDENTIAL_KEY =
 const TOKEN_COUNT_KEY =
   /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
 const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;
-const QUOTED_FIELD_KEY =
-  /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*|[ \t]*->[ \t]*|[ \t]+is(?:[ \t]*[:=][ \t]*|[ \t]+))/gi;
-const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
+const QUOTED_FIELD_SEPARATOR = /\s*[:=]\s*|[ \t]*->[ \t]*|[ \t]+is(?:[ \t]*[:=][ \t]*|[ \t]+)/iy;
 const MAX_ENCODED_STRING_DEPTH = 8;
 const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----/g;
 const BARE_SECRET =
-  /(^|[^A-Za-z0-9_-])(?:AIza[A-Za-z0-9_-]{35}|(?:gsk_|xai-|hf_|csk-|nvapi-|fw_)[A-Za-z0-9_-]{8,})(?![A-Za-z0-9_-])|\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
+  /(^|[^A-Za-z0-9_-])(?:AIza[A-Za-z0-9_-]{35}|(?:gsk_|xai-|hf_|csk-|nvapi-|fw_)[A-Za-z0-9_-]{8,})(?![A-Za-z0-9_-])|\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
+
+function lineStartAt(text: string, at: number): number {
+  for (let index = at; index >= 0; index--) {
+    if (text[index] === "\r" || text[index] === "\n") return index + 1;
+  }
+  return 0;
+}
 
 /** Read one complete value so quoted and nested credentials cannot leave a suffix behind. */
 function valueEnd(text: string, start: number): number {
@@ -121,8 +130,7 @@ function valueEnd(text: string, start: number): number {
 }
 
 function logicalValueEnd(text: string, start: number, keyStart: number, header: boolean): number {
-  const lineStart =
-    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const lineStart = lineStartAt(text, keyStart);
   const parentIndent = header ? 0 : /^[ \t]*/.exec(text.slice(lineStart))![0].length;
   let end = start;
   while (end < text.length) {
@@ -154,8 +162,7 @@ function blockScalarEnd(text: string, start: number, keyStart: number): number |
     text.slice(start),
   );
   if (!header) return undefined;
-  const lineStart =
-    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const lineStart = lineStartAt(text, keyStart);
   const parentIndent = /^[ \t]*/.exec(text.slice(lineStart))![0].length;
   let cursor = start + header[0].length;
   let end = cursor;
@@ -199,12 +206,33 @@ function rawKeyStart(text: string, end: number, boundary: number): number {
   return identifierStart;
 }
 
+function* jsonStrings(text: string): Generator<{ index: number; token: string }> {
+  const firstQuote = text.indexOf('"');
+  if (firstQuote < 0) return;
+  // Cache each possible body's end so an unclosed outer quote cannot rescan inner quotes.
+  const closingAfter = new Uint32Array(text.length + 2);
+  for (let index = text.length - 1; index > firstQuote; index--) {
+    const character = text[index];
+    if (character === '"') closingAfter[index] = index + 1;
+    else if (character !== "\\") closingAfter[index] = closingAfter[index + 1]!;
+    else if (index + 1 < text.length && !/[\r\n\u2028\u2029]/.test(text[index + 1]!))
+      closingAfter[index] = closingAfter[index + 2]!;
+  }
+  for (let index = firstQuote; index < text.length; index++) {
+    if (text[index] !== '"') continue;
+    const end = closingAfter[index + 1]!;
+    if (!end) continue;
+    yield { index, token: text.slice(index, end) };
+    index = end - 1;
+  }
+}
+
 function jsonStringSpans(text: string): { start: number; end: number }[] {
   const encodedStrings: { start: number; end: number }[] = [];
-  for (const token of text.matchAll(JSON_STRING)) {
+  for (const { index, token } of jsonStrings(text)) {
     try {
-      JSON.parse(token[0]);
-      encodedStrings.push({ start: token.index, end: token.index + token[0].length });
+      JSON.parse(token);
+      encodedStrings.push({ start: index, end: index + token.length });
     } catch {
       // Invalid quoted diagnostics remain inspectable as raw text.
     }
@@ -213,6 +241,66 @@ function jsonStringSpans(text: string): { start: number; end: number }[] {
 }
 
 type TextRedactionPolicy = "diagnostic" | "portable";
+
+type QuotedFieldMatch = { index: number; 0: string; 1: string; 2: string };
+
+/** Walk each quote kind monotonically; failed candidates cannot rescan a long suffix. */
+function* fieldsWithQuote(text: string, quote: string): Generator<QuotedFieldMatch> {
+  let start = -1;
+  for (let index = 0; index < text.length; index++) {
+    if (start < 0) {
+      if (text[index] === quote) start = index;
+      continue;
+    }
+    if (text[index] === "\\") {
+      index += quote === "'" && text.slice(index + 1, index + 3) === "''" ? 2 : 1;
+      continue;
+    }
+    if (text[index] !== quote) continue;
+    if (quote === "'" && text[index + 1] === "'") {
+      index++;
+      continue;
+    }
+    QUOTED_FIELD_SEPARATOR.lastIndex = index + 1;
+    const separator = QUOTED_FIELD_SEPARATOR.exec(text);
+    if (!separator) {
+      // A closing quote without a separator may open the next actual field.
+      start = index;
+      continue;
+    }
+    const end = QUOTED_FIELD_SEPARATOR.lastIndex;
+    const match = {
+      index: start,
+      0: text.slice(start, end),
+      1: text.slice(start, index + 1),
+      2: separator[0],
+    };
+    start = -1;
+    index = end - 1;
+    yield match;
+  }
+}
+
+function* quotedFields(text: string): Generator<QuotedFieldMatch> {
+  const single = fieldsWithQuote(text, "'");
+  const double = fieldsWithQuote(text, '"');
+  let a = single.next();
+  let b = double.next();
+  let end = 0;
+  while (!a.done || !b.done) {
+    let match: QuotedFieldMatch;
+    if (b.done || (!a.done && a.value.index < b.value.index)) {
+      match = a.value!;
+      a = single.next();
+    } else {
+      match = b.value!;
+      b = double.next();
+    }
+    if (match.index < end) continue;
+    end = match.index + match[0].length;
+    yield match;
+  }
+}
 
 function redactNamedValues(text: string, json: boolean, policy: TextRedactionPolicy): string {
   const encodedStrings = jsonStringSpans(text);
@@ -240,7 +328,7 @@ function redactNamedValues(text: string, json: boolean, policy: TextRedactionPol
   let encodedIndex = 0;
   let output = "";
   let end = 0;
-  for (const match of text.matchAll(json ? QUOTED_FIELD_KEY : ASSIGNMENT_SEPARATOR)) {
+  for (const match of json ? quotedFields(text) : text.matchAll(ASSIGNMENT_SEPARATOR)) {
     let index = match.index;
     if (index < end) continue;
     while (encodedStrings[encodedIndex] && encodedStrings[encodedIndex]!.end <= index)
@@ -352,11 +440,134 @@ function redactPrivateKeyBlocks(text: string): string {
   return output + text.slice(end);
 }
 
+function wordBoundaryAt(text: string, at: number): boolean {
+  const before = at > 0 && WORD_CHARACTER.test(text[at - 1]!);
+  const after = at < text.length && WORD_CHARACTER.test(text[at]!);
+  return before !== after;
+}
+
+function redactEmails(text: string): string {
+  let output = "";
+  let end = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const at = text.indexOf("@", cursor);
+    if (at < 0) break;
+    let start = at;
+    while (start > cursor && EMAIL_LOCAL_CHARACTER.test(text[start - 1]!)) start--;
+    while (start < at && !wordBoundaryAt(text, start)) start++;
+    EMAIL.lastIndex = start;
+    const match = start < at ? EMAIL.exec(text) : null;
+    if (!match) {
+      cursor = at + 1;
+      continue;
+    }
+    output += text.slice(end, start) + REDACTED;
+    end = EMAIL.lastIndex;
+    cursor = end;
+  }
+  return output + text.slice(end);
+}
+
+function base64urlEnd(text: string, start: number): number {
+  let end = start;
+  while (end < text.length && BASE64URL_CHARACTER.test(text[end]!)) end++;
+  return end;
+}
+
+type SecretSpan = { index: number; end: number; prefix?: string };
+
+function* jwtSpans(text: string): Generator<SecretSpan> {
+  for (let index = 0; index < text.length; ) {
+    if (!BASE64URL_CHARACTER.test(text[index]!)) {
+      index++;
+      continue;
+    }
+    const firstEnd = base64urlEnd(text, index);
+    let end = 0;
+    if (text[firstEnd] === ".") {
+      const secondStart = firstEnd + 1;
+      const secondEnd = base64urlEnd(text, secondStart);
+      if (secondEnd > secondStart && text[secondEnd] === ".") {
+        const thirdStart = secondEnd + 1;
+        let thirdEnd = base64urlEnd(text, thirdStart);
+        while (thirdEnd > thirdStart && !WORD_CHARACTER.test(text[thirdEnd - 1]!)) thirdEnd--;
+        if (thirdEnd > thirdStart) end = thirdEnd;
+      }
+    }
+    if (end) {
+      // Preserve every viable start; another secret may consume an earlier overlapping candidate.
+      for (let start = index; start + 3 < firstEnd; start++) {
+        if (text.startsWith("eyJ", start) && wordBoundaryAt(text, start))
+          yield { index: start, end };
+      }
+    }
+    index = firstEnd;
+  }
+}
+
+function* otherBareSpans(text: string): Generator<SecretSpan> {
+  for (const match of text.matchAll(BARE_SECRET)) {
+    yield {
+      index: match.index,
+      end: match.index + match[0].length,
+      prefix: match[1] ?? "",
+    };
+  }
+}
+
+function redactBareSecrets(text: string): string {
+  const other = otherBareSpans(text);
+  const jwt = jwtSpans(text);
+  let a = other.next();
+  let b = jwt.next();
+  let output = "";
+  let end = 0;
+  while (!a.done || !b.done) {
+    let span: SecretSpan;
+    if (b.done || (!a.done && a.value.index <= b.value.index)) {
+      span = a.value!;
+      a = other.next();
+    } else {
+      span = b.value!;
+      b = jwt.next();
+    }
+    if (span.index < end) continue;
+    output += text.slice(end, span.index) + (span.prefix ?? "") + REDACTED;
+    end = span.end;
+  }
+  return output + text.slice(end);
+}
+
 const PORTABLE_SECRET =
   /\bom[dg]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bxox[abposr]-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|\bLLM\|\d{6,}\|[A-Za-z0-9_-]{16,}|\bAIza[0-9A-Za-z_-]{30,}|\bnpm_[A-Za-z0-9]{20,}/g;
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:'"?#]*:)([^\s/'"?#]+)(@)/gi;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:'"?#]*:)([^\s/'"?#]+)(@)/iy;
 const SECRET_FLAG =
   /--(?:token|password|passwd|api-key|apikey|secret|access-key|auth-token)(?:=|[ \t]+)/gi;
+
+function redactUrlPasswords(text: string): string {
+  let output = "";
+  let end = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const separator = text.indexOf("://", cursor);
+    if (separator < 0) break;
+    let start = separator;
+    while (start > cursor && URL_SCHEME_CHARACTER.test(text[start - 1]!)) start--;
+    while (start < separator && (!/[A-Za-z]/.test(text[start]!) || !wordBoundaryAt(text, start)))
+      start++;
+    URL_PASSWORD.lastIndex = start;
+    const match = start < separator ? URL_PASSWORD.exec(text) : null;
+    if (!match) {
+      cursor = separator + 3;
+      continue;
+    }
+    output += text.slice(end, start) + match[1] + REDACTED + match[3];
+    end = URL_PASSWORD.lastIndex;
+    cursor = end;
+  }
+  return output + text.slice(end);
+}
 
 function redactSecretFlags(text: string): string {
   const encodedStrings = jsonStringSpans(text);
@@ -380,26 +591,30 @@ function redactSecretFlags(text: string): string {
 
 function redactText(text: string, depth: number, policy: TextRedactionPolicy): string {
   let prepared = redactPrivateKeyBlocks(text);
-  if (policy === "diagnostic") prepared = prepared.replace(EMAIL, REDACTED);
+  if (policy === "diagnostic") prepared = redactEmails(prepared);
   else {
-    prepared = prepared.replace(PORTABLE_SECRET, REDACTED).replace(URL_PASSWORD, `$1${REDACTED}$3`);
+    prepared = redactUrlPasswords(prepared.replace(PORTABLE_SECRET, REDACTED));
     prepared = redactSecretFlags(prepared);
   }
   const named = redactNamedValues(prepared, true, policy);
-  const decoded = named.replace(JSON_STRING, (token) => {
+  let decoded = "";
+  let end = 0;
+  for (const { index, token } of jsonStrings(named)) {
     let value: string;
     try {
       value = JSON.parse(token);
     } catch {
-      return token;
+      continue;
     }
     // Uninspectable deeper encoded values must not pass through with credentials intact.
     const cleaned =
       depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1, policy);
-    return cleaned === value ? token : JSON.stringify(cleaned);
-  });
+    decoded += named.slice(end, index) + (cleaned === value ? token : JSON.stringify(cleaned));
+    end = index + token.length;
+  }
+  decoded += named.slice(end);
   const headers = redactNamedValues(decoded, false, policy);
-  return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, `$1${REDACTED}`);
+  return redactBareSecrets(headers.replace(BEARER, `Bearer ${REDACTED}`));
 }
 
 export function redactSensitiveText(text: string): string {

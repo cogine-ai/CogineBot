@@ -4,7 +4,7 @@ import {
   BotPackageDocumentSchema,
 } from "@rakazo/contracts";
 import { buildSkillMd } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   canonicalBotPackageJson,
   parseBotPackageSource,
@@ -264,6 +264,79 @@ describe("bounded portable Bot JSON", () => {
     );
     normalized.profile.instructions += "x";
     expect(() => canonicalBotPackageJson(normalized)).toThrow("4 MiB");
+  });
+  it("tracks exactly 2000 omissions without reserializing prior entries", () => {
+    const value = {
+      ...document(),
+      memory: [],
+      ...Object.fromEntries(Array.from({ length: 2000 }, (_, index) => [`unknown${index}`, true])),
+    };
+    const stringify = vi.spyOn(JSON, "stringify");
+    const started = performance.now();
+    let result: ReturnType<typeof parse>;
+    try {
+      result = parse(value);
+      expect(
+        stringify.mock.calls.filter(([entry]) => Array.isArray(entry) && entry[0]?.kind),
+      ).toHaveLength(0);
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(result.leftOut).toHaveLength(2000);
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(() => parse({ ...value, oneMore: true })).toThrow("too many omitted");
+  });
+  it("accounts for UTF8, JSON escaping, brackets and commas at the exact omission byte limit", () => {
+    const keys = Array.from({ length: 2000 }, (_, index) => `中${index}`);
+    keys[0] = '中"\\0';
+    const entries = () =>
+      keys.map((key) => ({
+        kind: "unsupported",
+        name: `package.${key}`,
+        reason: "This configuration field is not imported.",
+      }));
+    const maxBytes = 256 * 1024;
+    let remaining = maxBytes - Buffer.byteLength(JSON.stringify(entries()));
+    expect(remaining).toBeGreaterThan(0);
+    for (let index = 0; index < keys.length; index++) {
+      const added = Math.min(remaining, 100 - keys[index]!.length);
+      keys[index] += "x".repeat(added);
+      remaining -= added;
+    }
+    expect(remaining).toBe(0);
+    const value = () => ({
+      ...document(),
+      memory: [],
+      ...Object.fromEntries(keys.map((key) => [key, true])),
+    });
+    const exact = parse(value());
+    expect(Buffer.byteLength(JSON.stringify(exact.leftOut))).toBe(maxBytes);
+    const grow = keys.findIndex((key) => key.length < 100);
+    expect(grow).toBeGreaterThan(-1);
+    keys[grow] += "x";
+    expect(() => parse(value())).toThrow("too many omitted");
+    keys[grow] = keys[grow]!.slice(0, -2);
+    expect(Buffer.byteLength(JSON.stringify(parse(value()).leftOut))).toBe(maxBytes - 1);
+  });
+  it("omits oversized field names whole before redaction without exposing a truncated credential", () => {
+    const credential = `ghp_${"A".repeat(36)}`;
+    const key = `${"x".repeat(95)}${credential}`;
+    const result = parse({ ...document(), memory: [], [key]: true, [credential]: true });
+    expect(result.leftOut[0]).toEqual(
+      expect.objectContaining({
+        name: "package.[field 1]",
+        reason: expect.stringContaining("name exceeds"),
+      }),
+    );
+    expect(JSON.stringify(result.leftOut)).not.toContain(key.slice(0, 100));
+    expect(JSON.stringify(result.leftOut)).not.toContain(credential);
+  });
+  it("bounds a 200000-quote unsupported key before the synchronous redactor", () => {
+    const key = "'".repeat(200000);
+    const started = performance.now();
+    const result = parse({ ...document(), memory: [], [key]: true });
+    expect(result.leftOut).toEqual([expect.objectContaining({ name: "package.[field 1]" })]);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
   it("rejects NUL and caps final canonical size as well as original bytes", () => {
     const value = document();

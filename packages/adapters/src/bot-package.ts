@@ -29,6 +29,23 @@ import { redactSecretText } from "@rakazo/logging/redaction";
 
 export class BotPackageError extends Error {}
 
+/** Count only the newly added JSON objects, brackets and separating commas. */
+class LeftOutBudget {
+  readonly entries: BotPackageLeftOut[] = [];
+  private bytes = 2;
+
+  push(...items: BotPackageLeftOut[]): void {
+    for (const item of items) {
+      const nextBytes =
+        this.bytes + (this.entries.length ? 1 : 0) + botPackageUtf8Bytes(JSON.stringify(item));
+      if (this.entries.length >= 2000 || nextBytes > 256 * 1024)
+        throw new BotPackageError("The package has too many omitted fields to preview safely.");
+      this.entries.push(item);
+      this.bytes = nextBytes;
+    }
+  }
+}
+
 type RecordValue = Record<string, unknown>;
 export type ParsedBotPackage = {
   document: BotPackageDocument;
@@ -164,11 +181,7 @@ function validateRoutine(routine: BotPackageDocument["routines"][number]) {
   }
 }
 
-function convertGrok(
-  root: RecordValue,
-  leftOut: BotPackageLeftOut[],
-  defaultTimezone: string,
-): unknown {
+function convertGrok(root: RecordValue, leftOut: LeftOutBudget, defaultTimezone: string): unknown {
   const persona = known(root.persona);
   const bundle = root.format === "grokbot-bundle/v1";
   const instructions = text(
@@ -365,26 +378,28 @@ function ignoredFields(
   root: RecordValue,
   allowed: Set<string>,
   path: string,
-  leftOut: BotPackageLeftOut[],
+  leftOut: LeftOutBudget,
 ) {
   const ignored = Object.keys(root).filter((key) => !allowed.has(key));
-  for (const key of ignored) {
-    const name = `${path}.${redactSecretText(key)
-      .replace(/\p{Cc}/gu, " ")
-      .slice(0, 100)}`;
+  for (const [index, key] of ignored.entries()) {
+    // Never show a truncated credential prefix: an oversized name is omitted whole.
+    const oversized = key.length > 100;
+    const label = oversized
+      ? `[field ${index + 1}]`
+      : redactSecretText(key)
+          .replace(/\p{Cc}/gu, " ")
+          .slice(0, 100);
     leftOut.push({
-      kind: /secret|password|credential|token|oauth|totp/i.test(key) ? "secrets" : "unsupported",
-      name,
-      reason: "This configuration field is not imported.",
+      kind:
+        !oversized && /secret|password|credential|token|oauth|totp/i.test(key)
+          ? "secrets"
+          : "unsupported",
+      name: `${path}.${label}`,
+      reason: oversized
+        ? "This configuration field is not imported; its name exceeds the preview limit."
+        : "This configuration field is not imported.",
     });
-    checkLeftOut(leftOut);
   }
-  checkLeftOut(leftOut);
-}
-
-function checkLeftOut(leftOut: BotPackageLeftOut[]) {
-  if (leftOut.length > 2000 || botPackageUtf8Bytes(JSON.stringify(leftOut)) > 256 * 1024)
-    throw new BotPackageError("The package has too many omitted fields to preview safely.");
 }
 
 function guardCollections(value: unknown) {
@@ -396,10 +411,7 @@ function guardCollections(value: unknown) {
   for (const routine of routines) limitedArray(known(routine).crons, 50, "Routine schedules");
 }
 
-function redactDocument(
-  document: BotPackageDocument,
-  leftOut: BotPackageLeftOut[],
-): BotPackageDocument {
+function redactDocument(document: BotPackageDocument, leftOut: LeftOutBudget): BotPackageDocument {
   const walk = (value: unknown, path: string): unknown => {
     if (typeof value === "string") {
       const cleaned = redactSecretText(value);
@@ -409,7 +421,6 @@ function redactDocument(
           name: path,
           reason: "Recognized credential text was removed.",
         });
-      checkLeftOut(leftOut);
       return cleaned;
     }
     if (Array.isArray(value)) return value.map((entry, index) => walk(entry, `${path}[${index}]`));
@@ -460,7 +471,7 @@ export function prepareBotPackageDocument(value: unknown): {
   const parsed = BotPackageDocumentSchema.safeParse(value);
   if (!parsed.success)
     throw new BotPackageError("The package has unsupported or oversized fields.");
-  const leftOut: BotPackageLeftOut[] = [];
+  const leftOut = new LeftOutBudget();
   const document = redactDocument(parsed.data, leftOut);
   const seenPaths = new Set<string>();
   let memoryBytes = 0;
@@ -482,8 +493,7 @@ export function prepareBotPackageDocument(value: unknown): {
   }
   for (const routine of document.routines) validateRoutine(routine);
   canonicalBotPackageJson(document);
-  checkLeftOut(leftOut);
-  return { document, leftOut };
+  return { document, leftOut: leftOut.entries };
 }
 
 export function parseBotPackageSource(
@@ -498,7 +508,7 @@ export function parseBotPackageSource(
     format !== "grokbot-bundle/v1"
   )
     throw new BotPackageError("This JSON format is not supported.");
-  const leftOut: BotPackageLeftOut[] = [];
+  const leftOut = new LeftOutBudget();
   const zone = TimeZoneSchema.safeParse(options.defaultTimezone ?? "UTC");
   const candidate =
     format === BOT_PACKAGE_FORMAT
@@ -657,6 +667,5 @@ export function parseBotPackageSource(
     document.memory = [];
   }
   canonicalBotPackageJson(document);
-  checkLeftOut(leftOut);
-  return { document, sourceFormat: format, leftOut, availableMemoryCount };
+  return { document, sourceFormat: format, leftOut: leftOut.entries, availableMemoryCount };
 }

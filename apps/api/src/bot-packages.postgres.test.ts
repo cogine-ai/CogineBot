@@ -13,7 +13,12 @@ import type {
 import { BOT_PACKAGE_FORMAT } from "@rakazo/contracts";
 import { buildSkillMd, parseSkillMd } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { createDb } from "@rakazo/db";
+import {
+  claimEmptySpaceDeletionForMember,
+  createDb,
+  createSpaceForMember,
+  releaseSpaceDeletionClaim,
+} from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { listAgentSkillRecords } from "../../../packages/adapters/src/skill-tools.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
@@ -32,6 +37,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   let failComponents = false;
   let loseClaimAck = false;
   let loseCommitAck = false;
+  let afterMarkerAccepted: (() => Promise<void>) | undefined;
   const users: string[] = [];
   const organizations: string[] = [];
   const outbound = vi.fn(async () => {
@@ -70,8 +76,13 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
               );
           }
           return (Reflect.apply(client.$transaction, client, args) as Promise<unknown>).then(
-            (value) => {
+            async (value) => {
               if (value && typeof value === "object" && "status" in value) {
+                if (value.status === "importing" && afterMarkerAccepted) {
+                  const effect = afterMarkerAccepted;
+                  afterMarkerAccepted = undefined;
+                  await effect();
+                }
                 if (loseClaimAck && value.status === "importing") {
                   loseClaimAck = false;
                   throw new Error("Synthetic accepted marker acknowledgement lost");
@@ -211,6 +222,8 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     failComponents = false;
     loseClaimAck = false;
     loseCommitAck = false;
+    afterMarkerAccepted = undefined;
+    vi.unstubAllEnvs();
     expect(outbound).not.toHaveBeenCalled();
   });
   afterAll(async () => {
@@ -745,6 +758,113 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       }),
     ).toBe(0);
     expect((await importPackage(other, current)).status).toBe("completed");
+  });
+  it("maps real computer quota failures to actionable HTTP and resumes the same failed marker", async () => {
+    vi.stubEnv("SANDBOX_MAX_COMPUTERS_PER_USER", "1");
+    const owner = await account();
+    await importPackage(owner, await preview(owner));
+    const sibling = await createSpaceForMember(database.prisma, {
+      currentSpaceId: owner.actor.spaceId,
+      userId: owner.actor.userId,
+      name: "Quota boundary",
+    });
+    const target = { ...owner, actor: { ...owner.actor, spaceId: sibling.id } };
+    const standard = await handles.app.request("/rpc/bots/create", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        cookie: owner.cookie,
+        "x-rakazo-space-id": sibling.id,
+      },
+      body: JSON.stringify({ json: { name: "Ordinary quota" } }),
+    });
+    expect(standard.status).toBe(400);
+    expect(JSON.stringify(await standard.json())).toContain("User computer limit (1) reached");
+    const p = await preview(target);
+    const clientNonce = randomUUID();
+    const failed = await request(target, "import", { previewToken: p.previewToken, clientNonce });
+    expect(failed.status).toBe(400);
+    expect(JSON.stringify(await failed.json())).toContain("User computer limit (1) reached");
+    const marker = await database.prisma.botPackageImport.findUniqueOrThrow({
+      where: {
+        spaceId_userId_clientNonce: {
+          spaceId: sibling.id,
+          userId: owner.actor.userId,
+          clientNonce,
+        },
+      },
+    });
+    expect(marker.status).toBe("failed");
+    expect(marker.botId).toBeNull();
+    expect(marker.plan).toEqual(p.document);
+    expect(await database.prisma.bot.count({ where: { spaceId: sibling.id } })).toBe(0);
+    expect(await database.prisma.thread.count({ where: { spaceId: sibling.id } })).toBe(0);
+    expect(await database.prisma.computer.count({ where: { spaceId: sibling.id } })).toBe(0);
+    expect((await request(target, "resume", { clientNonce })).status).toBe(400);
+    vi.stubEnv("SANDBOX_MAX_COMPUTERS_PER_USER", "2");
+    const resumed = await call<BotPackageReceipt>(target, "resume", { clientNonce });
+    expect(resumed.status).toBe("completed");
+    expect(resumed.importId).toBe(marker.id);
+    expect(resumed.digest).toBe(p.digest);
+    expect(await database.prisma.bot.count({ where: { spaceId: sibling.id } })).toBe(1);
+    expect((await call<BotPackageReceipt>(target, "resume", { clientNonce })).botId).toBe(
+      resumed.botId,
+    );
+  });
+  it("maps a real Space deletion claim between marker acceptance and atomic creation to HTTP conflict", async () => {
+    const owner = await account();
+    const sibling = await createSpaceForMember(database.prisma, {
+      currentSpaceId: owner.actor.spaceId,
+      userId: owner.actor.userId,
+      name: "Deletion boundary",
+    });
+    const target = { ...owner, actor: { ...owner.actor, spaceId: sibling.id } };
+    const p = await preview(target);
+    const clientNonce = randomUUID();
+    let claim: Awaited<ReturnType<typeof claimEmptySpaceDeletionForMember>> | undefined;
+    const deletion = {
+      currentSpaceId: sibling.id,
+      spaceId: sibling.id,
+      userId: owner.actor.userId,
+    };
+    afterMarkerAccepted = async () => {
+      claim = await claimEmptySpaceDeletionForMember(database.prisma, deletion);
+    };
+    try {
+      const failed = await request(target, "import", { previewToken: p.previewToken, clientNonce });
+      expect(failed.status).toBe(409);
+      expect(JSON.stringify(await failed.json())).toContain(
+        "Space deletion is already in progress",
+      );
+      expect(claim).toBeDefined();
+      const marker = await database.prisma.botPackageImport.findUniqueOrThrow({
+        where: {
+          spaceId_userId_clientNonce: {
+            spaceId: sibling.id,
+            userId: owner.actor.userId,
+            clientNonce,
+          },
+        },
+      });
+      expect(marker.status).toBe("failed");
+      expect(marker.botId).toBeNull();
+      expect(marker.plan).toEqual(p.document);
+      expect(await database.prisma.bot.count({ where: { spaceId: sibling.id } })).toBe(0);
+      expect(
+        await database.prisma.botPackageComponent.count({ where: { importId: marker.id } }),
+      ).toBe(0);
+    } finally {
+      if (claim)
+        await releaseSpaceDeletionClaim(database.prisma, { ...deletion, claimId: claim.claimId });
+    }
+    expect((await call<BotPackageReceipt>(target, "status", { clientNonce })).status).toBe(
+      "failed",
+    );
+    const resumed = await call<BotPackageReceipt>(target, "resume", { clientNonce });
+    expect(resumed.status).toBe("completed");
+    expect(resumed.digest).toBe(p.digest);
+    expect(await database.prisma.bot.count({ where: { spaceId: sibling.id } })).toBe(1);
   });
   it("requires authenticated current membership and rejects oversized pure JSON before writes", async () => {
     const owner = await account();

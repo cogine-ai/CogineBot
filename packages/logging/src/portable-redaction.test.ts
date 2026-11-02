@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { redactBindings, redactSecretText, redactSensitiveText } from "./redaction.js";
 
@@ -62,5 +63,69 @@ describe("portable credential redaction", () => {
   it("preserves short prefix examples and ordinary key names", () => {
     const value = `npm_${"a".repeat(19)} AIza${"a".repeat(29)} hotkey=example keyboard=example`;
     expect(redactSecretText(value)).toBe(value);
+  });
+
+  it.each(["'pa''ssword'", "'pass\\u0077ord'", '"pass\\u0077ord"'])(
+    "retains quoted credential-key coverage for %s",
+    (key) => {
+      for (const redact of [redactSecretText, redactSensitiveText]) {
+        const cleaned = redact(`${key}: SYNTHETIC_PRIVATE_VALUE\nnext: safe`);
+        expect(cleaned).not.toContain("SYNTHETIC_PRIVATE_VALUE");
+        expect(cleaned).toContain("next: safe");
+        expect(redact(cleaned)).toBe(cleaned);
+      }
+    },
+  );
+
+  it.each([
+    "single-quotes",
+    "escaped-quotes",
+    "jwt-without-dots",
+    "scheme-without-delimiter",
+    "email-without-at",
+    "lf-assignments",
+    "cr-assignments",
+    "quote-prefix-before-field",
+  ])("bounds synchronous work for large %s input without changing its meaning", (kind) => {
+    const moduleUrl = new URL("./redaction.ts", import.meta.url).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      import { redactSecretText, redactSensitiveText } from ${JSON.stringify(moduleUrl)};
+      const kind = process.argv[1];
+      const inputs = {
+        'single-quotes': "'".repeat(200001),
+        'escaped-quotes': String.fromCharCode(34) + String.fromCharCode(92, 34).repeat(100000),
+        'jwt-without-dots': 'eyJ-'.repeat(50000),
+        'scheme-without-delimiter': 'scheme-'.repeat(30000),
+        'email-without-at': 'local-'.repeat(35000),
+        'lf-assignments': 'token=x' + String.fromCharCode(10),
+        'cr-assignments': 'token=x' + String.fromCharCode(13),
+        'quote-prefix-before-field': "'".repeat(200000) + String.fromCharCode(10) +
+          '"password":"SYNTHETIC_PRIVATE_VALUE"' + String.fromCharCode(10) + 'next: safe',
+      };
+      const assignments = kind.endsWith('-assignments');
+      const input = assignments ? inputs[kind].repeat(25000) : inputs[kind];
+      for (const redact of [redactSecretText, redactSensitiveText]) {
+        const output = redact(input);
+        if (assignments) {
+          const newline = kind.startsWith('lf') ? String.fromCharCode(10) : String.fromCharCode(13);
+          assert.equal(output, ('token=[Redacted]' + newline).repeat(25000));
+        } else if (kind === 'quote-prefix-before-field') {
+          assert.ok(!output.includes('SYNTHETIC_PRIVATE_VALUE'));
+          assert.ok(output.includes('next: safe'));
+        } else {
+          assert.equal(output, input);
+        }
+      }
+      process.stdout.write('bounded and faithful');
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ["--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script, kind],
+      { encoding: "utf8", timeout: 8000, maxBuffer: 1024 * 1024 },
+    );
+    expect(child.error, child.stderr).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toBe("bounded and faithful");
   });
 });

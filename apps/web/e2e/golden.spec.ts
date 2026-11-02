@@ -378,7 +378,7 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   }
   await gear.click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export" }).click();
+  await page.getByRole("button", { name: "Export", exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/chief-export\.json/i);
   const settings = page.getByTestId("bot-settings");

@@ -11,6 +11,11 @@ Paste JSON or choose a UTF-8 file up to 4 MiB. Supported formats are
 `coginebot.package/v1`, `openmaus.grok/1` and `grokbot-bundle/v1`. This flow reads
 the supplied JSON; a public link does not retrieve private instructions.
 
+On mobile, the system picker may download or import a selection before the app can
+check its size. The app requests no additional picker cache copy and bounds its
+own read. If a document provider cannot be read directly, save a local file or
+paste the JSON instead.
+
 Choose **Preview** and read the profile, original Skill instructions, routines,
 connection requirements and omitted-content report. Recognized credentials are
 redacted before preview and export. Ordinary email addresses and instruction

@@ -31,7 +31,6 @@ function checkSize(bytes: number | undefined) {
 
 /** A missing or stale size cannot cause an unbounded whole-file read. */
 async function readPackage(file: File): Promise<string> {
-  checkSize(file.info().size);
   const handle = file.open(FileMode.ReadOnly);
   try {
     const chunks: Uint8Array[] = [];
@@ -65,7 +64,7 @@ export async function pickBotPackageFile(isCurrent: () => boolean): Promise<stri
   try {
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
-      copyToCacheDirectory: true,
+      copyToCacheDirectory: false,
       type: ["application/json", "text/plain"],
     });
     assertCurrent(isCurrent);

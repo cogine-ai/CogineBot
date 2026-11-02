@@ -34,6 +34,7 @@ import {
 import { redactSecretText } from "@rakazo/logging/redaction";
 import { createAgentSkillsService, resolveSkillContent } from "./agent-skills.js";
 import type { RouterDeps } from "./router.js";
+import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 
 type Context = {
   actor: Actor;
@@ -207,7 +208,9 @@ export function createBotPackagesService(deps: Deps) {
         },
         { timeout: 30_000 },
       ),
-    );
+    ).catch((error: unknown) => {
+      throw mapSpaceLifecycleError(error);
+    });
   }
   async function lockedNonce(tx: Prisma.TransactionClient, actor: Actor, clientNonce: string) {
     // The Space lifecycle lock also serializes absent nonces and cancellation tombstones.
@@ -309,7 +312,7 @@ export function createBotPackagesService(deps: Deps) {
         await scope(context);
         return receipt(context.actor, recovered);
       }
-      throw error;
+      throw mapSpaceLifecycleError(error);
     }
   }
   return {

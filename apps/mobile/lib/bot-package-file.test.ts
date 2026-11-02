@@ -7,6 +7,8 @@ const io = vi.hoisted(() => ({
   share: vi.fn(),
   bytes: new Uint8Array(),
   infoSize: undefined as number | undefined,
+  inputInfo: vi.fn(),
+  openError: false,
   readError: false,
   cleanupError: false,
   readLengths: [] as number[],
@@ -62,6 +64,7 @@ vi.mock("expo-file-system", () => {
     }
     info() {
       const input = this.uri.startsWith("file:///picked/") || this.uri.startsWith("content://");
+      if (input) io.inputInfo();
       return {
         size: io.infoSizes.has(this.uri)
           ? io.infoSizes.get(this.uri)
@@ -76,6 +79,7 @@ vi.mock("expo-file-system", () => {
     }
     open(mode: string) {
       expect(mode).toBe("r");
+      if (io.openError) throw new Error("Provider does not support a read-only file handle");
       let offset = 0;
       return {
         readBytes(length: number) {
@@ -126,6 +130,8 @@ beforeEach(() => {
   io.share.mockReset().mockResolvedValue(undefined);
   io.bytes = new TextEncoder().encode('{"name":"Research 🐦","instructions":"first\\nsecond"}');
   io.infoSize = undefined;
+  io.inputInfo.mockReset();
+  io.openError = false;
   io.readError = false;
   io.cleanupError = false;
   io.readLengths = [];
@@ -146,7 +152,7 @@ it.each(["file:///picked/package.json", "content://documents/package"])(
     const text = await pickBotPackageFile(() => true);
     expect(io.pick).toHaveBeenCalledExactlyOnceWith({
       multiple: false,
-      copyToCacheDirectory: true,
+      copyToCacheDirectory: false,
       type: ["application/json", "text/plain"],
     });
     expect(text).toBe(new TextDecoder().decode(io.bytes));
@@ -161,11 +167,45 @@ it("treats picker cancellation as no source and never reads a file", async () =>
   expect(io.readLengths).toEqual([]);
 });
 
-it.each(["picker", "file"])("rejects a known oversized %s size before reading", async (known) => {
-  if (known === "picker") io.pick.mockResolvedValueOnce(chosen(BOT_PACKAGE_MAX_BYTES + 1));
-  else io.infoSize = BOT_PACKAGE_MAX_BYTES + 1;
+it("rejects a known oversized picker size before reading", async () => {
+  io.pick.mockResolvedValueOnce(chosen(BOT_PACKAGE_MAX_BYTES + 1));
   await expect(pickBotPackageFile(() => true)).rejects.toMatchObject({ code: "too_large" });
   expect(io.readLengths).toEqual([]);
+});
+
+it("reads unknown-size input without consulting provider metadata", async () => {
+  io.pick.mockResolvedValueOnce({
+    canceled: false,
+    assets: [{ uri: "content://documents/package" }],
+  });
+  io.inputInfo.mockImplementation(() => {
+    throw new Error("Metadata lookup may materialize the full provider stream");
+  });
+  expect(await pickBotPackageFile(() => true)).toBe(new TextDecoder().decode(io.bytes));
+  expect(io.inputInfo).not.toHaveBeenCalled();
+  expect(io.close).toHaveBeenCalledOnce();
+});
+
+it("rejects an unknown-size stream after reading only MAX+1 bytes", async () => {
+  io.bytes = new Uint8Array(BOT_PACKAGE_MAX_BYTES + 20).fill(0x20);
+  await expect(pickBotPackageFile(() => true)).rejects.toMatchObject({ code: "too_large" });
+  expect(io.inputInfo).not.toHaveBeenCalled();
+  expect(io.readLengths.reduce((sum, length) => sum + length, 0)).toBe(BOT_PACKAGE_MAX_BYTES + 1);
+  expect(io.close).toHaveBeenCalledOnce();
+});
+
+it("fails unsupported read-only providers without copying or whole-file fallback", async () => {
+  io.pick.mockResolvedValueOnce({
+    canceled: false,
+    assets: [{ uri: "content://documents/package" }],
+  });
+  io.openError = true;
+  await expect(pickBotPackageFile(() => true)).rejects.toMatchObject({ code: "read_failed" });
+  expect(io.inputInfo).not.toHaveBeenCalled();
+  expect(io.readLengths).toEqual([]);
+  expect(io.created).toEqual([]);
+  expect(io.close).not.toHaveBeenCalled();
+  expect(io.pick).toHaveBeenCalledWith(expect.objectContaining({ copyToCacheDirectory: false }));
 });
 
 it("enforces the actual byte limit even when the declared size is false", async () => {

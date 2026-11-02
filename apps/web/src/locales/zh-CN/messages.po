@@ -6767,7 +6767,7 @@ msgstr "技能名称"
 
 #: src/components/BotPackageImport.tsx
 msgid "Skills stay off. Routines stay paused. Connections need setup."
-msgstr "技能保持关闭，例程保持暂停，连接需要另行设置。"
+msgstr "技能保持关闭，例行任务保持暂停，连接需要另行设置。"
 
 #: src/components/BotPackageImport.tsx
 msgid "This imported bot was removed."

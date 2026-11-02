@@ -1163,7 +1163,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Shared skills (optional)": "共享技能（可选）",
   "Skill name": "技能名称",
   "Skills stay off. Routines stay paused. Connections need setup.":
-    "技能保持关闭，例程保持暂停，连接需要另行设置。",
+    "技能保持关闭，例行任务保持暂停，连接需要另行设置。",
   "This imported bot was removed.": "此导入的 Bot 已被移除。",
   "Clear selection": "清空选择",
 };

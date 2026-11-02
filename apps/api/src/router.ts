@@ -325,6 +325,7 @@ import {
   readServerUpdateStatus,
   UpdaterProxyError,
 } from "./server-update.js";
+import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 import { assertTeachingSendAllowed, createTaughtSkillsService } from "./taught-skills.js";
 import {
   isBackgroundRun,
@@ -737,17 +738,6 @@ const HANG_UP_PROMPT =
 function spaceTeardownTimeoutMs(): number {
   const override = Number(process.env.SPACE_TEARDOWN_TIMEOUT_MS ?? "");
   return Number.isFinite(override) && override > 0 ? override : SPACE_TEARDOWN_TIMEOUT_MS;
-}
-
-/** Surface a Space deletion race as a retryable conflict instead of a generic failure. */
-function mapSpaceLifecycleError(error: unknown): unknown {
-  if (error instanceof SpaceDeletionInProgressError) {
-    return new ORPCError("CONFLICT", { message: error.message });
-  }
-  if (error instanceof ComputerLimitError) {
-    return new ORPCError("BAD_REQUEST", { message: error.message });
-  }
-  return error;
 }
 
 const BOT_SECRET_INPUT_ERRORS = [
