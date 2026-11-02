@@ -51,7 +51,11 @@ export function redactBindings(bindings: Record<string, unknown>): Record<string
   return redactValue(bindings) as Record<string, unknown>;
 }
 
-const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iy;
+const WORD_CHARACTER = /[A-Za-z0-9_]/;
+const EMAIL_LOCAL_CHARACTER = /[A-Za-z0-9._%+-]/;
+const URL_SCHEME_CHARACTER = /[A-Za-z0-9+.-]/;
+const BASE64URL_CHARACTER = /[A-Za-z0-9_-]/;
 const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 const ASSIGNMENT_SEPARATOR = /[:=][ \t]*|->[ \t]*|[ \t]is(?:[ \t]*[:=][ \t]*|[ \t]+)/gi;
 const RAW_KEY_QUALIFIER = /^(?:access|(?:key|value|header|material|id|identifier|data)s?)$/i;
@@ -60,13 +64,18 @@ const NATURAL_CREDENTIAL_KEY =
 const TOKEN_COUNT_KEY =
   /^(?:(?:max(?:imum)?|min(?:imum)?|prompt|completion|input|output|total|reasoning|cached)tokens?(?:count|limit|used|usage)?|tokens|tokens?(?:count|limit|used|usage))$/;
 const NUMERIC_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?=$|[\s,;})\]])/i;
-const QUOTED_FIELD_KEY =
-  /("(?:\\.|[^"\\])*"|'(?:\\(?:''|.)|''|[^'\\])*')(\s*[:=]\s*|[ \t]*->[ \t]*|[ \t]+is(?:[ \t]*[:=][ \t]*|[ \t]+))/gi;
-const JSON_STRING = /"(?:\\.|[^"\\])*"/g;
+const QUOTED_FIELD_SEPARATOR = /\s*[:=]\s*|[ \t]*->[ \t]*|[ \t]+is(?:[ \t]*[:=][ \t]*|[ \t]+)/iy;
 const MAX_ENCODED_STRING_DEPTH = 8;
 const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----/g;
 const BARE_SECRET =
-  /(^|[^A-Za-z0-9_-])(?:AIza[A-Za-z0-9_-]{35}|(?:gsk_|xai-|hf_|csk-|nvapi-|fw_)[A-Za-z0-9_-]{8,})(?![A-Za-z0-9_-])|\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
+  /(^|[^A-Za-z0-9_-])(?:AIza[A-Za-z0-9_-]{35}|(?:gsk_|xai-|hf_|csk-|nvapi-|fw_)[A-Za-z0-9_-]{8,})(?![A-Za-z0-9_-])|\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{8,}|(?:ak_|ck_)[A-Za-z0-9]+)\b)/g;
+
+function lineStartAt(text: string, at: number): number {
+  for (let index = at; index >= 0; index--) {
+    if (text[index] === "\r" || text[index] === "\n") return index + 1;
+  }
+  return 0;
+}
 
 /** Read one complete value so quoted and nested credentials cannot leave a suffix behind. */
 function valueEnd(text: string, start: number): number {
@@ -121,8 +130,7 @@ function valueEnd(text: string, start: number): number {
 }
 
 function logicalValueEnd(text: string, start: number, keyStart: number, header: boolean): number {
-  const lineStart =
-    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const lineStart = lineStartAt(text, keyStart);
   const parentIndent = header ? 0 : /^[ \t]*/.exec(text.slice(lineStart))![0].length;
   let end = start;
   while (end < text.length) {
@@ -154,8 +162,7 @@ function blockScalarEnd(text: string, start: number, keyStart: number): number |
     text.slice(start),
   );
   if (!header) return undefined;
-  const lineStart =
-    Math.max(text.lastIndexOf("\n", keyStart), text.lastIndexOf("\r", keyStart)) + 1;
+  const lineStart = lineStartAt(text, keyStart);
   const parentIndent = /^[ \t]*/.exec(text.slice(lineStart))![0].length;
   let cursor = start + header[0].length;
   let end = cursor;
@@ -199,16 +206,134 @@ function rawKeyStart(text: string, end: number, boundary: number): number {
   return identifierStart;
 }
 
-function redactNamedValues(text: string, json: boolean): string {
+function* jsonStrings(text: string): Generator<{ index: number; token: string }> {
+  const firstQuote = text.indexOf('"');
+  if (firstQuote < 0) return;
+  // Cache each possible body's end so an unclosed outer quote cannot rescan inner quotes.
+  const closingAfter = new Uint32Array(text.length + 2);
+  for (let index = text.length - 1; index > firstQuote; index--) {
+    const character = text[index];
+    if (character === '"') closingAfter[index] = index + 1;
+    else if (character !== "\\") closingAfter[index] = closingAfter[index + 1]!;
+    else if (index + 1 < text.length && !/[\r\n\u2028\u2029]/.test(text[index + 1]!))
+      closingAfter[index] = closingAfter[index + 2]!;
+  }
+  for (let index = firstQuote; index < text.length; index++) {
+    if (text[index] !== '"') continue;
+    const end = closingAfter[index + 1]!;
+    if (!end) continue;
+    yield { index, token: text.slice(index, end) };
+    index = end - 1;
+  }
+}
+
+function jsonStringSpans(text: string): { start: number; end: number }[] {
   const encodedStrings: { start: number; end: number }[] = [];
-  for (const token of text.matchAll(JSON_STRING)) {
+  for (const { index, token } of jsonStrings(text)) {
     try {
-      JSON.parse(token[0]);
-      encodedStrings.push({ start: token.index, end: token.index + token[0].length });
+      JSON.parse(token);
+      encodedStrings.push({ start: index, end: index + token.length });
     } catch {
       // Invalid quoted diagnostics remain inspectable as raw text.
     }
   }
+  return encodedStrings;
+}
+
+type TextRedactionPolicy = "diagnostic" | "portable";
+
+type QuotedFieldMatch = { index: number; 0: string; 1: string; 2: string };
+type QuotedFieldSpan = { index: number; closing: number; end: number };
+
+/** Cache viable suffixes, including the shorter escape when a doubled quote cannot finish. */
+function* fieldsWithQuote(
+  text: string,
+  quote: string,
+  separatorEnds: Uint32Array,
+  allowSingleMultiline: boolean,
+): Generator<QuotedFieldSpan> {
+  const firstQuote = text.indexOf(quote);
+  if (firstQuote < 0) return;
+  const closingAfter = new Uint32Array(text.length + 3);
+  for (let index = text.length - 1; index > firstQuote; index--) {
+    const character = text[index];
+    if (character === quote) {
+      const closing = separatorEnds[index] ? index + 1 : 0;
+      closingAfter[index] =
+        quote === "'" && text[index + 1] === "'" ? closingAfter[index + 2]! || closing : closing;
+    } else if (character !== "\\") {
+      closingAfter[index] = closingAfter[index + 1]!;
+    } else if (index + 1 < text.length && !/[\r\n\u2028\u2029]/.test(text[index + 1]!)) {
+      closingAfter[index] =
+        quote === "'" && text[index + 1] === "'" && text[index + 2] === "'"
+          ? closingAfter[index + 3]! || closingAfter[index + 2]!
+          : closingAfter[index + 2]!;
+    } else if (allowSingleMultiline && quote === "'" && index + 1 < text.length) {
+      closingAfter[index] = closingAfter[index + 1]!;
+    }
+  }
+  // Keep all starts: an earlier match of the other quote kind can hide an overlapping candidate.
+  for (let index = firstQuote; index < text.length; index++) {
+    if (text[index] !== quote) continue;
+    const closing = closingAfter[index + 1]!;
+    if (closing) yield { index, closing, end: separatorEnds[closing - 1]! };
+  }
+}
+
+function* quotedFields(text: string, allowSingleMultiline = false): Generator<QuotedFieldMatch> {
+  if (!text.includes("'") && !text.includes('"')) return;
+  const separatorEnds = new Uint32Array(text.length);
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] !== "'" && text[index] !== '"') continue;
+    QUOTED_FIELD_SEPARATOR.lastIndex = index + 1;
+    if (QUOTED_FIELD_SEPARATOR.exec(text)) separatorEnds[index] = QUOTED_FIELD_SEPARATOR.lastIndex;
+  }
+  const single = fieldsWithQuote(text, "'", separatorEnds, allowSingleMultiline);
+  const double = fieldsWithQuote(text, '"', separatorEnds, allowSingleMultiline);
+  let a = single.next();
+  let b = double.next();
+  let end = 0;
+  while (!a.done || !b.done) {
+    let match: QuotedFieldSpan;
+    if (b.done || (!a.done && a.value.index < b.value.index)) {
+      match = a.value!;
+      a = single.next();
+    } else {
+      match = b.value!;
+      b = double.next();
+    }
+    if (match.index < end) continue;
+    end = match.end;
+    yield {
+      index: match.index,
+      0: text.slice(match.index, match.end),
+      1: text.slice(match.index, match.closing),
+      2: text.slice(match.closing, match.end),
+    };
+  }
+}
+
+function hasOddSlashLineBreak(text: string): boolean {
+  for (let index = 0; index < text.length; ) {
+    if (text[index] !== "\\") {
+      index++;
+      continue;
+    }
+    const start = index;
+    while (text[index] === "\\") index++;
+    if ((index - start) % 2 === 1 && /[\r\n\u2028\u2029]/.test(text[index] ?? "")) return true;
+  }
+  return false;
+}
+
+function redactNamedValues(
+  text: string,
+  json: boolean,
+  policy: TextRedactionPolicy,
+  allowSingleMultiline = false,
+): string {
+  if (allowSingleMultiline && !hasOddSlashLineBreak(text)) return text;
+  const encodedStrings = jsonStringSpans(text);
   const jsonContainers: { start: number; end: number }[] = [];
   let stringIndex = 0;
   for (let index = 0; index < text.length; index += 1) {
@@ -233,7 +358,9 @@ function redactNamedValues(text: string, json: boolean): string {
   let encodedIndex = 0;
   let output = "";
   let end = 0;
-  for (const match of text.matchAll(json ? QUOTED_FIELD_KEY : ASSIGNMENT_SEPARATOR)) {
+  for (const match of json
+    ? quotedFields(text, allowSingleMultiline)
+    : text.matchAll(ASSIGNMENT_SEPARATOR)) {
     let index = match.index;
     if (index < end) continue;
     while (encodedStrings[encodedIndex] && encodedStrings[encodedIndex]!.end <= index)
@@ -243,6 +370,8 @@ function redactNamedValues(text: string, json: boolean): string {
     if (encoded && encoded.start < index && index < encoded.end) continue;
     let key: string;
     if (json) {
+      if (allowSingleMultiline && (!match[1]!.startsWith("'") || !hasOddSlashLineBreak(match[1]!)))
+        continue;
       try {
         key = decodeQuotedKey(match[1]!);
       } catch {
@@ -256,7 +385,14 @@ function redactNamedValues(text: string, json: boolean): string {
       if (!key) continue;
     }
     const normalized = normalizeKey(key);
-    if (!SECRET_KEY.test(normalized) && !(json && normalized === "email")) continue;
+    const portableKeyAssignment =
+      policy === "portable" && !json && match[0].trim() === "=" && /[_-]keys?$/i.test(key);
+    if (
+      !SECRET_KEY.test(normalized) &&
+      !portableKeyAssignment &&
+      !(json && policy === "diagnostic" && normalized === "email")
+    )
+      continue;
     const separator = (json ? match[2]! : match[0]).trim();
     if (
       /^(?:is\b|->)/i.test(separator) &&
@@ -265,7 +401,11 @@ function redactNamedValues(text: string, json: boolean): string {
     )
       continue;
     const start = match.index + match[0].length;
-    if (!json && TOKEN_COUNT_KEY.test(normalized) && NUMERIC_VALUE.test(text.slice(start)))
+    if (
+      (!json || policy === "portable") &&
+      TOKEN_COUNT_KEY.test(normalized) &&
+      NUMERIC_VALUE.test(text.slice(start))
+    )
       continue;
     const blockEnd = blockScalarEnd(text, start, index);
     let next = blockEnd ?? valueEnd(text, start);
@@ -334,25 +474,193 @@ function redactPrivateKeyBlocks(text: string): string {
   return output + text.slice(end);
 }
 
-function redactText(text: string, depth: number): string {
-  const named = redactNamedValues(redactPrivateKeyBlocks(text).replace(EMAIL, REDACTED), true);
-  const decoded = named.replace(JSON_STRING, (token) => {
+function wordBoundaryAt(text: string, at: number): boolean {
+  const before = at > 0 && WORD_CHARACTER.test(text[at - 1]!);
+  const after = at < text.length && WORD_CHARACTER.test(text[at]!);
+  return before !== after;
+}
+
+function redactEmails(text: string): string {
+  let output = "";
+  let end = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const at = text.indexOf("@", cursor);
+    if (at < 0) break;
+    let start = at;
+    while (start > cursor && EMAIL_LOCAL_CHARACTER.test(text[start - 1]!)) start--;
+    while (start < at && !wordBoundaryAt(text, start)) start++;
+    EMAIL.lastIndex = start;
+    const match = start < at ? EMAIL.exec(text) : null;
+    if (!match) {
+      cursor = at + 1;
+      continue;
+    }
+    output += text.slice(end, start) + REDACTED;
+    end = EMAIL.lastIndex;
+    cursor = end;
+  }
+  return output + text.slice(end);
+}
+
+function base64urlEnd(text: string, start: number): number {
+  let end = start;
+  while (end < text.length && BASE64URL_CHARACTER.test(text[end]!)) end++;
+  return end;
+}
+
+type SecretSpan = { index: number; end: number; prefix?: string };
+
+function* jwtSpans(text: string): Generator<SecretSpan> {
+  for (let index = 0; index < text.length; ) {
+    if (!BASE64URL_CHARACTER.test(text[index]!)) {
+      index++;
+      continue;
+    }
+    const firstEnd = base64urlEnd(text, index);
+    let end = 0;
+    if (text[firstEnd] === ".") {
+      const secondStart = firstEnd + 1;
+      const secondEnd = base64urlEnd(text, secondStart);
+      if (secondEnd > secondStart && text[secondEnd] === ".") {
+        const thirdStart = secondEnd + 1;
+        let thirdEnd = base64urlEnd(text, thirdStart);
+        while (thirdEnd > thirdStart && !WORD_CHARACTER.test(text[thirdEnd - 1]!)) thirdEnd--;
+        if (thirdEnd > thirdStart) end = thirdEnd;
+      }
+    }
+    if (end) {
+      // Preserve every viable start; another secret may consume an earlier overlapping candidate.
+      for (let start = index; start + 3 < firstEnd; start++) {
+        if (text.startsWith("eyJ", start) && wordBoundaryAt(text, start))
+          yield { index: start, end };
+      }
+    }
+    index = firstEnd;
+  }
+}
+
+function* otherBareSpans(text: string): Generator<SecretSpan> {
+  for (const match of text.matchAll(BARE_SECRET)) {
+    yield {
+      index: match.index,
+      end: match.index + match[0].length,
+      prefix: match[1] ?? "",
+    };
+  }
+}
+
+function redactBareSecrets(text: string): string {
+  const other = otherBareSpans(text);
+  const jwt = jwtSpans(text);
+  let a = other.next();
+  let b = jwt.next();
+  let output = "";
+  let end = 0;
+  while (!a.done || !b.done) {
+    let span: SecretSpan;
+    if (b.done || (!a.done && a.value.index <= b.value.index)) {
+      span = a.value!;
+      a = other.next();
+    } else {
+      span = b.value!;
+      b = jwt.next();
+    }
+    if (span.index < end) continue;
+    output += text.slice(end, span.index) + (span.prefix ?? "") + REDACTED;
+    end = span.end;
+  }
+  return output + text.slice(end);
+}
+
+const PORTABLE_SECRET =
+  /\bom[dg]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bxox[abposr]-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|\bLLM\|\d{6,}\|[A-Za-z0-9_-]{16,}|\bAIza[0-9A-Za-z_-]{30,}|\bnpm_[A-Za-z0-9]{20,}/g;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:'"?#]*:)([^\s/'"?#]+)(@)/iy;
+const SECRET_FLAG =
+  /--(?:token|password|passwd|api-key|apikey|secret|access-key|auth-token)(?:=|[ \t]+)/gi;
+
+function redactUrlPasswords(text: string): string {
+  let output = "";
+  let end = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const separator = text.indexOf("://", cursor);
+    if (separator < 0) break;
+    let start = separator;
+    while (start > cursor && URL_SCHEME_CHARACTER.test(text[start - 1]!)) start--;
+    while (start < separator && (!/[A-Za-z]/.test(text[start]!) || !wordBoundaryAt(text, start)))
+      start++;
+    URL_PASSWORD.lastIndex = start;
+    const match = start < separator ? URL_PASSWORD.exec(text) : null;
+    if (!match) {
+      cursor = separator + 3;
+      continue;
+    }
+    output += text.slice(end, start) + match[1] + REDACTED + match[3];
+    end = URL_PASSWORD.lastIndex;
+    cursor = end;
+  }
+  return output + text.slice(end);
+}
+
+function redactSecretFlags(text: string): string {
+  const encodedStrings = jsonStringSpans(text);
+  let stringIndex = 0;
+  let end = 0;
+  let output = "";
+  for (const match of text.matchAll(SECRET_FLAG)) {
+    if (match.index < end) continue;
+    while (encodedStrings[stringIndex] && encodedStrings[stringIndex]!.end <= match.index)
+      stringIndex += 1;
+    const encoded = encodedStrings[stringIndex];
+    if (encoded && encoded.start < match.index && match.index < encoded.end) continue;
+    const start = match.index + match[0].length;
+    if (text.slice(start, start + 2) === "--") continue;
+    const next = valueEnd(text, start);
+    if (next <= start || ["''", '""'].includes(text.slice(start, next))) continue;
+    output += text.slice(end, start) + REDACTED;
+    end = next;
+  }
+  return output + text.slice(end);
+}
+
+function redactText(text: string, depth: number, policy: TextRedactionPolicy): string {
+  let prepared = redactPrivateKeyBlocks(text);
+  if (policy === "diagnostic") prepared = redactEmails(prepared);
+  else {
+    prepared = redactUrlPasswords(prepared.replace(PORTABLE_SECRET, REDACTED));
+    prepared = redactSecretFlags(prepared);
+  }
+  // Clean existing quoted fields before a broader single-quoted key can hide an inner field.
+  const legacyNamed = redactNamedValues(prepared, true, policy);
+  const named = redactNamedValues(legacyNamed, true, policy, true);
+  let decoded = "";
+  let end = 0;
+  for (const { index, token } of jsonStrings(named)) {
     let value: string;
     try {
       value = JSON.parse(token);
     } catch {
-      return token;
+      continue;
     }
     // Uninspectable deeper encoded values must not pass through with credentials intact.
-    const cleaned = depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1);
-    return cleaned === value ? token : JSON.stringify(cleaned);
-  });
-  const headers = redactNamedValues(decoded, false);
-  return headers.replace(BEARER, `Bearer ${REDACTED}`).replace(BARE_SECRET, `$1${REDACTED}`);
+    const cleaned =
+      depth >= MAX_ENCODED_STRING_DEPTH ? REDACTED : redactText(value, depth + 1, policy);
+    decoded += named.slice(end, index) + (cleaned === value ? token : JSON.stringify(cleaned));
+    end = index + token.length;
+  }
+  decoded += named.slice(end);
+  const headers = redactNamedValues(decoded, false, policy);
+  return redactBareSecrets(headers.replace(BEARER, `Bearer ${REDACTED}`));
 }
 
 export function redactSensitiveText(text: string): string {
-  return redactText(text, 0);
+  return redactText(text, 0, "diagnostic");
+}
+
+/** Remove recognized credential material while preserving ordinary portable content, including email. */
+export function redactSecretText(text: string): string {
+  return redactText(text, 0, "portable");
 }
 
 function normalizeKey(key: string): string {

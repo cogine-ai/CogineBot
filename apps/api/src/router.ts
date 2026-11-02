@@ -260,6 +260,7 @@ import {
   listSpaceArtifacts,
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
+import { createBotPackagesService } from "./bot-packages.js";
 import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   applyChatGPTPlanCatalog,
@@ -324,6 +325,7 @@ import {
   readServerUpdateStatus,
   UpdaterProxyError,
 } from "./server-update.js";
+import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 import { assertTeachingSendAllowed, createTaughtSkillsService } from "./taught-skills.js";
 import {
   isBackgroundRun,
@@ -738,17 +740,6 @@ function spaceTeardownTimeoutMs(): number {
   return Number.isFinite(override) && override > 0 ? override : SPACE_TEARDOWN_TIMEOUT_MS;
 }
 
-/** Surface a Space deletion race as a retryable conflict instead of a generic failure. */
-function mapSpaceLifecycleError(error: unknown): unknown {
-  if (error instanceof SpaceDeletionInProgressError) {
-    return new ORPCError("CONFLICT", { message: error.message });
-  }
-  if (error instanceof ComputerLimitError) {
-    return new ORPCError("BAD_REQUEST", { message: error.message });
-  }
-  return error;
-}
-
 const BOT_SECRET_INPUT_ERRORS = [
   "Invalid credential destination",
   "Invalid credential length",
@@ -973,6 +964,7 @@ export function createRouter(deps: RouterDeps) {
     dataDir: deps.dataDir,
   });
   const agentSkills = createAgentSkillsService(deps.prisma);
+  const botPackages = createBotPackagesService(deps);
   const openApiImports = createOpenApiImportService(deps);
   const pluginUninstaller = createPluginUninstaller({ ...deps, mcpOAuth });
   const pluginInstalls = createPluginInstallsService({
@@ -4479,6 +4471,33 @@ export function createRouter(deps: RouterDeps) {
       ),
       remove: authed.agentSkills.remove.handler(async ({ context, input }) =>
         agentSkills.remove(context.actor, input.skillId),
+      ),
+    },
+    botPackages: {
+      preview: authed.botPackages.preview.handler(({ context, input }) =>
+        botPackages.preview(context, input),
+      ),
+      import: authed.botPackages.import.handler(({ context, input }) =>
+        botPackages.import(context, input),
+      ),
+      status: authed.botPackages.status.handler(({ context, input }) =>
+        botPackages.status(context, input),
+      ),
+      recent: authed.botPackages.recent.handler(({ context }) => botPackages.recent(context)),
+      forBot: authed.botPackages.forBot.handler(({ context, input }) =>
+        botPackages.forBot(context, input),
+      ),
+      resume: authed.botPackages.resume.handler(({ context, input }) =>
+        botPackages.resume(context, input),
+      ),
+      cancel: authed.botPackages.cancel.handler(({ context, input }) =>
+        botPackages.cancel(context, input),
+      ),
+      activateSkill: authed.botPackages.activateSkill.handler(({ context, input }) =>
+        botPackages.activateSkill(context, input),
+      ),
+      export: authed.botPackages.export.handler(({ context, input }) =>
+        botPackages.export(context, input),
       ),
     },
     plugins: {

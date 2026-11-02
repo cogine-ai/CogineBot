@@ -6,6 +6,7 @@ import type {
   Bot,
   ComputerStatus,
   ProductEvent,
+  ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
 import type { ReactNode } from "react";
@@ -13,7 +14,7 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import type { NavigateFunction } from "react-router-dom";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   mergeThreadSnapshot,
@@ -204,8 +205,10 @@ let firstBoot: ReturnType<typeof deferred<ComputerStatus>>;
 let bootCalls: string[];
 let boots: Array<ReturnType<typeof deferred<ComputerStatus>>>;
 let navigate: NavigateFunction;
+let routerSearch = "";
 function RoutedShell() {
   navigate = useNavigate();
+  routerSearch = useLocation().search;
   return <ShellPage />;
 }
 
@@ -2454,3 +2457,175 @@ for (const kind of ["bot_message_sent", "handoff", "child_bot"] as const) {
     },
   );
 }
+
+function pendingMessageJump(
+  freshRoutineMetadata = false,
+  stableRoutines: AppBootstrap["routines"] = [],
+) {
+  const target = jumpSnapshot("chief", 60, "Done");
+  const attention = { ...target.messages[0]!, id: "attention", seq: 2 };
+  const initial: ThreadSnapshot = {
+    ...target,
+    cursor: 50,
+    olderCursor: 50,
+    attentionMessageId: attention.id,
+    messages: [
+      {
+        ...target.messages[0]!,
+        id: "tail",
+        seq: 50,
+        blocks: [{ kind: "text", text: "Latest" }],
+      },
+    ],
+  };
+  const requests: Array<{
+    messageId: string;
+    page: ReturnType<typeof deferred<ThreadMessagePage>>;
+  }> = [];
+  const streamEnded = deferred<void>();
+  const scrolled: Array<string | null> = [];
+  let routineReads = 0;
+  let firstSubscription = true;
+  Element.prototype.scrollIntoView = function () {
+    scrolled.push(this.getAttribute("data-message-id"));
+  };
+  Element.prototype.animate = () => ({ cancel() {} }) as Animation;
+  boundary.bootstrap.mockResolvedValue({
+    ...bootstrap(),
+    thread: initial,
+    routines: stableRoutines,
+  });
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation(async (path, input, options) => {
+    if (path === "threads.get") return initial;
+    if (path === "routines.list") {
+      routineReads++;
+      return freshRoutineMetadata ? [] : stableRoutines;
+    }
+    if (path === "threads.messages") {
+      const page = deferred<ThreadMessagePage>();
+      requests.push({ messageId: input.around.messageId, page });
+      return page.promise;
+    }
+    if (path === "threads.subscribe" && firstSubscription) {
+      firstSubscription = false;
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => {
+              await streamEnded.promise;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
+    }
+    return fallback(path, input, options);
+  });
+  return {
+    requests,
+    streamEnded,
+    scrolled,
+    routineReads: () => routineReads,
+    resolve(index: number) {
+      const request = requests[index]!;
+      request.page.resolve({
+        threadId: target.threadId,
+        olderCursor: null,
+        messages: request.messageId === attention.id ? [attention] : target.messages,
+      });
+    },
+  };
+}
+
+it("keeps one message-jump intent while routine metadata refreshes during an around read", async () => {
+  const jump = pendingMessageJump(true);
+  await render();
+  await act(async () => navigate("/app/chief?m=card"));
+  expect(jump.requests).toHaveLength(1);
+  const routineReadsBeforeStreamEnd = jump.routineReads();
+  expect(routineReadsBeforeStreamEnd).toBeGreaterThan(0);
+  await act(async () => jump.streamEnded.resolve());
+  expect(jump.routineReads()).toBeGreaterThan(routineReadsBeforeStreamEnd);
+  expect(jump.requests).toHaveLength(1);
+  await act(async () => jump.resolve(0));
+  expect(jump.scrolled).toContain("card");
+});
+
+it("keeps the pending jump and later query parameters when unrelated query state changes", async () => {
+  const jump = pendingMessageJump();
+  await render();
+  await act(async () => navigate("/app/chief?m=card"));
+  await act(async () => navigate("/app/chief?m=card&view=keep"));
+  expect(jump.requests).toHaveLength(1);
+  await act(async () => jump.resolve(0));
+  expect(jump.scrolled).toContain("card");
+  const params = new URLSearchParams(routerSearch);
+  expect(params.get("view")).toBe("keep");
+  expect(params.has("m")).toBe(false);
+});
+
+it("does not let an obsolete jump finally clear a newer attention intent", async () => {
+  const jump = pendingMessageJump();
+  await render();
+  await act(async () => navigate("/app/chief?m=card"));
+  await act(async () => navigate("/app/chief?m=card&attention=1"));
+  expect(jump.requests.map((request) => request.messageId)).toEqual(["card", "attention"]);
+  await act(async () => jump.resolve(0));
+  expect(new URLSearchParams(routerSearch).get("m")).toBe("card");
+  expect(new URLSearchParams(routerSearch).get("attention")).toBe("1");
+  expect(jump.scrolled).toEqual([]);
+  await act(async () => jump.resolve(1));
+  expect(jump.scrolled).toEqual(["attention"]);
+  expect(new URLSearchParams(routerSearch).has("m")).toBe(false);
+  expect(new URLSearchParams(routerSearch).has("attention")).toBe(false);
+});
+
+it("does not apply a pending message jump after its URL intent is cancelled", async () => {
+  const jump = pendingMessageJump();
+  await render();
+  await act(async () => navigate("/app/chief?m=card"));
+  await act(async () => navigate("/app/chief?view=keep"));
+  await act(async () => jump.resolve(0));
+  expect(jump.scrolled).toEqual([]);
+  expect(new URLSearchParams(routerSearch).get("view")).toBe("keep");
+});
+
+it("resolves combined routine and attention links without restoring consumed query parameters", async () => {
+  const jump = pendingMessageJump(false, [
+    {
+      id: "routine-one",
+      botId: "chief",
+      name: "Linked routine",
+      prompt: "Review sources",
+      crons: ["0 9 * * 1-5"],
+      timezone: "UTC",
+      active: false,
+      notify: false,
+      webhookEnabled: false,
+      githubEnabled: false,
+      messageProvider: null,
+      modelProvider: null,
+      modelId: null,
+      thinkingLevel: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+  ]);
+  await render();
+  await act(async () => navigate("/app/chief?routine=routine-one&m=card&attention=1&view=initial"));
+  expect(
+    container.querySelector<HTMLInputElement>('input[placeholder="Name this routine"]')?.value,
+  ).toBe("Linked routine");
+  expect(new URLSearchParams(routerSearch).has("routine")).toBe(false);
+  await act(async () => navigate("/app/chief?m=card&attention=1&view=later"));
+  expect(jump.requests.map((request) => request.messageId)).toEqual(["attention"]);
+  await act(async () => jump.resolve(0));
+  const params = new URLSearchParams(routerSearch);
+  expect(jump.scrolled).toEqual(["attention"]);
+  expect(params.has("routine")).toBe(false);
+  expect(params.has("m")).toBe(false);
+  expect(params.has("attention")).toBe(false);
+  expect(params.get("view")).toBe("later");
+});

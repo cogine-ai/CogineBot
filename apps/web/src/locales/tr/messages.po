@@ -6613,3 +6613,166 @@ msgstr "Üst bilgi ekle"
 #: src/components/integrations/PluginServerSetup.tsx
 msgid "Connection status unavailable."
 msgstr "Bağlantı durumu kullanılamıyor."
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot imported"
+msgstr "Bot içe aktarıldı"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot package or Grok JSON"
+msgstr "Bot paketi veya Grok JSON"
+
+#: src/components/BotPackageImport.tsx
+msgid "Cancel import"
+msgstr "İçe aktarmayı iptal et"
+
+#: src/components/BotPackageTools.tsx
+msgid "Check imported skills"
+msgstr "İçe aktarılan becerileri kontrol et"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose package file"
+msgstr "Paket dosyası seç"
+
+#: src/components/BotPackageTools.tsx
+msgid "Clear selection"
+msgstr "Seçimi temizle"
+
+#: src/components/BotPackageDocumentView.tsx
+msgid "Connections"
+msgstr "Bağlantılar"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not confirm import. Check status before trying again."
+msgstr "İçe aktarma doğrulanamadı. Yeniden denemeden önce durumu kontrol edin."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Could not enable skill. Check status or choose another name."
+msgstr "Beceri etkinleştirilemedi. Durumu kontrol edin veya başka bir ad seçin."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not export this package."
+msgstr "Bu paket dışa aktarılamadı."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not load recent imports."
+msgstr "Son içe aktarmalar yüklenemedi."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not load skills."
+msgstr "Beceriler yüklenemedi."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not preview this package."
+msgstr "Bu paket önizlenemedi."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
+msgstr "Bu paket okunamadı. En fazla 4 MiB boyutunda UTF-8 JSON dosyası kullanın."
+
+#: src/components/BotPackageTools.tsx
+msgid "Download package"
+msgstr "Paketi indir"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enable shared skill"
+msgstr "Paylaşılan beceriyi etkinleştir"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enabling a skill shares it with your bots in this space."
+msgstr "Bir beceriyi etkinleştirmek, onu bu alandaki botlarınızla paylaşır."
+
+#: src/components/BotPackageTools.tsx
+msgid "Export package"
+msgstr "Paketi dışa aktar"
+
+#: src/components/BotPackageTools.tsx
+msgid "Exporting…"
+msgstr "Dışa aktarılıyor…"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import another bot"
+msgstr "Başka bir bot içe aktar"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import as new bot"
+msgstr "Yeni bot olarak içe aktar"
+
+#: src/components/BotPackageImport.tsx
+#: src/pages/shell/bot-panel.tsx
+msgid "Import bot"
+msgstr "Bot içe aktar"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import cancelled."
+msgstr "İçe aktarma iptal edildi."
+
+#: src/components/BotPackageImport.tsx
+msgid "Import needs attention."
+msgstr "İçe aktarma kontrol gerektiriyor."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported bot name"
+msgstr "İçe aktarılan botun adı"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Imported skills"
+msgstr "İçe aktarılan beceriler"
+
+#: src/components/BotPackageImport.tsx
+#: src/components/BotPackageTools.tsx
+msgid "Include memory"
+msgstr "Belleği dahil et"
+
+#: src/components/BotPackageImport.tsx
+msgid "Models, credentials, files, and chat history are not imported."
+msgstr "Modeller, kimlik bilgileri, dosyalar ve sohbet geçmişi içe aktarılmaz."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Pending"
+msgstr "Bekliyor"
+
+#: src/components/BotPackageImport.tsx
+msgid "Recent imports"
+msgstr "Son içe aktarmalar"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Removed"
+msgstr "Kaldırıldı"
+
+#: src/components/BotPackageImport.tsx
+msgid "Resume import"
+msgstr "İçe aktarmaya devam et"
+
+#: src/components/BotPackageImport.tsx
+msgid "Review import"
+msgstr "İçe aktarmayı incele"
+
+#: src/components/BotPackageTools.tsx
+msgid "Search shared skills"
+msgstr "Paylaşılan becerileri ara"
+
+#. placeholder {0}: selection.size
+#: src/components/BotPackageTools.tsx
+msgid "Selected skills: {0}"
+msgstr "Seçilen beceriler: {0}"
+
+#: src/components/BotPackageTools.tsx
+msgid "Shared skills (optional)"
+msgstr "Paylaşılan beceriler (isteğe bağlı)"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Skill name"
+msgstr "Beceri adı"
+
+#: src/components/BotPackageImport.tsx
+msgid "Skills stay off. Routines stay paused. Connections need setup."
+msgstr "Beceriler kapalı, rutinler duraklatılmış kalır. Bağlantılar kurulmalıdır."
+
+#: src/components/BotPackageImport.tsx
+msgid "This imported bot was removed."
+msgstr "İçe aktarılan bu bot kaldırıldı."
+
+#: src/components/BotPackageTools.tsx
+msgid "Preview package"
+msgstr "Paket önizlemesi"

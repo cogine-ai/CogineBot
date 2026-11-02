@@ -18,7 +18,16 @@ import {
 } from "@rakazo/core";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import type { Voice } from "expo-speech";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { BotAvatar } from "../components/bot-avatar";
 import { ComputerModePicker } from "../components/computer-mode-picker";
@@ -40,6 +49,12 @@ import { native, useMobileTokens } from "../lib/native";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
 
+const NativeBotPackageTools = lazy(() =>
+  import("../components/bot-package-tools").then((module) => ({
+    default: module.NativeBotPackageTools,
+  })),
+);
+
 type BotSettingsRecord = MobileBot & {
   description?: string;
   instructions?: string;
@@ -59,6 +74,7 @@ export default function BotSettingsScreen() {
   const parsedColor = parseBotAvatarValue(color);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [packageOpen, setPackageOpen] = useState(false);
   const [modelKey, setModelKey] = useState("");
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
@@ -658,6 +674,19 @@ export default function BotSettingsScreen() {
           onPress={() => void save()}
           style={{ marginTop: 24 }}
         />
+        {bot ? (
+          <NativeActionButton
+            label={t("Bot package")}
+            prominence="secondary"
+            onPress={() => setPackageOpen(!packageOpen)}
+            style={{ marginTop: 16 }}
+          />
+        ) : null}
+        {packageOpen && bot ? (
+          <Suspense fallback={<Text>{t("Loading…")}</Text>}>
+            <NativeBotPackageTools botId={bot.id} />
+          </Suspense>
+        ) : null}
       </ScrollView>
     </>
   );

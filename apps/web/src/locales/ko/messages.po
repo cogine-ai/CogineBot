@@ -6613,3 +6613,166 @@ msgstr "헤더 추가"
 #: src/components/integrations/PluginServerSetup.tsx
 msgid "Connection status unavailable."
 msgstr "연결 상태를 확인할 수 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot imported"
+msgstr "봇을 가져왔습니다"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot package or Grok JSON"
+msgstr "봇 패키지 또는 Grok JSON"
+
+#: src/components/BotPackageImport.tsx
+msgid "Cancel import"
+msgstr "가져오기 취소"
+
+#: src/components/BotPackageTools.tsx
+msgid "Check imported skills"
+msgstr "가져온 스킬 확인"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose package file"
+msgstr "패키지 파일 선택"
+
+#: src/components/BotPackageTools.tsx
+msgid "Clear selection"
+msgstr "선택 해제"
+
+#: src/components/BotPackageDocumentView.tsx
+msgid "Connections"
+msgstr "연결"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not confirm import. Check status before trying again."
+msgstr "가져오기를 확인할 수 없습니다. 다시 시도하기 전에 상태를 확인하세요."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Could not enable skill. Check status or choose another name."
+msgstr "스킬을 활성화할 수 없습니다. 상태를 확인하거나 다른 이름을 선택하세요."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not export this package."
+msgstr "이 패키지를 내보낼 수 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not load recent imports."
+msgstr "최근 가져오기를 불러올 수 없습니다."
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not load skills."
+msgstr "스킬을 불러올 수 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not preview this package."
+msgstr "이 패키지를 미리 볼 수 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
+msgstr "이 패키지를 읽을 수 없습니다. 4 MiB 이하의 UTF-8 JSON 파일을 사용하세요."
+
+#: src/components/BotPackageTools.tsx
+msgid "Download package"
+msgstr "패키지 다운로드"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enable shared skill"
+msgstr "공유 스킬 활성화"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enabling a skill shares it with your bots in this space."
+msgstr "스킬을 활성화하면 이 스페이스의 내 봇들과 공유됩니다."
+
+#: src/components/BotPackageTools.tsx
+msgid "Export package"
+msgstr "패키지 내보내기"
+
+#: src/components/BotPackageTools.tsx
+msgid "Exporting…"
+msgstr "내보내는 중…"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import another bot"
+msgstr "다른 봇 가져오기"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import as new bot"
+msgstr "새 봇으로 가져오기"
+
+#: src/components/BotPackageImport.tsx
+#: src/pages/shell/bot-panel.tsx
+msgid "Import bot"
+msgstr "봇 가져오기"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import cancelled."
+msgstr "가져오기가 취소되었습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Import needs attention."
+msgstr "가져오기에 확인이 필요합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported bot name"
+msgstr "가져올 봇 이름"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Imported skills"
+msgstr "가져온 스킬"
+
+#: src/components/BotPackageImport.tsx
+#: src/components/BotPackageTools.tsx
+msgid "Include memory"
+msgstr "메모리 포함"
+
+#: src/components/BotPackageImport.tsx
+msgid "Models, credentials, files, and chat history are not imported."
+msgstr "모델, 자격 증명, 파일, 채팅 기록은 가져오지 않습니다."
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Pending"
+msgstr "대기 중"
+
+#: src/components/BotPackageImport.tsx
+msgid "Recent imports"
+msgstr "최근 가져오기"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Removed"
+msgstr "제거됨"
+
+#: src/components/BotPackageImport.tsx
+msgid "Resume import"
+msgstr "가져오기 재개"
+
+#: src/components/BotPackageImport.tsx
+msgid "Review import"
+msgstr "가져오기 검토"
+
+#: src/components/BotPackageTools.tsx
+msgid "Search shared skills"
+msgstr "공유 스킬 검색"
+
+#. placeholder {0}: selection.size
+#: src/components/BotPackageTools.tsx
+msgid "Selected skills: {0}"
+msgstr "선택한 스킬: {0}"
+
+#: src/components/BotPackageTools.tsx
+msgid "Shared skills (optional)"
+msgstr "공유 스킬(선택 사항)"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Skill name"
+msgstr "스킬 이름"
+
+#: src/components/BotPackageImport.tsx
+msgid "Skills stay off. Routines stay paused. Connections need setup."
+msgstr "스킬은 비활성 상태로, 루틴은 일시 중지 상태로 유지됩니다. 연결은 따로 설정해야 합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This imported bot was removed."
+msgstr "가져온 이 봇은 제거되었습니다."
+
+#: src/components/BotPackageTools.tsx
+msgid "Preview package"
+msgstr "패키지 미리 보기"

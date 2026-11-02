@@ -6613,3 +6613,166 @@ msgstr "添加请求头"
 #: src/components/integrations/PluginServerSetup.tsx
 msgid "Connection status unavailable."
 msgstr "连接状态暂不可用。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot imported"
+msgstr "Bot 已导入"
+
+#: src/components/BotPackageImport.tsx
+msgid "Bot package or Grok JSON"
+msgstr "Bot 包或 Grok JSON"
+
+#: src/components/BotPackageImport.tsx
+msgid "Cancel import"
+msgstr "取消导入"
+
+#: src/components/BotPackageTools.tsx
+msgid "Check imported skills"
+msgstr "检查导入的技能"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose package file"
+msgstr "选择包文件"
+
+#: src/components/BotPackageTools.tsx
+msgid "Clear selection"
+msgstr "清空选择"
+
+#: src/components/BotPackageDocumentView.tsx
+msgid "Connections"
+msgstr "连接"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not confirm import. Check status before trying again."
+msgstr "无法确认导入结果，请先检查状态再重试。"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Could not enable skill. Check status or choose another name."
+msgstr "无法启用技能，请检查状态或选择其他名称。"
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not export this package."
+msgstr "无法导出此包。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not load recent imports."
+msgstr "无法加载最近的导入。"
+
+#: src/components/BotPackageTools.tsx
+msgid "Could not load skills."
+msgstr "无法加载技能。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not preview this package."
+msgstr "无法预览此包。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
+msgstr "无法读取此包，请使用不超过 4 MiB 的 UTF-8 JSON 文件。"
+
+#: src/components/BotPackageTools.tsx
+msgid "Download package"
+msgstr "下载包"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enable shared skill"
+msgstr "启用共享技能"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Enabling a skill shares it with your bots in this space."
+msgstr "启用后，此技能将供你在此空间中的所有 Bot 使用。"
+
+#: src/components/BotPackageTools.tsx
+msgid "Export package"
+msgstr "导出包"
+
+#: src/components/BotPackageTools.tsx
+msgid "Exporting…"
+msgstr "正在导出…"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import another bot"
+msgstr "导入另一个 Bot"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import as new bot"
+msgstr "导入为新 Bot"
+
+#: src/components/BotPackageImport.tsx
+#: src/pages/shell/bot-panel.tsx
+msgid "Import bot"
+msgstr "导入 Bot"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import cancelled."
+msgstr "导入已取消。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Import needs attention."
+msgstr "导入需要处理。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported bot name"
+msgstr "导入的 Bot 名称"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Imported skills"
+msgstr "导入的技能"
+
+#: src/components/BotPackageImport.tsx
+#: src/components/BotPackageTools.tsx
+msgid "Include memory"
+msgstr "包含记忆"
+
+#: src/components/BotPackageImport.tsx
+msgid "Models, credentials, files, and chat history are not imported."
+msgstr "不导入模型、凭据、文件或聊天历史。"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Pending"
+msgstr "待处理"
+
+#: src/components/BotPackageImport.tsx
+msgid "Recent imports"
+msgstr "最近的导入"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Removed"
+msgstr "已移除"
+
+#: src/components/BotPackageImport.tsx
+msgid "Resume import"
+msgstr "继续导入"
+
+#: src/components/BotPackageImport.tsx
+msgid "Review import"
+msgstr "查看导入"
+
+#: src/components/BotPackageTools.tsx
+msgid "Search shared skills"
+msgstr "搜索共享技能"
+
+#. placeholder {0}: selection.size
+#: src/components/BotPackageTools.tsx
+msgid "Selected skills: {0}"
+msgstr "已选技能：{0}"
+
+#: src/components/BotPackageTools.tsx
+msgid "Shared skills (optional)"
+msgstr "共享技能（可选）"
+
+#: src/components/BotPackageSkillsView.tsx
+msgid "Skill name"
+msgstr "技能名称"
+
+#: src/components/BotPackageImport.tsx
+msgid "Skills stay off. Routines stay paused. Connections need setup."
+msgstr "技能保持关闭，例行任务保持暂停，连接需要另行设置。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This imported bot was removed."
+msgstr "此导入的 Bot 已被移除。"
+
+#: src/components/BotPackageTools.tsx
+msgid "Preview package"
+msgstr "预览包"

@@ -19,6 +19,7 @@ CogineBot is maintained independently by [cogine-ai](https://github.com/cogine-a
 ## Features
 
 - Persistent Bots with conversation history, memory, and routines.
+- [Portable Bot packages](docs/bot-packages.md) with reviewed JSON imports and exports.
 - Group chats with multiple Bots, @ mentions, and Bot-to-Bot messages.
 - File attachments, previews, version history, and downloads.
 - Browser, terminal, and file access through a Bot's computer. Watch first, select **Take control** to interact, and **I'm done** to return control.

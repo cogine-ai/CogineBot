@@ -10,7 +10,7 @@ import {
 import type { BotCreationReceipt } from "@rakazo/core";
 import { BotCreationError } from "@rakazo/core";
 import { Stack, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, ScrollView, Text, TextInput } from "react-native";
 import { ComputerModePicker } from "../components/computer-mode-picker";
 import { NativeActionButton } from "../components/native-action-button";
@@ -24,6 +24,12 @@ import { captureMobileScope, mobileScopeKey, subscribeMobileScope } from "../lib
 import { native, useMobileTokens } from "../lib/native";
 import { currentReadySessionGeneration, subscribeSessionGeneration } from "../lib/session";
 import { errorText } from "../lib/user-error";
+
+const NativeBotPackageImport = lazy(() =>
+  import("../components/bot-package-import").then((module) => ({
+    default: module.NativeBotPackageImport,
+  })),
+);
 
 export default function NewBot() {
   const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
@@ -52,6 +58,7 @@ function NewBotEditor({ scope }: { scope: MobileScope }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<BotCreationReceipt | null>(null);
+  const [packageImport, setPackageImport] = useState(false);
   const closed = useRef(false);
   useEffect(() => {
     let active = true;
@@ -139,6 +146,29 @@ function NewBotEditor({ scope }: { scope: MobileScope }) {
     }
   }
   const confirmed = client?.creator.status() === "confirmed";
+  if (packageImport)
+    return (
+      <>
+        <Stack.Screen options={cancelHeaderOptions(t("Cancel"), () => setPackageImport(false))} />
+        <ScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ padding: 24 }}
+        >
+          <Suspense fallback={<ActivityIndicator />}>
+            <NativeBotPackageImport
+              scope={scope}
+              onClose={() => setPackageImport(false)}
+              onConnections={() => router.push("/plugins")}
+              onOpen={(botId, botName) => {
+                closed.current = true;
+                router.replace({ pathname: "/thread", params: { botId, name: botName } });
+              }}
+            />
+          </Suspense>
+        </ScrollView>
+      </>
+    );
   const fieldStyle = {
     marginTop: 8,
     backgroundColor: native.fill,
@@ -156,6 +186,12 @@ function NewBotEditor({ scope }: { scope: MobileScope }) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
+        <NativeActionButton
+          label={t("Import bot")}
+          prominence="secondary"
+          disabled={!client || pending || client.creator.status() !== "idle"}
+          onPress={() => setPackageImport(true)}
+        />
         <NativeActionButton
           label={t("Blank bot")}
           selected={selection === null}

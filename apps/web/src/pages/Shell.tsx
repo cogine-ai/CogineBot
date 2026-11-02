@@ -143,6 +143,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
+import { BotPackageTools } from "../components/BotPackageTools";
 import { CloudAgentCard } from "../components/CloudAgentCard";
 import { ComputerMaintenanceActions } from "../components/ComputerMaintenanceActions";
 import {
@@ -2883,64 +2884,70 @@ export function ShellPage() {
     setPanelState((current) => (current === "routine" ? null : current));
   }, [active?.id]);
 
+  const routineDeepLink = searchParams.get("routine");
+  const messageDeepLink = searchParams.get("m");
+  const attentionDeepLink = searchParams.get("attention") === "1";
+
   useEffect(() => {
-    const messageId = searchParams.get("m");
-    const routineId = searchParams.get("routine");
-    if (inGroup && groupId && messageId) {
-      if (!activeGroup) return;
-      void jumpToMessage({ groupId, messageId, attention: searchParams.get("attention") === "1" })
-        .catch(() => undefined)
-        .finally(() => {
-          if (activeGroupId.current !== groupId || searchParamsRef.current.get("m") !== messageId)
-            return;
-          // Keep expandedHistoryThread; only strip the jump URL so refresh does not remount.
-          const next = new URLSearchParams(searchParams);
-          next.delete("m");
-          next.delete("attention");
-          setSearchParams(next, { replace: true });
-        });
-      return;
+    if (inGroup || !active || !routineDeepLink || routinesBotId !== active.id) return;
+    const routine = routines.find((item) => item.id === routineDeepLink);
+    if (routine) {
+      setRoutineDraft(draftFromRoutine(routine));
+      setRoutineWebhookSecret(null);
+      setEditingRoutine(routine);
+      setPanel("routine");
+    } else {
+      setPanel("computer");
     }
-    if (!active) return;
-    if (routineId && routinesBotId === active.id) {
-      const routine = routines.find((item) => item.id === routineId);
-      if (routine) {
-        setRoutineDraft(draftFromRoutine(routine));
-        setRoutineWebhookSecret(null);
-        setEditingRoutine(routine);
-        setPanel("routine");
-      } else {
-        setPanel("computer");
-      }
-      const next = new URLSearchParams(searchParams);
-      next.delete("routine");
-      setSearchParams(next, { replace: true });
-    }
-    if (messageId) {
-      void jumpToMessage({
-        botId: active.id,
-        messageId,
-        attention: searchParams.get("attention") === "1",
-      })
-        .catch(() => undefined)
-        .finally(() => {
-          if (activeBotId.current !== active.id || searchParamsRef.current.get("m") !== messageId)
-            return;
-          const next = new URLSearchParams(searchParams);
-          next.delete("m");
-          next.delete("attention");
-          setSearchParams(next, { replace: true });
-        });
-    }
+    const next = new URLSearchParams(searchParamsRef.current);
+    next.delete("routine");
+    panelSearch.current.setSearchParams(next, { replace: true });
+  }, [active?.id, inGroup, routines, routinesBotId, routineDeepLink]);
+
+  // Routine metadata refreshes must not restart a pending message-page read.
+  useEffect(() => {
+    if (!messageDeepLink || (inGroup ? !groupId || !activeGroup : !active)) return;
+    let current = true;
+    let pending = true;
+    const target = inGroup ? { groupId: groupId! } : { botId: active!.id };
+    const request = jumpToMessage({
+      ...target,
+      messageId: messageDeepLink,
+      attention: attentionDeepLink,
+    });
+    const generation = jumpGeneration.current;
+    void request
+      .catch(() => undefined)
+      .finally(() => {
+        pending = false;
+        const params = searchParamsRef.current;
+        if (
+          !current ||
+          params.get("m") !== messageDeepLink ||
+          (params.get("attention") === "1") !== attentionDeepLink ||
+          (inGroup
+            ? activeGroupId.current !== target.groupId
+            : activeBotId.current !== target.botId)
+        )
+          return;
+        // Preserve query changes made while this one-shot jump was loading.
+        const next = new URLSearchParams(params);
+        next.delete("m");
+        next.delete("attention");
+        panelSearch.current.setSearchParams(next, { replace: true });
+      });
+    return () => {
+      current = false;
+      if (pending && jumpGeneration.current === generation) jumpGeneration.current += 1;
+    };
   }, [
     active?.id,
     activeGroup?.id,
     groupId,
     inGroup,
-    routines,
-    routinesBotId,
-    searchParams,
-    setSearchParams,
+    draftScopeKey,
+    messageDeepLink,
+    attentionDeepLink,
   ]);
   const activeSnapshot = inNewChat
     ? null
@@ -6050,6 +6057,23 @@ export function ShellPage() {
                 onCreated={publishCreatedBot}
                 onOpen={openCreatedBot}
                 onConnectEmail={() => setCreationAppsEditor(botCreationEditor)}
+                packageImport={
+                  creationSpaceId
+                    ? {
+                        spaceId: creationSpaceId,
+                        isCurrent: botCreationEditor.isCurrent,
+                        onImported: () => {
+                          void refreshBots().catch(() => undefined);
+                        },
+                        onOpen: (botId) => {
+                          if (!botCreationEditor.isCurrent()) return;
+                          navigate(`/app/${botId}`);
+                          setPanel(null);
+                        },
+                        onConnections: () => setCreationAppsEditor(botCreationEditor),
+                      }
+                    : undefined
+                }
                 onCancel={() => setPanel(null)}
               />
             ) : null}
@@ -6058,6 +6082,16 @@ export function ShellPage() {
                 key={active.id}
                 bot={active}
                 memoryProviderConfigured={memoryProviderConfig != null}
+                packageTools={
+                  creationSpaceId === active.spaceId ? (
+                    <BotPackageTools
+                      key={`${creationScope.scopeKey}:${active.id}`}
+                      botId={active.id}
+                      spaceId={active.spaceId}
+                      isCurrent={creationScope.scopeCurrent}
+                    />
+                  ) : undefined
+                }
                 onSkillsChange={setAgentSkills}
                 onSave={async ({ computerMode, ...patch }) => {
                   if (computerMode !== undefined && computerMode !== active.computerMode) {
