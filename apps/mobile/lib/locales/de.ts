@@ -1155,4 +1155,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Header name": "Headername",
   "Header value": "Headerwert",
   "Connection status unavailable.": "Verbindungsstatus nicht verfügbar.",
+
+  Enabled: "Aktiviert",
+  Disabled: "Deaktiviert",
+  "Tool access": "Tool-Zugriff",
 };

@@ -1110,4 +1110,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Header name": "请求头名称",
   "Header value": "请求头值",
   "Connection status unavailable.": "连接状态暂不可用。",
+
+  Enabled: "已启用",
+  Disabled: "已禁用",
+  "Tool access": "工具使用范围",
 };

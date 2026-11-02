@@ -157,6 +157,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount());
   node.remove();
+  vi.restoreAllMocks();
 });
 function button(label: string) {
   const found = Array.from(node.querySelectorAll("button")).find(
@@ -608,6 +609,7 @@ it("guides an owned imported server with explicit secret-preserving enable and n
   expect(JSON.stringify(api.update.mock.calls)).not.toContain('"X-Workspace":');
 });
 it("keeps sign-in uncertain until the exact server is read back as connected", async () => {
+  vi.spyOn(window, "open").mockReturnValue({ close: vi.fn() } as unknown as Window);
   let current: McpServer = { ...serverFixture, enabled: true };
   api.list.mockResolvedValue(listing([guideReceipt]));
   api.servers.mockImplementation(async () => [current]);

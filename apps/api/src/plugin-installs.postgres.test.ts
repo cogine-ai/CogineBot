@@ -580,7 +580,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       ...material,
       secret: "fixture-bearer",
       env: { KEEP: "value" },
-      oauth: { tokens: { access_token: "fixture-oauth" } },
+      oauth: { tokens: { access_token: "fixture-oauth", token_type: "bearer" } },
       metadata: { v: 2 },
     };
     const record = await secrets.put(
@@ -615,8 +615,9 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       },
     };
     const puts = secrets.puts;
-    // Discard the first HTTP response body: a lost acknowledgement must not replay the same edit.
-    expect((await request(actor, "mcp/servers/update", input)).status).toBe(200);
+    const response = await request(actor, "mcp/servers/update", input);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { json: McpServer }).json.oauthStatus).toBe("connected");
     expect((await request(actor, "mcp/servers/update", input)).status).toBe(409);
     expect(secrets.puts).toBe(puts + 1);
     const after = await database.prisma.mcpServer.findUniqueOrThrow({

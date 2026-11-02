@@ -1154,4 +1154,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Header name": "Имя заголовка",
   "Header value": "Значение заголовка",
   "Connection status unavailable.": "Статус подключения недоступен.",
+
+  Enabled: "Включено",
+  Disabled: "Отключено",
+  "Tool access": "Доступ к инструментам",
 };

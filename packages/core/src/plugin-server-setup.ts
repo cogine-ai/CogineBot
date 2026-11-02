@@ -92,6 +92,20 @@ export function createPluginServerSetup(deps: Deps) {
         if (!current(version)) return;
         if (next.id !== deps.serverId) throw new Error("Could not confirm server settings.");
         publish({ server: next, phase: "ready", authorizationResult: null, error: null });
+        if (next.oauthStatus === "unknown") {
+          try {
+            const confirmed = await read(controller.signal);
+            if (current(version) && confirmed.revision >= next.revision)
+              publish({
+                server: confirmed,
+                phase: "ready",
+                authorizationResult: null,
+                error: null,
+              });
+          } catch {
+            // The write is confirmed. A status outage must not undo that fact or prevent disabling.
+          }
+        }
       } catch (error) {
         // A lost response cannot prove whether the server committed the update. Read before retry.
         if (current(version)) publish({ ...state, phase: "unknown", error });

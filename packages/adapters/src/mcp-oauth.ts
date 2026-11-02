@@ -714,17 +714,20 @@ export class McpOAuthBroker {
     return material.oauth ? "reconnect" : "none";
   }
 
+  /** Shared validation for list status and already-committed connection replies; no I/O. */
+  statusForMaterial(value: unknown): "none" | "connected" | "reconnect" {
+    const material = StoredStatusMaterialSchema.parse(value);
+    if (material.oauth?.tokens) return "connected";
+    return material.oauth ? "reconnect" : "none";
+  }
+
   async statusForCiphertext(
     ciphertext: string | undefined,
     recordId: string | undefined,
   ): Promise<"none" | "connected" | "reconnect"> {
     if (ciphertext === undefined && recordId === undefined) return "none";
     if (!ciphertext || !recordId) throw new Error("MCP credential reference is incomplete");
-    const material = StoredStatusMaterialSchema.parse(
-      JSON.parse(await this.secrets.load(ciphertext, recordId)),
-    );
-    if (material.oauth?.tokens) return "connected";
-    return material.oauth ? "reconnect" : "none";
+    return this.statusForMaterial(JSON.parse(await this.secrets.load(ciphertext, recordId)));
   }
 
   async providerFor(

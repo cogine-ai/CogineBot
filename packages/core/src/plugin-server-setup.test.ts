@@ -72,6 +72,79 @@ function fixture() {
 }
 
 describe("owned plugin server connection review", () => {
+  it("reads an unknown save result without repeating the write or starting OAuth", async () => {
+    const f = fixture();
+    await f.manager.refresh();
+    f.save.mockResolvedValueOnce(server({ enabled: true, revision: 3, oauthStatus: "unknown" }));
+    f.list.mockResolvedValueOnce([server({ enabled: true, revision: 3, oauthStatus: "none" })]);
+    await f.manager.saveConnection({ enabled: true });
+    expect(f.state()).toMatchObject({
+      phase: "ready",
+      server: { enabled: true, revision: 3, oauthStatus: "none" },
+    });
+    expect(f.save).toHaveBeenCalledTimes(1);
+    expect(f.list).toHaveBeenCalledTimes(2);
+    expect(f.authorize).not.toHaveBeenCalled();
+  });
+  it("keeps a confirmed change usable when status readback fails", async () => {
+    const f = fixture();
+    await f.manager.refresh();
+    f.save.mockResolvedValueOnce(server({ enabled: true, revision: 3, oauthStatus: "unknown" }));
+    f.list.mockRejectedValueOnce(new Error("credential provider is unavailable"));
+    await f.manager.saveConnection({ enabled: true });
+    expect(f.state()).toMatchObject({
+      phase: "ready",
+      error: null,
+      server: { enabled: true, revision: 3, oauthStatus: "unknown" },
+    });
+    await f.manager.saveConnection({ enabled: false });
+    expect(f.save.mock.calls[1]?.[0]).toMatchObject({
+      connection: { enabled: false, revision: 3 },
+    });
+  });
+  it("does not let a background status read block or overwrite a newer save", async () => {
+    const f = fixture();
+    const pending = deferred<McpServer[]>();
+    await f.manager.refresh();
+    f.save.mockResolvedValueOnce(server({ enabled: true, revision: 3, oauthStatus: "unknown" }));
+    f.list.mockReturnValueOnce(pending.promise);
+    const first = f.manager.saveConnection({ enabled: true });
+    await Promise.resolve();
+    expect(f.state().phase).toBe("ready");
+    f.save.mockResolvedValueOnce(server({ enabled: false, revision: 4 }));
+    await f.manager.saveConnection({ enabled: false });
+    pending.resolve([server({ enabled: true, revision: 3, oauthStatus: "connected" })]);
+    await first;
+    expect(f.state().server).toMatchObject({ revision: 4, enabled: false, oauthStatus: "none" });
+  });
+  it("retains the confirmed revision when a status snapshot is older", async () => {
+    const f = fixture();
+    await f.manager.refresh();
+    f.save.mockResolvedValueOnce(server({ enabled: true, revision: 5, oauthStatus: "unknown" }));
+    f.list.mockResolvedValueOnce([
+      server({ enabled: false, revision: 4, oauthStatus: "connected" }),
+    ]);
+    await f.manager.saveConnection({ enabled: true });
+    expect(f.state().server).toMatchObject({ enabled: true, revision: 5, oauthStatus: "unknown" });
+  });
+  it.each(["scope", "dispose"])(
+    "discards a save status readback after %s changes",
+    async (reason) => {
+      const f = fixture();
+      const pending = deferred<McpServer[]>();
+      await f.manager.refresh();
+      f.save.mockResolvedValueOnce(server({ enabled: true, revision: 3, oauthStatus: "unknown" }));
+      f.list.mockReturnValueOnce(pending.promise);
+      const task = f.manager.saveConnection({ enabled: true });
+      await Promise.resolve();
+      if (reason === "scope") f.leave();
+      else f.manager.dispose();
+      const notifications = f.changed.mock.calls.length;
+      pending.resolve([server({ enabled: true, revision: 3, oauthStatus: "connected" })]);
+      await task;
+      expect(f.changed).toHaveBeenCalledTimes(notifications);
+    },
+  );
   it("reads an unknown credential status before starting a new authorization", async () => {
     const f = fixture();
     f.list.mockResolvedValueOnce([server({ enabled: true, oauthStatus: "unknown" })]);

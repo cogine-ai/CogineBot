@@ -5132,20 +5132,20 @@ export function createRouter(deps: RouterDeps) {
               );
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
-                return mcpServerDto(
-                  row.server,
-                  connection
-                    ? patchHeaders && update.action === "store"
-                      ? update.material.oauth?.tokens
-                        ? "connected"
-                        : update.material.oauth
-                          ? "reconnect"
-                          : "none"
-                      : row.server.secretId
-                        ? "unknown"
-                        : "none"
-                    : await mcpOAuth.statusFor(row.server, context.actor),
-                );
+                let oauthStatus: McpServer["oauthStatus"];
+                if (!connection) oauthStatus = await mcpOAuth.statusFor(row.server, context.actor);
+                else {
+                  oauthStatus = row.server.secretId ? "unknown" : "none";
+                  if (patchHeaders && update.action === "store") {
+                    try {
+                      oauthStatus = mcpOAuth.statusForMaterial(update.material);
+                    } catch {
+                      // Saving succeeded; unreadable OAuth state is not a failed write.
+                      oauthStatus = "unknown";
+                    }
+                  }
+                }
+                return mcpServerDto(row.server, oauthStatus);
               }
             } finally {
               if (existing.installId) {

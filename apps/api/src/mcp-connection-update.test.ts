@@ -1,4 +1,5 @@
 import { createRouterClient } from "@orpc/server";
+import { McpOAuthBroker } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
@@ -47,7 +48,7 @@ function fixture() {
     secret: "fixture-bearer",
     env: { KEEP: "env" },
     headers: { Authorization: "old", "X-Static": "preserved" },
-    oauth: { tokens: { access_token: "fixture-oauth" } },
+    oauth: { tokens: { access_token: "fixture-oauth", token_type: "bearer" } },
   };
   const rows = new Map([["old", { id: "old", ciphertext: "old-ref" }]]);
   const values = new Map([["old-ref", JSON.stringify(material)]]);
@@ -123,8 +124,10 @@ function fixture() {
       values.delete(ref);
     }),
   };
+  const materialStatus = new McpOAuthBroker(prisma as never, secrets as never);
   const mcpOAuth = {
     statusFor: vi.fn(async () => "connected"),
+    statusForMaterial: vi.fn((value: unknown) => materialStatus.statusForMaterial(value)),
     reservePluginCredential: vi.fn(async () => undefined),
     resolvePluginCredential: vi.fn(),
     releasePluginCredential: vi.fn(),

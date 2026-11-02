@@ -113,3 +113,126 @@ describe("MCP list preserves unknown credential status", () => {
     },
   );
 });
+
+describe("MCP header patch status agrees with list", () => {
+  it.each([
+    [{}, "unknown"],
+    [{ access_token: "fixture-token", token_type: "bearer" }, "connected"],
+  ] as const)(
+    "keeps the committed credential while classifying its OAuth tokens (%s)",
+    async (tokens, expected) => {
+      const store = new EncryptedSecretStore("fixture-patch-status-key");
+      const material = {
+        headers: { "X-Static": "fixture-static" },
+        env: { KEEP: "fixture-env" },
+        oauth: { tokens },
+        metadata: { version: 2 },
+      };
+      const context = {
+        ...actor,
+        operationId: "fixture-status",
+        traceId: "fixture",
+        botId: "fixture",
+        signal: new AbortController().signal,
+      };
+      const original = await store.put(JSON.stringify(material), context, { recordId: "old" });
+      const rows = new Map([[original.id, { id: original.id, ciphertext: original.ciphertext }]]);
+      const server = {
+        id: "server",
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        installId: null,
+        slug: "fixture",
+        name: "Fixture",
+        description: "",
+        transport: "streamable_http",
+        endpoint: "https://tools.example.test/mcp",
+        command: null,
+        args: [],
+        env: { KEEP: true },
+        headers: { "X-Static": true },
+        secretId: original.id,
+        enabled: false,
+        allowAllTools: false,
+        allowedTools: ["read"],
+        revision: 1,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      };
+      const prisma = {
+        mcpServer: {
+          findFirst: async () => structuredClone(server),
+          findMany: async () => [structuredClone(server)],
+          update: async ({ data }: { data: Record<string, unknown> }) => {
+            Object.assign(server, data, { revision: server.revision + 1 });
+            return structuredClone(server);
+          },
+        },
+        secret: {
+          findFirst: async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null,
+          findMany: async () => [...rows.values()],
+          create: async ({ data }: { data: { id: string; ciphertext: string } }) => {
+            rows.set(data.id, data);
+            return data;
+          },
+          deleteMany: async ({ where }: { where: { id: string } }) => {
+            rows.delete(where.id);
+            return { count: 1 };
+          },
+          count: async ({ where }: { where: { ciphertext: string } }) =>
+            [...rows.values()].filter((row) => row.ciphertext === where.ciphertext).length,
+        },
+        botSecret: { count: async () => 0 },
+        integrationProviderConfig: { count: async () => 0 },
+        nativeAppConfig: { count: async () => 0 },
+        $executeRaw: async () => 1,
+        $queryRaw: async () => [{ id: "scope", deletingAt: null, referenced: false }],
+        async $transaction<T>(effect: (tx: typeof prisma) => Promise<T>): Promise<T> {
+          return effect(prisma);
+        },
+      };
+      const put = vi.spyOn(store, "put");
+      const load = vi.spyOn(store, "load");
+      const deps = {
+        prisma,
+        secrets: store,
+        env: {
+          defaultProvider: "fake",
+          defaultModel: "fake-model",
+          webOrigin: "http://127.0.0.1:5173",
+          screenProxySecret: "fixture",
+          sandboxProvider: "fake",
+        },
+        dataDir: "/tmp/mcp-patch-status-fixture",
+      } as unknown as RouterDeps;
+      const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+      const saved = await client.mcp.servers.update({
+        id: server.id,
+        connection: { revision: 1, enabled: false, headerUpdates: { "X-New": "fixture-new" } },
+      });
+      const listed = await client.mcp.servers.list();
+      expect({ mutation: saved.oauthStatus, list: listed[0]!.oauthStatus }).toEqual({
+        mutation: expected,
+        list: expected,
+      });
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(saved).toMatchObject({
+        revision: 2,
+        enabled: false,
+        allowAllTools: false,
+        allowedTools: ["read"],
+        endpoint: server.endpoint,
+      });
+      expect(server.secretId).not.toBe(original.id);
+      expect(rows.size).toBe(1);
+      const stored = rows.get(server.secretId)!;
+      expect(JSON.parse(await store.load(stored.ciphertext, stored.id))).toEqual({
+        ...material,
+        headers: { "X-Static": "fixture-static", "X-New": "fixture-new" },
+      });
+      expect(JSON.stringify(saved)).not.toContain("fixture-static");
+      expect(JSON.stringify(saved)).not.toContain("fixture-new");
+    },
+  );
+});
