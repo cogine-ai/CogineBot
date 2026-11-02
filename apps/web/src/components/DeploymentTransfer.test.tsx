@@ -5,15 +5,29 @@ import { initialDeploymentTransferState } from "@rakazo/core";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   candidate,
   copied,
+  deferred,
   plan,
   snapshot,
+  sourceIdentity,
   targetScope,
 } from "../lib/deployment-transfer.test-helpers.js";
-import { DeploymentTransferReview } from "./DeploymentTransfer";
+import { DeploymentTransferReview, DeploymentTransferTools } from "./DeploymentTransfer";
+
+const tools = vi.hoisted(() => ({ start: vi.fn(), status: vi.fn(), makeClient: vi.fn() }));
+vi.mock("../lib/rpc", () => ({
+  currentRpcSessionGeneration: () => 1,
+  currentSpaceSelectionGeneration: () => 1,
+  createSpaceRpc: (...args: unknown[]) => {
+    tools.makeClient(...args);
+    return { transfer: { start: tools.start, status: tools.status } };
+  },
+}));
+vi.mock("../lib/client-id", () => ({ newClientId: () => "request-one" }));
 
 vi.mock("@lingui/react/macro", () => ({
   Trans: ({ children }: { children: ReactNode }) => children,
@@ -60,6 +74,7 @@ const manager = {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/app");
   host = document.createElement("div");
   root = createRoot(host);
 });
@@ -231,4 +246,100 @@ it("allows a distinct explicit cleanup of expired unknown items without resuming
   expect(manager.cancel).toHaveBeenCalledTimes(1);
   await render({ snapshot: snapshot({ phase: "expired", writeRevokedReason: "restore", items }) });
   expect(button("Retry stopping")).toBeUndefined();
+});
+
+let navigate: ReturnType<typeof useNavigate>;
+let path = "";
+function NavigationProbe() {
+  navigate = useNavigate();
+  path = useLocation().pathname;
+  return null;
+}
+const currentScope = () => true;
+async function renderTools(spaceId = targetScope.spaceId, isCurrent = currentScope) {
+  await act(async () =>
+    root.render(
+      <BrowserRouter>
+        <NavigationProbe />
+        <DeploymentTransferTools
+          botId={targetScope.botId}
+          spaceId={spaceId}
+          isCurrent={isCurrent}
+        />
+      </BrowserRouter>,
+    ),
+  );
+}
+async function startReceiver() {
+  await act(async () => button("Receive passwords and API keys").click());
+  const input = host.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      sourceIdentity.origin,
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(button("Create receiver").disabled).toBe(false);
+  await act(async () => button("Create receiver").click());
+}
+const received = () => snapshot({ side: "target", phase: "created", localScope: targetScope });
+
+it.each([false, true])(
+  "retains a pending receiver across pathname changes (navigation ABA: %s)",
+  async (aba) => {
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    tools.start.mockReturnValueOnce(pending.promise);
+    await renderTools();
+    await startReceiver();
+    const signal = tools.start.mock.calls[0]![1].signal as AbortSignal;
+    const previousNavigate = navigate;
+    await act(async () => navigate("/app/another"));
+    expect(navigate).not.toBe(previousNavigate);
+    if (aba) await act(async () => navigate("/app"));
+    expect(tools.makeClient).toHaveBeenCalledTimes(1);
+    expect(signal.aborted).toBe(false);
+    await act(async () => pending.resolve(received()));
+    expect(host.textContent).toContain("Waiting for the source");
+    expect(path).toBe(`/transfers/receive/${"a".repeat(43)}`);
+    expect(tools.start).toHaveBeenCalledTimes(1);
+    expect(signal.aborted).toBe(false);
+  },
+);
+
+it.each(["space", "authority"])("disposes an old receiver through a real %s ABA", async (kind) => {
+  const pending = deferred<ReturnType<typeof snapshot>>();
+  tools.start.mockReturnValueOnce(pending.promise);
+  await renderTools();
+  await startReceiver();
+  const signal = tools.start.mock.calls[0]![1].signal as AbortSignal;
+  if (kind === "space") await renderTools("other-space");
+  else await renderTools(targetScope.spaceId, () => false);
+  await renderTools();
+  expect(signal.aborted).toBe(true);
+  const before = path;
+  await act(async () => pending.resolve(received()));
+  expect(host.textContent).not.toContain("Waiting for the source");
+  expect(path).toBe(before);
+  expect(tools.start).toHaveBeenCalledTimes(1);
+});
+
+it("aborts an outstanding status read when closed and opens a fresh receiver without a late navigation", async () => {
+  tools.start.mockResolvedValueOnce(received());
+  await renderTools();
+  await startReceiver();
+  const pending = deferred<ReturnType<typeof snapshot>>();
+  tools.status.mockReturnValueOnce(pending.promise);
+  await act(async () => button("Check status").click());
+  const signal = tools.status.mock.calls[0]![1].signal as AbortSignal;
+  await act(async () => button("Receive passwords and API keys").click());
+  expect(signal.aborted).toBe(true);
+  const before = path;
+  await act(async () => pending.resolve(received()));
+  expect(path).toBe(before);
+  expect(host.querySelector("input")).toBeNull();
+  await act(async () => button("Receive passwords and API keys").click());
+  expect(tools.makeClient).toHaveBeenCalledTimes(2);
+  expect(host.querySelector("input")).not.toBeNull();
+  expect(host.textContent).not.toContain("Waiting for the source");
 });

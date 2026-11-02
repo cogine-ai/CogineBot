@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import { deploymentTransferDigest, ensureDeploymentIdentity } from "@rakazo/adapters";
+import { createDeploymentIdentityReader, deploymentTransferDigest } from "@rakazo/adapters";
 import type { Actor, DeploymentTransferScope } from "@rakazo/contracts";
 import { DEPLOYMENT_TRANSFER_TTL_MS, normalizeDeploymentTransferOrigin } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
@@ -99,6 +99,7 @@ export function createTransferStore(deps: {
   secrets: SecretStore;
   origin: string;
 }) {
+  const readIdentity = createDeploymentIdentityReader(deps);
   async function binding(
     scope: DeploymentTransferScope,
     intent: string,
@@ -121,7 +122,7 @@ export function createTransferStore(deps: {
     async identity() {
       // Only this feature is unavailable on an HTTP install; core initialization stays unchanged.
       const origin = normalizeDeploymentTransferOrigin(deps.origin);
-      return { ...(await ensureDeploymentIdentity(deps)), origin };
+      return { ...(await readIdentity()), origin };
     },
     async currentScope(context: TransferContext, botId: string) {
       const user = transferUser(context);

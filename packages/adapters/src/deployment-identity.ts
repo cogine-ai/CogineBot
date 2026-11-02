@@ -23,25 +23,76 @@ export class DeploymentIdentityUnavailableError extends Error {
   }
 }
 
+type IdentityStore = { prisma: PrismaClient; secrets: SecretStore; signal?: AbortSignal };
+
+async function openIdentity(input: IdentityStore, row: DeploymentIdentity) {
+  const { secrets, signal } = input;
+  signal?.throwIfAborted();
+  if (secrets.resourceIdentity?.(row.ciphertext, row.secretRecordId).kind !== "inline")
+    throw new DeploymentIdentityUnavailableError();
+  const privateKey = await secrets.load(row.ciphertext, { recordId: row.secretRecordId, signal });
+  const publicKey = deploymentTransferPublicKeyFromPrivate(privateKey);
+  const fingerprint = deploymentTransferFingerprint(publicKey);
+  if (publicKey !== row.publicKey || fingerprint !== row.fingerprint || !row.deploymentId)
+    throw new DeploymentIdentityUnavailableError();
+  return { deploymentId: row.deploymentId, publicKey, fingerprint, privateKey };
+}
+
+function sameIdentity(a: DeploymentIdentity | null, b: DeploymentIdentity) {
+  return (
+    a?.id === b.id &&
+    a.deploymentId === b.deploymentId &&
+    a.publicKey === b.publicKey &&
+    a.fingerprint === b.fingerprint &&
+    a.secretRecordId === b.secretRecordId &&
+    a.ciphertext === b.ciphertext
+  );
+}
+
+/** Reuse verified material only while this store's exact persisted authority is unchanged. */
+export function createDeploymentIdentityReader(input: Pick<IdentityStore, "prisma" | "secrets">) {
+  type Entry = { row: DeploymentIdentity; pending: Promise<DeploymentIdentityKey> };
+  let cached: Entry | undefined;
+  let initializing: Promise<DeploymentIdentityKey> | undefined;
+  const read = () => input.prisma.deploymentIdentity.findUnique({ where: { id: "primary" } });
+  return async (): Promise<DeploymentIdentityKey> => {
+    let entry = cached;
+    try {
+      let row = await read();
+      if (!row) {
+        cached = undefined;
+        initializing ??= ensureDeploymentIdentity(input);
+        const pending = initializing;
+        try {
+          await pending;
+        } finally {
+          if (initializing === pending) initializing = undefined;
+        }
+        row = await read();
+        if (!row) throw new DeploymentIdentityUnavailableError();
+      }
+      if (!cached || !sameIdentity(row, cached.row)) {
+        cached = { row: { ...row }, pending: openIdentity(input, row) };
+      }
+      entry = cached;
+      const key = await entry.pending;
+      // A slow old load must not publish a key after restore/replacement, or retire a new entry.
+      if (!sameIdentity(await read(), entry.row)) throw new DeploymentIdentityUnavailableError();
+      return { ...key };
+    } catch {
+      if (cached === entry) cached = undefined;
+      throw new DeploymentIdentityUnavailableError();
+    }
+  };
+}
+
 /** The singleton row, rather than a process-local candidate, is the identity authority. */
-export async function ensureDeploymentIdentity(input: {
-  prisma: PrismaClient;
-  secrets: SecretStore;
-  signal?: AbortSignal;
-}): Promise<DeploymentIdentityKey> {
+export async function ensureDeploymentIdentity(
+  input: IdentityStore,
+): Promise<DeploymentIdentityKey> {
   const { prisma, secrets, signal } = input;
   const read = () => prisma.deploymentIdentity.findUnique({ where: { id: "primary" } });
-  async function open(row: DeploymentIdentity): Promise<DeploymentIdentityKey> {
-    signal?.throwIfAborted();
-    if (secrets.resourceIdentity?.(row.ciphertext, row.secretRecordId).kind !== "inline")
-      throw new DeploymentIdentityUnavailableError();
-    const privateKey = await secrets.load(row.ciphertext, { recordId: row.secretRecordId, signal });
-    const publicKey = deploymentTransferPublicKeyFromPrivate(privateKey);
-    const fingerprint = deploymentTransferFingerprint(publicKey);
-    if (publicKey !== row.publicKey || fingerprint !== row.fingerprint || !row.deploymentId)
-      throw new DeploymentIdentityUnavailableError();
-    return { deploymentId: row.deploymentId, publicKey, fingerprint, privateKey };
-  }
+  const open = (row: DeploymentIdentity) => openIdentity(input, row);
   try {
     signal?.throwIfAborted();
     const existing = await read();

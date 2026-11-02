@@ -424,6 +424,8 @@ export function DeploymentTransferTools({
   const [sourceOrigin, setSourceOrigin] = useState("");
   const [state, setState] = useState(initialDeploymentTransferState);
   const manager = useRef<DeploymentTransfer | null>(null);
+  const liveNavigate = useRef(navigate);
+  liveNavigate.current = navigate;
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -435,7 +437,7 @@ export function DeploymentTransferTools({
         if (!active) return;
         setState(next);
         const path = rememberTransferAddress(next);
-        if (path && next.request !== "saving") navigate(path, { replace: true });
+        if (path && next.request !== "saving") liveNavigate.current(path, { replace: true });
       },
     });
     manager.current = connection.manager;
@@ -445,7 +447,7 @@ export function DeploymentTransferTools({
       connection.manager.dispose();
       manager.current = null;
     };
-  }, [open, spaceId, isCurrent, navigate]);
+  }, [open, spaceId, isCurrent]);
   return (
     <section className="mt-4 space-y-3" data-testid="deployment-transfer-tools">
       <Button
