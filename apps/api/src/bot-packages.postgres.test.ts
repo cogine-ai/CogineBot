@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUILTIN_AGENT_SKILLS } from "@rakazo/adapters";
+import { BUILTIN_AGENT_SKILLS, canonicalBotPackageJson } from "@rakazo/adapters";
 import type {
   Actor,
   BotPackageExport,
@@ -240,6 +240,10 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const owner = await account();
     const value = source();
     const p = await preview(owner, value);
+    expect(p).not.toHaveProperty("json");
+    expect(p.digest).toBe(
+      createHash("sha256").update(canonicalBotPackageJson(p.document)).digest("hex"),
+    );
     const receipt = await importPackage(owner, p);
     expect(receipt.status).toBe("completed");
     expect(receipt.skills[0]?.content).toBe(value.skills[0]!.content);
@@ -286,7 +290,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   it("copies selected memory only into the new isolated Bot with its first revision", async () => {
     const owner = await account();
     const value = source();
-    const receipt = await importPackage(owner, await preview(owner, value, true));
+    const p = await preview(owner, value, true);
+    expect(p).not.toHaveProperty("json");
+    expect(p.digest).toBe(
+      createHash("sha256").update(canonicalBotPackageJson(p.document)).digest("hex"),
+    );
+    const receipt = await importPackage(owner, p);
     const notes = await database.prisma.memoryDocument.findMany({
       where: { botId: receipt.botId! },
       include: { revisions: true },
@@ -304,6 +313,29 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         },
       }),
     ).toBe(0);
+  });
+  it("rejects an invalid stored preview before creating an import marker or Bot", async () => {
+    const owner = await account();
+    const p = await preview(owner);
+    const clientNonce = randomUUID();
+    const before = await database.prisma.bot.count({ where: { userId: owner.actor.userId } });
+    const changed = await database.prisma.botPackagePreview.updateMany({
+      where: {
+        userId: owner.actor.userId,
+        spaceId: owner.actor.spaceId,
+        tokenHash: createHash("sha256").update(p.previewToken).digest("hex"),
+      },
+      data: { document: { format: BOT_PACKAGE_FORMAT, profile: { name: 42 } } },
+    });
+    expect(changed.count).toBe(1);
+    const response = await request(owner, "import", { previewToken: p.previewToken, clientNonce });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(
+      await database.prisma.botPackageImport.count({
+        where: { userId: owner.actor.userId, clientNonce },
+      }),
+    ).toBe(0);
+    expect(await database.prisma.bot.count({ where: { userId: owner.actor.userId } })).toBe(before);
   });
   it("concurrent retries serialize the same nonce and a committed replay survives preview expiry", async () => {
     const owner = await account();
@@ -555,6 +587,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       },
     });
     const exported = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
+    expect(JSON.parse(exported.json)).toEqual(exported.document);
     expect(exported.document.skills).toEqual(value.skills);
     expect(exported.document.memory).toEqual([]);
     expect(exported.document.profile.instructions).toBe(value.profile.instructions);
@@ -565,6 +598,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       skillIds: [shared.id],
       includeMemory: true,
     });
+    expect(JSON.parse(selected.json)).toEqual(selected.document);
     expect(selected.document.skills).toHaveLength(2);
     expect(selected.document.memory).toEqual(value.memory);
     expect((await preview(owner, JSON.parse(selected.json), true)).document).toEqual(

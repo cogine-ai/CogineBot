@@ -2,7 +2,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import {
   BotPackageError,
-  canonicalBotPackageJson,
   parseBotPackageSource,
   prepareBotPackageDocument,
 } from "@rakazo/adapters";
@@ -332,7 +331,7 @@ export function createBotPackagesService(deps: Deps) {
         return packageError(error);
       }
       const previewToken = randomBytes(32).toString("base64url");
-      const digest = hash(canonicalBotPackageJson(parsed.document));
+      const digest = hash(parsed.json);
       const expiresAt = new Date(Date.now() + 10 * 60_000);
       await transact(context, async (tx) => {
         await tx.botPackagePreview.create({
@@ -353,7 +352,10 @@ export function createBotPackagesService(deps: Deps) {
         previewToken,
         digest,
         expiresAt: expiresAt.toISOString(),
-        ...parsed,
+        document: parsed.document,
+        sourceFormat: parsed.sourceFormat,
+        leftOut: parsed.leftOut,
+        availableMemoryCount: parsed.availableMemoryCount,
         includeMemory: input.includeMemory,
       };
     },
@@ -388,17 +390,18 @@ export function createBotPackagesService(deps: Deps) {
           throw new ORPCError("CONFLICT", {
             message: "This preview already belongs to another import request.",
           });
+        const document = BotPackageDocumentSchema.parse(preview.document);
         const marker = await tx.botPackageImport.create({
           data: {
             ...own(context.actor),
             clientNonce: input.clientNonce,
             previewTokenHash: tokenHash,
             digest: preview.digest,
-            botName: BotPackageDocumentSchema.parse(preview.document).profile.name,
+            botName: document.profile.name,
             plan: preview.document as Prisma.InputJsonValue,
             leftOut: preview.leftOut as Prisma.InputJsonValue,
-            skillCount: BotPackageDocumentSchema.parse(preview.document).skills.length,
-            connectionCount: BotPackageDocumentSchema.parse(preview.document).connections.length,
+            skillCount: document.skills.length,
+            connectionCount: document.connections.length,
           },
           include: includeChildren,
         });
@@ -721,7 +724,7 @@ export function createBotPackagesService(deps: Deps) {
         return packageError(error);
       }
       leftOut.push(...safe.leftOut);
-      const json = canonicalBotPackageJson(safe.document);
+      const json = safe.json;
       const filename = `${
         safe.document.profile.name
           .replace(/[^a-z0-9_-]/gi, "-")

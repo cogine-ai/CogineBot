@@ -64,7 +64,6 @@ export function NativeBotPackageImport({
             changed: setState,
           });
           manager.current = review;
-          review.edit({ source: "", name: "", includeMemory: false });
         })
         .catch(() => {
           if (active) setInitializationError(true);

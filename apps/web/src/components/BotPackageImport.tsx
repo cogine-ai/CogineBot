@@ -56,7 +56,6 @@ export function BotPackageImport({
       changed: setState,
     });
     manager.current = review;
-    review.edit({ source: "", name: "", includeMemory: false });
     return () => {
       active = false;
       fileGeneration.current++;

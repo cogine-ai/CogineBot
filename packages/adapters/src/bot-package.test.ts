@@ -31,6 +31,7 @@ describe("bounded portable Bot JSON", () => {
     expect(result.document.skills[0]?.content).toBe(skill);
     expect(result.document.memory).toEqual([]);
     expect(result.availableMemoryCount).toBe(1);
+    expect(JSON.parse(result.json)).toEqual(result.document);
     expect(result.leftOut).toContainEqual(
       expect.objectContaining({ kind: "memory", name: "memory" }),
     );
@@ -46,6 +47,7 @@ describe("bounded portable Bot JSON", () => {
     });
     expect(result.document.memory).toEqual(document().memory);
     expect(result.document.profile.name).toBe("A copy");
+    expect(JSON.parse(result.json)).toEqual(result.document);
   });
   it.each(["openmaus.grok/1", "grokbot-bundle/v1"])(
     "reads %s JSON and fenced JSON without guessing absent instructions",
@@ -69,6 +71,7 @@ describe("bounded portable Bot JSON", () => {
       expect(result.document.routines[0]?.crons).toEqual(["0 9 * * 1,2,3,4,5"]);
       expect(result.document.routines).toHaveLength(1);
       expect(result.document.connections).toEqual([{ name: "Mail", note: "" }]);
+      expect(JSON.parse(result.json)).toEqual(result.document);
       expect(result.leftOut).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ kind: "instructions" }),

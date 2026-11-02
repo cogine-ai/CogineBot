@@ -49,6 +49,7 @@ class LeftOutBudget {
 type RecordValue = Record<string, unknown>;
 export type ParsedBotPackage = {
   document: BotPackageDocument;
+  json: string;
   sourceFormat: typeof BOT_PACKAGE_FORMAT | "openmaus.grok/1" | "grokbot-bundle/v1";
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
@@ -464,6 +465,7 @@ export function canonicalBotPackageJson(value: BotPackageDocument): string {
 
 export function prepareBotPackageDocument(value: unknown): {
   document: BotPackageDocument;
+  json: string;
   leftOut: BotPackageLeftOut[];
 } {
   guardStructure(value);
@@ -492,8 +494,8 @@ export function prepareBotPackageDocument(value: unknown): {
       throw new BotPackageError("Skill metadata must match its self-contained SKILL.md text.");
   }
   for (const routine of document.routines) validateRoutine(routine);
-  canonicalBotPackageJson(document);
-  return { document, leftOut: leftOut.entries };
+  const json = canonicalBotPackageJson(document);
+  return { document, json, leftOut: leftOut.entries };
 }
 
 export function parseBotPackageSource(
@@ -657,6 +659,7 @@ export function parseBotPackageSource(
   const safe = prepareBotPackageDocument(native);
   leftOut.push(...safe.leftOut);
   const document = safe.document;
+  let json = safe.json;
   const availableMemoryCount = document.memory.length;
   if (!options.includeMemory && availableMemoryCount) {
     leftOut.push({
@@ -665,7 +668,7 @@ export function parseBotPackageSource(
       reason: `Memory notes not selected: ${availableMemoryCount}.`,
     });
     document.memory = [];
+    json = canonicalBotPackageJson(document);
   }
-  canonicalBotPackageJson(document);
-  return { document, sourceFormat: format, leftOut: leftOut.entries, availableMemoryCount };
+  return { document, json, sourceFormat: format, leftOut: leftOut.entries, availableMemoryCount };
 }
