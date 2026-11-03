@@ -132,6 +132,13 @@ async function fixture(
   let activeRuntime = actualRuntime();
   const firstRuntime = activeRuntime;
   const runtimeRequests: Array<{ generation: number; runId: string; checkpoint?: string }> = [];
+  const actualExecutions: Array<{
+    generation: number;
+    runId: string;
+    name: string;
+    executionId: string;
+    args: Record<string, unknown>;
+  }> = [];
   // Only the instance changes: the app still constructs and executes every real request.
   const forwarder: AgentRuntime = {
     describe: () => activeRuntime.describe(),
@@ -141,6 +148,20 @@ async function fixture(
         runId: request.runId,
         checkpoint: request.turnCheckpoint,
       });
+      const requestGeneration = generation;
+      const executeTool = request.executeTool;
+      if (executeTool) {
+        request.executeTool = (name, args, executionId, route, observer) => {
+          actualExecutions.push({
+            generation: requestGeneration,
+            runId: request.runId,
+            name,
+            executionId,
+            args: structuredClone(args),
+          });
+          return executeTool(name, args, executionId, route, observer);
+        };
+      }
       return activeRuntime.run(request, context);
     },
     abort: (runId) => activeRuntime.abort(runId),
@@ -318,6 +339,7 @@ async function fixture(
       key,
       providerRequests,
       runtimeRequests,
+      actualExecutions,
       get reservations() {
         return reservations;
       },
@@ -382,6 +404,35 @@ async function fixture(
         ])
           expect(text).not.toContain(internal);
         return text;
+      },
+      async assertCalledProjection(name: "shell" | "request_secret") {
+        const remaining = new Map<string, number>();
+        for (const execution of actualExecutions.filter(
+          (item) => item.runId === sent.runId && item.name === name,
+        )) {
+          const id = JSON.stringify([execution.name, execution.executionId]);
+          remaining.set(id, (remaining.get(id) ?? 0) + 1);
+        }
+        const events = await app.prisma.event.findMany({
+          where: {
+            runId: sent.runId,
+            type: "agent.tool.called",
+            payload: { path: ["name"], equals: name },
+          },
+          select: { runId: true, spaceId: true, payload: true },
+        });
+        for (const event of events) {
+          expect(event).toMatchObject({ runId: sent.runId, spaceId: me.spaceId });
+          expect(event.payload).toMatchObject({
+            name,
+            executionId: expect.any(String),
+          });
+          const payload = event.payload as { name: string; executionId: string };
+          const id = JSON.stringify([payload.name, payload.executionId]);
+          const available = remaining.get(id) ?? 0;
+          expect(available).toBeGreaterThan(0);
+          remaining.set(id, available - 1);
+        }
       },
       mainWrites() {
         return writes.mock.calls.filter(([, , context]) => context.runId === sent.runId);
@@ -860,13 +911,9 @@ describe.skipIf(!enabled)("parallel Pi approval checkpoint ownership", () => {
           .flatMap((message) => MessageBlockSchema.array().parse(message.blocks))
           .filter((block) => block.kind === "ask" && block.approvalEffectId),
       ).toHaveLength(1);
-      const toolEvents = await f.app.prisma.event.findMany({
-        where: { runId, type: "agent.tool.called" },
-        select: { payload: true },
-      });
-      const executionIds = toolEvents.map(
-        (event) => (event.payload as { executionId: string }).executionId,
-      );
+      const executionIds = f.actualExecutions
+        .filter((execution) => execution.runId === runId && execution.name === "shell")
+        .map((execution) => execution.executionId);
       expect(executionIds).toHaveLength(3);
       expect(
         executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", approvedCallId])),
@@ -874,6 +921,7 @@ describe.skipIf(!enabled)("parallel Pi approval checkpoint ownership", () => {
       expect(
         executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", siblingCallId])),
       ).toHaveLength(1);
+      await f.assertCalledProjection("shell");
       await f.clientSnapshot();
     } finally {
       release();
@@ -1015,14 +1063,40 @@ describe.skipIf(!enabled)("parallel Pi protected-input checkpoint ownership", ()
         (effect) => (effect.request as { label: string }).label === card.text,
       );
       expect(selectedEffect?.request).toEqual(calls[selected]!.arguments);
-      const completions = await f.app.prisma.event.findMany({
-        where: { runId, type: "agent.tool.completed" },
-        select: { payload: true },
-      });
-      expect(completions.map((event) => (event.payload as { outcome: string }).outcome)).toEqual([
-        "paused",
-        "paused",
-      ]);
+      await expect
+        .poll(async () => {
+          const completions = await f.app.prisma.event.findMany({
+            where: { runId, type: "agent.tool.completed" },
+            select: { runId: true, spaceId: true, payload: true },
+          });
+          return completions
+            .map((event) => {
+              const payload = event.payload as {
+                name: string;
+                executionId: string;
+                outcome: string;
+              };
+              return {
+                runId: event.runId,
+                spaceId: event.spaceId,
+                name: payload.name,
+                executionId: payload.executionId,
+                outcome: payload.outcome,
+              };
+            })
+            .sort((left, right) => left.executionId.localeCompare(right.executionId));
+        })
+        .toEqual(
+          callIds
+            .map((id) => ({
+              runId,
+              spaceId: f.me.spaceId,
+              name: "request_secret",
+              executionId: JSON.stringify(["pi-tool", "main", id]),
+              outcome: "paused",
+            }))
+            .sort((left, right) => left.executionId.localeCompare(right.executionId)),
+        );
       expect(
         await f.app.prisma.attempt.findMany({
           where: { runId },
@@ -1135,13 +1209,9 @@ describe.skipIf(!enabled)("parallel Pi protected-input checkpoint ownership", ()
       expect(
         await f.app.prisma.externalEffect.findUnique({ where: { idempotencyKey: f.key } }),
       ).toBeNull();
-      const callsAfter = await f.app.prisma.event.findMany({
-        where: { runId, type: "agent.tool.called" },
-        select: { payload: true },
-      });
-      const executionIds = callsAfter.map(
-        (event) => (event.payload as { executionId: string }).executionId,
-      );
+      const executionIds = f.actualExecutions
+        .filter((execution) => execution.runId === runId && execution.name === "request_secret")
+        .map((execution) => execution.executionId);
       expect(executionIds).toHaveLength(3);
       expect(
         executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", selectedCallId])),
@@ -1149,6 +1219,7 @@ describe.skipIf(!enabled)("parallel Pi protected-input checkpoint ownership", ()
       expect(
         executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", siblingCallId])),
       ).toHaveLength(1);
+      await f.assertCalledProjection("request_secret");
       expect(
         await f.app.prisma.attempt.findMany({
           where: { runId },
@@ -1192,6 +1263,9 @@ describe.skipIf(!enabled)("parallel Pi helper protected-input ownership", () => 
       const system = getCurrentSystemPrompt(context.messages);
       const index = helpers.findIndex((name) => system.includes(`subagent named "${name}"`));
       expect(index).toBeGreaterThanOrEqual(0);
+      expect(
+        JSON.stringify(context.messages.findLast((message) => message.role === "user")?.content),
+      ).toContain(`Request only ${labels[index]} through protected input.`);
       return [
         call(helperCallIds[index]!, "request_secret", {
           label: labels[index]!,
@@ -1281,13 +1355,9 @@ describe.skipIf(!enabled)("parallel Pi helper protected-input ownership", () => 
         purpose: "api_key",
         credential: destinations[selectedIndex],
       });
-      const toolEvents = await f.app.prisma.event.findMany({
-        where: { runId, type: "agent.tool.called" },
-        select: { payload: true },
-      });
-      const helperCalls = toolEvents
-        .map((event) => event.payload as { name: string; executionId: string })
-        .filter((event) => event.name === "request_secret");
+      const helperCalls = f.actualExecutions.filter(
+        (execution) => execution.runId === runId && execution.name === "request_secret",
+      );
       expect(helperCalls).toHaveLength(2);
       expect(helperCalls.map((event) => JSON.parse(event.executionId)[1]).sort()).toEqual(
         outerCallIds.map((id) => JSON.stringify(["pi-tool", "main", id])).sort(),
@@ -1295,6 +1365,18 @@ describe.skipIf(!enabled)("parallel Pi helper protected-input ownership", () => 
       expect(helperCalls.map((event) => JSON.parse(event.executionId)[2]).sort()).toEqual(
         [...helperCallIds].sort(),
       );
+      expect(
+        helperCalls
+          .map((execution) => execution.args)
+          .sort((left, right) => String(left.label).localeCompare(String(right.label))),
+      ).toEqual(
+        labels.map((label, index) => ({
+          label,
+          purpose: "api_key",
+          credential: destinations[index],
+        })),
+      );
+      await f.assertCalledProjection("request_secret");
       expect(f.providerRequests).toHaveLength(3);
       expect(f.reservations).toBe(3);
       expect(await f.app.prisma.botSecret.count({ where: { botId: f.bot.id } })).toBe(0);
