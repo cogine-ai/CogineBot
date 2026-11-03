@@ -1064,28 +1064,31 @@ describe.skipIf(!enabled)("parallel Pi protected-input checkpoint ownership", ()
       );
       expect(selectedEffect?.request).toEqual(calls[selected]!.arguments);
       await expect
-        .poll(async () => {
-          const completions = await f.app.prisma.event.findMany({
-            where: { runId, type: "agent.tool.completed" },
-            select: { runId: true, spaceId: true, payload: true },
-          });
-          return completions
-            .map((event) => {
-              const payload = event.payload as {
-                name: string;
-                executionId: string;
-                outcome: string;
-              };
-              return {
-                runId: event.runId,
-                spaceId: event.spaceId,
-                name: payload.name,
-                executionId: payload.executionId,
-                outcome: payload.outcome,
-              };
-            })
-            .sort((left, right) => left.executionId.localeCompare(right.executionId));
-        })
+        .poll(
+          async () => {
+            const completions = await f.app.prisma.event.findMany({
+              where: { runId, type: "agent.tool.completed" },
+              select: { runId: true, spaceId: true, payload: true },
+            });
+            return completions
+              .map((event) => {
+                const payload = event.payload as {
+                  name: string;
+                  executionId: string;
+                  outcome: string;
+                };
+                return {
+                  runId: event.runId,
+                  spaceId: event.spaceId,
+                  name: payload.name,
+                  executionId: payload.executionId,
+                  outcome: payload.outcome,
+                };
+              })
+              .sort((left, right) => left.executionId.localeCompare(right.executionId));
+          },
+          { timeout: 10_000, interval: 20 },
+        )
         .toEqual(
           callIds
             .map((id) => ({
