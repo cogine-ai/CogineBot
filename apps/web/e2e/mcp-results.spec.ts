@@ -114,6 +114,10 @@ for (const width of [1280, 390]) {
           );
         })
         .toBe(true);
+      await dialog
+        .getByRole("button", { name: "Save tool access", exact: true })
+        .scrollIntoViewIfNeeded();
+      await expect(preference).toBeVisible();
     }
     await captureScreenshot(page, testInfo, `mcp-results-existing-${width}`);
 
