@@ -192,6 +192,8 @@ export interface AgentToolExecutionResult {
 
 /** Hooks for a tool call that can report output before it returns. */
 export interface AgentToolExecutionObserver {
+  /** Executor-resolved identity for this call; provider result fields are not trusted routes. */
+  onConnectorRouteResolved?: (route: ConnectorRoute) => void;
   /**
    * A shell command has already produced output and is still running.
    * Resolves with the final redacted result when the process exits.

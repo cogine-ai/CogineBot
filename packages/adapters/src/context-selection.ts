@@ -13,7 +13,12 @@ import {
   VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
 } from "@rakazo/core";
 import type { VerbatimMcpServers } from "./verbatim-mcp-result.js";
-import { isVerbatimMcpResult, toolCallIdentity } from "./verbatim-mcp-result.js";
+import {
+  copyMcpToolResultRoute,
+  isVerbatimMcpResult,
+  mcpToolResultRoute,
+  toolCallIdentity,
+} from "./verbatim-mcp-result.js";
 
 export type ContextStrategy = AgentContextStrategy;
 export interface ContextMessage {
@@ -551,6 +556,7 @@ export function toolResultContentProvenance(content: unknown): ToolResultProvena
 }
 
 export function copyToolResultProvenance<T>(source: unknown, content: T[]): T[] {
+  copyMcpToolResultRoute(source, content);
   const metadata = toolResultContentProvenance(source);
   return metadata ? markToolResultContent(content, metadata) : content;
 }
@@ -590,7 +596,7 @@ export function boundToolResult(
   } catch {
     const marker = `\n${tool.afterUse || source.includes(OMITTED_AFTER_USE) ? OMITTED_AFTER_USE : OMITTED_BEFORE_USE}`;
     return {
-      text: source.slice(0, Math.max(0, size - marker.length)) + marker.slice(0, size),
+      text: truncatePlainText(source, Math.max(0, size - marker.length)) + marker.slice(0, size),
       wrapped: false,
     };
   }
@@ -901,7 +907,7 @@ export function selectContext<T extends ContextMessage>(
             )
           : undefined;
         const call = toolCallIdentity(nativeCall, message.toolName);
-        if (isVerbatimMcpResult(call.name, call.arguments, options.verbatimMcpServers)) {
+        if (isVerbatimMcpResult(mcpToolResultRoute(message.content), options.verbatimMcpServers)) {
           keptVerbatimWhole = true;
           return message;
         }

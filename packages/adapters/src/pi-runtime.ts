@@ -25,6 +25,7 @@ import type {
   AgentToolCompletion,
   AgentToolExecutionResult,
   AgentUsage,
+  ConnectorRoute,
   ConnectorTool,
   ModelCallObserver,
   ToolResultHistoryReference,
@@ -46,6 +47,7 @@ import { ModelImageLimitError, pruneForRebuild } from "./context-pruning.js";
 import {
   boundToolResult,
   ContextBudgetError,
+  copyToolResultProvenance,
   markToolResultContent,
   protectedContextIndexes,
   selectContext,
@@ -97,7 +99,12 @@ import {
 } from "./thinking-signatures.js";
 import { textContentArg } from "./tool-text.js";
 import { midTaskMessagePrompt } from "./user-progress.js";
-import { isVerbatimMcpResult, verbatimMcpToolResultIndexes } from "./verbatim-mcp-result.js";
+import {
+  isVerbatimMcpResult,
+  markMcpToolResultRoute,
+  mcpToolResultRoute,
+  verbatimMcpToolResultIndexes,
+} from "./verbatim-mcp-result.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
 interface ToolCallBudget {
@@ -1229,6 +1236,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
       const startedAt = Date.now();
       let result: unknown;
       let failure: unknown;
+      let resolvedRoute = tool.route?.resourceId ? { ...tool.route } : undefined;
       try {
         result = await (async () => {
           if (tool.name === "request_takeover") {
@@ -1313,6 +1321,9 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
               executionId,
               tool.route,
               {
+                onConnectorRouteResolved: (route) => {
+                  resolvedRoute = { ...route };
+                },
                 onShellStillRunning: (completion) => {
                   host.pendingShells.push(completion);
                 },
@@ -1346,7 +1357,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             }
             if (isAgentToolExecutionResult(result)) {
               if (isToolPauseResult(result)) host.pausePending = true;
-              if (isVerbatimMcpResult(tool.name, args, host.request.verbatimMcpServers)) {
+              if (isVerbatimMcpResult(resolvedRoute, host.request.verbatimMcpServers)) {
                 return {
                   ...result,
                   content: markToolResultContent(result.content, {
@@ -1365,6 +1376,7 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
               historyReference,
               Boolean(tool.route) || !["read_history", "search_history"].includes(tool.name),
               host.request.verbatimMcpServers,
+              resolvedRoute,
             );
             return {
               content: markToolResultContent([{ type: "text", text: serialized.text }], {
@@ -1384,12 +1396,21 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
             details: { error: "no executor" },
           };
         })();
-        if (
+        const prepared =
           VERBATIM_TOOL_RESULTS.has(tool.name) ||
-          isVerbatimMcpResult(tool.name, args, host.request.verbatimMcpServers)
-        )
-          return result as AgentToolResult<unknown>;
-        return boundAgentToolResult(result as AgentToolResult<unknown>);
+          isVerbatimMcpResult(resolvedRoute, host.request.verbatimMcpServers)
+            ? (result as AgentToolResult<unknown>)
+            : boundAgentToolResult(result as AgentToolResult<unknown>);
+        if (resolvedRoute?.connectorId !== "mcp" && !mcpToolResultRoute(prepared.content))
+          return prepared;
+        // Sessions may reuse a content array; each MCP execution owns a distinct identity.
+        return {
+          ...prepared,
+          content: markMcpToolResultRoute(
+            copyToolResultProvenance(prepared.content, [...prepared.content]),
+            resolvedRoute,
+          ),
+        };
       } catch (error) {
         failure = error;
         throw error;
@@ -2043,6 +2064,7 @@ export function serializeToolResult(
   historyReference?: ToolResultHistoryReference,
   fresh = !["read_history", "search_history"].includes(name),
   verbatimMcpServers?: AgentRunRequest["verbatimMcpServers"],
+  resolvedRoute?: ConnectorRoute,
 ) {
   return serializeToolResultView(
     result,
@@ -2052,6 +2074,7 @@ export function serializeToolResult(
     historyReference,
     fresh,
     verbatimMcpServers,
+    resolvedRoute,
   ).text;
 }
 
@@ -2063,12 +2086,13 @@ function serializeToolResultView(
   historyReference?: ToolResultHistoryReference,
   fresh = !["read_history", "search_history"].includes(name),
   verbatimMcpServers?: AgentRunRequest["verbatimMcpServers"],
+  resolvedRoute?: ConnectorRoute,
 ): { text: string; wrapped: boolean } {
   try {
     const text = JSON.stringify(result);
     if (!text) return { text: "ok", wrapped: false };
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
-    if (VERBATIM_TOOL_RESULTS.has(name) || isVerbatimMcpResult(name, args, verbatimMcpServers))
+    if (VERBATIM_TOOL_RESULTS.has(name) || isVerbatimMcpResult(resolvedRoute, verbatimMcpServers))
       return { text, wrapped: false };
     if (fresh && !historyReference && text.length <= 12_000) {
       const value: unknown = JSON.parse(text);

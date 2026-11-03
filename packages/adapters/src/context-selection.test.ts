@@ -1,6 +1,7 @@
 import { MODEL_CONTEXT_TOO_SMALL_ERROR, VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import {
+  boundToolResult,
   ContextBudgetError,
   ContextCacheTracker,
   estimateContextTokens,
@@ -9,6 +10,7 @@ import {
   selectContext,
   shortenPlainText,
 } from "./context-selection.js";
+import { markMcpToolResultRoute } from "./verbatim-mcp-result.js";
 
 const budget = {
   contextWindow: 2000,
@@ -364,7 +366,16 @@ describe("bounded context selection", () => {
         role: "assistant",
         content: [{ type: "toolCall", id: "whole", name: "mcp__office__read", arguments: {} }],
       },
-      { role: "toolResult", toolCallId: "whole", content: [{ type: "text", text: body }] },
+      {
+        role: "toolResult",
+        toolCallId: "whole",
+        content: markMcpToolResultRoute([{ type: "text", text: body }], {
+          connectorId: "mcp",
+          resourceId: "office-id",
+          catalogGroup: "office",
+          toolName: "read",
+        }),
+      },
     ];
     const options = {
       budget,
@@ -395,6 +406,22 @@ describe("bounded context selection", () => {
     expect(new TextDecoder().decode(new TextEncoder().encode(shortened))).toBe(shortened);
     expect(shortened).toContain("Tool result truncated");
   });
+  it.each([false, true])(
+    "bounds non-JSON text without splitting Unicode (after use: %s)",
+    (afterUse) => {
+      const original = "🙂甲".repeat(500);
+      for (let size = 1; size <= 300; size++) {
+        const result = boundToolResult(original, size, { afterUse });
+        expect(result.text.length).toBeLessThanOrEqual(size);
+        expect(new TextDecoder().decode(new TextEncoder().encode(result.text))).toBe(result.text);
+        expect(result.wrapped).toBe(false);
+        if (size >= 256)
+          expect(result.text).toContain(
+            afterUse ? "Earlier result shortened" : "Tool result truncated",
+          );
+      }
+    },
+  );
   it("selects complete tool groups within the actual image capacity", () => {
     const image = { type: "image", data: "fixture", mimeType: "image/png" };
     const messages = [
@@ -403,7 +430,16 @@ describe("bounded context selection", () => {
         role: "assistant",
         content: [{ type: "toolCall", id: "old", name: "mcp__office__read", arguments: {} }],
       },
-      { role: "toolResult", toolCallId: "old", content: [image, image, image] },
+      {
+        role: "toolResult",
+        toolCallId: "old",
+        content: markMcpToolResultRoute([image, image, image], {
+          connectorId: "mcp",
+          resourceId: "office-id",
+          catalogGroup: "office",
+          toolName: "read",
+        }),
+      },
       {
         role: "assistant",
         content: [{ type: "toolCall", id: "new", name: "read", arguments: {} }],
@@ -424,6 +460,32 @@ describe("bounded context selection", () => {
         strategy: "retrieval",
       }),
     ).toThrow("required context contains 2 images");
+  });
+  it("keeps unread non-JSON tool output Unicode-safe under context pressure", () => {
+    const text = "🙂甲".repeat(10_000);
+    const result = selectContext(
+      [
+        user("Inspect this shell output"),
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "shell", name: "shell", arguments: {} }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "shell",
+          toolName: "shell",
+          content: [{ type: "text", text }],
+        },
+      ],
+      { budget, strategy: "retrieval" },
+    );
+    const selected = (result.messages.at(-1)!.content as Array<{ text: string }>)[0]!.text;
+    expect(selected.length).toBeLessThan(text.length);
+    expect(selected).toContain("Tool result truncated");
+    expect(new TextDecoder().decode(new TextEncoder().encode(selected))).toBe(selected);
+    expect(result.estimatedInputTokens).toBeLessThanOrEqual(
+      budget.contextWindow - budget.outputReserve,
+    );
   });
   it("uses extra capacity predicates only for adding optional complete groups", () => {
     const calls: string[][] = [];

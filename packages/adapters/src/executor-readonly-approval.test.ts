@@ -4,6 +4,7 @@ import type {
   AutoReviewProvider,
   ConnectorCall,
   ConnectorProvider,
+  ConnectorRoute,
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
@@ -127,6 +128,7 @@ function fixture({
   };
   const effects: Effect[] = [];
   const results: unknown[] = [];
+  const resolvedRoutes: ConnectorRoute[] = [];
   const sharedMemoryState = {
     content: existingSharedMemory as string | undefined,
     revision: existingSharedMemory === undefined ? 0 : 1,
@@ -277,6 +279,8 @@ function fixture({
         catalog ? catalogToolName : name,
         catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
+        undefined,
+        { onConnectorRouteResolved: (route) => resolvedRoutes.push({ ...route }) },
       );
       results.push(result);
       if (isApprovalPausedResult(result)) return;
@@ -344,6 +348,7 @@ function fixture({
     runtimeRun,
     effects,
     results,
+    resolvedRoutes,
     execute,
     commit,
     sharedMemoryState,
@@ -717,6 +722,26 @@ describe("disabled builtins", () => {
 });
 
 describe("executor connector account revalidation", () => {
+  it.each([false, true])(
+    "reports the resolved connector identity (catalog: %s)",
+    async (catalog) => {
+      const f = fixture({ catalog, name: "mcp__research__notes__search" });
+      f.tool.route = {
+        connectorId: "mcp",
+        resourceId: "nested-server",
+        catalogGroup: "research__notes",
+        toolName: "search",
+      };
+      if (catalog)
+        f.setCalls([
+          { args: { id: "item-1" }, executionId: "call-1", catalogId: "nested-server:search" },
+        ]);
+      await f.run();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.resolvedRoutes).toEqual([f.tool.route]);
+      expect(f.results).toEqual([{ item: "item-1" }]);
+    },
+  );
   it.each([":", "/", "__"])(
     "persists a canonical approved target after a %s alias resolves",
     async (separator) => {
@@ -740,6 +765,7 @@ describe("executor connector account revalidation", () => {
         },
       ]);
       await f.run();
+      expect(f.resolvedRoutes).toEqual([f.tool.route]);
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.effects).toHaveLength(1);
       expect(f.effects[0]!.idempotencyKey).toBe(

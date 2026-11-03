@@ -2,7 +2,7 @@ import type * as AgentCore from "@earendil-works/pi-agent-core";
 import type { AgentOptions } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context, Model, ToolCall } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, AgentToolExecutionObserver } from "@rakazo/adapter-kit";
 import { HistoryReadInputSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { readHistory } from "@rakazo/db";
@@ -45,6 +45,7 @@ import { redactStoredToolResultView } from "./executor.js";
 import { PiAgentRuntime, pruneComputerScreenshotContext } from "./pi-runtime.js";
 import { clipToolResultContent } from "./pi-runtime-limits.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
+import { mcpToolResultRoute } from "./verbatim-mcp-result.js";
 
 const model: Model<"openai-completions"> = {
   provider: "offline-provenance",
@@ -141,6 +142,73 @@ describe("real Pi tool-result content provenance", () => {
     vi.unstubAllGlobals();
   });
 
+  it("isolates resolved identities when separate calls reuse a connector content array", async () => {
+    const raw = {
+      kind: "agent_tool_result" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ body: "Original evidence ".repeat(1500) }),
+        },
+      ],
+      details: { route: { connectorId: "mcp", resourceId: "selected" } },
+    };
+    const rawText = raw.content[0]!.text;
+    const contexts: Context[] = [];
+    providerState.stream.mockImplementation((_model, context: Context) => {
+      contexts.push(context);
+      const step = contexts.length;
+      if (step > 1) {
+        const first = resultMessage(context, "first");
+        expect(mcpToolResultRoute(first.content)?.resourceId).toBe("selected");
+        expect(first.content.some((part) => part.type === "text" && part.text === rawText)).toBe(
+          true,
+        );
+      }
+      if (step === 3) {
+        const second = resultMessage(context, "second");
+        expect(mcpToolResultRoute(second.content)?.resourceId).toBe("unselected");
+        const text = second.content.filter(
+          (part) => part.type === "text" && !part.text.startsWith("[Automated message"),
+        );
+        expect(JSON.stringify(text).length).toBeLessThan(rawText.length);
+        expect(JSON.stringify(text)).toContain("contextTruncated");
+        return response();
+      }
+      const offered =
+        context.tools?.[0] ??
+        context.messages.find((message) => message.role === "system")?.toolsAdded?.[0];
+      if (!offered) throw new Error("Synthetic tool was not offered");
+      return response([
+        {
+          ...call(step === 1 ? "first" : "second"),
+          name: offered.name,
+          arguments: { id: step === 1 ? "selected" : "unselected" },
+        },
+      ]);
+    });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (_name, args, _executionId, _route, observer) => {
+        observer?.onConnectorRouteResolved?.({
+          connectorId: "mcp",
+          resourceId: String(args.id),
+          catalogGroup: args.id === "selected" ? "research" : "research__notes",
+          toolName: "search",
+        });
+        return raw;
+      },
+    );
+    await run({
+      model: { provider: model.provider, id: model.id, contextWindow: 200_000 },
+      verbatimMcpServers: { ids: ["selected"], slugs: ["research"] },
+      executeTool: execute,
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(contexts).toHaveLength(3);
+    expect(raw.content[0]!.text).toBe(rawText);
+    expect(mcpToolResultRoute(raw.content)).toBeUndefined();
+  });
+
   it.each([
     ["mcp__mail__read.events", { id: "record" }, true],
     ["connectors_execute_tool", { id: "mail-server:read", arguments: {} }, true],
@@ -148,6 +216,10 @@ describe("real Pi tool-result content provenance", () => {
     ["connectors_execute_tool", { id: "mail--read", arguments: {} }, false],
     ["mcp__mailbox__read", { id: "record" }, false],
     ["mcp__other__read", { id: "record" }, false],
+    ["mcp__mail__notes__read", { id: "record" }, false],
+    ["connectors_execute_tool", { id: "mail__notes__read", arguments: {} }, false],
+    ["connectors_execute_tool", { id: "mail-server:read", arguments: {} }, false],
+    ["mcp__mail__notes__read", { id: "record" }, true],
   ] as const)(
     "preserves opted-in content and provenance for %s %j (whole: %s)",
     async (name, args, whole) => {
@@ -166,11 +238,32 @@ describe("real Pi tool-result content provenance", () => {
           { type: "text" as const, text: "Second original block ".repeat(700) },
           ...images,
         ],
-        details: { source: "offline", ...(whole ? { frameId: "synthetic-frame" } : {}) },
+        details: {
+          source: "offline",
+          route: { connectorId: "mcp", resourceId: "mail-server", catalogGroup: "mail" },
+          verbatim: true,
+          ...(whole ? { frameId: "synthetic-frame" } : {}),
+        },
         isError: false,
       };
       const stored = vi.fn(async () => reference);
-      const execute = vi.fn(async () => raw);
+      const execute = vi.fn(
+        async (
+          _name: string,
+          _args: Record<string, unknown>,
+          _executionId: string,
+          _route: unknown,
+          observer?: AgentToolExecutionObserver,
+        ) => {
+          observer?.onConnectorRouteResolved?.({
+            connectorId: "mcp",
+            resourceId: whole ? "mail-server" : "other-server",
+            catalogGroup: whole ? "mail" : "other",
+            toolName: "read",
+          });
+          return raw;
+        },
+      );
       const contexts: Context[] = [];
       providerState.stream.mockImplementation((_model: unknown, context: Context) => {
         contexts.push(context);

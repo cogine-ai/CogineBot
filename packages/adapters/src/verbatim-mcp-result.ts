@@ -1,12 +1,30 @@
 import type { Message } from "@earendil-works/pi-ai";
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
-import { catalogExecuteToolName } from "./approval-effect.js";
-import { GROUP_SEPARATORS } from "./lazy-tool-catalog.js";
+import type { AgentRunRequest, ConnectorRoute } from "@rakazo/adapter-kit";
 
-/** Servers whose tool results must stay whole. Ids cover catalog ids; slugs cover tool names. */
+/** Trusted selected servers. Tool names and catalog aliases cannot establish server identity. */
 export type VerbatimMcpServers = NonNullable<AgentRunRequest["verbatimMcpServers"]>;
 
-const CATALOG_EXECUTE = catalogExecuteToolName("mcp");
+const resultRoutes = new WeakMap<readonly unknown[], Readonly<ConnectorRoute>>();
+
+/** Bind executor-owned identity to this execution's content, outside provider-controlled data. */
+export function markMcpToolResultRoute<T>(content: T[], route: ConnectorRoute | undefined): T[] {
+  if (route) resultRoutes.set(content, { ...route });
+  else resultRoutes.delete(content);
+  return content;
+}
+
+/** Read live executor ownership rather than fields supplied in the provider result. */
+export function mcpToolResultRoute(content: unknown): Readonly<ConnectorRoute> | undefined {
+  return Array.isArray(content) ? resultRoutes.get(content) : undefined;
+}
+
+/** Identity must survive labeling even when a result has no history-reference metadata. */
+export function copyMcpToolResultRoute<T>(source: unknown, content: T[]): T[] {
+  const route = mcpToolResultRoute(source);
+  if (route) resultRoutes.set(content, route);
+  else resultRoutes.delete(content);
+  return content;
+}
 
 export function toolCallIdentity(
   call: unknown,
@@ -20,26 +38,15 @@ export function toolCallIdentity(
   };
 }
 
-/** Matches by prefix because slugs may contain `__` and catalog calls accept several id forms. */
+/** Use the resolved route: aliases, tool names, and legal server slugs can overlap. */
 export function isVerbatimMcpResult(
-  name: string | undefined,
-  args: unknown,
+  route: Readonly<ConnectorRoute> | undefined,
   servers: VerbatimMcpServers | undefined,
 ): boolean {
-  if (!servers || !name) return false;
-  const direct = (id: string) => servers.slugs.some((slug) => id.startsWith(`mcp__${slug}__`));
-  if (name.startsWith("mcp__")) return direct(name);
-  if (name !== CATALOG_EXECUTE) return false;
-  const id =
-    args && typeof args === "object" && "id" in args && typeof args.id === "string"
-      ? args.id.trim()
-      : "";
+  if (!servers || route?.connectorId !== "mcp" || !route.resourceId) return false;
   return (
-    direct(id) ||
-    servers.ids.some((serverId) => id.startsWith(`${serverId}:`)) ||
-    servers.slugs.some((slug) =>
-      GROUP_SEPARATORS.some((separator) => id.toLowerCase().startsWith(`${slug}${separator}`)),
-    )
+    servers.ids.includes(route.resourceId) ||
+    (route.catalogGroup !== undefined && servers.slugs.includes(route.catalogGroup))
   );
 }
 
@@ -62,7 +69,8 @@ export function verbatimMcpToolResultIndexes(
       );
     } else if (message.role === "toolResult") {
       const call = calls.get(message.toolCallId);
-      if (call && isVerbatimMcpResult(call.name, call.arguments, servers)) indexes.add(index);
+      if (call && isVerbatimMcpResult(mcpToolResultRoute(message.content), servers))
+        indexes.add(index);
     } else {
       calls.clear();
     }

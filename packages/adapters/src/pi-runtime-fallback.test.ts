@@ -1228,7 +1228,13 @@ describe("Pi runtime ordered model fallback", () => {
             type: "object",
             properties: { id: { type: "string" }, arguments: { type: "object" } },
           },
-          route: { connectorId: "mcp", toolName: "read", connectionId: "mail-connection" },
+          route: {
+            connectorId: "mcp",
+            toolName: "read",
+            resourceId: "mail-server",
+            catalogGroup: "mail",
+            connectionId: "mail-connection",
+          },
         },
       ];
       if (alreadyRead) input.tools.push(request().tools[0]!);

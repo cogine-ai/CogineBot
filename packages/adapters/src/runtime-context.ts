@@ -33,7 +33,7 @@ import {
 import { withoutThinkingFrom } from "./thinking-signatures.js";
 import {
   isVerbatimMcpResult,
-  toolCallIdentity,
+  mcpToolResultRoute,
   verbatimMcpToolResultIndexes,
 } from "./verbatim-mcp-result.js";
 
@@ -563,8 +563,10 @@ export function createRuntimeContextPolicy(
         for (const part of message.content)
           if (part.type === "toolCall") latestCalls.set(part.id, part);
       if (message.role !== "toolResult") return false;
-      const call = toolCallIdentity(latestCalls.get(message.toolCallId), message.toolName);
-      return isVerbatimMcpResult(call.name, call.arguments, request.verbatimMcpServers);
+      return (
+        latestCalls.has(message.toolCallId) &&
+        isVerbatimMcpResult(mcpToolResultRoute(message.content), request.verbatimMcpServers)
+      );
     });
     const shortenOlderResults = (keepRecent: boolean) =>
       messages.map((message, index) => {

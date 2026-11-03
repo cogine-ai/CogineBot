@@ -14,6 +14,7 @@ import {
 import * as outputBudget from "./pi-output-budget.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
+import { markMcpToolResultRoute, mcpToolResultRoute } from "./verbatim-mcp-result.js";
 
 const model = {
   id: "synthetic-model",
@@ -948,6 +949,12 @@ describe("complete MCP result pruning", () => {
         wrapped: false,
       },
     );
+    markMcpToolResultRoute(content, {
+      connectorId: "mcp",
+      resourceId: "mail-id",
+      catalogGroup: "mail",
+      toolName: "read",
+    });
     context.messages.push(
       fauxAssistantMessage([{ type: "toolCall", id: "visual", name, arguments: {} }]),
       {
@@ -979,6 +986,25 @@ describe("complete MCP result pruning", () => {
       });
     },
   );
+  it("keeps resolved MCP identity through labels without stored-history metadata", () => {
+    const { request, context, content } = visual(true);
+    const route = {
+      connectorId: "mcp",
+      resourceId: "mail-id",
+      catalogGroup: "mail",
+      toolName: "read",
+    };
+    const result = context.messages[2] as Extract<Message, { role: "toolResult" }>;
+    result.content = markMcpToolResultRoute([...content], route);
+    expect(toolResultContentProvenance(result.content)).toBeUndefined();
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    const labelled = prepared.messages.find((message) => message.role === "toolResult")!;
+    expect(labelled.content.filter((part) => part.type === "image")).toHaveLength(3);
+    expect(mcpToolResultRoute(labelled.content)).toEqual(route);
+    expect(toolResultContentProvenance(labelled.content)).toBeUndefined();
+  });
   it.each(["retrieval", "current"] as const)(
     "rejects necessary complete images beyond the actual %s model limit",
     (contextStrategy) => {
@@ -1275,6 +1301,12 @@ describe("optional history and effective output capacity", () => {
         wrapped: false,
       },
     );
+    markMcpToolResultRoute(content, {
+      connectorId: "mcp",
+      resourceId: "mail-id",
+      catalogGroup: "mail",
+      toolName: "read",
+    });
     context.messages.push(
       fauxAssistantMessage([
         { type: "toolCall", id: "whole", name: "mcp__mail__read", arguments: {} },

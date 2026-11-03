@@ -4876,6 +4876,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 "Approved catalog request could not be resolved to a tool. Deny and retry the direct tool call.",
             };
           }
+          if (connectorCall.route?.resourceId) {
+            observer?.onConnectorRouteResolved?.(connectorCall.route);
+          }
           if (
             !catalogRemapped &&
             connectorCall.route?.resourceId &&
