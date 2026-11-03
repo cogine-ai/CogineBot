@@ -142,6 +142,7 @@ async function main() {
     "packages/testkit/src/run-dispatch-runtime.postgres.test.ts",
     "packages/adapters/src/realtime.postgres.test.ts",
     "packages/adapters/src/job-reconciler.postgres.test.ts",
+    "packages/adapters/src/messaging-recovery.postgres.test.ts",
     "packages/adapters/src/cloud-agent.postgres.test.ts",
   ];
   const selectedSuites = integration ? selectIntegrationSuites(suites, e2eSpec, shard) : [];
