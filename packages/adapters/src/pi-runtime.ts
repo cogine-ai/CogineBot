@@ -1321,9 +1321,13 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
               executionId,
               tool.route,
               {
-                onConnectorRouteResolved: (route) => {
-                  resolvedRoute = { ...route };
-                },
+                ...(tool.route?.connectorId === "mcp"
+                  ? {
+                      onConnectorRouteResolved: (route: ConnectorRoute) => {
+                        resolvedRoute = { ...route };
+                      },
+                    }
+                  : {}),
                 onShellStillRunning: (completion) => {
                   host.pendingShells.push(completion);
                 },

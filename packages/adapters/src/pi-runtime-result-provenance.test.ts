@@ -201,6 +201,14 @@ describe("real Pi tool-result content provenance", () => {
     await run({
       model: { provider: model.provider, id: model.id, contextWindow: 200_000 },
       verbatimMcpServers: { ids: ["selected"], slugs: ["research"] },
+      tools: [
+        {
+          name: "connectors_execute_tool",
+          description: "Execute a synthetic MCP catalog selection",
+          inputSchema: { type: "object", properties: { id: { type: "string" } } },
+          route: { connectorId: "mcp", toolName: "__catalog_execute" },
+        },
+      ],
       executeTool: execute,
     });
     expect(execute).toHaveBeenCalledTimes(2);
