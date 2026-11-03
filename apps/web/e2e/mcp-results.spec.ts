@@ -68,6 +68,8 @@ for (const width of [1280, 390]) {
       });
     }
 
+    if (width === 390)
+      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
     await openIntegrations(page);
     await page.getByTestId("integrations-advanced").evaluate((element) => {
       (element as HTMLDetailsElement).open = true;
@@ -76,13 +78,18 @@ for (const width of [1280, 390]) {
     const dialog = page.getByRole("dialog", { name: "MCP servers" });
     await expect(dialog.getByText("Research MCP", { exact: true })).toBeVisible();
     await dialog.getByText("Advanced", { exact: true }).click();
-    const createPreference = dialog.locator("#mcp-verbatim-results");
+    const wholeResultSwitches = dialog.getByRole("switch", {
+      name: "Keep tool results whole",
+      exact: true,
+    });
+    const createPreference = wholeResultSwitches.first();
     await expect(createPreference).not.toBeChecked();
     await createPreference.scrollIntoViewIfNeeded();
     await captureScreenshot(page, testInfo, `mcp-results-default-${width}`);
 
     await dialog.getByRole("button", { name: "Tool access", exact: true }).click();
-    const preference = dialog.locator("#mcp-verbatim-mcp-results-server");
+    await expect(wholeResultSwitches).toHaveCount(2);
+    const preference = wholeResultSwitches.nth(1);
     await expect(preference).toBeChecked();
     await preference.click();
     await expect(preference).not.toBeChecked();
@@ -101,7 +108,9 @@ for (const width of [1280, 390]) {
     expect(saves).toBe(1);
     await dialog.getByRole("button", { name: "Tool access", exact: true }).click();
     await expect(preference).not.toBeChecked();
-    await expect(dialog.locator("#mcp-tools-mcp-results-server")).not.toBeChecked();
+    await expect(
+      dialog.getByRole("switch", { name: "Share all tools with this space", exact: true }),
+    ).not.toBeChecked();
     await expect(dialog.getByLabel("Tool names, one per line")).toHaveValue("lookup");
     expect(credentialWrites).toBe(0);
     expect(server.revision).toBe(8);
