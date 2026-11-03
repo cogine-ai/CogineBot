@@ -580,6 +580,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         "times in a row without making progress, so I stopped early",
       );
 
+      const unrelated = await seed(handles, "unrelated recovery");
       const recovery = createJobReconciler({ prisma: observer, jobs });
       await recovery.reconcileOnce();
       const enqueued = vi.mocked(jobs.enqueue).mock.calls.map(([job]) => job);
@@ -594,7 +595,14 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       ).toEqual([
         expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` }),
       ]);
-      expect(enqueued.some((job) => job.name === "run.continue")).toBe(false);
+      expect(
+        enqueued.some(
+          (job) => job.name === "run.continue" && job.payload.runId === unrelated.run.id,
+        ),
+      ).toBe(true);
+      expect(
+        enqueued.some((job) => job.name === "run.continue" && job.payload.runId === targetRunId),
+      ).toBe(false);
       expect(await observer.attempt.findMany({ where: { runId: targetRunId } })).toEqual(attempts);
       expect(await observer.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
         ...final,
