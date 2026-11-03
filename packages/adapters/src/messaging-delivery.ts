@@ -7,7 +7,7 @@ import type {
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { botMessageHopExhausted, nextBotMessageHop } from "@rakazo/core";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
@@ -60,20 +60,27 @@ export async function mirrorMessagingOutbound(
   deps: MessagingDeliveryDeps,
   runId: string,
 ): Promise<void> {
-  await mirrorRun(deps, runId);
-  await deps.prisma.run.updateMany({
-    where: { id: runId, trigger: "messaging" },
-    data: { messagingMirroredAt: new Date() },
-  });
-}
-
-async function mirrorRun(deps: MessagingDeliveryDeps, runId: string): Promise<void> {
   const run = await deps.prisma.run.findUnique({
     where: { id: runId },
     include: { sourceMessage: true },
   });
   if (!run) return;
+  const terminal = run.status === "completed" || run.status === "failed";
+  await mirrorRun(deps, run);
+  // A running snapshot can precede the final reply even if the Run settles
+  // before this write. Only a snapshot already terminal acknowledges its mirror.
+  if (run.trigger === "messaging" && terminal) {
+    await deps.prisma.run.updateMany({
+      where: { id: runId, trigger: "messaging" },
+      data: { messagingMirroredAt: new Date() },
+    });
+  }
+}
 
+async function mirrorRun(
+  deps: MessagingDeliveryDeps,
+  run: Prisma.RunGetPayload<{ include: { sourceMessage: true } }>,
+): Promise<void> {
   if (run.trigger === "messaging") {
     const sourceBlocks = (run.sourceMessage?.blocks ?? []) as MessageBlock[];
     const channelBlock = sourceBlocks.find(

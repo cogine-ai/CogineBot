@@ -1,25 +1,74 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { BackgroundJob, BackgroundJobHandlers } from "@rakazo/adapter-kit";
+import type {
+  Api,
+  AssistantMessage,
+  Model,
+  MutableModels,
+  ToolCall,
+  TranscriptContext,
+} from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, createProvider } from "@earendil-works/pi-ai";
+import type {
+  AgentRuntime,
+  BackgroundJob,
+  BackgroundJobHandlers,
+  JobPublisher,
+} from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import {
   ComposioEmulator,
   InMemoryRealtimeFanout,
+  MessagingTeamChatEmulator,
   RunStarter,
   RunWorkerHost,
   ScriptedAgentRuntime,
 } from "@rakazo/adapters";
-import { createDb } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { createDb, createThreadEvents } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
+import { createJobReconciler } from "../../adapters/src/job-reconciler.js";
+import { mirrorMessagingOutbound } from "../../adapters/src/messaging-delivery.js";
+import { modelsForRequest, PiAgentRuntime } from "../../adapters/src/pi-runtime.js";
 import { sessionCookieHeader } from "./index.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const origin = "http://127.0.0.1:5173";
 const wait = (assertion: () => Promise<void> | void) =>
   vi.waitFor(assertion, { timeout: 10_000, interval: 20 });
+
+function loopGuardResponse(activeModel: Model<Api>, calls: ToolCall[]) {
+  const message: AssistantMessage = {
+    role: "assistant",
+    content: calls,
+    api: activeModel.api,
+    provider: activeModel.provider,
+    model: activeModel.id,
+    usage: {
+      input: 40,
+      output: 10,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 50,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "toolUse",
+    timestamp: 1,
+  };
+  const stream = createAssistantMessageEventStream();
+  stream.push({ type: "start", partial: { ...message, content: [] } });
+  for (const [contentIndex, toolCall] of calls.entries()) {
+    stream.push({ type: "toolcall_start", contentIndex, partial: message });
+    stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: message });
+  }
+  stream.push({ type: "done", reason: "toolUse", message });
+  stream.end(message);
+  return stream;
+}
 
 async function rpc<T>(
   handles: AppHandles,
@@ -218,6 +267,340 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       expect(await f.handles.prisma.attempt.count({ where: { runId: seeded.run.id } })).toBe(0);
     } finally {
       await f.close();
+    }
+  });
+
+  it("awaits already-started parallel Pi message tools before settling a loop guard", async () => {
+    const lateText = "The already-started progress message must reach the linked chat.";
+    const fixtureKey = "synthetic-loop-guard-model-key";
+    const model: Model<"openai-completions"> = {
+      provider: "anthropic",
+      id: "synthetic-loop-guard-settlement",
+      name: "Synthetic loop guard settlement",
+      api: "openai-completions",
+      baseUrl: "https://models.invalid/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 1_024,
+    };
+    vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
+    vi.stubEnv("PI_DEFAULT_MODEL", model.id);
+    vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
+    const models = modelsForRequest(
+      { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
+      model.provider,
+    ) as MutableModels;
+    const previousProvider = models.getProvider(model.provider);
+    const providerFailures: unknown[] = [];
+    let modelRequests = 0;
+    let reservations = 0;
+    const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
+      try {
+        modelRequests += 1;
+        expect(activeModel.id).toBe(model.id);
+        expect(modelRequests).toBeLessThanOrEqual(6);
+        if (modelRequests > 1) {
+          const previous = context.messages.findLast((message) => message.role === "toolResult");
+          expect(previous).toMatchObject({ toolCallId: `repeated-message-${modelRequests - 1}` });
+          expect(JSON.stringify(previous)).toContain("message is required");
+        }
+        const repeated: ToolCall = {
+          type: "toolCall",
+          id: `repeated-message-${modelRequests}`,
+          name: "message_user",
+          arguments: { message: "" },
+        };
+        return loopGuardResponse(activeModel, [
+          repeated,
+          ...(modelRequests === 6
+            ? [
+                {
+                  type: "toolCall" as const,
+                  id: "late-progress-message",
+                  name: "message_user",
+                  arguments: { message: lateText },
+                },
+              ]
+            : []),
+        ]);
+      } catch (error) {
+        providerFailures.push(error);
+        throw error;
+      }
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: {
+          apiKey: {
+            name: "Synthetic loop guard fixture",
+            resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
+          },
+        },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+
+    let targetRunId: string | undefined;
+    const executionScope = new AsyncLocalStorage<string>();
+    const lateExecutionId = JSON.stringify(["pi-tool", "main", "late-progress-message"]);
+    let enteredLatePublication = () => {};
+    const latePublicationEntered = new Promise<void>((resolve) => {
+      enteredLatePublication = resolve;
+    });
+    let releaseLatePublication = () => {};
+    const latePublicationReleased = new Promise<void>((resolve) => {
+      releaseLatePublication = resolve;
+    });
+    let observedAbort = () => {};
+    const cleanupStarted = new Promise<void>((resolve) => {
+      observedAbort = resolve;
+    });
+    let lateEffectId: string | undefined;
+    const db = createDb(process.env.DATABASE_URL!, {
+      applicationName: "synthetic-loop-guard-settlement",
+    });
+    const observedPrisma = db.prisma.$extends({
+      query: {
+        externalEffect: {
+          async create({ args, query }) {
+            const effect = await query(args);
+            if (
+              effect.runId === targetRunId &&
+              effect.kind === "message_user" &&
+              (effect.request as { message?: unknown }).message === lateText
+            ) {
+              lateEffectId = effect.id;
+            }
+            return effect;
+          },
+        },
+        run: {
+          async updateMany({ args, query }) {
+            if (targetRunId && args.where?.id === targetRunId && args.data.status === "completed") {
+              // The sibling is waiting before BEGIN, holding no database lock.
+              await latePublicationEntered;
+            }
+            return query(args);
+          },
+        },
+      },
+    });
+    let publicationWaiting = false;
+    function gateTransactions<T extends object>(client: T): T {
+      return new Proxy(client, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          // createApp adds its real secret-persistence extension. Preserve that
+          // extension while carrying the same pre-BEGIN gate into its client.
+          if (property === "$extends")
+            return (...args: unknown[]) => gateTransactions(Reflect.apply(value, target, args));
+          if (property !== "$transaction") return value;
+          return (...args: unknown[]) => {
+            const transact = () => Reflect.apply(value, target, args);
+            if (executionScope.getStore() === lateExecutionId && !publicationWaiting) {
+              // The real message_user has passed its abort check and is about to
+              // publish. Delay before BEGIN, not while holding Run/Thread locks.
+              publicationWaiting = true;
+              enteredLatePublication();
+              return latePublicationReleased.then(transact);
+            }
+            return transact();
+          };
+        },
+      });
+    }
+    const controlledPrisma = gateTransactions(observedPrisma) as unknown as PrismaClient;
+    const pi = new PiAgentRuntime({
+      modelCallObserver: {
+        beforeCall() {
+          reservations += 1;
+          return `loop-guard-reservation-${reservations}`;
+        },
+        afterCall() {},
+      },
+    });
+    const scripted = new ScriptedAgentRuntime();
+    const executions: Array<{ name: string; id: string; args: Record<string, unknown> }> = [];
+    const runtime: AgentRuntime = {
+      describe: () => pi.describe(),
+      run(request, context) {
+        if (request.runId !== targetRunId) return scripted.run(request, context);
+        context?.signal?.addEventListener("abort", observedAbort, { once: true });
+        const execute = request.executeTool;
+        if (!execute) throw new Error("The real executor must provide executeTool");
+        request.executeTool = (name, args, id, route, observer) => {
+          executions.push({ name, id, args: structuredClone(args) });
+          return executionScope.run(id, () => execute(name, args, id, route, observer));
+        };
+        return pi.run(request, context);
+      },
+      abort: (runId) => pi.abort(runId),
+    };
+    const dataDir = await mkdtemp(path.join(tmpdir(), "loop-guard-settlement-"));
+    let handles: AppHandles | undefined;
+    let executing: Promise<void> | undefined;
+    let terminalVisible: Promise<unknown> | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      handles = await createApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        realtimeDatabaseUrl: process.env.DATABASE_URL!,
+        prisma: controlledPrisma,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "pi",
+        runtime,
+        contextStrategy: "current",
+        wakeupDriver: "memory",
+        defaultProvider: model.provider,
+        defaultModel: model.id,
+        deploymentModelConfigured: true,
+        signupsEnabled: "true",
+        authUrl: origin,
+        webOrigin: origin,
+        composio: new ComposioEmulator(),
+        encryptionKey: "synthetic-loop-guard-encryption-key",
+      });
+      const seeded = await seed(handles, "loop guard settlement");
+      targetRunId = seeded.run.id;
+      await handles.prisma.run.update({
+        where: { id: targetRunId },
+        data: { trigger: "messaging" },
+      });
+      await handles.prisma.messagingIdentity.create({
+        data: {
+          provider: "slack",
+          address: randomUUID(),
+          userId: seeded.userId,
+          spaceId: seeded.spaceId,
+          botId: seeded.botId,
+          dmThreadId: "slack:synthetic-loop-guard",
+        },
+      });
+      const observer = db.prisma;
+      const jobs: JobPublisher = {
+        enqueue: vi.fn(async (_job: BackgroundJob) => undefined),
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+      const mirrorDeps = {
+        prisma: observer,
+        jobs,
+        events: createThreadEvents(observer),
+        messaging: new MessagingTeamChatEmulator({ provider: "slack" }),
+      };
+      executing = handles.executor.continueRun(targetRunId, "loop-guard-worker");
+      void executing.catch(() => undefined);
+      terminalVisible = wait(async () =>
+        expect((await observer.run.findUniqueOrThrow({ where: { id: targetRunId } })).status).toBe(
+          "completed",
+        ),
+      );
+      void terminalVisible.catch(() => undefined);
+      await wait(() => expect(publicationWaiting).toBe(true)).catch(async (error) => {
+        const diagnostic = {
+          modelRequests,
+          reservations,
+          providerFailures: providerFailures.map((failure) =>
+            failure instanceof Error ? failure.message : String(failure),
+          ),
+          executions,
+          run: await observer.run.findUnique({
+            where: { id: targetRunId },
+            select: { status: true, error: true, leaseOwner: true, leaseFence: true },
+          }),
+          effects: await observer.externalEffect.findMany({
+            where: { runId: targetRunId, kind: "message_user" },
+            select: { status: true, request: true, result: true },
+          }),
+        };
+        throw new Error(
+          `Loop guard publication gate was unreachable: ${JSON.stringify(diagnostic)}`,
+          {
+            cause: error,
+          },
+        );
+      });
+      expect(lateEffectId).toEqual(expect.any(String));
+      expect(
+        await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
+      ).toMatchObject({
+        runId: targetRunId,
+        kind: "message_user",
+        request: { message: lateText },
+      });
+      // Old code exposes terminal first; cleanup-first code instead exposes
+      // abort while still running. Both paths release the same real tool below.
+      await Promise.race([terminalVisible, cleanupStarted]);
+      await mirrorMessagingOutbound(mirrorDeps, targetRunId);
+      expect(
+        await observer.message.count({
+          where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
+        }),
+      ).toBe(0);
+      releaseLatePublication();
+      await executing;
+      await terminalVisible;
+      expect(providerFailures).toEqual([]);
+      expect(modelRequests).toBe(6);
+      expect(reservations).toBe(6);
+      expect(executions).toHaveLength(7);
+      expect(new Set(executions.map((execution) => execution.id)).size).toBe(7);
+      expect(executions.filter(({ args }) => args.message === lateText)).toHaveLength(1);
+      const final = await observer.run.findUniqueOrThrow({ where: { id: targetRunId } });
+      const attempts = await observer.attempt.findMany({ where: { runId: targetRunId } });
+      expect(final).toMatchObject({ status: "completed", leaseFence: 1, leaseOwner: null });
+      expect(attempts).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
+      const late = await observer.message.findMany({
+        where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
+      });
+      expect(late).toHaveLength(1);
+      const stop = await observer.message.findMany({ where: { runId: targetRunId, role: "bot" } });
+      expect(JSON.stringify(stop)).toContain(
+        "times in a row without making progress, so I stopped early",
+      );
+
+      const recovery = createJobReconciler({ prisma: observer, jobs });
+      await recovery.reconcileOnce();
+      const enqueued = vi.mocked(jobs.enqueue).mock.calls.map(([job]) => job);
+      for (const job of enqueued) {
+        if (job.name === "messaging.deliver" && job.payload.runId === targetRunId)
+          await mirrorMessagingOutbound(mirrorDeps, targetRunId);
+      }
+      // Recovery must see an unacknowledged Run until every admitted message
+      // has finished. A premature terminal stamp permanently loses this row.
+      expect(
+        await observer.messagingOutbound.findMany({ where: { sourceMessageId: late[0]!.id } }),
+      ).toEqual([
+        expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` }),
+      ]);
+      expect(enqueued.some((job) => job.name === "run.continue")).toBe(false);
+      expect(await observer.attempt.findMany({ where: { runId: targetRunId } })).toEqual(attempts);
+      expect(await observer.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        ...final,
+        messagingMirroredAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      });
+      expect(mirrorDeps.messaging.sent).toEqual([]);
+    } finally {
+      enteredLatePublication();
+      releaseLatePublication();
+      if (targetRunId) pi.abort(targetRunId);
+      await executing?.catch(() => undefined);
+      await terminalVisible?.catch(() => undefined);
+      await handles?.stop();
+      await db.prisma.$disconnect();
+      await db.pool.end();
+      if (previousProvider) models.setProvider(previousProvider);
+      else models.deleteProvider(model.provider);
+      vi.unstubAllEnvs();
+      await rm(dataDir, { recursive: true, force: true });
     }
   });
 

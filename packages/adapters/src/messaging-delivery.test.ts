@@ -7,6 +7,7 @@ import {
   MESSAGING_DM_OUTBOUND_CAP,
   MESSAGING_OUTBOUND_MAX_ATTEMPTS,
   type MessagingDeliveryDeps,
+  mirrorMessagingOutbound,
 } from "./messaging-delivery.js";
 
 const context: AdapterContext = {
@@ -32,6 +33,7 @@ const messagingRun = {
   id: "run-1",
   botId: "bot-1",
   trigger: "messaging",
+  status: "completed",
   sourceMessage: { blocks: [{ kind: "text", text: "hi" }] },
 };
 
@@ -183,6 +185,58 @@ function createDeps(overrides: {
     rows,
   };
 }
+
+describe("messaging mirror settlement", () => {
+  it.each(["queued", "leased", "running", "waiting_input", "waiting_takeover"])(
+    "mirrors %s progress without acknowledging a terminal response",
+    async (status) => {
+      const deps = createDeps({ run: { ...messagingRun, status } });
+      await mirrorMessagingOutbound(deps, "run-1");
+      expect(deps.rows).toEqual([
+        expect.objectContaining({ idempotencyKey: "msg:m-1", body: "Hello from your bot" }),
+      ]);
+      expect(deps.prisma.run.updateMany).not.toHaveBeenCalled();
+      expect(deps.sendToThread).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["completed", "failed"])("acknowledges an empty %s snapshot", async (status) => {
+    const deps = createDeps({ run: { ...messagingRun, status }, messages: [] });
+    await mirrorMessagingOutbound(deps, "run-1");
+    expect(deps.rows).toEqual([]);
+    expect(deps.prisma.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "run-1", trigger: "messaging" },
+      data: { messagingMirroredAt: expect.any(Date) },
+    });
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+  });
+
+  it("uses the pre-mirror status even when the Run settles during the message query", async () => {
+    const run = { ...messagingRun, status: "running" };
+    const deps = createDeps({ run });
+    deps.prisma.message.findMany.mockImplementationOnce(async () => {
+      run.status = "completed";
+      return [{ id: "m-1", blocks: [{ kind: "text", text: "Earlier progress" }] }];
+    });
+    await mirrorMessagingOutbound(deps, "run-1");
+    expect(deps.rows).toEqual([
+      expect.objectContaining({ idempotencyKey: "msg:m-1", body: "Earlier progress" }),
+    ]);
+    expect(deps.prisma.run.findUnique).toHaveBeenCalledTimes(1);
+    expect(deps.prisma.run.updateMany).not.toHaveBeenCalled();
+    deps.prisma.message.findMany.mockResolvedValueOnce([
+      { id: "m-1", blocks: [{ kind: "text", text: "Earlier progress" }] },
+      { id: "m-2", blocks: [{ kind: "text", text: "Final response" }] },
+    ]);
+    await mirrorMessagingOutbound(deps, "run-1");
+    expect(deps.rows).toEqual([
+      expect.objectContaining({ idempotencyKey: "msg:m-1", body: "Earlier progress" }),
+      expect.objectContaining({ idempotencyKey: "msg:m-2", body: "Final response" }),
+    ]);
+    expect(deps.prisma.run.updateMany).toHaveBeenCalledTimes(1);
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+  });
+});
 
 describe("deliverMessagingOutbound", () => {
   it("mirrors a messaging DM run's bot text to the identity's conversation", async () => {
@@ -588,6 +642,7 @@ function createChannelDeps(
     id: "run-1",
     botId: "bot-1",
     trigger: "messaging",
+    status: "completed",
     sourceMessage: {
       blocks: [
         {

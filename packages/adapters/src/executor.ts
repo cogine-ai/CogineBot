@@ -7985,6 +7985,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             },
             context,
           );
+          let toolLoopStopText: string | undefined;
           for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
             if (deps.shutdownSignal?.aborted) return;
             if (approvalPausePending) return;
@@ -8255,51 +8256,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 else helperToolCallStreaks.set(namespace, next);
               }
               if (loopGuard.stuck) {
-                approvedEffectReplays.assertDrained();
-                flushPendingTools();
-                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-                if (messageSegments.length > 0) {
-                  await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
-                }
-                await workspaceCheckpoint.flush();
-                terminalCheckpointComplete = true;
-                const stuckText = loopGuardStopText(
+                toolLoopStopText = loopGuardStopText(
                   humanizeToolName(event.name),
                   namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
                 );
-                const stopped = await deps.events.finalizeRun({
-                  spaceId: run.spaceId,
-                  threadId: thread.id,
-                  botId: bot.id,
-                  runId,
-                  taskId: run.taskId,
-                  attemptId: attempt.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                  outcome: "completed",
-                  blocks: isBackgroundRunTrigger(run.trigger)
-                    ? []
-                    : [{ kind: "text", text: stuckText }],
-                });
-                if (!stopped) return;
-                stopHeartbeatAfterCompletion();
-                await settleLocalPeerDelivery();
-                if (stopped.continuationRunId) {
-                  await deps.jobs
-                    .enqueue(runContinueJob(stopped.continuationRunId))
-                    .catch((error) => getLogger().error("steering continuation enqueue", error));
-                }
-                if (run.trigger === "bot_message") {
-                  await returnBotMessageOutcome(
-                    deps,
-                    { ...run, sourceMessageId: run.sourceMessageId },
-                    { id: bot.id, name: bot.name },
-                    stuckText,
-                    "result",
-                  ).catch((error) => getLogger().error("bot message loop-guard return", error));
-                }
-                runAbortController?.abort();
-                return;
+                break;
               }
               if (scripted) {
                 const startedAt = Date.now();
@@ -8417,6 +8378,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
             }
+          }
+
+          if (toolLoopStopText !== undefined) {
+            // Breaking the iterator aborts and awaits admitted parallel tools.
+            // Keep the lease alive until their writes finish, then expose terminal.
+            if (deps.shutdownSignal?.aborted || approvalPausePending || !leaseValid) return;
+            approvedEffectReplays.assertDrained();
+            flushPendingTools();
+            if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+            if (messageSegments.length > 0) {
+              await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
+            }
+            await workspaceCheckpoint.flush();
+            terminalCheckpointComplete = true;
+            const stopped = await deps.events.finalizeRun({
+              spaceId: run.spaceId,
+              threadId: thread.id,
+              botId: bot.id,
+              runId,
+              taskId: run.taskId,
+              attemptId: attempt.id,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              outcome: "completed",
+              blocks: isBackgroundRunTrigger(run.trigger)
+                ? []
+                : [{ kind: "text", text: toolLoopStopText }],
+            });
+            if (!stopped) return;
+            stopHeartbeatAfterCompletion();
+            await settleLocalPeerDelivery();
+            if (stopped.continuationRunId) {
+              await deps.jobs
+                .enqueue(runContinueJob(stopped.continuationRunId))
+                .catch((error) => getLogger().error("steering continuation enqueue", error));
+            }
+            if (run.trigger === "bot_message") {
+              await returnBotMessageOutcome(
+                deps,
+                { ...run, sourceMessageId: run.sourceMessageId },
+                { id: bot.id, name: bot.name },
+                toolLoopStopText,
+                "result",
+              ).catch((error) => getLogger().error("bot message loop-guard return", error));
+            }
+            return;
           }
 
           runComputer.throwIfFailed();
