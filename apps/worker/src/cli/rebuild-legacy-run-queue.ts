@@ -1,6 +1,7 @@
 import { rebuildLegacyRunQueue } from "@rakazo/adapters";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import { createPool } from "@rakazo/db";
+import { formatLegacyRunQueueFailure } from "./legacy-run-queue-error.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -36,8 +37,8 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => {
+main().catch((error: unknown) => {
   // Connection errors can contain credentials or deployment addresses.
-  process.stderr.write("Legacy Run queue rebuild failed; no downgrade should proceed.\n");
+  process.stderr.write(formatLegacyRunQueueFailure(error));
   process.exitCode = 1;
 });

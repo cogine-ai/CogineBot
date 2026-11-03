@@ -296,11 +296,12 @@ export class GraphileJobWorkerHost implements JobWorkerHost {
 }
 
 /**
- * Scheduled and maintenance jobs mostly wait on the network, so each starts as soon as it
- * is due. A slow job only occupies its own slot; per-entity safety comes from job keys
- * and row claims, never from running jobs one at a time.
+ * Maintenance shares its database pool with chat. Leave room for three queue listeners,
+ * reconciliation leadership and an interactive checkout, even during a maintenance burst.
+ * Per-entity safety still comes from job keys and row claims.
  */
 const MAINTENANCE_JOB_CONCURRENCY = 100;
+const MAINTENANCE_DATABASE_HEADROOM = 5;
 const MAINTENANCE_LOCAL_QUEUE_SIZE = 10;
 
 /** Long agent turns cannot occupy the capacity reserved for other workloads. */
@@ -308,13 +309,18 @@ export function createReservedGraphileJobWorkerHost(
   pool: Pool,
   options: { concurrency?: number; pollInterval?: number } = {},
 ): JobWorkerHost {
+  // pg resolves options.max to a number when constructing the pool.
+  const maintenanceConcurrency = Math.min(
+    MAINTENANCE_JOB_CONCURRENCY,
+    Math.max(1, pool.options.max! - MAINTENANCE_DATABASE_HEADROOM),
+  );
   const hosts = (["interactive", "background", "maintenance"] as const).map(
     (workload) =>
       new GraphileJobWorkerHost(pool, {
         ...options,
         ...(workload === "maintenance"
           ? {
-              concurrency: MAINTENANCE_JOB_CONCURRENCY,
+              concurrency: maintenanceConcurrency,
               localQueueSize: MAINTENANCE_LOCAL_QUEUE_SIZE,
             }
           : { concurrency: workload === "interactive" ? options.concurrency : 1 }),

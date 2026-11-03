@@ -29,12 +29,12 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
       CREATE TEMP TABLE chat_groups (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
       CREATE TEMP TABLE chat_group_members ("groupId" text, "botId" text);
       CREATE TEMP TABLE messages (id text PRIMARY KEY, "threadId" text, seq integer, role text, "runId" text, blocks jsonb);
-      CREATE TEMP TABLE runs (id text PRIMARY KEY, "spaceId" text, "userId" text, "threadId" text, "botId" text, "sourceMessageId" text, status text, "startedAt" timestamptz);
+      CREATE TEMP TABLE runs (id text PRIMARY KEY, "spaceId" text, "userId" text, "threadId" text, "botId" text, "sourceMessageId" text, status text, "startedAt" timestamptz, "firstResponseAt" timestamptz, "leaseOwner" text, "leaseFence" integer NOT NULL DEFAULT 0);
       CREATE TEMP TABLE events (id text PRIMARY KEY, "spaceId" text, "threadId" text, "botId" text, seq integer, type text, payload jsonb, "toolResult" jsonb, "runId" text, "createdAt" timestamptz DEFAULT now());
       INSERT INTO bots VALUES ('bot','space','owner',NULL), ('peer','space','owner',NULL);
       INSERT INTO threads (id,"spaceId","userId","botId") VALUES ('thread','space','owner','bot');
       INSERT INTO messages VALUES ('source','thread',1,'user',NULL,'[{"kind":"channel_message","channelId":"channel-a","text":"Read synthetic items"}]');
-      INSERT INTO runs VALUES ('run','space','owner','thread','bot','source','running',now());
+      INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('run','space','owner','thread','bot','source','running',now());
     `);
   });
   afterAll(async () => {
@@ -135,7 +135,7 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
       INSERT INTO chat_group_members VALUES ('group','bot'), ('group','peer');
       INSERT INTO threads (id,"spaceId","userId","groupId") VALUES ('group-thread','space','owner','group');
       INSERT INTO messages VALUES ('group-source','group-thread',1,'user',NULL,'[{"kind":"text","text":"group input"}]');
-      INSERT INTO runs VALUES ('group-run','space','owner','group-thread','bot','group-source','running',now());`);
+      INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('group-run','space','owner','group-thread','bot','group-source','running',now());`);
     const groupScope = { ...scope, threadId: "group-thread", activeRunId: "group-run" };
     const id = (await store('{"value":"group-canary"}', groupScope))!.arguments.toolResultId;
     expect((await read(id, groupScope)).toolResult?.text).toContain("group-canary");
@@ -151,7 +151,7 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
   });
   it("requires a surviving background output except for the server-owned active run", async () => {
     await pool.query(
-      `INSERT INTO runs VALUES ('background','space','owner','thread','bot',NULL,'running',now());`,
+      `INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('background','space','owner','thread','bot',NULL,'running',now());`,
     );
     const activeScope = { ...scope, activeRunId: "background" };
     const id = (await store('{"value":"background-canary"}', activeScope))!.arguments.toolResultId;

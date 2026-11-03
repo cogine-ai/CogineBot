@@ -443,7 +443,12 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
         await host.start({
           "run.continue": async ({ runId }) => {
             entered.push(runId);
-            await prisma.run.update({ where: { id: runId }, data: { status: "completed" } });
+            if (runId === sentinel.id) {
+              await prisma.run.update({
+                where: { id: sentinel.id },
+                data: { status: "completed" },
+              });
+            }
           },
         } as BackgroundJobHandlers);
         await wait(() => expect(entered).toContain(sentinel.id));
@@ -469,6 +474,7 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
         await host.stop();
         await realtime.close();
       }
+      expect(entered).toEqual([sentinel.id]);
     },
   );
 });

@@ -14,8 +14,8 @@ const describePostgres =
   process.env.VERIFY_DATABASE && databaseUrl ? describe.sequential : describe.skip;
 
 let pool: Pool | undefined;
-function testPool(): Pool {
-  pool ??= new Pool({ connectionString: databaseUrl, max: 4 });
+function testPool(max = 4): Pool {
+  pool ??= new Pool({ connectionString: databaseUrl, max });
   return pool;
 }
 afterEach(async () => {
@@ -157,8 +157,10 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
   });
 
   it("starts due maintenance jobs while others are still running", async () => {
-    const publisher = new GraphileJobPublisher(testPool());
-    const host = createReservedGraphileJobWorkerHost(testPool(), { pollInterval: 25 });
+    // Three blocked jobs and one due job need four maintenance slots.
+    const pgPool = testPool(9);
+    const publisher = new GraphileJobPublisher(pgPool);
+    const host = createReservedGraphileJobWorkerHost(pgPool, { pollInterval: 25 });
     const release = deferred();
     const sleeping: string[] = [];
     const woken: string[] = [];
@@ -188,8 +190,9 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
   });
 
   it("runs outgoing message drains in parallel", async () => {
-    const publisher = new GraphileJobPublisher(testPool());
-    const host = createReservedGraphileJobWorkerHost(testPool(), { pollInterval: 25 });
+    const pgPool = testPool(8);
+    const publisher = new GraphileJobPublisher(pgPool);
+    const host = createReservedGraphileJobWorkerHost(pgPool, { pollInterval: 25 });
     const release = deferred();
     const draining: string[] = [];
     try {

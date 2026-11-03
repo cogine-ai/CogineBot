@@ -313,13 +313,37 @@ describe("GraphileJobPublisher.enqueue", () => {
 describe("reserved Graphile workloads", () => {
   afterEach(() => run.mockReset());
 
+  it.each([
+    [6, 1],
+    [8, 3],
+    [10, 5],
+    [105, 100],
+    [200, 100],
+  ])("bounds maintenance for shared pool %s to %s jobs", async (poolMax, maintenance) => {
+    for (let i = 0; i < 3; i++) run.mockResolvedValueOnce(mockRunner().runner);
+    const pool = { options: { max: poolMax } } as Pool;
+    const host = createReservedGraphileJobWorkerHost(pool, { concurrency: 4 });
+    try {
+      await host.start(handlers());
+      const configurations = run.mock.calls.map(([options]) => options);
+      expect(configurations.map(({ pgPool }) => pgPool)).toEqual([pool, pool, pool]);
+      expect(configurations.map(({ concurrency }) => concurrency)).toEqual([4, 1, maintenance]);
+      // Three listeners, reconciliation leadership and an interactive checkout stay outside this budget.
+      expect(maintenance + 5).toBeLessThanOrEqual(poolMax);
+    } finally {
+      await host.stop();
+    }
+  });
+
   it("reserves disjoint task lists and stops every runner", async () => {
     const runners = [mockRunner(), mockRunner(), mockRunner()];
     for (const { runner } of runners) run.mockResolvedValueOnce(runner);
-    const host = createReservedGraphileJobWorkerHost({} as Pool, { concurrency: 4 });
+    const host = createReservedGraphileJobWorkerHost({ options: { max: 8 } } as Pool, {
+      concurrency: 4,
+    });
     await host.start(handlers());
     const configurations = run.mock.calls.map(([options]) => options);
-    expect(configurations.map(({ concurrency }) => concurrency)).toEqual([4, 1, 100]);
+    expect(configurations.map(({ concurrency }) => concurrency)).toEqual([4, 1, 3]);
     // The worker's own shutdown hands back runs first; Graphile must not kill the process.
     expect(configurations.map(({ noHandleSignals }) => noHandleSignals)).toEqual([
       true,
@@ -339,7 +363,7 @@ describe("reserved Graphile workloads", () => {
   it("stops runners already started if another workload cannot start", async () => {
     const first = mockRunner();
     run.mockResolvedValueOnce(first.runner).mockRejectedValueOnce(tooMany);
-    const host = createReservedGraphileJobWorkerHost({} as Pool);
+    const host = createReservedGraphileJobWorkerHost({ options: { max: 8 } } as Pool);
     await expect(host.start(handlers())).rejects.toBe(tooMany);
     expect(first.runner.stop).toHaveBeenCalled();
   });
@@ -352,7 +376,7 @@ describe("reserved Graphile workloads", () => {
         release = resolve;
       }),
     );
-    const host = createReservedGraphileJobWorkerHost({} as Pool);
+    const host = createReservedGraphileJobWorkerHost({ options: { max: 8 } } as Pool);
     const starting = host.start(handlers());
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
     await host.stop();
@@ -364,7 +388,7 @@ describe("reserved Graphile workloads", () => {
 
   it("dispatches legacy chat jobs after stopping and restarting", async () => {
     for (let i = 0; i < 6; i++) run.mockResolvedValueOnce(mockRunner().runner);
-    const host = createReservedGraphileJobWorkerHost({} as Pool);
+    const host = createReservedGraphileJobWorkerHost({ options: { max: 8 } } as Pool);
     const target = handlers();
     try {
       for (let cycle = 0; cycle < 2; cycle++) {
