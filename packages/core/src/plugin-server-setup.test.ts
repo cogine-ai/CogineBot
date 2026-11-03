@@ -21,6 +21,7 @@ function server(overrides: Partial<McpServer> = {}): McpServer {
     enabled: false,
     allowAllTools: false,
     allowedTools: [],
+    verbatimResults: false,
     revision: 2,
     createdAt: "2026-11-02T00:00:00Z",
     updatedAt: "2026-11-02T00:00:00Z",

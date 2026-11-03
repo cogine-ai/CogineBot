@@ -4512,7 +4512,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return result;
         };
 
-        let approvalRequest: Promise<ReturnType<typeof approvalPausedToolResult>> | undefined;
+        let pauseRequest: Promise<unknown> | undefined;
+        const requestPause = async <T>(
+          show: () => Promise<T>,
+        ): Promise<{ owned: true; result: T } | { owned: false }> => {
+          if (pauseRequest) {
+            await pauseRequest;
+            return { owned: false };
+          }
+          const current = show();
+          pauseRequest = current;
+          return { owned: true, result: await current };
+        };
         const pauseForApproval = () => {
           approvalPausePending = true;
           return approvalPausedToolResult();
@@ -4547,21 +4558,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
         const verbatimMcpServers =
-          !scripted && tools.some((tool) => tool.route?.connectorId === "mcp")
+          !scripted &&
+          (turnState.blob !== undefined || tools.some((tool) => tool.route?.connectorId === "mcp"))
             ? await loadRunVerbatimMcpServers(deps.prisma, context)
             : undefined;
-        const availableToolNames = async () => {
+        const currentDisabledBuiltinTools = async () => {
           const current = await deps.prisma.bot.findUnique({
             where: { id: bot.id },
             select: { spaceId: true, disabledBuiltinTools: true },
           });
           if (!current || current.spaceId !== run.spaceId)
             throw new Error("Bot tools are no longer available");
-          const disabled = disabledBuiltinToolSet(current.disabledBuiltinTools);
+          return disabledBuiltinToolSet(current.disabledBuiltinTools);
+        };
+        const availableToolNames = async () => {
+          const disabled = await currentDisabledBuiltinTools();
           return tools.filter((tool) => !disabled.has(tool.name)).map((tool) => tool.name);
         };
-        const persistTurnCheckpoint = (executionId?: string) =>
-          persistRunTurnCheckpoint(deps.prisma, run, workerId, fence, turnState, executionId);
+        const persistTurnCheckpoint = (executionId?: string, pendingSecretEffectId?: string) =>
+          persistRunTurnCheckpoint(
+            deps.prisma,
+            run,
+            workerId,
+            fence,
+            turnState,
+            executionId,
+            pendingSecretEffectId,
+          );
         const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
         let lastScriptedState = scriptedResume.stored;
         const snapshotScriptedOutput = (): ScriptedOutputState =>
@@ -4726,8 +4749,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pauseRunForInput = async (
           input: Parameters<ThreadEvents["pauseRunForInput"]>[0],
           executionId?: string,
+          pendingSecretEffectId?: string,
         ) => {
-          if (!scripted) await persistTurnCheckpoint(executionId);
+          if (!scripted) await persistTurnCheckpoint(executionId, pendingSecretEffectId);
           try {
             return await deps.events.pauseRunForInput(input);
           } catch (error) {
@@ -4812,7 +4836,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (
             disabledBuiltinTools.has(name) ||
-            (BUILTIN_AGENT_TOOL_NAMES.has(name) && !(await availableToolNames()).includes(name))
+            (BUILTIN_AGENT_TOOL_NAMES.has(name) &&
+              (scripted
+                ? (await currentDisabledBuiltinTools()).has(name)
+                : !(await availableToolNames()).includes(name)))
           ) {
             return { error: "This tool is disabled for this bot." };
           }
@@ -5365,11 +5392,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return pauseForApproval();
           };
 
-          const requestApproval = () => {
-            // Parallel calls must share the card and checkpoint for the first pending call.
-            if (approvalRequest) return approvalRequest.then(() => pauseForApproval());
-            approvalRequest = showApprovalCard();
-            return approvalRequest;
+          const requestApproval = async () => {
+            const pause = await requestPause(showApprovalCard);
+            return pause.owned ? pause.result : pauseForApproval();
           };
 
           if (applied?.duplicate) {
@@ -6824,48 +6849,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return settleUncertainEffect(deps.prisma, recordedForAsk.effect.id, "request_secret");
             }
-            if (!(await renewRunLease(deps, runId, workerId, fence))) {
+            const pause = await requestPause(async () => {
+              if (!(await renewRunLease(deps, runId, workerId, fence))) {
+                return pauseForSecret();
+              }
+              await workspaceCheckpoint.flush();
+              const paused = await pauseRunForInput(
+                {
+                  spaceId: run.spaceId,
+                  threadId: run.threadId,
+                  botId: run.botId,
+                  runId,
+                  attemptId: attempt.id,
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  ...(isSteeringContinuation && lastScriptedState
+                    ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                    : {}),
+                  blocks: [
+                    {
+                      kind: "ask",
+                      text: String(args.label ?? "Code"),
+                      input: "secret",
+                      ...(destination ? { credential: destination } : {}),
+                      purpose: normalizeSecretAskPurpose(
+                        args.purpose ? String(args.purpose) : undefined,
+                      ),
+                      status: "pending",
+                    },
+                  ],
+                },
+                executionId,
+                recordedForAsk.effect.id,
+              );
+              if (!paused) {
+                throw new Error("Could not pause this run for protected input; try sending again.");
+              }
+              await notifyRun(deps, run, {
+                kind: "help",
+                title: `${bot.name} needs a code`,
+                body: String(args.label ?? "Code"),
+                botId: bot.id,
+                threadId: thread.id,
+              });
               return pauseForSecret();
-            }
-            await workspaceCheckpoint.flush();
-            const paused = await pauseRunForInput(
-              {
-                spaceId: run.spaceId,
-                threadId: run.threadId,
-                botId: run.botId,
-                runId,
-                attemptId: attempt.id,
-                leaseOwner: workerId,
-                leaseFence: fence,
-                ...(isSteeringContinuation && lastScriptedState
-                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                  : {}),
-                blocks: [
-                  {
-                    kind: "ask",
-                    text: String(args.label ?? "Code"),
-                    input: "secret",
-                    ...(destination ? { credential: destination } : {}),
-                    purpose: normalizeSecretAskPurpose(
-                      args.purpose ? String(args.purpose) : undefined,
-                    ),
-                    status: "pending",
-                  },
-                ],
-              },
-              executionId,
-            );
-            if (!paused) {
-              throw new Error("Could not pause this run for protected input; try sending again.");
-            }
-            await notifyRun(deps, run, {
-              kind: "help",
-              title: `${bot.name} needs a code`,
-              body: String(args.label ?? "Code"),
-              botId: bot.id,
-              threadId: thread.id,
             });
-            return pauseForSecret();
+            return pause.owned ? pause.result : pauseForSecret();
           }
           if (name === "request_takeover") return { ok: true };
           if (name === "run_subagent") {
@@ -7800,127 +7829,133 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               });
             } else if (event.type === "ask") {
-              if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-              const safeText = redactSecrets(event.text, runSecrets);
-              const safeDetail = event.detail
-                ? redactSecrets(event.detail, runSecrets)
-                : event.detail;
-              const safeActions = event.actions?.map((action) => ({
-                id: action.id,
-                label: redactSecrets(action.label, runSecrets),
-              }));
-              await workspaceCheckpoint.flush();
-              const paused = await pauseRunForInput(
-                {
-                  spaceId: run.spaceId,
-                  threadId: run.threadId,
-                  botId: run.botId,
-                  runId,
-                  attemptId: attempt.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                  ...(isSteeringContinuation && lastScriptedState
-                    ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                    : {}),
-                  blocks: [
-                    {
-                      kind: "ask",
-                      text: safeText,
-                      detail: safeDetail,
-                      status: "pending",
-                      actions: safeActions,
-                    },
-                  ],
-                  // Keep unredacted labels on the run for resume; message blocks stay redacted.
-                  offeredActions: event.actions,
-                },
-                event.executionId,
-              );
-              if (!paused) return;
-              await notifyRun(deps, run, {
-                kind: "help",
-                title: `${bot.name} needs an answer`,
-                body: safeText,
-                botId: bot.id,
-                threadId: thread.id,
+              await requestPause(async () => {
+                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+                const safeText = redactSecrets(event.text, runSecrets);
+                const safeDetail = event.detail
+                  ? redactSecrets(event.detail, runSecrets)
+                  : event.detail;
+                const safeActions = event.actions?.map((action) => ({
+                  id: action.id,
+                  label: redactSecrets(action.label, runSecrets),
+                }));
+                await workspaceCheckpoint.flush();
+                const paused = await pauseRunForInput(
+                  {
+                    spaceId: run.spaceId,
+                    threadId: run.threadId,
+                    botId: run.botId,
+                    runId,
+                    attemptId: attempt.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                    ...(isSteeringContinuation && lastScriptedState
+                      ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                      : {}),
+                    blocks: [
+                      {
+                        kind: "ask",
+                        text: safeText,
+                        detail: safeDetail,
+                        status: "pending",
+                        actions: safeActions,
+                      },
+                    ],
+                    // Keep unredacted labels on the run for resume; message blocks stay redacted.
+                    offeredActions: event.actions,
+                  },
+                  event.executionId,
+                );
+                if (!paused) return;
+                await notifyRun(deps, run, {
+                  kind: "help",
+                  title: `${bot.name} needs an answer`,
+                  body: safeText,
+                  botId: bot.id,
+                  threadId: thread.id,
+                });
+                return;
               });
               return;
             } else if (event.type === "takeover") {
-              if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-              // The user takes over the computer's screen, so it must be up before the run waits.
-              await runComputer.get();
-              const safeReason = redactSecrets(event.reason, runSecrets);
-              // Publish pending narration as tagged mid-turn progress so reconciliation
-              // does not treat pre-takeover text as the delegated final result.
-              await publishMidTurnNarration();
-              if (assembled.trim()) {
-                const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
-                if (narration && runPromotesMidTurnNarration(run.trigger)) {
-                  if (isSteeringContinuation && lastScriptedState) {
-                    await publishDurableScriptedOutput(
-                      [{ kind: "text", text: narration }],
-                      undefined,
-                      "takeover-narration",
-                      { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
-                    );
-                    midTurnProgressCount += 1;
-                  } else {
-                    await publishMessage(
-                      deps,
-                      run,
-                      "bot",
-                      [{ kind: "text", text: narration }],
-                      undefined,
-                      userProgressClientNonce(run.id, midTurnProgressCount++),
-                    );
+              await requestPause(async () => {
+                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+                // The user takes over the computer's screen, so it must be up before the run waits.
+                await runComputer.get();
+                const safeReason = redactSecrets(event.reason, runSecrets);
+                // Publish pending narration as tagged mid-turn progress so reconciliation
+                // does not treat pre-takeover text as the delegated final result.
+                await publishMidTurnNarration();
+                if (assembled.trim()) {
+                  const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
+                  if (narration && runPromotesMidTurnNarration(run.trigger)) {
+                    if (isSteeringContinuation && lastScriptedState) {
+                      await publishDurableScriptedOutput(
+                        [{ kind: "text", text: narration }],
+                        undefined,
+                        "takeover-narration",
+                        { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
+                      );
+                      midTurnProgressCount += 1;
+                    } else {
+                      await publishMessage(
+                        deps,
+                        run,
+                        "bot",
+                        [{ kind: "text", text: narration }],
+                        undefined,
+                        userProgressClientNonce(run.id, midTurnProgressCount++),
+                      );
+                    }
+                    midTurnUserTexts.push(narration);
+                    publishedMidTurnUserMessage = true;
+                  } else if (narration) {
+                    discardedMidTurnNarration = true;
                   }
-                  midTurnUserTexts.push(narration);
-                  publishedMidTurnUserMessage = true;
-                } else if (narration) {
-                  discardedMidTurnNarration = true;
+                  assembled = "";
+                  hasStreamedText = false;
+                  pendingProgress = "";
                 }
-                assembled = "";
-                hasStreamedText = false;
-                pendingProgress = "";
-              }
-              if (!(isSteeringContinuation && lastScriptedState)) {
-                await publishMessage(
-                  deps,
-                  run,
-                  "bot",
-                  [{ kind: "computer", state: "Needs you", text: safeReason }],
-                  true,
+                if (!(isSteeringContinuation && lastScriptedState)) {
+                  await publishMessage(
+                    deps,
+                    run,
+                    "bot",
+                    [{ kind: "computer", state: "Needs you", text: safeReason }],
+                    true,
+                  );
+                }
+                await workspaceCheckpoint.flush();
+                if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
+                  throw new Error("Computer lease expired before takeover");
+                }
+                const paused = await pauseRunForTakeover(
+                  {
+                    spaceId: run.spaceId,
+                    threadId: run.threadId,
+                    botId: run.botId,
+                    runId,
+                    attemptId: attempt.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                    reason: safeReason,
+                    computerId: storedComputer.id,
+                    ...(isSteeringContinuation && lastScriptedState
+                      ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                      : {}),
+                  },
+                  event.executionId,
                 );
-              }
-              await workspaceCheckpoint.flush();
-              if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
-                throw new Error("Computer lease expired before takeover");
-              }
-              const paused = await pauseRunForTakeover(
-                {
-                  spaceId: run.spaceId,
-                  threadId: run.threadId,
-                  botId: run.botId,
-                  runId,
-                  attemptId: attempt.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                  reason: safeReason,
-                  computerId: storedComputer.id,
-                  ...(isSteeringContinuation && lastScriptedState
-                    ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                    : {}),
-                },
-                event.executionId,
-              );
-              if (!paused) return;
-              retainComputerLease = true;
-              await notifyRun(deps, run, {
-                kind: "takeover",
-                title: `${bot.name} needs you on the screen`,
-                body: safeReason,
-                botId: bot.id,
-                threadId: thread.id,
+                if (!paused) return;
+                retainComputerLease = true;
+                await notifyRun(deps, run, {
+                  kind: "takeover",
+                  title: `${bot.name} needs you on the screen`,
+                  body: safeReason,
+                  botId: bot.id,
+                  threadId: thread.id,
+                });
+                return;
               });
               return;
             } else if (event.type === "tool") {

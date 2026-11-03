@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from "./client.js";
+import type { PrismaClient } from "./client.js";
+import { Prisma } from "./client.js";
 
 // This reserved effect kind/status keeps server-only transcripts out of approval
 // queues and client events while reusing Run/Space cascades and latest-only storage.
@@ -13,26 +14,67 @@ const scopeOf = (run: RunScope) => ({
   status: RUN_TURN_CHECKPOINT_KIND,
 });
 
+function checkpointContent(
+  row: {
+    runId: string;
+    spaceId: string;
+    kind: string;
+    status: string;
+    request: Prisma.JsonValue;
+    result: Prisma.JsonValue;
+  },
+  run: RunScope,
+): { blob?: string; pendingSecretEffectId?: string } | undefined {
+  if (
+    row.runId !== run.id ||
+    row.spaceId !== run.spaceId ||
+    row.kind !== RUN_TURN_CHECKPOINT_KIND ||
+    row.status !== RUN_TURN_CHECKPOINT_KIND
+  )
+    return undefined;
+  const request = row.request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return undefined;
+  const fields = Object.keys(request).length;
+  const blob = typeof row.result === "string" && row.result.length > 0 ? row.result : undefined;
+  if (fields === 0 && blob !== undefined) return { blob };
+  const id = request.pendingSecretEffectId;
+  if (typeof id !== "string" || id.length === 0) return undefined;
+  if (fields === 1 && blob !== undefined) return { blob, pendingSecretEffectId: id };
+  // A helper without transcript capture still binds its one protected-input card.
+  if (fields === 2 && request.capture === "none" && row.result === null)
+    return { pendingSecretEffectId: id };
+  return undefined;
+}
+
 export async function loadRunTurnCheckpoint(
   prisma: PrismaClient,
   run: RunScope,
 ): Promise<string | undefined> {
   const row = await prisma.externalEffect.findUnique({
     where: { idempotencyKey: keyOf(run.id) },
-    select: { runId: true, spaceId: true, kind: true, status: true, result: true },
+    select: { runId: true, spaceId: true, kind: true, status: true, request: true, result: true },
   });
   if (!row) return undefined;
   // A present but invalid record must not silently restart the turn from scratch.
-  if (
-    row.runId !== run.id ||
-    row.spaceId !== run.spaceId ||
-    row.kind !== RUN_TURN_CHECKPOINT_KIND ||
-    row.status !== RUN_TURN_CHECKPOINT_KIND ||
-    typeof row.result !== "string" ||
-    row.result.length === 0
-  )
-    throw new Error("Unsupported turn checkpoint");
-  return row.result;
+  const content = checkpointContent(row, run);
+  if (!content) throw new Error("Unsupported turn checkpoint");
+  return content.blob;
+}
+
+/** A present Pi checkpoint must bind its secret card to exactly one server-owned effect. */
+export async function loadRunTurnCheckpointSecretEffectId(
+  tx: Pick<Prisma.TransactionClient, "externalEffect">,
+  run: RunScope,
+): Promise<string | undefined> {
+  const row = await tx.externalEffect.findUnique({
+    where: { idempotencyKey: keyOf(run.id) },
+    select: { runId: true, spaceId: true, kind: true, status: true, request: true, result: true },
+  });
+  if (!row) return undefined;
+  const content = checkpointContent(row, run);
+  if (!content?.pendingSecretEffectId)
+    throw new Error("Unsupported turn checkpoint secret binding");
+  return content.pendingSecretEffectId;
 }
 
 export async function saveRunTurnCheckpoint(
@@ -40,9 +82,25 @@ export async function saveRunTurnCheckpoint(
   run: RunScope,
   leaseOwner: string,
   leaseFence: number,
-  blob: string,
+  blob: string | undefined,
+  pendingSecretEffectId?: string,
 ): Promise<void> {
-  if (typeof blob !== "string" || blob.length === 0) throw new Error("Unsupported turn checkpoint");
+  if (blob !== undefined && (typeof blob !== "string" || blob.length === 0))
+    throw new Error("Unsupported turn checkpoint");
+  if (
+    pendingSecretEffectId !== undefined &&
+    (typeof pendingSecretEffectId !== "string" || pendingSecretEffectId.length === 0)
+  )
+    throw new Error("Unsupported turn checkpoint secret binding");
+  if (blob === undefined && pendingSecretEffectId === undefined)
+    throw new Error("Unsupported turn checkpoint");
+  const request =
+    pendingSecretEffectId === undefined
+      ? {}
+      : blob === undefined
+        ? { pendingSecretEffectId, capture: "none" }
+        : { pendingSecretEffectId };
+  const result = blob === undefined ? Prisma.DbNull : blob;
   await prisma.$transaction(async (tx) => {
     // The Run write lock orders this save against terminal transitions: a later
     // terminal writer clears it, and an earlier terminal writer rejects this save.
@@ -54,8 +112,8 @@ export async function saveRunTurnCheckpoint(
     const scope = scopeOf(run);
     await tx.externalEffect.upsert({
       where: scope,
-      create: { ...scope, request: {}, result: blob },
-      update: { result: blob },
+      create: { ...scope, request, result },
+      update: { request, result },
     });
   });
 }

@@ -1108,4 +1108,117 @@ describe("real Pi turn checkpoint producer and recovery", () => {
       ),
     ).toBe(true);
   });
+
+  it.each([false, true])(
+    "retains claimed user steering once when restoring an interaction (explicit result: %s)",
+    async (explicitResult) => {
+      const store = captures();
+      const pendingId = "steering-interaction";
+      const input = request([builtin("ask_user")], { onCheckpoint: store.onCheckpoint });
+      provider.stream.mockImplementationOnce(() =>
+        response([
+          call(pendingId, "ask_user", {
+            question: "Continue the saved work?",
+            options: ["Continue", "Stop"],
+          }),
+        ]),
+      );
+      const paused = await consume(input);
+      const question = paused.find((event) => event.type === "tool" && event.name === "ask_user");
+      if (question?.type !== "tool") throw new Error("Missing steering interaction pause");
+      const blob = store.at(question.executionId);
+      expect((JSON.parse(blob) as TurnCheckpoint).pendingToolCallId).toBe(pendingId);
+      expect(provider.stream).toHaveBeenCalledOnce();
+
+      const marker = `CLAIMED-USER-STEERING-ONCE-${explicitResult}`;
+      const png =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE7sAAAAASUVORK5CYII=";
+      const image = {
+        name: "steering-pixel.png",
+        mimeType: "image/png" as const,
+        data: Buffer.from(png, "base64"),
+      };
+      const steering = [
+        {
+          id: "claimed-steering-once",
+          messageId: "claimed-user-message",
+          text: marker,
+          images: [image],
+        },
+      ];
+      const claimSteering = vi.fn<NonNullable<AgentRunRequest["claimSteering"]>>(async (seenIds) =>
+        steering.filter((item) => !seenIds.includes(item.id)),
+      );
+      const contexts: TranscriptContext[] = [];
+      provider.stream
+        .mockReset()
+        .mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+          contexts.push(structuredClone(context));
+          return response(undefined, activeModel);
+        });
+      const resumedPrompt = "Continue with the saved choice.";
+      const receipt = "Verified interaction response receipt.";
+      const execute = vi.fn(async () => ({ ok: true }));
+      const freshRuntime = new PiAgentRuntime();
+      const events = await consume(
+        {
+          ...input,
+          prompt: resumedPrompt,
+          history: [
+            ...input.history,
+            { id: steering[0]!.messageId, role: "user", content: marker, images: [image] },
+          ],
+          turnCheckpoint: blob,
+          claimSteering,
+          ...(explicitResult
+            ? {
+                resumeToolResult: {
+                  kind: "agent_tool_result" as const,
+                  content: [{ type: "text" as const, text: receipt }],
+                  details: {},
+                },
+              }
+            : {}),
+          executeTool: execute,
+        },
+        freshRuntime,
+      );
+
+      expect(provider.stream).toHaveBeenCalledOnce();
+      expect(contexts).toHaveLength(1);
+      const context = contexts[0]!;
+      const wire = JSON.stringify(context.messages);
+      expect(wire.split(marker)).toHaveLength(2);
+      expect(wire.split("Original history canary.")).toHaveLength(2);
+      const steeringUsers = context.messages
+        .filter((message) => message.role === "user")
+        .filter((message) => JSON.stringify(message.content).includes(marker));
+      expect(steeringUsers).toHaveLength(1);
+      expect(steeringUsers[0]!.content).toEqual([
+        { type: "text", text: marker },
+        { type: "image", data: png, mimeType: "image/png" },
+      ]);
+      expect(
+        context.messages.flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.filter((part) => part.type === "image")
+            : [],
+        ),
+      ).toEqual([{ type: "image", data: png, mimeType: "image/png" }]);
+      expect(
+        context.messages.filter(
+          (message) => message.role === "toolResult" && message.toolCallId === pendingId,
+        ),
+      ).toHaveLength(1);
+      expect(resultText(context, pendingId)).toBe(explicitResult ? receipt : resumedPrompt);
+      expect(resultText(context, pendingId)).not.toContain(marker);
+      expect(resultText(context, pendingId)).not.toContain("Additional user context:");
+      expect(claimSteering).toHaveBeenNthCalledWith(1, []);
+      expect(
+        claimSteering.mock.calls.slice(1).every(([seenIds]) => seenIds.includes(steering[0]!.id)),
+      ).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(events.some((event) => event.type === "ask" || event.type === "takeover")).toBe(false);
+    },
+  );
 });

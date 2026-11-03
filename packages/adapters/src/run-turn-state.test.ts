@@ -2,6 +2,7 @@ import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
+import { loadRunTurnCheckpoint, Prisma } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
@@ -420,12 +421,103 @@ describe("persist run turn checkpoint", () => {
     },
   );
 
-  it("does no database work for a fresh state with no capture", async () => {
+  it("fences cleanup of a possible private binding even when fresh state has no capture", async () => {
     const f = storage();
     const current = state();
     await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current);
     expect(current.stored).toBe(false);
-    expect(f.client.$transaction).not.toHaveBeenCalled();
+    expect(f.client.run.updateMany).toHaveBeenCalledWith({
+      where: { ...run, status: "running", leaseOwner: "worker", leaseFence: 7 },
+      data: { leaseFence: 7 },
+    });
+    expect(f.client.externalEffect.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", run.id]),
+            runId: run.id,
+            spaceId: run.spaceId,
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
+    });
+    expect(f.client.externalEffect.upsert).not.toHaveBeenCalled();
+  });
+
+  it("saves only the selected secret effect binding when a helper has no transcript capture", async () => {
+    const f = storage();
+    const current = state();
+    const helperExecution = JSON.stringify(["pi-tool", execution("helper"), "helper-secret"]);
+    const selected = "selected-helper-secret-effect";
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, helperExecution, selected);
+    expect(current.stored).toBe(true);
+    expect(current.blob).toBeUndefined();
+    expect(current.pendingCaptures.size).toBe(0);
+    expect(f.client.run.updateMany).toHaveBeenCalledWith({
+      where: { ...run, status: "running", leaseOwner: "worker", leaseFence: 7 },
+      data: { leaseFence: 7 },
+    });
+    const scope = {
+      idempotencyKey: JSON.stringify(["runtime_checkpoint", run.id]),
+      runId: run.id,
+      spaceId: run.spaceId,
+      kind: "runtime_checkpoint",
+      status: "runtime_checkpoint",
+    };
+    const request = { pendingSecretEffectId: selected, capture: "none" };
+    expect(f.client.externalEffect.upsert).toHaveBeenCalledExactlyOnceWith({
+      where: scope,
+      create: { ...scope, request, result: Prisma.DbNull },
+      update: { request, result: Prisma.DbNull },
+    });
+    expect(f.client.externalEffect.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("fences removal of a loaded binding-only row even though no transcript marks the state stored", async () => {
+    const f = storage();
+    const row = {
+      runId: run.id,
+      spaceId: run.spaceId,
+      kind: "runtime_checkpoint",
+      status: "runtime_checkpoint",
+      request: { pendingSecretEffectId: "previous-helper-secret-effect", capture: "none" },
+      result: null,
+    };
+    const findUnique = vi.fn(async () => row);
+    Object.assign(f.client.externalEffect, { findUnique });
+    const loaded = await loadRunTurnCheckpoint(f.prisma, run);
+    expect(loaded).toBeUndefined();
+    const current = state(loaded);
+    expect(current.stored).toBe(false);
+    await persistRunTurnCheckpoint(
+      f.prisma,
+      run,
+      "worker",
+      7,
+      current,
+      execution("ordinary-no-capture"),
+    );
+    expect(f.client.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { ...run, status: "running", leaseOwner: "worker", leaseFence: 7 },
+      data: { leaseFence: 7 },
+    });
+    expect(f.client.externalEffect.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", run.id]),
+            runId: run.id,
+            spaceId: run.spaceId,
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
+    });
+    expect(f.client.externalEffect.upsert).not.toHaveBeenCalled();
+    expect(current.stored).toBe(false);
   });
 
   it("preserves an unknown old baseline instead of rebasing it to current instructions", async () => {

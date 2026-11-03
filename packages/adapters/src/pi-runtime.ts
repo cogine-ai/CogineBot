@@ -811,7 +811,7 @@ export class PiAgentRuntime implements AgentRuntime {
                     ? {
                         ...request.resumeToolResult,
                         content: request.resumeToolResult?.content ?? [
-                          { type: "text", text: initialPrompt },
+                          { type: "text", text: request.prompt },
                         ],
                         details: undefined,
                       }

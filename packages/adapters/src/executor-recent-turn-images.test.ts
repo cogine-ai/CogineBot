@@ -1,8 +1,11 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
+import { serializeTurnCheckpoint } from "./turn-checkpoint.js";
+import { markMcpToolResultRoute } from "./verbatim-mcp-result.js";
 
 const provisionComputer = vi.hoisted(() =>
   vi.fn(async () => ({ id: "computer-1", kind: "desktop" })),
@@ -74,6 +77,7 @@ async function runWithModel(
     timezoneReadFails?: boolean;
     botOwnerId?: string;
     useComputer?: boolean;
+    turnCheckpoint?: string;
   } = {},
 ) {
   provisionComputer.mockClear();
@@ -242,7 +246,35 @@ async function runWithModel(
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: {
       findMany: vi.fn(async () => []),
-      findUnique: vi.fn(async () => null),
+      findUnique: vi.fn(async ({ where }: { where: { idempotencyKey: string } }) =>
+        attachmentOptions.turnCheckpoint &&
+        where.idempotencyKey === JSON.stringify(["runtime_checkpoint", run.id])
+          ? {
+              runId: run.id,
+              spaceId: run.spaceId,
+              kind: "runtime_checkpoint",
+              status: "runtime_checkpoint",
+              request: {},
+              result: attachmentOptions.turnCheckpoint,
+            }
+          : null,
+      ),
+    },
+    mcpServer: {
+      findMany: vi.fn(async () =>
+        attachmentOptions.turnCheckpoint
+          ? [
+              {
+                id: "mcp-research",
+                slug: "research",
+                allowAllTools: false,
+                allowedTools: ["read"],
+                verbatimResults: true,
+                installId: null,
+              },
+            ]
+          : [],
+      ),
     },
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
@@ -289,6 +321,82 @@ async function runWithModel(
 }
 
 describe("recent turn images follow model vision", () => {
+  it("loads current MCP retention for a saved turn when this attempt offers no MCP tools", async () => {
+    const assistant = (content: AssistantMessage["content"]): AssistantMessage => ({
+      role: "assistant",
+      content,
+      api: "openai-completions",
+      provider: "openrouter",
+      model: TEXT_ONLY_MODEL,
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: 0,
+    });
+    const pastMcpContent = [{ type: "text" as const, text: "Saved complete research evidence" }];
+    markMcpToolResultRoute(pastMcpContent, {
+      connectorId: "mcp",
+      resourceId: "mcp-research",
+      resourceRevision: 2,
+      catalogGroup: "research",
+      toolName: "read",
+    });
+    const turnCheckpoint = serializeTurnCheckpoint({
+      version: 1,
+      provider: "openrouter",
+      model: TEXT_ONLY_MODEL,
+      systemPrompt: "Preserve the saved research evidence.",
+      pendingToolCallId: "pending-question",
+      effectOccurrences: [],
+      messages: [
+        { role: "user", content: "Read the research, then ask before continuing.", timestamp: 0 },
+        assistant([
+          { type: "toolCall", id: "past-read", name: "mcp__research__read", arguments: {} },
+        ]),
+        {
+          role: "toolResult",
+          toolCallId: "past-read",
+          toolName: "mcp__research__read",
+          content: pastMcpContent,
+          isError: false,
+          timestamp: 0,
+        },
+        assistant([
+          {
+            type: "toolCall",
+            id: "pending-question",
+            name: "ask_user",
+            arguments: { question: "Continue?", options: ["Continue", "Stop"] },
+          },
+        ]),
+      ],
+    });
+    const { request, prisma } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+      turnCheckpoint,
+    });
+
+    expect(request.turnCheckpoint).toBe(turnCheckpoint);
+    expect(request.tools.some((tool) => tool.route?.connectorId === "mcp")).toBe(false);
+    expect(request.verbatimMcpServers).toEqual({ ids: ["mcp-research"], slugs: ["research"] });
+    expect(prisma.mcpServer.findMany).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "user-1", spaceId: "space-1", enabled: true, verbatimResults: true },
+      select: {
+        id: true,
+        slug: true,
+        allowAllTools: true,
+        allowedTools: true,
+        verbatimResults: true,
+        installId: true,
+      },
+    });
+  });
+
   it("does not send history images to a text-only model", async () => {
     const { request } = await runWithModel(TEXT_ONLY_MODEL);
 

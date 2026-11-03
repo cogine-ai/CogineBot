@@ -133,15 +133,33 @@ export async function persistRunTurnCheckpoint(
   leaseFence: number,
   state: RunTurnCheckpointState,
   executionId?: string,
+  pendingSecretEffectId?: string,
 ): Promise<void> {
   const capture = executionId ? state.pendingCaptures.get(executionId) : undefined;
   if (capture) {
     const saved = JSON.parse(capture());
     saved.effectOccurrences = state.occurrences;
     saved.ownInstructionsBaseline = state.ownInstructionsBaseline;
-    await saveRunTurnCheckpoint(prisma, run, leaseOwner, leaseFence, JSON.stringify(saved));
+    await saveRunTurnCheckpoint(
+      prisma,
+      run,
+      leaseOwner,
+      leaseFence,
+      JSON.stringify(saved),
+      pendingSecretEffectId,
+    );
     state.stored = true;
-  } else if (state.stored) {
+  } else if (pendingSecretEffectId !== undefined) {
+    await saveRunTurnCheckpoint(
+      prisma,
+      run,
+      leaseOwner,
+      leaseFence,
+      undefined,
+      pendingSecretEffectId,
+    );
+    state.stored = true;
+  } else {
     await dropRunTurnCheckpoint(prisma, run, leaseOwner, leaseFence);
     state.stored = false;
   }

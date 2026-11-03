@@ -359,6 +359,19 @@ describe("reconcileStuckWork", () => {
     });
 
     expect(cursor).toBeUndefined();
+    expect(client.externalEffect.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", run.id]),
+            runId: run.id,
+            spaceId: run.spaceId,
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
+    });
     expect(client.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         role: "system",
@@ -397,6 +410,7 @@ describe("reconcileStuckWork", () => {
     });
 
     expect(client.message.create).not.toHaveBeenCalled();
+    expect(client.externalEffect.deleteMany).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -574,6 +588,7 @@ function expireClient(run: ReturnType<typeof candidate>, options?: { cancelled?:
       create: vi.fn(async () => ({ id: "run-next" })),
     },
     attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    externalEffect: { deleteMany: vi.fn(async () => ({ count: 1 })) },
     task: {
       updateMany: vi.fn(async () => ({ count: 1 })),
       create: vi.fn(async () => ({ id: "task-next" })),

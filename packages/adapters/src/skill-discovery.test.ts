@@ -106,6 +106,14 @@ async function runDiscovery(
     },
     event: { count: vi.fn(async () => 0) },
     bot: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId
+          ? {
+              spaceId: run.spaceId,
+              disabledBuiltinTools: options.disabledCatalog ? ["task_catalog"] : [],
+            }
+          : null,
+      ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
         name: "Assistant",
@@ -184,7 +192,10 @@ async function runDiscovery(
           : [],
       ),
     },
-    externalEffect: { findMany: vi.fn(async () => []) },
+    externalEffect: {
+      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+    },
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     artifact: { findMany: vi.fn(async () => []) },

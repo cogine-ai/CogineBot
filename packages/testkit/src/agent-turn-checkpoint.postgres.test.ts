@@ -886,3 +886,470 @@ describe.skipIf(!enabled)("parallel Pi approval checkpoint ownership", () => {
     }
   }, 45_000);
 });
+
+describe.skipIf(!enabled)("parallel Pi protected-input checkpoint ownership", () => {
+  it("binds the sole protected-input card to the saved call when two direct requests reach the default-exempt gate", async () => {
+    const labels = ["Synthetic protected credential A", "Synthetic protected credential B"];
+    const callIds = ["parallel-protected-a", "parallel-protected-b"];
+    const destinations = ["parallel_secret_a", "parallel_secret_b"].map((name) => ({
+      name,
+      origin: "https://api.example.test",
+      auth: { type: "bearer" },
+    }));
+    const calls = destinations.map((credential, index) =>
+      call(callIds[index]!, "request_secret", {
+        label: labels[index]!,
+        purpose: "api_key",
+        credential,
+      }),
+    );
+    let runId = "";
+    let selectedCallId = "";
+    let siblingCallId = "";
+    const syntheticValue = "synthetic-parallel-selected-credential-value";
+    const created: CreatedEffect[] = [];
+    let release!: () => void;
+    const bothCreated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const task =
+      "Ask for the two synthetic credentials through protected input; do not submit or use them.";
+    const f = await fixture(
+      [
+        (context) => {
+          expect(JSON.stringify(context.messages)).toContain(task);
+          return calls;
+        },
+        (context) => {
+          expect(toolResult(context, selectedCallId).isError).toBe(false);
+          const selectedText = toolResult(context, selectedCallId)
+            .content.flatMap((part) => (part.type === "text" ? [part.text] : []))
+            .join("\n");
+          expect(JSON.parse(selectedText)).toMatchObject({ saved: true });
+          const sibling = toolResult(context, siblingCallId);
+          expect(sibling.isError).toBe(true);
+          const siblingText = sibling.content
+            .flatMap((part) => (part.type === "text" ? [part.text] : []))
+            .join("\n");
+          expect(JSON.parse(siblingText)).toMatchObject({ uncertain: true });
+          expect(JSON.stringify(context.messages)).not.toContain(syntheticValue);
+          return [{ type: "text", text: "Saved only the selected protected credential." }];
+        },
+      ],
+      {
+        prompt: task,
+        async afterEffectCreate(effect) {
+          if (effect.runId !== runId || effect.kind !== "request_secret") return;
+          // Both real autocommitted effects reach protected entry, without action-approval rules.
+          created.push(effect);
+          await bothCreated;
+        },
+        releaseEffectBarrier: () => release(),
+      },
+    );
+    runId = f.sent.runId;
+    let firstAttempt: Promise<void> | undefined;
+    let firstFailure: unknown;
+    try {
+      expect(
+        await f.app.prisma.actionApprovalRule.count({
+          where: { spaceId: f.me.spaceId, createdByUserId: f.me.userId },
+        }),
+      ).toBe(0);
+      firstAttempt = f.continueRun("parallel-protected-first-worker").catch((error) => {
+        firstFailure = error;
+      });
+      await expect.poll(() => created.length, { timeout: 10_000, interval: 20 }).toBe(2);
+      expect(created.map((effect) => (effect.request as { label: string }).label).sort()).toEqual(
+        [...labels].sort(),
+      );
+      release();
+      await firstAttempt;
+      if (firstFailure) throw firstFailure;
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "waiting_input",
+        leaseFence: 1,
+        leaseOwner: null,
+        error: null,
+      });
+      const messages = await f.app.prisma.message.findMany({
+        where: { runId, role: "bot" },
+        orderBy: { seq: "asc" },
+      });
+      const asks = messages.flatMap((message) =>
+        MessageBlockSchema.array()
+          .parse(message.blocks)
+          .flatMap((block) => (block.kind === "ask" ? [{ message, block }] : [])),
+      );
+      expect(asks).toHaveLength(1);
+      const card = asks[0]!.block;
+      expect(card).toMatchObject({ input: "secret", purpose: "api_key", status: "pending" });
+      expect(card.approvalEffectId).toBeUndefined();
+      expect(labels).toContain(card.text);
+      const selected = labels.indexOf(card.text);
+      selectedCallId = callIds[selected]!;
+      siblingCallId = callIds.find((id) => id !== selectedCallId)!;
+      expect(card.credential).toEqual(destinations[selected]);
+      const { row, saved } = await f.checkpoint();
+      expect(saved).toMatchObject({
+        executionMode: "parallel",
+        pendingToolCallId: callIds[selected],
+      });
+      expect(
+        saved.messages.flatMap((message) =>
+          message.role === "assistant"
+            ? message.content.filter((part) => part.type === "toolCall").map((part) => part.id)
+            : [],
+        ),
+      ).toEqual(callIds);
+      const effects = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "request_secret" },
+      });
+      expect(effects).toHaveLength(2);
+      expect(effects.every((effect) => effect.status === "intended")).toBe(true);
+      expect(new Set(effects.map((effect) => effect.idempotencyKey)).size).toBe(2);
+      expect(effects.map((effect) => effect.id).sort()).toEqual(
+        created.map((effect) => effect.id).sort(),
+      );
+      const selectedEffect = effects.find(
+        (effect) => (effect.request as { label: string }).label === card.text,
+      );
+      expect(selectedEffect?.request).toEqual(calls[selected]!.arguments);
+      const completions = await f.app.prisma.event.findMany({
+        where: { runId, type: "agent.tool.completed" },
+        select: { payload: true },
+      });
+      expect(completions.map((event) => (event.payload as { outcome: string }).outcome)).toEqual([
+        "paused",
+        "paused",
+      ]);
+      expect(
+        await f.app.prisma.attempt.findMany({
+          where: { runId },
+          select: { fence: true, status: true, finishedAt: true },
+        }),
+      ).toEqual([{ fence: 1, status: "waiting_input", finishedAt: expect.any(Date) }]);
+      expect(f.providerRequests).toHaveLength(1);
+      expect(f.reservations).toBe(1);
+      expect(f.mainWrites()).toHaveLength(0);
+      expect(await f.app.prisma.botSecret.count({ where: { botId: f.bot.id } })).toBe(0);
+      expect(
+        await f.app.prisma.secret.count({
+          where: { spaceId: f.me.spaceId, userId: f.me.userId, kind: `run-secret:${runId}` },
+        }),
+      ).toBe(0);
+      await f.clientSnapshot();
+
+      const siblingBefore = effects.find((effect) => effect.id !== selectedEffect!.id)!;
+      for (const request of [
+        { pendingSecretEffectId: "missing-protected-effect" },
+        { pendingSecretEffectId: selectedEffect!.id, capture: "unknown" },
+        { pendingSecretEffectId: selectedEffect!.id, capture: "none" },
+        { pendingSecretEffectId: selectedEffect!.id, unexpected: true },
+      ]) {
+        await f.app.prisma.externalEffect.update({ where: { id: row.id }, data: { request } });
+        await expect(
+          f.rpc("threads/answer", {
+            botId: f.bot.id,
+            runId,
+            messageId: asks[0]!.message.id,
+            answer: syntheticValue,
+          }),
+        ).rejects.toThrow();
+        expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+          status: "waiting_input",
+          leaseFence: 1,
+          error: null,
+        });
+        expect(await f.app.prisma.botSecret.count({ where: { botId: f.bot.id } })).toBe(0);
+        expect(
+          await f.app.prisma.externalEffect.findMany({
+            where: { runId, kind: "request_secret" },
+            orderBy: { id: "asc" },
+          }),
+        ).toEqual([...effects].sort((left, right) => left.id.localeCompare(right.id)));
+        expect(
+          (
+            await f.app.prisma.message.findUniqueOrThrow({
+              where: { id: asks[0]!.message.id },
+            })
+          ).blocks,
+        ).toEqual(asks[0]!.message.blocks);
+        expect(f.providerRequests).toHaveLength(1);
+      }
+      await f.app.prisma.externalEffect.update({
+        where: { id: row.id },
+        data: {
+          request: { pendingSecretEffectId: selectedEffect!.id },
+        },
+      });
+      await f.rpc("threads/answer", {
+        botId: f.bot.id,
+        runId,
+        messageId: asks[0]!.message.id,
+        answer: syntheticValue,
+      });
+      const answeredEffects = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "request_secret" },
+      });
+      expect(answeredEffects).toHaveLength(2);
+      expect(answeredEffects.find((effect) => effect.id === selectedEffect!.id)).toMatchObject({
+        status: "approved",
+        result: { credentialSaved: destinations[selected] },
+      });
+      expect(answeredEffects.find((effect) => effect.id === siblingBefore.id)).toEqual(
+        siblingBefore,
+      );
+      expect(row.request).toEqual({ pendingSecretEffectId: selectedEffect!.id });
+      const stored = await f.app.prisma.botSecret.findMany({
+        where: { userId: f.me.userId, spaceId: f.me.spaceId, botId: f.bot.id },
+      });
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject(destinations[selected]!);
+      expect(stored[0]!.ciphertext).not.toContain(syntheticValue);
+      await f.restartRuntime();
+      await f.continueRun("parallel-protected-resume-worker");
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "completed",
+        leaseFence: 2,
+        error: null,
+      });
+      expect(f.providerRequests.map((request) => request.generation)).toEqual([1, 2]);
+      expect(f.reservations).toBe(2);
+      const completedEffects = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "request_secret" },
+      });
+      expect(completedEffects).toHaveLength(2);
+      expect(completedEffects.find((effect) => effect.id === selectedEffect!.id)).toMatchObject({
+        status: "completed",
+        request: selectedEffect!.request,
+      });
+      expect(completedEffects.find((effect) => effect.id === siblingBefore.id)).toEqual(
+        siblingBefore,
+      );
+      expect(
+        await f.app.prisma.botSecret.findMany({
+          where: { userId: f.me.userId, spaceId: f.me.spaceId, botId: f.bot.id },
+        }),
+      ).toEqual(stored);
+      expect(
+        await f.app.prisma.externalEffect.findUnique({ where: { idempotencyKey: f.key } }),
+      ).toBeNull();
+      const callsAfter = await f.app.prisma.event.findMany({
+        where: { runId, type: "agent.tool.called" },
+        select: { payload: true },
+      });
+      const executionIds = callsAfter.map(
+        (event) => (event.payload as { executionId: string }).executionId,
+      );
+      expect(executionIds).toHaveLength(3);
+      expect(
+        executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", selectedCallId])),
+      ).toHaveLength(2);
+      expect(
+        executionIds.filter((id) => id === JSON.stringify(["pi-tool", "main", siblingCallId])),
+      ).toHaveLength(1);
+      expect(
+        await f.app.prisma.attempt.findMany({
+          where: { runId },
+          orderBy: { fence: "asc" },
+          select: { fence: true, status: true },
+        }),
+      ).toEqual([
+        { fence: 1, status: "waiting_input" },
+        { fence: 2, status: "completed" },
+      ]);
+      const finalMessages = await f.app.prisma.message.findMany({ where: { runId, role: "bot" } });
+      expect(
+        finalMessages
+          .flatMap((message) => MessageBlockSchema.array().parse(message.blocks))
+          .filter((block) => block.kind === "ask" && block.input === "secret"),
+      ).toEqual([expect.objectContaining({ text: card.text, status: "answered" })]);
+      const client = await f.clientSnapshot();
+      expect(client).not.toContain(syntheticValue);
+      expect(client).not.toContain("pendingSecretEffectId");
+    } finally {
+      release();
+      await firstAttempt;
+      await f.close();
+    }
+  }, 45_000);
+});
+
+describe.skipIf(!enabled)("parallel Pi helper protected-input ownership", () => {
+  it("approves only the selected helper secret request without a resumable helper transcript", async () => {
+    const helpers = ["Credential helper A", "Credential helper B"];
+    const labels = ["Synthetic helper credential A", "Synthetic helper credential B"];
+    const helperCallIds = ["helper-secret-a", "helper-secret-b"];
+    const outerCallIds = ["credential-helper-a", "credential-helper-b"];
+    const destinations = ["helper_secret_a", "helper_secret_b"].map((name) => ({
+      name,
+      origin: "https://api.example.test",
+      auth: { type: "bearer" },
+    }));
+    const task = "Ask two helpers for their distinct synthetic API credentials; do not use them.";
+    const helperStep: ModelStep = (context) => {
+      const system = getCurrentSystemPrompt(context.messages);
+      const index = helpers.findIndex((name) => system.includes(`subagent named "${name}"`));
+      expect(index).toBeGreaterThanOrEqual(0);
+      return [
+        call(helperCallIds[index]!, "request_secret", {
+          label: labels[index]!,
+          purpose: "api_key",
+          credential: destinations[index]!,
+        }),
+      ];
+    };
+    let runId = "";
+    const created: CreatedEffect[] = [];
+    let release!: () => void;
+    const bothCreated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const syntheticValue = "synthetic-selected-helper-credential-value";
+    const f = await fixture(
+      [
+        (context) => {
+          expect(JSON.stringify(context.messages)).toContain(task);
+          return helpers.map((name, index) =>
+            call(outerCallIds[index]!, "run_subagent", {
+              name,
+              task: `Request only ${labels[index]} through protected input.`,
+            }),
+          );
+        },
+        helperStep,
+        helperStep,
+      ],
+      {
+        prompt: task,
+        async afterEffectCreate(effect) {
+          if (effect.runId !== runId || effect.kind !== "request_secret") return;
+          // Each query has committed its actual effect before either helper may pause.
+          created.push(effect);
+          await bothCreated;
+        },
+        releaseEffectBarrier: () => release(),
+      },
+    );
+    runId = f.sent.runId;
+    let firstAttempt: Promise<void> | undefined;
+    let firstFailure: unknown;
+    try {
+      firstAttempt = f.continueRun("parallel-helper-secret-worker").catch((error) => {
+        firstFailure = error;
+      });
+      await expect.poll(() => created.length, { timeout: 10_000, interval: 20 }).toBe(2);
+      expect(created.map((effect) => (effect.request as { label: string }).label).sort()).toEqual(
+        [...labels].sort(),
+      );
+      release();
+      await firstAttempt;
+      if (firstFailure) throw firstFailure;
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "waiting_input",
+        leaseFence: 1,
+        leaseOwner: null,
+        error: null,
+      });
+      const messages = await f.app.prisma.message.findMany({
+        where: { runId, role: "bot" },
+        orderBy: { seq: "asc" },
+      });
+      const asks = messages.flatMap((message) =>
+        MessageBlockSchema.array()
+          .parse(message.blocks)
+          .flatMap((block) => (block.kind === "ask" ? [{ message, block }] : [])),
+      );
+      expect(asks).toHaveLength(1);
+      const card = asks[0]!;
+      expect(card.block).toMatchObject({ input: "secret", purpose: "api_key", status: "pending" });
+      const selectedIndex = labels.indexOf(card.block.text);
+      expect(selectedIndex).toBeGreaterThanOrEqual(0);
+      expect(card.block.credential).toEqual(destinations[selectedIndex]);
+      const effectsBefore = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "request_secret" },
+      });
+      expect(effectsBefore).toHaveLength(2);
+      expect(effectsBefore.every((effect) => effect.status === "intended")).toBe(true);
+      const selected = effectsBefore.find(
+        (effect) => (effect.request as { label: string }).label === card.block.text,
+      )!;
+      const siblingBefore = effectsBefore.find((effect) => effect.id !== selected.id)!;
+      expect(selected.request).toEqual({
+        label: labels[selectedIndex],
+        purpose: "api_key",
+        credential: destinations[selectedIndex],
+      });
+      const toolEvents = await f.app.prisma.event.findMany({
+        where: { runId, type: "agent.tool.called" },
+        select: { payload: true },
+      });
+      const helperCalls = toolEvents
+        .map((event) => event.payload as { name: string; executionId: string })
+        .filter((event) => event.name === "request_secret");
+      expect(helperCalls).toHaveLength(2);
+      expect(helperCalls.map((event) => JSON.parse(event.executionId)[1]).sort()).toEqual(
+        outerCallIds.map((id) => JSON.stringify(["pi-tool", "main", id])).sort(),
+      );
+      expect(helperCalls.map((event) => JSON.parse(event.executionId)[2]).sort()).toEqual(
+        [...helperCallIds].sort(),
+      );
+      expect(f.providerRequests).toHaveLength(3);
+      expect(f.reservations).toBe(3);
+      expect(await f.app.prisma.botSecret.count({ where: { botId: f.bot.id } })).toBe(0);
+
+      // Do not precondition the answer on checkpoint storage: the regression is bulk approval.
+      await f.rpc("threads/answer", {
+        botId: f.bot.id,
+        runId,
+        messageId: card.message.id,
+        answer: syntheticValue,
+      });
+      const answered = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "request_secret" },
+      });
+      expect(answered.find((effect) => effect.id === siblingBefore.id)).toEqual(siblingBefore);
+      expect(answered.find((effect) => effect.id === selected.id)).toMatchObject({
+        status: "approved",
+        request: selected.request,
+        result: { credentialSaved: destinations[selectedIndex] },
+      });
+      expect(answered).toHaveLength(2);
+      const binding = await f.app.prisma.externalEffect.findUniqueOrThrow({
+        where: { idempotencyKey: f.key },
+      });
+      expect(binding).toMatchObject({
+        runId,
+        spaceId: f.me.spaceId,
+        kind: "runtime_checkpoint",
+        status: "runtime_checkpoint",
+        result: null,
+      });
+      expect(binding.request).toEqual({ pendingSecretEffectId: selected.id, capture: "none" });
+      const stored = await f.app.prisma.botSecret.findMany({
+        where: { userId: f.me.userId, spaceId: f.me.spaceId, botId: f.bot.id },
+      });
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject(destinations[selectedIndex]!);
+      expect(stored[0]!.ciphertext).not.toContain(syntheticValue);
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "queued",
+        leaseFence: 1,
+        error: null,
+      });
+      expect(f.providerRequests).toHaveLength(3);
+      expect(f.runtimeRequests.filter((request) => request.runId === runId)).toHaveLength(1);
+      expect(f.mainWrites()).toHaveLength(0);
+      const client = await f.clientSnapshot();
+      expect(client).not.toContain(syntheticValue);
+      expect(client).not.toContain("pendingSecretEffectId");
+      expect(client).not.toContain('"capture":"none"');
+      // Helpers have no full transcript capture; this case deliberately does not resume them.
+    } finally {
+      release();
+      await firstAttempt;
+      await f.close();
+    }
+  }, 45_000);
+});

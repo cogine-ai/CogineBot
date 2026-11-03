@@ -8,6 +8,7 @@ import type {
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
+import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
@@ -24,6 +25,7 @@ import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
 import { compileOpenApiDocument } from "./openapi-import.js";
 import { serializeModelSecret } from "./pi-oauth.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
+import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -51,6 +53,7 @@ type Effect = {
   result?: unknown;
   reviewDecision?: string;
   runId?: string;
+  spaceId?: string;
 };
 
 type TestConnection = {
@@ -91,6 +94,8 @@ function fixture({
   onConnectionRead,
   connectorProvider,
   catalogToolName = "demo_execute_tool",
+  runtimeProvider,
+  groupId = null,
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -114,6 +119,8 @@ function fixture({
   onConnectionRead?: (count: number) => void;
   connectorProvider?: ConnectorProvider;
   catalogToolName?: string;
+  runtimeProvider?: AgentRuntime;
+  groupId?: string | null;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -201,16 +208,64 @@ function fixture({
         return { count: 1 };
       },
     ),
+    deleteMany: vi.fn(
+      async ({
+        where,
+      }: {
+        where: {
+          OR: Array<{
+            idempotencyKey: string;
+            runId: string;
+            spaceId: string;
+            kind: string;
+            status: string;
+          }>;
+        };
+      }) => {
+        let count = 0;
+        for (let index = effects.length - 1; index >= 0; index -= 1) {
+          const effect = effects[index]!;
+          if (
+            where.OR.some(
+              (scope) =>
+                effect.idempotencyKey === scope.idempotencyKey &&
+                effect.runId === scope.runId &&
+                effect.spaceId === scope.spaceId &&
+                effect.kind === scope.kind &&
+                effect.status === scope.status,
+            )
+          ) {
+            effects.splice(index, 1);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    ),
   };
   let connectionReadCount = 0;
   const prisma = {
     run: {
       findUnique: vi.fn(async () => run),
       findUniqueOrThrow: vi.fn(async () => run),
-      updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        Object.assign(run, data);
-        return { count: 1 };
-      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const current: Record<string, unknown> = run;
+          for (const key of ["id", "spaceId", "status", "leaseOwner", "leaseFence"] as const) {
+            const expected = where[key];
+            if (expected !== undefined && typeof expected !== "object" && current[key] !== expected)
+              return { count: 0 };
+          }
+          Object.assign(run, data);
+          return { count: 1 };
+        },
+      ),
     },
     bot: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
@@ -233,7 +288,7 @@ function fixture({
       update: vi.fn(),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
-    thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })) },
+    thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId })) },
     message: { findMany: vi.fn(async () => []) },
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt, connectionIds })) },
     connection: {
@@ -265,7 +320,18 @@ function fixture({
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: autoReview })) },
     externalEffect,
     mcpServer: { findMany: vi.fn(async () => []) },
+    usageRecord: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: "usage-1",
+        ...data,
+      })),
+    },
   };
+  Object.assign(prisma, {
+    $transaction: vi.fn(async (callback: (tx: typeof prisma) => Promise<unknown>) =>
+      callback(prisma),
+    ),
+  });
   const pauseRunForInput = vi.fn(async () => {
     run.status = "waiting_input";
     return true;
@@ -293,7 +359,10 @@ function fixture({
   });
   const executor = createRunExecutor({
     prisma,
-    runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
+    runtime: runtimeProvider ?? {
+      describe: () => ({ capabilities: { scripted: false } }),
+      run: runtimeRun,
+    },
     connector: connectorProvider ?? {
       discoverTools: async () =>
         builtin
@@ -338,7 +407,12 @@ function fixture({
       commit,
     },
     memoryProviders: { resolve: async () => null },
-    events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
+    events: {
+      append: vi.fn(async () => undefined),
+      notify: vi.fn(async () => undefined),
+      pauseRunForInput,
+      finalizeRun,
+    },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets,
     secretStore: { load: async (ciphertext: string) => ciphertext },
@@ -349,6 +423,9 @@ function fixture({
   return {
     tool,
     prisma,
+    executor,
+    runRecord: run,
+    finalizeRun,
     runtimeRun,
     effects,
     results,
@@ -383,6 +460,332 @@ function fixture({
     },
   };
 }
+
+describe("group peer dispatch across runtime modes", () => {
+  function groupPeerFixture({
+    scripted = true,
+    disabled = false,
+    collaborationAllowed = true,
+  }: {
+    scripted?: boolean;
+    disabled?: boolean;
+    collaborationAllowed?: boolean;
+  } = {}) {
+    const scriptedRuntime = new ScriptedAgentRuntime();
+    const scriptedRun = vi.spyOn(scriptedRuntime, "run");
+    const f = fixture({
+      builtin: true,
+      name: "message_bot",
+      groupId: "group-1",
+      prompt: "message the bot named Analyst saying group-peer-alpha",
+      disabledBuiltinTools: disabled ? ["message_bot"] : [],
+      runtimeProvider: scripted ? scriptedRuntime : undefined,
+    });
+    Object.assign(f.runRecord, { scriptedState: null, sourceMessageId: null, origin: "human" });
+    f.setCalls([
+      {
+        args: { confirm_name: "Analyst", message: "group-peer-alpha", intent: "request" },
+        executionId: "group-peer-model-call",
+      },
+    ]);
+    const target = {
+      id: "bot-target",
+      name: "Analyst",
+      title: "",
+      thread: { id: "target-direct-thread" },
+    };
+    const sent: Array<{
+      id: string;
+      seq: number;
+      threadId: string;
+      role: string;
+      blocks: MessageBlock[];
+      runId?: string;
+      botId?: string;
+      clientNonce?: string;
+    }> = [];
+    const peers = new Map<string, Record<string, unknown>>();
+    const sequences = new Map<string, { nextMessageSeq: number; nextEventSeq: number }>();
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      space: {
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+          where.id === f.runRecord.spaceId
+            ? {
+                id: where.id,
+                allowBotCollaboration: collaborationAllowed,
+                collaborationRevision: 3,
+                deletingAt: null,
+              }
+            : null,
+        ),
+      },
+      spaceMember: {
+        findUnique: vi.fn(
+          async ({ where }: { where: { spaceId_userId: { spaceId: string; userId: string } } }) =>
+            where.spaceId_userId.spaceId === f.runRecord.spaceId &&
+            where.spaceId_userId.userId === f.runRecord.userId
+              ? where.spaceId_userId
+              : null,
+        ),
+      },
+      bot: {
+        findFirst: vi.fn(
+          async ({
+            where,
+          }: {
+            where: { id: string; spaceId: string; userId: string; archivedAt: null };
+          }) =>
+            where.spaceId === f.runRecord.spaceId &&
+            where.userId === f.runRecord.userId &&
+            [f.runRecord.botId, target.id].includes(where.id)
+              ? {
+                  id: where.id,
+                  userId: f.runRecord.userId,
+                  spaceId: f.runRecord.spaceId,
+                  disabledBuiltinTools:
+                    where.id === f.runRecord.botId && disabled ? ["message_bot"] : [],
+                }
+              : null,
+        ),
+      },
+      thread: {
+        findFirst: vi.fn(async ({ where }: { where: { id: string; spaceId: string } }) =>
+          where.id === target.thread.id && where.spaceId === f.runRecord.spaceId
+            ? { id: target.thread.id, spaceId: f.runRecord.spaceId }
+            : null,
+        ),
+        update: vi.fn(
+          async ({
+            where,
+            data,
+          }: {
+            where: { id: string };
+            data: { nextMessageSeq?: unknown; nextEventSeq?: unknown };
+          }) => {
+            const sequence = sequences.get(where.id) ?? { nextMessageSeq: 1, nextEventSeq: 1 };
+            if (data.nextMessageSeq) sequence.nextMessageSeq += 1;
+            if (data.nextEventSeq) sequence.nextEventSeq += 1;
+            sequences.set(where.id, sequence);
+            return { ...sequence };
+          },
+        ),
+      },
+      run: {
+        findFirst: vi.fn(
+          async ({
+            where,
+          }: {
+            where: {
+              id: string;
+              spaceId: string;
+              threadId: string;
+              botId: string;
+              userId: string;
+              status?: string;
+            };
+          }) =>
+            where.id === f.runRecord.id &&
+            where.spaceId === f.runRecord.spaceId &&
+            where.threadId === f.runRecord.threadId &&
+            where.botId === f.runRecord.botId &&
+            where.userId === f.runRecord.userId &&
+            (!where.status || where.status === f.runRecord.status)
+              ? f.runRecord
+              : null,
+        ),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+          where.id === f.runRecord.id ? f.runRecord : (peers.get(where.id) ?? null),
+        ),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const peer = { id: `group-peer-run-${peers.size + 1}`, ...data };
+          peers.set(peer.id, peer);
+          return peer;
+        }),
+      },
+      task: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "peer-task",
+          ...data,
+        })),
+      },
+      message: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: { data: Omit<(typeof sent)[number], "id"> }) => {
+          const message = { id: `group-peer-message-${sent.length + 1}`, ...data };
+          sent.push(message);
+          return message;
+        }),
+        update: vi.fn(
+          async ({ where, data }: { where: { id: string }; data: { runId: string } }) => {
+            const message = sent.find((entry) => entry.id === where.id);
+            if (!message) throw new Error("Missing committed peer message");
+            Object.assign(message, data);
+            return message;
+          },
+        ),
+      },
+      event: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "peer-event",
+          ...data,
+        })),
+      },
+    };
+    Object.assign(f.prisma.bot, { findMany: vi.fn(async () => [target]) });
+    Object.assign(f.prisma, {
+      chatGroup: {
+        findUnique: vi.fn(async () => ({
+          id: "group-1",
+          name: "Peer group",
+          members: [
+            { bot: { id: f.runRecord.botId, name: "Assistant", title: "", description: "" } },
+            { bot: { id: target.id, name: target.name, title: "", description: "" } },
+          ],
+        })),
+      },
+      $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+        callback(tx),
+      ),
+    });
+    return {
+      ...f,
+      scriptedRun,
+      sent,
+      peers,
+      tx,
+      target,
+      async continue() {
+        await f.executor.continueRun(f.runRecord.id, "group-peer-worker");
+        expect(f.finalizeRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            outcome: "completed",
+            runId: f.runRecord.id,
+            threadId: f.runRecord.threadId,
+          }),
+        );
+        expect(f.finalizeRun).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: "failed" }),
+        );
+      },
+    };
+  }
+
+  it("delivers a scripted group peer request through current A8 scope without offering message_bot to the model", async () => {
+    const f = groupPeerFixture();
+    await f.continue();
+    expect(f.scriptedRun).toHaveBeenCalledOnce();
+    const offered = f.scriptedRun.mock.calls[0]![0].tools.map((tool) => tool.name);
+    expect(offered).not.toContain("message_bot");
+    expect(offered).toContain("handoff_to_bot");
+    const outbound = f.sent.filter((message) =>
+      message.blocks.some((block) => block.kind === "bot_message_sent"),
+    );
+    const inbound = f.sent.filter((message) =>
+      message.blocks.some((block) => block.kind === "bot_message_received"),
+    );
+    expect(outbound).toHaveLength(1);
+    expect(inbound).toHaveLength(1);
+    expect(outbound[0]).toMatchObject({
+      threadId: f.runRecord.threadId,
+      role: "bot",
+      botId: f.runRecord.botId,
+      runId: f.runRecord.id,
+      blocks: [{ kind: "bot_message_sent", toBotId: f.target.id, text: "group-peer-alpha" }],
+    });
+    expect(inbound[0]).toMatchObject({
+      threadId: f.target.thread.id,
+      role: "user",
+      blocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: f.runRecord.botId,
+          text: "group-peer-alpha",
+          returnToMessageId: outbound[0]!.id,
+        },
+      ],
+    });
+    expect(f.tx.run.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: f.runRecord.id,
+          spaceId: f.runRecord.spaceId,
+          threadId: f.runRecord.threadId,
+          botId: f.runRecord.botId,
+          userId: f.runRecord.userId,
+          status: "running",
+        },
+      }),
+    );
+    expect(f.tx.space.findUnique).toHaveBeenCalledWith({ where: { id: f.runRecord.spaceId } });
+    expect(f.tx.spaceMember.findUnique).toHaveBeenCalledWith({
+      where: { spaceId_userId: { spaceId: f.runRecord.spaceId, userId: f.runRecord.userId } },
+    });
+    expect([...f.peers.values()]).toEqual([
+      expect.objectContaining({
+        spaceId: f.runRecord.spaceId,
+        userId: f.runRecord.userId,
+        threadId: f.target.thread.id,
+        botId: f.target.id,
+        trigger: "bot_message",
+        origin: "bot_peer",
+        parentRunId: f.runRecord.id,
+        collaborationSourceSpaceId: f.runRecord.spaceId,
+        collaborationSourceBotId: f.runRecord.botId,
+        collaborationMessageId: outbound[0]!.id,
+        sourceMessageId: inbound[0]!.id,
+        collaborationRevision: 3,
+      }),
+    ]);
+    expect(f.effects.filter((effect) => effect.kind === "message_bot")).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        runId: f.runRecord.id,
+        result: expect.objectContaining({ ok: true, botId: f.target.id }),
+      }),
+    ]);
+  });
+
+  it.each([
+    { reason: "explicitly disabled", disabled: true, collaborationAllowed: true },
+    { reason: "Space collaboration disabled", disabled: false, collaborationAllowed: false },
+  ])(
+    "refuses a scripted group peer request when $reason",
+    async ({ disabled, collaborationAllowed }) => {
+      const f = groupPeerFixture({ disabled, collaborationAllowed });
+      await f.continue();
+      expect(f.scriptedRun).toHaveBeenCalledOnce();
+      expect(
+        f.sent.filter((message) =>
+          message.blocks.some(
+            (block) => block.kind === "bot_message_sent" || block.kind === "bot_message_received",
+          ),
+        ),
+      ).toEqual([]);
+      expect(f.peers.size).toBe(0);
+      expect(f.tx.run.create).not.toHaveBeenCalled();
+      if (disabled) expect(f.effects.filter((effect) => effect.kind === "message_bot")).toEqual([]);
+      else {
+        expect(f.tx.space.findUnique).toHaveBeenCalledWith({ where: { id: f.runRecord.spaceId } });
+        expect(f.effects.filter((effect) => effect.kind === "message_bot")).toEqual([
+          expect.objectContaining({ result: { error: "policy_disabled" } }),
+        ]);
+      }
+    },
+  );
+
+  it("keeps an unoffered group message_bot call blocked for a model runtime", async () => {
+    const f = groupPeerFixture({ scripted: false });
+    await f.continue();
+    expect(f.runtimeRun).toHaveBeenCalledOnce();
+    expect(f.runtimeRun.mock.calls[0]![0].tools.map((tool) => tool.name)).not.toContain(
+      "message_bot",
+    );
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.tx.run.create).not.toHaveBeenCalled();
+    expect(f.peers.size).toBe(0);
+  });
+});
 
 describe("bot instructions in actual model requests", () => {
   async function modelRequest(instructions: string, trigger = "user") {
