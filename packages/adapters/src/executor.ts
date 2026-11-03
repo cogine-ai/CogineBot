@@ -15,6 +15,7 @@ import type {
   ComputerRef,
   ConnectorCall,
   ConnectorProvider,
+  ConnectorRoute,
   ConnectorTool,
   JobPublisher,
   ManagedConnectorProvider,
@@ -57,7 +58,7 @@ import {
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, PlatformModelAllowlist, ToolCallStreak } from "@rakazo/core";
+import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
 import {
   appendTextSegment,
   appendToolCallSegment,
@@ -122,6 +123,7 @@ import {
   InvalidSpaceNameError,
   isTooManyDatabaseConnections,
   loadRunHistoryMessages,
+  loadRunTurnCheckpoint,
   Prisma,
   parseComputerMode,
   readHistory,
@@ -207,7 +209,12 @@ import {
   browserNavigateFromTool,
   browserSnapshotFromTool,
 } from "./browser-tools.js";
-import { agentConnectionTools, builtinAgentTools, sharedMemorySaveError } from "./builtin-tools.js";
+import {
+  agentConnectionTools,
+  BUILTIN_AGENT_TOOL_NAMES,
+  builtinAgentTools,
+  sharedMemorySaveError,
+} from "./builtin-tools.js";
 import { chatGPTPlanRotationCheckpoint } from "./chatgpt-plan-auth.js";
 import { withChatGPTPlanCredentialLock } from "./chatgpt-plan-credential-lock.js";
 import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
@@ -350,6 +357,7 @@ import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
+import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -360,6 +368,12 @@ import {
   secretPausedToolResult,
   tryCompleteConnectionWithCode,
 } from "./run-secret.js";
+import type { RunTurnCheckpointState } from "./run-turn-state.js";
+import {
+  claimTurnEffectOccurrence,
+  createRunTurnCheckpointState,
+  persistRunTurnCheckpoint,
+} from "./run-turn-state.js";
 import { withRuntimeCleanup } from "./runtime-stream.js";
 import {
   cancelScheduleFromTool,
@@ -433,7 +447,9 @@ import {
   listBoardTickets,
   updateTicket,
 } from "./ticket-tools.js";
-import { advanceToolCallLoopGuard, loopGuardStopText } from "./tool-loop.js";
+import type { LoopGuardStreak } from "./tool-loop.js";
+import { advanceToolCallLoopGuard, loopGuardStopText, toolResultFingerprint } from "./tool-loop.js";
+import { isFailedToolResult, toolResultError } from "./tool-result-error.js";
 import { textContentArg } from "./tool-text.js";
 import {
   botMessageOutcomeFromMidTurn,
@@ -482,7 +498,6 @@ const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
-const BUILTIN_AGENT_TOOL_NAMES = new Set(builtinAgentTools.map((tool) => tool.name));
 
 /** Avoid an expensive remote workspace export when a turn never touched the computer. */
 export function createRunWorkspaceCheckpoint(checkpoint: () => Promise<unknown>) {
@@ -2757,36 +2772,6 @@ function isAuditableToolResult(value: unknown): value is {
   );
 }
 
-function isFailedToolResult(value: unknown): value is { error: unknown } {
-  if (!value || typeof value !== "object" || !("error" in value)) return false;
-  const error = (value as { error?: unknown }).error;
-  return error !== undefined && error !== null;
-}
-
-/**
- * Tools can return an `error` or MCP `isError: true` instead of throwing. Pi keeps that
- * result in `details` without populating `completion.error`. Read the failure for auditing
- * without changing the result that reaches the model and lets it react to the failure.
- */
-function toolResultError(result: unknown): unknown {
-  const payload = (result as { details?: unknown } | null)?.details ?? result;
-  if (isFailedToolResult(payload)) {
-    const message = (payload.error as { message?: unknown })?.message;
-    return typeof message === "string" ? message : payload.error;
-  }
-  if (!payload || typeof payload !== "object") return undefined;
-  if ((payload as { isError?: unknown }).isError !== true) return undefined;
-  const content = (payload as { content?: unknown }).content;
-  const text = Array.isArray(content)
-    ? content
-        .map((part) => (part as { text?: unknown } | null)?.text)
-        .filter((value): value is string => typeof value === "string")
-        .join("\n")
-        .trim()
-    : "";
-  return text || "tool reported an error result";
-}
-
 export function toolCompletionFromResult(
   base: Pick<AgentToolCompletion, "name" | "executionId" | "durationMs">,
   result: unknown,
@@ -4271,7 +4256,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : []),
         ];
         const exposedConnectorTools = discovered.filter(
-          (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
+          (tool) => !BUILTIN_AGENT_TOOL_NAMES.has(tool.name),
         );
         const connectorTools = new Map(
           exposedConnectorTools.map((tool) => [tool.name, tool] as const),
@@ -4423,7 +4408,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let pendingProgress = "";
         let lastProgressAt = 0;
         let hasStreamedText = false;
-        let toolCallStreak: ToolCallStreak = { key: undefined, count: 0 };
+        let toolCallStreak: LoopGuardStreak = { key: undefined, count: 0 };
+        const helperToolCallStreaks = new Map<string, LoopGuardStreak>();
+        const toolResults = new Map<string, string>();
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
         let terminalCheckpointComplete = false;
@@ -4525,6 +4512,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return result;
         };
 
+        let pauseRequest: Promise<unknown> | undefined;
+        const requestPause = async <T>(
+          show: () => Promise<T>,
+        ): Promise<{ owned: true; result: T } | { owned: false }> => {
+          if (pauseRequest) {
+            await pauseRequest;
+            return { owned: false };
+          }
+          const current = show();
+          pauseRequest = current;
+          try {
+            return { owned: true, result: await current };
+          } catch (error) {
+            if (pauseRequest === current) pauseRequest = undefined;
+            throw error;
+          }
+        };
         const pauseForApproval = () => {
           approvalPausePending = true;
           return approvalPausedToolResult();
@@ -4538,6 +4542,54 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const mutatingEffectOccurrences = new Map<string, number>(
           scriptedResume.stored?.effectOccurrences,
         );
+        let turnState: RunTurnCheckpointState;
+        try {
+          const turnCheckpoint = scripted
+            ? undefined
+            : await loadRunTurnCheckpoint(deps.prisma, run);
+          turnState = createRunTurnCheckpointState({
+            runId,
+            blob: turnCheckpoint,
+            model: { provider: runModelProvider ?? "", id: runModelId ?? "" },
+            tools,
+            instructionsBaseline: bot.instructions,
+            counts: mutatingEffectOccurrences,
+          });
+        } catch (error) {
+          if (isTooManyDatabaseConnections(error)) throw error;
+          // An unreadable or incompatible saved turn must never become a fresh execution.
+          getLogger().error("saved turn restoration failed", { runId, error });
+          await failRunBeforeModel("Saved turn checkpoint could not be restored");
+          return;
+        }
+        const verbatimMcpServers =
+          !scripted &&
+          (turnState.blob !== undefined || tools.some((tool) => tool.route?.connectorId === "mcp"))
+            ? await loadRunVerbatimMcpServers(deps.prisma, context)
+            : undefined;
+        const currentDisabledBuiltinTools = async () => {
+          const current = await deps.prisma.bot.findUnique({
+            where: { id: bot.id },
+            select: { spaceId: true, disabledBuiltinTools: true },
+          });
+          if (!current || current.spaceId !== run.spaceId)
+            throw new Error("Bot tools are no longer available");
+          return disabledBuiltinToolSet(current.disabledBuiltinTools);
+        };
+        const availableToolNames = async () => {
+          const disabled = await currentDisabledBuiltinTools();
+          return tools.filter((tool) => !disabled.has(tool.name)).map((tool) => tool.name);
+        };
+        const persistTurnCheckpoint = (executionId?: string, pendingSecretEffectId?: string) =>
+          persistRunTurnCheckpoint(
+            deps.prisma,
+            run,
+            workerId,
+            fence,
+            turnState,
+            executionId,
+            pendingSecretEffectId,
+          );
         const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
         let lastScriptedState = scriptedResume.stored;
         const snapshotScriptedOutput = (): ScriptedOutputState =>
@@ -4699,7 +4751,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }),
           );
         };
-        const pauseRunForInput = async (input: Parameters<ThreadEvents["pauseRunForInput"]>[0]) => {
+        const pauseRunForInput = async (
+          input: Parameters<ThreadEvents["pauseRunForInput"]>[0],
+          executionId?: string,
+          pendingSecretEffectId?: string,
+        ) => {
+          if (!scripted) await persistTurnCheckpoint(executionId, pendingSecretEffectId);
           try {
             return await deps.events.pauseRunForInput(input);
           } catch (error) {
@@ -4709,7 +4766,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         };
         const pauseRunForTakeover = async (
           input: Parameters<ThreadEvents["pauseRunForTakeover"]>[0],
+          executionId?: string,
         ) => {
+          if (!scripted) await persistTurnCheckpoint(executionId);
           try {
             return await deps.events.pauseRunForTakeover(input);
           } catch (error) {
@@ -4760,12 +4819,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }),
           );
         };
-        const nextMutatingEffectOccurrence = (toolName: string, args: Record<string, unknown>) => {
-          const fingerprint = toolEffectIdempotencyKey(runId, toolName, args);
-          const occurrence = mutatingEffectOccurrences.get(fingerprint) ?? 0;
-          mutatingEffectOccurrences.set(fingerprint, occurrence + 1);
-          return occurrence;
-        };
+        const nextMutatingEffectOccurrence = (
+          toolName: string,
+          args: Record<string, unknown>,
+          executionId: string,
+          approvedKey?: string,
+        ) => claimTurnEffectOccurrence(turnState, runId, toolName, args, executionId, approvedKey);
 
         const applyTool = async (
           name: string,
@@ -4780,7 +4839,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               error: "This stage was handed off. End the turn without more tool calls.",
             };
           }
-          if (disabledBuiltinTools.has(name)) {
+          if (
+            disabledBuiltinTools.has(name) ||
+            (BUILTIN_AGENT_TOOL_NAMES.has(name) &&
+              (scripted
+                ? (await currentDisabledBuiltinTools()).has(name)
+                : !(await availableToolNames()).includes(name)))
+          ) {
             return { error: "This tool is disabled for this bot." };
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name) && !pageBrowserAllowed) {
@@ -4902,6 +4967,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // hit the already-approved effect instead of creating a second approval card.
           const nextApprovedTool = approvedEffectReplays.nextToolName();
           const nextApprovedRequest = approvedEffectReplays.nextRequest();
+          const nextApprovedKey = approvedEffectReplays.nextIdempotencyKey();
           const liveRoute =
             connectorCall.route?.resourceId &&
             connectorCall.route.connectorId &&
@@ -5078,11 +5144,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const occurrence =
             name === "request_secret"
               ? 0
-              : nextMutatingEffectOccurrence(replayEffectToolName, args);
+              : nextMutatingEffectOccurrence(
+                  replayEffectToolName,
+                  args,
+                  executionId,
+                  nextApprovedKey,
+                );
           const effectKey =
-            usesApprovalKey && occurrence === 0
+            nextApprovedKey ??
+            (usesApprovalKey && occurrence === 0
               ? approvalEffectKey(runId, replayEffectToolName, args)
-              : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence);
+              : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence));
           // Connector read-only hints must not bypass approval, review, or replay decisions.
           const applied = READ_ONLY_AGENT_TOOLS.has(name)
             ? undefined
@@ -5283,29 +5355,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
             throw uncertainEffectError(name);
           };
 
-          const requestApproval = async () => {
+          const showApprovalCard = async () => {
             if (!(await renewRunLease(deps, runId, workerId, fence))) {
               // Another worker owns the run now; exit without leaving a local pause card.
               return pauseForApproval();
             }
             await workspaceCheckpoint.flush();
-            const paused = await pauseRunForInput({
-              spaceId: run.spaceId,
-              threadId: run.threadId,
-              botId: run.botId,
-              runId,
-              attemptId: attempt.id,
-              leaseOwner: workerId,
-              leaseFence: fence,
-              ...(isSteeringContinuation && lastScriptedState
-                ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                : {}),
-              blocks: [
-                buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
-                  reviewReason,
-                }),
-              ],
-            });
+            const paused = await pauseRunForInput(
+              {
+                spaceId: run.spaceId,
+                threadId: run.threadId,
+                botId: run.botId,
+                runId,
+                attemptId: attempt.id,
+                leaseOwner: workerId,
+                leaseFence: fence,
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
+                blocks: [
+                  buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
+                    reviewReason,
+                  }),
+                ],
+              },
+              executionId,
+            );
             // pauseRunForInput returning false after a successful renew means the run row no
             // longer matches this worker. Exiting via pauseForApproval() would leave the run
             // stuck in "running" with no ask card — fail instead so the user can retry.
@@ -5320,6 +5395,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
             });
             return pauseForApproval();
+          };
+
+          const requestApproval = async () => {
+            const pause = await requestPause(showApprovalCard);
+            return pause.owned ? pause.result : pauseForApproval();
           };
 
           if (applied?.duplicate) {
@@ -6774,45 +6854,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return settleUncertainEffect(deps.prisma, recordedForAsk.effect.id, "request_secret");
             }
-            if (!(await renewRunLease(deps, runId, workerId, fence))) {
-              return pauseForSecret();
-            }
-            await workspaceCheckpoint.flush();
-            const paused = await pauseRunForInput({
-              spaceId: run.spaceId,
-              threadId: run.threadId,
-              botId: run.botId,
-              runId,
-              attemptId: attempt.id,
-              leaseOwner: workerId,
-              leaseFence: fence,
-              ...(isSteeringContinuation && lastScriptedState
-                ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                : {}),
-              blocks: [
+            const pause = await requestPause(async () => {
+              if (!(await renewRunLease(deps, runId, workerId, fence))) {
+                return pauseForSecret();
+              }
+              await workspaceCheckpoint.flush();
+              const paused = await pauseRunForInput(
                 {
-                  kind: "ask",
-                  text: String(args.label ?? "Code"),
-                  input: "secret",
-                  ...(destination ? { credential: destination } : {}),
-                  purpose: normalizeSecretAskPurpose(
-                    args.purpose ? String(args.purpose) : undefined,
-                  ),
-                  status: "pending",
+                  spaceId: run.spaceId,
+                  threadId: run.threadId,
+                  botId: run.botId,
+                  runId,
+                  attemptId: attempt.id,
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  ...(isSteeringContinuation && lastScriptedState
+                    ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                    : {}),
+                  blocks: [
+                    {
+                      kind: "ask",
+                      text: String(args.label ?? "Code"),
+                      input: "secret",
+                      ...(destination ? { credential: destination } : {}),
+                      purpose: normalizeSecretAskPurpose(
+                        args.purpose ? String(args.purpose) : undefined,
+                      ),
+                      status: "pending",
+                    },
+                  ],
                 },
-              ],
+                executionId,
+                recordedForAsk.effect.id,
+              );
+              if (!paused) {
+                throw new Error("Could not pause this run for protected input; try sending again.");
+              }
+              await notifyRun(deps, run, {
+                kind: "help",
+                title: `${bot.name} needs a code`,
+                body: String(args.label ?? "Code"),
+                botId: bot.id,
+                threadId: thread.id,
+              });
+              return pauseForSecret();
             });
-            if (!paused) {
-              throw new Error("Could not pause this run for protected input; try sending again.");
-            }
-            await notifyRun(deps, run, {
-              kind: "help",
-              title: `${bot.name} needs a code`,
-              body: String(args.label ?? "Code"),
-              botId: bot.id,
-              threadId: thread.id,
-            });
-            return pauseForSecret();
+            return pause.owned ? pause.result : pauseForSecret();
           }
           if (name === "request_takeover") return { ok: true };
           if (name === "run_subagent") {
@@ -7552,6 +7639,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               },
               resumeFromCheckpoint: takeoverResume?.checkpoint,
+              ...(scripted
+                ? {}
+                : {
+                    turnCheckpoint: turnState.blob,
+                    onCheckpoint: (capture: () => string, executionId: string) => {
+                      turnState.pendingCaptures.set(executionId, capture);
+                    },
+                    availableToolNames,
+                    restoreMcpResultRoute: (route: ConnectorRoute) =>
+                      restoreRunMcpResultRoute(deps.prisma, context, route),
+                    ...(verbatimMcpServers ? { verbatimMcpServers } : {}),
+                  }),
               script,
               ...(scripted
                 ? {
@@ -7578,8 +7677,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       true,
                       modelCredentialId ?? null,
                     ),
-              onToolCompleted: (completion) =>
-                appendToolCompletionAudit(
+              onToolCompleted: (completion) => {
+                if (turnState.restoredPending?.executionId === completion.executionId)
+                  turnState.restoredPending = undefined;
+                if (!completion.paused) turnState.pendingCaptures.delete(completion.executionId);
+                toolResults.set(
+                  completion.executionId,
+                  toolResultFingerprint(completion.result, completion.error),
+                );
+                return appendToolCompletionAudit(
                   deps,
                   {
                     spaceId: run.spaceId,
@@ -7589,7 +7695,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   completion,
                   runSecrets,
-                ),
+                );
+              },
               storeToolResult: (result) =>
                 !disabledBuiltinTools.has("read_history") && connectorTools.has(result.name)
                   ? storeConnectorToolResultHistory(
@@ -7699,7 +7806,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 await flushProgress();
               }
             } else if (event.type === "progress") {
-              toolCallStreak = { key: undefined, count: 0 };
+              if (!event.activity) toolCallStreak = { key: undefined, count: 0 };
               if (isBackgroundRunTrigger(run.trigger)) continue;
               // Flush batched text deltas first so an activity line cannot land
               // ahead of text the model streamed before the tool call.
@@ -7727,121 +7834,133 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               });
             } else if (event.type === "ask") {
-              if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-              const safeText = redactSecrets(event.text, runSecrets);
-              const safeDetail = event.detail
-                ? redactSecrets(event.detail, runSecrets)
-                : event.detail;
-              const safeActions = event.actions?.map((action) => ({
-                id: action.id,
-                label: redactSecrets(action.label, runSecrets),
-              }));
-              await workspaceCheckpoint.flush();
-              const paused = await pauseRunForInput({
-                spaceId: run.spaceId,
-                threadId: run.threadId,
-                botId: run.botId,
-                runId,
-                attemptId: attempt.id,
-                leaseOwner: workerId,
-                leaseFence: fence,
-                ...(isSteeringContinuation && lastScriptedState
-                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                  : {}),
-                blocks: [
+              await requestPause(async () => {
+                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+                const safeText = redactSecrets(event.text, runSecrets);
+                const safeDetail = event.detail
+                  ? redactSecrets(event.detail, runSecrets)
+                  : event.detail;
+                const safeActions = event.actions?.map((action) => ({
+                  id: action.id,
+                  label: redactSecrets(action.label, runSecrets),
+                }));
+                await workspaceCheckpoint.flush();
+                const paused = await pauseRunForInput(
                   {
-                    kind: "ask",
-                    text: safeText,
-                    detail: safeDetail,
-                    status: "pending",
-                    actions: safeActions,
+                    spaceId: run.spaceId,
+                    threadId: run.threadId,
+                    botId: run.botId,
+                    runId,
+                    attemptId: attempt.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                    ...(isSteeringContinuation && lastScriptedState
+                      ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                      : {}),
+                    blocks: [
+                      {
+                        kind: "ask",
+                        text: safeText,
+                        detail: safeDetail,
+                        status: "pending",
+                        actions: safeActions,
+                      },
+                    ],
+                    // Keep unredacted labels on the run for resume; message blocks stay redacted.
+                    offeredActions: event.actions,
                   },
-                ],
-                // Keep unredacted labels on the run for resume; message blocks stay redacted.
-                offeredActions: event.actions,
-              });
-              if (!paused) return;
-              await notifyRun(deps, run, {
-                kind: "help",
-                title: `${bot.name} needs an answer`,
-                body: safeText,
-                botId: bot.id,
-                threadId: thread.id,
+                  event.executionId,
+                );
+                if (!paused) return;
+                await notifyRun(deps, run, {
+                  kind: "help",
+                  title: `${bot.name} needs an answer`,
+                  body: safeText,
+                  botId: bot.id,
+                  threadId: thread.id,
+                });
+                return;
               });
               return;
             } else if (event.type === "takeover") {
-              if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-              // The user takes over the computer's screen, so it must be up before the run waits.
-              await runComputer.get();
-              const safeReason = redactSecrets(event.reason, runSecrets);
-              // Publish pending narration as tagged mid-turn progress so reconciliation
-              // does not treat pre-takeover text as the delegated final result.
-              await publishMidTurnNarration();
-              if (assembled.trim()) {
-                const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
-                if (narration && runPromotesMidTurnNarration(run.trigger)) {
-                  if (isSteeringContinuation && lastScriptedState) {
-                    await publishDurableScriptedOutput(
-                      [{ kind: "text", text: narration }],
-                      undefined,
-                      "takeover-narration",
-                      { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
-                    );
-                    midTurnProgressCount += 1;
-                  } else {
-                    await publishMessage(
-                      deps,
-                      run,
-                      "bot",
-                      [{ kind: "text", text: narration }],
-                      undefined,
-                      userProgressClientNonce(run.id, midTurnProgressCount++),
-                    );
+              await requestPause(async () => {
+                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+                // The user takes over the computer's screen, so it must be up before the run waits.
+                await runComputer.get();
+                const safeReason = redactSecrets(event.reason, runSecrets);
+                // Publish pending narration as tagged mid-turn progress so reconciliation
+                // does not treat pre-takeover text as the delegated final result.
+                await publishMidTurnNarration();
+                if (assembled.trim()) {
+                  const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
+                  if (narration && runPromotesMidTurnNarration(run.trigger)) {
+                    if (isSteeringContinuation && lastScriptedState) {
+                      await publishDurableScriptedOutput(
+                        [{ kind: "text", text: narration }],
+                        undefined,
+                        "takeover-narration",
+                        { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
+                      );
+                      midTurnProgressCount += 1;
+                    } else {
+                      await publishMessage(
+                        deps,
+                        run,
+                        "bot",
+                        [{ kind: "text", text: narration }],
+                        undefined,
+                        userProgressClientNonce(run.id, midTurnProgressCount++),
+                      );
+                    }
+                    midTurnUserTexts.push(narration);
+                    publishedMidTurnUserMessage = true;
+                  } else if (narration) {
+                    discardedMidTurnNarration = true;
                   }
-                  midTurnUserTexts.push(narration);
-                  publishedMidTurnUserMessage = true;
-                } else if (narration) {
-                  discardedMidTurnNarration = true;
+                  assembled = "";
+                  hasStreamedText = false;
+                  pendingProgress = "";
                 }
-                assembled = "";
-                hasStreamedText = false;
-                pendingProgress = "";
-              }
-              if (!(isSteeringContinuation && lastScriptedState)) {
-                await publishMessage(
-                  deps,
-                  run,
-                  "bot",
-                  [{ kind: "computer", state: "Needs you", text: safeReason }],
-                  true,
+                if (!(isSteeringContinuation && lastScriptedState)) {
+                  await publishMessage(
+                    deps,
+                    run,
+                    "bot",
+                    [{ kind: "computer", state: "Needs you", text: safeReason }],
+                    true,
+                  );
+                }
+                await workspaceCheckpoint.flush();
+                if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
+                  throw new Error("Computer lease expired before takeover");
+                }
+                const paused = await pauseRunForTakeover(
+                  {
+                    spaceId: run.spaceId,
+                    threadId: run.threadId,
+                    botId: run.botId,
+                    runId,
+                    attemptId: attempt.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                    reason: safeReason,
+                    computerId: storedComputer.id,
+                    ...(isSteeringContinuation && lastScriptedState
+                      ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                      : {}),
+                  },
+                  event.executionId,
                 );
-              }
-              await workspaceCheckpoint.flush();
-              if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
-                throw new Error("Computer lease expired before takeover");
-              }
-              const paused = await pauseRunForTakeover({
-                spaceId: run.spaceId,
-                threadId: run.threadId,
-                botId: run.botId,
-                runId,
-                attemptId: attempt.id,
-                leaseOwner: workerId,
-                leaseFence: fence,
-                reason: safeReason,
-                computerId: storedComputer.id,
-                ...(isSteeringContinuation && lastScriptedState
-                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                  : {}),
-              });
-              if (!paused) return;
-              retainComputerLease = true;
-              await notifyRun(deps, run, {
-                kind: "takeover",
-                title: `${bot.name} needs you on the screen`,
-                body: safeReason,
-                botId: bot.id,
-                threadId: thread.id,
+                if (!paused) return;
+                retainComputerLease = true;
+                await notifyRun(deps, run, {
+                  kind: "takeover",
+                  title: `${bot.name} needs you on the screen`,
+                  body: safeReason,
+                  botId: bot.id,
+                  threadId: thread.id,
+                });
+                return;
               });
               return;
             } else if (event.type === "tool") {
@@ -7875,13 +7994,47 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   botId: bot.id,
                   type: "agent.tool.called",
                   runId,
-                  payload: { name: event.name, executionId: event.executionId },
+                  payload: {
+                    name: event.name,
+                    executionId: event.executionId,
+                    ...(event.viaUseTool ? { viaUseTool: true } : {}),
+                  },
                 });
                 pendingToolNames.push(event.name);
                 tryFlushPendingTools();
               }
-              const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, event.args);
-              toolCallStreak = loopGuard.streak;
+              let namespace = "main";
+              try {
+                const identity: unknown = JSON.parse(event.executionId);
+                if (
+                  Array.isArray(identity) &&
+                  identity[0] === "pi-tool" &&
+                  typeof identity[1] === "string"
+                )
+                  namespace = identity[1];
+              } catch {
+                /* Scripted IDs share the main streak. */
+              }
+              const streak =
+                namespace === "main"
+                  ? toolCallStreak
+                  : (helperToolCallStreaks.get(namespace) ?? { key: undefined, count: 0 });
+              const previousResult = streak.executionId
+                ? toolResults.get(streak.executionId)
+                : undefined;
+              const loopGuard = advanceToolCallLoopGuard(
+                streak,
+                event.name,
+                event.args,
+                previousResult,
+                event.response,
+              );
+              if (loopGuard.streak !== streak) {
+                if (streak.executionId) toolResults.delete(streak.executionId);
+                const next = { ...loopGuard.streak, executionId: event.executionId };
+                if (namespace === "main") toolCallStreak = next;
+                else helperToolCallStreaks.set(namespace, next);
+              }
               if (loopGuard.stuck) {
                 approvedEffectReplays.assertDrained();
                 flushPendingTools();
@@ -7893,7 +8046,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 terminalCheckpointComplete = true;
                 const stuckText = loopGuardStopText(
                   humanizeToolName(event.name),
-                  toolCallStreak.count,
+                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
                 );
                 const stopped = await deps.events.finalizeRun({
                   spaceId: run.spaceId,
@@ -7932,6 +8085,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 const startedAt = Date.now();
                 try {
                   const result = await applyTool(event.name, event.args, event.executionId);
+                  toolResults.set(event.executionId, toolResultFingerprint(result));
                   await appendToolCompletionAudit(
                     deps,
                     {

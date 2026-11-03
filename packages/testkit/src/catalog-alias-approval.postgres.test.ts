@@ -10,6 +10,10 @@ import { describe, expect, it } from "vitest";
 import { connectionAuthorizationRevision } from "../../adapters/src/connector-account-binding.js";
 import { CATALOG_EXECUTE } from "../../adapters/src/lazy-tool-catalog.js";
 import { CALENDAR_SCOPES } from "../../adapters/src/native-connectors/config.js";
+import {
+  restoreTurnCheckpoint,
+  serializeTurnCheckpoint,
+} from "../../adapters/src/turn-checkpoint.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import type { ModelEmulatorRequest, ModelEmulatorStep } from "./model-emulator.js";
@@ -50,6 +54,13 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
       const connections: string[] = [];
       const canonical = (index: number) =>
         `google-calendar:${encodeURIComponent(connections[index]!)}:${encodeURIComponent(action)}`;
+      const unapprovedArguments = () => ({
+        id: canonical(1),
+        arguments: {
+          ...approved,
+          event: { ...approved.event, summary: "Unapproved replacement" },
+        },
+      });
       const mutations: Array<{ token: string; body: Record<string, unknown> }> = [];
       let approvedToolName = "";
       const loadStep: ModelEmulatorStep = {
@@ -124,24 +135,17 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
         {
           expect(request) {
             expect(JSON.stringify(request.messages)).toContain(canonical(0));
-            expect(mutations).toEqual([]);
-          },
-          response: () => ({
-            type: "tool",
-            id: "resume-mutation",
-            name: "native_execute_tool",
-            arguments: {
-              id: canonical(1),
-              arguments: {
-                ...approved,
-                event: { ...approved.event, summary: "Unapproved replacement" },
-              },
-            },
-          }),
-        },
-        {
-          expect(request) {
-            const result = lastToolText(request);
+            const resumedCalls = request.messages
+              .flatMap((message) => message.tool_calls ?? [])
+              .filter((call) => call.id === "initial-mutation");
+            expect(resumedCalls).toHaveLength(1);
+            expect(resumedCalls[0]!.function.name).toBe("native_execute_tool");
+            expect(JSON.parse(resumedCalls[0]!.function.arguments)).toEqual(unapprovedArguments());
+            const resumedResults = request.messages.filter(
+              (message) => message.role === "tool" && message.tool_call_id === "initial-mutation",
+            );
+            expect(resumedResults).toHaveLength(1);
+            const result = String(resumedResults[0]!.content);
             if (allowed) {
               expect(result).toContain('"outcome":"succeeded"');
               expect(mutations).toHaveLength(1);
@@ -150,7 +154,9 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
               expect(mutations[0]!.body.summary).not.toBe("Unapproved replacement");
             } else {
               expect(result).not.toContain('"outcome":"succeeded"');
-              expect(result).toMatch(/unknown|authorized|available|resource|account|approved/i);
+              expect(result).toMatch(
+                /Tool is unknown or not authorized for this bot|Selected connector account is unavailable or its authorization changed|An explicitly selected connector account is unavailable/,
+              );
               expect(mutations).toEqual([]);
             }
           },
@@ -394,6 +400,73 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
           where: { runId: sent.runId, role: "bot" },
           orderBy: { seq: "desc" },
         });
+        const savedRow = await handles.prisma.externalEffect.findUniqueOrThrow({
+          where: { idempotencyKey: JSON.stringify(["runtime_checkpoint", sent.runId]) },
+        });
+        expect(savedRow).toMatchObject({
+          runId: sent.runId,
+          spaceId: storedBot.spaceId,
+          kind: "runtime_checkpoint",
+          status: "runtime_checkpoint",
+          request: {},
+        });
+        if (typeof savedRow.result !== "string") throw new Error("Missing saved catalog turn");
+        const saved = restoreTurnCheckpoint(savedRow.result, {
+          provider: model.model.provider,
+          id: model.model.id,
+        });
+        const before = JSON.parse(savedRow.result);
+        expect(saved).toEqual(before);
+        expect(saved.pendingToolCallId).toBe("initial-mutation");
+        const pendingCalls = saved.messages.flatMap((message) =>
+          message.role === "assistant"
+            ? message.content.filter(
+                (part) => part.type === "toolCall" && part.id === saved.pendingToolCallId,
+              )
+            : [],
+        );
+        expect(pendingCalls).toHaveLength(1);
+        const pendingCall = pendingCalls[0];
+        if (pendingCall?.type !== "toolCall") throw new Error("Missing saved catalog call");
+        expect(pendingCall.name).toBe("native_execute_tool");
+        const initialArguments = {
+          id: mode === "same-labels" ? canonical(0) : alias,
+          arguments: approved,
+        };
+        expect(pendingCall.arguments).toEqual(initialArguments);
+        pendingCall.arguments = unapprovedArguments();
+        const changedBlob = serializeTurnCheckpoint(saved);
+        const changed = restoreTurnCheckpoint(changedBlob, {
+          provider: model.model.provider,
+          id: model.model.id,
+        });
+        const changedCalls = changed.messages.flatMap((message) =>
+          message.role === "assistant"
+            ? message.content.filter(
+                (part) => part.type === "toolCall" && part.id === changed.pendingToolCallId,
+              )
+            : [],
+        );
+        expect(changedCalls).toHaveLength(1);
+        const changedCall = changedCalls[0];
+        if (changedCall?.type !== "toolCall") throw new Error("Missing modified catalog call");
+        expect(changedCall.arguments).toEqual(unapprovedArguments());
+        changedCall.arguments = initialArguments;
+        expect(changed).toEqual(before);
+        await handles.prisma.externalEffect.update({
+          where: { id: savedRow.id },
+          data: { result: changedBlob },
+        });
+        const changedRow = await handles.prisma.externalEffect.findUniqueOrThrow({
+          where: { id: savedRow.id },
+        });
+        expect({ ...changedRow, result: savedRow.result, updatedAt: savedRow.updatedAt }).toEqual(
+          savedRow,
+        );
+        expect(changedRow.result).toBe(changedBlob);
+        expect(
+          await handles.prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+        ).toEqual(effect);
         await rpc("threads/answer", {
           botId: bot.id,
           runId: sent.runId,
@@ -408,14 +481,26 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
           )
           .toBe(allowed ? "completed" : "failed");
         model.assertComplete();
+        expect(model.requests).toHaveLength(mode === "same-labels" ? 5 : 4);
         expect(mutations).toHaveLength(allowed ? 1 : 0);
         const settled = await handles.prisma.externalEffect.findMany({
           where: { runId: sent.runId, kind: approvedToolName },
         });
         expect(settled).toHaveLength(1);
         expect(settled[0]!.id).toBe(effect.id);
+        expect(settled[0]!.idempotencyKey).toBe(effect.idempotencyKey);
+        expect(settled[0]!.request).toEqual(effect.request);
         if (allowed) expect(settled[0]!.status).toBe("completed");
         else expect(settled[0]!.status).not.toBe("completed");
+        const allEffects = await handles.prisma.externalEffect.findMany({
+          where: { runId: sent.runId },
+        });
+        const nativeEffects = allEffects.filter(
+          (entry) => Array.isArray(entry.request) && entry.request[1] === "native_execute_tool",
+        );
+        expect(nativeEffects).toHaveLength(1);
+        expect(nativeEffects[0]!.id).toBe(effect.id);
+        expect(nativeEffects[0]!.request).toEqual(effect.request);
         const siblings = await handles.prisma.connection.findMany({
           where: { id: { in: connections.slice(1) } },
         });

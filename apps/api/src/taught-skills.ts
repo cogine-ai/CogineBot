@@ -41,6 +41,7 @@ import {
   teachRecordingTtlMs,
 } from "@rakazo/core";
 import {
+  clearRunTurnCheckpoints,
   type createRepos,
   expireComputerExecutionLeases,
   IsolationError,
@@ -112,16 +113,17 @@ export async function assertTeachingSendAllowed(
 
 async function cancelActiveRuns(
   deps: TaughtSkillsDeps,
-  _actor: Actor,
+  actor: Actor,
   botId: string,
 ): Promise<void> {
-  const activeRuns = await deps.prisma.run.findMany({
-    where: { botId, status: { in: [...ACTIVE_RUN_STATUSES] } },
-    select: { id: true },
-  });
-  await deps.prisma.run.updateMany({
-    where: { botId, status: { in: [...ACTIVE_RUN_STATUSES] } },
-    data: { status: "cancelled", completedAt: new Date() },
+  const cancelled = await deps.prisma.$transaction(async (tx) => {
+    const runs = await tx.run.updateManyAndReturn({
+      where: { botId, spaceId: actor.spaceId, status: { in: [...ACTIVE_RUN_STATUSES] } },
+      data: { status: "cancelled", completedAt: new Date() },
+      select: { id: true, spaceId: true },
+    });
+    await clearRunTurnCheckpoints(tx, runs);
+    return runs;
   });
   await expireComputerExecutionLeases(deps.prisma, { botId });
   await deps.prisma.computer.updateMany({
@@ -129,7 +131,7 @@ async function cancelActiveRuns(
     data: { executionRunId: null, executionBotId: null, executionLeaseExpiresAt: null },
   });
   await deps.prisma.event.deleteMany({
-    where: { type: "thread.progress", runId: { in: activeRuns.map((run) => run.id) } },
+    where: { type: "thread.progress", runId: { in: cancelled.map((run) => run.id) } },
   });
 }
 

@@ -8,6 +8,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import { AutomatedSenderPoliciesSchema, type MessageBlock } from "@rakazo/contracts";
 import { BOT_MESSAGE_MAX_HOPS } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { clearRunTurnCheckpoints } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { TeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -1067,33 +1068,30 @@ export class TeamChatBridge {
     // beside the routine wake.
     if (await findWake()) {
       if (sent.runId) {
+        const cancelledRunId = sent.runId;
         const cancelledAt = new Date();
-        await this.deps.prisma.run.updateMany({
-          where: {
-            id: sent.runId,
-            status: { in: ["queued", "running", "leased", "waiting_input", "waiting_takeover"] },
-          },
-          data: {
-            status: "cancelled",
-            completedAt: cancelledAt,
-            leaseOwner: null,
-            leaseExpiresAt: null,
-          },
-        });
-        const taskId =
-          sent.taskId ??
-          (
-            await this.deps.prisma.run.findUnique({
-              where: { id: sent.runId },
-              select: { taskId: true },
-            })
-          )?.taskId;
-        if (taskId) {
-          await this.deps.prisma.task.updateMany({
-            where: { id: taskId },
+        await this.deps.prisma.$transaction(async (tx) => {
+          const cancelled = await tx.run.updateManyAndReturn({
+            where: {
+              id: cancelledRunId,
+              spaceId: message.externalConversation.spaceId,
+              status: { in: ["queued", "running", "leased", "waiting_input", "waiting_takeover"] },
+            },
+            data: {
+              status: "cancelled",
+              completedAt: cancelledAt,
+              leaseOwner: null,
+              leaseExpiresAt: null,
+            },
+            select: { id: true, spaceId: true, taskId: true },
+          });
+          if (cancelled.length === 0) return;
+          await clearRunTurnCheckpoints(tx, cancelled);
+          await tx.task.updateMany({
+            where: { id: { in: cancelled.map((run) => run.taskId) } },
             data: { status: "cancelled" },
           });
-        }
+        });
       }
       await abandonForRoutine("queueing");
       return;

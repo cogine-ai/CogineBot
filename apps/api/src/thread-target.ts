@@ -28,6 +28,7 @@ import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   answerWaitingRunWithTextInTransaction,
   appendEventInTransaction,
+  clearRunTurnCheckpoints,
   createGroupRepos,
   createRepos,
   createThreadMessageInTransaction,
@@ -244,12 +245,15 @@ export async function cancelSupersededQueuedRuns(
   });
   if (superseded.length === 0) return;
   const now = new Date();
-  await tx.run.updateMany({
-    where: { id: { in: superseded.map((run) => run.id) } },
+  const cancelled = await tx.run.updateManyAndReturn({
+    where: { id: { in: superseded.map((run) => run.id) }, status: "queued" },
     data: { status: "cancelled", completedAt: now },
+    select: { id: true, spaceId: true, taskId: true },
   });
+  if (cancelled.length === 0) return;
+  await clearRunTurnCheckpoints(tx, cancelled);
   await tx.task.updateMany({
-    where: { id: { in: superseded.map((run) => run.taskId) } },
+    where: { id: { in: cancelled.map((run) => run.taskId) } },
     data: { status: "cancelled" },
   });
 }
@@ -1130,8 +1134,9 @@ export async function stopThreadRuns(
         status: { in: [...ACTIVE_RUN_STATUSES] },
       },
       data: { status: "cancelled", completedAt: new Date() },
-      select: { id: true, botId: true },
+      select: { id: true, botId: true, spaceId: true },
     });
+    await clearRunTurnCheckpoints(tx, cancelled);
     const ids = cancelled.map((run) => run.id);
     await tx.steeringMessage.deleteMany({
       where: {

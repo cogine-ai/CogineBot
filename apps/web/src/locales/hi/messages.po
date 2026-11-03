@@ -3067,6 +3067,11 @@ msgstr "अभी-अभी"
 msgid "Keep memories"
 msgstr "मेमोरी रखें"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "टूल के परिणाम पूरे रखें"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr ""

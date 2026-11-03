@@ -7,11 +7,14 @@ export type ApprovalPausedToolResult = AgentToolExecutionResult & { terminate: t
 export interface ApprovedEffectReplay {
   kind: string;
   request: unknown;
+  /** Reuse the exact approved occurrence instead of creating a second effect. */
+  idempotencyKey?: string;
 }
 
 export interface ApprovedEffectReplayQueue {
   nextToolName(): string | undefined;
   nextRequest(): unknown;
+  nextIdempotencyKey(): string | undefined;
   take(toolName: string): unknown;
   assertDrained(): void;
 }
@@ -28,6 +31,9 @@ export function createApprovedEffectReplayQueue(
     nextRequest() {
       return pending[0]?.request;
     },
+    nextIdempotencyKey() {
+      return pending[0]?.idempotencyKey;
+    },
     take(toolName) {
       const next = pending[0];
       if (!next || next.kind !== toolName) return undefined;
@@ -40,6 +46,14 @@ export function createApprovedEffectReplayQueue(
       }
     },
   };
+}
+
+/** Decode the occurrence already assigned to an approved canonical call. */
+export function approvedEffectOccurrence(approvedKey: string, baseKey: string): number | undefined {
+  if (approvedKey === baseKey) return 0;
+  if (!approvedKey.startsWith(`${baseKey}:`)) return undefined;
+  const suffix = approvedKey.slice(baseKey.length + 1);
+  return /^[1-9]\d*$/.test(suffix) ? Number(suffix) : undefined;
 }
 
 export function approvedCatalogReplay(

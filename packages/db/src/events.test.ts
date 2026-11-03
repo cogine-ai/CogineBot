@@ -86,6 +86,7 @@ describe("finalizeRun", () => {
     const conflict = Object.assign(new Error("serialization conflict"), { code: "P2034" });
     const createEvent = vi.fn(async () => ({ threadId: "thread-1", seq: 0 }));
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running" })),
@@ -134,6 +135,7 @@ describe("finalizeRun", () => {
 
   it("resumes a held messaging inbound as a messaging run", async () => {
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -204,6 +206,7 @@ describe("finalizeRun", () => {
     "compares connection identity before pinning a continuation: %s",
     async (_, secondId, pinned) => {
       const tx = {
+        externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
         $queryRaw: vi.fn(async () => []),
         run: {
           findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -303,6 +306,7 @@ describe("finalizeRun", () => {
       text: "What is the status?",
     };
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -2269,7 +2273,10 @@ describe("answerRunInput", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       task: { updateMany: vi.fn() },
-      externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      externalEffect: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
       event: {
         create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -2337,6 +2344,167 @@ describe("answerRunInput", () => {
           },
         ],
       },
+    });
+  });
+
+  describe("private checkpoint secret binding", () => {
+    const scope = {
+      runId: "run-1",
+      spaceId: "workspace-1",
+      kind: "runtime_checkpoint",
+      status: "runtime_checkpoint",
+    };
+    const binding = {
+      ...scope,
+      request: { pendingSecretEffectId: "selected-secret-effect" },
+      result: "saved-private-turn",
+    };
+    const credential = {
+      name: "selected_api",
+      origin: "https://api.example.test",
+      auth: { type: "bearer" },
+    };
+    function boundAnswerFixture(checkpoint: unknown = binding, count = 1) {
+      const store = vi.fn().mockResolvedValue(undefined);
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+        run: {
+          findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+          findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        message: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "message-1",
+            blocks: [
+              {
+                kind: "ask",
+                text: "Selected key",
+                input: "secret",
+                purpose: "api_key",
+                credential,
+                status: "pending",
+              },
+            ],
+          }),
+          update: vi.fn().mockResolvedValue({ id: "message-1" }),
+        },
+        task: { updateMany: vi.fn() },
+        externalEffect: {
+          findUnique: vi.fn().mockResolvedValue(checkpoint),
+          updateMany: vi.fn().mockResolvedValue({ count }),
+        },
+        thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+          })),
+        },
+      };
+      const prisma = {
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+      const answer = () =>
+        answerRunInput(
+          prisma,
+          {
+            spaceId: "workspace-1",
+            threadId: "thread-1",
+            runId: "run-1",
+            messageId: "message-1",
+            answeredByUserId: "user-1",
+            answer: "synthetic-selected-value",
+          },
+          new TestFanout(),
+          { store },
+        );
+      return { tx, store, answer };
+    }
+
+    it("authorizes only the server-bound intended effect in the same Run and Space", async () => {
+      const f = boundAnswerFixture();
+      await expect(f.answer()).resolves.toBe(true);
+      expect(f.tx.externalEffect.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "selected-secret-effect",
+          runId: "run-1",
+          spaceId: "workspace-1",
+          kind: "request_secret",
+          status: "intended",
+        },
+        data: { status: "approved", result: { credentialSaved: credential } },
+      });
+      expect(f.tx.externalEffect.findUnique.mock.invocationCallOrder[0]).toBeLessThan(
+        f.store.mock.invocationCallOrder[0]!,
+      );
+      expect(f.tx.task.updateMany).not.toHaveBeenCalled();
+      expect(JSON.stringify(f.tx.event.create.mock.calls)).not.toContain(
+        "synthetic-selected-value",
+      );
+    });
+
+    it.each([
+      { ...binding, runId: "other-run" },
+      { ...binding, spaceId: "other-space" },
+      { ...binding, kind: "request_secret" },
+      { ...binding, status: "completed" },
+      { ...binding, request: {} },
+      { ...binding, request: { pendingSecretEffectId: "" } },
+      { ...binding, request: { pendingSecretEffectId: 1 } },
+      { ...binding, request: { ...binding.request, capture: "unknown" }, result: null },
+      { ...binding, request: { ...binding.request, capture: "none" } },
+      {
+        ...binding,
+        request: { ...binding.request, capture: "none", unexpected: true },
+        result: null,
+      },
+      { ...binding, result: null },
+      { ...binding, request: { ...binding.request, unexpected: true } },
+    ])(
+      "refuses present invalid binding before storing or authorizing the value (%j)",
+      async (row) => {
+        const f = boundAnswerFixture(row);
+        await expect(f.answer()).rejects.toThrow("secret binding");
+        expect(f.store).not.toHaveBeenCalled();
+        expect(f.tx.externalEffect.updateMany).not.toHaveBeenCalled();
+        expect(f.tx.message.update).not.toHaveBeenCalled();
+        expect(f.tx.event.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it("propagates binding storage failure before secret storage rather than approving every intended effect", async () => {
+      const f = boundAnswerFixture();
+      const failure = new Error("fixture binding read failed");
+      f.tx.externalEffect.findUnique.mockRejectedValueOnce(failure);
+      await expect(f.answer()).rejects.toBe(failure);
+      expect(f.store).not.toHaveBeenCalled();
+      expect(f.tx.externalEffect.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([0, 2])(
+      "throws when the exact bound intended effect update count is %s",
+      async (count) => {
+        const f = boundAnswerFixture(binding, count);
+        await expect(f.answer()).rejects.toThrow("Protected input request changed");
+        expect(f.store).toHaveBeenCalledOnce();
+        expect(f.tx.message.update).not.toHaveBeenCalled();
+        expect(f.tx.event.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it("preserves the existing bulk secret-answer contract only when no checkpoint exists", async () => {
+      const f = boundAnswerFixture(null, 2);
+      await expect(f.answer()).resolves.toBe(true);
+      expect(f.tx.externalEffect.updateMany).toHaveBeenCalledWith({
+        where: {
+          runId: "run-1",
+          spaceId: "workspace-1",
+          kind: "request_secret",
+          status: "intended",
+        },
+        data: { status: "approved", result: { credentialSaved: credential } },
+      });
     });
   });
 
@@ -2421,7 +2589,10 @@ describe("answerRunInput", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         task: { updateMany: vi.fn() },
-        externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        externalEffect: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
         event: {
           create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -3287,6 +3458,7 @@ describe("clearThread", () => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -3295,7 +3467,7 @@ describe("clearThread", () => {
       },
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
-        updateMany: vi.fn(),
+        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
@@ -3348,6 +3520,7 @@ describe("clearThread", () => {
   it("scopes group clear lease cleanup to cancelled run ids", async () => {
     const fanout = new TestFanout();
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -3359,7 +3532,10 @@ describe("clearThread", () => {
           { id: "group-run-1", taskId: "task-1" },
           { id: "group-run-2", taskId: "task-2" },
         ]),
-        updateMany: vi.fn(),
+        updateManyAndReturn: vi.fn().mockResolvedValue([
+          { id: "group-run-1", spaceId: "workspace-1" },
+          { id: "group-run-2", spaceId: "workspace-1" },
+        ]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },

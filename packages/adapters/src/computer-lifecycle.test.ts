@@ -1705,10 +1705,11 @@ describe("computer execution leases", () => {
       },
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
-        updateMany: vi.fn(),
+        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
+      externalEffect: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
       computerExecutionLease: {
         updateMany: vi.fn().mockImplementation(async ({ data }) => {
           lease.expiresAt = data.expiresAt;
@@ -1754,6 +1755,32 @@ describe("computer execution leases", () => {
       spaceId: "workspace-1",
       threadId: "thread-1",
       botId: "bot-1",
+    });
+    expect(client.run.updateManyAndReturn).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["run-1"] },
+        status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+      },
+      data: {
+        status: "cancelled",
+        completedAt: expect.any(Date),
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      },
+      select: { id: true, spaceId: true },
+    });
+    expect(client.externalEffect.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", "run-1"]),
+            runId: "run-1",
+            spaceId: "workspace-1",
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
     });
     const next = await acquireComputerExecutionLease(prisma, {
       computerId: "computer-1",

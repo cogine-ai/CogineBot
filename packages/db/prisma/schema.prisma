@@ -1347,6 +1347,7 @@ model McpServer {
   secret        Secret?           @relation(fields: [secretId], references: [id], onDelete: SetNull)
   enabled       Boolean           @default(true)
   allowAllTools Boolean           @default(false)
+  verbatimResults Boolean         @default(false)
   allowedTools  Json              @default("[]")
   revision      Int               @default(1)
   createdAt     DateTime          @default(now())

@@ -569,6 +569,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Jump to latest, new messages": "Перейти к последнему, новые сообщения",
   "just now": "только что",
   "Keep memories": "Сохранить память",
+  "Keep tool results whole": "Сохранять результаты инструментов целиком",
   Language: "Язык",
   "Live update settings": "Настройки обновлений в реальном времени",
   "Live working status": "Статус работы в реальном времени",

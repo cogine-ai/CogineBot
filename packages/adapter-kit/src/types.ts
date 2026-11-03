@@ -504,6 +504,16 @@ export interface AgentRunRequest {
   contextRestored?: boolean;
   /** Trusted server identities whose results must remain whole; this grants no tool access. */
   verbatimMcpServers?: { ids: string[]; slugs: string[] };
+  /** Server-owned Pi transcript loaded for this Run and Space, never client history. */
+  turnCheckpoint?: string;
+  /** Captures are persisted only when the matching execution actually pauses. */
+  onCheckpoint?: (capture: () => string, executionId: string) => void | Promise<void>;
+  /** Validated response to the suspended ask/takeover interaction. */
+  resumeToolResult?: AgentToolExecutionResult;
+  /** Current offered subset; discovery does not change the stable model tool list. */
+  availableToolNames?: () => Promise<readonly string[]>;
+  /** Revalidate private saved ownership against the current authorized service. */
+  restoreMcpResultRoute?: (route: ConnectorRoute) => Promise<ConnectorRoute | undefined>;
   /** Exclusive workflow cost bucket; retrieval tool turns are detected for answer calls. */
   usageOperationKind?: UsageOperationKind;
   botId: string;
@@ -648,14 +658,22 @@ export type AgentRuntimeEvent =
       /** Provider-generated tool status rather than assistant-authored narration. */
       activity?: true;
     }
-  | { type: "tool"; name: string; args: Record<string, unknown>; executionId: string }
+  | {
+      type: "tool";
+      name: string;
+      args: Record<string, unknown>;
+      executionId: string;
+      response?: number;
+      viaUseTool?: true;
+    }
   | {
       type: "ask";
       text: string;
       detail?: string;
       actions?: Array<{ id: string; label: string }>;
+      executionId?: string;
     }
-  | { type: "takeover"; reason: string }
+  | { type: "takeover"; reason: string; executionId?: string }
   | ({
       type: "usage";
       /** Producer-side onUsage completed; consumers must not account it again. */

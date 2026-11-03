@@ -504,7 +504,8 @@ describe("createJobReconciler", () => {
       error: null,
       bot: { name: "Researcher" },
     };
-    const stuckText = loopGuardStopText("search", 8);
+    const stuckText = loopGuardStopText("search", { key: "search:{}", count: 8 });
+    expect(stuckText).toContain("with the same input 8 times in a row");
     const prisma = {
       run: {
         findMany: vi.fn(async (args: { where?: Record<string, unknown> } = {}) =>

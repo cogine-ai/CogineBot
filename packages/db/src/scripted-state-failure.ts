@@ -2,6 +2,7 @@ import { ACTIVE_RUN_STATUSES, runSecretKind } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { appendEventInTransaction } from "./events.js";
+import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
 
 export interface FailScriptedRunInput {
   runId: string;
@@ -59,6 +60,7 @@ export async function failScriptedRunPreservingSteering(
         },
       });
       if (failed.count !== 1) return null;
+      await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
       const run = await tx.run.findUniqueOrThrow({
         where: { id: input.runId },
         select: { userId: true },

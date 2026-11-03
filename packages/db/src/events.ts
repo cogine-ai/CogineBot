@@ -31,6 +31,10 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import {
+  clearRunTurnCheckpoints,
+  loadRunTurnCheckpointSecretEffectId,
+} from "./run-turn-checkpoint.js";
 import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
@@ -800,6 +804,10 @@ async function commitAnswerRunInput(
       });
     }
   } else if (secretAsk) {
+    const pendingSecretEffectId = await loadRunTurnCheckpointSecretEffectId(tx, {
+      id: input.runId,
+      spaceId: input.spaceId,
+    });
     await runSecretWriter!.store({
       botId: run.botId,
       credential: pendingAsk.credential,
@@ -809,8 +817,9 @@ async function commitAnswerRunInput(
       plaintext: login?.success ? encodeLoginSecret(login.data) : input.answer,
       tx,
     });
-    await tx.externalEffect.updateMany({
+    const approved = await tx.externalEffect.updateMany({
       where: {
+        ...(pendingSecretEffectId === undefined ? {} : { id: pendingSecretEffectId }),
         runId: input.runId,
         spaceId: input.spaceId,
         kind: "request_secret",
@@ -821,6 +830,8 @@ async function commitAnswerRunInput(
         ...(pendingAsk.credential ? { result: { credentialSaved: pendingAsk.credential } } : {}),
       },
     });
+    if (pendingSecretEffectId !== undefined && approved.count !== 1)
+      throw new Error("Protected input request changed; retry");
   } else {
     const resumeLabel = selectedChoice
       ? resumeChoiceLabel(selectedChoice, run.checkpoint)
@@ -1497,6 +1508,7 @@ async function finalizeRunOnce(
       },
     });
     if (terminal.count !== 1) return null;
+    await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
 
     const attempt = await tx.attempt.updateMany({
       where: {

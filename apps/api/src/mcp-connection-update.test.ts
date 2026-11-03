@@ -29,6 +29,7 @@ function fixture() {
     headers: { Authorization: true, "X-Static": true },
     secretId: "old" as string | null,
     enabled: false,
+    verbatimResults: true,
     allowAllTools: false,
     allowedTools: [] as string[],
     revision: 1,
@@ -174,6 +175,28 @@ function fixture() {
 }
 
 describe("revision-bound MCP connection patches", () => {
+  it.each([undefined, false, true])(
+    "preserves omitted result retention and accepts explicit full-config values (%s)",
+    async (verbatimResults) => {
+      const f = fixture();
+      const result = await f.client.mcp.servers.update({
+        id: f.server.id,
+        config: {
+          slug: f.server.slug,
+          name: f.server.name,
+          transport: "streamable_http",
+          endpoint: f.server.endpoint,
+          headers: {},
+          enabled: false,
+          verbatimResults,
+        },
+      });
+      expect(result.verbatimResults).toBe(verbatimResults ?? true);
+      expect(f.server.verbatimResults).toBe(verbatimResults ?? true);
+      expect(result).toMatchObject({ allowAllTools: false, allowedTools: [], revision: 2 });
+    },
+  );
+
   it.each([undefined, {}])(
     "enables without rewriting encrypted credentials or tool permission (%s)",
     async (headerUpdates) => {
@@ -185,6 +208,7 @@ describe("revision-bound MCP connection patches", () => {
       });
       expect(result).toMatchObject({
         enabled: true,
+        verbatimResults: true,
         revision: 2,
         hasSecret: true,
         oauthStatus: "unknown",

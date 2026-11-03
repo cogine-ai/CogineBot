@@ -531,6 +531,7 @@ function mcpServerDto(
     headers: unknown;
     secretId: string | null;
     enabled: boolean;
+    verbatimResults?: boolean;
     allowAllTools: boolean;
     allowedTools: unknown;
     revision: number;
@@ -563,6 +564,7 @@ function mcpServerDto(
     hasSecret: row.secretId !== null,
     oauthStatus,
     enabled: row.enabled,
+    verbatimResults: row.verbatimResults ?? false,
     allowAllTools: row.allowAllTools,
     allowedTools: Array.isArray(row.allowedTools)
       ? row.allowedTools.filter((item): item is string => typeof item === "string")
@@ -4855,6 +4857,7 @@ export function createRouter(deps: RouterDeps) {
                   : {}) as Prisma.InputJsonValue,
                 secretId: stored?.id,
                 enabled: input.enabled,
+                verbatimResults: input.verbatimResults ?? false,
                 allowAllTools: false,
                 allowedTools: [],
               },
@@ -4885,6 +4888,9 @@ export function createRouter(deps: RouterDeps) {
                   data: {
                     allowAllTools: input.allowAllTools,
                     allowedTools: [...new Set(input.allowedTools)],
+                    ...(input.verbatimResults === undefined
+                      ? {}
+                      : { verbatimResults: input.verbatimResults }),
                     revision: { increment: 1 },
                   },
                 });
@@ -4992,6 +4998,7 @@ export function createRouter(deps: RouterDeps) {
                     name: existing.name,
                     description: existing.description,
                     enabled: connection?.enabled ?? existing.enabled,
+                    verbatimResults: existing.verbatimResults,
                     transport: existing.transport as "streamable_http" | "sse",
                     endpoint: existing.endpoint!,
                     headers: (existingMaterial.headers ?? {}) as Record<string, string>,
@@ -5136,6 +5143,9 @@ export function createRouter(deps: RouterDeps) {
                                 : {}) as Prisma.InputJsonValue,
                             }),
                         enabled: config.enabled,
+                        ...(config.verbatimResults === undefined
+                          ? {}
+                          : { verbatimResults: config.verbatimResults }),
                         revision: { increment: 1 },
                         ...(stored ? { secretId: stored.id } : clearing ? { secretId: null } : {}),
                       },

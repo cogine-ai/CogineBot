@@ -42,6 +42,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
   registerOpenAiCompatibleRuntime: (models: unknown) => models,
 }));
 
+import { USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
 
@@ -137,7 +138,7 @@ describe("real Pi tool batch ordering", () => {
     vi.unstubAllEnvs();
   });
 
-  it("marks exactly memory and the three schedule tools sequential in real runtime definitions", async () => {
+  it("marks memory, core scheduling and the deferred bridge sequential in real runtime definitions", async () => {
     providerState.stream.mockImplementation(() => response());
     await run(
       ["remember", "schedule_create", "schedule_list", "schedule_cancel", "read_file", "shell"],
@@ -147,7 +148,8 @@ describe("real Pi tool batch ordering", () => {
     const tools = providerState.agent!.state.tools;
     expect(
       tools.filter((tool) => tool.executionMode === "sequential").map((tool) => tool.name),
-    ).toEqual(["remember", "schedule_cancel", "schedule_create", "schedule_list"]);
+    ).toEqual(["remember", "schedule_create", "schedule_list", USE_TOOL]);
+    expect(tools.some((tool) => tool.name === "schedule_cancel")).toBe(false);
     for (const name of ["read_file", "shell"]) {
       expect(tools.find((tool) => tool.name === name)?.executionMode).toBeUndefined();
     }
@@ -222,7 +224,7 @@ describe("real Pi tool batch ordering", () => {
             delayMinutes: 10,
           }),
           call("list-created", "schedule_list"),
-          call("cancel", "schedule_cancel", { name: "Review" }),
+          call("cancel", USE_TOOL, { name: "schedule_cancel", arguments: { name: "Review" } }),
           call("list-cancelled", "schedule_list"),
         ]),
       )

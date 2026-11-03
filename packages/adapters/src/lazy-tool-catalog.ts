@@ -20,7 +20,7 @@ export const CATALOG_SEARCH = "__catalog_search";
 export const CATALOG_LOAD = "__catalog_load";
 export const CATALOG_EXECUTE = "__catalog_execute";
 
-type CatalogEntry = { id: string; tool: ConnectorTool; group: string };
+export type CatalogEntry = { id: string; tool: ConnectorTool; group: string };
 
 export type CatalogSearchHit = {
   id: string;
@@ -193,23 +193,45 @@ export function searchCatalog(
     ? Math.max(1, Math.min(TOOL_SEARCH_LIMIT, Math.trunc(requested)))
     : TOOL_SEARCH_LIMIT;
   return {
-    tools: scoped
-      .map((entry) => ({ entry, score: catalogScore(entry, query) }))
-      .filter(({ score }) => score < 4)
-      .sort(
-        (left, right) =>
-          left.score - right.score ||
-          left.entry.tool.name.localeCompare(right.entry.tool.name) ||
-          left.entry.id.localeCompare(right.entry.id),
-      )
-      .slice(0, limit)
-      .map(({ entry }) => ({
-        id: entry.id,
-        name: entry.tool.name,
-        description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
-        readOnly: entry.tool.readOnly === true,
-      })),
+    tools: rankCatalogEntries(scoped, query, limit).hits.map((entry) => ({
+      id: entry.id,
+      name: entry.tool.name,
+      description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
+      readOnly: entry.tool.readOnly === true,
+    })),
   };
+}
+
+/** The best `limit` entries for a query; `complete` when they match every query word. */
+export function rankCatalogEntries(
+  entries: CatalogEntry[],
+  query: string,
+  limit: number,
+): { hits: CatalogEntry[]; complete: boolean } {
+  const words = searchWords(query);
+  const score = (inside: boolean) =>
+    entries.map((entry) => ({ entry, ...catalogScore(entry, query, words, inside) }));
+  let scored = score(false);
+  // Rank on the words that matched before the cap, so a tool that matches every word is
+  // not pushed out by tools that match one word and sort earlier by name.
+  let bestMatched = Math.max(0, ...scored.map(({ matched }) => matched));
+  // Matches inside a word ("mail" in gmail) count only when nothing matches every word at a
+  // word start; otherwise "tool_0" would also find tool_10.
+  if (bestMatched < words.length) {
+    scored = score(true);
+    bestMatched = Math.max(0, ...scored.map(({ matched }) => matched));
+  }
+  const hits = scored
+    .filter(({ matched }) => matched > 0 && matched === bestMatched)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.entry.tool.name.localeCompare(right.entry.tool.name) ||
+        left.entry.id.localeCompare(right.entry.id),
+    )
+    .slice(0, limit)
+    .map(({ entry }) => entry);
+  return { hits, complete: bestMatched === words.length };
 }
 
 export function loadCatalogEntry(
@@ -415,7 +437,7 @@ function catalogShortName(entry: CatalogEntry): string {
   return entry.tool.name;
 }
 
-function groupedNames(entries: CatalogEntry[]): Array<{ group: string; names: string[] }> {
+export function groupedNames(entries: CatalogEntry[]): Array<{ group: string; names: string[] }> {
   const byGroup = new Map<string, string[]>();
   for (const entry of entries) {
     const names = byGroup.get(entry.group) ?? [];
@@ -436,15 +458,51 @@ function listNames(entries: CatalogEntry[]): string[] {
   );
 }
 
-function catalogScore(entry: CatalogEntry, query: string): number {
-  if (!query) return 0;
-  const name = entry.tool.name.toLowerCase();
-  const shortName = catalogShortName(entry).toLowerCase();
-  const description = entry.tool.description.toLowerCase();
-  const group = entry.group.toLowerCase();
-  if (name === query || shortName === query) return 0;
-  if (name.startsWith(query) || shortName.startsWith(query)) return 1;
-  if (name.includes(query) || shortName.includes(query) || group.includes(query)) return 2;
-  if (description.includes(query)) return 3;
-  return 4;
+function searchWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+function isExactName(entry: CatalogEntry, query: string): boolean {
+  return entry.tool.name.toLowerCase() === query || catalogShortName(entry).toLowerCase() === query;
+}
+
+/**
+ * Score each query word on its best field: a name word outranks the source, which outranks
+ * the description. A word matches the start of a word in that field, so "project" finds
+ * list_projects, or with inside set anywhere in one. An exact tool name ranks above everything.
+ */
+function catalogScore(
+  entry: CatalogEntry,
+  query: string,
+  words: string[],
+  inside: boolean,
+): { matched: number; score: number } {
+  if (isExactName(entry, query)) return { matched: words.length, score: Number.MAX_SAFE_INTEGER };
+  const fields = [
+    { words: searchWords(`${entry.tool.name} ${catalogShortName(entry)}`), weight: 3 },
+    { words: searchWords(entry.group), weight: 2 },
+    { words: searchWords(entry.tool.description), weight: 1 },
+  ];
+  let matched = 0;
+  let score = 0;
+  for (const word of words) {
+    const weight = Math.max(
+      0,
+      ...fields
+        .filter((field) =>
+          field.words.some((candidate) =>
+            inside ? candidate.includes(word) : candidate.startsWith(word),
+          ),
+        )
+        .map((field) => field.weight),
+    );
+    if (weight > 0) {
+      matched += 1;
+      score += weight;
+    }
+  }
+  return { matched, score };
 }

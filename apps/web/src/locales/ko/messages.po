@@ -3067,6 +3067,11 @@ msgstr "방금"
 msgid "Keep memories"
 msgstr "기억은 유지"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "도구 결과를 온전히 유지"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr "key"

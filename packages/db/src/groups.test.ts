@@ -263,7 +263,9 @@ describe("archiveGroup", () => {
     findManyComputers = vi.fn(async ({ where }: { where: ComputerWhere }) =>
       computerRows.filter((row) => matches(row, where)),
     );
-    runUpdateMany = vi.fn();
+    runUpdateMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.map((id) => ({ id, spaceId: actor.spaceId })),
+    );
     attemptUpdateMany = vi.fn();
     taskUpdateMany = vi.fn();
     // computer-1 is a Team computer: bot-2's lease there belongs to a run outside this group.
@@ -330,7 +332,8 @@ describe("archiveGroup", () => {
     const tx = {
       $queryRaw: queryRaw,
       chatGroup: { findFirst, update: groupUpdate },
-      run: { findMany: findManyRuns, updateMany: runUpdateMany },
+      run: { findMany: findManyRuns, updateManyAndReturn: runUpdateMany },
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       attempt: { updateMany: attemptUpdateMany },
       task: { updateMany: taskUpdateMany },
       computerExecutionLease: { findMany: leaseFindMany, updateMany: leaseUpdateMany },

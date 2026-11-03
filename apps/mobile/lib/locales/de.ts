@@ -877,6 +877,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Its conversation, files, and routines will be permanently deleted. What should happen to its memories?":
     "Unterhaltung, Dateien und Routinen werden endgültig gelöscht. Was soll mit den Erinnerungen geschehen?",
   "Keep memories": "Erinnerungen behalten",
+  "Keep tool results whole": "Tool-Ergebnisse vollständig behalten",
   // lib/computer.ts
   Asleep: "Im Ruhezustand",
   "Booting live desktop…": "Live-Desktop wird gestartet…",

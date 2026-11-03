@@ -542,6 +542,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Jump to latest, new messages": "跳到最新，有新消息",
   "just now": "刚刚",
   "Keep memories": "保留记忆",
+  "Keep tool results whole": "完整保留工具结果",
   Language: "语言",
   "Live update settings": "实时更新设置",
   "Live working status": "实时工作状态",

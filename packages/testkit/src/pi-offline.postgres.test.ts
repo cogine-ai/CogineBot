@@ -337,11 +337,18 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         model.assertComplete();
         expect(model.requests).toHaveLength(2);
         const resumed = model.requests[1]!;
-        const currentUser = resumed.messages.findLast((message) => message.role === "user");
-        const prompt = JSON.stringify(currentUser?.content);
+        const takeoverResults = resumed.messages.filter(
+          (message) => message.role === "tool" && message.tool_call_id === "manual-screen-choice",
+        );
+        expect(takeoverResults).toHaveLength(1);
+        const prompt = JSON.stringify(takeoverResults[0]!.content);
         expect(prompt).toContain(note);
         expect(prompt.split(note)).toHaveLength(2);
-        expect(prompt).not.toMatch(/The user (?:finished|skipped) the login/i);
+        const resumedContent = resumed.messages
+          .map((message) => JSON.stringify(message.content))
+          .join("\n");
+        expect(resumedContent.split(note)).toHaveLength(2);
+        expect(resumedContent).not.toMatch(/The user (?:finished|skipped) the login/i);
         const userContext = resumed.messages
           .filter((message) => message.role === "user")
           .map((message) => JSON.stringify(message.content))

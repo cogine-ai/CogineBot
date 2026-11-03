@@ -3067,6 +3067,11 @@ msgstr "только что"
 msgid "Keep memories"
 msgstr "Сохранить память"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "Сохранять результаты инструментов целиком"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr "ключ"
