@@ -408,8 +408,8 @@ describeIntegration("run executor lifecycle", () => {
       const published: string[] = [];
       let freshMessageId: string | undefined;
       const enqueue = handles.jobs.enqueue.bind(handles.jobs);
-      // Exercise the real finalizer and its queue publication once per invocation.
-      // This boundary keeps a regression from dispatching an unbounded chain of runs.
+      // Finalization and computer release can both wake the same pending Run.
+      // Keep those bounded hints without dispatching an unbounded chain of work.
       const publish = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
         if (job.name === "run.continue") {
           const run = await handles.prisma.run.findUnique({ where: { id: job.payload.runId } });
@@ -457,12 +457,13 @@ describeIntegration("run executor lifecycle", () => {
         expect({
           claimedBatches: captured.length,
           pendingMessages: pending.length,
-          published,
+          wokenRuns: [...new Set(published)],
         }).toEqual({
           claimedBatches: 1,
           pendingMessages: fresh ? 1 : 0,
-          published: fresh ? [expect.any(String)] : [],
+          wokenRuns: fresh ? [expect.any(String)] : [],
         });
+        expect(published.length).toBeLessThanOrEqual(fresh ? 2 : 0);
         expect(captured[0]).toEqual({
           runId: continuationRunId,
           batch: originalBatch.map((item, index) =>
@@ -498,7 +499,8 @@ describeIntegration("run executor lifecycle", () => {
           ]);
           const nextRunId = pending[0]!.runId!;
           expect(nextRunId).not.toBe(continuationRunId);
-          expect(published).toEqual([nextRunId]);
+          expect([...new Set(published)]).toEqual([nextRunId]);
+          const wakesBeforeFresh = [...published];
           await handles.executor.continueRun(nextRunId, "fresh-worker");
           expect(captured[1]).toEqual({
             runId: nextRunId,
@@ -516,7 +518,8 @@ describeIntegration("run executor lifecycle", () => {
           expect(JSON.stringify(freshAnswer.map((item) => item.blocks))).toContain(
             "done. i handled: A fresh message after claim.",
           );
-          expect(published).toEqual([nextRunId]);
+          expect(published).toEqual(wakesBeforeFresh);
+          expect(await handles.prisma.attempt.count({ where: { runId: nextRunId } })).toBe(1);
         } else {
           expect(pending).toEqual([]);
           expect(published).toEqual([]);
@@ -578,10 +581,11 @@ describeIntegration("run executor lifecycle", () => {
         const pending = await handles.prisma.steeringMessage.findMany({
           where: { botId: seeded.bot.id },
         });
-        expect({ pending: pending.length, publications: held.published.length }).toEqual({
+        expect({ pending: pending.length, wokenRuns: new Set(held.published).size }).toEqual({
           pending: 1,
-          publications: 1,
+          wokenRuns: 1,
         });
+        expect(held.published.length).toBeLessThanOrEqual(2);
         expect(pending).toEqual([
           expect.objectContaining({
             id: steering.id,
@@ -599,6 +603,7 @@ describeIntegration("run executor lifecycle", () => {
         expect(JSON.stringify(originalAnswer.map((item) => item.blocks))).not.toContain(
           "Answer this follow-up separately.",
         );
+        const wakesBeforeAnswer = [...held.published];
         await handles.executor.continueRun(held.published[0]!, "answering-worker");
         const followUp = await handles.prisma.message.findMany({
           where: { runId: held.published[0], role: "bot" },
@@ -617,7 +622,8 @@ describeIntegration("run executor lifecycle", () => {
             where: { botId: seeded.bot.id, trigger: { not: "created" } },
           }),
         ).toBe(2);
-        expect(held.published).toHaveLength(1);
+        expect(held.published).toEqual(wakesBeforeAnswer);
+        expect(await handles.prisma.attempt.count({ where: { runId: held.published[0] } })).toBe(1);
       } finally {
         await cleanupHeldRuns(seeded.bot.id, held.restore);
       }
@@ -1120,7 +1126,7 @@ describeIntegration("run executor lifecycle", () => {
       // The lost worker has returned; only this fixture makes its durable progress runnable.
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "recovered-completion-worker");
       await expect(
@@ -1225,7 +1231,7 @@ describeIntegration("run executor lifecycle", () => {
       // The interrupted worker has returned before this fixture releases its expired lease.
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "recovered-prefix-text-worker");
       await expect(
@@ -1500,7 +1506,7 @@ describeIntegration("run executor lifecycle", () => {
       // Retry starts only after the old worker and its committed-memory fault have ended.
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "recovered-memory-replay-worker");
       await expect(
@@ -1699,7 +1705,7 @@ describeIntegration("run executor lifecycle", () => {
       // The old worker has returned; only this fixture releases its expired lease.
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "recovered-confirmed-file-worker");
       await expect(
@@ -1813,7 +1819,7 @@ describeIntegration("run executor lifecycle", () => {
       expect(rows).toHaveLength(3);
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "unacknowledged-file-retry-worker");
       await expect(
@@ -2214,7 +2220,7 @@ describeIntegration("run executor lifecycle", () => {
       ).toBe(1);
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null },
+        data: { status: "queued", leaseOwner: null, leaseExpiresAt: null, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "recovered-subagent-delivery-worker");
       await expect(
@@ -3393,10 +3399,12 @@ describeIntegration("run executor lifecycle", () => {
         const queued = await handles.prisma.run.findMany({
           where: { botId: seeded.bot.id, status: "queued" },
         });
-        expect({ queued: queued.length, publications: held.published.length }).toEqual({
+        expect({ queued: queued.length, wokenRuns: new Set(held.published).size }).toEqual({
           queued: fresh ? 1 : 0,
-          publications: fresh ? 1 : 0,
+          wokenRuns: fresh ? 1 : 0,
         });
+        expect(held.published.length).toBeLessThanOrEqual(fresh ? 2 : 0);
+        const wakesBeforeFresh = [...held.published];
         if (fresh) {
           expect(queued[0]).toMatchObject({
             id: held.published[0],
@@ -3436,7 +3444,9 @@ describeIntegration("run executor lifecycle", () => {
             where: { botId: seeded.bot.id, trigger: { not: "created" } },
           }),
         ).toBe(fresh ? 3 : 2);
-        expect(held.published).toHaveLength(fresh ? 1 : 0);
+        expect(held.published).toEqual(wakesBeforeFresh);
+        if (fresh)
+          expect(await handles.prisma.attempt.count({ where: { runId: queued[0]!.id } })).toBe(1);
       } finally {
         await cleanupHeldRuns(seeded.bot.id, () => {
           runtime.mockRestore();

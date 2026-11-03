@@ -4,7 +4,11 @@ import type {
   ComputerRef,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
-import { SandboxRateLimitError } from "@rakazo/adapter-kit";
+import {
+  SandboxRateLimitError,
+  SandboxUnavailableError,
+  SandboxUnresponsiveError,
+} from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoxSandboxEmulator } from "./box-emulator.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -43,6 +47,9 @@ async function runRoutine(
   options: {
     takeover?: boolean;
     abortBeforeTools?: boolean;
+    abortBeforeClaim?: boolean;
+    setupFailures?: number;
+    onRunStarted?: () => void;
     modelId?: string;
     emulator?: ManagedSandboxEmulator;
     resume?: {
@@ -82,6 +89,8 @@ async function runRoutine(
     routineId: options.resume?.pendingCard ? null : "routine-1",
     retryOfRunId: null,
     leaseFence: options.resume ? 3 : 0,
+    leaseOwner: null as string | null,
+    leaseExpiresAt: null as Date | null,
     checkpoint: options.resume?.checkpoint ?? null,
   };
   const storedComputer = {
@@ -107,11 +116,32 @@ async function runRoutine(
     expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
   };
   const takeoverTx = {
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(async (query: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = query.join("");
+      if (
+        sql.includes("FROM runs") &&
+        sql.includes('"leaseOwner"') &&
+        sql.includes("FOR UPDATE SKIP LOCKED")
+      ) {
+        const [runId, botId, workerId, fence, now] = values;
+        return run.id === runId &&
+          run.botId === botId &&
+          run.status === "running" &&
+          run.leaseOwner === workerId &&
+          run.leaseFence === fence &&
+          now instanceof Date &&
+          run.leaseExpiresAt &&
+          run.leaseExpiresAt > now
+          ? [{ id: run.id }]
+          : [];
+      }
+      return [];
+    }),
     run: { findFirst: vi.fn(async () => run) },
     message: { findMany: vi.fn(async () => []) },
   };
   const shutdown = new AbortController();
+  if (options.abortBeforeClaim) shutdown.abort();
   const toolResults: unknown[] = [];
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     if (options.abortBeforeTools) shutdown.abort();
@@ -127,7 +157,12 @@ async function runRoutine(
   });
   const prisma = {
     $transaction: vi.fn(async (callback: (tx: typeof takeoverTx) => Promise<unknown>) =>
-      callback(takeoverTx),
+      callback(
+        Object.assign(takeoverTx, {
+          computer: prisma.computer,
+          computerExecutionLease: prisma.computerExecutionLease,
+        }),
+      ),
     ),
     run: {
       findUnique: vi.fn(
@@ -145,10 +180,14 @@ async function runRoutine(
         },
       ),
       findUniqueOrThrow: vi.fn(async () => run),
-      findFirst: vi.fn(async () => ({
-        bot: { notifyOnFinish: false },
-        thread: { groupId: null },
-      })),
+      findFirst: vi.fn(async ({ where }: { where: { botId?: string } }) =>
+        where.botId
+          ? null
+          : {
+              bot: { notifyOnFinish: false },
+              thread: { groupId: null },
+            },
+      ),
       updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(run, data);
         return { count: 1 };
@@ -176,6 +215,9 @@ async function runRoutine(
       findMany: vi.fn(async () => []),
     },
     attempt: {
+      findMany: vi.fn(async () =>
+        Array.from({ length: options.setupFailures ?? 0 }, () => ({ status: "setup_failed" })),
+      ),
       create: vi.fn(async () => ({ id: "attempt-1" })),
       update: vi.fn(),
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -371,12 +413,14 @@ async function runRoutine(
     secrets: [],
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
-  await executor.continueRun(run.id, "worker-1");
+  if (options.onRunStarted) await executor.continueRun(run.id, "worker-1", options.onRunStarted);
+  else await executor.continueRun(run.id, "worker-1");
   const sleepJobs = enqueue.mock.calls
     .map((call) => (call as unknown[])[0] as { name: string })
     .filter((job) => job.name === "computer.sleep");
   return {
     finalizeRun,
+    enqueue,
     sandbox,
     sleepJobs,
     toolResults,
@@ -407,6 +451,138 @@ describe("run computer provisioning", () => {
     provisionComputer.mockRejectedValueOnce(failure);
     await expect(runRoutine([{ name: "list_files", args: { path: "" } }])).rejects.toBe(failure);
     expect(provisionComputer).toHaveBeenCalledOnce();
+  });
+
+  it("hands off dispatch only after the attempt owns execution, before model work", async () => {
+    const onRunStarted = vi.fn();
+    const f = await runRoutine([], { onRunStarted });
+    expect(onRunStarted).toHaveBeenCalledOnce();
+    expect(f.prisma.attempt.create.mock.invocationCallOrder[0]).toBeLessThan(
+      onRunStarted.mock.invocationCallOrder[0]!,
+    );
+    expect(onRunStarted.mock.invocationCallOrder[0]).toBeLessThan(
+      f.runtimeRun.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps one durable retry instant after dispatch has handed off", async () => {
+    provisionComputer.mockRejectedValueOnce(new SandboxRateLimitError());
+    const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+      onRunStarted: vi.fn(),
+    });
+    const job = (f.enqueue.mock.calls as unknown as [{ name: string; availableAt?: Date }][])
+      .map(([value]) => value)
+      .find((value) => value.name === "run.continue");
+    expect(job?.availableAt).toBeInstanceOf(Date);
+    expect(f.run).toMatchObject({ status: "queued", wakeAt: job!.availableAt });
+    expect(f.finalizeRun).not.toHaveBeenCalled();
+    expect(f.prisma.attempt.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "setup_failed" }),
+      }),
+    );
+  });
+
+  it.each([
+    ["unresponsive", () => new SandboxUnresponsiveError("synthetic provider unavailable")],
+    ["accepted start", () => new SandboxUnavailableError()],
+  ] as const)(
+    "uses durable provider-outage backoff for %s without spending all retries in seconds",
+    async (_name, failure) => {
+      const now = Date.UTC(2026, 10, 3, 12);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      const delays = [15_000, 30_000, 60_000, 120_000, 240_000, 300_000, 300_000];
+      try {
+        for (const [priorFailures, delay] of delays.entries()) {
+          provisionComputer.mockRejectedValueOnce(failure());
+          const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+            setupFailures: priorFailures,
+            onRunStarted: vi.fn(),
+          });
+          const retries = (
+            f.enqueue.mock.calls as unknown as [{ name: string; availableAt?: Date }][]
+          )
+            .map(([job]) => job)
+            .filter((job) => job.name === "run.continue");
+          expect(retries).toHaveLength(1);
+          expect(retries[0]!.availableAt?.getTime()).toBe(now + delay);
+          expect(f.run).toMatchObject({ status: "queued", wakeAt: retries[0]!.availableAt });
+          expect(f.finalizeRun).not.toHaveBeenCalled();
+        }
+        provisionComputer.mockRejectedValueOnce(failure());
+        const exhausted = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+          setupFailures: 7,
+          onRunStarted: vi.fn(),
+        });
+        expect(exhausted.finalizeRun).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ outcome: "failed" }),
+        );
+        expect(
+          (exhausted.enqueue.mock.calls as unknown as [{ name: string }][]).some(
+            ([job]) => job.name === "run.continue",
+          ),
+        ).toBe(false);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("keeps rate limits distinct from provider outages", async () => {
+    const now = Date.UTC(2026, 10, 3, 12);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      provisionComputer.mockRejectedValueOnce(new SandboxRateLimitError());
+      const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+        onRunStarted: vi.fn(),
+      });
+      const retry = (f.enqueue.mock.calls as unknown as [{ name: string; availableAt?: Date }][])
+        .map(([job]) => job)
+        .find((job) => job.name === "run.continue");
+      expect(retry?.availableAt?.getTime()).toBe(now + 250);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("ends a permanently broken setup after eight failures", async () => {
+    provisionComputer.mockRejectedValueOnce(new Error("synthetic setup failure"));
+    const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+      setupFailures: 7,
+      onRunStarted: vi.fn(),
+    });
+    expect(f.finalizeRun).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", error: "synthetic setup failure" }),
+    );
+    expect(
+      (f.enqueue.mock.calls as unknown as [{ name: string }][]).some(
+        ([job]) => job.name === "run.continue",
+      ),
+    ).toBe(false);
+  });
+
+  it("hands a stopping attempt back without failing or cancelling the run", async () => {
+    const f = await runRoutine([], { abortBeforeTools: true, onRunStarted: vi.fn() });
+    expect(f.run).toMatchObject({
+      status: "queued",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      wakeAt: null,
+    });
+    expect(f.finalizeRun).not.toHaveBeenCalled();
+    expect(f.prisma.attempt.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "interrupted" }) }),
+    );
+  });
+
+  it("does not claim or hand off a run after shutdown was already requested", async () => {
+    const onRunStarted = vi.fn();
+    const f = await runRoutine([], { abortBeforeClaim: true, onRunStarted });
+    expect(f.run.status).toBe("queued");
+    expect(f.prisma.run.updateMany).not.toHaveBeenCalled();
+    expect(f.prisma.attempt.create).not.toHaveBeenCalled();
+    expect(f.runtimeRun).not.toHaveBeenCalled();
+    expect(onRunStarted).not.toHaveBeenCalled();
   });
 
   for (const checkpoint of ["takeover", "takeover-skipped"] as const) {

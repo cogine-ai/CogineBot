@@ -81,8 +81,10 @@ export function createBackgroundJobHandlers(deps: {
       if (!deps.nativeEvents) throw new Error("Native event processing is unavailable");
       await deps.nativeEvents.notionSignal(payload, new AbortController().signal);
     },
-    "run.continue": async (payload) => {
-      await deps.executor.continueRun(payload.runId, deps.workerId);
+    "run.continue": async (payload, execution) => {
+      if (execution)
+        await deps.executor.continueRun(payload.runId, deps.workerId, execution.onRunStarted);
+      else await deps.executor.continueRun(payload.runId, deps.workerId);
       // Automatic messaging mirror: once the run's bot messages are durable,
       // copy them into the outbox. Never let mirror failures fail the run.
       if (deps.messaging) {

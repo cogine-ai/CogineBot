@@ -2053,7 +2053,7 @@ description: Prepare standup notes
     expect(cancel).toHaveBeenCalledWith("routine:routine-1");
   });
 
-  it("restores the routine claim when run.continue enqueue fails", async () => {
+  it("preserves the committed routine and schedule when its wake notification fails", async () => {
     const scheduledAt = new Date(Date.now() - 1_000);
     const previousLastRunAt = new Date(Date.now() - 60_000);
     const enqueue = vi.fn(async () => {
@@ -2113,25 +2113,23 @@ description: Prepare standup notes
     } as unknown as PrismaClient;
     const executor = createRunExecutor({
       prisma,
+      secrets: [],
       jobs: { enqueue, cancel: vi.fn(async () => undefined), close: vi.fn(async () => undefined) },
       events: { append: vi.fn(async () => undefined) },
     } as unknown as Parameters<typeof createRunExecutor>[0]);
 
-    await expect(executor.wakeRoutine("routine-1", scheduledAt.toISOString())).rejects.toThrow(
-      "enqueue failed",
-    );
-    expect(deleteRunMany).toHaveBeenCalledWith({ where: { id: "run-1", status: "queued" } });
-    expect(deleteTaskMany).toHaveBeenCalledWith({ where: { id: "task-1", status: "queued" } });
-    expect(restoreUpdateMany).toHaveBeenCalledWith(
+    await expect(
+      executor.wakeRoutine("routine-1", scheduledAt.toISOString()),
+    ).resolves.toBeUndefined();
+    expect(transactionCalls).toBe(1);
+    expect(claimUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: "routine-1", active: false, nextRunAt: null }),
-        data: expect.objectContaining({
-          nextRunAt: scheduledAt,
-          active: true,
-          lastRunAt: previousLastRunAt,
-        }),
+        data: expect.objectContaining({ active: false, nextRunAt: null }),
       }),
     );
+    expect(deleteRunMany).not.toHaveBeenCalled();
+    expect(deleteTaskMany).not.toHaveBeenCalled();
+    expect(restoreUpdateMany).not.toHaveBeenCalled();
   });
 
   it.each(["takeover", "takeover-skipped"])(
@@ -2142,7 +2140,12 @@ description: Prepare standup notes
         $queryRaw: vi.fn().mockResolvedValue([{ id: "group-thread" }]),
         run: {
           findFirst: vi.fn().mockResolvedValue({ status: "running" }),
-          findUnique: vi.fn().mockResolvedValue({ status: "running" }),
+          findUnique: vi.fn().mockResolvedValue({
+            status: "running",
+            leaseOwner: "worker-1",
+            leaseFence: 1,
+            firstResponseAt: null,
+          }),
         },
         message: {
           findMany: vi.fn().mockResolvedValue([

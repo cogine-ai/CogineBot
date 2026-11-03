@@ -1,11 +1,13 @@
+import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { StuckWorkStatus } from "@rakazo/core";
 import { ACTIVE_RUN_STATUSES, stuckWorkExpiredNonce, stuckWorkStatusMessage } from "@rakazo/core";
-import type { Prisma } from "./client.js";
+import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
-import { appendEventInTransaction, createPendingSteeringRun } from "./events.js";
+import { appendEventInTransaction, createPendingSteeringRun, notifyRealtime } from "./events.js";
 import { createThreadMessageInTransaction } from "./messages.js";
 import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
+import { withTransactionRetry } from "./transaction-retry.js";
 
 export interface ExpireStuckRunInput {
   runId: string;
@@ -43,6 +45,8 @@ export async function expireStuckRun(
   ) {
     return null;
   }
+  if (input.status === "waiting_takeover" && (await userHasTakeoverScreen(tx, input.runId)))
+    return null;
   const cancelled = await tx.run.updateMany({
     where: { id: input.runId, status: input.status, updatedAt: current.updatedAt },
     data: {
@@ -137,4 +141,51 @@ export async function expireStuckRun(
     botId: run.botId,
   });
   return { seq: cancelledEvent.seq, continuationRunId };
+}
+
+/** End unclaimed takeover waits without cancelling a screen the user has taken. */
+export async function endTakeoverWaits(
+  prisma: PrismaClient,
+  runIds: string[],
+  realtime?: RealtimeFanout,
+): Promise<number> {
+  const waits = await prisma.run.findMany({
+    where: { id: { in: runIds }, status: "waiting_takeover" },
+    select: { id: true, threadId: true, updatedAt: true },
+  });
+  let ended = 0;
+  for (const wait of waits) {
+    const expired = await withTransactionRetry(() =>
+      prisma.$transaction((tx) =>
+        expireStuckRun(tx, {
+          runId: wait.id,
+          threadId: wait.threadId,
+          status: "waiting_takeover",
+          updatedAt: wait.updatedAt,
+          now: new Date(),
+        }),
+      ),
+    );
+    if (!expired) continue;
+    ended += 1;
+    await notifyRealtime(realtime, wait.threadId, expired.seq);
+  }
+  return ended;
+}
+
+/** A lease remains user control until release, even during expiry or handback. */
+async function userHasTakeoverScreen(
+  tx: Prisma.TransactionClient,
+  runId: string,
+): Promise<boolean> {
+  const [computer] = await tx.$queryRaw<
+    Array<{ botId: string; controlBotId: string | null; controlLeaseId: string | null }>
+  >`
+    SELECT r."botId", c."controlBotId", c."controlLeaseId"
+    FROM runs r
+    JOIN bots b ON b.id = r."botId"
+    JOIN computers c ON c.id = b."computerId"
+    WHERE r.id = ${runId}
+    FOR UPDATE OF c`;
+  return Boolean(computer?.controlLeaseId && computer.controlBotId === computer.botId);
 }

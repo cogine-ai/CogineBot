@@ -1,3 +1,5 @@
+import { hostname } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { JobPublisher, JobWorkerHost } from "@rakazo/adapter-kit";
 import {
   ComposioConnector,
@@ -7,6 +9,7 @@ import {
 } from "@rakazo/adapters";
 import { parsePlatformModelAllowlist } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
+import { stopOnShutdownSignals } from "@rakazo/core/node/shutdown-signals";
 import { createWorkerSecretStore } from "./secret-store.js";
 
 loadRootEnv();
@@ -20,6 +23,7 @@ import {
   createJobReconciler,
   createMessagingContextLoader,
   createPostgresReconciliationLeadership,
+  createReservedGraphileJobWorkerHost,
   createRunExecutor,
   createRunSandbox,
   createRunSecretWriter,
@@ -28,7 +32,6 @@ import {
   databaseCapacityBackoffMs,
   ExpoPushProvider,
   GraphileJobPublisher,
-  GraphileJobWorkerHost,
   InMemoryJobQueue,
   InstalledConnectorProvider,
   isComposioEnabled,
@@ -44,6 +47,9 @@ import {
   PipedreamConnector,
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
+  RunJobPublisher,
+  RunStarter,
+  RunWorkerHost,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   resolveDeploymentModel,
@@ -52,6 +58,7 @@ import {
   ScriptedAgentRuntime,
   SpaceMemoryProviderResolver,
   sandboxProviderOptionsFromEnv,
+  withRunWorker,
   withSecretPersistence,
 } from "@rakazo/adapters";
 import { resolveEncryptionKey, resolveSupervisorToken } from "@rakazo/core";
@@ -72,13 +79,16 @@ const logger = createRootLogger(SERVICE_NAMES.worker);
 async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
-  // Shared by Prisma, the reconciliation leadership lock, and both graphile-worker
-  // components (see GraphileJobPublisher/GraphileJobWorkerHost) — one pool instead
-  // of four separate ones. Keep this modest: graphile holds a LISTEN client and
-  // leadership holds an advisory-lock client for the process lifetime, and a
-  // larger max just competes for Postgres max_connections (53300).
+  const poolMax = parsePositiveInteger(process.env.DB_POOL_MAX, 8);
+  // Three queue listeners and reconciliation leadership hold connections. Leave
+  // room for job queries and transactions instead of starting a stalled worker.
+  if (process.env.WAKEUP_DRIVER !== "memory" && poolMax < 6)
+    throw new Error("DB_POOL_MAX must be at least 6 for the Graphile worker");
+  // Prisma, queue publishing, the three queue listeners and reconciliation
+  // leadership share one bounded pool rather than opening a pool per component.
+  // A larger max competes for Postgres max_connections (53300).
   const created = createDb(databaseUrl, {
-    poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 8),
+    poolMax,
     applicationName: "rakazo-worker",
   });
   const { pool } = created;
@@ -179,19 +189,17 @@ async function main() {
   integrationSettings.warmDirectories();
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const home = new LocalAgentHomeStore(dataDir);
+  const shutdown = new AbortController();
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
-  const jobs: JobPublisher = inMemoryJobs ?? new GraphileJobPublisher(pool);
+  const runs = new RunStarter(realtime, { signal: shutdown.signal });
+  const jobs: JobPublisher =
+    inMemoryJobs ?? new RunJobPublisher(prisma, new GraphileJobPublisher(pool, prisma), runs);
   const ticketChanges = createTicketChangeNotifier({
     boardEvents,
     jobs,
     prisma,
     ticketBoardEnabled,
   });
-  const jobHost: JobWorkerHost =
-    inMemoryJobs ??
-    new GraphileJobWorkerHost(pool, {
-      concurrency: parsePositiveInteger(process.env.GRAPHILE_WORKER_CONCURRENCY, 4),
-    });
   // One provider instance so emulator launches and polls share the same Map.
   const cloudAgent = createCloudAgentConnection();
   // Shared with the reconciler so a stuck wait uses the same push path as a finish notice.
@@ -241,6 +249,7 @@ async function main() {
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,
     web: createWebProvider(),
     cloudAgent,
+    shutdownSignal: shutdown.signal,
   });
 
   const nativeEvents = new NativeRoutineEventService(
@@ -253,6 +262,14 @@ async function main() {
     undefined,
     native.slackEventHooks,
   );
+  const jobHost: JobWorkerHost =
+    inMemoryJobs ??
+    withRunWorker(
+      new RunWorkerHost(prisma, realtime, runs, { pool }),
+      createReservedGraphileJobWorkerHost(pool, {
+        concurrency: parsePositiveInteger(process.env.GRAPHILE_WORKER_CONCURRENCY, 4),
+      }),
+    );
   const jobHandlers = createBackgroundJobHandlers({
     nativeEvents,
     executor,
@@ -261,7 +278,8 @@ async function main() {
     home,
     jobs,
     events,
-    workerId: process.pid.toString(),
+    // Containers share Node's pid, including during rolling deploys.
+    workerId: `${hostname()}:${process.pid}`,
     runtime,
     secretStore: secrets,
     memoryProviders,
@@ -271,25 +289,6 @@ async function main() {
     messaging,
     cloudAgent,
   });
-  // graphile-worker run() connects through the shared pool. createPool already
-  // retries connect() on 53300 a finite number of times. Keep retrying start
-  // until Postgres has capacity: exhausting then returning from main().catch
-  // left a live process that held connections but never ran jobs or registered
-  // signal handlers, even after capacity returned. Do not exit(1) here; that
-  // crash-loops into the same saturated Postgres. GraphileJobWorkerHost also
-  // observes runner.promise after start and restarts with the same backoff if
-  // the runner dies later on 53300 (unhandledRejection still swallows that
-  // code so we do not Docker crash-loop on transient completeJob failures).
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await jobHost.start(jobHandlers);
-      break;
-    } catch (error) {
-      if (!isTooManyDatabaseConnections(error)) throw error;
-      logger.error("worker job host start waiting on database capacity", error);
-      await new Promise((resolve) => setTimeout(resolve, databaseCapacityBackoffMs(attempt)));
-    }
-  }
   const reconciler = createJobReconciler({
     prisma,
     jobs,
@@ -300,30 +299,32 @@ async function main() {
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
     reconcileNativeEvents: () => nativeEvents.reconcile(),
   });
-  reconciler.start();
-
   let stopping = false;
-  const stop = async () => {
-    if (stopping) return;
+  let stopPromise: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
     stopping = true;
-    try {
-      await reconciler.stop();
-      await jobHost.stop();
-      await jobs.close();
-      await secrets.close();
-      await realtime.close();
-      await connector.stop();
-      await mcp.close();
-      await nativeEvents.close();
-      await native.close();
-      await prisma.$disconnect().catch(() => undefined);
-      await pool.end().catch(() => undefined);
-    } finally {
-      await logger.flush({ timeoutMs: 2_000 });
-    }
+    shutdown.abort();
+    stopPromise = (async () => {
+      try {
+        await reconciler.stop();
+        await jobHost.stop();
+        await jobs.close();
+        await secrets.close();
+        await realtime.close();
+        await connector.stop();
+        await mcp.close();
+        await nativeEvents.close();
+        await native.close();
+        await prisma.$disconnect().catch(() => undefined);
+        await pool.end().catch(() => undefined);
+      } finally {
+        await logger.flush({ timeoutMs: 2_000 });
+      }
+    })();
+    return stopPromise;
   };
-  process.once("SIGTERM", () => void stop());
-  process.once("SIGINT", () => void stop());
+  stopOnShutdownSignals(stop);
   // graphile-worker fires completeJob() without awaiting it. When pool.connect()
   // then hits Postgres 53300, that rejection is unhandled. Exiting here is the
   // crash loop: Docker restarts the process before Postgres has reaped the old
@@ -339,6 +340,27 @@ async function main() {
     if (isTooManyDatabaseConnections(reason)) return;
     void stop().finally(() => process.exit(1));
   });
+
+  // Direct runs can already be active while the scheduler waits for capacity.
+  // Register shutdown first so those runs can drain even before Graphile starts.
+  for (let attempt = 0; !stopping; attempt += 1) {
+    try {
+      await jobHost.start(jobHandlers);
+      break;
+    } catch (error) {
+      if (stopping) return;
+      if (!isTooManyDatabaseConnections(error)) {
+        await stop();
+        throw error;
+      }
+      logger.error("worker job host start waiting on database capacity", error);
+      await sleep(databaseCapacityBackoffMs(attempt), undefined, { signal: shutdown.signal }).catch(
+        () => undefined,
+      );
+    }
+  }
+  if (stopping) return;
+  reconciler.start();
 
   logger.info("worker ready", { degraded: secrets.describe().capabilities.degraded ?? false });
 }

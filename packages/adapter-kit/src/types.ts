@@ -776,11 +776,22 @@ export type BackgroundJob = {
     replaceKey?: string;
     /** Cap retried executions; omit to use the job queue's default. */
     maxAttempts?: number;
+    /** Preserve an existing job's retry budget and delay while attempts remain. */
+    keepExisting?: boolean;
+    /** Replace a job whose worker lock is older than this instant. */
+    replaceLockedBefore?: Date;
   };
 }[BackgroundJobName];
 
+export interface BackgroundJobExecution {
+  onRunStarted(): void;
+}
+
 export type BackgroundJobHandlers = {
-  [Name in BackgroundJobName]: (payload: BackgroundJobPayloads[Name]) => Promise<void>;
+  [Name in BackgroundJobName]: (
+    payload: BackgroundJobPayloads[Name],
+    execution?: BackgroundJobExecution,
+  ) => Promise<void>;
 };
 
 export interface SecretRecord {

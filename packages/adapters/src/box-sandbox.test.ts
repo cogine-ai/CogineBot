@@ -1,4 +1,5 @@
 import type { Command200Response } from "@asciidev/box-sdk";
+import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { parse } from "shell-quote";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BoxSandboxProvider, type BoxSandboxSdk, isUnrecoverableBoxError } from "./box-sandbox.js";
@@ -14,6 +15,7 @@ const context = {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -115,6 +117,35 @@ describe("BoxSandboxProvider", () => {
     ).resolves.toBeUndefined();
     expect(fixture.command).not.toHaveBeenCalled();
     expect(fixture.resume).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
+  it("reports an accepted computer that never becomes ready as unavailable", async () => {
+    vi.useFakeTimers();
+    const fixture = boxFixture({ state: "creating" });
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const pending = provider
+      .prepare(
+        { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+        context,
+      )
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(await pending).toBeInstanceOf(SandboxUnavailableError);
+    expect(fixture.command).not.toHaveBeenCalled();
+    expect(fixture.create).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed accepted start without running workspace commands", async () => {
+    const fixture = boxFixture({ state: "error" });
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    await expect(
+      provider.prepare(
+        { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+        context,
+      ),
+    ).rejects.toBeInstanceOf(SandboxUnavailableError);
+    expect(fixture.command).not.toHaveBeenCalled();
     expect(fixture.create).not.toHaveBeenCalled();
   });
 

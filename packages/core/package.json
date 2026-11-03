@@ -43,6 +43,11 @@
       "types": "./src/node/screen-capability.ts",
       "development": "./src/node/screen-capability.ts",
       "default": "./src/node/screen-capability.ts"
+    },
+    "./node/shutdown-signals": {
+      "types": "./src/node/shutdown-signals.ts",
+      "development": "./src/node/shutdown-signals.ts",
+      "default": "./src/node/shutdown-signals.ts"
     }
   },
   "scripts": {

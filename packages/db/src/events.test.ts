@@ -1,16 +1,19 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import { encodeLoginSecret } from "@rakazo/contracts";
+import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import {
   answerRunInput,
   answerWaitingRunWithTextInTransaction,
   appendEvent,
+  appendEventInTransaction,
   bindWaitingTakeoverControl,
   claimSteering,
   clearThread,
   completedRunBlocks,
   createPendingSteeringRun,
+  createThreadEvents,
   finalizeComputerControlRelease,
   finalizeRun,
   followThreadEvents,
@@ -3724,7 +3727,10 @@ describe("appendEvent", () => {
     };
     const tx = {
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 4 }) },
-      run: { findUnique: vi.fn().mockResolvedValue({ status: "running" }) },
+      run: {
+        findUnique: vi.fn().mockResolvedValue({ status: "running" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       event: { create: vi.fn().mockResolvedValue(created) },
     };
     const prisma = {
@@ -4092,5 +4098,202 @@ describe("steering connection selection metadata", () => {
     expect(tx.task.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ connectionIds: ["deleted-target"] }),
     });
+  });
+});
+
+describe("first reply transaction metadata", () => {
+  const input = {
+    spaceId: "workspace-1",
+    threadId: "thread-1",
+    botId: "bot-1",
+    runId: "run-1",
+    type: "thread.progress" as const,
+    payload: { streaming: true, delta: "Reply" },
+    lease: { owner: "worker-1", fence: 2 },
+  };
+
+  function fixture(options: { firstResponseAt?: Date; stampCount?: number } = {}) {
+    const createdAt = new Date("2026-01-01T00:00:02Z");
+    const order: string[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 6 })) },
+      run: {
+        findUnique: vi.fn(async () => ({
+          status: "running",
+          startedAt: new Date("2026-01-01T00:00:01Z"),
+          firstResponseAt: options.firstResponseAt ?? null,
+          userId: "user-1",
+          leaseOwner: input.lease.owner,
+          leaseFence: input.lease.fence,
+        })),
+        updateMany: vi.fn(async (..._args: unknown[]) => {
+          order.push("first-response");
+          return { count: options.stampCount ?? 1 };
+        }),
+      },
+      event: {
+        create: vi.fn(async (..._args: unknown[]) => {
+          order.push("event");
+          return {
+            ...event(5),
+            type: input.type,
+            runId: input.runId,
+            payload: input.payload,
+            createdAt,
+          };
+        }),
+      },
+    };
+    const readTiming = vi.fn(async () => ({
+      trigger: "user",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      startedAt: new Date("2026-01-01T00:00:01Z"),
+      firstResponseAt: createdAt,
+      completedAt: null,
+      sourceMessage: null,
+    }));
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      run: { findUnique: readTiming },
+    };
+    const realtime = new TestFanout();
+    const publish = vi.spyOn(realtime, "publish");
+    return { tx, prisma, createdAt, order, realtime, publish, readTiming };
+  }
+
+  it("records event timestamp in the same transaction and preserves the supplied event ID", async () => {
+    const f = fixture();
+    const committed = await appendEventInTransaction(
+      f.tx as unknown as Parameters<typeof appendEventInTransaction>[0],
+      input,
+      "stable-event-id",
+    );
+    expect(committed.firstResponse).toBe(true);
+    expect(f.order).toEqual(["event", "first-response"]);
+    expect(f.tx.run.updateMany).toHaveBeenCalledWith({
+      where: { id: input.runId, firstResponseAt: null },
+      data: { firstResponseAt: f.createdAt },
+    });
+    expect(f.tx.event.create).toHaveBeenCalledWith({
+      data: {
+        id: "stable-event-id",
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        seq: 5,
+        type: input.type,
+        payload: input.payload,
+        runId: input.runId,
+      },
+    });
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it("publishes and logs only a committed first reply without exposing lease or private metadata", async () => {
+    const f = fixture();
+    const log = vi.spyOn(getLogger(), "info");
+    try {
+      const result = await appendEvent(f.prisma as unknown as PrismaClient, input, f.realtime);
+      expect(f.publish).toHaveBeenCalledExactlyOnceWith(
+        "thread:thread-1",
+        JSON.stringify({ cursor: 5 }),
+      );
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        "run.first_response",
+        expect.objectContaining({
+          "run.id": input.runId,
+          "run.first_response_ms": 2_000,
+        }),
+      );
+      expect(result).not.toHaveProperty("firstResponse");
+      expect(result).not.toHaveProperty("lease");
+      expect(result.payload).toEqual(input.payload);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(["already-stamped", "lost-CAS"] as const)(
+    "does not announce a second first reply after %s",
+    async (scenario) => {
+      const f = fixture(
+        scenario === "already-stamped"
+          ? { firstResponseAt: new Date("2026-01-01T00:00:01Z") }
+          : { stampCount: 0 },
+      );
+      const log = vi.spyOn(getLogger(), "info");
+      try {
+        await appendEvent(f.prisma as unknown as PrismaClient, input, f.realtime);
+        expect(log).not.toHaveBeenCalled();
+        expect(f.readTiming).not.toHaveBeenCalled();
+        expect(f.tx.run.updateMany).toHaveBeenCalledTimes(scenario === "already-stamped" ? 0 : 1);
+        expect(f.publish).toHaveBeenCalledTimes(1);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it("does not publish or log when the output transaction fails after its writes", async () => {
+    const f = fixture();
+    f.prisma.$transaction.mockImplementation(async (callback) => {
+      await callback(f.tx);
+      throw new Error("fixture commit rejected");
+    });
+    const log = vi.spyOn(getLogger(), "info");
+    try {
+      await expect(
+        appendEvent(f.prisma as unknown as PrismaClient, input, f.realtime),
+      ).rejects.toThrow("fixture commit rejected");
+      expect(f.tx.event.create).toHaveBeenCalledTimes(1);
+      expect(f.tx.run.updateMany).toHaveBeenCalledTimes(1);
+      expect(f.publish).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("keeps a committed reply successful when the timing read fails", async () => {
+    const f = fixture();
+    f.readTiming.mockRejectedValueOnce(new Error("fixture timing read failed"));
+    await expect(
+      appendEvent(f.prisma as unknown as PrismaClient, input, f.realtime),
+    ).resolves.toMatchObject({ runId: input.runId });
+    expect(f.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a superseded attempt before creating its event or timestamp", async () => {
+    const f = fixture();
+    f.tx.run.findUnique.mockResolvedValueOnce({
+      status: "running",
+      startedAt: new Date("2026-01-01T00:00:01Z"),
+      firstResponseAt: null,
+      userId: "user-1",
+      leaseOwner: "worker-new",
+      leaseFence: 3,
+    });
+    await expect(
+      appendEvent(f.prisma as unknown as PrismaClient, input, f.realtime),
+    ).rejects.toBeInstanceOf(RunHistoryWriteError);
+    expect(f.tx.event.create).not.toHaveBeenCalled();
+    expect(f.tx.run.updateMany).not.toHaveBeenCalled();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it("uses the committed transaction flag for explicit durable-message notifications", async () => {
+    const f = fixture();
+    const log = vi.spyOn(getLogger(), "info");
+    try {
+      const events = createThreadEvents(f.prisma as unknown as PrismaClient, f.realtime);
+      await events.notify(input.threadId, 5);
+      expect(log).not.toHaveBeenCalled();
+      await events.notify(input.threadId, 5, input.runId);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(f.readTiming).toHaveBeenCalledTimes(1);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

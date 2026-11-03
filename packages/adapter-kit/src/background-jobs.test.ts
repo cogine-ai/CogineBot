@@ -57,6 +57,15 @@ describe("background job contracts", () => {
     });
   });
 
+  it("passes the run handoff callback only when an execution is supplied", async () => {
+    const target = handlers();
+    const execution = { onRunStarted: vi.fn() };
+    await dispatchBackgroundJob(target, "run.continue", { runId: "run-a" }, execution);
+    expect(target["run.continue"]).toHaveBeenCalledExactlyOnceWith({ runId: "run-a" }, execution);
+    await dispatchBackgroundJob(target, "run.continue", { runId: "run-b" });
+    expect(vi.mocked(target["run.continue"]).mock.calls[1]).toEqual([{ runId: "run-b" }]);
+  });
+
   it("rejects unknown names and malformed deliveries", () => {
     expect(() => parseBackgroundJob("unknown", {})).toThrow("Unknown background job");
     expect(() =>
