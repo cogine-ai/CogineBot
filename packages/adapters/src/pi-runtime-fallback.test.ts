@@ -691,6 +691,55 @@ describe("Pi runtime ordered model fallback", () => {
     }
   });
 
+  it("rejects diagnostic fallback tool growth before reserving or sending an oversized request", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fixture-growth-backup-key" },
+    ]);
+    input.contextStrategy = "current";
+    input.contextRestored = false;
+    input.executeTool = vi.fn(async () => ({ payload: "0".repeat(20_000) }));
+    const beforeCall = vi.fn<ModelCallObserver["beforeCall"]>(async () => "growth-reservation");
+    const afterCall = vi.fn<ModelCallObserver["afterCall"]>(async () => undefined);
+    let backupCalls = 0;
+    providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+      if (target.provider === primary.provider)
+        return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+      expect(target.id).toBe(backupA.id);
+      if (++backupCalls > 1) throw new Error("Oversized fallback context reached the provider");
+      const tokens = estimateModelContextTokens(context);
+      expect(tokens + 4096 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(8192);
+      return stream(
+        target,
+        message(
+          target,
+          [
+            {
+              type: "toolCall",
+              id: "diagnostic-growth-once",
+              name: "write_effect",
+              arguments: { value: "once" },
+            },
+          ],
+          "toolUse",
+        ),
+      );
+    });
+    const failure = await run(
+      input,
+      [],
+      new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } }),
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect.soft(providerState.stream).toHaveBeenCalledTimes(2);
+    expect.soft(input.executeTool).toHaveBeenCalledTimes(1);
+    expect.soft(beforeCall).toHaveBeenCalledTimes(2);
+    expect(failure).toMatchObject({
+      message: expect.stringContaining("Required context exceeds"),
+    });
+  });
+
   it.each([false, true])(
     "bills configured model ids with switched=%s despite provider response ids",
     async (switched) => {

@@ -805,6 +805,16 @@ export function createRuntimeContextPolicy(
       images: messages.reduce((count, message) => count + imagePartCount(message), 0),
     };
   }
+  /** Reject an unsendable fallback before committing its transcript or reserving usage. */
+  function assertFallbackInputLimit(ctx: Context, messages: Message[], model: Model<Api>) {
+    if (!options.reserveFallbackMargin) return;
+    const available = maxFallbackInputTokens(
+      request.model.contextWindow ?? model.contextWindow,
+      outputReserve(model),
+    );
+    const tokens = measure(ctx, messages).tokens + MODEL_CONTEXT_FRAMING_TOKENS;
+    if (tokens > available) throw new ContextBudgetError(tokens, available);
+  }
   /** A rebuild that leaves part of the window free, or none when the run needs all of it. */
   function rebuildWithHeadroom(ctx: Context, model: Model<Api>): Prepared | undefined {
     const window = request.model.contextWindow ?? model.contextWindow;
@@ -888,6 +898,7 @@ export function createRuntimeContextPolicy(
           ...ctx.messages.slice(previous.source.length).map((message) => ({ hash: hash(message) })),
         ];
         assertImageLimit(appended);
+        assertFallbackInputLimit(ctx, appended, model);
         sent = {
           ...previous,
           source,
@@ -909,6 +920,7 @@ export function createRuntimeContextPolicy(
           )
         : built.context.messages;
       assertImageLimit(messages);
+      assertFallbackInputLimit(ctx, messages, model);
       const projection = messages.map((message) => ({
         hash: hash(message),
         ...(message === built.navigation?.message
