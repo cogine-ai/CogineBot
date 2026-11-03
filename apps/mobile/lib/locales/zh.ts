@@ -1,4 +1,8 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "This model's context window is too small. Choose another model.":
+    "此模型的上下文容量太小。请选择其他模型。",
+  "This server's tool result does not fit the model. Choose another model.":
+    "此服务器的完整工具结果超出模型容量。请选择其他模型。",
   "Add your own API key to continue.": "添加你自己的 API 密钥以继续。",
   "Add API key": "添加 API 密钥",
   "Back to chats": "返回聊天",

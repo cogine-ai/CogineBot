@@ -2713,6 +2713,49 @@ test("a committed creation without its receipt leaves the other Space isolated a
   }
 });
 
+for (const width of [1280, 390]) {
+  for (const [kind, message] of [
+    ["context", "This model's context window is too small. Choose another model."],
+    ["whole-result", "This server's tool result does not fit the model. Choose another model."],
+  ] as const) {
+    test(`a ${kind} capacity failure preserves the draft at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      const { state, errors, unknown } = await mockChat(page);
+      await controlledStream(page);
+      await page.setViewportSize({ width, height: 844 });
+      const failed = {
+        id: `run-capacity-${kind}-${width}`,
+        botId: "chief",
+        status: "failed" as const,
+        trigger: "user" as const,
+        error: message,
+      };
+      // Only the failed Run is synthetic; the shell and shared error rendering are real.
+      state.bootstrap = (route, data) =>
+        json(route, { ...data, thread: { ...data.thread!, run: failed } });
+      state.thread = (route, data) => json(route, { ...data, run: failed });
+      await ready(page);
+      const composer = page.getByRole("combobox", { name: "Message Chief", exact: true });
+      await composer.fill("Keep this next step");
+      const failure = page.getByTestId("composer-error");
+      await expect(failure).toContainText(message);
+      await expect(failure).not.toContainText("The model provider returned an error.");
+      await failure.getByText("Details", { exact: true }).click();
+      await expect(failure.locator("pre")).toContainText(message);
+      await expect(composer).toHaveValue("Keep this next step");
+      await captureScreenshot(page, testInfo, `context-capacity-${kind}-${width}`);
+      await page.getByTestId("composer-error-dismiss").click();
+      await expect(failure).toBeHidden();
+      await expect(composer).toHaveValue("Keep this next step");
+      expect(state.sends).toEqual([]);
+      expect(state.uploads).toEqual([]);
+      expect(unknown).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
+}
+
 test("a computer provider limit keeps computer retry advice without starting another run", async ({
   page,
 }, testInfo) => {

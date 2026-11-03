@@ -1,6 +1,7 @@
 import type * as AgentCore from "@earendil-works/pi-agent-core";
 import type { AgentOptions } from "@earendil-works/pi-agent-core";
 import type {
+  Api,
   AssistantMessage,
   Context,
   CredentialStore,
@@ -58,6 +59,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
   registerOpenAiCompatibleRuntime: (models: unknown) => models,
 }));
 
+import { estimateModelContextTokens } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import { isRetryableProviderUnavailable, PiAgentRuntime } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS } from "./pi-runtime-limits.js";
@@ -83,7 +85,7 @@ function model(provider: string, id: string, contextWindow: number): Model<"open
 }
 
 function message(
-  target: Model<"openai-completions">,
+  target: Model<Api>,
   content: AssistantMessage["content"],
   stopReason: AssistantMessage["stopReason"],
   errorMessage?: string,
@@ -108,7 +110,7 @@ function message(
   };
 }
 
-function stream(_target: Model<"openai-completions">, response: AssistantMessage) {
+function stream(_target: Model<Api>, response: AssistantMessage) {
   const result = new AssistantMessageEventStream();
   result.push({ type: "start", partial: { ...response, content: [], stopReason: "stop" } });
   if (response.stopReason === "error" || response.stopReason === "aborted") {
@@ -689,6 +691,55 @@ describe("Pi runtime ordered model fallback", () => {
     }
   });
 
+  it("rejects diagnostic fallback tool growth before reserving or sending an oversized request", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fixture-growth-backup-key" },
+    ]);
+    input.contextStrategy = "current";
+    input.contextRestored = false;
+    input.executeTool = vi.fn(async () => ({ payload: "0".repeat(20_000) }));
+    const beforeCall = vi.fn<ModelCallObserver["beforeCall"]>(async () => "growth-reservation");
+    const afterCall = vi.fn<ModelCallObserver["afterCall"]>(async () => undefined);
+    let backupCalls = 0;
+    providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+      if (target.provider === primary.provider)
+        return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+      expect(target.id).toBe(backupA.id);
+      if (++backupCalls > 1) throw new Error("Oversized fallback context reached the provider");
+      const tokens = estimateModelContextTokens(context);
+      expect(tokens + 4096 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(8192);
+      return stream(
+        target,
+        message(
+          target,
+          [
+            {
+              type: "toolCall",
+              id: "diagnostic-growth-once",
+              name: "write_effect",
+              arguments: { value: "once" },
+            },
+          ],
+          "toolUse",
+        ),
+      );
+    });
+    const failure = await run(
+      input,
+      [],
+      new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } }),
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect.soft(providerState.stream).toHaveBeenCalledTimes(2);
+    expect.soft(input.executeTool).toHaveBeenCalledTimes(1);
+    expect.soft(beforeCall).toHaveBeenCalledTimes(2);
+    expect(failure).toMatchObject({
+      message: expect.stringContaining("Required context exceeds"),
+    });
+  });
+
   it.each([false, true])(
     "bills configured model ids with switched=%s despite provider response ids",
     async (switched) => {
@@ -1197,6 +1248,185 @@ describe("Pi runtime ordered model fallback", () => {
     );
   });
 
+  it.each([
+    ["mcp__mail__read.events", { id: "record" }, false],
+    ["connectors_execute_tool", { id: "mail-server:read", arguments: {} }, false],
+    ["mcp__mail__read.events", { id: "record" }, true],
+  ] as const)(
+    "selects a backup without cropping a whole opted-in image result from %s %j (already read: %s)",
+    async (name, args, alreadyRead) => {
+      const input = request([
+        {
+          provider: backupA.provider,
+          id: backupA.id,
+          apiKey: "backup-a-key",
+          maxImagesPerPrompt: 2,
+        },
+        {
+          provider: backupB.provider,
+          id: backupB.id,
+          apiKey: "backup-b-key",
+          maxImagesPerPrompt: 3,
+        },
+      ]);
+      input.model = { ...input.model, maxImagesPerPrompt: 3 };
+      input.verbatimMcpServers = { ids: ["mail-server"], slugs: ["mail"] };
+      input.tools = [
+        {
+          name,
+          description: "Read evidence images",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string" }, arguments: { type: "object" } },
+          },
+          route: {
+            connectorId: "mcp",
+            toolName: "read",
+            resourceId: "mail-server",
+            catalogGroup: "mail",
+            connectionId: "mail-connection",
+          },
+        },
+      ];
+      if (alreadyRead) input.tools.push(request().tools[0]!);
+      const images = [0, 1, 2].map((index) => ({
+        type: "image" as const,
+        data: `synthetic-evidence-${index}`,
+        mimeType: "image/png",
+      }));
+      const raw = {
+        kind: "agent_tool_result" as const,
+        content: [
+          { type: "text" as const, text: JSON.stringify({ id: "exact-id", complete: true }) },
+          ...images,
+          { type: "text" as const, text: "Final original evidence block." },
+        ],
+        details: { frameId: "synthetic-frame" },
+      };
+      input.executeTool = vi.fn(async (toolName) => (toolName === name ? raw : { ok: true }));
+      let primaryCalls = 0;
+      const attempted: string[] = [];
+      providerState.stream.mockImplementation(
+        (target: Model<"openai-completions">, context: Context) => {
+          attempted.push(target.provider);
+          if (target.provider === primary.provider && ++primaryCalls === 1) {
+            const offered =
+              context.tools?.[0] ??
+              context.messages.find((item) => item.role === "system")?.toolsAdded?.[0];
+            if (!offered) throw new Error("Synthetic tool was not offered");
+            return stream(
+              target,
+              message(
+                target,
+                [{ type: "toolCall", id: "evidence-once", name: offered.name, arguments: args }],
+                "toolUse",
+              ),
+            );
+          }
+          if (target.provider === primary.provider && alreadyRead && primaryCalls === 2) {
+            expect(countContextImages(context)).toBe(3);
+            return stream(
+              target,
+              message(
+                target,
+                [
+                  {
+                    type: "toolCall",
+                    id: "effect-once",
+                    name: "write_effect",
+                    arguments: { value: "once" },
+                  },
+                ],
+                "toolUse",
+              ),
+            );
+          }
+          if (target.provider === primary.provider)
+            return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+          const result = context.messages.find(
+            (item): item is Extract<Context["messages"][number], { role: "toolResult" }> =>
+              item.role === "toolResult" && item.toolCallId === "evidence-once",
+          );
+          if (alreadyRead) {
+            expect(result).toBeUndefined();
+            expect(
+              context.messages.some(
+                (item) =>
+                  item.role === "assistant" &&
+                  item.content.some(
+                    (part) => part.type === "toolCall" && part.id === "evidence-once",
+                  ),
+              ),
+            ).toBe(false);
+            expect(context.messages).toContainEqual(
+              expect.objectContaining({ role: "toolResult", toolCallId: "effect-once" }),
+            );
+          } else {
+            expect(result?.content.filter((part) => part.type === "image")).toEqual(images);
+            expect(
+              result?.content.filter(
+                (part) => part.type !== "text" || !part.text.startsWith("[Automated message"),
+              ),
+            ).toEqual(raw.content);
+          }
+          return stream(
+            target,
+            message(target, [{ type: "text", text: "Evidence read." }], "stop"),
+          );
+        },
+      );
+
+      const events = await run(input);
+
+      expect(attempted).toEqual(
+        alreadyRead
+          ? [primary.provider, primary.provider, primary.provider, backupA.provider]
+          : [primary.provider, primary.provider, backupB.provider],
+      );
+      expect(input.executeTool).toHaveBeenCalledWith(
+        name,
+        args,
+        expect.any(String),
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(input.executeTool).toHaveBeenCalledTimes(alreadyRead ? 2 : 1);
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Evidence read." });
+    },
+  );
+
+  it("keeps the configured output room when optional history moves to a backup", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "backup-key", maxTokens: 1024 },
+    ]);
+    input.model = { ...input.model, contextWindow: 8192, maxTokens: 1024 };
+    input.history = Array.from({ length: 100 }, (_, index) => ({
+      id: `old-${index}`,
+      role: "user" as const,
+      content: `Old message ${index} ${"filler ".repeat(80)}`,
+    }));
+    input.onModelChange = vi.fn();
+    const caps: number[] = [];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, context: Context, options?: { maxTokens?: number }) => {
+        caps.push(options?.maxTokens ?? 0);
+        expect(JSON.stringify(context.messages)).toContain(input.prompt);
+        return target.provider === primary.provider
+          ? stream(target, message(target, [], "error", "HTTP 402 quota exhausted"))
+          : stream(target, message(target, [{ type: "text", text: "Backup complete." }], "stop"));
+      },
+    );
+
+    const events = await run(input);
+
+    expect(caps).toEqual([1024, 1024]);
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(backupA.provider, backupA.id);
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup complete." });
+  });
+
   it("prunes new screenshots using the active backup image limit", async () => {
     const visionBackup = { ...backupA, input: ["text", "image"] };
     providerState.models.set(`${backupA.provider}/${backupA.id}`, visionBackup);
@@ -1558,7 +1788,7 @@ describe("Pi runtime ordered model fallback", () => {
       { provider: backupA.provider, id: backupA.id, apiKey: "small...key" },
       { provider: backupB.provider, id: backupB.id, apiKey: "fitti...key" },
     ]);
-    input.prompt = "x".repeat(8_000);
+    input.prompt = "0".repeat(8_000);
     providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
       target.provider === primary.provider
         ? stream(target, message(target, [], "error", "429 rate_limit_error"))
@@ -1602,6 +1832,137 @@ describe("Pi runtime ordered model fallback", () => {
       ),
     ).toEqual([primary.provider, smallContextBackup.provider]);
   });
+
+  it("leaves framing room by omitting optional history before accepting a small backup", async () => {
+    const smallBackup = model("provider-small", "framing-fit", 2048);
+    providerState.models.set(
+      `${smallBackup.provider}/${smallBackup.id}`,
+      smallBackup as unknown as Record<string, unknown>,
+    );
+    const input = request([
+      { provider: smallBackup.provider, id: smallBackup.id, apiKey: "backup-key", maxTokens: 512 },
+    ]);
+    input.history = [{ id: "optional-old", role: "user", content: "0".repeat(1200) }];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        const sent = JSON.stringify(context.messages);
+        expect(sent).toContain(input.prompt);
+        expect(sent).not.toContain("0".repeat(1200));
+        return stream(target, message(target, [{ type: "text", text: "Framing fits." }], "stop"));
+      },
+    );
+
+    const events = await run(input);
+
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Framing fits." });
+  });
+
+  it.each([
+    { window: 2048, api: "openai-completions" as const },
+    { window: 8192, api: "openai-responses" as const },
+  ])(
+    "reserves the fallback input safety margin in the actual $window-token request",
+    async ({ window, api }) => {
+      const backup = { ...model("provider-margin", `margin-${window}`, window), api };
+      providerState.models.set(
+        `${backup.provider}/${backup.id}`,
+        backup as unknown as Record<string, unknown>,
+      );
+      const input = request([
+        { provider: backup.provider, id: backup.id, apiKey: "fixture-backup-key", maxTokens: 512 },
+      ]);
+      input.history = Array.from({ length: 60 }, (_, index) => ({
+        id: `optional-${index}`,
+        role: "user" as const,
+        content: `optional-${index}: ${"0".repeat(400)}`,
+      }));
+      let backupCalls = 0;
+      providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        const tokens = estimateModelContextTokens(context);
+        expect(tokens + 512 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(window);
+        expect(JSON.stringify(context.messages)).toContain(input.prompt);
+        expect(JSON.stringify(context.messages)).not.toContain("optional-0:");
+        if (++backupCalls === 1)
+          return stream(
+            target,
+            message(
+              target,
+              [
+                {
+                  type: "toolCall",
+                  id: "margin-effect-once",
+                  name: "write_effect",
+                  arguments: { value: "once" },
+                },
+              ],
+              "toolUse",
+            ),
+          );
+        expect(JSON.stringify(context.messages)).toContain('"ok":true');
+        return stream(
+          target,
+          message(target, [{ type: "text", text: "Backup margin fits." }], "stop"),
+        );
+      });
+      const events = await run(input);
+      expect(providerState.stream).toHaveBeenCalledTimes(3);
+      expect(input.executeTool).toHaveBeenCalledTimes(1);
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Backup margin fits." });
+    },
+  );
+
+  it.each([false, true])(
+    "preserves diagnostic history unless the trusted restored hint is set (%s)",
+    async (contextRestored) => {
+      const small = model("provider-diagnostic", "diagnostic-small", 2048);
+      const large = model("provider-diagnostic-large", "diagnostic-large", 65_536);
+      providerState.models.set(
+        `${small.provider}/${small.id}`,
+        small as unknown as Record<string, unknown>,
+      );
+      providerState.models.set(
+        `${large.provider}/${large.id}`,
+        large as unknown as Record<string, unknown>,
+      );
+      const input = request([
+        { provider: small.provider, id: small.id, apiKey: "small-key", maxTokens: 512 },
+        { provider: large.provider, id: large.id, apiKey: "large-key", maxTokens: 512 },
+      ]);
+      input.contextStrategy = "current";
+      input.contextRestored = contextRestored;
+      input.history = Array.from({ length: 60 }, (_, index) => ({
+        id: `optional-${index}`,
+        role: "user" as const,
+        content: `optional-${index}: ${"0".repeat(400)}`,
+      }));
+      providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        expect(target.id).toBe(contextRestored ? small.id : large.id);
+        const tokens = estimateModelContextTokens(context);
+        expect(tokens + 512 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(
+          target.contextWindow,
+        );
+        expect(JSON.stringify(context.messages).includes("optional-0:")).toBe(!contextRestored);
+        return stream(
+          target,
+          message(target, [{ type: "text", text: "Diagnostic contract kept." }], "stop"),
+        );
+      });
+      const events = await run(input);
+      expect(providerState.stream).toHaveBeenCalledTimes(2);
+      expect(input.executeTool).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Diagnostic contract kept." });
+    },
+  );
 
   it("skips backups without the primary turn's reasoning capability", async () => {
     const reasoningPrimary = { ...primary, reasoning: true };
@@ -1992,6 +2353,77 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
     context.messages.flatMap((entry) =>
       entry.role === "assistant" ? entry.content.filter((part) => part.type === "thinking") : [],
     );
+
+  it("omits the primary's thinking on a direct switch and keeps thinking written by the backup", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key", maxTokens: 512 },
+    ]);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          primary,
+          message(
+            primary,
+            [
+              {
+                type: "thinking",
+                thinking: "Primary plan",
+                thinkingSignature: "primary-signature",
+              },
+              {
+                type: "toolCall",
+                id: "primary-write",
+                name: "write_effect",
+                arguments: { value: "a" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [], "error", "429 rate_limit_error")),
+      )
+      .mockImplementationOnce(() =>
+        stream(
+          backupA,
+          message(
+            backupA,
+            [
+              { type: "thinking", thinking: "Backup plan", thinkingSignature: "backup-signature" },
+              {
+                type: "toolCall",
+                id: "backup-write",
+                name: "write_effect",
+                arguments: { value: "b" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation(() =>
+        stream(backupA, message(backupA, [{ type: "text", text: "Done." }], "stop")),
+      );
+
+    expect((await run(input)).at(-1)).toEqual({ type: "done", text: "Done." });
+    const contexts = providerState.stream.mock.calls.map(([, context]) => context as Context);
+    expect(contexts).toHaveLength(4);
+    expect(thinkingParts(contexts[1]!)).toEqual([
+      { type: "thinking", thinking: "Primary plan", thinkingSignature: "primary-signature" },
+    ]);
+    expect(thinkingParts(contexts[2]!)).toEqual([]);
+    expect(thinkingParts(contexts[3]!)).toEqual([
+      { type: "thinking", thinking: "Backup plan", thinkingSignature: "backup-signature" },
+    ]);
+    expect(JSON.stringify(contexts[3]!.messages.slice(0, contexts[2]!.messages.length))).toBe(
+      JSON.stringify(contexts[2]!.messages),
+    );
+    expect(
+      (input.executeTool as ReturnType<typeof vi.fn>).mock.calls.map(([, args]) => args),
+    ).toEqual([{ value: "a" }, { value: "b" }]);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
 
   it("retries once without earlier thinking blocks and keeps dropping them for the run", async () => {
     providerState.stream

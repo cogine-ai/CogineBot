@@ -37,6 +37,8 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 }));
 
 import { builtinAgentTools } from "./builtin-tools.js";
+import { estimateModelContextTokens } from "./model-context.js";
+import { estimatePiImageTokens } from "./pi-image-context.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
 
 const model: Model<"openai-completions"> = {
@@ -202,14 +204,30 @@ describe("automated source in the real Agent loop", () => {
     const parent = contexts.filter((context) => !system(context).includes("subagent named"));
     expect(parent.every((context) => system(context) === "Stable parent instructions.")).toBe(true);
     expect(text(parent.at(-1)!.messages.at(-1)!)).toBe(
-      `${label} Continue the original task from the latest tool result. Do not stop after a tool call; use any remaining tools needed, then give the user the final answer.`,
+      `${label} Your last turn ended right after a tool result, without a reply. Continue the original task from the latest tool result. If you need information or a decision from the user, ask them instead of guessing; otherwise use any remaining tools needed, then give the user the final answer.`,
     );
     expect(beforeCall).toHaveBeenCalledTimes(contexts.length);
     for (const [index, context] of contexts.entries()) {
-      // Invalid synthetic image bytes use the serialized-byte bound plus fixed framing.
       expect(beforeCall.mock.calls[index]![0].inputTokensEstimate).toBe(
-        Buffer.byteLength(JSON.stringify(context), "utf8") + 256,
+        estimateModelContextTokens(context, estimatePiImageTokens),
       );
+      const withoutLabels = {
+        ...context,
+        messages: context.messages.map((message) =>
+          message.role === "toolResult"
+            ? {
+                ...message,
+                content: message.content.filter(
+                  (part) => part.type !== "text" || !part.text.startsWith(label),
+                ),
+              }
+            : message,
+        ),
+      };
+      if (context.messages.some((message) => message.role === "toolResult"))
+        expect(beforeCall.mock.calls[index]![0].inputTokensEstimate).toBeGreaterThan(
+          estimateModelContextTokens(withoutLabels, estimatePiImageTokens),
+        );
     }
     for (const agent of captured.agents) {
       for (const message of agent.state.messages) {

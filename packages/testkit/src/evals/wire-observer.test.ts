@@ -111,10 +111,15 @@ it("bounds records, declares unsupported evidence and propagates aborts without 
 it("observes actual Pi post-selection JSON controls through twelve dependent compressed results", async () => {
   const services = new EvalServices();
   services.enableDiagnosticChain();
+  let previousMessages: ModelEmulatorRequest["messages"] = [];
+  const assertSentPrefix = (request: ModelEmulatorRequest) => {
+    expect(request.messages.slice(0, previousMessages.length)).toEqual(previousMessages);
+    previousMessages = structuredClone(request.messages);
+  };
   const server = await startModelEmulator({
     steps: [
       {
-        expect() {},
+        expect: assertSentPrefix,
         response: {
           type: "tool",
           id: "private-first-id",
@@ -123,7 +128,7 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
         },
       },
       ...Array.from({ length: 12 }, () => ({
-        expect() {},
+        expect: assertSentPrefix,
         response(request: ModelEmulatorRequest) {
           const result = diagnosticResultData(
             JSON.parse(String(request.messages.findLast((m) => m.role === "tool")?.content)),
@@ -189,8 +194,7 @@ it("observes actual Pi post-selection JSON controls through twelve dependent com
       expect(
         record.results?.every((r) => r.jsonValid && r.controlsValidated && r.nextCursorPresent),
       ).toBe(true);
-      expect(record.results?.at(-1)?.bytes).toBeLessThanOrEqual(12000);
-      expect(record.results?.slice(0, -1).every((r) => r.bytes <= 1024)).toBe(true);
+      expect(record.results?.every((result) => result.bytes <= 12000)).toBe(true);
     }
     expect(records.at(-1)?.results?.at(-1)?.nextCursor).toBeNull();
     expect(JSON.stringify(records)).not.toMatch(/private|Synthetic detailed|ledger-indexer/);

@@ -4,7 +4,9 @@ import {
   billedPromptTokens,
   clipToolResultContent,
   clipToolResultText,
+  effectiveOutputReserve,
   modelStreamMaxRetries,
+  operatorMaxTokens,
   REASONING_MODEL_MAX_TOKENS,
   resolveCompletionMaxTokens,
   TOOL_RESULT_TEXT_LIMIT,
@@ -94,6 +96,39 @@ describe("billedPromptTokens", () => {
 });
 
 describe("resolveCompletionMaxTokens", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("reserves the same bounded output for small and odd context windows", () => {
+    for (const window of [1, 3, 4, 7, 1_024, 8_193]) {
+      const expected = Math.max(1, Math.floor(window / 4));
+      expect(effectiveOutputReserve(window, 32_768)).toBe(expected);
+      expect(resolveCompletionMaxTokens(128_000, 32_768, undefined, true, window)).toBe(expected);
+    }
+    expect(resolveCompletionMaxTokens(128_000, 128, 64, true, 8_192)).toBe(64);
+    expect(resolveCompletionMaxTokens(32, 128, 64, true, 8_192)).toBe(32);
+  });
+
+  it("uses an operator local cap only when explicitly configured and still honors connection limits", () => {
+    const local = { provider: "local", maxTokens: 8_192 };
+    vi.stubEnv("RAKAZO_LOCAL_MAX_TOKENS", "");
+    expect(operatorMaxTokens(local)).toBeUndefined();
+    vi.stubEnv("RAKAZO_LOCAL_MAX_TOKENS", "8192");
+    expect(operatorMaxTokens(local)).toBe(8_192);
+    expect(operatorMaxTokens({ ...local, provider: "other" })).toBeUndefined();
+    expect(
+      resolveCompletionMaxTokens(
+        16_384,
+        undefined,
+        undefined,
+        true,
+        65_536,
+        operatorMaxTokens(local),
+      ),
+    ).toBe(8_192);
+    expect(
+      resolveCompletionMaxTokens(16_384, 1_024, undefined, true, 65_536, operatorMaxTokens(local)),
+    ).toBe(1_024);
+  });
   it("uses the shared default instead of a model-card ceiling", () => {
     expect(resolveCompletionMaxTokens(128_000)).toBe(DEFAULT_MODEL_MAX_TOKENS);
   });

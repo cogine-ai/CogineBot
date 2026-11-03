@@ -4,6 +4,18 @@ import type { RunErrorTranslator } from "@rakazo/core";
 /** Static descriptors keep shared run-error messages in Lingui extraction. */
 export const translateRunError: RunErrorTranslator = (message, values) => {
   switch (message) {
+    case "This model's context window is too small. Choose another model.":
+      return i18n._({
+        id: "This model's context window is too small. Choose another model.",
+        message: "This model's context window is too small. Choose another model.",
+        values,
+      });
+    case "This server's tool result does not fit the model. Choose another model.":
+      return i18n._({
+        id: "This server's tool result does not fit the model. Choose another model.",
+        message: "This server's tool result does not fit the model. Choose another model.",
+        values,
+      });
     case "Add your own API key to continue.":
       return i18n._({
         id: "Add your own API key to continue.",

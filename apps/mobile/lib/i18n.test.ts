@@ -107,6 +107,25 @@ describe("mobile i18n", () => {
     },
   );
 
+  it.each(["zh-CN", "ru", "de"] as const)(
+    "localizes capacity failures in %s without adding a recovery action",
+    async (locale) => {
+      const {
+        MODEL_CONTEXT_TOO_SMALL_ERROR,
+        VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
+        normalizeRunError,
+      } = await import("@rakazo/core");
+      const { resetI18nForTests, t } = await import("./i18n");
+      resetI18nForTests(locale);
+      for (const details of [MODEL_CONTEXT_TOO_SMALL_ERROR, VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR]) {
+        const failure = normalizeRunError(details, t, locale);
+        expect(failure.summary).not.toBe(details);
+        expect(failure.details).toBe(details);
+        expect(failure).not.toHaveProperty("action");
+      }
+    },
+  );
+
   it("localizes shared provider recovery advice without exposing its diagnostics", async () => {
     const { normalizeRunError, RUN_ERROR_LIMIT_MESSAGES } = await import("@rakazo/core");
     const { resetI18nForTests, t } = await import("./i18n");

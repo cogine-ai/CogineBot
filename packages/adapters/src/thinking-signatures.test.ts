@@ -1,6 +1,11 @@
 import type { TranscriptContext } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { isThinkingSignatureMismatch, withoutThinkingBlocks } from "./thinking-signatures.js";
+import {
+  isThinkingSignatureMismatch,
+  withoutThinkingBlocks,
+  withoutThinkingFrom,
+} from "./thinking-signatures.js";
 
 describe("thinking signature recovery", () => {
   it.each([
@@ -78,5 +83,19 @@ describe("thinking signature recovery", () => {
       messages: [{ role: "user", content: "hello", timestamp: 0 }],
     } as TranscriptContext;
     expect(withoutThinkingBlocks(context)).toBe(context);
+  });
+  it("removes thinking only in the selected old model range", () => {
+    const assistant = (thinking: string) =>
+      fauxAssistantMessage([
+        { type: "thinking", thinking },
+        { type: "text", text: "answer" },
+      ]);
+    const messages = [assistant("before"), assistant("old-model"), assistant("new-model")];
+    const stripped = withoutThinkingFrom(messages, 1, 2);
+    expect(stripped[0]).toBe(messages[0]);
+    expect(stripped[1]!.content).toEqual([{ type: "text", text: "answer" }]);
+    expect(stripped[2]).toBe(messages[2]);
+    expect(messages[1]!.content[0]).toMatchObject({ thinking: "old-model" });
+    expect(withoutThinkingFrom(stripped, 1, 2)).toBe(stripped);
   });
 });

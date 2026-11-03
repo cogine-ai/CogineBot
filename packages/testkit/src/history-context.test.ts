@@ -1,4 +1,4 @@
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, ModelCallObserver } from "@rakazo/adapter-kit";
 import { PiAgentRuntime } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
 import { diagnosticResultData } from "./evals/wire-observer.js";
@@ -6,7 +6,8 @@ import { startModelEmulator } from "./model-emulator.js";
 
 describe("structured results through real Pi context selection", () => {
   it("preserves valid history JSON and follows a shortened original-text cursor", async () => {
-    const original = `Verified original fact: ORBIT-731.\n${'"\n'.repeat(2000)}`;
+    const firstPageLength = 20_000;
+    const original = `Verified original fact: ORBIT-731.\n${'"\n'.repeat(firstPageLength)}`;
     let cursor = 0;
     let calls = 0;
     const server = await startModelEmulator({
@@ -29,7 +30,7 @@ describe("structured results through real Pi context selection", () => {
             expect(result.messages[0].truncated).toBe(true);
             cursor = result.messages[0].nextTextOffset;
             expect(cursor).toBeGreaterThan(0);
-            expect(cursor).toBeLessThan(2000);
+            expect(cursor).toBeLessThan(firstPageLength);
             expect(result.messages[0].text).toBe(original.slice(0, cursor));
           },
           response: () => ({
@@ -78,7 +79,7 @@ describe("structured results through real Pi context selection", () => {
         ],
         executeTool: async (_name, args) => {
           const offset = (args as { textOffset: number }).textOffset;
-          const length = calls++ === 0 ? 2000 : 120;
+          const length = calls++ === 0 ? firstPageLength : 120;
           return {
             untrusted: true,
             messages: [
@@ -104,6 +105,9 @@ describe("structured results through real Pi context selection", () => {
       server.assertComplete();
       expect(calls).toBe(2);
       expect(finalText).toContain("ORBIT-731");
+    } catch (error) {
+      server.assertComplete();
+      throw error;
     } finally {
       await server.close();
     }
@@ -112,12 +116,25 @@ describe("structured results through real Pi context selection", () => {
     "follows twelve oversized JSON diagnostic segments within a small %s context",
     async (contextStrategy) => {
       let calls = 0;
+      const reservations: Array<Parameters<ModelCallObserver["beforeCall"]>[0]> = [];
       const decisions: Array<{ droppedMessages: number; truncatedToolResults: number }> = [];
       const server = await startModelEmulator({
         steps: Array.from({ length: 13 }, (_, index) => ({
           expect(request) {
             const serialized = JSON.stringify(request.messages);
-            expect(Buffer.byteLength(serialized)).toBeLessThan(3584);
+            const reservation = reservations[index]!;
+            expect(reservations).toHaveLength(index + 1);
+            expect(reservation.inputTokensEstimate).toBeGreaterThan(0);
+            expect(
+              reservation.inputTokensEstimate + reservation.maxOutputTokens,
+            ).toBeLessThanOrEqual(4096);
+            expect(reservation.maxOutputTokens).toBeGreaterThan(0);
+            expect(reservation.maxOutputTokens).toBeLessThanOrEqual(512);
+            const wire = request as typeof request & {
+              max_tokens?: number;
+              max_completion_tokens?: number;
+            };
+            expect(wire.max_tokens ?? wire.max_completion_tokens).toBe(reservation.maxOutputTokens);
             expect(serialized).toContain("Approval remains pending");
             expect(serialized).not.toContain("obsolete-old-0");
             if (index > 0) {
@@ -180,15 +197,26 @@ describe("structured results through real Pi context selection", () => {
         };
         let finalText = "";
         for await (const event of new PiAgentRuntime({
+          modelCallObserver: {
+            beforeCall: (call) => {
+              reservations.push(call);
+              return `diagnostic-${reservations.length}`;
+            },
+            afterCall() {},
+          },
           onContextDecision: (decision) => decisions.push(decision),
         }).run(request)) {
           if (event.type === "done") finalText = event.text ?? "";
         }
         server.assertComplete();
         expect(calls).toBe(12);
+        expect(reservations).toHaveLength(13);
         expect(finalText).toContain("approval pending");
         expect(decisions.some((decision) => decision.truncatedToolResults > 0)).toBe(true);
         expect(decisions.at(-1)!.droppedMessages).toBeGreaterThan(decisions[0]!.droppedMessages);
+      } catch (error) {
+        server.assertComplete();
+        throw error;
       } finally {
         await server.close();
       }

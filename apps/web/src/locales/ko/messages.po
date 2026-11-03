@@ -7030,3 +7030,11 @@ msgstr "대상에서 삭제됨"
 #: src/components/DeploymentTransfer.tsx
 msgid "Target status not confirmed"
 msgstr "대상 상태 확인 안 됨"
+
+#: src/lib/run-error.ts
+msgid "This model's context window is too small. Choose another model."
+msgstr "이 모델의 컨텍스트 창이 너무 작습니다. 다른 모델을 선택하세요."
+
+#: src/lib/run-error.ts
+msgid "This server's tool result does not fit the model. Choose another model."
+msgstr "이 서버의 도구 결과가 모델 용량을 초과합니다. 다른 모델을 선택하세요."

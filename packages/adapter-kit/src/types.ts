@@ -192,6 +192,8 @@ export interface AgentToolExecutionResult {
 
 /** Hooks for a tool call that can report output before it returns. */
 export interface AgentToolExecutionObserver {
+  /** Executor-resolved identity for this call; provider result fields are not trusted routes. */
+  onConnectorRouteResolved?: (route: ConnectorRoute) => void;
   /**
    * A shell command has already produced output and is still running.
    * Resolves with the final redacted result when the process exits.
@@ -498,6 +500,10 @@ export interface AgentRunRequest {
   /** Awaited producer-side accounting, independent of event-consumer cancellation. */
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
   contextStrategy?: AgentContextStrategy;
+  /** Trusted runtime input; restored context must use bounded selection even in current mode. */
+  contextRestored?: boolean;
+  /** Trusted server identities whose results must remain whole; this grants no tool access. */
+  verbatimMcpServers?: { ids: string[]; slugs: string[] };
   /** Exclusive workflow cost bucket; retrieval tool turns are detected for answer calls. */
   usageOperationKind?: UsageOperationKind;
   botId: string;

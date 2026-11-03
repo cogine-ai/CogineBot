@@ -19,6 +19,7 @@ import { Agent } from "undici";
 import type { ContextBudget } from "./context-selection.js";
 import { estimateModelContextTokens } from "./model-context.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
+import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 /** Pi initializes absent usage to zero. Only raw numeric fields can prove reported zero. */
@@ -318,12 +319,18 @@ export function observedPiStream(
       // Reject an unsupported declared control before reserving or making any request.
       const cacheRetention = resolvePiCacheRetention(model, options?.cacheRetention);
       const preparedContext = hooks?.prepareContext?.(context, model) ?? context;
+      const effectiveMaxTokens = effectivePiOutputTokens(
+        model,
+        preparedContext,
+        options?.maxTokens ?? model.maxTokens,
+      );
+      const maxOutputTokens = effectiveMaxTokens ?? options?.maxTokens ?? model.maxTokens;
       reservation = observer
         ? await observer.beforeCall({
             provider: model.provider,
             modelId: model.id,
             inputTokensEstimate: estimateModelContextTokens(preparedContext, hooks?.imageTokens),
-            maxOutputTokens: options?.maxTokens ?? model.maxTokens,
+            maxOutputTokens,
             cacheWriteRetention: requestedPiCacheWriteRetention(model, cacheRetention),
           })
         : undefined;
@@ -344,6 +351,7 @@ export function observedPiStream(
       // Each guarded reservation covers one HTTP attempt, not hidden SDK retries.
       const streamOptions: SimpleStreamOptions = {
         ...options,
+        ...(effectiveMaxTokens === undefined ? {} : { maxTokens: effectiveMaxTokens }),
         ...(remainingMs === undefined
           ? {}
           : {
