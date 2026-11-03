@@ -1,6 +1,7 @@
 import type * as AgentCore from "@earendil-works/pi-agent-core";
 import type { AgentOptions } from "@earendil-works/pi-agent-core";
 import type {
+  Api,
   AssistantMessage,
   Context,
   CredentialStore,
@@ -58,6 +59,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
   registerOpenAiCompatibleRuntime: (models: unknown) => models,
 }));
 
+import { estimateModelContextTokens } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import { isRetryableProviderUnavailable, PiAgentRuntime } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS } from "./pi-runtime-limits.js";
@@ -83,7 +85,7 @@ function model(provider: string, id: string, contextWindow: number): Model<"open
 }
 
 function message(
-  target: Model<"openai-completions">,
+  target: Model<Api>,
   content: AssistantMessage["content"],
   stopReason: AssistantMessage["stopReason"],
   errorMessage?: string,
@@ -108,7 +110,7 @@ function message(
   };
 }
 
-function stream(_target: Model<"openai-completions">, response: AssistantMessage) {
+function stream(_target: Model<Api>, response: AssistantMessage) {
   const result = new AssistantMessageEventStream();
   result.push({ type: "start", partial: { ...response, content: [], stopReason: "stop" } });
   if (response.stopReason === "error" || response.stopReason === "aborted") {
@@ -1810,6 +1812,108 @@ describe("Pi runtime ordered model fallback", () => {
     expect(providerState.delay).not.toHaveBeenCalled();
     expect(events.at(-1)).toEqual({ type: "done", text: "Framing fits." });
   });
+
+  it.each([
+    { window: 2048, api: "openai-completions" as const },
+    { window: 8192, api: "openai-responses" as const },
+  ])(
+    "reserves the fallback input safety margin in the actual $window-token request",
+    async ({ window, api }) => {
+      const backup = { ...model("provider-margin", `margin-${window}`, window), api };
+      providerState.models.set(
+        `${backup.provider}/${backup.id}`,
+        backup as unknown as Record<string, unknown>,
+      );
+      const input = request([
+        { provider: backup.provider, id: backup.id, apiKey: "fixture-backup-key", maxTokens: 512 },
+      ]);
+      input.history = Array.from({ length: 60 }, (_, index) => ({
+        id: `optional-${index}`,
+        role: "user" as const,
+        content: `optional-${index}: ${"0".repeat(400)}`,
+      }));
+      let backupCalls = 0;
+      providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        const tokens = estimateModelContextTokens(context);
+        expect(tokens + 512 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(window);
+        expect(JSON.stringify(context.messages)).toContain(input.prompt);
+        expect(JSON.stringify(context.messages)).not.toContain("optional-0:");
+        if (++backupCalls === 1)
+          return stream(
+            target,
+            message(
+              target,
+              [
+                {
+                  type: "toolCall",
+                  id: "margin-effect-once",
+                  name: "write_effect",
+                  arguments: { value: "once" },
+                },
+              ],
+              "toolUse",
+            ),
+          );
+        expect(JSON.stringify(context.messages)).toContain('"ok":true');
+        return stream(
+          target,
+          message(target, [{ type: "text", text: "Backup margin fits." }], "stop"),
+        );
+      });
+      const events = await run(input);
+      expect(providerState.stream).toHaveBeenCalledTimes(3);
+      expect(input.executeTool).toHaveBeenCalledTimes(1);
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Backup margin fits." });
+    },
+  );
+
+  it.each([false, true])(
+    "preserves diagnostic history unless the trusted restored hint is set (%s)",
+    async (contextRestored) => {
+      const small = model("provider-diagnostic", "diagnostic-small", 2048);
+      const large = model("provider-diagnostic-large", "diagnostic-large", 65_536);
+      providerState.models.set(
+        `${small.provider}/${small.id}`,
+        small as unknown as Record<string, unknown>,
+      );
+      providerState.models.set(
+        `${large.provider}/${large.id}`,
+        large as unknown as Record<string, unknown>,
+      );
+      const input = request([
+        { provider: small.provider, id: small.id, apiKey: "small-key", maxTokens: 512 },
+        { provider: large.provider, id: large.id, apiKey: "large-key", maxTokens: 512 },
+      ]);
+      input.contextStrategy = "current";
+      input.contextRestored = contextRestored;
+      input.history = Array.from({ length: 60 }, (_, index) => ({
+        id: `optional-${index}`,
+        role: "user" as const,
+        content: `optional-${index}: ${"0".repeat(400)}`,
+      }));
+      providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        expect(target.id).toBe(contextRestored ? small.id : large.id);
+        const tokens = estimateModelContextTokens(context);
+        expect(tokens + 512 + Math.max(256, Math.ceil(tokens * 0.1))).toBeLessThan(
+          target.contextWindow,
+        );
+        expect(JSON.stringify(context.messages).includes("optional-0:")).toBe(!contextRestored);
+        return stream(
+          target,
+          message(target, [{ type: "text", text: "Diagnostic contract kept." }], "stop"),
+        );
+      });
+      const events = await run(input);
+      expect(providerState.stream).toHaveBeenCalledTimes(2);
+      expect(input.executeTool).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Diagnostic contract kept." });
+    },
+  );
 
   it("skips backups without the primary turn's reasoning capability", async () => {
     const reasoningPrimary = { ...primary, reasoning: true };

@@ -2,7 +2,76 @@ import type { Context } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { estimateContextTokens, providerContextPrefix } from "./context-selection.js";
-import { estimateModelContextTokens, MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
+import {
+  estimateModelContextTokens,
+  fallbackContextSafetyMargin,
+  MODEL_CONTEXT_FRAMING_TOKENS,
+  maxFallbackInputTokens,
+} from "./model-context.js";
+
+// The original strict admission predicate is the independent oracle for both helpers.
+const fallbackFits = (input: number, window: number, output: number) =>
+  input + output + Math.max(256, Math.ceil(input * 0.1)) < window;
+
+describe("fallback input capacity", () => {
+  it("preserves the original minimum and ten-percent margin", () => {
+    for (const input of [0, 1, 2559, 2560, 2561, 2570, 4096, 8192, 10001, 1_000_000]) {
+      expect(fallbackContextSafetyMargin(input)).toBe(Math.max(256, Math.ceil(input * 0.1)));
+    }
+  });
+
+  it("finds the last admitted integer through every small-window margin transition", () => {
+    for (let remaining = 0; remaining <= 4096; remaining++) {
+      const output = (remaining % 7) * 37;
+      const window = output + remaining;
+      const maximum = maxFallbackInputTokens(window, output);
+      expect(Number.isInteger(maximum)).toBe(true);
+      expect(maximum).toBeGreaterThanOrEqual(0);
+      if (maximum > 0) expect(fallbackFits(maximum, window, output)).toBe(true);
+      expect(fallbackFits(maximum + 1, window, output)).toBe(false);
+    }
+  });
+
+  it.each([
+    [8191, 1024],
+    [8192, 2048],
+    [8193, 2048],
+    [9000, 4096],
+    [9001, 4096],
+    [16383, 4096],
+    [16384, 4096],
+    [16385, 4096],
+    [128_000, 32_000],
+    [131_071, 8192],
+    [131_072, 8192],
+    [1_000_000, 8192],
+    [2 ** 40 + 1, 4096],
+  ])("preserves the strict boundary at window=%i output=%i", (window, output) => {
+    const maximum = maxFallbackInputTokens(window, output);
+    expect(fallbackFits(maximum, window, output)).toBe(true);
+    expect(fallbackFits(maximum + 1, window, output)).toBe(false);
+  });
+
+  it.each([1, 2559, 2560, 2561, 2570, 8192, 10001])(
+    "rejects equality and admits the next window token for input=%i",
+    (input) => {
+      const output = 4096;
+      const equalityWindow = input + output + Math.max(256, Math.ceil(input * 0.1));
+      expect(fallbackFits(input, equalityWindow, output)).toBe(false);
+      expect(maxFallbackInputTokens(equalityWindow, output)).toBeLessThan(input);
+      expect(maxFallbackInputTokens(equalityWindow + 1, output)).toBe(input);
+    },
+  );
+
+  it("returns zero for an unsatisfiable capacity without claiming zero input always fits", () => {
+    expect(maxFallbackInputTokens(256, 0)).toBe(0);
+    expect(fallbackFits(0, 256, 0)).toBe(false);
+    expect(maxFallbackInputTokens(257, 0)).toBe(0);
+    expect(fallbackFits(0, 257, 0)).toBe(true);
+    expect(maxFallbackInputTokens(4096, 4096)).toBe(0);
+    expect(maxFallbackInputTokens(4096, 8192)).toBe(0);
+  });
+});
 
 describe("provider input planning", () => {
   function fixture(): Context {

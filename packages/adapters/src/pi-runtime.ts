@@ -57,7 +57,12 @@ import {
 } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
-import { estimateModelContextTokens, MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
+import {
+  estimateModelContextTokens,
+  fallbackContextSafetyMargin,
+  MODEL_CONTEXT_FRAMING_TOKENS,
+  maxFallbackInputTokens,
+} from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
@@ -435,6 +440,7 @@ export class PiAgentRuntime implements AgentRuntime {
               {
                 credentialScope: target.credentials?.accessToken ?? target.apiKey,
                 imageTokens: estimatePiImageTokens,
+                reserveFallbackMargin: true,
               },
             );
             host.activeModel = target;
@@ -2540,6 +2546,7 @@ function fallbackSupportsContext(
   requestedThinkingLevel: AgentRunRequest["model"]["thinkingLevel"],
   tools: readonly ConnectorTool[],
   verbatimMcpServers: AgentRunRequest["verbatimMcpServers"],
+  preserveAllContext = false,
 ): boolean {
   const outputTokens = resolveCompletionMaxTokens(
     candidate.model.maxTokens,
@@ -2553,8 +2560,9 @@ function fallbackSupportsContext(
   // user message, including images followed by steering, while old complete tool
   // groups remain optional on the same terms as the sending context policy.
   const protectedIndexes = context.messages.flatMap((message, index) =>
-    message.role === "user" &&
-    !(message as typeof message & { rakazoHistory?: boolean }).rakazoHistory
+    preserveAllContext ||
+    (message.role === "user" &&
+      !(message as typeof message & { rakazoHistory?: boolean }).rakazoHistory)
       ? [index]
       : [],
   );
@@ -2565,10 +2573,17 @@ function fallbackSupportsContext(
       verbatimMcpToolResultIndexes(context.messages, verbatimMcpServers),
       protectedIndexes,
     );
+    const rawInput = estimateModelContextTokens({ ...context, messages }, estimatePiImageTokens);
+    const labelledInput = estimateModelContextTokens(
+      { ...context, messages: automatedToolMessages(messages) },
+      estimatePiImageTokens,
+    );
+    const labels = Math.max(0, labelledInput - rawInput);
     const selectionOptions = {
       budget: {
-        contextWindow: candidate.model.contextWindow,
-        outputReserve: outputTokens,
+        contextWindow:
+          maxFallbackInputTokens(candidate.model.contextWindow, outputTokens) + outputTokens,
+        outputReserve: outputTokens + labels,
         inputOverhead: MODEL_CONTEXT_FRAMING_TOKENS,
         // The SDK has already folded prompt and tools into system messages.
         systemPrompt: "",
@@ -2608,7 +2623,7 @@ function fallbackSupportsContext(
         }).messages;
       }
     }
-    context = { ...context, messages: selectedMessages };
+    context = { ...context, messages: automatedToolMessages(selectedMessages) };
   } catch (error) {
     if (error instanceof ModelImageLimitError || error instanceof ContextBudgetError) return false;
     throw error;
@@ -2617,7 +2632,7 @@ function fallbackSupportsContext(
   // Token counts are estimates and can differ by provider/tokenizer. Reserve a
   // small input-relative margin, not a fixed 4096 tokens that would exclude
   // otherwise usable small-context models on short turns.
-  const contextSafetyMargin = Math.max(256, Math.ceil(inputTokens * 0.1));
+  const contextSafetyMargin = fallbackContextSafetyMargin(inputTokens);
   if (candidate.model.contextWindow <= inputTokens + outputTokens + contextSafetyMargin)
     return false;
   const imageCount = contextImageCount(context);
@@ -2749,6 +2764,7 @@ function fallbackAwareModelStream(
             state.request.model.thinkingLevel,
             state.request.tools,
             state.request.verbatimMcpServers,
+            state.request.contextStrategy === "current" && state.request.contextRestored !== true,
           )
         ) {
           continue;

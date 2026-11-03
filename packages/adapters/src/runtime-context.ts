@@ -23,7 +23,7 @@ import {
   selectContext,
   toolResultContentProvenance,
 } from "./context-selection.js";
-import { MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
+import { MODEL_CONTEXT_FRAMING_TOKENS, maxFallbackInputTokens } from "./model-context.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   effectiveOutputReserve,
@@ -143,6 +143,7 @@ export function createRuntimeContextPolicy(
     cacheTracker?: ContextCacheTracker;
     imageTokens?: ContextBudget["imageTokens"];
     credentialScope?: string;
+    reserveFallbackMargin?: boolean;
   } = {},
 ) {
   const cache = options.cacheTracker ?? sharedCacheTracker;
@@ -419,7 +420,11 @@ export function createRuntimeContextPolicy(
       MODEL_CONTEXT_FRAMING_TOKENS;
     // Recent history and navigation have their own bounds. Active tool progress
     // uses the model budget, less the headroom a window-forced rebuild leaves.
-    const contextWindow = modelWindow;
+    // Apply the safety margin to the actual window, not an already tighter headroom override.
+    const actualWindow = request.model.contextWindow ?? model.contextWindow;
+    const contextWindow = options.reserveFallbackMargin
+      ? Math.min(modelWindow, reserve + maxFallbackInputTokens(actualWindow, reserve))
+      : modelWindow;
     let navigationMessage = projected?.navigation;
     let catalogIds = projected?.catalogIds ?? [];
     const budget = {
@@ -843,8 +848,11 @@ export function createRuntimeContextPolicy(
           : undefined;
       let append = false;
       if (previous && appended) {
-        const available =
-          (request.model.contextWindow ?? model.contextWindow) - outputReserve(model);
+        const window = request.model.contextWindow ?? model.contextWindow;
+        const reserve = outputReserve(model);
+        const available = options.reserveFallbackMargin
+          ? maxFallbackInputTokens(window, reserve)
+          : window - reserve;
         const imageLimit = normalizedImageLimit(request.model.maxImagesPerPrompt);
         const overTokens = (size: Size) => size.tokens + MODEL_CONTEXT_FRAMING_TOKENS > available;
         const overImages = (size: Size) => imageLimit !== undefined && size.images > imageLimit;
