@@ -13,7 +13,14 @@ import {
   renewComputerExecutionLease,
   screenLeaseIdForRun,
 } from "./computer-lifecycle.js";
+import type { ExecutorDeps } from "./executor.js";
 import { InMemoryRealtimeFanout } from "./realtime.js";
+import {
+  requeueComputerRun,
+  requeueRunAfterShutdown,
+  startNextWaitingRun,
+  writeComputerRunRequeue,
+} from "./run-lifecycle.js";
 import { findRunRecoveryBlockers } from "./run-recovery.js";
 import { RunJobPublisher, RunStarter, RunWorkerHost } from "./run-wakeup.js";
 import { InMemoryJobQueue } from "./wakeup.js";
@@ -250,6 +257,159 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
       await jobs.close();
       await realtime.close();
     }
+  });
+
+  it("starts a timerless owned resource wait immediately when its holder releases", async () => {
+    const computer = await createComputer(bot, "dedicated");
+    const holder = await createRun(bot, {
+      status: "running",
+      leaseOwner: "holder-worker",
+      leaseFence: 1,
+      leaseExpiresAt: future(),
+    });
+    const held = await acquireDedicatedScreenLeaseFence(prisma, {
+      computerId: computer.id,
+      botId: bot.id,
+      runId: holder.id,
+      workerId: "holder-worker",
+      runFence: 1,
+    });
+    const waiter = await createRun(bot, {
+      status: "running",
+      leaseOwner: "waiter-worker",
+      leaseFence: 20,
+      leaseExpiresAt: future(),
+      createdAt: new Date(0),
+    });
+    const sentinelBot = await createBot();
+    const sentinel = await createRun(sentinelBot);
+    const realtime = new InMemoryRealtimeFanout();
+    const starter = new RunStarter(realtime);
+    const jobs = new RunJobPublisher(prisma, new InMemoryJobQueue(), starter);
+    const enqueue = vi.spyOn(jobs, "enqueue");
+    const deps = { prisma, jobs } as unknown as ExecutorDeps;
+    const host = new RunWorkerHost(prisma, realtime, starter, { intervalMs: 60_000, batchSize: 1 });
+    const entered: string[] = [];
+    try {
+      await requeueComputerRun(deps, waiter.id, "waiter-worker", 20, null, false, true);
+      const before = await prisma.run.findUniqueOrThrow({ where: { id: waiter.id } });
+      expect(before).toMatchObject({
+        status: "queued",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        leaseFence: 20,
+        checkpoint: null,
+      });
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(
+        await findRunRecoveryBlockers(
+          prisma,
+          [{ id: waiter.id, botId: bot.id, bot: { computerId: computer.id } }],
+          new Date(),
+        ),
+      ).toEqual(new Map([[waiter.id, holder.id]]));
+      await host.start({
+        "run.continue": async ({ runId }, execution) => {
+          if (runId === sentinel.id) {
+            await prisma.run.update({ where: { id: runId }, data: { status: "completed" } });
+            entered.push(runId);
+            return;
+          }
+          if (runId !== waiter.id) throw new Error("unexpected fixture dispatch");
+          const claimed = await prisma.run.updateMany({
+            where: { id: waiter.id, status: "queued", leaseFence: 20 },
+            data: {
+              status: "running",
+              leaseOwner: "released-worker",
+              leaseFence: 21,
+              leaseExpiresAt: future(),
+            },
+          });
+          expect(claimed.count).toBe(1);
+          const next = await acquireDedicatedScreenLeaseFence(prisma, {
+            computerId: computer.id,
+            botId: bot.id,
+            runId: waiter.id,
+            workerId: "released-worker",
+            runFence: 21,
+          });
+          expect(next.fence).toBeGreaterThan(held.fence);
+          execution!.onRunStarted();
+          await releaseComputerExecutionLease(prisma, next);
+          await prisma.run.update({
+            where: { id: waiter.id },
+            data: { status: "completed", leaseOwner: null, leaseExpiresAt: null },
+          });
+          entered.push(runId);
+        },
+      } as BackgroundJobHandlers);
+      await wait(() => expect(entered).toEqual([sentinel.id]));
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: waiter.id } })).toEqual(before);
+      expect(await prisma.attempt.count({ where: { runId: waiter.id } })).toBe(0);
+      expect(enqueue).not.toHaveBeenCalled();
+      await releaseComputerExecutionLease(prisma, held);
+      // Exercise the actual release producer, without directly publishing the waiter
+      // or waiting out the legacy high-fence eight-second retry window.
+      await startNextWaitingRun(deps, bot.id, holder.id);
+      expect(enqueue).toHaveBeenCalledExactlyOnceWith(runContinueJob(waiter.id));
+      await wait(() => expect(entered).toEqual([sentinel.id, waiter.id]));
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: waiter.id } })).toMatchObject({
+        status: "completed",
+        leaseFence: 21,
+      });
+    } finally {
+      enqueue.mockRestore();
+      await host.stop();
+      await jobs.close();
+      await realtime.close();
+    }
+  });
+
+  it("preserves timerless human waits but leaves an unpublished shutdown requeue immediately due", async () => {
+    const human = await createRun(bot, {
+      status: "running",
+      leaseOwner: "human-worker",
+      leaseFence: 20,
+      leaseExpiresAt: future(),
+    });
+    const enqueue = vi.fn(async () => {
+      throw new Error("synthetic shutdown publication failure");
+    });
+    const deps = { prisma, jobs: { enqueue } } as unknown as ExecutorDeps;
+    expect(
+      await writeComputerRunRequeue(deps, human.id, "human-worker", 20, null, true, null, null),
+    ).toBe(true);
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: human.id } })).toMatchObject({
+      status: "waiting_takeover",
+      checkpoint: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      wakeAt: null,
+      leaseFence: 20,
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+
+    const shutdown = await createRun(bot, {
+      status: "running",
+      leaseOwner: "shutdown-worker",
+      leaseFence: 20,
+      leaseExpiresAt: future(),
+    });
+    const before = Date.now();
+    expect(await requeueRunAfterShutdown(deps, shutdown.id, "shutdown-worker", 20)).toBe(true);
+    const after = Date.now();
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(runContinueJob(shutdown.id));
+    const queued = await prisma.run.findUniqueOrThrow({ where: { id: shutdown.id } });
+    expect(queued).toMatchObject({
+      status: "queued",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      leaseFence: 20,
+      error: null,
+    });
+    expect(queued.wakeAt).toBeInstanceOf(Date);
+    expect(queued.wakeAt!.getTime()).toBeGreaterThanOrEqual(before);
+    expect(queued.wakeAt!.getTime()).toBeLessThanOrEqual(after);
   });
 
   it("increments a same-Run dedicated screen fence only for the newer owned worker", async () => {

@@ -125,7 +125,9 @@ export async function writeComputerRunRequeue(
   };
   const releasedHold = {
     status: "queued" as const,
-    wakeAt: retryAt,
+    // An explicit due time distinguishes a resource wait from a legacy retry
+    // whose writer does not know wakeAt. No retry job is scheduled for this wait.
+    wakeAt: retryAt ?? new Date(),
     error,
     leaseOwner: null,
     leaseExpiresAt: null,
@@ -138,11 +140,12 @@ export async function writeComputerRunRequeue(
     data: releasedHold,
   });
   if (preserve.count === 1) return true;
+  const plannedData = computerRunRequeueData(resumeCheckpoint, error, heldForTakeover);
   const planned = await deps.prisma.run.updateMany({
     where: { ...whereLease, checkpoint: null },
     data: {
-      ...computerRunRequeueData(resumeCheckpoint, error, heldForTakeover),
-      wakeAt: releasedHold.wakeAt,
+      ...plannedData,
+      wakeAt: plannedData.status === "queued" ? releasedHold.wakeAt : retryAt,
     },
   });
   if (planned.count === 1) return true;
@@ -179,7 +182,7 @@ export async function requeueRunAfterShutdown(
       error: null,
       leaseOwner: null,
       leaseExpiresAt: null,
-      wakeAt: null,
+      wakeAt: new Date(),
     },
   });
   if (released.count !== 1) return false;

@@ -733,7 +733,7 @@ describe("run computer provisioning", () => {
       status: "queued",
       leaseOwner: null,
       leaseExpiresAt: null,
-      wakeAt: null,
+      wakeAt: expect.any(Date),
     });
     expect(f.finalizeRun).not.toHaveBeenCalled();
     expect(f.prisma.attempt.updateMany).toHaveBeenCalledWith(
