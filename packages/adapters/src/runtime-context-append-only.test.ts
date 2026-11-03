@@ -7,6 +7,7 @@ import {
   estimateContextTokens,
   providerContextPrefix,
 } from "./context-selection.js";
+import { MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
 import { createRuntimeContextPolicy, rebuildPaysOff } from "./runtime-context.js";
 
 const model = {
@@ -484,7 +485,11 @@ describe("append-only run transcript boundaries", () => {
         messages: [...first.messages, ...run.messages.slice(-2)],
       });
       // Keep the output reserve below the quarter-window clamp so this isolates input fit.
-      const tight = { ...model, maxTokens: 1024, contextWindow: appendedSize + 1024 + headroom };
+      const tight = {
+        ...model,
+        maxTokens: 1024,
+        contextWindow: appendedSize + MODEL_CONTEXT_FRAMING_TOKENS + 1024 + headroom,
+      };
       const next = run.send(undefined, tight as Model<Api>);
       expect(staleThinking(next)).toEqual([]);
       return extendsPrevious(first, next);

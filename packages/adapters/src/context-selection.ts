@@ -32,6 +32,10 @@ export interface ContextBudget {
   tools: unknown;
   /** Additional instructions, snapshots, retrieved passages or task state outside messages. */
   extraContext?: string;
+  /** Input framing reserved separately from generated output. */
+  inputOverhead?: number;
+  /** Actual model image capacity; complete result groups remain indivisible. */
+  maxImages?: number;
   /** Adapter-specific image planning estimate. Unknown images use serialized bytes. */
   imageTokens?: number | ((image: object) => number | undefined);
 }
@@ -46,7 +50,11 @@ export interface ContextSelectionOptions {
   truncateToolResults?: boolean;
   /** Trusted configured servers whose results must remain whole. */
   verbatimMcpServers?: VerbatimMcpServers;
+  /** Extra provider capacity checks apply only when adding optional complete groups. */
+  canAddOptional?: (messages: readonly ContextMessage[]) => boolean;
 }
+export class ModelImageLimitError extends Error {}
+
 export class ContextBudgetError extends Error {
   constructor(
     public readonly estimatedTokens: number,
@@ -165,6 +173,7 @@ function fixedTokens(budget: ContextBudget): number {
   for (const value of [
     budget.contextWindow,
     budget.outputReserve,
+    budget.inputOverhead ?? 0,
     typeof budget.imageTokens === "number" ? budget.imageTokens : 0,
   ]) {
     if (!Number.isFinite(value) || value < 0) throw new Error("Invalid context budget");
@@ -174,6 +183,7 @@ function fixedTokens(budget: ContextBudget): number {
   return (
     estimateContextTokens(budget.systemPrompt) +
     estimateContextTokens(budget.tools) +
+    (budget.inputOverhead ?? 0) +
     (budget.extraContext ? estimateContextTokens(budget.extraContext) : 0)
   );
 }
@@ -693,11 +703,13 @@ function toolResultControlMetadata(value: unknown, key = "", depth = 0): unknown
 interface Group {
   indexes: number[];
   tokens: number;
+  images: number;
 }
 /** A tool request and all results form an indivisible group. User exchanges may contain several groups. */
 function messageGroups(
   messages: readonly ContextMessage[],
   imageTokens?: ContextBudget["imageTokens"],
+  measure = true,
 ): Group[] {
   const groups: Group[] = [];
   for (let index = 0; index < messages.length; index++) {
@@ -726,17 +738,17 @@ function messageGroups(
       )
         throw new Error("Duplicate tool result in context");
       group.indexes.push(index);
-      group.tokens += estimateContextTokens(
-        providerContextPrefix("", [], [message]).messages[0],
-        imageTokens,
-      );
+      group.tokens += measure
+        ? estimateContextTokens(providerContextPrefix("", [], [message]).messages[0], imageTokens)
+        : 0;
+      group.images += contextImageCount(message);
     } else {
       groups.push({
         indexes: [index],
-        tokens: estimateContextTokens(
-          providerContextPrefix("", [], [message]).messages[0],
-          imageTokens,
-        ),
+        tokens: measure
+          ? estimateContextTokens(providerContextPrefix("", [], [message]).messages[0], imageTokens)
+          : 0,
+        images: contextImageCount(message),
       });
     }
   }
@@ -758,6 +770,53 @@ function messageGroups(
   }
   return groups;
 }
+function contextImageCount(message: ContextMessage): number {
+  return Array.isArray(message.content)
+    ? message.content.filter((part) => part?.type === "image").length
+    : 0;
+}
+
+function protectedGroupPositions(
+  messages: readonly ContextMessage[],
+  groups: readonly Group[],
+  extraProtected: readonly number[],
+): Set<number> {
+  const latestAssistant = messages.findLastIndex((message) => message.role === "assistant");
+  const protectedIndexes = new Set(extraProtected);
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "system") protectedIndexes.add(index);
+  }
+  const lastUser = messages.findLastIndex((message) => message.role === "user");
+  if (lastUser >= 0) protectedIndexes.add(lastUser);
+  // Keep the unread tool step intact even when user messages follow its results.
+  const latestContent = messages[latestAssistant]?.content;
+  if (Array.isArray(latestContent) && latestContent.some((part) => part?.type === "toolCall"))
+    protectedIndexes.add(latestAssistant);
+  // Keep the final group intact. Earlier complete groups can be omitted.
+  for (const index of groups.at(-1)?.indexes ?? []) protectedIndexes.add(index);
+  for (const index of protectedIndexes) {
+    if (!Number.isInteger(index) || index < 0 || index >= messages.length)
+      throw new Error("Invalid protected context index");
+  }
+  return new Set(
+    groups
+      .filter((group) => group.indexes.some((index) => protectedIndexes.has(index)))
+      .flatMap((group) => group.indexes),
+  );
+}
+
+/** The same required atomic groups used by selection, without measuring their token cost. */
+export function protectedContextIndexes(
+  messages: readonly ContextMessage[],
+  extraProtected: readonly number[] = [],
+): ReadonlySet<number> {
+  return protectedGroupPositions(
+    messages,
+    messageGroups(messages, undefined, false),
+    extraProtected,
+  );
+}
+
 /** Cheap selection only. No clock event or strategy calls a model or creates a summary. */
 export function selectContext<T extends ContextMessage>(
   messages: readonly T[],
@@ -790,32 +849,27 @@ export function selectContext<T extends ContextMessage>(
   }
   // A result followed by any assistant message has been read, with or without a later tool call.
   const latestAssistant = messages.findLastIndex((message) => message.role === "assistant");
-  const protectedIndexes = new Set(options.protectedIndexes ?? []);
-  for (const [index, message] of messages.entries()) {
-    if (message.role === "system") protectedIndexes.add(index);
-  }
-  const lastUser = messages.findLastIndex((message) => message.role === "user");
-  if (lastUser >= 0) protectedIndexes.add(lastUser);
-  // Keep the unread tool step intact even when user messages follow its results.
-  const latestContent = messages[latestAssistant]?.content;
-  if (Array.isArray(latestContent) && latestContent.some((part) => part?.type === "toolCall"))
-    protectedIndexes.add(latestAssistant);
-  // Keep the final group intact. Earlier complete groups can be omitted.
-  for (const index of groups.at(-1)?.indexes ?? []) protectedIndexes.add(index);
-  for (const index of protectedIndexes) {
-    if (!Number.isInteger(index) || index < 0 || index >= messages.length)
-      throw new Error("Invalid protected context index");
-  }
+  const requiredIndexes = protectedGroupPositions(messages, groups, options.protectedIndexes ?? []);
   const protectedGroupIndexes = new Set<number>();
   const selected = new Set<Group>();
   let used = 0;
+  let usedImages = 0;
   for (const group of groups) {
-    if (group.indexes.some((index) => protectedIndexes.has(index))) {
+    if (group.indexes.some((index) => requiredIndexes.has(index))) {
       selected.add(group);
       for (const index of group.indexes) protectedGroupIndexes.add(index);
       used += group.tokens;
+      usedImages += group.images;
     }
   }
+  const imageLimit =
+    options.budget.maxImages !== undefined && Number.isFinite(options.budget.maxImages)
+      ? Math.max(0, Math.floor(options.budget.maxImages))
+      : undefined;
+  if (imageLimit !== undefined && usedImages > imageLimit)
+    throw new ModelImageLimitError(
+      `The configured model image limit is ${imageLimit}, but required context contains ${usedImages} images.`,
+    );
   if (used > available) {
     if (options.truncateToolResults !== false) {
       let shortenedCount = 0;
@@ -915,9 +969,18 @@ export function selectContext<T extends ContextMessage>(
     if (group.indexes.some((i) => messages[i]!.role === "user")) exchanges += 1;
     if (exchanges > exchangeLimit && !selected.has(group)) break;
     if (selected.has(group)) continue;
-    if (used + group.tokens > available) break;
+    if (
+      used + group.tokens > available ||
+      (imageLimit !== undefined && usedImages + group.images > imageLimit)
+    )
+      break;
+    if (options.canAddOptional) {
+      const indexes = new Set([...selected, group].flatMap((selected) => selected.indexes));
+      if (!options.canAddOptional(messages.filter((_message, index) => indexes.has(index)))) break;
+    }
     selected.add(group);
     used += group.tokens;
+    usedImages += group.images;
   }
   const selectedIndexes = new Set([...selected].flatMap((group) => group.indexes));
   return {

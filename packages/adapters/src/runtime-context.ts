@@ -4,7 +4,12 @@ import type { AdapterContext, AgentRunRequest, AgentUsage } from "@rakazo/adapte
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
 import { automatedToolMessages } from "./automated-messages.js";
-import { imagePartCount, normalizedImageLimit, pruneForRebuild } from "./context-pruning.js";
+import {
+  imagePartCount,
+  ModelImageLimitError,
+  normalizedImageLimit,
+  pruneForRebuild,
+} from "./context-pruning.js";
 import type { CacheRequest, ContextBudget } from "./context-selection.js";
 import {
   boundToolResult,
@@ -13,17 +18,24 @@ import {
   copyToolResultProvenance,
   estimateContextTokens,
   markToolResultContent,
+  protectedContextIndexes,
   providerContextPrefix,
   selectContext,
   toolResultContentProvenance,
 } from "./context-selection.js";
+import { MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
+import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   effectiveOutputReserve,
   operatorMaxTokens,
   resolveCompletionMaxTokens,
 } from "./pi-runtime-limits.js";
 import { withoutThinkingFrom } from "./thinking-signatures.js";
-import { isVerbatimMcpResult, toolCallIdentity } from "./verbatim-mcp-result.js";
+import {
+  isVerbatimMcpResult,
+  toolCallIdentity,
+  verbatimMcpToolResultIndexes,
+} from "./verbatim-mcp-result.js";
 
 /** Minimum whole-result window, unless the full model budget requires clipping. */
 const RECENT_TOOL_RESULTS_TO_KEEP = 3;
@@ -84,6 +96,7 @@ interface Prepared {
   navigation?: { message: Message; catalogIds: string[] };
   decision: RuntimeContextDecision;
   resultSources?: Map<Message, { key: string; original: Message }>;
+  sdkOutputCap?: number;
 }
 /** What the run last sent: the source messages it came from and the exact messages sent. */
 interface SentTranscript {
@@ -284,6 +297,9 @@ export function createRuntimeContextPolicy(
     model: Model<Api>,
     modelWindow = request.model.contextWindow ?? model.contextWindow,
   ): Prepared {
+    metadataPresent = source.messages.some((message) =>
+      Boolean((message as Message & OriginalMetadata).rakazoHistory),
+    );
     const ctx = pruned(source);
     const occurrences = new Map<string, number>();
     const resultSources = new WeakMap<Message, { key: string; original: Message }>();
@@ -362,7 +378,7 @@ export function createRuntimeContextPolicy(
         decision: {
           strategy,
           predictedCache,
-          estimatedInputTokens: cacheRequest.prefixTokens,
+          estimatedInputTokens: cacheRequest.prefixTokens + MODEL_CONTEXT_FRAMING_TOKENS,
           droppedMessages: 0,
           truncatedToolResults: 0,
           observedReuse: null,
@@ -399,7 +415,8 @@ export function createRuntimeContextPolicy(
     const fixed =
       estimateContextTokens(ctx.systemPrompt ?? "") +
       estimateContextTokens(ctx.tools ?? []) +
-      labels;
+      labels +
+      MODEL_CONTEXT_FRAMING_TOKENS;
     // Recent history and navigation have their own bounds. Active tool progress
     // uses the model budget, less the headroom a window-forced rebuild leaves.
     const contextWindow = modelWindow;
@@ -408,9 +425,11 @@ export function createRuntimeContextPolicy(
     const budget = {
       contextWindow,
       outputReserve: reserve + labels,
+      inputOverhead: MODEL_CONTEXT_FRAMING_TOKENS,
       systemPrompt: ctx.systemPrompt ?? "",
       tools: ctx.tools ?? [],
       imageTokens: options.imageTokens,
+      maxImages: request.model.maxImagesPerPrompt,
     };
     const useSnapshots =
       strategy === "snapshots" || (strategy === "cache-aware" && predictedCache !== "likely-warm");
@@ -624,6 +643,64 @@ export function createRuntimeContextPolicy(
       catalogIds = [];
       selected = select();
     }
+    let sdkOutputCap = effectivePiOutputTokens(
+      model,
+      modelView({ ...ctx, messages: selected.messages }),
+      reserve,
+    );
+    if (sdkOutputCap !== undefined && sdkOutputCap < reserve) {
+      const selectedPositions = new Map(
+        selected.sourceIndexes.map((index, position) => [index, position]),
+      );
+      const extraProtected = protectedIndexes.flatMap((index) => {
+        if (messages[index] === navigationMessage) return [];
+        const position = selectedPositions.get(index);
+        return position === undefined ? [] : [position];
+      });
+      const required = protectedContextIndexes(selected.messages, extraProtected);
+      const requiredMessages = selected.messages.filter((_message, index) => required.has(index));
+      const attainable = effectivePiOutputTokens(
+        model,
+        modelView({ ...ctx, messages: requiredMessages }),
+        reserve,
+      );
+      const target = Math.min(reserve, attainable ?? sdkOutputCap);
+      if (sdkOutputCap < target) {
+        const normal = selected;
+        const fitted = selectContext(normal.messages, {
+          budget,
+          strategy,
+          protectedIndexes: extraProtected,
+          verbatimMcpServers: request.verbatimMcpServers,
+          cacheWarmth: predictedCache,
+          recentExchanges:
+            retainShortHistory || standaloneHistoryFallback
+              ? messages.length
+              : 8 + laterUserMessages,
+          truncateToolResults: false,
+          canAddOptional: (candidate) =>
+            (effectivePiOutputTokens(
+              model,
+              modelView({ ...ctx, messages: [...candidate] as Message[] }),
+              reserve,
+            ) ?? target) >= target,
+        });
+        selected = {
+          ...fitted,
+          sourceIndexes: fitted.sourceIndexes.map((index) => normal.sourceIndexes[index]!),
+          truncatedToolResults: normal.truncatedToolResults,
+        };
+        sdkOutputCap = effectivePiOutputTokens(
+          model,
+          modelView({ ...ctx, messages: selected.messages }),
+          reserve,
+        );
+        if (navigationMessage && !selected.messages.includes(navigationMessage)) {
+          navigationMessage = undefined;
+          catalogIds = [];
+        }
+      }
+    }
     const shortenedStructuredResults = selected.messages.filter((message) => {
       if (message.role !== "toolResult") return false;
       try {
@@ -642,6 +719,7 @@ export function createRuntimeContextPolicy(
         }),
       ),
       cacheRequest,
+      sdkOutputCap,
       ...(navigationMessage ? { navigation: { message: navigationMessage, catalogIds } } : {}),
       decision: {
         strategy,
@@ -655,7 +733,23 @@ export function createRuntimeContextPolicy(
   }
   /** Removes what only a rebuild may drop: stale page state and screenshots over the budget. */
   function pruned(ctx: Context): Context {
-    const messages = pruneForRebuild(ctx.messages, request.model.maxImagesPerPrompt);
+    const preserved = verbatimMcpToolResultIndexes(ctx.messages, request.verbatimMcpServers);
+    let current = ctx.messages.findIndex(
+      (message) => message.role === "user" && !original(message),
+    );
+    if (current < 0) current = ctx.messages.findLastIndex((message) => message.role === "user");
+    const diagnostic = request.contextStrategy === "current" && request.contextRestored !== true;
+    const protectedIndexes = ctx.messages.flatMap((message, index) =>
+      diagnostic || message.role === "system" || (index >= current && message.role === "user")
+        ? [index]
+        : [],
+    );
+    const messages = pruneForRebuild(
+      ctx.messages,
+      request.model.maxImagesPerPrompt,
+      preserved,
+      protectedIndexes,
+    );
     return messages === ctx.messages ? ctx : { ...ctx, messages };
   }
   /** Records the context about to be sent for cache prediction and cross-run reuse. */
@@ -679,9 +773,17 @@ export function createRuntimeContextPolicy(
       ...built.decision,
       ...fields,
       predictedCache: cache.predict(pending),
-      estimatedInputTokens: prefixTokens,
+      estimatedInputTokens: prefixTokens + MODEL_CONTEXT_FRAMING_TOKENS,
     };
     return prepared;
+  }
+  function assertImageLimit(messages: Message[]): void {
+    const imageLimit = normalizedImageLimit(request.model.maxImagesPerPrompt);
+    const images = messages.reduce((count, message) => count + imagePartCount(message), 0);
+    if (imageLimit !== undefined && images > imageLimit)
+      throw new ModelImageLimitError(
+        `The configured model image limit is ${imageLimit}, but required context contains ${images} images.`,
+      );
   }
   function measure(ctx: Context, messages: Message[]): Size {
     return {
@@ -742,15 +844,29 @@ export function createRuntimeContextPolicy(
         const available =
           (request.model.contextWindow ?? model.contextWindow) - outputReserve(model);
         const imageLimit = normalizedImageLimit(request.model.maxImagesPerPrompt);
-        const overTokens = (size: Size) => size.tokens > available;
+        const overTokens = (size: Size) => size.tokens + MODEL_CONTEXT_FRAMING_TOKENS > available;
         const overImages = (size: Size) => imageLimit !== undefined && size.images > imageLimit;
         const kept = measure(ctx, appended);
         const fresh = measure(ctx, built.context.messages);
+        const desiredOutput = outputReserve(model);
+        const keptOutput =
+          built.sdkOutputCap === undefined
+            ? undefined
+            : effectivePiOutputTokens(
+                model,
+                modelView({ ...ctx, messages: appended }),
+                desiredOutput,
+              );
+        const sdkWindowPressure =
+          keptOutput !== undefined &&
+          keptOutput < desiredOutput &&
+          built.sdkOutputCap !== undefined &&
+          built.sdkOutputCap > keptOutput;
         // Each limit is enforced on its own: a rebuild that fixes the image count is still
         // taken when the text stays too large for the window, and the other way round.
         if (overTokens(kept) && !overTokens(fresh))
           built = rebuildWithHeadroom(ctx, model) ?? built;
-        else if (!(overImages(kept) && !overImages(fresh)))
+        else if (!(overImages(kept) && !overImages(fresh)) && !sdkWindowPressure)
           append =
             overTokens(kept) ||
             overImages(kept) ||
@@ -761,6 +877,7 @@ export function createRuntimeContextPolicy(
           ...previous.projection,
           ...ctx.messages.slice(previous.source.length).map((message) => ({ hash: hash(message) })),
         ];
+        assertImageLimit(appended);
         sent = {
           ...previous,
           source,
@@ -781,6 +898,7 @@ export function createRuntimeContextPolicy(
               : 0,
           )
         : built.context.messages;
+      assertImageLimit(messages);
       const projection = messages.map((message) => ({
         hash: hash(message),
         ...(message === built.navigation?.message

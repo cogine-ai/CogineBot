@@ -1,6 +1,9 @@
 import type { Context } from "@earendil-works/pi-ai";
 import type { ContextBudget } from "./context-selection.js";
-import { estimateContextTokens } from "./context-selection.js";
+import { estimateContextTokens, providerContextPrefix } from "./context-selection.js";
+
+/** Shared provider framing allowance for planning and reservation. */
+export const MODEL_CONTEXT_FRAMING_TOKENS = 240;
 
 /**
  * Provider-neutral planning estimate, including tool schemas and message framing.
@@ -11,5 +14,10 @@ export function estimateModelContextTokens(
   context: Context,
   imageTokens?: ContextBudget["imageTokens"],
 ): number {
-  return estimateContextTokens(context, imageTokens) + 240;
+  return (
+    estimateContextTokens(
+      providerContextPrefix(context.systemPrompt ?? "", context.tools ?? [], context.messages),
+      imageTokens,
+    ) + MODEL_CONTEXT_FRAMING_TOKENS
+  );
 }

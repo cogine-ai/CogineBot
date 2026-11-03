@@ -1197,6 +1197,179 @@ describe("Pi runtime ordered model fallback", () => {
     );
   });
 
+  it.each([
+    ["mcp__mail__read.events", { id: "record" }, false],
+    ["connectors_execute_tool", { id: "mail-server:read", arguments: {} }, false],
+    ["mcp__mail__read.events", { id: "record" }, true],
+  ] as const)(
+    "selects a backup without cropping a whole opted-in image result from %s %j (already read: %s)",
+    async (name, args, alreadyRead) => {
+      const input = request([
+        {
+          provider: backupA.provider,
+          id: backupA.id,
+          apiKey: "backup-a-key",
+          maxImagesPerPrompt: 2,
+        },
+        {
+          provider: backupB.provider,
+          id: backupB.id,
+          apiKey: "backup-b-key",
+          maxImagesPerPrompt: 3,
+        },
+      ]);
+      input.model = { ...input.model, maxImagesPerPrompt: 3 };
+      input.verbatimMcpServers = { ids: ["mail-server"], slugs: ["mail"] };
+      input.tools = [
+        {
+          name,
+          description: "Read evidence images",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string" }, arguments: { type: "object" } },
+          },
+          route: { connectorId: "mcp", toolName: "read", connectionId: "mail-connection" },
+        },
+      ];
+      if (alreadyRead) input.tools.push(request().tools[0]!);
+      const images = [0, 1, 2].map((index) => ({
+        type: "image" as const,
+        data: `synthetic-evidence-${index}`,
+        mimeType: "image/png",
+      }));
+      const raw = {
+        kind: "agent_tool_result" as const,
+        content: [
+          { type: "text" as const, text: JSON.stringify({ id: "exact-id", complete: true }) },
+          ...images,
+          { type: "text" as const, text: "Final original evidence block." },
+        ],
+        details: { frameId: "synthetic-frame" },
+      };
+      input.executeTool = vi.fn(async (toolName) => (toolName === name ? raw : { ok: true }));
+      let primaryCalls = 0;
+      const attempted: string[] = [];
+      providerState.stream.mockImplementation(
+        (target: Model<"openai-completions">, context: Context) => {
+          attempted.push(target.provider);
+          if (target.provider === primary.provider && ++primaryCalls === 1) {
+            const offered =
+              context.tools?.[0] ??
+              context.messages.find((item) => item.role === "system")?.toolsAdded?.[0];
+            if (!offered) throw new Error("Synthetic tool was not offered");
+            return stream(
+              target,
+              message(
+                target,
+                [{ type: "toolCall", id: "evidence-once", name: offered.name, arguments: args }],
+                "toolUse",
+              ),
+            );
+          }
+          if (target.provider === primary.provider && alreadyRead && primaryCalls === 2) {
+            expect(countContextImages(context)).toBe(3);
+            return stream(
+              target,
+              message(
+                target,
+                [
+                  {
+                    type: "toolCall",
+                    id: "effect-once",
+                    name: "write_effect",
+                    arguments: { value: "once" },
+                  },
+                ],
+                "toolUse",
+              ),
+            );
+          }
+          if (target.provider === primary.provider)
+            return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+          const result = context.messages.find(
+            (item): item is Extract<Context["messages"][number], { role: "toolResult" }> =>
+              item.role === "toolResult" && item.toolCallId === "evidence-once",
+          );
+          if (alreadyRead) {
+            expect(result).toBeUndefined();
+            expect(
+              context.messages.some(
+                (item) =>
+                  item.role === "assistant" &&
+                  item.content.some(
+                    (part) => part.type === "toolCall" && part.id === "evidence-once",
+                  ),
+              ),
+            ).toBe(false);
+            expect(context.messages).toContainEqual(
+              expect.objectContaining({ role: "toolResult", toolCallId: "effect-once" }),
+            );
+          } else {
+            expect(result?.content.filter((part) => part.type === "image")).toEqual(images);
+            expect(
+              result?.content.filter(
+                (part) => part.type !== "text" || !part.text.startsWith("[Automated message"),
+              ),
+            ).toEqual(raw.content);
+          }
+          return stream(
+            target,
+            message(target, [{ type: "text", text: "Evidence read." }], "stop"),
+          );
+        },
+      );
+
+      const events = await run(input);
+
+      expect(attempted).toEqual(
+        alreadyRead
+          ? [primary.provider, primary.provider, primary.provider, backupA.provider]
+          : [primary.provider, primary.provider, backupB.provider],
+      );
+      expect(input.executeTool).toHaveBeenCalledWith(
+        name,
+        args,
+        expect.any(String),
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(input.executeTool).toHaveBeenCalledTimes(alreadyRead ? 2 : 1);
+      expect(providerState.delay).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ type: "done", text: "Evidence read." });
+    },
+  );
+
+  it("keeps the configured output room when optional history moves to a backup", async () => {
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "backup-key", maxTokens: 1024 },
+    ]);
+    input.model = { ...input.model, contextWindow: 8192, maxTokens: 1024 };
+    input.history = Array.from({ length: 100 }, (_, index) => ({
+      id: `old-${index}`,
+      role: "user" as const,
+      content: `Old message ${index} ${"filler ".repeat(80)}`,
+    }));
+    input.onModelChange = vi.fn();
+    const caps: number[] = [];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, context: Context, options?: { maxTokens?: number }) => {
+        caps.push(options?.maxTokens ?? 0);
+        expect(JSON.stringify(context.messages)).toContain(input.prompt);
+        return target.provider === primary.provider
+          ? stream(target, message(target, [], "error", "HTTP 402 quota exhausted"))
+          : stream(target, message(target, [{ type: "text", text: "Backup complete." }], "stop"));
+      },
+    );
+
+    const events = await run(input);
+
+    expect(caps).toEqual([1024, 1024]);
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(backupA.provider, backupA.id);
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup complete." });
+  });
+
   it("prunes new screenshots using the active backup image limit", async () => {
     const visionBackup = { ...backupA, input: ["text", "image"] };
     providerState.models.set(`${backupA.provider}/${backupA.id}`, visionBackup);
@@ -1601,6 +1774,35 @@ describe("Pi runtime ordered model fallback", () => {
         ([target]) => (target as Model<"openai-completions">).provider,
       ),
     ).toEqual([primary.provider, smallContextBackup.provider]);
+  });
+
+  it("leaves framing room by omitting optional history before accepting a small backup", async () => {
+    const smallBackup = model("provider-small", "framing-fit", 2048);
+    providerState.models.set(
+      `${smallBackup.provider}/${smallBackup.id}`,
+      smallBackup as unknown as Record<string, unknown>,
+    );
+    const input = request([
+      { provider: smallBackup.provider, id: smallBackup.id, apiKey: "backup-key", maxTokens: 512 },
+    ]);
+    input.history = [{ id: "optional-old", role: "user", content: "0".repeat(1200) }];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, context: Context) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "HTTP 402 quota exhausted"));
+        const sent = JSON.stringify(context.messages);
+        expect(sent).toContain(input.prompt);
+        expect(sent).not.toContain("0".repeat(1200));
+        return stream(target, message(target, [{ type: "text", text: "Framing fits." }], "stop"));
+      },
+    );
+
+    const events = await run(input);
+
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Framing fits." });
   });
 
   it("skips backups without the primary turn's reasoning capability", async () => {

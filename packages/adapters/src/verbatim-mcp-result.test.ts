@@ -1,6 +1,12 @@
+import type { Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { catalogExecuteToolName } from "./approval-effect.js";
-import { isVerbatimMcpResult, toolCallIdentity } from "./verbatim-mcp-result.js";
+import {
+  isVerbatimMcpResult,
+  toolCallIdentity,
+  verbatimMcpToolResultIndexes,
+} from "./verbatim-mcp-result.js";
 
 const servers = { ids: ["server-1"], slugs: ["research__notes"] };
 
@@ -46,5 +52,25 @@ describe("whole MCP result identities", () => {
       arguments: arguments_,
     });
     expect(toolCallIdentity(null, "fallback")).toEqual({ name: "fallback" });
+  });
+  it("binds catalog preservation to its own call occurrence when an ID is reused", () => {
+    const call = (id: string) =>
+      fauxAssistantMessage([
+        { type: "toolCall", id: "reused", name: catalogExecuteToolName("mcp"), arguments: { id } },
+      ]);
+    const result = {
+      role: "toolResult",
+      toolCallId: "reused",
+      toolName: "mcp__research__notes__search",
+      content: [{ type: "text", text: "same result" }],
+      details: { verbatim: true },
+      isError: false,
+      timestamp: 1,
+    } as Message;
+    const messages = [call("server-1:search"), result, call("other:search"), { ...result }];
+    expect([...verbatimMcpToolResultIndexes(messages, servers)]).toEqual([1]);
+    expect([...verbatimMcpToolResultIndexes(messages, undefined)]).toEqual([]);
+    const inverse = [call("other:search"), result, call("server-1:search"), { ...result }];
+    expect([...verbatimMcpToolResultIndexes(inverse, servers)]).toEqual([3]);
   });
 });

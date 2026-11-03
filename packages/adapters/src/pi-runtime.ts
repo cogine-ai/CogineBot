@@ -33,7 +33,7 @@ import { usableModelId } from "@rakazo/contracts";
 import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
-import { automated } from "./automated-messages.js";
+import { automated, automatedToolMessages } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import {
@@ -45,14 +45,17 @@ import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import { ModelImageLimitError, pruneForRebuild } from "./context-pruning.js";
 import {
   boundToolResult,
+  ContextBudgetError,
   markToolResultContent,
+  protectedContextIndexes,
+  selectContext,
   TOOL_RESULT_HISTORY_MIN_LENGTH,
   toolResultContentProvenance,
   validatedToolResultHistoryReference,
 } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
-import { estimateModelContextTokens } from "./model-context.js";
+import { estimateModelContextTokens, MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
@@ -68,6 +71,7 @@ import {
   registerOpenAiCompatibleCatalog,
   registerOpenAiCompatibleRuntime,
 } from "./pi-openai-compatible-provider.js";
+import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   clipToolResultContent,
   clipToolResultText,
@@ -93,7 +97,7 @@ import {
 } from "./thinking-signatures.js";
 import { textContentArg } from "./tool-text.js";
 import { midTaskMessagePrompt } from "./user-progress.js";
-import { isVerbatimMcpResult } from "./verbatim-mcp-result.js";
+import { isVerbatimMcpResult, verbatimMcpToolResultIndexes } from "./verbatim-mcp-result.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
 interface ToolCallBudget {
@@ -2334,7 +2338,7 @@ function modelForCompletion(model: Model<Api>, configuredMaxTokens?: number): Mo
     configuredMaxTokens,
     undefined,
     model.reasoning,
-    undefined,
+    model.contextWindow,
     operatorMaxTokens(model),
   );
   if (maxTokens === model.maxTokens) return model;
@@ -2507,17 +2511,8 @@ function fallbackSupportsContext(
   options: ModelsSimpleStreamOptions | undefined,
   requestedThinkingLevel: AgentRunRequest["model"]["thinkingLevel"],
   tools: readonly ConnectorTool[],
+  verbatimMcpServers: AgentRunRequest["verbatimMcpServers"],
 ): boolean {
-  try {
-    context = {
-      ...context,
-      messages: pruneForRebuild(context.messages, candidate.config.maxImagesPerPrompt),
-    };
-  } catch (error) {
-    if (error instanceof ModelImageLimitError) return false;
-    throw error;
-  }
-  const inputTokens = estimateModelContextTokens(context, estimatePiImageTokens);
   const outputTokens = resolveCompletionMaxTokens(
     candidate.model.maxTokens,
     candidate.config.maxTokens,
@@ -2526,6 +2521,71 @@ function fallbackSupportsContext(
     candidate.model.contextWindow,
     operatorMaxTokens(candidate.model),
   );
+  // History from toHistory is marked before entering the Agent. Keep every live
+  // user message, including images followed by steering, while old complete tool
+  // groups remain optional on the same terms as the sending context policy.
+  const protectedIndexes = context.messages.flatMap((message, index) =>
+    message.role === "user" &&
+    !(message as typeof message & { rakazoHistory?: boolean }).rakazoHistory
+      ? [index]
+      : [],
+  );
+  try {
+    const messages = pruneForRebuild(
+      context.messages,
+      candidate.config.maxImagesPerPrompt,
+      verbatimMcpToolResultIndexes(context.messages, verbatimMcpServers),
+      protectedIndexes,
+    );
+    const selectionOptions = {
+      budget: {
+        contextWindow: candidate.model.contextWindow,
+        outputReserve: outputTokens,
+        inputOverhead: MODEL_CONTEXT_FRAMING_TOKENS,
+        // The SDK has already folded prompt and tools into system messages.
+        systemPrompt: "",
+        tools: [],
+        imageTokens: estimatePiImageTokens,
+        maxImages: candidate.config.maxImagesPerPrompt,
+      },
+      strategy: "current" as const,
+      protectedIndexes,
+      truncateToolResults: false,
+      verbatimMcpServers,
+    };
+    const selected = selectContext(messages, selectionOptions);
+    let selectedMessages = selected.messages;
+    const outputCap = (messages: typeof selectedMessages) =>
+      effectivePiOutputTokens(
+        candidate.model,
+        { ...context, messages: automatedToolMessages(messages) },
+        outputTokens,
+      );
+    const normalCap = outputCap(selectedMessages);
+    if (normalCap !== undefined && normalCap < outputTokens) {
+      const selectedProtected = selected.sourceIndexes.flatMap((sourceIndex, index) =>
+        protectedIndexes.includes(sourceIndex) ? [index] : [],
+      );
+      const required = protectedContextIndexes(selectedMessages, selectedProtected);
+      const target = Math.min(
+        outputTokens,
+        outputCap(selectedMessages.filter((_message, index) => required.has(index)))!,
+      );
+      if (normalCap < target) {
+        selectedMessages = selectContext(selectedMessages, {
+          ...selectionOptions,
+          protectedIndexes: selectedProtected,
+          canAddOptional: (messages) =>
+            outputCap([...messages] as typeof selectedMessages)! >= target,
+        }).messages;
+      }
+    }
+    context = { ...context, messages: selectedMessages };
+  } catch (error) {
+    if (error instanceof ModelImageLimitError || error instanceof ContextBudgetError) return false;
+    throw error;
+  }
+  const inputTokens = estimateModelContextTokens(context, estimatePiImageTokens);
   // Token counts are estimates and can differ by provider/tokenizer. Reserve a
   // small input-relative margin, not a fixed 4096 tokens that would exclude
   // otherwise usable small-context models on short turns.
@@ -2660,6 +2720,7 @@ function fallbackAwareModelStream(
             options,
             state.request.model.thinkingLevel,
             state.request.tools,
+            state.request.verbatimMcpServers,
           )
         ) {
           continue;

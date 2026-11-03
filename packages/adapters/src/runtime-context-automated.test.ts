@@ -8,6 +8,7 @@ import {
   estimateContextTokens,
   providerContextPrefix,
 } from "./context-selection.js";
+import { estimateModelContextTokens, MODEL_CONTEXT_FRAMING_TOKENS } from "./model-context.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
 const label = "[Automated message from CogineBot, not from the user]";
@@ -86,7 +87,9 @@ describe("automated source context policy", () => {
         const messages = (prediction.prefix as { messages: Message[] }).messages;
         expect(texts(messages.at(-1))[0]).toContain(label);
       }
-      expect(policy.getDecision()!.estimatedInputTokens).toBe(estimateContextTokens(prefix, 10));
+      expect(policy.getDecision()!.estimatedInputTokens).toBe(
+        estimateModelContextTokens(first, 10),
+      );
     },
   );
 
@@ -150,7 +153,10 @@ describe("automated source context policy", () => {
       context.messages.push(current);
       const raw = structuredClone(context);
       const policy = createRuntimeContextPolicy(request, undefined, { imageTokens: 10 });
-      const prepared = policy.prepareContext(context, { ...model, contextWindow: 5000 });
+      const prepared = policy.prepareContext(context, {
+        ...model,
+        contextWindow: 5000 + MODEL_CONTEXT_FRAMING_TOKENS,
+      });
 
       expect(prepared.messages.at(-1)).toEqual(current);
       expect(
@@ -174,7 +180,10 @@ describe("automated source context policy", () => {
         { ...request, threadId: `${request.threadId}-no-images` },
         undefined,
         { imageTokens: 10 },
-      ).prepareContext(unlabelled, { ...model, contextWindow: 5000 });
+      ).prepareContext(unlabelled, {
+        ...model,
+        contextWindow: 5000 + MODEL_CONTEXT_FRAMING_TOKENS,
+      });
       expect(JSON.stringify(withoutReserve)).toContain("Historical navigation snapshots");
       expect(
         estimateContextTokens(
@@ -191,7 +200,7 @@ describe("automated source context policy", () => {
         { ...request, threadId: `${request.threadId}-more-room` },
         undefined,
         { imageTokens: 10 },
-      ).prepareContext(context, { ...model, contextWindow: 5200 });
+      ).prepareContext(context, { ...model, contextWindow: 5200 + MODEL_CONTEXT_FRAMING_TOKENS });
       expect(JSON.stringify(roomy)).toContain("Historical navigation snapshots");
       expect(
         estimateContextTokens(

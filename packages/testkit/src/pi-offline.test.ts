@@ -2,9 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
+import type {
+  AgentRunRequest,
+  AgentRuntimeEvent,
+  ConnectorTool,
+  ModelCallObserver,
+} from "@rakazo/adapter-kit";
 import { PiAgentRuntime } from "@rakazo/adapters";
 import { afterEach, describe, expect, it } from "vitest";
+import { estimateTextTokens } from "../../adapters/src/context-selection.js";
 import { type ModelEmulatorRequest, startModelEmulator } from "./model-emulator.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -49,13 +55,41 @@ function latestToolResult(request: ModelEmulatorRequest) {
   return request.messages.findLast((message) => message.role === "tool");
 }
 
+function assertOutputCap(request: ModelEmulatorRequest, maxTokens: number) {
+  const caps = ["max_tokens", "max_completion_tokens"]
+    .filter((field) => Object.hasOwn(request, field))
+    .map((field) => Reflect.get(request, field));
+  expect(caps).toEqual([maxTokens]);
+  return caps[0] as number;
+}
+
+type ObservedModelCall = Parameters<ModelCallObserver["beforeCall"]>[0];
+
+function budgetObserver(calls: ObservedModelCall[]): ModelCallObserver {
+  return {
+    beforeCall(call) {
+      calls.push(call);
+      return `offline-call-${calls.length}`;
+    },
+    afterCall() {},
+  };
+}
+
 describe("real Pi against an offline model HTTP endpoint", () => {
   it.each([undefined, "retrieval", "snapshots", "cache-aware"] as const)(
     "bounds actual initial and tool-loop requests with %s context",
     async (contextStrategy) => {
-      const decisions: Array<{ droppedMessages: number; truncatedToolResults: number }> = [];
+      const calls: ObservedModelCall[] = [];
+      const wireCaps: number[] = [];
+      const decisions: Array<{
+        droppedMessages: number;
+        truncatedToolResults: number;
+        estimatedInputTokens: number;
+      }> = [];
       const assertBounded = (request: ModelEmulatorRequest) => {
-        expect(Buffer.byteLength(JSON.stringify(request.messages))).toBeLessThan(7168);
+        // The wire payload has a token budget; UTF-8 bytes are not token counts.
+        expect(estimateTextTokens(JSON.stringify(request.messages))).toBeLessThan(7168);
+        wireCaps.push(assertOutputCap(request, 1024));
         expect(JSON.stringify(request.messages)).toContain("Save hello to notes.txt.");
       };
       const server = await startModelEmulator({
@@ -85,7 +119,10 @@ describe("real Pi against an offline model HTTP endpoint", () => {
       });
       cleanups.push(() => server.close());
       const events = await collect(
-        new PiAgentRuntime({ onContextDecision: (decision) => decisions.push(decision) }).run(
+        new PiAgentRuntime({
+          onContextDecision: (decision) => decisions.push(decision),
+          modelCallObserver: budgetObserver(calls),
+        }).run(
           runRequest(
             { ...server.model, contextWindow: 8192, maxTokens: 1024 },
             {
@@ -95,7 +132,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
                 role: "user" as const,
                 content: `Old message ${index} ${"filler ".repeat(80)}`,
               })),
-              executeTool: async () => ({ original: "large evidence ".repeat(6000) }),
+              executeTool: async () => ({ original: "😀".repeat(30_000) }),
             },
           ),
         ),
@@ -106,8 +143,15 @@ describe("real Pi against an offline model HTTP endpoint", () => {
       server.assertComplete();
       expect(events.some((event) => event.type === "done")).toBe(true);
       expect(decisions).toHaveLength(2);
+      expect(calls.map((call) => call.maxOutputTokens)).toEqual(wireCaps);
+      expect(wireCaps).toHaveLength(2);
+      for (const call of calls)
+        expect(call.inputTokensEstimate + call.maxOutputTokens).toBeLessThanOrEqual(8192);
       expect(decisions[0]!.droppedMessages).toBeGreaterThan(0);
       expect(decisions[1]!.truncatedToolResults).toBe(1);
+      expect(decisions.every((decision) => decision.estimatedInputTokens + 1024 <= 8192)).toBe(
+        true,
+      );
     },
   );
 
@@ -240,12 +284,20 @@ describe("real Pi against an offline model HTTP endpoint", () => {
   });
 
   it("enforces the same context budget inside a delegated tool loop", async () => {
-    const decisions: Array<{ agentId?: string; strategy?: string; truncatedToolResults: number }> =
-      [];
+    const calls: ObservedModelCall[] = [];
+    const wireCaps: number[] = [];
+    const decisions: Array<{
+      agentId?: string;
+      strategy?: string;
+      truncatedToolResults: number;
+      estimatedInputTokens: number;
+    }> = [];
     const server = await startModelEmulator({
       steps: [
         {
-          expect() {},
+          expect(request) {
+            wireCaps.push(assertOutputCap(request, 1024));
+          },
           response: {
             type: "tool",
             id: "delegate",
@@ -255,6 +307,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         },
         {
           expect(request) {
+            wireCaps.push(assertOutputCap(request, 1024));
             expect(request.tools?.some((tool) => tool.function.name === "run_subagent")).toBe(
               false,
             );
@@ -269,7 +322,8 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         },
         {
           expect(request) {
-            expect(Buffer.byteLength(JSON.stringify(request.messages))).toBeLessThan(7168);
+            expect(estimateTextTokens(JSON.stringify(request.messages))).toBeLessThan(7168);
+            wireCaps.push(assertOutputCap(request, 1024));
             expect(latestToolResult(request)?.tool_call_id).toBe("child-write");
             expect(String(latestToolResult(request)?.content)).toContain("truncated");
             expect(JSON.stringify(request.messages)).toContain("Save hello to notes.txt.");
@@ -278,6 +332,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         },
         {
           expect(request) {
+            wireCaps.push(assertOutputCap(request, 1024));
             expect(latestToolResult(request)?.tool_call_id).toBe("delegate");
           },
           response: { type: "text", text: "Finished." },
@@ -286,7 +341,10 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     });
     cleanups.push(() => server.close());
     await collect(
-      new PiAgentRuntime({ onContextDecision: (decision) => decisions.push(decision) }).run(
+      new PiAgentRuntime({
+        onContextDecision: (decision) => decisions.push(decision),
+        modelCallObserver: budgetObserver(calls),
+      }).run(
         runRequest(
           { ...server.model, contextWindow: 8192, maxTokens: 1024 },
           {
@@ -302,7 +360,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
                 },
               },
             ],
-            executeTool: async () => ({ original: "large child evidence ".repeat(3000) }),
+            executeTool: async () => ({ original: "😀".repeat(30_000) }),
           },
         ),
       ),
@@ -312,6 +370,12 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     });
     server.assertComplete();
     expect(decisions).toHaveLength(4);
+    expect(calls).toHaveLength(4);
+    expect(calls.map((call) => call.maxOutputTokens)).toEqual(wireCaps);
+    expect(wireCaps).toHaveLength(4);
+    for (const call of calls)
+      expect(call.inputTokensEstimate + call.maxOutputTokens).toBeLessThanOrEqual(8192);
+    expect(decisions.every((decision) => decision.estimatedInputTokens + 1024 <= 8192)).toBe(true);
     expect(decisions.every((decision) => decision.strategy === "retrieval")).toBe(true);
     expect(decisions.filter((decision) => decision.agentId)).toHaveLength(2);
     expect(

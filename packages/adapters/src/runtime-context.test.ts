@@ -2,7 +2,8 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { catalogExecuteToolName } from "./approval-effect.js";
 import {
   boundToolResultText,
   ContextBudgetError,
@@ -10,6 +11,8 @@ import {
   markToolResultContent,
   toolResultContentProvenance,
 } from "./context-selection.js";
+import * as outputBudget from "./pi-output-budget.js";
+import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 
 const model = {
@@ -923,5 +926,426 @@ describe("runtime context policy", () => {
       );
       context.messages.push({ role: "user", content: `Follow-up ${turn}`, timestamp: turn + 1 });
     }
+  });
+});
+
+describe("complete MCP result pruning", () => {
+  const images = [1, 2, 3].map((index) => ({
+    type: "image" as const,
+    data: `image-${index}`,
+    mimeType: "image/png",
+  }));
+  function visual(whole: boolean) {
+    const { request, context } = fixture(0);
+    const name = "mcp__mail__read";
+    request.contextStrategy = "retrieval";
+    request.model.maxImagesPerPrompt = 4;
+    if (whole) request.verbatimMcpServers = { ids: [], slugs: ["mail"] };
+    const content = markToolResultContent(
+      [{ type: "text" as const, text: "Exact original visual evidence" }, ...images],
+      {
+        historyReference: { tool: "read_history", arguments: { toolResultId: "original-visual" } },
+        wrapped: false,
+      },
+    );
+    context.messages.push(
+      fauxAssistantMessage([{ type: "toolCall", id: "visual", name, arguments: {} }]),
+      {
+        role: "toolResult",
+        toolCallId: "visual",
+        toolName: name,
+        content,
+        details: { frameId: "mcp-frame" },
+        isError: false,
+        timestamp: 2,
+      },
+    );
+    return { request, context, content };
+  }
+  it.each([false, true])(
+    "keeps complete multipart image evidence only for trusted servers (%s)",
+    (whole) => {
+      const { request, context, content } = visual(whole);
+      const prepared = createRuntimeContextPolicy(request, undefined, {
+        imageTokens: 10,
+      }).prepareContext(context, model);
+      const result = prepared.messages.find((message) => message.role === "toolResult")!;
+      expect(result.content.filter((part) => part.type === "image")).toHaveLength(whole ? 3 : 0);
+      if (whole) expect(result.content.slice(-content.length)).toEqual(content);
+      expect(content.filter((part) => part.type === "image")).toHaveLength(3);
+      expect(toolResultContentProvenance(result.content)).toEqual({
+        historyReference: { tool: "read_history", arguments: { toolResultId: "original-visual" } },
+        wrapped: false,
+      });
+    },
+  );
+  it.each(["retrieval", "current"] as const)(
+    "rejects necessary complete images beyond the actual %s model limit",
+    (contextStrategy) => {
+      const { request, context, content } = visual(true);
+      request.contextStrategy = contextStrategy;
+      request.model.maxImagesPerPrompt = 2;
+      expect(() =>
+        createRuntimeContextPolicy(request, undefined, { imageTokens: 10 }).prepareContext(
+          context,
+          model,
+        ),
+      ).toThrow("image limit is 2");
+      expect(content).toHaveLength(4);
+      request.model.maxImagesPerPrompt = 3;
+      expect(
+        createRuntimeContextPolicy(request, undefined, { imageTokens: 10 })
+          .prepareContext(context, model)
+          .messages.at(-1)!
+          .content.slice(-content.length),
+      ).toEqual(content);
+    },
+  );
+  it("counts prompt images together with complete multipart results", () => {
+    const { request, context, content } = visual(true);
+    request.model.maxImagesPerPrompt = 3;
+    context.messages[0] = {
+      role: "user",
+      content: [{ type: "text", text: request.prompt }, images[0]!],
+      timestamp: 0,
+    };
+    expect(() =>
+      createRuntimeContextPolicy(request, undefined, { imageTokens: 10 }).prepareContext(
+        context,
+        model,
+      ),
+    ).toThrow("required context contains 4 images");
+    expect(content).toHaveLength(4);
+  });
+  it("drops an old optional whole group rather than clipping it or rejecting newer images", () => {
+    const { request, context, content } = visual(true);
+    request.model.maxImagesPerPrompt = 2;
+    context.messages.push(
+      fauxAssistantMessage([
+        { type: "toolCall", id: "ordinary", name: "computer_observe", arguments: {} },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "ordinary",
+        toolName: "computer_observe",
+        content: [images[0]!, images[1]!],
+        details: { frameId: "ordinary-frame" },
+        isError: false,
+        timestamp: 3,
+      },
+    );
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    expect(
+      prepared.messages.some(
+        (message) => message.role === "toolResult" && message.toolCallId === "visual",
+      ),
+    ).toBe(false);
+    expect(
+      (prepared.messages.at(-1) as Extract<Message, { role: "toolResult" }>).content.filter(
+        (part) => part.type === "image",
+      ),
+    ).toHaveLength(2);
+    request.model.maxImagesPerPrompt = 5;
+    const roomy = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    const old = roomy.messages.find(
+      (message) => message.role === "toolResult" && message.toolCallId === "visual",
+    )!;
+    expect(old.content.slice(-content.length)).toEqual(content);
+    expect(content).toHaveLength(4);
+  });
+  it("reserves the required whole result before pruning ordinary screenshots in the same step", () => {
+    const { request, context, content } = visual(true);
+    request.model.maxImagesPerPrompt = 3;
+    context.messages[1] = fauxAssistantMessage([
+      { type: "toolCall", id: "visual", name: "mcp__mail__read", arguments: {} },
+      { type: "toolCall", id: "ordinary", name: "computer_observe", arguments: {} },
+    ]);
+    context.messages.push({
+      role: "toolResult",
+      toolCallId: "ordinary",
+      toolName: "computer_observe",
+      content: [images[0]!, images[1]!],
+      details: { frameId: "ordinary-frame" },
+      isError: false,
+      timestamp: 3,
+    });
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    const marked = prepared.messages.find(
+      (message) => message.role === "toolResult" && message.toolCallId === "visual",
+    )!;
+    expect(marked.content.slice(-content.length)).toEqual(content);
+    expect(
+      (prepared.messages.at(-1) as Extract<Message, { role: "toolResult" }>).content.filter(
+        (part) => part.type === "image",
+      ),
+    ).toHaveLength(0);
+  });
+  it("keeps restored current bounded when an optional old complete result exceeds its image budget", () => {
+    const { request, context } = visual(true);
+    request.contextStrategy = "current";
+    request.contextRestored = true;
+    request.model.maxImagesPerPrompt = 2;
+    context.messages.push(fauxAssistantMessage([{ type: "text", text: "Read the old evidence" }]), {
+      role: "user",
+      content: "Continue",
+      timestamp: 3,
+    });
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    expect(prepared.messages.some((message) => message.role === "toolResult")).toBe(false);
+  });
+  it("uses the original catalog call arguments before pruning a complete result", () => {
+    const { request, context, content } = visual(true);
+    request.verbatimMcpServers = { ids: ["mail-id"], slugs: [] };
+    const name = catalogExecuteToolName("mcp");
+    context.messages[1] = fauxAssistantMessage([
+      { type: "toolCall", id: "visual", name, arguments: { id: "mail-id:read" } },
+    ]);
+    (context.messages[2] as Extract<Message, { role: "toolResult" }>).toolName = name;
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    expect(prepared.messages.at(-1)!.content.slice(-content.length)).toEqual(content);
+  });
+  it("does not reuse an old catalog preservation decision for a later call with the same ID", () => {
+    const { request, context, content } = visual(true);
+    request.verbatimMcpServers = { ids: ["mail-id"], slugs: [] };
+    request.model.maxImagesPerPrompt = 2;
+    const name = catalogExecuteToolName("mcp");
+    context.messages[1] = fauxAssistantMessage([
+      { type: "toolCall", id: "visual", name, arguments: { id: "mail-id:read" } },
+    ]);
+    context.messages.push(
+      fauxAssistantMessage([
+        { type: "toolCall", id: "visual", name, arguments: { id: "other-id:read" } },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "visual",
+        toolName: name,
+        content: [images[0]!, images[1]!],
+        details: { frameId: "new-frame" },
+        isError: false,
+        timestamp: 3,
+      },
+    );
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, model);
+    const results = prepared.messages.filter((message) => message.role === "toolResult");
+    expect(results).toHaveLength(1);
+    expect(results[0]!.content.filter((part) => part.type === "image")).toEqual([
+      images[0],
+      images[1],
+    ]);
+    expect(content).toHaveLength(4);
+  });
+  it("does not treat an image-budget failure as a previously sent diagnostic transcript", () => {
+    const { request, context } = visual(true);
+    request.contextStrategy = "current";
+    request.model.maxImagesPerPrompt = 2;
+    const thinking = {
+      type: "thinking" as const,
+      thinking: "Unsent reasoning",
+      thinkingSignature: "unsent-signature",
+    };
+    context.messages[1] = fauxAssistantMessage([
+      thinking,
+      { type: "toolCall", id: "visual", name: "mcp__mail__read", arguments: {} },
+    ]);
+    const policy = createRuntimeContextPolicy(request, undefined, { imageTokens: 10 });
+    expect(() => policy.prepareContext(context, model)).toThrow("image limit is 2");
+    request.model.maxImagesPerPrompt = 3;
+    const prepared = policy.prepareContext(
+      { ...context, systemPrompt: "Changed before the first successful send" },
+      model,
+    );
+    expect(
+      prepared.messages.find((message) => message.role === "assistant")!.content,
+    ).toContainEqual(thinking);
+  });
+});
+
+describe("optional history and effective output capacity", () => {
+  const ccModel = {
+    ...model,
+    api: "openai-completions",
+    contextWindow: 8192,
+    maxTokens: 1024,
+  } as Model<Api>;
+  function capacityFixture() {
+    const { request, context } = fixture(100);
+    request.model.contextWindow = 8192;
+    request.model.maxTokens = 1024;
+    request.instructions = context.systemPrompt = "Complete the requested task";
+    request.prompt = "Save hello to notes.txt";
+    for (const [index, item] of request.history.entries()) {
+      item.content = `Old message ${index} ${"filler ".repeat(80)}`;
+      (context.messages[index] as { content: string }).content = item.content;
+    }
+    (context.messages.at(-1) as { content: string }).content = request.prompt;
+    return { request, context };
+  }
+  it("leaves attainable configured output capacity by removing only optional history", () => {
+    const { request, context } = capacityFixture();
+    const raw = structuredClone(context);
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1024);
+    expect(prepared.messages.at(-1)).toEqual(context.messages.at(-1));
+    expect(context).toEqual(raw);
+  });
+  it("keeps the normal selection when the SDK cannot improve its unavoidable small-window cap", () => {
+    const { request, context } = capacityFixture();
+    request.model.contextWindow = 4096;
+    const small = { ...ccModel, contextWindow: 4096 };
+    const unknown = createRuntimeContextPolicy(request).prepareContext(context, {
+      ...small,
+      api: "openai-responses",
+    });
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, small);
+    expect(effectivePiOutputTokens(small, prepared, 1024)).toBe(1);
+    expect(prepared.messages).toEqual(unknown.messages);
+  });
+  it("targets the actual mandatory capacity without inventing an output minimum", () => {
+    const { request, context } = capacityFixture();
+    request.prompt = "Required words ".repeat(900);
+    (context.messages.at(-1) as { content: string }).content = request.prompt;
+    const mandatory = { ...context, messages: [context.messages.at(-1)!] };
+    const attainable = effectivePiOutputTokens(ccModel, mandatory, 1024)!;
+    expect(attainable).toBeGreaterThan(1);
+    expect(attainable).toBeLessThan(1024);
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(attainable);
+    expect(prepared.messages.at(-1)).toEqual(mandatory.messages[0]);
+  });
+  it("preserves the explicit diagnostic strategy and bypasses unknown API behavior", () => {
+    const { request, context } = capacityFixture();
+    request.contextStrategy = "current";
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+    expect(prepared.messages).toEqual(context.messages);
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1);
+    request.contextStrategy = undefined;
+    const unknown = createRuntimeContextPolicy(request).prepareContext(context, {
+      ...ccModel,
+      api: "openai-responses",
+    });
+    const bounded = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+    expect(bounded.messages.length).toBeLessThan(unknown.messages.length);
+  });
+  it("keeps restored diagnostic input bounded with attainable output", () => {
+    const { request, context } = capacityFixture();
+    request.contextStrategy = "current";
+    request.contextRestored = true;
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1024);
+    expect(prepared.messages.at(-1)).toEqual(context.messages.at(-1));
+  });
+  it("does not measure mandatory and optional candidates again when the normal cap already fits", () => {
+    const { request, context } = fixture(0);
+    request.model.maxTokens = 1024;
+    const spy = vi.spyOn(outputBudget, "effectivePiOutputTokens");
+    try {
+      createRuntimeContextPolicy(request).prepareContext(context, ccModel);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("evaluates labelled whole-result evidence without further shortening its mandatory payload", () => {
+    const { request, context } = capacityFixture();
+    request.verbatimMcpServers = { ids: [], slugs: ["mail"] };
+    request.model.maxImagesPerPrompt = 1;
+    const content = markToolResultContent(
+      [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ id: "exact", body: "original evidence ".repeat(50) }),
+        },
+        { type: "image" as const, data: "synthetic", mimeType: "image/png" },
+      ],
+      {
+        historyReference: { tool: "read_history", arguments: { toolResultId: "original" } },
+        wrapped: false,
+      },
+    );
+    context.messages.push(
+      fauxAssistantMessage([
+        { type: "toolCall", id: "whole", name: "mcp__mail__read", arguments: {} },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "whole",
+        toolName: "mcp__mail__read",
+        content,
+        details: { frameId: "whole-frame" },
+        isError: false,
+        timestamp: 3,
+      },
+    );
+    const prepared = createRuntimeContextPolicy(request, undefined, {
+      imageTokens: 10,
+    }).prepareContext(context, ccModel);
+    const result = prepared.messages.find((message) => message.role === "toolResult")!;
+    expect(result.content.slice(-content.length)).toEqual(content);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("Automated message"),
+    });
+    expect(toolResultContentProvenance(result.content)).toEqual({
+      historyReference: { tool: "read_history", arguments: { toolResultId: "original" } },
+      wrapped: false,
+    });
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1024);
+  });
+  it("rebuilds an append only when optional selection improves a real SDK window constraint", () => {
+    const { request, context } = capacityFixture();
+    const policy = createRuntimeContextPolicy(request);
+    const first = policy.prepareContext(context, ccModel);
+    const continuation = {
+      ...context,
+      messages: [
+        ...context.messages,
+        fauxAssistantMessage([{ type: "toolCall", id: "step", name: "shell", arguments: {} }]),
+        {
+          role: "toolResult" as const,
+          toolCallId: "step",
+          toolName: "shell",
+          content: [{ type: "text" as const, text: "New evidence ".repeat(60) }],
+          isError: false,
+          timestamp: 3,
+        },
+      ],
+    };
+    const appended = {
+      ...context,
+      messages: [...first.messages, ...continuation.messages.slice(context.messages.length)],
+    };
+    expect(effectivePiOutputTokens(ccModel, appended, 1024)).toBeLessThan(1024);
+    const prepared = policy.prepareContext(continuation, ccModel);
+    expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1024);
+    expect(prepared.messages.length).toBeLessThan(appended.messages.length);
+    expect(prepared.messages.at(-1)).toEqual(continuation.messages.at(-1));
+    expect(policy.prepareContext(continuation, ccModel)).toEqual(prepared);
+  });
+  it("keeps appending when a fresh choice cannot improve the SDK output cap", () => {
+    const { request, context } = capacityFixture();
+    request.model.contextWindow = 4096;
+    const small = { ...ccModel, contextWindow: 4096 };
+    const policy = createRuntimeContextPolicy(request);
+    const first = policy.prepareContext(context, small);
+    const continued = {
+      ...context,
+      messages: [...context.messages, { role: "user" as const, content: "Continue", timestamp: 3 }],
+    };
+    const next = policy.prepareContext(continued, small);
+    expect(effectivePiOutputTokens(small, next, 1024)).toBe(1);
+    expect(next.messages.slice(0, first.messages.length)).toEqual(first.messages);
   });
 });

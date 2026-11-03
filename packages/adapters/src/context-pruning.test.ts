@@ -50,6 +50,16 @@ describe("context pruning on rebuild", () => {
     expect(screenshots[0]!.content).toHaveLength(2);
   });
 
+  it("does not transform explicitly preserved page-shaped content or count it as replaceable state", () => {
+    const messages = ["whole", "a", "b", "c", "d"].map((id) => pageResult(id, "browser_snapshot"));
+    const pruned = pruneStalePageStateContext(messages, 3, new Set([0]));
+    expect(pruned[0]).toBe(messages[0]);
+    expect(pruned[1]!.content[0]).toMatchObject({
+      text: expect.stringContaining("trimmed to save context"),
+    });
+    expect(pruned.slice(2)).toEqual(messages.slice(2));
+  });
+
   it("trims page-state results older than the three most recent", () => {
     const messages = [
       { role: "user" as const, content: "find the cheapest coffee", timestamp: 1 },

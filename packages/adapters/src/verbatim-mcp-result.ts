@@ -1,3 +1,4 @@
+import type { Message } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { catalogExecuteToolName } from "./approval-effect.js";
 import { GROUP_SEPARATORS } from "./lazy-tool-catalog.js";
@@ -40,4 +41,31 @@ export function isVerbatimMcpResult(
       GROUP_SEPARATORS.some((separator) => id.toLowerCase().startsWith(`${slug}${separator}`)),
     )
   );
+}
+
+/** Match each result to the actual preceding call occurrence before any content is transformed. */
+export function verbatimMcpToolResultIndexes(
+  messages: readonly Message[],
+  servers: VerbatimMcpServers | undefined,
+): ReadonlySet<number> {
+  const indexes = new Set<number>();
+  if (!servers) return indexes;
+  let calls = new Map<string, { name: string; arguments: unknown }>();
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant") {
+      calls = new Map(
+        message.content.flatMap((part) =>
+          part.type === "toolCall"
+            ? [[part.id, { name: part.name, arguments: part.arguments }] as const]
+            : [],
+        ),
+      );
+    } else if (message.role === "toolResult") {
+      const call = calls.get(message.toolCallId);
+      if (call && isVerbatimMcpResult(call.name, call.arguments, servers)) indexes.add(index);
+    } else {
+      calls.clear();
+    }
+  }
+  return indexes;
 }

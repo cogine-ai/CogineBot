@@ -151,7 +151,11 @@ describe("real Pi tool-result content provenance", () => {
   ] as const)(
     "preserves opted-in content and provenance for %s %j (whole: %s)",
     async (name, args, whole) => {
-      const image = { type: "image" as const, data: "synthetic", mimeType: "image/png" };
+      const images = Array.from({ length: whole ? 3 : 1 }, (_, index) => ({
+        type: "image" as const,
+        data: `synthetic-${index}`,
+        mimeType: "image/png",
+      }));
       const raw = {
         kind: "agent_tool_result" as const,
         content: [
@@ -160,9 +164,9 @@ describe("real Pi tool-result content provenance", () => {
             text: JSON.stringify({ id: "exact-id", evidence: "Original evidence ".repeat(1500) }),
           },
           { type: "text" as const, text: "Second original block ".repeat(700) },
-          image,
+          ...images,
         ],
-        details: { source: "offline" },
+        details: { source: "offline", ...(whole ? { frameId: "synthetic-frame" } : {}) },
         isError: false,
       };
       const stored = vi.fn(async () => reference);
@@ -208,7 +212,7 @@ describe("real Pi tool-result content provenance", () => {
       expect(contexts).toHaveLength(2);
       const sent = resultMessage(contexts[1]!, "mcp-read");
       expect(toolResultContentProvenance(sent.content)?.historyReference).toEqual(reference);
-      expect(sent.content).toContainEqual(image);
+      expect(sent.content.filter((part) => part.type === "image")).toEqual(images);
       if (whole) {
         expect(
           sent.content.filter(

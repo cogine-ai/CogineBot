@@ -7,6 +7,55 @@ import { userTurnInstructions } from "./executor.js";
 import { PiAgentRuntime, resolveRuntimeModel } from "./pi-runtime.js";
 
 describe("Pi outgoing provider prefixes", () => {
+  it("keeps the completion ceiling when the SDK adds a budget-based thinking allowance", async () => {
+    const payloads: Array<{ max_tokens: number; thinking?: { budget_tokens?: number } }> = [];
+    const beforeCall = vi.fn(async (_call: { maxOutputTokens: number }) => "fixture-reservation");
+    const runtime = new PiAgentRuntime({
+      modelCallObserver: { beforeCall, afterCall: vi.fn() },
+      modelFetch: async (_input, init) => {
+        payloads.push(JSON.parse(String(init?.body)));
+        return new Response(
+          JSON.stringify({
+            error: { type: "invalid_request_error", message: "Offline payload capture complete" },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    const consume = async () => {
+      for await (const _event of runtime.run(
+        {
+          botId: "bot-fixture",
+          threadId: "thread-fixture",
+          runId: "run-thinking-ceiling",
+          prompt: "Answer briefly.",
+          instructions: "Be concise.",
+          history: [],
+          tools: [],
+          contextStrategy: "retrieval",
+          model: {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            apiKey: "fake-fixture-key",
+            contextWindow: 16384,
+            maxTokens: 12000,
+            thinkingLevel: "medium",
+          },
+        },
+        { signal: AbortSignal.timeout(15_000) },
+      )) {
+        /* Stop at the injected transport; no provider network is used. */
+      }
+    };
+
+    await expect(consume()).rejects.toThrow("Offline payload capture complete");
+    expect(payloads).toHaveLength(1);
+    expect(beforeCall).toHaveBeenCalledOnce();
+    expect(beforeCall.mock.calls[0]?.[0].maxOutputTokens).toBe(4096);
+    expect(payloads[0]?.max_tokens).toBe(4096);
+    expect(payloads[0]?.thinking?.budget_tokens).toBe(3072);
+  });
+
   it.each(["png", "gif"] as const)(
     "sends a large valid %s image through a 128k context without treating base64 as text",
     async (format) => {

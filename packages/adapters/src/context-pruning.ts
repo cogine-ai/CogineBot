@@ -1,11 +1,15 @@
 import type { Message } from "@earendil-works/pi-ai";
-import { copyToolResultProvenance } from "./context-selection.js";
+import {
+  copyToolResultProvenance,
+  ModelImageLimitError,
+  protectedContextIndexes,
+} from "./context-selection.js";
+
+export { ModelImageLimitError } from "./context-selection.js";
 
 type ToolResultMessage = Extract<Message, { role: "toolResult" }>;
 
 const DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP = 2;
-
-export class ModelImageLimitError extends Error {}
 
 /**
  * Tools whose result is a view of the current page or screen. Each new result supersedes the
@@ -37,12 +41,18 @@ const STALE_PAGE_STATE_NOTE =
 export function pruneStalePageStateContext(
   messages: Message[],
   keep = DEFAULT_PAGE_STATE_RESULTS_TO_KEEP,
+  preservedResults: ReadonlySet<number> = new Set(),
 ): Message[] {
   let remaining = Math.max(0, Math.floor(keep));
   let transformed: Message[] | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role !== "toolResult" || !PAGE_STATE_TOOL_NAMES.has(message.toolName)) continue;
+    if (
+      preservedResults.has(index) ||
+      message?.role !== "toolResult" ||
+      !PAGE_STATE_TOOL_NAMES.has(message.toolName)
+    )
+      continue;
     // Failures are diagnostics, not fresh page state, even when their text is large.
     const returnedError = (message.details as { error?: unknown } | undefined)?.error;
     if (message.isError || (returnedError !== undefined && returnedError !== null)) continue;
@@ -78,13 +88,25 @@ function textLength(message: ToolResultMessage): number {
 export function pruneComputerScreenshotContext(
   messages: Message[],
   maxImagesPerPrompt?: number,
+  preservedResults: ReadonlySet<number> = new Set(),
+  extraProtected: readonly number[] = [],
 ): Message[] {
   const imageLimit = normalizedImageLimit(maxImagesPerPrompt);
   let remaining = DEFAULT_COMPUTER_SCREENSHOTS_TO_KEEP;
   if (imageLimit !== undefined) {
+    const required = preservedResults.size
+      ? protectedContextIndexes(messages, extraProtected)
+      : new Set<number>();
+    const reservedWholeImages = messages.reduce(
+      (count, message, index) =>
+        count + (preservedResults.has(index) && required.has(index) ? imagePartCount(message) : 0),
+      0,
+    );
     const nonScreenshotImages = messages.reduce(
-      (count, message) =>
-        isComputerScreenshotMessage(message) ? count : count + imagePartCount(message),
+      (count, message, index) =>
+        preservedResults.has(index) || isComputerScreenshotMessage(message)
+          ? count
+          : count + imagePartCount(message),
       0,
     );
     if (nonScreenshotImages > imageLimit) {
@@ -92,12 +114,15 @@ export function pruneComputerScreenshotContext(
         `The configured model image limit is ${imageLimit}, but the prompt contains ${nonScreenshotImages} non-screenshot images.`,
       );
     }
-    remaining = Math.min(remaining, imageLimit - nonScreenshotImages);
+    remaining = Math.max(
+      0,
+      Math.min(remaining, imageLimit - nonScreenshotImages - reservedWholeImages),
+    );
   }
   let transformed: Message[] | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (!isComputerScreenshotMessage(message)) continue;
+    if (preservedResults.has(index) || !isComputerScreenshotMessage(message)) continue;
     const images = imagePartCount(message);
     if (remaining >= images) {
       remaining -= images;
@@ -116,8 +141,18 @@ export function pruneComputerScreenshotContext(
 }
 
 /** What a rebuild drops: stale page state, and screenshots over the default or model limit. */
-export function pruneForRebuild(messages: Message[], maxImagesPerPrompt?: number): Message[] {
-  return pruneComputerScreenshotContext(pruneStalePageStateContext(messages), maxImagesPerPrompt);
+export function pruneForRebuild(
+  messages: Message[],
+  maxImagesPerPrompt?: number,
+  preservedResults: ReadonlySet<number> = new Set(),
+  extraProtected: readonly number[] = [],
+): Message[] {
+  return pruneComputerScreenshotContext(
+    pruneStalePageStateContext(messages, DEFAULT_PAGE_STATE_RESULTS_TO_KEEP, preservedResults),
+    maxImagesPerPrompt,
+    preservedResults,
+    extraProtected,
+  );
 }
 
 /** A model's image limit as a whole number, or undefined when it has none or it isn't finite. */

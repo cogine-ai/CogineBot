@@ -282,10 +282,13 @@ describe("Pi usage accounting", () => {
       { messages: [] },
       {
         apiKey: "fake-fixture-key",
-        fetch: async () =>
-          new Response(sse({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }), {
+        fetch: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { messages: unknown[] };
+          expect(JSON.stringify(body.messages)).toContain("x".repeat(10000));
+          return new Response(sse({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }), {
             headers: { "content-type": "text/event-stream" },
-          }),
+          });
+        },
       },
       vi.fn(),
       { beforeCall, afterCall: vi.fn() },
@@ -297,10 +300,71 @@ describe("Pi usage accounting", () => {
     expect(beforeCall.mock.calls[0]?.[0]).toMatchObject({
       inputTokensEstimate: expect.any(Number),
     });
-    expect(beforeCall.mock.calls[0]?.[0]?.inputTokensEstimate).toBeGreaterThan(10000);
+    expect(beforeCall.mock.calls[0]?.[0]?.inputTokensEstimate).toBeGreaterThan(3000);
+    expect(beforeCall.mock.calls[0]?.[0]?.inputTokensEstimate).toBeLessThan(4000);
     expect(onUsage).toHaveBeenCalledOnce();
     expect((await stream.result()).stopReason).toBe("stop");
   });
+  it.each([
+    ["prompt", 1],
+    ["tools", 1],
+    ["none", 1024],
+  ] as const)(
+    "reserves the actual SDK output cap with legacy %s pressure",
+    async (pressure, cap) => {
+      const beforeCall = vi.fn((_call: { maxOutputTokens: number }) => "reservation");
+      const afterCall = vi.fn();
+      const wireCaps: number[] = [];
+      const stream = observedPiStream(
+        builtinModels(),
+        { ...model, reasoning: false, contextWindow: 8192, maxTokens: 1024 },
+        { messages: [{ role: "user", content: "Short request", timestamp: 1 }] },
+        {
+          apiKey: "fake-fixture-key",
+          maxTokens: 1024,
+          fetch: async (_input, init) => {
+            const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+            const caps = ["max_tokens", "max_completion_tokens"]
+              .filter((field) => Object.hasOwn(body, field))
+              .map((field) => body[field]);
+            expect(caps).toEqual([cap]);
+            wireCaps.push(caps[0] as number);
+            return new Response(sse({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }), {
+              headers: { "content-type": "text/event-stream" },
+            });
+          },
+        },
+        vi.fn(),
+        { beforeCall, afterCall },
+        undefined,
+        {
+          prepareContext: (context) => ({
+            ...context,
+            systemPrompt:
+              pressure === "prompt"
+                ? "Required instructions. ".repeat(700)
+                : "Required instructions.",
+            tools: [
+              {
+                name: "read_evidence",
+                description:
+                  pressure === "tools" ? "Read evidence. ".repeat(1100) : "Read evidence",
+                parameters: { type: "object", properties: {} },
+              },
+            ],
+          }),
+        },
+      );
+      for await (const _event of stream) {
+        /* Real SDK request builder and synthetic provider response. */
+      }
+      expect((await stream.result()).stopReason).toBe("stop");
+      expect(beforeCall).toHaveBeenCalledOnce();
+      expect(beforeCall.mock.calls[0]?.[0].maxOutputTokens).toBe(cap);
+      expect(afterCall).toHaveBeenCalledOnce();
+      expect(wireCaps).toEqual([cap]);
+    },
+  );
   it("context policy rejection terminates without reserving or spending", async () => {
     const beforeCall = vi.fn((_call: { inputTokensEstimate: number }) => "reservation");
     const fetcher = vi.fn();

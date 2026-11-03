@@ -395,6 +395,92 @@ describe("bounded context selection", () => {
     expect(new TextDecoder().decode(new TextEncoder().encode(shortened))).toBe(shortened);
     expect(shortened).toContain("Tool result truncated");
   });
+  it("selects complete tool groups within the actual image capacity", () => {
+    const image = { type: "image", data: "fixture", mimeType: "image/png" };
+    const messages = [
+      user("Objective"),
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "old", name: "mcp__office__read", arguments: {} }],
+      },
+      { role: "toolResult", toolCallId: "old", content: [image, image, image] },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "new", name: "read", arguments: {} }],
+      },
+      { role: "toolResult", toolCallId: "new", content: [image, image] },
+    ];
+    const selected = selectContext(messages, {
+      budget: { ...budget, imageTokens: 10, maxImages: 2 },
+      strategy: "retrieval",
+      protectedIndexes: [0],
+      verbatimMcpServers: { ids: [], slugs: ["office"] },
+    });
+    expect(selected.sourceIndexes).toEqual([0, 3, 4]);
+    expect(selected.messages.at(-1)!.content).toEqual([image, image]);
+    expect(() =>
+      selectContext(messages, {
+        budget: { ...budget, imageTokens: 10, maxImages: 1 },
+        strategy: "retrieval",
+      }),
+    ).toThrow("required context contains 2 images");
+  });
+  it("uses extra capacity predicates only for adding optional complete groups", () => {
+    const calls: string[][] = [];
+    const messages = [
+      user("old"),
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "old", name: "read", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "old",
+        content: [{ type: "text", text: "Whole evidence" }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "Read it" }] },
+      user("required"),
+    ];
+    const selected = selectContext(messages, {
+      budget,
+      strategy: "retrieval",
+      canAddOptional: (candidate) => {
+        calls.push(candidate.map((message) => message.role));
+        return !candidate.some((message) => message.role === "toolResult");
+      },
+    });
+    expect(selected.messages).toEqual(messages.slice(3));
+    expect(calls).toEqual([
+      ["assistant", "user"],
+      ["assistant", "toolResult", "assistant", "user"],
+    ]);
+    const mandatoryOnly = selectContext([user("required")], {
+      budget,
+      strategy: "retrieval",
+      canAddOptional: () => {
+        throw new Error("mandatory must bypass predicate");
+      },
+    });
+    expect(mandatoryOnly.messages).toHaveLength(1);
+  });
+  it("reserves input framing once without treating it as output", () => {
+    const messages = [user("Required content")];
+    const plain = selectContext(messages, { budget, strategy: "retrieval" });
+    const framing = 240;
+    const exactWindow = plain.estimatedInputTokens + framing + budget.outputReserve;
+    const selected = selectContext(messages, {
+      budget: { ...budget, contextWindow: exactWindow, inputOverhead: framing },
+      strategy: "retrieval",
+    });
+    expect(selected.estimatedInputTokens).toBe(plain.estimatedInputTokens + framing);
+    expect(selected.estimatedInputTokens + budget.outputReserve).toBe(exactWindow);
+    expect(() =>
+      selectContext(messages, {
+        budget: { ...budget, contextWindow: exactWindow - 1, inputOverhead: framing },
+        strategy: "retrieval",
+      }),
+    ).toThrow(ContextBudgetError);
+  });
 });
 describe("cache request metadata", () => {
   const request = {
