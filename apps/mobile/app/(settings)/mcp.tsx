@@ -20,6 +20,7 @@ export default function McpSettings() {
   const [selected, setSelected] = useState<McpServer | null>(null);
   const [all, setAll] = useState(false);
   const [names, setNames] = useState("");
+  const [verbatimResults, setVerbatimResults] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,6 +33,7 @@ export default function McpSettings() {
     setSelected(server);
     setAll(server.allowAllTools);
     setNames(server.allowedTools.join("\n"));
+    setVerbatimResults(server.verbatimResults ?? false);
     setSaved(false);
     setError(null);
   }
@@ -77,6 +79,7 @@ export default function McpSettings() {
         id: selected.id,
         revision: selected.revision,
         allowAllTools: all,
+        verbatimResults,
         allowedTools: all
           ? []
           : [
@@ -181,6 +184,18 @@ export default function McpSettings() {
                       ? t("Credential saved")
                       : t("No OAuth connection")}
             </Text>
+            <View style={styles.switchRow}>
+              <Text style={styles.grow}>{t("Keep tool results whole")}</Text>
+              <NativeSwitch
+                accessibilityLabel={t("Keep tool results whole")}
+                value={verbatimResults}
+                disabled={busy}
+                onValueChange={(value) => {
+                  setVerbatimResults(value);
+                  setSaved(false);
+                }}
+              />
+            </View>
             <View style={styles.switchRow}>
               <Text style={styles.grow}>{t("Share all tools with this space")}</Text>
               <NativeSwitch

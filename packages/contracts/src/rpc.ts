@@ -854,6 +854,7 @@ export const appContract = {
             revision: z.number().int().positive(),
             allowAllTools: z.boolean(),
             allowedTools: z.array(z.string().min(1).max(200)).max(500),
+            verbatimResults: z.boolean().optional(),
           }),
         )
         .output(McpServerSchema),

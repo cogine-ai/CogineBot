@@ -137,6 +137,9 @@ async function runWithModel(
       }),
     },
     bot: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools: [] } : null,
+      ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
         userId: attachmentOptions.botOwnerId ?? "bot-owner",
@@ -237,7 +240,10 @@ async function runWithModel(
     botSecret: { findMany: vi.fn(async () => []) },
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
-    externalEffect: { findMany: vi.fn(async () => []) },
+    externalEffect: {
+      findMany: vi.fn(async () => []),
+      findUnique: vi.fn(async () => null),
+    },
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     usageRecord: { createMany: vi.fn(async () => ({ count: 1 })) },

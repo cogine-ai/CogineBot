@@ -86,6 +86,7 @@ describe("finalizeRun", () => {
     const conflict = Object.assign(new Error("serialization conflict"), { code: "P2034" });
     const createEvent = vi.fn(async () => ({ threadId: "thread-1", seq: 0 }));
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running" })),
@@ -134,6 +135,7 @@ describe("finalizeRun", () => {
 
   it("resumes a held messaging inbound as a messaging run", async () => {
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -204,6 +206,7 @@ describe("finalizeRun", () => {
     "compares connection identity before pinning a continuation: %s",
     async (_, secondId, pinned) => {
       const tx = {
+        externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
         $queryRaw: vi.fn(async () => []),
         run: {
           findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -303,6 +306,7 @@ describe("finalizeRun", () => {
       text: "What is the status?",
     };
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
         findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
@@ -3287,6 +3291,7 @@ describe("clearThread", () => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -3295,7 +3300,7 @@ describe("clearThread", () => {
       },
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
-        updateMany: vi.fn(),
+        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
@@ -3348,6 +3353,7 @@ describe("clearThread", () => {
   it("scopes group clear lease cleanup to cancelled run ids", async () => {
     const fanout = new TestFanout();
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -3359,7 +3365,10 @@ describe("clearThread", () => {
           { id: "group-run-1", taskId: "task-1" },
           { id: "group-run-2", taskId: "task-2" },
         ]),
-        updateMany: vi.fn(),
+        updateManyAndReturn: vi.fn().mockResolvedValue([
+          { id: "group-run-1", spaceId: "workspace-1" },
+          { id: "group-run-2", spaceId: "workspace-1" },
+        ]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },

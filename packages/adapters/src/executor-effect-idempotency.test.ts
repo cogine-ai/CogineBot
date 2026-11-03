@@ -48,7 +48,11 @@ type ToolCall = {
 
 function fixture(
   runId = "run-1",
-  options: { catchToolErrors?: boolean; contextStrategy?: AgentContextStrategy } = {},
+  options: {
+    catchToolErrors?: boolean;
+    contextStrategy?: AgentContextStrategy;
+    toolResultHistory?: boolean;
+  } = {},
 ) {
   const effects: Effect[] = [];
   const results: unknown[] = [];
@@ -156,6 +160,9 @@ function fixture(
       }),
     },
     bot: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools: [] } : null,
+      ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
         name: "Assistant",
@@ -250,7 +257,18 @@ function fixture(
     contextStrategy: options.contextStrategy,
     runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
     connector: {
-      discoverTools: async () => [],
+      discoverTools: async () =>
+        options.toolResultHistory
+          ? [
+              {
+                name: "evidence_read",
+                description: "Read a stored connector result",
+                inputSchema: { type: "object" },
+                readOnly: true,
+                route: { connectorId: "evidence", toolName: "read" },
+              },
+            ]
+          : [],
       resolveCall: async () => undefined,
       execute: async function* () {},
     },
@@ -302,6 +320,7 @@ describe("history context capabilities", () => {
     const f = fixture("run-current-history", {
       contextStrategy: "current",
       catchToolErrors: true,
+      toolResultHistory: true,
     });
     f.setCalls([
       {

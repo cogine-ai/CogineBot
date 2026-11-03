@@ -157,6 +157,9 @@ async function runRoutine(
     routine: { findUnique: vi.fn(async () => ({ notify: false, nextRunAt: null })) },
     event: { count: vi.fn(async () => 0) },
     bot: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools: [] } : null,
+      ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
         name: "Assistant",
@@ -269,7 +272,10 @@ async function runRoutine(
     botSecret: { findMany: vi.fn(async () => []) },
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
-    externalEffect: { findMany: vi.fn(async () => []) },
+    externalEffect: {
+      findMany: vi.fn(async () => []),
+      findUnique: vi.fn(async () => null),
+    },
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => null) },
     artifact: { findMany: vi.fn(async () => []) },

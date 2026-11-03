@@ -3067,6 +3067,11 @@ msgstr "刚刚"
 msgid "Keep memories"
 msgstr "保留记忆"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "完整保留工具结果"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr "密钥"

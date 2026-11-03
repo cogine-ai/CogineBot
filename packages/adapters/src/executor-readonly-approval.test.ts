@@ -213,6 +213,9 @@ function fixture({
       }),
     },
     bot: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools } : null,
+      ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
         name: bot.name,
@@ -261,6 +264,7 @@ function fixture({
     actionApprovalRule: { findMany: vi.fn(async () => rules) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: autoReview })) },
     externalEffect,
+    mcpServer: { findMany: vi.fn(async () => []) },
   };
   const pauseRunForInput = vi.fn(async () => {
     run.status = "waiting_input";

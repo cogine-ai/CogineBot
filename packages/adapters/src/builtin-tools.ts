@@ -1233,6 +1233,10 @@ export const agentConnectionTools: ConnectorTool[] = [
   },
 ];
 
+export const BUILTIN_AGENT_TOOL_NAMES: ReadonlySet<string> = new Set(
+  [...builtinAgentTools, ...agentConnectionTools].map((tool) => tool.name),
+);
+
 /** Shared documents are read by every bot, so a single save stays bounded. */
 export const MAX_SHARED_MEMORY_CHARS = 4_000;
 

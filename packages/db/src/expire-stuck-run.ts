@@ -5,6 +5,7 @@ import type { Prisma } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { appendEventInTransaction, createPendingSteeringRun } from "./events.js";
 import { createThreadMessageInTransaction } from "./messages.js";
+import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
 
 export interface ExpireStuckRunInput {
   runId: string;
@@ -66,6 +67,7 @@ export async function expireStuckRun(
     where: { id: input.runId },
     select: { spaceId: true, threadId: true, botId: true, taskId: true },
   });
+  await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: run.spaceId }]);
   const sibling = await tx.run.findFirst({
     where: {
       taskId: run.taskId,

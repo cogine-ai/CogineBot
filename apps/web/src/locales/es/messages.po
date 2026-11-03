@@ -3067,6 +3067,11 @@ msgstr "ahora mismo"
 msgid "Keep memories"
 msgstr "Conservar memorias"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "Conservar completos los resultados de las herramientas"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr "Clave"

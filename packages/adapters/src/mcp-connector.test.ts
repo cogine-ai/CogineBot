@@ -54,6 +54,7 @@ function mcpFetch(
     headers?: Record<string, string>[];
     tools?: Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }>;
     calls?: string[];
+    result?: unknown;
   },
   expectedUrl = "https://mcp.example.test/mcp",
 ) {
@@ -95,7 +96,7 @@ function mcpFetch(
       return Response.json({
         jsonrpc: "2.0",
         id: message.id,
-        result: { content: [{ type: "text", text: "ok" }] },
+        result: state.result ?? { content: [{ type: "text", text: "ok" }] },
       });
     }
     return new Response(null, { status: 202 });
@@ -103,6 +104,72 @@ function mcpFetch(
 }
 
 describe("MCP connector session cache", () => {
+  it.each([false, true])(
+    "returns complete redacted MCP results without a retention bypass (%s)",
+    async (verbatimResults) => {
+      const payload = "0".repeat(20_000);
+      const secret = "fixture-private-credential";
+      const state = {
+        failNext: false,
+        initializations: 0,
+        calls: [] as string[],
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ payload, credential: secret }) }],
+          structuredContent: { payload, credential: secret },
+        },
+      };
+      const server = { ...SHARED_SERVER, verbatimResults, secretId: "fixture-secret" };
+      const prisma = {
+        mcpServer: {
+          findMany: vi.fn(async () => [server]),
+          findFirst: vi.fn(async () => server),
+        },
+        secret: {
+          findFirst: vi.fn(async () => ({ id: "fixture-secret", ciphertext: "fixture-ref" })),
+        },
+      };
+      vi.stubGlobal("fetch", mcpFetch(state));
+      const connector = new McpConnector(
+        prisma as never,
+        {
+          load: vi.fn(async () => JSON.stringify({ secret })),
+        } as never,
+        { network: TEST_NETWORK },
+      );
+      const context = {
+        botId: "bot-1",
+        spaceId: "w1",
+        userId: "u1",
+        signal: new AbortController().signal,
+      };
+      try {
+        const [tool] = await connector.discoverTools(context as never);
+        expect(tool).toBeDefined();
+        const events = [];
+        for await (const event of connector.execute(
+          { tool: tool!.name, route: tool!.route, args: {}, executionId: "complete-result" },
+          context as never,
+        ))
+          events.push(event);
+        expect(events).toMatchObject([
+          {
+            type: "result",
+            data: {
+              content: [
+                { type: "text", text: JSON.stringify({ payload, credential: "[redacted]" }) },
+              ],
+              structuredContent: { payload, credential: "[redacted]" },
+            },
+          },
+        ]);
+        expect(JSON.stringify(events)).not.toContain(secret);
+        expect(state.calls).toEqual(["echo"]);
+      } finally {
+        await connector.close();
+      }
+    },
+  );
+
   it("keeps sessions across unchanged TTL reads and reconnects on observed rotation", async () => {
     vi.useFakeTimers();
     const fake = infisicalFake();

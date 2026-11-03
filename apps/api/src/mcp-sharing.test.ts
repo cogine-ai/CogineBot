@@ -32,6 +32,7 @@ function fixture() {
     headers: {},
     secretId: null,
     enabled: true,
+    verbatimResults: false,
     allowAllTools: false,
     allowedTools: [] as string[],
     revision: 1,
@@ -210,6 +211,75 @@ function statuses(messages: ReturnType<typeof fixture>["messages"]) {
 }
 
 describe("shared registered MCP settings", () => {
+  it("saves whole-result retention independently of tool access and preserves omitted updates", async () => {
+    const f = fixture();
+    expect((await f.client.mcp.servers.list())[0]?.verbatimResults).toBe(false);
+    const saved = await f.client.mcp.servers.setTools({
+      id: f.server.id,
+      revision: 1,
+      allowAllTools: false,
+      allowedTools: [],
+      verbatimResults: true,
+    });
+    expect(saved).toMatchObject({
+      verbatimResults: true,
+      allowAllTools: false,
+      allowedTools: [],
+      revision: 2,
+    });
+    const kept = await f.client.mcp.servers.setTools({
+      id: f.server.id,
+      revision: 2,
+      allowAllTools: false,
+      allowedTools: [],
+    });
+    expect(kept).toMatchObject({ verbatimResults: true, revision: 3 });
+    const cleared = await f.client.mcp.servers.setTools({
+      id: f.server.id,
+      revision: 3,
+      allowAllTools: false,
+      allowedTools: [],
+      verbatimResults: false,
+    });
+    expect(cleared).toMatchObject({
+      verbatimResults: false,
+      allowAllTools: false,
+      allowedTools: [],
+      revision: 4,
+    });
+    expect(statuses(f.messages)).toEqual(["pending", "pending", "pending"]);
+    expect(f.prisma.botMcpServer.createMany).not.toHaveBeenCalled();
+    expect(
+      f.prisma.mcpServer.updateMany.mock.calls.every(([call]) => !("secretId" in call.data)),
+    ).toBe(true);
+  });
+
+  it("cannot change retention with a stale revision or another user or Space", async () => {
+    const f = fixture();
+    const input = {
+      id: f.server.id,
+      revision: 1,
+      allowAllTools: false,
+      allowedTools: [],
+      verbatimResults: true,
+    };
+    for (const client of [
+      f.clientFor({ ...actor, userId: "other-user" }),
+      f.clientFor({ ...actor, spaceId: "other-space" }),
+    ]) {
+      await expect(client.mcp.servers.setTools(input)).rejects.toThrow();
+    }
+    await expect(f.client.mcp.servers.setTools({ ...input, revision: 2 })).rejects.toThrow(
+      "changed",
+    );
+    expect(f.server).toMatchObject({
+      verbatimResults: false,
+      allowAllTools: false,
+      allowedTools: [],
+      revision: 1,
+    });
+  });
+
   it("saves one explicit allowlist for existing and future bots and paints their pending cards", async () => {
     const { client, server, messages, prisma } = fixture();
     const saved = await client.mcp.servers.setTools({

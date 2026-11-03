@@ -31,6 +31,7 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
 import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
@@ -1497,6 +1498,7 @@ async function finalizeRunOnce(
       },
     });
     if (terminal.count !== 1) return null;
+    await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
 
     const attempt = await tx.attempt.updateMany({
       where: {

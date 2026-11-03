@@ -934,6 +934,9 @@ importers:
         specifier: 7.0.0
         version: 7.0.0
     devDependencies:
+      '@earendil-works/pi-ai':
+        specifier: 1.3.0
+        version: 1.3.0(patch_hash=xavx6sqwkzce2h6mgxx5gxkgqi)(@aws-sdk/credential-provider-node@3.972.82)(@modelcontextprotocol/sdk@1.32.2(@cfworker/json-schema@4.1.1)(zod@4.6.2))(@smithy/signature-v4@5.7.3)(undici@8.10.2)(ws@8.21.3)(zod@4.6.2)
       '@playwright/test':
         specifier: 1.63.0
         version: 1.63.0

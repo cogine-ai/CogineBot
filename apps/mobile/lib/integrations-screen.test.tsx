@@ -89,13 +89,19 @@ vi.mock("../components/native-switch", () => ({
   NativeSwitch: ({
     value,
     onValueChange,
+    accessibilityLabel,
+    disabled,
   }: {
     value: boolean;
     onValueChange: (value: boolean) => void;
+    accessibilityLabel?: string;
+    disabled?: boolean;
   }) => (
     <input
       type="checkbox"
       checked={value}
+      aria-label={accessibilityLabel}
+      disabled={disabled}
       onChange={(event) => onValueChange(event.target.checked)}
     />
   ),
@@ -811,6 +817,7 @@ it("keeps the selected MCP server visible while saving the exact reviewed revisi
     revision: 2,
     allowAllTools: false,
     allowedTools: [],
+    verbatimResults: false,
   };
   let finish!: (value: unknown) => void;
   state.rpc.mockImplementation((proc: string) =>
@@ -836,11 +843,162 @@ it("keeps the selected MCP server visible while saving the exact reviewed revisi
     revision: 2,
     allowAllTools: false,
     allowedTools: [],
+    verbatimResults: false,
   });
   expect(container.textContent).toContain("Fixture");
   expect(container.textContent).not.toContain("No MCP servers yet.");
   await act(async () => finish({ ...server, revision: 3 }));
   expect(container.textContent).toContain("Tool access saved.");
+});
+
+async function selectMcpServer(id = "server-a") {
+  await act(async () => {
+    const picker = container.querySelector<HTMLSelectElement>('select[aria-label="MCP server"]')!;
+    picker.value = id;
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+it.each([false, true])(
+  "edits the native whole-result preference from %s only on explicit Save without changing tool access",
+  async (verbatimResults) => {
+    const server = {
+      id: "server-a",
+      name: "Fixture",
+      revision: 2,
+      allowAllTools: false,
+      allowedTools: ["lookup"],
+      verbatimResults,
+    };
+    state.rpc.mockImplementation((procedure: string) =>
+      Promise.resolve(
+        procedure === "mcp/servers/setTools"
+          ? { ...server, revision: 3, verbatimResults: !verbatimResults }
+          : [server],
+      ),
+    );
+    await render(<McpSettings />);
+    await selectMcpServer();
+    const preference = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Keep tool results whole"]',
+    )!;
+    expect(preference.checked).toBe(verbatimResults);
+    await act(async () => preference.click());
+    expect(
+      state.rpc.mock.calls.filter(([procedure]) => procedure === "mcp/servers/setTools"),
+    ).toHaveLength(0);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        'input[aria-label="Share all tools with this space"]',
+      )?.checked,
+    ).toBe(false);
+    await press("Save tool access");
+    expect(state.rpc).toHaveBeenCalledWith("mcp/servers/setTools", {
+      id: server.id,
+      revision: 2,
+      allowAllTools: false,
+      allowedTools: ["lookup"],
+      verbatimResults: !verbatimResults,
+    });
+    expect(container.textContent).toContain("Tool access saved.");
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+        ?.checked,
+    ).toBe(!verbatimResults);
+  },
+);
+
+it("discards a native whole-result draft when its editor is closed", async () => {
+  const server = {
+    id: "server-a",
+    name: "Fixture",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+    verbatimResults: true,
+  };
+  state.rpc.mockResolvedValue([server]);
+  await render(<McpSettings />);
+  await selectMcpServer();
+  await act(async () =>
+    container
+      .querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.click(),
+  );
+  await selectMcpServer("");
+  expect(container.querySelector('input[aria-label="Keep tool results whole"]')).toBeNull();
+  await selectMcpServer();
+  expect(
+    container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.checked,
+  ).toBe(true);
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "mcp/servers/setTools"),
+  ).toHaveLength(0);
+});
+
+it("keeps the native whole-result draft when its reviewed revision is rejected", async () => {
+  const server = {
+    id: "server-a",
+    name: "Fixture",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+    verbatimResults: true,
+  };
+  state.rpc.mockImplementation((procedure: string) =>
+    procedure === "mcp/servers/setTools"
+      ? Promise.reject(new Error("Server changed; reload settings"))
+      : Promise.resolve([server]),
+  );
+  await render(<McpSettings />);
+  await selectMcpServer();
+  await act(async () =>
+    container
+      .querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.click(),
+  );
+  await press("Save tool access");
+  expect(container.textContent).toContain("Server changed; reload settings");
+  expect(container.textContent).not.toContain("Tool access saved.");
+  expect(
+    container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.checked,
+  ).toBe(false);
+});
+
+it("ignores a late native preference save response after the actor scope changes", async () => {
+  const server = {
+    id: "server-a",
+    name: "Fixture",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+    verbatimResults: false,
+  };
+  let finish!: (value: unknown) => void;
+  state.rpc.mockImplementation((procedure: string) =>
+    procedure === "mcp/servers/setTools"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve([server]),
+  );
+  await render(<McpSettings />);
+  await selectMcpServer();
+  await act(async () =>
+    container
+      .querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.click(),
+  );
+  await press("Save tool access");
+  state.current = false;
+  await act(async () => finish({ ...server, revision: 3, verbatimResults: false }));
+  expect(container.textContent).not.toContain("Tool access saved.");
+  expect(
+    container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
+      ?.checked,
+  ).toBe(true);
 });
 
 it("a Native route hint selects the exact live Native app without starting account authorization", async () => {

@@ -18,6 +18,7 @@ import {
   FieldGroup,
   FieldLabel,
   Input,
+  Switch,
   Tabs,
   TabsList,
   TabsTrigger,
@@ -54,6 +55,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
   const [headerValue, setHeaderValue] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
+  const [verbatimResults, setVerbatimResults] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [oauthPending, setOauthPending] = useState<string | null>(null);
@@ -109,6 +111,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
             env: {},
             secret: secret || undefined,
             enabled: true,
+            verbatimResults,
           })
         : rpc.mcp.servers.create({
             slug,
@@ -118,6 +121,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
             headers,
             secret: secret || undefined,
             enabled: true,
+            verbatimResults,
           }));
       await refresh();
       setName("");
@@ -126,6 +130,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
       setHeaderValue("");
       setCommand("");
       setArgs("");
+      setVerbatimResults(false);
     } catch (err) {
       setError(errorText(err, t`Could not add MCP server`));
     } finally {
@@ -299,6 +304,17 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
                     </span>
                   </summary>
                   <div className="space-y-4 border-t border-border p-3">
+                    <Field orientation="horizontal">
+                      <Switch
+                        id="mcp-verbatim-results"
+                        checked={verbatimResults}
+                        disabled={saving}
+                        onCheckedChange={setVerbatimResults}
+                      />
+                      <FieldLabel htmlFor="mcp-verbatim-results">
+                        <Trans>Keep tool results whole</Trans>
+                      </FieldLabel>
+                    </Field>
                     <Field>
                       <FieldLabel htmlFor="mcp-secret">
                         <Trans>Access token (optional)</Trans>

@@ -52,9 +52,11 @@ function ToolAccessEditor({
   const [revision] = useState(server.revision);
   const [all, setAll] = useState(server.allowAllTools);
   const [names, setNames] = useState(server.allowedTools.join("\n"));
+  const [verbatimResults, setVerbatimResults] = useState(server.verbatimResults ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save() {
+    if (busy || revision !== server.revision) return;
     setBusy(true);
     setError(null);
     try {
@@ -62,6 +64,7 @@ function ToolAccessEditor({
         id: server.id,
         revision,
         allowAllTools: all,
+        verbatimResults,
         allowedTools: all
           ? []
           : [
@@ -83,6 +86,17 @@ function ToolAccessEditor({
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border p-3">
       <FieldGroup>
+        <Field orientation="horizontal">
+          <Switch
+            id={`mcp-verbatim-${server.id}`}
+            checked={verbatimResults}
+            disabled={busy}
+            onCheckedChange={setVerbatimResults}
+          />
+          <FieldLabel htmlFor={`mcp-verbatim-${server.id}`}>
+            <Trans>Keep tool results whole</Trans>
+          </FieldLabel>
+        </Field>
         <Field orientation="horizontal">
           <Switch
             id={`mcp-tools-${server.id}`}

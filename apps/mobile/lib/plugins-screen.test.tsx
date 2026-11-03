@@ -558,6 +558,7 @@ const setupServer = {
   hasSecret: true,
   oauthStatus: "none" as const,
   enabled: false,
+  verbatimResults: false,
   allowAllTools: false,
   allowedTools: [],
   revision: 1,

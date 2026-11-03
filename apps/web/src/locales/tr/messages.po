@@ -3067,6 +3067,11 @@ msgstr "az önce"
 msgid "Keep memories"
 msgstr "Hafızayı koru"
 
+#: src/components/integrations/McpToolAccess.tsx
+#: src/pages/McpServersOverlay.tsx
+msgid "Keep tool results whole"
+msgstr "Araç sonuçlarını eksiksiz koru"
+
 #: src/pages/RoutineEditor.tsx
 msgid "key"
 msgstr ""

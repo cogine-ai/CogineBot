@@ -54,6 +54,8 @@ async function main() {
     "packages/testkit/src/usage-accounting.postgres.test.ts",
     "packages/db/src/history-retrieval.postgres.test.ts",
     "packages/db/src/tool-result-history.postgres.test.ts",
+    "packages/db/src/run-turn-checkpoint.postgres.test.ts",
+    "packages/testkit/src/agent-turn-checkpoint.postgres.test.ts",
     "packages/testkit/src/history-retrieval.postgres.test.ts",
     "packages/testkit/src/tool-result-history.postgres.test.ts",
     "packages/testkit/src/catalog-alias-approval.postgres.test.ts",

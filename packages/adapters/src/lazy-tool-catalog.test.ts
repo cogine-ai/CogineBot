@@ -12,6 +12,7 @@ import {
   lazyCatalogTools,
   loadCatalogEntry,
   NAME_INDEX_MAX_NAMES,
+  rankCatalogEntries,
   resolveCatalogCall,
   SELECTED_SCHEMA_MAX_BYTES,
   searchCatalog,
@@ -97,6 +98,41 @@ function multiGroupTools(): ConnectorTool[] {
   ];
 }
 
+function serverTools(slug: string, tools: Array<[string, string]>): ConnectorTool[] {
+  return tools.map(([toolName, description]) => ({
+    name: `mcp__${slug}__${toolName}`,
+    description,
+    inputSchema: { type: "object", properties: {} },
+    route: { connectorId: "mcp", resourceId: `srv-${slug}`, toolName, catalogGroup: slug },
+  }));
+}
+
+const linearTools = serverTools("linear", [
+  ["create_attachment", "Create an attachment on an issue"],
+  ["create_document", "Create a document"],
+  ["delete_attachment", "Delete an attachment"],
+  ["get_document", "Retrieve a document"],
+  ["get_issue", "Retrieve an issue by id"],
+  ["get_project", "Retrieve a project"],
+  ["get_team", "Retrieve a team"],
+  ["list_comments", "List comments on an issue"],
+  ["list_issues", "List issues in the workspace"],
+  ["list_projects", "List projects in the workspace"],
+  ["list_teams", "List teams"],
+  ["save_comment", "Create or update a comment on an issue"],
+  ["save_issue", "Create or update an issue"],
+]);
+
+const githubTools = serverTools("github", [
+  ["create_pull_request", "Create a new pull request in a GitHub repository"],
+  ["get_file_contents", "Get the contents of a file or directory"],
+  ["issue_read", "Get information about a specific issue"],
+  ["list_pull_requests", "List pull requests in a GitHub repository"],
+  ["merge_pull_request", "Merge a pull request"],
+  ["pull_request_read", "Get information on a specific pull request"],
+  ["search_code", "Search code across repositories"],
+]);
+
 describe("lazy tool catalog", () => {
   it("exposes tools directly at the limit and switches to lazy wrappers above it", () => {
     expect(tools(DIRECT_TOOL_LIMIT)).toHaveLength(20);
@@ -134,6 +170,82 @@ describe("lazy tool catalog", () => {
   it("returns an empty catalog as an empty tool list", () => {
     expect(catalogEntries([])).toEqual([]);
     expect(searchCatalog([], { query: "anything" })).toEqual({ tools: [] });
+  });
+
+  it("matches query words separately and keeps an exact name first", () => {
+    const entries = catalogEntries([...githubTools, ...linearTools]);
+    const names = (query: string) => {
+      const result = searchCatalog(entries, { query });
+      return "tools" in result ? result.tools.map((tool) => tool.name) : [];
+    };
+    expect(names("github pull request get")[0]).toBe("mcp__github__pull_request_read");
+    expect(names("linear project")).toEqual([
+      "mcp__linear__get_project",
+      "mcp__linear__list_projects",
+    ]);
+    expect(names("linear save issue")[0]).toBe("mcp__linear__save_issue");
+    expect(names("save_issue")[0]).toBe("mcp__linear__save_issue");
+    expect(names("issue_read")[0]).toBe("mcp__github__issue_read");
+  });
+
+  const insideWordNames = (query: string) => {
+    const entries = catalogEntries([
+      ...serverTools("gmail", [["send_message", "Send a message"]]),
+      ...serverTools("jira", [
+        ["getJiraIssue", "Fetch one issue"],
+        ["searchJiraIssuesUsingJql", "Search issues"],
+      ]),
+    ]);
+    const result = searchCatalog(entries, { query });
+    return "tools" in result ? result.tools.map((tool) => tool.name) : [];
+  };
+
+  it("falls back to a match inside a source name when no word start matches", () => {
+    expect(insideWordNames("mail")).toEqual(["mcp__gmail__send_message"]);
+  });
+
+  it("falls back to a match inside a camelCase tool name when no word start matches", () => {
+    expect(insideWordNames("JiraIssue")[0]).toBe("mcp__jira__getJiraIssue");
+  });
+
+  it("keeps all-word matches ahead of partial matches before applying the limit", () => {
+    const partial = serverTools(
+      "records",
+      Array.from({ length: 30 }, (_, index): [string, string] => [
+        `read_${index}`,
+        "Read a record",
+      ]),
+    );
+    const complete = serverTools("records", [["z_invoice", "Read invoice"]]);
+    const entries = catalogEntries([...partial, ...complete]);
+    const ranked = rankCatalogEntries(entries, "read invoice", 1);
+    expect(ranked).toEqual({ hits: [entries.at(-1)!], complete: true });
+    expect(rankCatalogEntries([...entries].reverse(), "read invoice", 1)).toEqual(ranked);
+    expect(searchCatalog(entries, { query: "read invoice", limit: 1 })).toEqual({
+      tools: [
+        {
+          id: entries.at(-1)!.id,
+          name: "mcp__records__z_invoice",
+          description: "Read invoice",
+          readOnly: false,
+        },
+      ],
+    });
+  });
+
+  it("returns only caller-scoped entries with stable tie order and an explicit completeness result", () => {
+    const entries = catalogEntries(
+      serverTools("records", [
+        ["z_read", "Read a record"],
+        ["a_read", "Read a record"],
+      ]),
+    );
+    const result = rankCatalogEntries(entries, "read missing", 3);
+    expect(result).toEqual({ hits: [entries[1]!, entries[0]!], complete: false });
+    expect(rankCatalogEntries([...entries].reverse(), "read missing", 3)).toEqual(result);
+    expect(rankCatalogEntries([], "read", 3)).toEqual({ hits: [], complete: false });
+    expect(rankCatalogEntries(entries, "unknown", 3)).toEqual({ hits: [], complete: false });
+    expect(searchCatalog(entries, { group: "missing", query: "read" })).toEqual({ tools: [] });
   });
 
   it("lists grouped names for an empty query without dumping schemas", () => {

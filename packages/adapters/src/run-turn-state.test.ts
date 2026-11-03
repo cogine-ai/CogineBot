@@ -1,0 +1,474 @@
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
+import type { ConnectorTool } from "@rakazo/adapter-kit";
+import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
+import type { PrismaClient } from "@rakazo/db";
+import { describe, expect, it, vi } from "vitest";
+import { USE_TOOL } from "./builtin-tool-bridge.js";
+import { builtinAgentTools } from "./builtin-tools.js";
+import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
+import {
+  claimTurnEffectOccurrence,
+  createRunTurnCheckpointState,
+  persistRunTurnCheckpoint,
+} from "./run-turn-state.js";
+import type { TurnCheckpoint } from "./turn-checkpoint.js";
+
+const run = { id: "state-run", spaceId: "state-space" };
+const model = { provider: "fixture", id: "model" };
+const args = { path: "report.txt", content: "Exact body" };
+const execution = (id: string) => JSON.stringify(["pi-tool", "main", id]);
+const fingerprint = toolEffectIdempotencyKey(run.id, "write_file", args);
+
+function builtin(name: string): ConnectorTool {
+  const tool = builtinAgentTools.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`Missing fixture tool ${name}`);
+  return tool;
+}
+function call(
+  id = "pending",
+  name = "write_file",
+  arguments_: ToolCall["arguments"] = args,
+): ToolCall {
+  return { type: "toolCall", id, name, arguments: arguments_ };
+}
+function assistant(calls: ToolCall[]): AssistantMessage {
+  return {
+    role: "assistant",
+    content: calls,
+    api: "openai-completions",
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "toolUse",
+    timestamp: 0,
+  };
+}
+function checkpoint(overrides: Partial<TurnCheckpoint> = {}): TurnCheckpoint {
+  return {
+    version: 1,
+    provider: model.provider,
+    model: model.id,
+    systemPrompt: "Saved prompt",
+    pendingToolCallId: "pending",
+    messages: [{ role: "user", content: "Original request", timestamp: 0 }, assistant([call()])],
+    ...overrides,
+  };
+}
+function state(
+  blob?: string,
+  extra: Partial<Parameters<typeof createRunTurnCheckpointState>[0]> = {},
+) {
+  return createRunTurnCheckpointState({
+    runId: run.id,
+    blob,
+    model,
+    tools: [builtin("write_file")],
+    instructionsBaseline: "Current instructions",
+    ...extra,
+  });
+}
+const completed = (id: string, name: string) => ({
+  role: "toolResult" as const,
+  toolCallId: id,
+  toolName: name,
+  content: [{ type: "text" as const, text: "Completed receipt" }],
+  isError: false,
+  timestamp: 0,
+});
+
+function storage() {
+  const client = {
+    run: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    externalEffect: {
+      upsert: vi.fn(
+        async (_input: { create: { result: string }; update: { result: string } }) => ({}),
+      ),
+      deleteMany: vi.fn(async () => ({ count: 1 })),
+    },
+    $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(client)),
+  };
+  return { client, prisma: client as unknown as PrismaClient };
+}
+
+describe("run turn checkpoint state", () => {
+  it("starts fresh with the actual baseline and shares the supplied occurrence map", () => {
+    const counts = new Map([[fingerprint, 3]]);
+    const current = state(undefined, { counts });
+    expect(current).toEqual({
+      blob: undefined,
+      stored: false,
+      ownInstructionsBaseline: "Current instructions",
+      counts,
+      occurrences: [],
+      pendingCaptures: new Map(),
+    });
+    expect(current.counts).toBe(counts);
+  });
+
+  it.each([
+    "",
+    "not-json",
+    JSON.stringify({ ...checkpoint(), version: 2 }),
+    JSON.stringify({ ...checkpoint(), messages: [] }),
+  ])(
+    "rejects a present unsupported or incomplete blob instead of treating it as absent (%s)",
+    (blob) => expect(() => state(blob)).toThrow("Unsupported turn checkpoint"),
+  );
+
+  it("returns the original blob unchanged and takes only its saved baseline", () => {
+    const saved = {
+      ...checkpoint({ ownInstructionsBaseline: "Saved baseline" }),
+      privateFutureField: { keep: "opaque payload" },
+    };
+    const blob = JSON.stringify(saved, null, 2);
+    const current = state(blob);
+    expect(current.blob).toBe(blob);
+    expect(current.stored).toBe(true);
+    expect(current.ownInstructionsBaseline).toBe("Saved baseline");
+    expect(state(JSON.stringify(checkpoint())).ownInstructionsBaseline).toBeUndefined();
+  });
+
+  it.each([undefined, "parallel"] as const)(
+    "leaves unknown parallel siblings for uncertain recovery (%s)",
+    (mode) => {
+      const blob = JSON.stringify(
+        checkpoint({
+          executionMode: mode,
+          messages: [assistant([call(), call("unknown", "removed_action", {})])],
+        }),
+      );
+      expect(state(blob).blob).toBe(blob);
+    },
+  );
+
+  it.each([
+    { executionMode: "parallel" as const, pendingToolCallId: "unknown" },
+    { executionMode: "sequential" as const, pendingToolCallId: "pending" },
+  ])("rejects a pending or explicit sequential unknown tool (%j)", (options) => {
+    const blob = JSON.stringify(
+      checkpoint({
+        ...options,
+        messages: [assistant([call(), call("unknown", "removed_action", {})])],
+      }),
+    );
+    expect(() => state(blob)).toThrow("no longer available");
+  });
+
+  it("uses the exact stable provider-safe mapping when offered registration order changes", () => {
+    const tools: ConnectorTool[] = [
+      { name: "record.read", description: "First", inputSchema: { type: "object" } },
+      { name: "record_read", description: "Second", inputSchema: { type: "object" } },
+    ];
+    const named = namedAgentTools(partitionRuntimeTools(tools).listed);
+    const exposed = named.find((entry) => entry.tool.name === "record.read")!.name;
+    expect(exposed).not.toBe("record.read");
+    const blob = JSON.stringify(
+      checkpoint({ messages: [assistant([call("pending", exposed, {})])] }),
+    );
+    expect(state(blob, { tools: [...tools].reverse() }).blob).toBe(blob);
+    expect(() =>
+      state(
+        JSON.stringify(checkpoint({ messages: [assistant([call("pending", "record.read", {})])] })),
+        { tools },
+      ),
+    ).toThrow("no longer available");
+  });
+
+  it("accepts only the offered inner map for a pending use_tool without adding a find gate", () => {
+    const tools = [builtin("scratchpad_add"), builtin("write_file")];
+    const blob = JSON.stringify(
+      checkpoint({
+        messages: [
+          assistant([
+            call("pending", USE_TOOL, { name: "scratchpad_add", arguments: { title: "Retain" } }),
+          ]),
+        ],
+      }),
+    );
+    expect(state(blob, { tools }).blob).toBe(blob);
+    const directDeferred = JSON.stringify(
+      checkpoint({
+        messages: [
+          assistant([call("pending", "scratchpad_add", { title: "Unavailable directly" })]),
+        ],
+      }),
+    );
+    expect(() => state(directDeferred, { tools })).toThrow("no longer available");
+    const invalidArgs = JSON.stringify(
+      checkpoint({
+        messages: [
+          assistant([
+            call("pending", USE_TOOL, { name: "write_file", arguments: "runtime validates this" }),
+          ]),
+        ],
+      }),
+    );
+    expect(state(invalidArgs, { tools }).blob).toBe(invalidArgs);
+  });
+
+  it.each(["not-offered", "find_tool", "use_tool", "save_shared_memory"])(
+    "rejects unavailable or recursive pending inner name %s",
+    (name) => {
+      const blob = JSON.stringify(
+        checkpoint({ messages: [assistant([call("pending", USE_TOOL, { name, arguments: {} })])] }),
+      );
+      expect(() => state(blob, { tools: [builtin("scratchpad_add")] })).toThrow(
+        "no longer available",
+      );
+    },
+  );
+
+  it("reserves saved assignments without decreasing a newer count and claims only the last pending assignment once", () => {
+    const occurrences = [
+      { executionId: execution("pending"), fingerprint, occurrence: 1 },
+      { executionId: execution("finished"), fingerprint, occurrence: 7 },
+      { executionId: execution("pending"), fingerprint, occurrence: 2 },
+    ];
+    const current = state(JSON.stringify(checkpoint({ effectOccurrences: occurrences })), {
+      counts: new Map([[fingerprint, 10]]),
+    });
+    expect(current.counts.get(fingerprint)).toBe(10);
+    expect(current.restoredPending).toEqual(occurrences[2]);
+    expect(
+      claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending")),
+    ).toBe(2);
+    expect(current.restoredPending).toBeUndefined();
+    expect(current.occurrences).toEqual(occurrences);
+    expect(current.counts.get(fingerprint)).toBe(10);
+    expect(
+      claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending")),
+    ).toBe(10);
+    expect(current.counts.get(fingerprint)).toBe(11);
+  });
+
+  it("does not consume the pending assignment for another execution ID", () => {
+    const pending = { executionId: execution("pending"), fingerprint, occurrence: 2 };
+    const current = state(JSON.stringify(checkpoint({ effectOccurrences: [pending] })));
+    expect(claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("other"))).toBe(
+      3,
+    );
+    expect(current.restoredPending).toEqual(pending);
+    expect(
+      claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending")),
+    ).toBe(2);
+    expect(current.counts.get(fingerprint)).toBe(4);
+  });
+
+  it.each([0, 4])(
+    "prefers the exact canonical approved occurrence %s without rewinding counts",
+    (approved) => {
+      const current = state(
+        JSON.stringify(
+          checkpoint({
+            effectOccurrences: [{ executionId: execution("pending"), fingerprint, occurrence: 2 }],
+          }),
+        ),
+        { counts: new Map([[fingerprint, 10]]) },
+      );
+      const key = toolEffectIdempotencyKey(run.id, "write_file", args, approved);
+      expect(
+        claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending"), key),
+      ).toBe(approved);
+      expect(current.restoredPending).toBeUndefined();
+      expect(current.occurrences.at(-1)).toEqual({
+        executionId: execution("pending"),
+        fingerprint,
+        occurrence: approved,
+      });
+      expect(current.counts.get(fingerprint)).toBe(10);
+      expect(claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("new"))).toBe(
+        10,
+      );
+    },
+  );
+
+  it("does not reuse a pending assignment for changed canonical arguments", () => {
+    const current = state(
+      JSON.stringify(
+        checkpoint({
+          effectOccurrences: [{ executionId: execution("pending"), fingerprint, occurrence: 2 }],
+        }),
+      ),
+    );
+    const changed = { ...args, content: "Different body" };
+    expect(
+      claimTurnEffectOccurrence(current, run.id, "write_file", changed, execution("pending")),
+    ).toBe(0);
+    expect(current.restoredPending).toBeUndefined();
+    expect(current.counts.get(fingerprint)).toBe(3);
+    expect(current.counts.get(toolEffectIdempotencyKey(run.id, "write_file", changed))).toBe(1);
+  });
+
+  it("derives old completed use_tool occurrences from real names and args before assigning the pending call", () => {
+    const wrapped = (id: string) => call(id, USE_TOOL, { name: "write_file", arguments: args });
+    const blob = JSON.stringify(
+      checkpoint({
+        executionMode: "sequential",
+        messages: [
+          assistant([wrapped("done")]),
+          completed("done", USE_TOOL),
+          assistant([wrapped("pending")]),
+        ],
+      }),
+    );
+    const current = state(blob, { tools: [builtin("write_file"), builtin("scratchpad_add")] });
+    expect(current.occurrences).toEqual([
+      { executionId: execution("done"), fingerprint, occurrence: 0 },
+    ]);
+    expect(current.counts.get(fingerprint)).toBe(1);
+    expect([...current.counts.keys()].some((key) => key.includes(":use_tool:"))).toBe(false);
+    expect(
+      claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending")),
+    ).toBe(1);
+  });
+
+  it("reserves an old completed occurrence when a later response reuses its wire ID", () => {
+    const blob = JSON.stringify(
+      checkpoint({
+        pendingToolCallId: "same",
+        messages: [
+          assistant([call("same")]),
+          completed("same", "write_file"),
+          assistant([call("same")]),
+        ],
+      }),
+    );
+    const current = state(blob);
+    expect(current.occurrences).toEqual([
+      { executionId: execution("same"), fingerprint, occurrence: 0 },
+    ]);
+    expect(claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("same"))).toBe(
+      1,
+    );
+  });
+
+  it("does not reserve the protected secret interaction as a mutating effect in an older blob", () => {
+    const blob = JSON.stringify(
+      checkpoint({
+        messages: [
+          assistant([call("secret", "request_secret", {})]),
+          completed("secret", "request_secret"),
+          assistant([call()]),
+        ],
+      }),
+    );
+    const current = state(blob, { tools: [builtin("request_secret"), builtin("write_file")] });
+    expect(current.occurrences).toEqual([]);
+    expect(current.counts.size).toBe(0);
+  });
+});
+
+describe("persist run turn checkpoint", () => {
+  it("captures only the matching pause, preserves private JSON data and adds executor assignments and baseline", async () => {
+    const f = storage();
+    const current = state();
+    const route = { connectorId: "mcp", resourceId: "service", toolName: "read" };
+    const captured = checkpoint({
+      messages: [
+        assistant([call("completed", "connector_read", {})]),
+        completed("completed", "connector_read"),
+        assistant([call()]),
+      ],
+      mcpResultRoutes: [{ messageIndex: 1, route }],
+    });
+    const selected = vi.fn(() => JSON.stringify(captured));
+    const other = vi.fn(() => {
+      throw new Error("Wrong capture selected");
+    });
+    current.pendingCaptures.set(execution("pending"), selected);
+    current.pendingCaptures.set(execution("other"), other);
+    claimTurnEffectOccurrence(current, run.id, "write_file", args, execution("pending"));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    expect(selected).toHaveBeenCalledOnce();
+    expect(other).not.toHaveBeenCalled();
+    expect(current.stored).toBe(true);
+    expect(f.client.run.updateMany).toHaveBeenCalledWith({
+      where: { ...run, status: "running", leaseOwner: "worker", leaseFence: 7 },
+      data: { leaseFence: 7 },
+    });
+    const written = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].update.result);
+    expect(written).toEqual({
+      ...captured,
+      effectOccurrences: [{ executionId: execution("pending"), fingerprint, occurrence: 0 }],
+      ownInstructionsBaseline: "Current instructions",
+    });
+    expect(f.client.externalEffect.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "missing"])(
+    "drops a stored transcript with the same fence when this pause has no matching capture (%s)",
+    async (executionId) => {
+      const f = storage();
+      const blob = JSON.stringify(checkpoint());
+      const current = state(blob);
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, executionId);
+      expect(current.stored).toBe(false);
+      expect(current.blob).toBe(blob);
+      expect(f.client.run.updateMany).toHaveBeenCalledWith({
+        where: { ...run, status: "running", leaseOwner: "worker", leaseFence: 7 },
+        data: { leaseFence: 7 },
+      });
+      expect(f.client.externalEffect.deleteMany).toHaveBeenCalledOnce();
+      expect(f.client.externalEffect.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does no database work for a fresh state with no capture", async () => {
+    const f = storage();
+    const current = state();
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current);
+    expect(current.stored).toBe(false);
+    expect(f.client.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unknown old baseline instead of rebasing it to current instructions", async () => {
+    const f = storage();
+    const blob = JSON.stringify(checkpoint());
+    const current = state(blob);
+    current.pendingCaptures.set(execution("pending"), () => blob);
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const written = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].update.result);
+    expect(written).not.toHaveProperty("ownInstructionsBaseline");
+  });
+
+  it("does not mark a failed save as stored", async () => {
+    const f = storage();
+    const failure = new Error("Storage unavailable");
+    f.client.externalEffect.upsert.mockRejectedValueOnce(failure);
+    const current = state();
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(checkpoint()));
+    await expect(
+      persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending")),
+    ).rejects.toBe(failure);
+    expect(current.stored).toBe(false);
+  });
+
+  it("retains stored state when fenced drop is refused", async () => {
+    const f = storage();
+    f.client.run.updateMany.mockResolvedValueOnce({ count: 0 });
+    const current = state(JSON.stringify(checkpoint()));
+    await expect(persistRunTurnCheckpoint(f.prisma, run, "stale", 6, current)).rejects.toThrow(
+      "lease expired",
+    );
+    expect(current.stored).toBe(true);
+    expect(f.client.externalEffect.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("propagates malformed capture without database writes or fallback", async () => {
+    const f = storage();
+    const current = state(JSON.stringify(checkpoint()));
+    current.pendingCaptures.set(execution("pending"), () => "not-json");
+    await expect(
+      persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending")),
+    ).rejects.toThrow();
+    expect(current.stored).toBe(true);
+    expect(f.client.$transaction).not.toHaveBeenCalled();
+  });
+});
