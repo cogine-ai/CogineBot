@@ -21,7 +21,9 @@ import type {
 import { runContinueJob } from "@rakazo/adapter-kit";
 import {
   ComposioEmulator,
+  FakeSandboxProvider,
   InMemoryRealtimeFanout,
+  LocalAgentHomeStore,
   MessagingTeamChatEmulator,
   RunStarter,
   RunWorkerHost,
@@ -86,7 +88,17 @@ async function rpc<T>(
   return value.json;
 }
 
-async function openApp(runtime = new ScriptedAgentRuntime()) {
+async function openApp(
+  runtime: AgentRuntime = new ScriptedAgentRuntime(),
+  overrides: {
+    sandbox?: FakeSandboxProvider;
+    agentRuntime?: "pi";
+    defaultProvider?: string;
+    defaultModel?: string;
+    deploymentModelConfigured?: boolean;
+    contextStrategy?: "current";
+  } = {},
+) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "run-dispatch-fixture-"));
   const { createApp } = await import("../../../apps/api/src/app.ts");
   const handles = await createApp({
@@ -104,10 +116,12 @@ async function openApp(runtime = new ScriptedAgentRuntime()) {
     webOrigin: origin,
     composio: new ComposioEmulator(),
     encryptionKey: "synthetic-dispatch-fixture-encryption-key",
+    ...overrides,
   });
   return {
     handles,
     runtime,
+    dataDir,
     close: async () => {
       await handles.stop();
       await rm(dataDir, { recursive: true, force: true });
@@ -601,6 +615,211 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       else models.deleteProvider(model.provider);
       vi.unstubAllEnvs();
       await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("checkpoints dirty Pi work after a loop guard without cancelling workspace export", async () => {
+    const filePath = "notes/loop-guard-workspace.txt";
+    const fileText = "The stopped Pi turn must retain its actual workspace write.";
+    const fixtureKey = "synthetic-loop-guard-workspace-key";
+    const model: Model<"openai-completions"> = {
+      provider: "anthropic",
+      id: "synthetic-loop-guard-workspace",
+      name: "Synthetic loop guard workspace",
+      api: "openai-completions",
+      baseUrl: "https://models.invalid/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 1_024,
+    };
+    vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
+    vi.stubEnv("PI_DEFAULT_MODEL", model.id);
+    vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
+    const models = modelsForRequest(
+      { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
+      model.provider,
+    ) as MutableModels;
+    const previousProvider = models.getProvider(model.provider);
+    let requests = 0;
+    let reservations = 0;
+    const providerFailures: unknown[] = [];
+    const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
+      try {
+        requests += 1;
+        expect(activeModel.id).toBe(model.id);
+        expect(requests).toBeLessThanOrEqual(7);
+        if (requests > 1) {
+          const previous = context.messages.findLast((message) => message.role === "toolResult");
+          expect(previous).toMatchObject({
+            toolCallId: requests === 2 ? "dirty-write" : `dirty-repeat-${requests - 2}`,
+          });
+          expect(JSON.stringify(previous)).toContain(
+            requests === 2 ? filePath : "message is required",
+          );
+        }
+        return loopGuardResponse(activeModel, [
+          requests === 1
+            ? {
+                type: "toolCall",
+                id: "dirty-write",
+                name: "write_file",
+                arguments: { path: filePath, content: fileText },
+              }
+            : {
+                type: "toolCall",
+                id: `dirty-repeat-${requests - 1}`,
+                name: "message_user",
+                arguments: { message: "" },
+              },
+        ]);
+      } catch (error) {
+        providerFailures.push(error);
+        throw error;
+      }
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: {
+          apiKey: {
+            name: "Synthetic workspace fixture",
+            resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
+          },
+        },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+    const pi = new PiAgentRuntime({
+      modelCallObserver: {
+        beforeCall() {
+          reservations += 1;
+          return `dirty-loop-reservation-${reservations}`;
+        },
+        afterCall() {},
+      },
+    });
+    const scripted = new ScriptedAgentRuntime();
+    let targetRunId: string | undefined;
+    let releaseFinalResult = () => {};
+    const finalResultReleased = new Promise<void>((resolve) => {
+      releaseFinalResult = resolve;
+    });
+    let finalResultHeld = false;
+    let runtimeAborted = false;
+    const executions: string[] = [];
+    const runtime: AgentRuntime = {
+      describe: () => pi.describe(),
+      run(request, context) {
+        if (request.runId !== targetRunId) return scripted.run(request, context);
+        context?.signal?.addEventListener(
+          "abort",
+          () => {
+            runtimeAborted = true;
+            releaseFinalResult();
+          },
+          { once: true },
+        );
+        const execute = request.executeTool;
+        if (!execute) throw new Error("The real executor must provide executeTool");
+        request.executeTool = (name, args, id, route, observer) => {
+          executions.push(id);
+          const result = execute(name, args, id, route, observer);
+          if (id !== JSON.stringify(["pi-tool", "main", "dirty-repeat-6"])) return result;
+          // The actual tool and effect finish normally; retain only its result
+          // transport until cleanup, preventing an unrelated eighth model call.
+          return result.then(async (value) => {
+            finalResultHeld = true;
+            await finalResultReleased;
+            return value;
+          });
+        };
+        return pi.run(request, context);
+      },
+      abort: (runId) => pi.abort(runId),
+    };
+    const sandbox = new FakeSandboxProvider();
+    const write = vi.spyOn(sandbox, "writeFile");
+    const originalExport = sandbox.exportWorkspace.bind(sandbox);
+    const exports: Array<{ aborted: boolean; runId?: string }> = [];
+    const exported = vi
+      .spyOn(sandbox, "exportWorkspace")
+      .mockImplementation(async function* (computer, context) {
+        if (context.runId === targetRunId) {
+          exports.push({ aborted: context.signal.aborted, runId: context.runId });
+          context.signal.throwIfAborted();
+        }
+        yield* originalExport(computer, context);
+      });
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    let executing: Promise<void> | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        sandbox,
+        agentRuntime: "pi",
+        defaultProvider: model.provider,
+        defaultModel: model.id,
+        deploymentModelConfigured: true,
+        contextStrategy: "current",
+      });
+      const seeded = await seed(fixture.handles, "dirty loop guard", "dedicated");
+      targetRunId = seeded.run.id;
+      executing = fixture.handles.executor.continueRun(targetRunId, "dirty-loop-guard-worker");
+      await executing;
+      expect(providerFailures).toEqual([]);
+      expect(requests).toBe(7);
+      expect(reservations).toBe(7);
+      expect(executions).toHaveLength(7);
+      expect(new Set(executions).size).toBe(7);
+      expect(finalResultHeld).toBe(true);
+      expect(runtimeAborted).toBe(true);
+      const writes = write.mock.calls.filter(([, , context]) => context.runId === targetRunId);
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.[1]).toMatchObject({ path: filePath });
+      expect(new TextDecoder().decode(writes[0]?.[1].content)).toBe(fileText);
+      // Fake is deliberately not the Docker/local-home checkpoint fast path.
+      expect(exports).toEqual([{ runId: targetRunId, aborted: false }]);
+      expect(
+        await fixture.handles.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+      ).toMatchObject({ status: "completed", error: null, leaseFence: 1, leaseOwner: null });
+      expect(
+        await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
+      ).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
+      const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
+        where: { bots: { some: { id: seeded.botId } } },
+      });
+      expect(computer).toMatchObject({ kind: "fake", homeRevision: expect.any(String) });
+      expect(
+        await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
+          operationId: "dirty-checkpoint-readback",
+          traceId: "dirty-checkpoint-readback",
+          userId: seeded.userId,
+          spaceId: seeded.spaceId,
+          botId: seeded.botId,
+          runId: targetRunId,
+          signal: new AbortController().signal,
+        }),
+      ).toBe(fileText);
+      const messages = await fixture.handles.prisma.message.findMany({
+        where: { runId: targetRunId, role: "bot" },
+      });
+      expect(JSON.stringify(messages)).toContain(
+        "times in a row without making progress, so I stopped early",
+      );
+    } finally {
+      releaseFinalResult();
+      if (targetRunId) await pi.abort(targetRunId);
+      await executing?.catch(() => undefined);
+      await fixture?.close();
+      exported.mockRestore();
+      write.mockRestore();
+      if (previousProvider) models.setProvider(previousProvider);
+      else models.deleteProvider(model.provider);
+      vi.unstubAllEnvs();
     }
   });
 

@@ -3961,6 +3961,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
               )
             : null;
         runAbortController = new AbortController();
+        const ownerSignal = runAbortController.signal;
+        const runtimeAbortController = new AbortController();
+        let toolLoopStopText: string | undefined;
+        runtimeAbortController.signal.addEventListener(
+          "abort",
+          () => {
+            // Other early exits still cancel the whole attempt. A loop guard
+            // stops tools first while retaining ownership for its checkpoint.
+            if (toolLoopStopText === undefined)
+              runAbortController?.abort(runtimeAbortController.signal.reason);
+          },
+          { once: true },
+        );
         if (!leaseValid) runAbortController.abort();
         if (deps.shutdownSignal?.aborted) runAbortController.abort(deps.shutdownSignal.reason);
         const onShutdown = () => runAbortController?.abort(deps.shutdownSignal?.reason);
@@ -3995,7 +4008,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           botId: bot.id,
           runId,
           screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
-          signal: runAbortController.signal,
+          signal: AbortSignal.any([ownerSignal, runtimeAbortController.signal]),
           connectedConnections: connectedPlugins.map((row) => ({
             id: row.id,
             connectorId: row.connectorId,
@@ -4322,7 +4335,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(async () => {
           if (!runComputer.ready) return;
-          await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, context);
+          await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, {
+            ...context,
+            signal: ownerSignal,
+          });
         });
         let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>> = [];
         let recentThreadFiles: Awaited<ReturnType<typeof listRecentThreadFiles>> = [];
@@ -7985,8 +8001,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             },
             context,
           );
-          let toolLoopStopText: string | undefined;
-          for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
+          for await (const event of withRuntimeCleanup(runtimeEvents, runtimeAbortController)) {
             if (deps.shutdownSignal?.aborted) return;
             if (approvalPausePending) return;
             if (!leaseValid) return;
