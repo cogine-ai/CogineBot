@@ -1,6 +1,13 @@
-import type { BackgroundJob, JobPublisher } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  BackgroundJob,
+  JobPublisher,
+  MessagingSurface,
+} from "@rakazo/adapter-kit";
+import type { MessageBlock } from "@rakazo/contracts";
 import { stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
+import { createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { returnBotMessageOutcome } from "./bot-messages.js";
 import {
@@ -8,6 +15,7 @@ import {
   createPostgresReconciliationLeadership,
   type ReconciliationLeadership,
 } from "./job-reconciler.js";
+import { deliverMessagingOutbound } from "./messaging-delivery.js";
 import { loopGuardStopText } from "./tool-loop.js";
 
 vi.mock("./bot-messages.js", () => ({ returnBotMessageOutcome: vi.fn() }));
@@ -316,7 +324,11 @@ describe("createJobReconciler", () => {
     await createJobReconciler({ prisma, jobs }).reconcileOnce();
 
     expect(prisma.run.findMany).toHaveBeenCalledWith({
-      where: { trigger: "messaging", status: "completed", messagingMirroredAt: null },
+      where: {
+        trigger: "messaging",
+        status: { in: ["completed", "failed"] },
+        messagingMirroredAt: null,
+      },
       orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       take: 100,
       select: { id: true },
@@ -944,5 +956,320 @@ describe("createPostgresReconciliationLeadership", () => {
     await expect(second.tryAcquire()).resolves.toBe(true);
     expect(clients[0]?.removeListener).toHaveBeenCalledWith("error", expect.any(Function));
     expect(clients[0]?.release).toHaveBeenCalledWith(false);
+  });
+});
+
+function messagingRecoveryFixture(
+  options: { trigger?: string; channel?: boolean; identity?: boolean } = {},
+) {
+  const run = {
+    id: "failed-messaging-run",
+    spaceId: "space-recovery",
+    userId: "user-recovery",
+    botId: "bot-recovery",
+    threadId: "thread-recovery",
+    status: "running",
+    trigger: options.trigger ?? "messaging",
+    messagingMirroredAt: null as Date | null,
+    updatedAt: new Date("2026-11-04T00:00:00Z"),
+    sourceMessage: {
+      blocks: options.channel ? [{ kind: "channel_message", channelId: "channel-recovery" }] : [],
+    },
+  };
+  const attempt = { id: "attempt-recovery", runId: run.id, status: "running", leaseFence: 7 };
+  const messages: Array<{
+    id: string;
+    runId: string;
+    role: string;
+    seq: number;
+    blocks: MessageBlock[];
+  }> = [];
+  const outbox: Array<{
+    id: string;
+    idempotencyKey: string;
+    status: string;
+    body: string;
+    identityId?: string;
+    threadId?: string;
+    providerHandle?: string;
+  }> = [];
+  const identity =
+    options.identity === false
+      ? null
+      : {
+          id: "identity-recovery",
+          botId: run.botId,
+          provider: "slack",
+          address: "fixture-owner",
+          userId: run.userId,
+          spaceId: run.spaceId,
+          dmThreadId: "slack:recovery-dm",
+          outboundSinceInbound: 0,
+        };
+  let nextMessageSeq = 1;
+  const client = {
+    run: {
+      findUnique: vi.fn(async () => run),
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            trigger?: string;
+            status?: string | { in: string[] };
+            messagingMirroredAt?: null;
+          };
+        }) => {
+          // Match the actual recovery predicate; unconditional rows would conceal completed-only regressions.
+          if (where.messagingMirroredAt !== null) return [];
+          const statuses =
+            typeof where.status === "string" ? [where.status] : (where.status?.in ?? []);
+          return run.trigger === where.trigger &&
+            statuses.includes(run.status) &&
+            run.messagingMirroredAt === null
+            ? [run]
+            : [];
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; trigger?: string };
+          data: { messagingMirroredAt: Date };
+        }) => {
+          if (where.id !== run.id || (where.trigger !== undefined && where.trigger !== run.trigger))
+            return { count: 0 };
+          run.messagingMirroredAt = data.messagingMirroredAt;
+          return { count: 1 };
+        },
+      ),
+    },
+    thread: { update: vi.fn(async () => ({ nextMessageSeq: ++nextMessageSeq })) },
+    message: {
+      create: vi.fn(async ({ data }: { data: Omit<(typeof messages)[number], "id"> }) => {
+        const row = { id: `durable-reply-${messages.length + 1}`, ...data };
+        messages.push(row);
+        return row;
+      }),
+      findMany: vi.fn(async ({ where }: { where: { runId: string; role: string } }) =>
+        messages.filter((message) => message.runId === where.runId && message.role === where.role),
+      ),
+    },
+    computerExecutionLease: { findMany: vi.fn(async () => []) },
+    routine: { findMany: vi.fn(async () => []) },
+    computer: { findMany: vi.fn(async () => []) },
+    user: { findUnique: vi.fn(async () => ({ name: "Fixture Owner" })) },
+    messagingIdentity: {
+      findUnique: vi.fn(async () => identity),
+      update: vi.fn(async () => identity),
+    },
+    messagingChannel: {
+      findUnique: vi.fn(async () => ({ id: "channel-recovery", threadId: "slack:recovery-group" })),
+    },
+    messagingChannelMember: { findMany: vi.fn(async () => []) },
+    messagingOutbound: {
+      findFirst: vi.fn(async () => outbox.find((row) => row.status === "pending") ?? null),
+      findMany: vi.fn(async ({ where }: { where: { status: string } }) =>
+        outbox.filter((row) => row.status === where.status),
+      ),
+      createMany: vi.fn(
+        async ({ data }: { data: Array<Omit<(typeof outbox)[number], "id" | "status">> }) => {
+          let count = 0;
+          for (const item of data) {
+            if (outbox.some((row) => row.idempotencyKey === item.idempotencyKey)) continue;
+            outbox.push({ id: `outbound-${outbox.length + 1}`, status: "pending", ...item });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
+      update: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: Partial<(typeof outbox)[number]>;
+        }) => {
+          const row = outbox.find((entry) => entry.id === where.id);
+          if (row) Object.assign(row, data);
+          return row;
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; status?: string };
+          data: Partial<(typeof outbox)[number]>;
+        }) => {
+          const row = outbox.find(
+            (entry) =>
+              entry.id === where.id &&
+              (where.status === undefined || entry.status === where.status),
+          );
+          if (!row) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      ),
+    },
+  };
+  const prisma = {
+    ...client,
+    $transaction: vi.fn(async (work: (tx: typeof client) => unknown) => work(client)),
+  } as unknown as PrismaClient;
+  const { jobs, enqueue } = publisher();
+  const sendToThread = vi.fn(async () => ({ handle: "synthetic-recovery-handle" }));
+  const messaging = { sendToThread } as unknown as MessagingSurface;
+  const events = {
+    notify: vi.fn(async () => undefined),
+    sendUserMessage: vi.fn(),
+  } as unknown as ThreadEvents;
+  const context: AdapterContext = {
+    operationId: "fixture-recovery",
+    traceId: "fixture-recovery",
+    userId: run.userId,
+    spaceId: run.spaceId,
+    signal: new AbortController().signal,
+  };
+  const reconciler = createJobReconciler({ prisma, jobs });
+  const deliver = () =>
+    deliverMessagingOutbound({ prisma, jobs, messaging, events }, { runId: run.id }, context);
+  const persistReply = (blocks: MessageBlock[]) =>
+    createThreadMessage(prisma, {
+      threadId: run.threadId,
+      runId: run.id,
+      botId: run.botId,
+      role: "bot",
+      blocks,
+    });
+  const fail = () => {
+    run.status = "failed";
+    attempt.status = "failed";
+  };
+  return {
+    run,
+    attempt,
+    messages,
+    outbox,
+    prisma,
+    client,
+    enqueue,
+    sendToThread,
+    events,
+    reconciler,
+    deliver,
+    persistReply,
+    fail,
+  };
+}
+
+describe("terminal messaging recovery", () => {
+  it("recovers a durable response after failure without restarting the run or duplicating delivery", async () => {
+    const fixture = messagingRecoveryFixture();
+    await fixture.persistReply([{ kind: "text", text: "The saved reply" }]);
+    fixture.fail();
+    const terminal = structuredClone(fixture.run);
+    const attempt = structuredClone(fixture.attempt);
+
+    await fixture.reconciler.reconcileOnce();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.enqueue.mock.calls.map(([job]) => job)).toEqual([
+      {
+        name: "messaging.deliver",
+        payload: { runId: fixture.run.id },
+        replaceKey: `messaging.deliver:${fixture.run.id}`,
+      },
+      {
+        name: "messaging.deliver",
+        payload: { runId: fixture.run.id },
+        replaceKey: `messaging.deliver:${fixture.run.id}`,
+      },
+    ]);
+    await fixture.deliver();
+    await fixture.deliver();
+    await fixture.reconciler.reconcileOnce();
+
+    expect(fixture.enqueue).toHaveBeenCalledTimes(2);
+    expect(fixture.outbox).toEqual([
+      expect.objectContaining({
+        idempotencyKey: `msg:${fixture.messages[0]!.id}`,
+        body: "The saved reply",
+        status: "sent",
+        providerHandle: "synthetic-recovery-handle",
+      }),
+    ]);
+    expect(fixture.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      { threadId: "slack:recovery-dm", body: "The saved reply" },
+      expect.anything(),
+    );
+    expect(fixture.run).toEqual({ ...terminal, messagingMirroredAt: expect.any(Date) });
+    expect(fixture.attempt).toEqual(attempt);
+  });
+
+  it("settles a failed run without a reply without inventing an error message", async () => {
+    const fixture = messagingRecoveryFixture();
+    fixture.fail();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "messaging.deliver", payload: { runId: fixture.run.id } }),
+    );
+    await fixture.deliver();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.enqueue).toHaveBeenCalledOnce();
+    expect(fixture.run.status).toBe("failed");
+    expect(fixture.run.messagingMirroredAt).toBeInstanceOf(Date);
+    expect(fixture.outbox).toEqual([]);
+    expect(fixture.sendToThread).not.toHaveBeenCalled();
+  });
+
+  it.each(["user", "routine", "bot_message", "cancelled"])(
+    "does not recover %s as failed inbound messaging",
+    async (excluded) => {
+      const fixture = messagingRecoveryFixture({
+        trigger: excluded === "cancelled" ? "messaging" : excluded,
+      });
+      await fixture.persistReply([{ kind: "text", text: "Not for automatic recovery" }]);
+      fixture.fail();
+      if (excluded === "cancelled") fixture.run.status = "cancelled";
+      await fixture.reconciler.reconcileOnce();
+      expect(fixture.enqueue).not.toHaveBeenCalled();
+      expect(fixture.run.messagingMirroredAt).toBeNull();
+      expect(fixture.outbox).toEqual([]);
+    },
+  );
+
+  it("keeps a failed channel run with a private answer out of the group and peer fan-out", async () => {
+    const fixture = messagingRecoveryFixture({ channel: true });
+    await fixture.persistReply([
+      { kind: "ask", text: "Which detail?", status: "answered", answer: "Private fixture detail" },
+      { kind: "text", text: "Reply using private detail" },
+    ]);
+    fixture.fail();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.enqueue).toHaveBeenCalledOnce();
+    await fixture.deliver();
+    await fixture.deliver();
+    expect(fixture.run.messagingMirroredAt).toBeInstanceOf(Date);
+    expect(fixture.outbox).toEqual([]);
+    expect(fixture.sendToThread).not.toHaveBeenCalled();
+    expect(fixture.events.sendUserMessage).not.toHaveBeenCalled();
+    expect(fixture.client.messagingChannelMember.findMany).not.toHaveBeenCalled();
+  });
+
+  it("settles recovery without sending after the messaging identity has been removed", async () => {
+    const fixture = messagingRecoveryFixture({ identity: false });
+    await fixture.persistReply([{ kind: "text", text: "Saved while linked" }]);
+    fixture.fail();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.enqueue).toHaveBeenCalledOnce();
+    await fixture.deliver();
+    expect(fixture.run.messagingMirroredAt).toBeInstanceOf(Date);
+    expect(fixture.outbox).toEqual([]);
+    expect(fixture.sendToThread).not.toHaveBeenCalled();
   });
 });

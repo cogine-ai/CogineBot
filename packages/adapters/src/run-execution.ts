@@ -51,6 +51,10 @@ function reclaimableFileCache(): number {
   }
 }
 
+// Dispatchers share process memory, but each host owns its shutdown and drain.
+const residentRuns = new Set<Promise<void>>();
+const processCapacityWaiters = new Set<() => void>();
+
 /** Tracks agent lifetimes separately from short wakeup deliveries. */
 export class RunExecutionHost {
   private stopping = false;
@@ -84,9 +88,9 @@ export class RunExecutionHost {
     // Under real pressure, wait for a resident run to finish before loading more
     // histories. With no resident runs, allow work to resume instead of deadlocking
     // behind memory that has not been reclaimed yet.
-    while (this.activeRuns.size > 0) {
+    while (residentRuns.size > 0) {
       if (this.stopping) throw new Error("Worker is stopping");
-      const memory = admissionMemory(this.activeRuns.size);
+      const memory = admissionMemory(residentRuns.size);
       if (!memory.reason) break;
       if (!this.pressure) {
         this.pressure = { since: Date.now(), reason: memory.reason };
@@ -100,11 +104,13 @@ export class RunExecutionHost {
         const finish = () => {
           clearTimeout(timer);
           this.capacityWaiters.delete(finish);
+          processCapacityWaiters.delete(finish);
           resolve();
         };
         const timer = setTimeout(finish, 1_000);
         timer.unref?.();
         this.capacityWaiters.add(finish);
+        processCapacityWaiters.add(finish);
       });
     }
     if (this.stopping) throw new Error("Worker is stopping");
@@ -112,7 +118,7 @@ export class RunExecutionHost {
       getLogger().info("run.admission_resumed", {
         "admission.reason": this.pressure.reason,
         "run.admission_wait_ms": Math.max(0, Date.now() - this.pressure.since),
-        ...admissionMemory(this.activeRuns.size).fields,
+        ...admissionMemory(residentRuns.size).fields,
       });
       this.pressure = undefined;
     }
@@ -120,16 +126,30 @@ export class RunExecutionHost {
     const started = new Promise<void>((resolve) => {
       onRunStarted = resolve;
     });
-    const executing = execute({ onRunStarted });
+    let resolveTracked!: () => void;
+    const tracked = new Promise<void>((resolve) => {
+      resolveTracked = resolve;
+    });
+    // Reserve before user code can reenter another dispatcher or this host's stop().
+    residentRuns.add(tracked);
+    this.activeRuns.add(tracked);
     const finish = () => {
+      if (!residentRuns.delete(tracked)) return;
       this.activeRuns.delete(tracked);
-      for (const notify of this.capacityWaiters) notify();
+      resolveTracked();
+      for (const notify of processCapacityWaiters) notify();
     };
+    let executing: Promise<void>;
+    try {
+      executing = execute({ onRunStarted });
+    } catch (error) {
+      finish();
+      throw error;
+    }
     // runCorrelatedJob reports failures in their original context. Observe the
     // rejection after handoff without reporting it again. Before handoff, the
     // original rejecting promise below still reaches Graphile's retry handling.
-    const tracked = executing.then(finish, finish);
-    this.activeRuns.add(tracked);
+    void executing.then(finish, finish);
     await Promise.race([started, executing]);
     return true;
   }

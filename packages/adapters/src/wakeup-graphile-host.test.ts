@@ -27,7 +27,9 @@ vi.mock("graphile-worker", () => ({
   makeWorkerUtils: vi.fn(),
 }));
 
+import { InMemoryRealtimeFanout } from "./realtime.js";
 import { RunExecutionHost } from "./run-execution.js";
+import { RunStarter } from "./run-wakeup.js";
 import {
   createReservedGraphileJobWorkerHost,
   databaseCapacityBackoffMs,
@@ -406,6 +408,84 @@ describe("reserved Graphile workloads", () => {
       await host.stop();
     }
   });
+});
+
+describe("process admission across direct and legacy dispatch", () => {
+  beforeEach(() => {
+    run.mockReset();
+    vi.mocked(getHeapStatistics).mockReturnValue({
+      used_heap_size: 0,
+      external_memory: 0,
+      heap_size_limit: 1024 ** 3,
+    } as ReturnType<typeof getHeapStatistics>);
+    vi.spyOn(process, "availableMemory").mockReturnValue(8 * 1024 ** 3);
+    vi.spyOn(process, "constrainedMemory").mockReturnValue(0);
+  });
+  afterEach(() => {
+    run.mockReset();
+    vi.mocked(process.availableMemory).mockRestore();
+    vi.mocked(process.constrainedMemory).mockRestore();
+  });
+
+  it.each(["direct", "interactive", "background"] as const)(
+    "counts a %s resident before admitting work through another dispatcher",
+    async (residentLane) => {
+      for (let index = 0; index < 3; index++) run.mockResolvedValueOnce(mockRunner().runner);
+      const graphile = createReservedGraphileJobWorkerHost({ options: { max: 8 } } as Pool);
+      const realtime = new InMemoryRealtimeFanout();
+      const publish = vi.spyOn(realtime, "publish");
+      const direct = new RunStarter(realtime);
+      const release = deferred();
+      const target = handlers();
+      const entered: string[] = [];
+      target["run.continue"] = async ({ runId }, execution) => {
+        entered.push(runId);
+        execution!.onRunStarted();
+        await release.promise;
+      };
+      const pending: Promise<void>[] = [];
+      const residentId = `${residentLane}-resident`;
+      try {
+        await graphile.start(target);
+        direct.attach(target);
+        const [interactive, background, maintenance] = run.mock.calls.map(([options]) => options);
+        if (residentLane === "direct") {
+          direct.start(residentId);
+          await vi.waitFor(() => expect(entered).toEqual([residentId]));
+        } else {
+          const task = residentLane === "interactive" ? "run.interactive" : "run.continue";
+          const runner = residentLane === "interactive" ? interactive : background;
+          await runner.taskList[task](wrapJobPayload({ runId: residentId }));
+        }
+        vi.mocked(process.availableMemory).mockReturnValue(1);
+        pending.push(
+          interactive.taskList["run.interactive"](
+            wrapJobPayload({ runId: "interactive-candidate" }),
+          ),
+          background.taskList["run.continue"](wrapJobPayload({ runId: "background-candidate" })),
+        );
+        for (const waiting of pending) void waiting.catch(() => undefined);
+        direct.start("direct-candidate");
+        await maintenance.taskList["history.compact"](
+          wrapJobPayload(historyCompactJob("maintenance-thread").payload),
+        );
+        expect(target["history.compact"]).toHaveBeenCalledOnce();
+        expect(entered).toEqual([residentId]);
+        expect(publish).toHaveBeenCalledExactlyOnceWith("runs:ready", "direct-candidate");
+
+        release.resolve();
+        await Promise.all(pending);
+        expect([...entered].sort()).toEqual(
+          [residentId, "interactive-candidate", "background-candidate"].sort(),
+        );
+      } finally {
+        release.resolve();
+        await Promise.allSettled(pending);
+        await Promise.all([direct.stop(), graphile.stop()]);
+        await realtime.close();
+      }
+    },
+  );
 });
 
 describe("GraphileJobWorkerHost runner lifecycle", () => {
