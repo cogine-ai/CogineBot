@@ -100,6 +100,21 @@ for (const width of [1280, 390]) {
     await dialog.getByRole("button", { name: "Tool access", exact: true }).click();
     await expect(preference).toBeChecked();
     await preference.scrollIntoViewIfNeeded();
+    if (width === 390) {
+      await expect
+        .poll(async () => {
+          const createCard = await dialog.locator('[data-slot="card"]').first().boundingBox();
+          const configuredHeading = await dialog
+            .getByRole("heading", { name: "Configured servers", exact: true })
+            .boundingBox();
+          return Boolean(
+            createCard &&
+              configuredHeading &&
+              configuredHeading.y >= createCard.y + createCard.height - 1,
+          );
+        })
+        .toBe(true);
+    }
     await captureScreenshot(page, testInfo, `mcp-results-existing-${width}`);
 
     await preference.click();

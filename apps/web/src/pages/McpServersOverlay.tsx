@@ -223,7 +223,7 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         ) : null}
-        <div className="rk-scroll grid min-h-0 grid-cols-1 gap-5 overflow-y-auto p-6 lg:grid-cols-2">
+        <div className="rk-scroll grid min-h-0 auto-rows-max grid-cols-1 gap-5 overflow-y-auto p-6 lg:grid-cols-2">
           <Card className="self-start">
             <CardHeader>
               <CardTitle>
