@@ -10,6 +10,7 @@ import {
   SandboxUnresponsiveError,
 } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as botMessages from "./bot-messages.js";
 import { BoxSandboxEmulator } from "./box-emulator.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { SingleScreenClaimTracker } from "./computer-screens.js";
@@ -51,6 +52,12 @@ async function runRoutine(
     setupFailures?: number;
     onRunStarted?: () => void;
     modelId?: string;
+    trigger?: "user" | "bot_message";
+    runtimeError?: Error;
+    notifyOnFinish?: boolean;
+    secrets?: string[];
+    finalizeResult?: { continuationRunId: string | null } | null;
+    loseClaim?: boolean;
     emulator?: ManagedSandboxEmulator;
     resume?: {
       checkpoint: "takeover" | "takeover-skipped" | null;
@@ -85,7 +92,7 @@ async function runRoutine(
     spaceId: "space-1",
     userId: "user-1",
     status: options.resume?.checkpoint === null ? "waiting_takeover" : "queued",
-    trigger: options.resume?.pendingCard ? "user" : "routine",
+    trigger: options.trigger ?? (options.resume?.pendingCard ? "user" : "routine"),
     routineId: options.resume?.pendingCard ? null : "routine-1",
     retryOfRunId: null,
     leaseFence: options.resume ? 3 : 0,
@@ -144,6 +151,7 @@ async function runRoutine(
   if (options.abortBeforeClaim) shutdown.abort();
   const toolResults: unknown[] = [];
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
+    if (options.runtimeError) throw options.runtimeError;
     if (options.abortBeforeTools) shutdown.abort();
     for (const [index, call] of toolCalls.entries()) {
       toolResults.push(await request.executeTool?.(call.name, call.args, `exec-${index}`));
@@ -180,15 +188,17 @@ async function runRoutine(
         },
       ),
       findUniqueOrThrow: vi.fn(async () => run),
-      findFirst: vi.fn(async ({ where }: { where: { botId?: string } }) =>
-        where.botId
-          ? null
-          : {
-              bot: { notifyOnFinish: false },
-              thread: { groupId: null },
-            },
+      findFirst: vi.fn(
+        async ({ where, select }: { where: { botId?: string }; select?: { bot?: unknown } }) =>
+          where.botId && !select?.bot
+            ? null
+            : {
+                bot: { notifyOnFinish: options.notifyOnFinish ?? false },
+                thread: { groupId: null },
+              },
       ),
       updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (options.loseClaim && data.status === "leased") return { count: 0 };
         Object.assign(run, data);
         return { count: 1 };
       }),
@@ -196,8 +206,13 @@ async function runRoutine(
     routine: { findUnique: vi.fn(async () => ({ notify: false, nextRunAt: null })) },
     event: { count: vi.fn(async () => 0) },
     bot: {
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-        where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools: [] } : null,
+      findUnique: vi.fn(
+        async ({ where, select }: { where: { id: string }; select?: { name?: boolean } }) =>
+          where.id === run.botId
+            ? select?.name
+              ? { name: "Assistant" }
+              : { spaceId: run.spaceId, disabledBuiltinTools: [] }
+            : null,
       ),
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
@@ -378,10 +393,12 @@ async function runRoutine(
     fetch: vi.fn(),
   };
   const finalizeRun = vi.fn(async ({ outcome }: { outcome: string }) => {
+    if (options.finalizeResult === null) return null;
     if (options.resume) run.status = outcome;
-    return { continuationRunId: null };
+    return options.finalizeResult ?? { continuationRunId: null };
   });
-  const enqueue = vi.fn(async () => undefined);
+  const enqueue = vi.fn(async (_job: { name: string; payload?: unknown }) => undefined);
+  const send = vi.fn(async () => undefined);
   const executor = createRunExecutor({
     prisma,
     deploymentModelKey: "fake-deployment-key",
@@ -409,8 +426,8 @@ async function runRoutine(
       pauseRunForTakeover: vi.fn(async () => false),
     },
     jobs: { enqueue },
-    notifications: { send: vi.fn(async () => undefined) },
-    secrets: [],
+    notifications: { send },
+    secrets: options.secrets ?? [],
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
   if (options.onRunStarted) await executor.continueRun(run.id, "worker-1", options.onRunStarted);
@@ -426,6 +443,7 @@ async function runRoutine(
     toolResults,
     web,
     runtimeRun,
+    send,
     prisma,
     retainedLease,
     screenReleased,
@@ -559,6 +577,154 @@ describe("run computer provisioning", () => {
         ([job]) => job.name === "run.continue",
       ),
     ).toBe(false);
+  });
+
+  it.each(["setup", "runtime"] as const)(
+    "normalizes a terminal %s policy error without replacing its stored code",
+    async (stage) => {
+      const failure = new Error("platform_model_forbidden");
+      if (stage === "setup") provisionComputer.mockRejectedValueOnce(failure);
+      const f = await runRoutine(
+        stage === "setup" ? [{ name: "list_files", args: { path: "" } }] : [],
+        {
+          trigger: "user",
+          notifyOnFinish: true,
+          setupFailures: 7,
+          runtimeError: stage === "runtime" ? failure : undefined,
+        },
+      );
+      expect(f.finalizeRun).toHaveBeenCalledExactlyOnceWith({
+        spaceId: "space-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        runId: "run-1",
+        taskId: "task-1",
+        attemptId: "attempt-1",
+        leaseOwner: "worker-1",
+        leaseFence: 1,
+        outcome: "failed",
+        error: "platform_model_forbidden",
+      });
+      expect(f.send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          kind: "failure",
+          title: "Assistant failed",
+          body: "Add your own API key to continue.",
+          botId: "bot-1",
+          threadId: "thread-1",
+        }),
+        expect.anything(),
+      );
+      const nameLookups = f.prisma.bot.findUnique.mock.calls
+        .map(([input], index) => (input.select?.name ? index : -1))
+        .filter((index) => index >= 0);
+      expect(nameLookups).toHaveLength(stage === "setup" ? 1 : 0);
+      if (stage === "setup")
+        expect(f.prisma.bot.findUnique.mock.invocationCallOrder[nameLookups[0]!]).toBeGreaterThan(
+          f.finalizeRun.mock.invocationCallOrder[0]!,
+        );
+    },
+  );
+
+  it.each(["setup", "runtime"] as const)(
+    "redacts and bounds a terminal %s notification preview",
+    async (stage) => {
+      const secret = "synthetic-private-value";
+      const failure = new Error(`private=${secret}; ${"x".repeat(200)}`);
+      if (stage === "setup") provisionComputer.mockRejectedValueOnce(failure);
+      const f = await runRoutine(
+        stage === "setup" ? [{ name: "list_files", args: { path: "" } }] : [],
+        {
+          trigger: "user",
+          notifyOnFinish: true,
+          setupFailures: 7,
+          runtimeError: stage === "runtime" ? failure : undefined,
+          secrets: [secret],
+        },
+      );
+      expect(f.finalizeRun).toHaveBeenCalledWith(
+        expect.objectContaining({ error: `private=[redacted]; ${"x".repeat(200)}` }),
+      );
+      expect(f.send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ body: `private=[redacted]; ${"x".repeat(160)}` }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it.each(["setup", "runtime"] as const)(
+    "returns the normalized terminal %s error to a delegated sender",
+    async (stage) => {
+      const returned = vi.spyOn(botMessages, "returnBotMessageOutcome");
+      try {
+        const failure = new Error("platform_model_forbidden");
+        if (stage === "setup") provisionComputer.mockRejectedValueOnce(failure);
+        await runRoutine(stage === "setup" ? [{ name: "list_files", args: { path: "" } }] : [], {
+          trigger: "bot_message",
+          setupFailures: 7,
+          runtimeError: stage === "runtime" ? failure : undefined,
+        });
+        expect(returned).toHaveBeenCalledExactlyOnceWith(
+          expect.anything(),
+          expect.objectContaining({ id: "run-1", spaceId: "space-1", botId: "bot-1" }),
+          { id: "bot-1", name: "Assistant" },
+          "Could not complete the delegated request: Add your own API key to continue.",
+          "status",
+        );
+      } finally {
+        returned.mockRestore();
+      }
+    },
+  );
+
+  it("does not notify or read a fallback name after losing terminal settlement", async () => {
+    provisionComputer.mockRejectedValueOnce(new Error("platform_model_forbidden"));
+    const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+      trigger: "user",
+      notifyOnFinish: true,
+      setupFailures: 7,
+      finalizeResult: null,
+    });
+    expect(f.finalizeRun).toHaveBeenCalledOnce();
+    expect(f.prisma.bot.findUnique.mock.calls.some(([input]) => input.select?.name)).toBe(false);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(
+      f.enqueue.mock.calls.some(([job]) => (job as { name: string }).name === "run.continue"),
+    ).toBe(false);
+  });
+
+  it("does not settle or notify an attempt that never won its claim", async () => {
+    const f = await runRoutine([], { trigger: "user", notifyOnFinish: true, loseClaim: true });
+    expect(f.prisma.attempt.create).not.toHaveBeenCalled();
+    expect(f.finalizeRun).not.toHaveBeenCalled();
+    expect(f.prisma.bot.findUnique).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it("wakes a terminal steering continuation without sending a finish notification", async () => {
+    provisionComputer.mockRejectedValueOnce(new Error("platform_model_forbidden"));
+    const f = await runRoutine([{ name: "list_files", args: { path: "" } }], {
+      trigger: "user",
+      notifyOnFinish: true,
+      setupFailures: 7,
+      finalizeResult: { continuationRunId: "continuation-1" },
+    });
+    expect(f.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "continuation-1" } }),
+    );
+    const continuation = f.enqueue.mock.calls.findIndex(
+      ([job]) => (job as { payload?: { runId?: string } }).payload?.runId === "continuation-1",
+    );
+    const nameLookup = f.prisma.bot.findUnique.mock.calls.findIndex(
+      ([input]) => input.select?.name,
+    );
+    expect(f.enqueue.mock.invocationCallOrder[continuation]).toBeGreaterThan(
+      f.finalizeRun.mock.invocationCallOrder[0]!,
+    );
+    expect(f.prisma.bot.findUnique.mock.invocationCallOrder[nameLookup]).toBeGreaterThan(
+      f.enqueue.mock.invocationCallOrder[continuation]!,
+    );
+    expect(f.send).not.toHaveBeenCalled();
   });
 
   it("hands a stopping attempt back without failing or cancelling the run", async () => {

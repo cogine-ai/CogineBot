@@ -3759,6 +3759,54 @@ export function createRunExecutor(deps: ExecutorDeps) {
       };
 
       const runSecrets = [...deps.secrets];
+      const settleRunFailure = async (message: string, knownBot?: { id: string; name: string }) => {
+        const failed = await deps.events.finalizeRun({
+          spaceId: run.spaceId,
+          threadId: run.threadId,
+          botId: run.botId,
+          runId,
+          taskId: run.taskId,
+          attemptId: attempt.id,
+          leaseOwner: workerId,
+          leaseFence: fence,
+          outcome: "failed",
+          error: message,
+        });
+        if (!failed) return;
+        stopHeartbeatAfterCompletion();
+        await settleLocalPeerDelivery();
+        if (failed.continuationRunId) {
+          await deps.jobs
+            .enqueue(runContinueJob(failed.continuationRunId))
+            .catch((error) => getLogger().error("steering continuation enqueue", error));
+        }
+        const bot =
+          knownBot ??
+          (await deps.prisma.bot.findUnique({
+            where: { id: run.botId },
+            select: { name: true },
+          }));
+        const displayMessage =
+          message === "platform_model_forbidden" ? normalizeRunError(message).summary : message;
+        if (run.trigger === "bot_message") {
+          await returnBotMessageOutcome(
+            deps,
+            run,
+            { id: run.botId, name: bot?.name ?? "" },
+            `Could not complete the delegated request: ${displayMessage}`,
+            "status",
+          ).catch((error) => getLogger().error("bot message failure return", error));
+        }
+        if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
+          await notifyRun(deps, run, {
+            kind: "failure",
+            title: `${bot?.name ?? "Bot"} failed`,
+            body: displayMessage.slice(0, 180),
+            botId: run.botId,
+            threadId: run.threadId,
+          });
+        }
+      };
       const parkScriptedProgress = async (error: unknown) => {
         const failed = await failScriptedRunPreservingSteering(deps.prisma, {
           runId,
@@ -8609,47 +8657,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error instanceof Error ? error.message : String(error),
             runSecrets,
           );
-          const failed = await deps.events.finalizeRun({
-            spaceId: run.spaceId,
-            threadId: thread.id,
-            botId: bot.id,
-            runId,
-            taskId: run.taskId,
-            attemptId: attempt.id,
-            leaseOwner: workerId,
-            leaseFence: fence,
-            outcome: "failed",
-            error: message,
-          });
-          if (!failed) return;
-          stopHeartbeatAfterCompletion();
-          await settleLocalPeerDelivery();
-          if (failed.continuationRunId) {
-            await deps.jobs
-              .enqueue(runContinueJob(failed.continuationRunId))
-              .catch((error) => getLogger().error("steering continuation enqueue", error));
-          }
-          if (run.trigger === "bot_message") {
-            await returnBotMessageOutcome(
-              deps,
-              { ...run, sourceMessageId: run.sourceMessageId },
-              { id: bot.id, name: bot.name },
-              `Could not complete the delegated request: ${message === "platform_model_forbidden" ? normalizeRunError(message).summary : message}`,
-              "status",
-            ).catch((returnError) => getLogger().error("bot message failure return", returnError));
-          }
-          if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
-            await notifyRun(deps, run, {
-              kind: "failure",
-              title: `${bot.name} failed`,
-              body: (message === "platform_model_forbidden"
-                ? normalizeRunError(message).summary
-                : message
-              ).slice(0, 180),
-              botId: bot.id,
-              threadId: thread.id,
-            });
-          }
+          await settleRunFailure(message, bot);
         }
       } catch (setupError) {
         if (deps.shutdownSignal?.aborted || setupError instanceof RunHistoryWriteError) return;
@@ -8697,49 +8705,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             setupError instanceof Error ? setupError.message : String(setupError),
             runSecrets,
           );
-          const failed = await deps.events.finalizeRun({
-            spaceId: run.spaceId,
-            threadId: run.threadId,
-            botId: run.botId,
-            runId,
-            taskId: run.taskId,
-            attemptId: attempt.id,
-            leaseOwner: workerId,
-            leaseFence: fence,
-            outcome: "failed",
-            error: failureMessage,
-          });
-          if (failed) {
-            stopHeartbeatAfterCompletion();
-            await settleLocalPeerDelivery();
-            if (failed.continuationRunId) {
-              await deps.jobs
-                .enqueue(runContinueJob(failed.continuationRunId))
-                .catch((error) => getLogger().error("steering continuation enqueue", error));
-            }
-            const bot = await deps.prisma.bot.findUnique({
-              where: { id: run.botId },
-              select: { name: true },
-            });
-            if (run.trigger === "bot_message") {
-              await returnBotMessageOutcome(
-                deps,
-                run,
-                { id: run.botId, name: bot?.name ?? "" },
-                `Could not complete the delegated request: ${failureMessage}`,
-                "status",
-              ).catch((error) => getLogger().error("bot message failure return", error));
-            }
-            if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
-              await notifyRun(deps, run, {
-                kind: "failure",
-                title: `${bot?.name ?? "Bot"} failed`,
-                body: failureMessage,
-                botId: run.botId,
-                threadId: run.threadId,
-              });
-            }
-          }
+          await settleRunFailure(failureMessage);
           return;
         }
         const retryAt = new Date(
