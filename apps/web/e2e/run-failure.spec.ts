@@ -1,5 +1,14 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, openNewSpace, signup } from "./helpers";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { AppBootstrap, ThreadSnapshot } from "@rakazo/contracts";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openNewSpace,
+  rpc,
+  signup,
+} from "./helpers";
 
 function isPresented(error: Locator) {
   return error.evaluate((element) => {
@@ -59,6 +68,76 @@ test("a failed run is visible once without returning after reload", async ({ pag
   await expect(error).toBeHidden();
   await expect(page.getByPlaceholder(/^Message /)).toBeFocused();
 });
+
+for (const diagnostic of [
+  { id: "computer-start", text: "The computer did not start. Try again." },
+  { id: "computer-unreachable", text: "Box could not be reached" },
+]) {
+  test(`computer setup failures expose safe diagnostics in Details: ${diagnostic.id}`, async ({
+    page,
+  }, testInfo) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await signup(
+      page,
+      `${diagnostic.id}-${Date.now()}@example.test`,
+      "password12",
+      "Computer Failure",
+    );
+    await completeOnboarding(page);
+    await page.getByPlaceholder(/^Message /).fill("fail this run");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const error = page.getByTestId("composer-error");
+    await expect(error).toBeVisible({ timeout: 30_000 });
+    const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId: activeBotId(page) });
+    const failedRun = snapshot.run;
+    expect(failedRun).toMatchObject({ status: "failed", error: "Scripted run failure" });
+    if (!failedRun) throw new Error("The scripted fixture must create a failed Run");
+    await expect
+      .poll(() =>
+        page.evaluate((id) => localStorage.getItem(`rakazo:seen-run-error:${id}`), failedRun.id),
+      )
+      .not.toBeNull();
+
+    let patchedSnapshots = 0;
+    // Keep the real failed Run and response; substitute only its diagnostic for rendered acceptance.
+    for (const procedure of ["bootstrap", "threads/get"]) {
+      await page.route(`**/rpc/${procedure}`, async (route) => {
+        const response = await route.fetch({ maxRetries: 0 });
+        const body = (await response.json()) as { json?: AppBootstrap | ThreadSnapshot };
+        const thread =
+          procedure === "bootstrap"
+            ? (body.json as AppBootstrap | undefined)?.thread
+            : (body.json as ThreadSnapshot | undefined);
+        if (thread?.run?.id === failedRun.id) {
+          expect(thread.run.status).toBe("failed");
+          expect(thread.run.error).toBe("Scripted run failure");
+          thread.run.error = diagnostic.text;
+          patchedSnapshots += 1;
+        }
+        await route.fulfill({ response, json: body });
+      });
+    }
+    await page.evaluate(
+      (id) => localStorage.removeItem(`rakazo:seen-run-error:${id}`),
+      failedRun.id,
+    );
+    await page.reload();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    // An idle subscription becomes live on its first 20-second heartbeat.
+    await expect(page.getByTestId("connection-status")).toBeHidden({ timeout: 30_000 });
+    await expect.poll(() => patchedSnapshots).toBeGreaterThan(0);
+    const details = error.getByTestId("run-error-details");
+    await expect(details.locator("p")).toHaveText("The model provider returned an error.");
+    await expect(details.locator("pre")).toBeHidden();
+    await details.getByText("Details", { exact: true }).click();
+    await expect(details.locator("pre")).toHaveText(diagnostic.text);
+    await expect(error).not.toContainText("Scripted run failure");
+    await captureScreenshot(page, testInfo, `${diagnostic.id}-error-details`);
+    expect(pageErrors).toEqual([]);
+  });
+}
 
 test("a covered run error is not remembered until it is presented", async ({ page }, testInfo) => {
   const stamp = Date.now();
