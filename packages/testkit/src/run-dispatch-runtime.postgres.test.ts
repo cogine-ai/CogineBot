@@ -2,9 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { BackgroundJob } from "@rakazo/adapter-kit";
+import type { BackgroundJob, BackgroundJobHandlers } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
-import { ComposioEmulator, ScriptedAgentRuntime } from "@rakazo/adapters";
+import {
+  ComposioEmulator,
+  InMemoryRealtimeFanout,
+  RunStarter,
+  RunWorkerHost,
+  ScriptedAgentRuntime,
+} from "@rakazo/adapters";
 import { createDb } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
@@ -60,7 +66,7 @@ async function openApp(runtime = new ScriptedAgentRuntime()) {
   };
 }
 
-async function seed(handles: AppHandles, label: string) {
+async function seed(handles: AppHandles, label: string, computerMode?: "dedicated") {
   const signup = await handles.app.request("/api/auth/sign-up/email", {
     method: "POST",
     headers: { "content-type": "application/json", origin },
@@ -79,6 +85,7 @@ async function seed(handles: AppHandles, label: string) {
     description: "",
     instructions: "",
     notifyOnFinish: false,
+    ...(computerMode ? { computerMode } : {}),
   });
   await wait(async () =>
     expect(
@@ -95,7 +102,7 @@ async function seed(handles: AppHandles, label: string) {
   const run = await handles.prisma.run.create({
     data: { ...identity, taskId: task.id, trigger: "user", status: "queued" },
   });
-  return { ...identity, run };
+  return { ...identity, cookie, run };
 }
 
 describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
@@ -213,6 +220,157 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       await f.close();
     }
   });
+
+  it.each([false, true])(
+    "creates new chat behind a background takeover and preserves actual user control=%s",
+    async (userHasScreen) => {
+      const f = await openApp();
+      let recovery: RunWorkerHost | undefined;
+      try {
+        const { run, cookie, ...identity } = await seed(
+          f.handles,
+          "background handoff",
+          "dedicated",
+        );
+        const takeoverPrompt = "Take over so I can sign in.";
+        const routine = await f.handles.prisma.routine.create({
+          data: {
+            ...identity,
+            name: "Background handoff fixture",
+            prompt: takeoverPrompt,
+            crons: ["* * * * *"],
+            active: false,
+          },
+        });
+        await f.handles.prisma.task.update({
+          where: { id: run.taskId },
+          data: { prompt: takeoverPrompt },
+        });
+        await f.handles.prisma.run.update({
+          where: { id: run.id },
+          data: { trigger: "routine", routineId: routine.id },
+        });
+        await f.handles.jobs.enqueue(runContinueJob(run.id));
+        await wait(async () =>
+          expect(
+            await f.handles.prisma.run.findUniqueOrThrow({ where: { id: run.id } }),
+          ).toMatchObject({ status: "waiting_takeover", leaseOwner: null }),
+        );
+        await wait(async () =>
+          expect(await f.handles.prisma.attempt.findMany({ where: { runId: run.id } })).toEqual([
+            expect.objectContaining({
+              status: "waiting_takeover",
+              finishedAt: expect.any(Date),
+            }),
+          ]),
+        );
+        if (userHasScreen) {
+          await rpc(f.handles, cookie, "computer/boot", { botId: identity.botId });
+          await rpc(f.handles, cookie, "computer/takeover", { botId: identity.botId });
+        }
+        const oldState = async () => ({
+          run: await f.handles.prisma.run.findUniqueOrThrow({ where: { id: run.id } }),
+          attempts: await f.handles.prisma.attempt.findMany({
+            where: { runId: run.id },
+            orderBy: { id: "asc" },
+          }),
+          effects: await f.handles.prisma.externalEffect.findMany({
+            where: { runId: run.id },
+            orderBy: { id: "asc" },
+          }),
+          computer: await f.handles.prisma.computer.findFirstOrThrow({
+            where: { bots: { some: { id: identity.botId } } },
+          }),
+          leases: await f.handles.prisma.computerExecutionLease.findMany({
+            where: { botId: identity.botId },
+            orderBy: { id: "asc" },
+          }),
+          cards: await f.handles.prisma.message.findMany({
+            where: { runId: run.id },
+            orderBy: { seq: "asc" },
+          }),
+        });
+        const before = await oldState();
+        const sent = await rpc<{ runId: string }>(f.handles, cookie, "threads/send", {
+          botId: identity.botId,
+          text: "Reply with the next available step.",
+          clientNonce: `new-chat-${randomUUID()}`,
+        });
+        expect(sent.runId).not.toBe(run.id);
+        expect(await f.handles.prisma.steeringMessage.count({ where: { runId: run.id } })).toBe(0);
+        // The immediate dispatch may claim once before observing the occupied computer.
+        await wait(async () => {
+          const queued = await f.handles.prisma.run.findUniqueOrThrow({
+            where: { id: sent.runId },
+          });
+          expect(queued).toMatchObject({ status: "queued", leaseOwner: null, startedAt: null });
+          expect(queued.leaseFence).toBeGreaterThan(0);
+        });
+        const queuedBeforeRecovery = await f.handles.prisma.run.findUniqueOrThrow({
+          where: { id: sent.runId },
+        });
+        expect(queuedBeforeRecovery).toMatchObject({
+          trigger: "user",
+          botId: identity.botId,
+          threadId: identity.threadId,
+          userId: identity.userId,
+          spaceId: identity.spaceId,
+          sourceMessageId: expect.any(String),
+        });
+        expect(
+          await f.handles.prisma.steeringMessage.count({
+            where: { messageId: queuedBeforeRecovery.sourceMessageId! },
+          }),
+        ).toBe(0);
+        expect(
+          await f.handles.prisma.task.findUniqueOrThrow({
+            where: { id: queuedBeforeRecovery.taskId },
+          }),
+        ).toMatchObject({ prompt: "Reply with the next available step." });
+        expect(await f.handles.prisma.attempt.count({ where: { runId: sent.runId } })).toBe(0);
+        const fanout = new InMemoryRealtimeFanout();
+        recovery = new RunWorkerHost(f.handles.prisma, fanout, new RunStarter(fanout), {
+          intervalMs: 25,
+        });
+        // A later unrelated chat proves that recovery scanned the blocked chat's lane.
+        const sentinel = userHasScreen ? await seed(f.handles, "recovery sentinel") : undefined;
+        await recovery.start({
+          "run.continue": async ({ runId }, execution) =>
+            f.handles.executor.continueRun(
+              runId,
+              "background-handoff-recovery",
+              execution?.onRunStarted,
+            ),
+        } as BackgroundJobHandlers);
+        if (userHasScreen) {
+          await wait(async () =>
+            expect(
+              (await f.handles.prisma.run.findUniqueOrThrow({ where: { id: sentinel!.run.id } }))
+                .status,
+            ).toBe("completed"),
+          );
+          expect(await oldState()).toEqual(before);
+          expect(
+            await f.handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
+          ).toEqual(queuedBeforeRecovery);
+          expect(await f.handles.prisma.attempt.count({ where: { runId: sent.runId } })).toBe(0);
+        } else {
+          await wait(async () =>
+            expect(
+              (await f.handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } })).status,
+            ).toBe("completed"),
+          );
+          expect(
+            await f.handles.prisma.run.findUniqueOrThrow({ where: { id: run.id } }),
+          ).toMatchObject({ status: "cancelled", leaseFence: before.run.leaseFence });
+          expect(await f.handles.prisma.attempt.count({ where: { runId: run.id } })).toBe(1);
+        }
+      } finally {
+        await recovery?.stop();
+        await f.close();
+      }
+    },
+  );
 
   it("makes repeated stop calls wait for active work, then resumes the same run", async () => {
     const f = await openApp();

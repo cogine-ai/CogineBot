@@ -1829,6 +1829,173 @@ describe("sendThreadMessage", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it.each(
+    (["bot", "group"] as const).flatMap((kind) =>
+      (
+        [
+          "routine",
+          "webhook",
+          "created",
+          "bot_message",
+          "tickets",
+          "user",
+          "follow_up",
+          undefined,
+        ] as const
+      ).map((trigger) => ({ kind, trigger })),
+    ),
+  )(
+    "routes takeover waits for $kind/$trigger without answering background work",
+    async ({ kind, trigger }) => {
+      const background = ["routine", "webhook", "created", "bot_message", "tickets"].some(
+        (name) => name === trigger,
+      );
+      const waiting = {
+        id: "run-waiting",
+        taskId: "task-waiting",
+        botId: "bot-1",
+        status: "waiting_takeover",
+        trigger,
+      };
+      const tx = {
+        thread: {
+          update: vi.fn().mockResolvedValue({ nextMessageSeq: 2, nextEventSeq: 3 }),
+        },
+        message: {
+          create: vi.fn().mockResolvedValue({
+            id: "msg-1",
+            threadId: "thread-1",
+            seq: 1,
+            role: "user",
+            blocks: [{ kind: "text", text: "status?" }],
+            botId: null,
+            runId: null,
+            createdAt: new Date(),
+          }),
+          update: vi.fn(),
+        },
+        run: {
+          findMany: vi.fn().mockResolvedValueOnce([waiting]).mockResolvedValue([]),
+          findUnique: vi.fn().mockResolvedValue({
+            status: background ? "queued" : "waiting_takeover",
+            startedAt: null,
+          }),
+          create: vi.fn().mockResolvedValue({
+            id: "run-new",
+            taskId: "task-new",
+            botId: "bot-1",
+            status: "queued",
+          }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        task: {
+          create: vi.fn().mockResolvedValue({ id: "task-new" }),
+          update: vi.fn(),
+        },
+        steeringMessage: { create: vi.fn() },
+        event: {
+          create: vi.fn().mockResolvedValue({ id: "event-1", seq: 2, createdAt: new Date() }),
+        },
+        chatGroup: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "group-1",
+            members: [
+              { bot: { id: "bot-1", name: "Alpha", color: null } },
+              { bot: { id: "bot-2", name: "Beta", color: null } },
+            ],
+          }),
+          update: vi.fn(),
+        },
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
+      };
+      const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+      const target: ThreadTarget =
+        kind === "bot"
+          ? ({
+              kind: "bot",
+              botId: "bot-1",
+              threadId: "thread-1",
+              bot: { computer: null },
+            } as ThreadTarget)
+          : {
+              kind: "group",
+              groupId: "group-1",
+              groupName: "Group",
+              threadId: "thread-1",
+              members: [],
+              memberBotIds: ["bot-1", "bot-2"],
+            };
+      const enqueue = vi.fn().mockResolvedValue(undefined);
+      const result = await sendThreadMessage(
+        {
+          prisma,
+          events: { notify: vi.fn().mockResolvedValue(undefined) } as never,
+          jobs: { enqueue } as never,
+        },
+        { spaceId: "workspace-1", userId: "user-1" } as Actor,
+        target,
+        { text: "status?", mentions: ["bot-1"], clientNonce: "nonce-wait-bypass" },
+      );
+      if (background) {
+        expect(result).toMatchObject({ runId: "run-new", taskId: "task-new", runIds: ["run-new"] });
+        expect(tx.run.create).toHaveBeenCalledExactlyOnceWith({
+          data: expect.objectContaining({
+            botId: "bot-1",
+            threadId: "thread-1",
+            userId: "user-1",
+            spaceId: "workspace-1",
+            trigger: "user",
+            status: "queued",
+            sourceMessageId: "msg-1",
+          }),
+        });
+        expect(tx.task.create).toHaveBeenCalledOnce();
+        expect(tx.steeringMessage.create).not.toHaveBeenCalled();
+        expect(tx.run.updateMany).not.toHaveBeenCalled();
+        expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            name: "run.continue",
+            payload: { runId: "run-new" },
+            replaceKey: "run:run-new",
+          }),
+        );
+      } else {
+        expect(result).toMatchObject({
+          runId: waiting.id,
+          taskId: waiting.taskId,
+          runIds: [waiting.id],
+        });
+        expect(tx.steeringMessage.create).toHaveBeenCalledExactlyOnceWith({
+          data: { messageId: "msg-1", botId: "bot-1", userId: "user-1", runId: waiting.id },
+        });
+        expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+          where: { id: waiting.id, status: "waiting_takeover" },
+          data: { wakeAt: expect.any(Date) },
+        });
+        expect(tx.run.create).not.toHaveBeenCalled();
+        expect(tx.task.create).not.toHaveBeenCalled();
+        expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            name: "run.continue",
+            payload: { runId: waiting.id },
+            replaceKey: "run:run-waiting",
+          }),
+        );
+      }
+      expect(tx.task.update).not.toHaveBeenCalled();
+      expect(waiting).toEqual({
+        id: "run-waiting",
+        taskId: "task-waiting",
+        botId: "bot-1",
+        status: "waiting_takeover",
+        trigger,
+      });
+    },
+  );
+
   it("steers a waiting-takeover run instead of refusing the message", async () => {
     const tx = {
       thread: {

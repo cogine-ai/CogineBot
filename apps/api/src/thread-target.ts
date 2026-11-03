@@ -18,6 +18,7 @@ import {
   callIdFromClientNonce,
   isActive,
   isConversationalRun,
+  messageBypassesTakeoverWait,
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
@@ -790,7 +791,10 @@ export async function sendThreadMessage(
             message: "Answer the pending ask first.",
           });
         }
-        const active = activeRuns.find(steersUserMessage) ?? activeRuns[0];
+        const holdingRuns = activeRuns.filter(
+          (run) => STEERABLE_RUN_STATUSES.has(run.status) && !messageBypassesTakeoverWait(run),
+        );
+        const active = holdingRuns.find(steersUserMessage) ?? holdingRuns[0];
         if (active) {
           await tx.steeringMessage.create({
             data: {
@@ -959,6 +963,7 @@ export async function sendThreadMessage(
             message: "Answer the pending ask first.",
           });
         }
+        if (messageBypassesTakeoverWait(run)) continue;
         const current = activeByBotId.get(run.botId);
         if (!current || (!steersUserMessage(current) && steersUserMessage(run))) {
           activeByBotId.set(run.botId, run);

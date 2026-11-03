@@ -13,6 +13,7 @@ import {
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
+  messageBypassesTakeoverWait,
   messagingChannelId,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
@@ -475,12 +476,15 @@ export async function sendUserMessage(
                   in: ["running", "queued", "leased", "waiting_input", "waiting_takeover"],
                 },
               },
-              select: { id: true, taskId: true, trigger: true },
+              select: { id: true, taskId: true, trigger: true, status: true },
             })
           : [];
+      const holdingRuns = activeRuns.filter(
+        (run) => !messageBypassesTakeoverWait(run, input.trigger !== "webhook"),
+      );
       // Steer a conversational run when there is one; a routine, webhook, or intro turn only holds the queue.
       const busy =
-        activeRuns.find((run) => isConversationalRun(run.trigger)) ?? activeRuns[0] ?? null;
+        holdingRuns.find((run) => isConversationalRun(run.trigger)) ?? holdingRuns[0] ?? null;
       let task = null;
       let run = null;
       if (createRun && !busy) {
@@ -539,6 +543,12 @@ export async function sendUserMessage(
               : {}),
           },
         });
+        if (busy.status === "waiting_takeover") {
+          await tx.run.updateMany({
+            where: { id: busy.id, status: "waiting_takeover" },
+            data: { wakeAt: new Date() },
+          });
+        }
         await tx.message.update({ where: { id: message.id }, data: { runId: busy.id } });
       }
       const event = await appendEventInTransaction(tx, {
