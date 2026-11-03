@@ -12,6 +12,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
+import type { ThreadEvents } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
@@ -26,6 +27,8 @@ import { compileOpenApiDocument } from "./openapi-import.js";
 import { serializeModelSecret } from "./pi-oauth.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
+import type { TurnCheckpoint } from "./turn-checkpoint.js";
+import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -1958,5 +1961,282 @@ describe("strict installed argument approval replay", () => {
       ),
     ).rejects.toThrow("revision changed");
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("pause ownership after an IO failure", () => {
+  type PauseInput = Parameters<ThreadEvents["pauseRunForInput"]>[0];
+  const name = "demo_write_item";
+
+  function pauseFixture() {
+    const f = fixture({
+      name,
+      readOnly: false,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: name }],
+    });
+    const captures: string[] = [];
+    const checkpointWrites: string[] = [];
+    const cards: PauseInput[] = [];
+    Object.assign(f.prisma.externalEffect, {
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { idempotencyKey: string };
+          create: Omit<Effect, "id">;
+          update: Partial<Effect>;
+        }) => {
+          let row = f.effects.find((effect) => effect.idempotencyKey === where.idempotencyKey);
+          if (row) Object.assign(row, update);
+          else {
+            row = { id: "private-pause-checkpoint", ...create };
+            f.effects.push(row);
+          }
+          if (typeof row.result !== "string")
+            throw new Error("Expected a captured turn transcript");
+          checkpointWrites.push(row.result);
+          return row;
+        },
+      ),
+    });
+    async function invoke(request: AgentRunRequest, id: string) {
+      const checkpoint: TurnCheckpoint = {
+        version: 1,
+        provider: request.model.provider,
+        model: request.model.id,
+        systemPrompt: "Synthetic pause recovery context",
+        pendingToolCallId: id,
+        messages: [
+          { role: "user", content: "Approve this synthetic action", timestamp: 1 },
+          {
+            role: "assistant",
+            api: "openai-completions",
+            provider: request.model.provider,
+            model: request.model.id,
+            content: [{ type: "toolCall", id, name, arguments: { id } }],
+            stopReason: "toolUse",
+            timestamp: 1,
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        ],
+      };
+      await request.onCheckpoint!(() => {
+        captures.push(id);
+        return JSON.stringify(checkpoint);
+      }, id);
+      return request.executeTool!(name, { id }, id);
+    }
+    return { ...f, captures, checkpointWrites, cards, invoke };
+  }
+
+  it("lets a later pause retry after its owner fails while concurrent waiters share the original failure", async () => {
+    const f = pauseFixture();
+    let signalFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      signalFirst = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    f.pauseRunForInput.mockImplementation(async (...args: unknown[]) => {
+      const input = args[0] as PauseInput;
+      if (f.pauseRunForInput.mock.calls.length === 1) {
+        signalFirst();
+        await release;
+        return false;
+      }
+      f.cards.push(input);
+      Object.assign(f.runRecord, {
+        status: "waiting_input",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      });
+      return true;
+    });
+    let initial: PromiseSettledResult<unknown>[] = [];
+    let retry: PromiseSettledResult<unknown> | undefined;
+    let afterSuccess: unknown;
+    let waiterSettledBeforeRelease = true;
+    f.runtimeRun.mockImplementation(async function* (request) {
+      const owner = f.invoke(request, "failed-owner");
+      await Promise.race([
+        firstEntered,
+        owner.then(
+          () => undefined,
+          () => undefined,
+        ),
+      ]);
+      let waiterSettled = false;
+      const waiter = f.invoke(request, "failed-waiter").finally(() => {
+        waiterSettled = true;
+      });
+      const shared = Promise.allSettled([owner, waiter]);
+      try {
+        // All fixture IO resolves on microtasks; one macrotask leaves only the held owner pending.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        waiterSettledBeforeRelease = waiterSettled;
+      } finally {
+        releaseFirst();
+      }
+      initial = await shared;
+      [retry] = await Promise.allSettled([f.invoke(request, "successful-retry")]);
+      if (retry!.status === "fulfilled") afterSuccess = await f.invoke(request, "after-success");
+      else yield { type: "done" as const, text: "The owner failed before pausing." };
+    });
+    await f.executor.continueRun(f.runRecord.id, "pause-retry-worker");
+    expect(
+      waiterSettledBeforeRelease,
+      JSON.stringify(
+        {
+          initial,
+          retry,
+          pauseCalls: f.pauseRunForInput.mock.calls.length,
+          captures: f.captures,
+          checkpointWrites: f.checkpointWrites.length,
+        },
+        (_key, value) =>
+          value instanceof Error ? { name: value.name, message: value.message } : value,
+      ),
+    ).toBe(false);
+    expect(initial.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+    if (initial[0]?.status !== "rejected" || initial[1]?.status !== "rejected")
+      throw new Error("Expected the shared precommit failure");
+    expect(initial[0].reason).toBe(initial[1].reason);
+    expect(initial[0].reason).toMatchObject({
+      message: "Could not pause this run for approval; try sending again.",
+    });
+    expect(retry?.status).toBe("fulfilled");
+    if (retry?.status === "fulfilled") expect(isApprovalPausedResult(retry.value)).toBe(true);
+    expect(isApprovalPausedResult(afterSuccess)).toBe(true);
+    expect(f.pauseRunForInput).toHaveBeenCalledTimes(2);
+    expect(f.cards).toHaveLength(1);
+    const selectedEffect = f.effects.find(
+      (effect) =>
+        effect.kind === name &&
+        effect.idempotencyKey ===
+          approvalEffectKey(f.runRecord.id, name, { id: "successful-retry" }),
+    );
+    expect(selectedEffect).toBeDefined();
+    expect(f.cards[0]!.blocks).toEqual([
+      expect.objectContaining({
+        kind: "ask",
+        approvalEffectId: selectedEffect!.id,
+        status: "pending",
+      }),
+    ]);
+    expect(f.cards[0]).toMatchObject({
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      leaseOwner: "pause-retry-worker",
+      leaseFence: 1,
+    });
+    expect(f.captures).toEqual(["failed-owner", "successful-retry"]);
+    expect(f.checkpointWrites).toHaveLength(2);
+    const rows = f.effects.filter((effect) => effect.kind === "runtime_checkpoint");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      status: "runtime_checkpoint",
+      idempotencyKey: JSON.stringify(["runtime_checkpoint", f.runRecord.id]),
+    });
+    const raw = JSON.parse(String(rows[0]!.result)) as TurnCheckpoint;
+    const saved = restoreTurnCheckpoint(String(rows[0]!.result), {
+      provider: raw.provider,
+      id: raw.model,
+    });
+    expect(saved.pendingToolCallId).toBe("successful-retry");
+    expect(
+      saved.messages.flatMap((message) =>
+        message.role === "assistant"
+          ? message.content.filter((part) => part.type === "toolCall").map((part) => part.id)
+          : [],
+      ),
+    ).toEqual(["successful-retry"]);
+    expect(f.runRecord).toMatchObject({ status: "waiting_input", leaseFence: 1, leaseOwner: null });
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.finalizeRun).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a committed pause or checkpoint after its commit acknowledgement fails", async () => {
+    const f = pauseFixture();
+    const commitFailure = new Error("Synthetic pause commit acknowledgement is uncertain");
+    f.pauseRunForInput.mockImplementation(async (...args: unknown[]) => {
+      f.cards.push(args[0] as PauseInput);
+      // Contract fault injection: commit the real fixture's lifecycle, then lose the acknowledgement.
+      Object.assign(f.runRecord, {
+        status: "waiting_input",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      });
+      throw commitFailure;
+    });
+    let first: PromiseSettledResult<unknown> | undefined;
+    let retry: PromiseSettledResult<unknown> | undefined;
+    let retryLeaseChecks: typeof f.prisma.run.updateMany.mock.calls = [];
+    f.runtimeRun.mockImplementation(async function* (request) {
+      [first] = await Promise.allSettled([f.invoke(request, "committed-owner")]);
+      const beforeRetry = f.prisma.run.updateMany.mock.calls.length;
+      [retry] = await Promise.allSettled([f.invoke(request, "late-retry")]);
+      retryLeaseChecks = f.prisma.run.updateMany.mock.calls.slice(beforeRetry);
+      if (retry!.status === "rejected")
+        yield { type: "done" as const, text: "The acknowledgement failed." };
+    });
+    await f.executor.continueRun(f.runRecord.id, "pause-commit-worker");
+    expect(
+      first,
+      JSON.stringify(
+        {
+          first,
+          retry,
+          pauseCalls: f.pauseRunForInput.mock.calls.length,
+          captures: f.captures,
+          checkpointWrites: f.checkpointWrites.length,
+        },
+        (_key, value) =>
+          value instanceof Error ? { name: value.name, message: value.message } : value,
+      ),
+    ).toMatchObject({ status: "rejected", reason: commitFailure });
+    expect(retry?.status).toBe("fulfilled");
+    if (retry?.status === "fulfilled") expect(isApprovalPausedResult(retry.value)).toBe(true);
+    expect(retryLeaseChecks).toHaveLength(1);
+    expect(retryLeaseChecks[0]![0]).toEqual({
+      where: {
+        id: f.runRecord.id,
+        status: "running",
+        leaseOwner: "pause-commit-worker",
+        leaseFence: 1,
+      },
+      data: { leaseExpiresAt: expect.any(Date) },
+    });
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.cards).toHaveLength(1);
+    expect(f.captures).toEqual(["committed-owner"]);
+    expect(f.checkpointWrites).toHaveLength(1);
+    const checkpoint = f.effects.find((effect) => effect.kind === "runtime_checkpoint")!;
+    expect(checkpoint.result).toBe(f.checkpointWrites[0]);
+    const raw = JSON.parse(String(checkpoint.result)) as TurnCheckpoint;
+    expect(
+      restoreTurnCheckpoint(String(checkpoint.result), { provider: raw.provider, id: raw.model })
+        .pendingToolCallId,
+    ).toBe("committed-owner");
+    expect(f.runRecord).toMatchObject({
+      status: "waiting_input",
+      leaseFence: 1,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.finalizeRun).not.toHaveBeenCalled();
   });
 });

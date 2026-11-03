@@ -5,6 +5,10 @@ import path from "node:path";
 import { ComposioEmulator, FakeSandboxProvider } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  restoreTurnCheckpoint,
+  serializeTurnCheckpoint,
+} from "../../adapters/src/turn-checkpoint.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import { type ModelEmulatorStep, startModelEmulator } from "./model-emulator.js";
@@ -30,10 +34,18 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
         observe: false,
         settle_ms: 0,
       };
+      const replacementArgs = {
+        ...approvedArgs,
+        actions: [{ kind: "type", text: "unapproved replacement" }],
+      };
       const resultStep =
         (id: string): ModelEmulatorStep["expect"] =>
         (request) => {
-          const result = request.messages.findLast((message) => message.role === "tool");
+          const results = request.messages.filter(
+            (message) => message.role === "tool" && message.tool_call_id === id,
+          );
+          expect(results).toHaveLength(1);
+          const result = results[0];
           expect(result?.tool_call_id).toBe(id);
           const body = JSON.parse(String(result?.content));
           if (answer === "allow") expect(body).toMatchObject({ ok: true, completed: 1 });
@@ -65,28 +77,7 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
             },
           },
           {
-            expect(request) {
-              expect(JSON.stringify(request.messages)).toContain("approved clipboard content");
-            },
-            response: {
-              type: "tool",
-              id: "resumed-action",
-              name: "computer_act",
-              // The executor must restore exactly what the user approved, even if
-              // the model reconstructs different arguments after its run resumes.
-              arguments:
-                answer === "allow"
-                  ? {
-                      ...approvedArgs,
-                      actions: [{ kind: "type", text: "unapproved replacement" }],
-                    }
-                  : approvedArgs,
-            },
-          },
-          {
-            // A later identical computer_act in this same resume is a new occurrence,
-            // not a replay. This fixture only checks the approved request is restored.
-            expect: resultStep("resumed-action"),
+            expect: resultStep("pending-action"),
             response: { type: "text", text: "Finished the approval fixture." },
           },
         ],
@@ -180,7 +171,7 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
         expect(model.requests).toHaveLength(1);
         expect(act).not.toHaveBeenCalled();
         const effects = await handles.prisma.externalEffect.findMany({
-          where: { runId: sent.runId },
+          where: { runId: sent.runId, kind: "computer_act" },
         });
         expect(effects).toHaveLength(1);
         expect(effects[0]).toMatchObject({
@@ -188,6 +179,78 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
           status: "intended",
           request: approvedArgs,
         });
+        const privateRows = await handles.prisma.externalEffect.findMany({
+          where: { runId: sent.runId, kind: "runtime_checkpoint" },
+        });
+        expect(privateRows).toHaveLength(1);
+        const savedRow = privateRows[0]!;
+        expect(savedRow).toMatchObject({
+          runId: sent.runId,
+          spaceId: storedBot.spaceId,
+          idempotencyKey: JSON.stringify(["runtime_checkpoint", sent.runId]),
+          kind: "runtime_checkpoint",
+          status: "runtime_checkpoint",
+          request: {},
+        });
+        if (typeof savedRow.result !== "string") throw new Error("Missing saved computer turn");
+        const saved = restoreTurnCheckpoint(savedRow.result, {
+          provider: model.model.provider,
+          id: model.model.id,
+        });
+        const before = JSON.parse(savedRow.result);
+        expect(saved).toEqual(before);
+        expect(saved.pendingToolCallId).toBe("pending-action");
+        const pendingCalls = saved.messages.flatMap((message) =>
+          message.role === "assistant"
+            ? message.content.filter(
+                (part) => part.type === "toolCall" && part.id === saved.pendingToolCallId,
+              )
+            : [],
+        );
+        expect(pendingCalls).toHaveLength(1);
+        const pendingCall = pendingCalls[0];
+        if (pendingCall?.type !== "toolCall") throw new Error("Missing saved computer call");
+        expect(pendingCall.name).toBe("computer_act");
+        expect(pendingCall.arguments).toEqual(approvedArgs);
+        if (answer === "allow") {
+          pendingCall.arguments = replacementArgs;
+          const changedBlob = serializeTurnCheckpoint(saved);
+          const changed = restoreTurnCheckpoint(changedBlob, {
+            provider: model.model.provider,
+            id: model.model.id,
+          });
+          const changedCalls = changed.messages.flatMap((message) =>
+            message.role === "assistant"
+              ? message.content.filter(
+                  (part) => part.type === "toolCall" && part.id === changed.pendingToolCallId,
+                )
+              : [],
+          );
+          expect(changedCalls).toHaveLength(1);
+          const changedCall = changedCalls[0];
+          if (changedCall?.type !== "toolCall") throw new Error("Missing modified computer call");
+          expect(changedCall.arguments).toEqual(replacementArgs);
+          changedCall.arguments = approvedArgs;
+          expect(changed).toEqual(before);
+          await handles.prisma.externalEffect.update({
+            where: { id: savedRow.id },
+            data: { result: changedBlob },
+          });
+          const changedRow = await handles.prisma.externalEffect.findUniqueOrThrow({
+            where: { id: savedRow.id },
+          });
+          expect({ ...changedRow, result: savedRow.result, updatedAt: savedRow.updatedAt }).toEqual(
+            savedRow,
+          );
+          expect(changedRow.result).toBe(changedBlob);
+        } else {
+          expect(
+            await handles.prisma.externalEffect.findUniqueOrThrow({ where: { id: savedRow.id } }),
+          ).toEqual(savedRow);
+        }
+        expect(
+          await handles.prisma.externalEffect.findUniqueOrThrow({ where: { id: effects[0]!.id } }),
+        ).toEqual(effects[0]);
         const card = await handles.prisma.message.findFirstOrThrow({
           where: { runId: sent.runId, role: "bot" },
           orderBy: { seq: "desc" },
@@ -205,6 +268,7 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
         });
         await waitForRun("completed");
         model.assertComplete();
+        expect(model.requests).toHaveLength(2);
         expect(act).toHaveBeenCalledTimes(answer === "allow" ? 1 : 0);
         if (answer === "allow") {
           expect(act.mock.calls[0]![1]).toEqual({
@@ -214,14 +278,25 @@ describe.skipIf(!databaseAvailable)("offline Pi computer approval", () => {
           });
         }
         const settledEffects = await handles.prisma.externalEffect.findMany({
-          where: { runId: sent.runId },
+          where: { runId: sent.runId, kind: "computer_act" },
         });
         expect(settledEffects).toHaveLength(1);
         expect(settledEffects[0]).toMatchObject({
           id: effects[0]!.id,
+          idempotencyKey: effects[0]!.idempotencyKey,
           status: answer === "allow" ? "completed" : "denied",
           request: approvedArgs,
         });
+        expect(
+          await handles.prisma.externalEffect.findUnique({
+            where: { idempotencyKey: savedRow.idempotencyKey },
+          }),
+        ).toBeNull();
+        expect(
+          await handles.prisma.externalEffect.count({
+            where: { runId: sent.runId, kind: "runtime_checkpoint" },
+          }),
+        ).toBe(0);
       } finally {
         try {
           await stop?.();

@@ -4522,7 +4522,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           const current = show();
           pauseRequest = current;
-          return { owned: true, result: await current };
+          try {
+            return { owned: true, result: await current };
+          } catch (error) {
+            if (pauseRequest === current) pauseRequest = undefined;
+            throw error;
+          }
         };
         const pauseForApproval = () => {
           approvalPausePending = true;
