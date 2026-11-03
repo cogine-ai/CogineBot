@@ -803,6 +803,12 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
+          if (active.status === "waiting_takeover") {
+            await tx.run.updateMany({
+              where: { id: active.id, status: "waiting_takeover" },
+              data: { wakeAt: new Date() },
+            });
+          }
           await tx.message.update({ where: { id: message.id }, data: { runId: active.id } });
           const event = await appendEventInTransaction(tx, {
             spaceId: actor.spaceId,
@@ -978,6 +984,12 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
+          if (active.status === "waiting_takeover") {
+            await tx.run.updateMany({
+              where: { id: active.id, status: "waiting_takeover" },
+              data: { wakeAt: new Date() },
+            });
+          }
           runs.push(active);
           continue;
         }

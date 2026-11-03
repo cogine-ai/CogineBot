@@ -6,7 +6,12 @@ import type {
   JobPublisher,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
-import { computerControlExpireJobKey } from "@rakazo/adapter-kit";
+import {
+  computerControlExpireJobKey,
+  SandboxRateLimitError,
+  SandboxUnavailableError,
+  SandboxUnresponsiveError,
+} from "@rakazo/adapter-kit";
 import type { ComputerUpdate } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES, parseScreenLeaseId, screenLeaseId } from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -410,6 +415,18 @@ export async function provisionComputer(
       );
     }
     if (rollbackError) {
+      // The provider was still down for the cleanup, which adds nothing to why the start failed.
+      if (
+        rollbackError instanceof SandboxUnresponsiveError ||
+        rollbackError instanceof SandboxUnavailableError ||
+        rollbackError instanceof SandboxRateLimitError
+      ) {
+        getLogger().warn("computer.rollback_failed", {
+          provider: provisioned?.kind,
+          error: rollbackError,
+        });
+        throw error;
+      }
       throw new AggregateError(
         [error, rollbackError],
         "Computer provisioning failed and its sandbox could not be rolled back",

@@ -3529,7 +3529,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                 }
               : {}),
-            AND: [{ OR: [{ wakeAt: null }, { wakeAt: { lte: now } }] }],
+            AND: [
+              {
+                OR: [
+                  {
+                    status: { in: ["waiting_input", "waiting_takeover"] },
+                    wakeAt: { lte: now },
+                  },
+                  {
+                    status: { notIn: ["waiting_input", "waiting_takeover"] },
+                    OR: [{ wakeAt: null }, { wakeAt: { lte: now } }],
+                  },
+                ],
+              },
+            ],
             OR: [
               { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
               {

@@ -1852,6 +1852,7 @@ describe("sendThreadMessage", () => {
         update: vi.fn(),
       },
       run: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi
           .fn()
           .mockResolvedValue([{ id: "run-waiting", taskId: "task-1", status: "waiting_takeover" }]),
@@ -1904,6 +1905,10 @@ describe("sendThreadMessage", () => {
         userId: "user-1",
         runId: "run-waiting",
       },
+    });
+    expect(tx.run.updateMany).toHaveBeenCalledWith({
+      where: { id: "run-waiting", status: "waiting_takeover" },
+      data: { wakeAt: expect.any(Date) },
     });
     expect(tx.task.create).not.toHaveBeenCalled();
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));

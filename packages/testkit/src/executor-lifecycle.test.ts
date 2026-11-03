@@ -3095,7 +3095,7 @@ describeIntegration("run executor lifecycle", () => {
       expect(rows).toHaveLength(2);
       await handles.prisma.run.update({
         where: { id: continuationRunId },
-        data: { scriptedState: {} },
+        data: { scriptedState: {}, wakeAt: new Date() },
       });
       await handles.executor.continueRun(continuationRunId, "corrupt-takeover-admission-worker");
       const rejected = await handles.prisma.run.findUniqueOrThrow({

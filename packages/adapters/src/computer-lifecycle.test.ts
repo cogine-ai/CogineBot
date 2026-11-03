@@ -9,6 +9,11 @@ import type {
   JobPublisher,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
+import {
+  SandboxRateLimitError,
+  SandboxUnavailableError,
+  SandboxUnresponsiveError,
+} from "@rakazo/adapter-kit";
 import { clearThread, type PrismaClient, type ThreadEvents } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -1213,6 +1218,109 @@ describe("computer provisioning", () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    {
+      name: "unresponsive cleanup",
+      original: () => new SandboxUnresponsiveError("provider start unreachable"),
+      cleanup: () => new SandboxUnresponsiveError("provider cleanup unreachable"),
+      recordFails: false,
+    },
+    {
+      name: "unavailable cleanup",
+      original: () => new SandboxUnavailableError(),
+      cleanup: () => new SandboxUnavailableError(),
+      recordFails: false,
+    },
+    {
+      name: "rate-limited cleanup",
+      original: () => new SandboxRateLimitError(),
+      cleanup: () => new SandboxRateLimitError(),
+      recordFails: false,
+    },
+    {
+      name: "ordinary start error with typed cleanup",
+      original: () => new Error("ordinary preparation failed"),
+      cleanup: () => new SandboxUnresponsiveError("provider cleanup unreachable"),
+      recordFails: false,
+    },
+    {
+      name: "recording failure with typed cleanup",
+      original: () => new SandboxUnresponsiveError("provider start unreachable"),
+      cleanup: () => new SandboxUnavailableError(),
+      recordFails: true,
+    },
+  ])(
+    "preserves provisioning failures across typed rollback failures ($name)",
+    async ({ original, cleanup, recordFails }) => {
+      const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-typed-rollback-"));
+      const prepareError = original();
+      const rollbackError = cleanup();
+      const recordError = new Error("failure record unavailable");
+      const ref = {
+        id: "new-provider-1",
+        botId: "bot-1",
+        kind: "e2b" as const,
+        providerRef: "new-provider-1",
+        fresh: true,
+      };
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      if (recordFails)
+        updateMany.mockResolvedValueOnce({ count: 1 }).mockRejectedValueOnce(recordError);
+      const prisma = {
+        computer: {
+          findUniqueOrThrow: vi.fn().mockResolvedValue({
+            id: "computer-1",
+            homeKey: "bot-1",
+            providerRef: null,
+            kind: "e2b",
+            scope: "dedicated",
+            state: "stopped",
+            controlLeaseId: null,
+            updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+          }),
+          updateMany,
+        },
+      } as unknown as PrismaClient;
+      const destroy = vi.fn().mockRejectedValue(rollbackError);
+      const sandbox = {
+        provision: vi.fn().mockResolvedValue(ref),
+        prepare: vi.fn().mockRejectedValue(prepareError),
+        destroy,
+      } as unknown as SandboxProvider;
+      try {
+        const result = provisionComputer(
+          {
+            prisma,
+            sandbox,
+            home: {} as AgentHomeStore,
+            jobs: {} as JobPublisher,
+            events: {} as ThreadEvents,
+            dataDir,
+          },
+          "computer-1",
+          context,
+        );
+        if (recordFails) {
+          await expect(result).rejects.toBeInstanceOf(AggregateError);
+          await expect(result).rejects.toMatchObject({
+            errors: [prepareError, rollbackError, recordError],
+          });
+        } else {
+          await expect(result).rejects.toBe(prepareError);
+        }
+        expect(destroy).toHaveBeenCalledExactlyOnceWith(ref, context);
+        expect(updateMany).toHaveBeenCalledTimes(2);
+        expect(updateMany).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            data: { state: "error", providerRef: "new-provider-1", kind: "e2b" },
+          }),
+        );
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each([false, true])(
     "preserves a running computer's files on ordinary reconnect (prepare fails=%s)",
