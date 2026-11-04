@@ -372,7 +372,18 @@ export function observedPiStream(
               },
             }),
         onPayload: async (payload, requestModel) => {
-          const original = payload && typeof payload === "object" ? { ...payload } : payload;
+          const original =
+            payload && typeof payload === "object"
+              ? {
+                  ...payload,
+                  ...("thinking" in payload &&
+                  payload.thinking &&
+                  typeof payload.thinking === "object" &&
+                  !Array.isArray(payload.thinking)
+                    ? { thinking: { ...payload.thinking } }
+                    : {}),
+                }
+              : payload;
           const replacement = await payloadOptions.onPayload?.(payload, requestModel);
           const finalPayload = finalPiOutputPayload(
             model,

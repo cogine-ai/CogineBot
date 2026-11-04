@@ -1,5 +1,10 @@
 import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { clampMaxTokensToContext, clampReasoning } from "@earendil-works/pi-ai/api/simple-options";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import {
+  clampMaxTokensToContext,
+  clampReasoning,
+  clampThinkingBudgetToAnswerRoom,
+} from "@earendil-works/pi-ai/api/simple-options";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 
 /** The audited SDK families share the same reservation and final serialized cap. */
@@ -51,9 +56,36 @@ export function finalPiOutputPayload(
   ) {
     const budgetLevel = clampReasoning(options?.reasoning);
     const configuredBudget = budgetLevel ? options?.thinkingBudgets?.[budgetLevel] : undefined;
-    if (configuredBudget === 0) next.thinking = { type: "disabled" };
-    else if (typeof next.thinking.budget_tokens !== "number" || next.thinking.budget_tokens >= cap)
-      throw new Error("Model thinking budget exceeds the reserved output limit");
+    const thinkingBudget = next.thinking.budget_tokens;
+    const sdkThinking = original.thinking;
+    const callerChangedThinking =
+      !isRecord(sdkThinking) ||
+      sdkThinking.type !== next.thinking.type ||
+      sdkThinking.budget_tokens !== thinkingBudget;
+    if (callerChangedThinking || (configuredBudget !== undefined && configuredBudget !== 0)) {
+      // Explicit budgets are promises, unlike the SDK's automatically chosen level budget.
+      if (
+        typeof thinkingBudget !== "number" ||
+        !Number.isSafeInteger(thinkingBudget) ||
+        thinkingBudget < 1024 ||
+        thinkingBudget >= cap
+      )
+        throw new Error("Model thinking budget exceeds the reserved output limit");
+    } else {
+      if (
+        typeof thinkingBudget !== "number" ||
+        !Number.isSafeInteger(thinkingBudget) ||
+        thinkingBudget < 0
+      )
+        throw new Error("Model thinking budget exceeds the reserved output limit");
+      const fitted =
+        configuredBudget === 0 ? 0 : clampThinkingBudgetToAnswerRoom(thinkingBudget, cap);
+      if (fitted < 1024) {
+        if (!getSupportedThinkingLevels(model).includes("off"))
+          throw new Error("Model thinking budget exceeds the reserved output limit");
+        next.thinking = { type: "disabled" };
+      } else next.thinking = { ...next.thinking, budget_tokens: fitted };
+    }
   }
   return next;
 }
