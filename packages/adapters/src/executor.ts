@@ -6445,6 +6445,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await updateTicket(deps, {
                 spaceId: run.spaceId,
                 botId: bot.id,
+                userId: run.userId,
                 id: String(args.id ?? ""),
                 title: args.title !== undefined ? String(args.title) : undefined,
                 description: args.description !== undefined ? String(args.description) : undefined,

@@ -105,6 +105,19 @@ export async function addScratchpadItemFromTool(
   return { item: mapScratchpadItem(row) };
 }
 
+function scratchpadItemScope(
+  input: { spaceId: string; botId: string; userId: string },
+  id: string,
+) {
+  if (
+    [input.spaceId, input.botId, input.userId].some(
+      (value) => typeof value !== "string" || !value.trim(),
+    )
+  )
+    return undefined;
+  return { id, spaceId: input.spaceId, botId: input.botId, userId: input.userId };
+}
+
 export async function updateScratchpadItemFromTool(
   deps: ScratchpadToolDeps,
   input: {
@@ -119,14 +132,11 @@ export async function updateScratchpadItemFromTool(
 ) {
   const itemId = input.itemId.trim();
   if (!itemId) return { error: "itemId is required." };
+  const scope = scratchpadItemScope(input, itemId);
+  if (!scope) return { error: "Scratchpad item not found." };
 
   const existing = await deps.prisma.scratchpadItem.findFirst({
-    where: {
-      id: itemId,
-      spaceId: input.spaceId,
-      botId: input.botId,
-      userId: input.userId,
-    },
+    where: scope,
   });
   if (!existing) return { error: "Scratchpad item not found." };
 
@@ -154,10 +164,11 @@ export async function updateScratchpadItemFromTool(
     return { error: "Provide title, status, and/or notes to update." };
   }
 
-  const row = await deps.prisma.scratchpadItem.update({
-    where: { id: existing.id },
+  const [row] = await deps.prisma.scratchpadItem.updateManyAndReturn({
+    where: scope,
     data,
   });
+  if (!row) return { error: "Scratchpad item not found." };
   return { item: mapScratchpadItem(row) };
 }
 
@@ -187,18 +198,18 @@ export async function removeScratchpadItemFromTool(
 ) {
   const itemId = input.itemId.trim();
   if (!itemId) return { error: "itemId is required." };
+  const scope = scratchpadItemScope(input, itemId);
+  if (!scope) return { error: "Scratchpad item not found." };
 
   const existing = await deps.prisma.scratchpadItem.findFirst({
-    where: {
-      id: itemId,
-      spaceId: input.spaceId,
-      botId: input.botId,
-      userId: input.userId,
-    },
+    where: scope,
   });
   if (!existing) return { error: "Scratchpad item not found." };
 
-  await deps.prisma.scratchpadItem.delete({ where: { id: existing.id } });
+  const { count } = await deps.prisma.scratchpadItem.deleteMany({
+    where: scope,
+  });
+  if (count === 0) return { error: "Scratchpad item not found." };
   return { ok: true as const, itemId: existing.id, title: existing.title };
 }
 

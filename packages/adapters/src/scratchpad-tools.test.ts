@@ -87,12 +87,12 @@ describe("scratchpad tools store", () => {
   it("updates, completes, and removes scoped items", async () => {
     const existing = row({ id: "item-1", title: "Draft", status: "open" });
     const findFirst = vi.fn(async () => existing);
-    const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
+    const updateManyAndReturn = vi.fn(async ({ data }: { data: Record<string, unknown> }) => [
       row({ ...existing, ...data, status: String(data.status ?? existing.status) }),
-    );
-    const del = vi.fn(async () => existing);
+    ]);
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
     const prisma = {
-      scratchpadItem: { findFirst, update, delete: del },
+      scratchpadItem: { findFirst, updateManyAndReturn, deleteMany },
     };
 
     const updated = await updateScratchpadItemFromTool(
