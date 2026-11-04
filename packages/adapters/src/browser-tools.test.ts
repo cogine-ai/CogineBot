@@ -28,6 +28,98 @@ const computer: ComputerRef = {
 };
 
 describe("browser tools", () => {
+  it("probes the live helper once before resolving and dispatching a saved login", async () => {
+    const commands: string[] = [];
+    const browser = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        return command.command === "capabilities"
+          ? {
+              ok: true,
+              capabilities: {
+                protocol: 2,
+                engine: "agent-browser",
+                engineVersion: "0.41.0",
+                refIdentity: "exact-node-v1",
+                loginFields: ["username", "password"],
+              },
+            }
+          : { ok: true, completed: 1, url: "https://example.test", title: "Current" };
+      },
+    });
+    const resolve = vi.fn(async () => {
+      expect(commands).toEqual(["capabilities"]);
+      return { text: "synthetic-password", origin: "https://example.test" };
+    });
+    const result = await browserActFromTool(
+      browser,
+      { ...computer, kind: "docker" },
+      context,
+      { actions: [{ kind: "fill_secret", ref: "r2.field", field: "password", secret: "saved" }] },
+      { resolveSecretFill: resolve },
+    );
+    expect(result).toMatchObject({ ok: true, completed: 1 });
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(commands).toEqual(["capabilities", "act"]);
+  });
+
+  it("starts the action budget after bounded saved-login preparation", async () => {
+    vi.useFakeTimers();
+    const timer = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("deadline", "TimeoutError")),
+        milliseconds,
+      );
+      return controller.signal;
+    });
+    let resolvePending!: (value: { text: string; origin: string }) => void;
+    const resolve = vi.fn(
+      () =>
+        new Promise<{ text: string; origin: string }>((done) => {
+          resolvePending = done;
+        }),
+    );
+    const commands: string[] = [];
+    const browser = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        if (command.command === "capabilities")
+          return {
+            ok: true,
+            capabilities: {
+              protocol: 2,
+              engine: "agent-browser",
+              engineVersion: "0.41.0",
+              refIdentity: "exact-node-v1",
+              loginFields: ["username", "password"],
+            },
+          };
+        await new Promise((done) => setTimeout(done, 10_000));
+        return { ok: true, completed: 1, url: "https://example.test", title: "Current" };
+      },
+    });
+    try {
+      const task = browserActFromTool(
+        browser,
+        { ...computer, kind: "docker" },
+        context,
+        { actions: [{ kind: "fill_secret", ref: "r2.field", field: "password", secret: "saved" }] },
+        { resolveSecretFill: resolve },
+      );
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(18_000);
+      resolvePending({ text: "synthetic-password", origin: "https://example.test" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await task).toMatchObject({ ok: true, completed: 1 });
+      expect(commands.filter((command) => command === "act")).toHaveLength(1);
+    } finally {
+      timer.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("reports timed-out partial navigation without replaying or exposing saved values", async () => {
     const secret = "synthetic-password-for-navigation";
     const liveDriver = vi.fn(async () => ({

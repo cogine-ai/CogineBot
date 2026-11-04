@@ -1,5 +1,6 @@
 import type {
   AdapterContext,
+  BrowserActRequest,
   ComputerRef,
   PageBrowserCapabilities,
   PageBrowserCommand,
@@ -456,6 +457,188 @@ describe("running helper login capability", () => {
     origin: "https://login.example.test",
     field: "password" as const,
   };
+
+  it("retains the original Run Stop after a direct request proof replaces its context signal", async () => {
+    const original = new AbortController();
+    const owner = { ...baseContext, signal: original.signal };
+    const request = { actions: [secretAction] };
+    let entered!: () => void;
+    const enteredAction = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let cancelCount = 0,
+      laterEffects = 0;
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command, actionContext) => {
+        if (command.command === "capabilities")
+          return { ok: true, capabilities: strictCapabilities };
+        entered();
+        await new Promise<void>((resolve) =>
+          actionContext.signal.addEventListener(
+            "abort",
+            () => {
+              cancelCount++;
+              resolve();
+            },
+            { once: true },
+          ),
+        );
+        actionContext.signal.throwIfAborted();
+        laterEffects++;
+        return { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    expect(await provider.supportsPageActions(liveComputer, owner, request)).toBe(true);
+    owner.signal = new AbortController().signal;
+    const outcome = provider.act(liveComputer, request, owner).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await enteredAction;
+    const reason = new Error("Original Run stopped");
+    original.abort(reason);
+    const observed = await Promise.race([
+      outcome,
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+    ]);
+    expect(observed).toEqual({ error: reason });
+    expect(cancelCount).toBe(1);
+    expect(laterEffects).toBe(0);
+  });
+
+  it.each(["owner", "signal"] as const)(
+    "rejects proof when %s changes during the probe",
+    async (change) => {
+      const owner = { ...baseContext };
+      const provider = new ComputerBrowserProvider({
+        liveDriver: async () => {
+          if (change === "owner") owner.userId = "changed-user";
+          else owner.signal = new AbortController().signal;
+          return { ok: true, capabilities: strictCapabilities };
+        },
+      });
+      await expect(
+        provider.supportsPageActions(liveComputer, owner, { actions: [secretAction] }),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it.each([
+    "request",
+    "computer",
+    "context",
+    "run",
+    "user",
+    "space",
+    "lease",
+    "image",
+    "actions",
+    "aborted",
+  ] as const)("does not reuse a request proof after %s identity changes", async (change) => {
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        return commands.length === 1
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: false, uncertain: false, error: "Old helper" };
+      },
+    });
+    const stop = new AbortController();
+    let owner: AdapterContext = {
+      ...baseContext,
+      signal: stop.signal,
+      runId: "run-a",
+      screenLeaseId: "lease-a",
+    };
+    let target = { ...liveComputer };
+    let request: BrowserActRequest = { actions: [secretAction] };
+    expect(await provider.supportsPageActions(target, owner, request)).toBe(true);
+    if (change === "request") request = { ...request };
+    if (change === "computer") target = { ...target };
+    if (change === "context") owner = { ...owner };
+    if (change === "run") owner.runId = "run-b";
+    if (change === "user") owner.userId = "other-user";
+    if (change === "space") owner.spaceId = "other-space";
+    if (change === "lease") owner.screenLeaseId = "lease-b";
+    if (change === "image") target.providerRef = "replacement-computer";
+    if (change === "actions") request.actions = [...request.actions];
+    if (change === "aborted") {
+      stop.abort(new Error("Proof owner stopped"));
+      owner.signal = new AbortController().signal;
+      await expect(provider.act(target, request, owner)).rejects.toThrow("Proof owner stopped");
+      expect(commands).toEqual(["capabilities"]);
+      return;
+    }
+    const result = await provider.act(target, request, owner);
+    expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    expect(commands).toEqual(["capabilities", "capabilities"]);
+  });
+
+  it("consumes a matching proof once and never caches a legacy two-argument probe", async () => {
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        return command.command === "capabilities"
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    const owner = { ...baseContext },
+      request = { actions: [secretAction] };
+    await provider.supportsPageActions(liveComputer, owner, request);
+    await provider.act(liveComputer, request, owner);
+    await provider.act(liveComputer, request, owner);
+    await provider.supportsPageActions(liveComputer, owner);
+    await provider.act(liveComputer, request, owner);
+    expect(commands).toEqual([
+      "capabilities",
+      "act",
+      "capabilities",
+      "act",
+      "capabilities",
+      "capabilities",
+      "act",
+    ]);
+  });
+
+  it("gives a direct action its dispatch budget after a bounded fresh probe", async () => {
+    vi.useFakeTimers();
+    const timer = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("deadline", "TimeoutError")),
+        milliseconds,
+      );
+      return controller.signal;
+    });
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        await new Promise((done) =>
+          setTimeout(done, command.command === "capabilities" ? 18_000 : 10_000),
+        );
+        return command.command === "capabilities"
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    try {
+      const task = provider.act(liveComputer, { actions: [secretAction] }, baseContext).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(28_000);
+      expect(await task).toMatchObject({ value: { ok: true, completed: 1 } });
+      expect(commands).toEqual(["capabilities", "act"]);
+    } finally {
+      timer.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 
   it.each(["navigate", "snapshot", "act"] as const)(
     "honors an already aborted request signal before %s reaches the helper",

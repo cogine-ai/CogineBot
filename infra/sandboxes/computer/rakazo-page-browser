@@ -80,6 +80,10 @@ class Settled(RuntimeError):
     """
 
 
+class PreDispatchRejected(RuntimeError):
+    """The request was rejected before any browser action could be dispatched."""
+
+
 class TypingStopped(RuntimeError):
     """Typing ended before the last key. The message never repeats any of the text."""
 
@@ -295,6 +299,10 @@ def describe_options(options: list[dict[str, Any]], total: int) -> str:
     if chosen is not None and describe(chosen) not in parts:
         parts.append(describe(chosen))
     return ", ".join(parts) + (f", and {total - len(parts)} more" if total > len(parts) else "")
+
+
+PAGE_LOAD = r"""({ href: location.href, ready: document.readyState,
+  done: performance.getEntriesByType("resource").slice(-500).map((entry) => entry.name) })"""
 
 
 def same_site(url: Any) -> str:
@@ -650,7 +658,10 @@ class PageBrowser:
             raise KeysNotKept(NOT_KEPT)
 
     def act(self, actions: list[dict[str, Any]]) -> dict[str, Any]:
-        validate_actions(actions)
+        try:
+            validate_actions(actions)
+        except RuntimeError as exc:
+            raise PreDispatchRejected(str(exc)) from exc
         completed, uncertain = 0, False
         try:
             exact = self.exact()
@@ -938,7 +949,7 @@ def run(argv: list[str]) -> int:
         target,address = front_tab(port,deadline)
         if internal(address):
             if command != 'navigate':
-                raise RuntimeError(INTERNAL_PAGE)
+                raise PreDispatchRejected(INTERNAL_PAGE)
             url = str(args.get('url') or '')
             check_url(url)
             browser.batch([['tab','new','about:blank']],timeout=NAVIGATE_SECONDS)
@@ -952,6 +963,10 @@ def run(argv: list[str]) -> int:
         else:
             result = page.act(args.get('actions'))
         print(json.dumps(result))
+        return 0
+    except PreDispatchRejected as exc:
+        result = {'ok':False,'error':str(exc),'completed':0,'uncertain':False}
+        print(json.dumps(page.redact(result) if page is not None else result))
         return 0
     except Exception as exc:
         result = {'ok':False,'error':str(exc),'fallback':'computer_act',

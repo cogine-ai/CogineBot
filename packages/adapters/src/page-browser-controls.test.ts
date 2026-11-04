@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { installExactPage, typingScript } from "./page-browser.test-support.js";
 
@@ -469,6 +470,49 @@ it("does not treat synthetic pointer events as trusted recovery evidence", () =>
   } finally {
     close();
   }
+});
+
+it("records only a fresh trusted left-button release for pointer recovery", () => {
+  const source = readFileSync(
+    new URL("../../../infra/sandboxes/computer/page_secrets.py", import.meta.url),
+    "utf8",
+  );
+  const script = source.match(/POINTER_OBSERVER = r"""\n([\s\S]*?)\n"""/)?.[1];
+  if (!script) throw new Error("Pointer observer was not found");
+  type Event = { type: string; isTrusted: boolean; button: number; buttons: number };
+  const handlers = new Map<string, (event: Event) => void>();
+  let stamp = 0;
+  const context = {
+    window: {} as {
+      __rakazoPointerObserver?: {
+        arm: (token: string) => unknown;
+        read: (token: string) => { down: number | null; up: number | null };
+      };
+    },
+    performance: { timeOrigin: 0, now: () => ++stamp },
+    addEventListener: (name: string, listener: (event: Event) => void) => {
+      handlers.set(name, listener);
+    },
+  };
+  runInNewContext(script, context);
+  const observer = context.window.__rakazoPointerObserver!;
+  const release = (button: number, isTrusted = true, buttons = 0) =>
+    handlers.get("mouseup")!({ type: "mouseup", button, buttons, isTrusted });
+  release(0); // A release before registration cannot become recovery evidence.
+  observer.arm("recovery-token");
+  release(2);
+  expect(observer.read("recovery-token").up).toBeNull();
+  release(0, false);
+  expect(observer.read("recovery-token").up).toBeNull();
+  release(0, true, 1);
+  expect(observer.read("recovery-token").up).toBeNull();
+  release(0);
+  expect(observer.read("recovery-token").up).toBeGreaterThan(0);
+  const oldObserver = { version: 1 };
+  const upgraded = { ...context, window: { __rakazoPointerObserver: oldObserver } };
+  runInNewContext(script, upgraded);
+  expect(upgraded.window.__rakazoPointerObserver).not.toBe(oldObserver);
+  expect(upgraded.window.__rakazoPointerObserver).toMatchObject({ version: 2 });
 });
 
 it("keeps one observer token while preserving repeated-arm object identity", () => {

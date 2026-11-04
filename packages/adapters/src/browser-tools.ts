@@ -2,6 +2,7 @@ import type {
   AdapterContext,
   AgentToolExecutionResult,
   BrowserActKind,
+  BrowserActRequest,
   BrowserActStep,
   BrowserProvider,
   ComputerRef,
@@ -131,12 +132,13 @@ export async function browserActFromTool(
 ) {
   const actionContext = {
     ...context,
-    signal: AbortSignal.any([context.signal, AbortSignal.timeout(22_000)]),
   };
+  const preparationSignal = AbortSignal.any([context.signal, AbortSignal.timeout(22_000)]);
   let dispatchStarted = false;
   try {
-    actionContext.signal.throwIfAborted();
+    preparationSignal.throwIfAborted();
     const actions: BrowserActStep[] = [];
+    const request: BrowserActRequest = { actions, signal: context.signal };
     const steps = parseBrowserActions(args.actions);
     if (
       steps.some(
@@ -146,18 +148,22 @@ export async function browserActFromTool(
       let supported = false;
       try {
         supported = await withAbort(
-          Promise.resolve(browser.supportsPageActions?.(computer, actionContext) ?? false),
-          actionContext.signal,
+          Promise.resolve().then(
+            () =>
+              browser.supportsPageActions?.(computer, actionContext, request, preparationSignal) ??
+              false,
+          ),
+          preparationSignal,
         );
       } catch {
-        actionContext.signal.throwIfAborted();
+        preparationSignal.throwIfAborted();
       }
-      actionContext.signal.throwIfAborted();
+      preparationSignal.throwIfAborted();
       if (!supported) return refusedInput("Page browser action is unavailable on this computer.");
     }
     // Resolve every saved login before acting, so a missing one cannot leave a half-filled form.
     for (const step of steps) {
-      actionContext.signal.throwIfAborted();
+      preparationSignal.throwIfAborted();
       if (step.kind === "upload") {
         if (!options.resolveUploadPath || !options.uploadRoots?.length)
           throw new BrowserToolInputError("File uploads are unavailable for this workspace.");
@@ -177,13 +183,16 @@ export async function browserActFromTool(
       let resolved: Awaited<ReturnType<ResolveSecretFill>>;
       try {
         resolved = options.resolveSecretFill
-          ? await withAbort(options.resolveSecretFill(step), actionContext.signal)
+          ? await withAbort(
+              Promise.resolve().then(() => options.resolveSecretFill!(step)),
+              preparationSignal,
+            )
           : { error: "Saved logins are unavailable here." };
       } catch {
-        actionContext.signal.throwIfAborted();
+        preparationSignal.throwIfAborted();
         return refusedInput("This saved login could not be loaded.");
       }
-      actionContext.signal.throwIfAborted();
+      preparationSignal.throwIfAborted();
       if ("error" in resolved) return refusedInput(resolved.error);
       actions.push({
         kind: "fill",
@@ -193,16 +202,18 @@ export async function browserActFromTool(
         field: step.field,
       });
     }
-    actionContext.signal.throwIfAborted();
+    preparationSignal.throwIfAborted();
+    // Preparation stays bounded, but must not consume the helper's action budget.
+    actionContext.signal = AbortSignal.any([context.signal, AbortSignal.timeout(22_000)]);
     dispatchStarted = true;
     const result = await withAbort(
-      browser.act(computer, { actions, signal: actionContext.signal }, actionContext),
+      Promise.resolve().then(() => browser.act(computer, request, actionContext)),
       actionContext.signal,
     );
     return redactBrowserResult(formatBrowserResult(result), options.redactions?.() ?? []);
   } catch (error) {
     context.signal.throwIfAborted();
-    if (actionContext.signal.aborted && !dispatchStarted) {
+    if (preparationSignal.aborted && !dispatchStarted) {
       return { ...refusedInput("Page browser action timed out before dispatch."), timedOut: true };
     }
     if (error instanceof BrowserToolInputError) return refusedInput(error.message);

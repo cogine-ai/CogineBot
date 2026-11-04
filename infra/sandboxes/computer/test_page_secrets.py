@@ -401,7 +401,8 @@ class NativeClickTest(unittest.TestCase):
         before = len(page.client.call.call_args_list)
         with self.assertRaisesRegex(secrets.Refused, "uncertain"):
             page.act(exact_ref(), "fill", "not-dispatched")
-        self.assertEqual(len(page.client.call.call_args_list), before)
+        self.assertEqual([call.args[0] for call in page.client.call.call_args_list[before:]], ["Page.enable"])
+        self.assertEqual(self.events(page), events)
 
     def test_target_changed_during_observer_preparation_dispatches_no_press_or_release(self):
         page = self.native_page()
@@ -448,6 +449,33 @@ class NativeClickTest(unittest.TestCase):
 
 
 class GlobalPointerGuardTest(unittest.TestCase):
+    def test_unobserved_press_in_the_same_document_needs_a_fresh_bound_release(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(secrets.tempfile, "gettempdir", return_value=directory):
+            page = object.__new__(secrets.ExactPage)
+            page.target = "tab-a"
+            page.pointer_guard = secrets.PointerGuard("owned-browser", "tab-a", time.monotonic() + 22)
+            page.pointer_guard.arm("a" * 32, "frame-a", "loader-a")
+            page.pending_document_present = Mock(return_value=True)
+            page.client = Mock()
+            page.frames = Mock(return_value=[
+                {"id": "frame-a", "loaderId": "loader-a", "session": "origin-session"},
+                {"id": "sibling", "loaderId": "sibling-loader", "session": "sibling-session"}])
+            phase = 0
+            def witness(client, session, world, function, token, arm):
+                if not token.startswith("recovery:"):
+                    return {"down": None, "up": 1}  # An old release is not fresh recovery evidence.
+                released = phase == 2 and session == "origin-session" or phase == 1 and session == "sibling-session"
+                return {"down": None, "up": 3 if released else None}
+            with patch.object(secrets, "world_in", return_value=7), patch.object(secrets, "eval_json", return_value=True), \
+                    patch.object(secrets, "call_with", side_effect=witness):
+                for phase in (0, 1):
+                    with self.assertRaises(secrets.Refused):
+                        page.assert_mutations_allowed()
+                    self.assertIsNotNone(page.pointer_guard.read())
+                phase = 2
+                page.assert_mutations_allowed()
+            self.assertIsNone(page.pointer_guard.read())
+
     def test_same_browser_guard_cannot_be_bypassed_by_a_new_target_frame_or_store(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(secrets.tempfile, "gettempdir", return_value=directory):
             first = secrets.PointerGuard("owned-browser", "tab-a", time.monotonic() + 22)
@@ -504,11 +532,37 @@ class GlobalPointerGuardTest(unittest.TestCase):
             page.pointer_guard.arm("a" * 32, "frame-a", "old-loader")
             page.client = Mock()
             page.frames = Mock(return_value=[{"id": "frame-a", "loaderId": "new-loader", "session": "session"}])
+            def witness(client, session, world, function, token, arm):
+                return {"down": None, "up": None} if token.startswith("recovery:") else {"down": 2, "up": 3}
             with patch.object(secrets, "world_in", return_value=7), patch.object(secrets, "eval_json", return_value=True), \
-                    patch.object(secrets, "call_with", return_value={"down": 2, "up": 3}):
+                    patch.object(secrets, "call_with", side_effect=witness):
                 with self.assertRaises(secrets.Refused):
                     page.assert_mutations_allowed()
             self.assertEqual(page.pointer_guard.read()["loader"], "old-loader")
+
+    def test_missing_original_document_needs_a_fresh_release_in_the_recovery_realm(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(secrets.tempfile, "gettempdir", return_value=directory):
+            page = object.__new__(secrets.ExactPage)
+            page.target = "tab-a"
+            page.pointer_guard = secrets.PointerGuard("owned-browser", "tab-a", time.monotonic() + 22)
+            page.pointer_guard.arm("a" * 32, "frame-a", "old-loader")
+            page.pending_document_present = Mock(return_value=False)
+            page.client = Mock()
+            page.frames = Mock(return_value=[{"id": "frame-a", "loaderId": "new-loader", "session": "session"}])
+            released = False
+            def read_witness(client, session, world, function, token, arm):
+                return {"down": None, "up": 3 if released and token.startswith("recovery:") else None}
+            with patch.object(secrets, "world_in", return_value=7), patch.object(secrets, "eval_json", return_value=True), \
+                    patch.object(secrets, "call_with", side_effect=read_witness) as witness:
+                with self.assertRaises(secrets.Refused):
+                    page.assert_mutations_allowed()
+                self.assertIsNotNone(page.pointer_guard.read())
+                released = True
+                page.assert_mutations_allowed()
+            self.assertIsNone(page.pointer_guard.read())
+            self.assertEqual(page.pending_document_present.call_count, 2)
+            self.assertEqual([(call.args[4], call.args[5]) for call in witness.call_args_list],
+                             [("a" * 32, False), ("recovery:" + "a" * 32, True)] * 2)
 
     def test_owner_process_exit_at_press_leaves_global_guard_for_the_next_target(self):
         import subprocess
@@ -558,6 +612,100 @@ page.act(exact_ref(), 'click')
             self.assertNotEqual(old.path, fresh.path)
             self.assertIsNone(fresh.read())
             self.assertIsNotNone(old.read())
+
+
+class PendingDocumentProofTest(unittest.TestCase):
+    pending = {"target": "original-tab", "frame": "original-frame", "loader": "original-loader"}
+
+    def page(self, target="current-tab"):
+        page = object.__new__(secrets.ExactPage)
+        page.target, page.session = target, "current-session"
+        page.client = Mock()
+        return page
+
+    def test_current_target_checks_exact_loader_with_complete_frame_enumeration(self):
+        page = self.page(target="original-tab")
+        page.frames = Mock(return_value=[{"id": "original-frame", "loaderId": "original-loader"}])
+        self.assertTrue(page.pending_document_present(self.pending))
+        page.frames.assert_called_once_with(require_complete=True)
+        page.frames.return_value = [{"id": "original-frame", "loaderId": "new-loader"}]
+        self.assertFalse(page.pending_document_present(self.pending))
+        page.client.call.assert_not_called()
+
+    def test_target_absence_requires_a_valid_browser_target_list(self):
+        page = self.page()
+        page.client.call.return_value = {"targetInfos": [{"targetId": "current-tab"}]}
+        page.frames = Mock()
+        self.assertFalse(page.pending_document_present(self.pending))
+        page.client.call.assert_called_once_with("Target.getTargets")
+        page.frames.assert_not_called()
+        for targets in (None, {}, [{}], [{"targetId": ""}]):
+            with self.subTest(targets=targets):
+                page.client.call.return_value = {"targetInfos": targets}
+                with self.assertRaises(RuntimeError):
+                    page.pending_document_present(self.pending)
+
+    def test_other_target_is_attached_checked_completely_and_always_detached(self):
+        page = self.page()
+        page.frames = Mock(return_value=[{"id": "original-frame", "loaderId": "original-loader"}])
+        page.client.call.side_effect = [{"targetInfos": [{"targetId": "original-tab"}]}, {"sessionId": "original-session"}, {}]
+        self.assertTrue(page.pending_document_present(self.pending))
+        page.frames.assert_called_once_with("original-session", require_complete=True)
+        self.assertEqual([(call.args[0], call.args[1:] ) for call in page.client.call.call_args_list], [
+            ("Target.getTargets", ()), ("Target.attachToTarget", ({"targetId": "original-tab", "flatten": True},)),
+            ("Target.detachFromTarget", ({"sessionId": "original-session"},))])
+        page.client.call.reset_mock(side_effect=True)
+        page.client.call.side_effect = [{"targetInfos": [{"targetId": "original-tab"}]}, {"sessionId": "original-session"}, {}]
+        page.frames.side_effect = RuntimeError("The frame tree could not be read")
+        with self.assertRaisesRegex(RuntimeError, "could not be read"):
+            page.pending_document_present(self.pending)
+        self.assertEqual(page.client.call.call_args.args, ("Target.detachFromTarget", {"sessionId": "original-session"}))
+
+    def test_frame_depth_or_session_limits_cannot_prove_document_absence(self):
+        for boundary in ("depth", "sessions"):
+            with self.subTest(boundary=boundary):
+                page = self.page(target="original-tab")
+                tree = {"frame": {"id": "current-frame", "loaderId": "current-loader"}}
+                if boundary == "depth":
+                    tree["childFrames"] = [{"frame": {"id": "child", "loaderId": "child-loader"},
+                                             "childFrames": [{"frame": {"id": "deep", "loaderId": "deep-loader"}}]}]
+                page.client.call.side_effect = lambda method, *args, **kwargs: {"frameTree": tree} if method == "Page.getFrameTree" else {}
+                page.client.frame_sessions.return_value = ["another-session"] if boundary == "sessions" else []
+                with patch.object(secrets, "MAX_FRAME_DEPTH", 1), patch.object(secrets, "MAX_FRAME_SESSIONS", 1):
+                    with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                        page.pending_document_present(self.pending)
+
+    def test_missing_frame_identity_cannot_prove_the_document_is_gone(self):
+        for frame in ({"id": "original-frame"}, {"loaderId": "original-loader"}, {"id": "", "loaderId": "loader"}):
+            with self.subTest(frame=frame):
+                page = self.page(target="original-tab")
+                page.client.call.side_effect = lambda method, *args, **kwargs: {"frameTree": {"frame": frame}} if method == "Page.getFrameTree" else {}
+                page.client.frame_sessions.return_value = []
+                with self.assertRaises(RuntimeError):
+                    page.pending_document_present(self.pending)
+
+    def test_invalid_attachment_session_never_falls_back_to_the_current_target(self):
+        for session in (None, "", 3):
+            with self.subTest(session=session):
+                page = self.page()
+                page.frames = Mock()
+                page.client.call.side_effect = [{"targetInfos": [{"targetId": "original-tab"}]}, {"sessionId": session}]
+                with self.assertRaises(RuntimeError):
+                    page.pending_document_present(self.pending)
+                page.frames.assert_not_called()
+                self.assertEqual([call.args[0] for call in page.client.call.call_args_list], ["Target.getTargets", "Target.attachToTarget"])
+
+    def test_failed_origin_inspection_never_reads_recovery_witness_or_clears_guard(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(secrets.tempfile, "gettempdir", return_value=directory):
+            page = self.page()
+            page.pointer_guard = secrets.PointerGuard("owned-browser", "original-tab", time.monotonic() + 22)
+            page.pointer_guard.arm("a" * 32, "original-frame", "original-loader")
+            page.pending_document_present = Mock(side_effect=RuntimeError("The browser target read failed"))
+            page.pointer_states = Mock(return_value=[{"up": 3}])
+            with self.assertRaises(secrets.Refused):
+                page.assert_mutations_allowed()
+            page.pointer_states.assert_not_called()
+            self.assertEqual(page.pointer_guard.read()["token"], "a" * 32)
 
 
 class NativeFileInputTest(unittest.TestCase):

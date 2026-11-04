@@ -269,7 +269,13 @@ it("closes helper stdin when the request is cancelled", async () => {
 
 it("sends a saved-login fill only over stdin, never in the helper's arguments", async () => {
   const actions = [
-    { kind: "fill", ref: "e1", text: "fake-password-1", origin: "https://login.example.test" },
+    {
+      kind: "fill",
+      ref: "e1",
+      text: "fake-password-1",
+      origin: "https://login.example.test",
+      field: "password",
+    },
   ];
   const response = await supervisorApp.request("/computers/computer-login/browser", {
     method: "POST",
@@ -283,6 +289,7 @@ it("sends a saved-login fill only over stdin, never in the helper's arguments", 
     },
     body: JSON.stringify({ command: "act", actions }),
   });
+  expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ ok: true });
   const helperCall = mock.exec.mock.calls.find(([options]) =>
     options.Cmd.includes("/usr/local/bin/rakazo-page-browser"),

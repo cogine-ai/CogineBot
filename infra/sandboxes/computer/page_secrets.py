@@ -470,7 +470,7 @@ def follow_navigation(client: CdpClient, navigation: NavigationState,
 
 POINTER_OBSERVER = r"""
 (() => {
-  if (window.__rakazoPointerObserver?.version === 1) return true;
+  if (window.__rakazoPointerObserver?.version === 2) return true;
   const tokens = new Map();
   const track = event => {
     if (!event.isTrusted) return;
@@ -478,11 +478,11 @@ POINTER_OBSERVER = r"""
     for (const state of tokens.values()) {
       if ((event.type === 'pointerdown' || event.type === 'mousedown') && (event.buttons & 1)) {
         state.down = stamp; state.up = null;
-      } else if ((event.type === 'pointerup' || event.type === 'mouseup') && event.buttons === 0) state.up = stamp;
+      } else if ((event.type === 'pointerup' || event.type === 'mouseup') && event.button === 0 && event.buttons === 0) state.up = stamp;
     }
   };
   for (const name of ['pointerdown','mousedown','pointerup','mouseup']) addEventListener(name,track,true);
-  window.__rakazoPointerObserver = {version:1,
+  window.__rakazoPointerObserver = {version:2,
     arm(token) { if (!tokens.has(token)) { tokens.clear(); tokens.set(token,{down:null,up:null}); } return tokens.get(token); },
     read(token) { return tokens.get(token) || {down:null,up:null}; }};
   return true;
@@ -1029,8 +1029,8 @@ class ExactPage:
     def close(self) -> None:
         self.client.close()
 
-    def frames(self) -> list[dict[str, Any]]:
-        pending, seen, found = [self.session], set(), {}
+    def frames(self, root_session: str | None = None, *, require_complete: bool = False) -> list[dict[str, Any]]:
+        pending, seen, found = [root_session or self.session], set(), {}
         while pending and len(seen) < MAX_FRAME_SESSIONS:
             session = pending.pop(0)
             if session in seen:
@@ -1044,24 +1044,52 @@ class ExactPage:
             while stack:
                 item, depth = stack.pop()
                 frame = item["frame"]
+                if require_complete and any(not isinstance(frame.get(key),str) or not frame[key]
+                                            for key in ('id','loaderId')):
+                    raise RuntimeError("The browser frame identity is incomplete.")
                 if frame.get("id") and frame.get("loaderId"):
                     # An OOPIF's own root session is authoritative over its parent's stub.
                     old = found.get(frame["id"])
                     if old is None or depth == 0:
                         found[frame["id"]] = {**(old or {}), **frame, "session": session, "depth": depth}
+                if require_complete and depth >= MAX_FRAME_DEPTH and item.get("childFrames"):
+                    raise RuntimeError("The browser frame tree is incomplete.")
                 if depth < MAX_FRAME_DEPTH:
                     stack.extend((child, depth + 1) for child in item.get("childFrames") or [])
             pending.extend(self.client.frame_sessions(session))
+        if require_complete and any(session not in seen for session in pending):
+            raise RuntimeError("The browser frame sessions are incomplete.")
         return list(found.values())
 
-    def pointer_states(self, token: str) -> list[dict[str, Any]]:
+    def pending_document_present(self, pending: dict[str, Any]) -> bool:
+        """A failed or bounded inspection never proves that a pressed document is gone."""
+        if pending['target'] == self.target:
+            frames = self.frames(require_complete=True)
+        else:
+            targets = self.client.call("Target.getTargets").get("targetInfos")
+            if not isinstance(targets,list) or any(not isinstance(item,dict)
+                    or not isinstance(item.get('targetId'),str) or not item['targetId'] for item in targets):
+                raise RuntimeError("The browser target list is unavailable.")
+            if not any(item['targetId'] == pending['target'] for item in targets):
+                return False
+            session = self.client.call("Target.attachToTarget",{
+                "targetId":pending['target'],"flatten":True})['sessionId']
+            if not isinstance(session,str) or not session:
+                raise RuntimeError("The original browser target could not be inspected.")
+            try:
+                frames = self.frames(session,require_complete=True)
+            finally:
+                self.client.call("Target.detachFromTarget",{"sessionId":session})
+        return any(frame['id'] == pending['frame'] and frame['loaderId'] == pending['loader'] for frame in frames)
+
+    def pointer_states(self, token: str, *, arm: bool = True) -> list[dict[str, Any]]:
         states = []
         for frame in self.frames():
             session = frame['session']
             world = world_in(self.client,session,frame['id'])
             eval_json(self.client,session,POINTER_OBSERVER,context_id=world)
             state = call_with(self.client,session,world,
-                "function (token) { return window.__rakazoPointerObserver.arm(token); }",token)
+                "function (token, arm) { return window.__rakazoPointerObserver[arm ? 'arm' : 'read'](token); }",token,arm)
             if isinstance(state,dict):
                 states.append({**state,'target':self.target,'frame':frame['id'],'loader':frame['loaderId']})
         return states
@@ -1070,16 +1098,34 @@ class ExactPage:
         pending = self.pointer_guard.read()
         if pending is None:
             return
-        if pending['target'] != self.target:
-            raise Refused("Browser pointer input is uncertain on another tab. Request takeover on its original page.")
-        states = [state for state in self.pointer_states(pending['token'])
-                  if all(state.get(key) == pending[key] for key in ('target','frame','loader'))]
-        down = [state['down'] for state in states if type(state.get('down')) in (int,float)]
-        up = [state['up'] for state in states if type(state.get('up')) in (int,float)]
-        if down and up and max(up) > max(down):
+        down = []
+        if pending['target'] == self.target:
+            states = [state for state in self.pointer_states(pending['token'],arm=False)
+                      if all(state.get(key) == pending[key] for key in ('target','frame','loader'))]
+            down = [state['down'] for state in states if type(state.get('down')) in (int,float)]
+            up = [state['up'] for state in states if type(state.get('up')) in (int,float)]
+            if down and up and max(up) > max(down):
+                self.pointer_guard.clear(pending['token'])
+                return
+        try:
+            present = self.pending_document_present(pending)
+        except Exception:
+            raise Refused("Browser pointer input is uncertain; its original document could not be verified. Request takeover inspection.") from None
+        if present:
+            if pending['target'] == self.target and not down:
+                states = [state for state in self.pointer_states('recovery:' + pending['token'])
+                          if all(state.get(key) == pending[key] for key in ('target','frame','loader'))]
+                if any(type(state.get('up')) in (int,float) for state in states):
+                    self.pointer_guard.clear(pending['token'])
+                    return
+            raise Refused("Browser pointer input is uncertain. Request takeover on its original page and release the pointer before continuing.")
+        # This token was never armed before the original press. Only a later trusted
+        # release in a still-observable document can recover a missing origin.
+        states = self.pointer_states('recovery:' + pending['token'])
+        if any(type(state.get('up')) in (int,float) for state in states):
             self.pointer_guard.clear(pending['token'])
             return
-        raise Refused("Browser pointer input is uncertain. Request takeover and release the pointer before continuing.")
+        raise Refused("The original pointer document has closed. Request takeover, release the pointer on the current page, then continue.")
 
     def prepare_frame(self, ref: str) -> None:
         frame_id, loader = ref_binding(ref, self.target)

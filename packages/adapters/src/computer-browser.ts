@@ -15,11 +15,41 @@ import type {
 } from "@rakazo/adapter-kit";
 import { combineSignals } from "./connector-safety.js";
 import { FakeBrowserProvider, type FakeBrowserProviderOptions } from "./fake-browser.js";
+import { withAbort } from "./web-ssrf.js";
 
 const DETACHED_MESSAGE =
   "Page browser is not attached to this computer's Chrome. Use computer_act on the desktop browser instead.";
 
 type LivePayload = Partial<PageBrowserResult>;
+
+type PageActionProof = {
+  computer: ComputerRef;
+  context: AdapterContext;
+  binding: string;
+  actions: BrowserActRequest["actions"];
+  preparationSignal: AbortSignal;
+  requestSignal: AbortSignal | undefined;
+  rootStop: AbortSignal;
+};
+
+function pageActionBinding(computer: ComputerRef, context: AdapterContext): string {
+  return JSON.stringify([
+    computer.id,
+    computer.botId,
+    computer.kind,
+    computer.providerRef,
+    computer.fresh,
+    computer.started,
+    context.operationId,
+    context.traceId,
+    context.spaceId,
+    context.userId,
+    context.botId,
+    context.runId,
+    context.screenLeaseId,
+    context.cancelRunWork,
+  ]);
+}
 
 export type LivePageBrowserDriver = (
   computer: ComputerRef,
@@ -39,6 +69,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
   private readonly fake: FakeBrowserProvider;
   private readonly sandbox?: SandboxProvider;
   private readonly liveDriver?: LivePageBrowserDriver;
+  private readonly pageActionProofs = new WeakMap<BrowserActRequest, PageActionProof>();
 
   constructor(
     options: FakeBrowserProviderOptions & {
@@ -68,22 +99,57 @@ export class ComputerBrowserProvider implements BrowserProvider {
     };
   }
 
-  async supportsPageActions(computer: ComputerRef, context: AdapterContext): Promise<boolean> {
-    if (this.canUseInProcess(computer)) return this.fake.supportsPageActions(computer, context);
-    const result = await this.runLive(computer, { command: "capabilities" }, context);
-    const capabilities = result.capabilities;
-    return (
-      result.ok === true &&
-      result.fallback === undefined &&
-      result.uncertain !== true &&
-      capabilities?.protocol === 2 &&
-      capabilities.engine === "agent-browser" &&
-      capabilities.engineVersion === "0.41.0" &&
-      capabilities.refIdentity === "exact-node-v1" &&
-      Array.isArray(capabilities.loginFields) &&
-      capabilities.loginFields.includes("username") &&
-      capabilities.loginFields.includes("password")
-    );
+  async supportsPageActions(
+    computer: ComputerRef,
+    context: AdapterContext,
+    request?: BrowserActRequest,
+    preparation?: AbortSignal,
+  ): Promise<boolean> {
+    if (request) this.pageActionProofs.delete(request);
+    const binding = pageActionBinding(computer, context);
+    const contextSignal = context.signal;
+    const requestSignal = request?.signal;
+    const rootStop = combineSignals(contextSignal, requestSignal);
+    const preparationSignal = combineSignals(rootStop, preparation);
+    const result = this.canUseInProcess(computer)
+      ? undefined
+      : await this.runLive(
+          computer,
+          { command: "capabilities" },
+          { ...context, signal: preparationSignal },
+        );
+    const capabilities = result?.capabilities;
+    const supported = this.canUseInProcess(computer)
+      ? await this.fake.supportsPageActions(computer, { ...context, signal: preparationSignal })
+      : result?.ok === true &&
+        result.fallback === undefined &&
+        result.uncertain !== true &&
+        capabilities?.protocol === 2 &&
+        capabilities.engine === "agent-browser" &&
+        capabilities.engineVersion === "0.41.0" &&
+        capabilities.refIdentity === "exact-node-v1" &&
+        Array.isArray(capabilities.loginFields) &&
+        capabilities.loginFields.includes("username") &&
+        capabilities.loginFields.includes("password");
+    preparationSignal.throwIfAborted();
+    if (
+      context.signal !== contextSignal ||
+      request?.signal !== requestSignal ||
+      binding !== pageActionBinding(computer, context)
+    )
+      return false;
+    if (supported && request) {
+      this.pageActionProofs.set(request, {
+        computer,
+        context,
+        binding,
+        actions: request.actions,
+        preparationSignal,
+        requestSignal,
+        rootStop,
+      });
+    }
+    return supported;
   }
 
   async navigate(
@@ -148,15 +214,21 @@ export class ComputerBrowserProvider implements BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult> {
-    context = {
-      ...context,
-      signal: AbortSignal.any([
-        context.signal,
-        ...(request.signal ? [request.signal] : []),
-        AbortSignal.timeout(22_000),
-      ]),
-    };
-    context.signal.throwIfAborted();
+    const proof = this.pageActionProofs.get(request);
+    this.pageActionProofs.delete(request);
+    const sameRequest =
+      proof?.computer === computer &&
+      proof.context === context &&
+      proof.actions === request.actions &&
+      proof.requestSignal === request.signal &&
+      proof.binding === pageActionBinding(computer, context);
+    const signal = combineSignals(
+      context.signal,
+      request.signal,
+      sameRequest ? proof.rootStop : undefined,
+    );
+    signal.throwIfAborted();
+    const verified = sameRequest && !proof.preparationSignal.aborted;
     if (
       request.actions.some(
         (action) =>
@@ -164,24 +236,47 @@ export class ComputerBrowserProvider implements BrowserProvider {
           action.kind === "upload" ||
           (action.kind === "fill" && Boolean(action.origin || action.field)),
       ) &&
-      !(await this.supportsPageActions(computer, context))
+      !verified
     ) {
-      return {
-        ok: false,
-        completed: 0,
-        uncertain: false,
-        url: "",
-        title: "",
-        error: "Page browser action is unavailable on this computer.",
+      const preparation = {
+        ...context,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(22_000)]),
       };
+      let supported = false;
+      try {
+        preparation.signal.throwIfAborted();
+        supported = await withAbort(
+          Promise.resolve().then(() => this.supportsPageActions(computer, preparation)),
+          preparation.signal,
+        );
+      } catch {
+        signal.throwIfAborted();
+      }
+      signal.throwIfAborted();
+      if (!supported)
+        return {
+          ok: false,
+          completed: 0,
+          uncertain: false,
+          url: "",
+          title: "",
+          ...(preparation.signal.aborted ? { timedOut: true } : {}),
+          error: "Page browser action is unavailable on this computer.",
+        };
     }
+    context = { ...context, signal: AbortSignal.any([signal, AbortSignal.timeout(22_000)]) };
+    context.signal.throwIfAborted();
     if (this.canUseInProcess(computer)) {
-      return this.fake.act(computer, request, context);
+      return withAbort(
+        Promise.resolve().then(() => this.fake.act(computer, request, context)),
+        context.signal,
+      );
     }
-    const live = await this.runLive(
-      computer,
-      { command: "act", actions: request.actions },
-      context,
+    const live = await withAbort(
+      Promise.resolve().then(() =>
+        this.runLive(computer, { command: "act", actions: request.actions }, context),
+      ),
+      context.signal,
     );
     // A confirmed refusal is settled: a desktop fallback could repeat an earlier step.
     if (live?.ok === false && live.uncertain === false && live.fallback === undefined) {

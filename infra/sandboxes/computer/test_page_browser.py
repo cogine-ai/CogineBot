@@ -27,6 +27,8 @@ def page(exact=None):
     browser.batch.return_value = [{"snapshot": "Readable page [ref=e1]"}]
     result = helper.PageBrowser(9222, "tab", browser)
     result._exact = exact or Mock()
+    if exact is None:
+        result._exact.assert_mutations_allowed = Mock()
     result._exact.snapshot.return_value = {
         "url": "https://login.example.test", "title": "Page", "text": "Readable page",
         "elements": [], "masked": [],
@@ -37,6 +39,22 @@ def page(exact=None):
 
 
 class PageBrowserTest(unittest.TestCase):
+    def test_settle_reads_the_live_page_load_telemetry(self):
+        browser = Mock(deadline=helper.time.monotonic() + 22)
+        browser.batch.side_effect = [
+            [{"result": {"href": "https://example.test/", "ready": "complete", "done": []}},
+             {"requests": []}],
+            [{}],
+        ]
+        target = helper.PageBrowser(9222, "tab", browser)
+        self.assertTrue(target.settle(0))
+        commands = browser.batch.call_args_list[0].args[0]
+        self.assertEqual(commands[0][0], "eval")
+        self.assertIn("document.readyState", commands[0][1])
+        self.assertIn('performance.getEntriesByType("resource")', commands[0][1])
+        self.assertEqual(commands[1], ["network", "requests"])
+        self.assertEqual(browser.batch.call_args_list[1].args[0], [["network", "requests", "--clear"]])
+
     def test_closed_stdin_cancels_helper_without_a_browser(self):
         with subprocess.Popen([sys.executable, str(Path(__file__).with_name("rakazo-page-browser")), "snapshot", "{}"],
                               env={**os.environ, "RAKAZO_BROWSER_WATCH_STDIN": "1", "RAKAZO_CDP_PORT": "0"},
@@ -442,6 +460,51 @@ while base.exists():
         target.navigate.assert_called_once_with("https://example.test/once")
         browser.use_tab.assert_called_once_with("new")
         self.assertTrue(json.loads(output.getvalue())["ok"])
+
+    def run_result(self, command, args, *, address="https://example.test", target=None):
+        import contextlib
+        import io
+        browser = Mock()
+        target = target or page()
+        output = io.StringIO()
+        with patch.object(helper, "AgentBrowser", return_value=browser), \
+                patch.object(helper, "wait_for_cdp"), \
+                patch.object(helper, "front_tab", return_value=("tab", address)), \
+                patch.object(helper, "PageBrowser", return_value=target) as create_page, \
+                patch.dict(os.environ, {"RAKAZO_BROWSER_ARGS_STDIN": "0", "RAKAZO_BROWSER_WATCH_STDIN": "0"}), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(helper.run(["page-browser", command, json.dumps(args)]), 0)
+        return json.loads(output.getvalue()), browser, create_page
+
+    def test_run_reports_validation_before_dispatch_as_settled_without_fallback(self):
+        target = page()
+        result, browser, _ = self.run_result("act", {"actions": [{"kind": "fill", "ref": ref()}]}, target=target)
+        self.assertFalse(result["ok"])
+        self.assertIn("Text", result["error"])
+        self.assertEqual((result.get("completed"), result["uncertain"]), (0, False))
+        self.assertNotIn("fallback", result)
+        target._exact.act.assert_not_called()
+        target._exact.invoke.assert_not_called()
+        browser.batch.assert_not_called()
+
+    def test_run_reports_internal_page_refusal_before_dispatch_as_settled_without_fallback(self):
+        result, browser, create_page = self.run_result("act", {"actions": [{"kind": "click", "ref": ref()}]},
+                                                      address="chrome://settings/")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], helper.INTERNAL_PAGE)
+        self.assertEqual((result.get("completed"), result["uncertain"]), (0, False))
+        self.assertNotIn("fallback", result)
+        create_page.assert_not_called()
+        browser.batch.assert_not_called()
+
+    def test_run_preserves_uncertainty_for_an_unclassified_dispatch_failure(self):
+        target = page()
+        target.act = Mock(side_effect=RuntimeError("The action response was lost"))
+        result, _, _ = self.run_result("act", {"actions": [{"kind": "click", "ref": ref()}]}, target=target)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["uncertain"])
+        self.assertEqual(result["fallback"], "computer_act")
+        target.act.assert_called_once()
 
     def test_engine_commands_use_stdin_and_a_private_environment(self):
         with tempfile.TemporaryDirectory() as directory, \
