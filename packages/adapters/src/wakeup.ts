@@ -140,6 +140,16 @@ export class GraphileJobPublisher implements JobPublisher {
   }
 }
 
+/** Prepare the queue schema as the migration owner before runtime login grants. */
+export async function migrateJobQueue(connectionString: string): Promise<void> {
+  const utils = await makeWorkerUtils({ connectionString });
+  try {
+    await utils.migrate();
+  } finally {
+    await utils.release();
+  }
+}
+
 /** Same bounded backoff the worker uses around jobHost.start for 53300. */
 export function databaseCapacityBackoffMs(attempt: number): number {
   return Math.min(30_000, 200 * 2 ** Math.min(attempt, 8));

@@ -136,6 +136,7 @@ async function main() {
     "apps/api/src/billing.postgres.test.ts",
     "apps/api/src/billing-status-refresh.postgres.test.ts",
     "packages/memory/src/commit.postgres.test.ts",
+    "packages/adapters/src/database-access.postgres.test.ts",
     "packages/adapters/src/wakeup.postgres.test.ts",
     "packages/adapters/src/run-wakeup.postgres.test.ts",
     "packages/adapters/src/routine-coalescing.postgres.test.ts",

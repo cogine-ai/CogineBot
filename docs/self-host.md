@@ -10,6 +10,32 @@ For source development in WSL, keep the checkout and `data` directory in the Lin
 
 Compose bot homes mount only their own subdirectory of the application volume using Docker volume semantics. Docker's internal volume paths are never used as host bind mounts.
 
+## Database role preparation
+
+The administrative migration command can prepare a restricted runtime login and
+register its authenticated system key. Run it in a one-shot administrator
+environment, with both URLs targeting the same database:
+
+```bash
+DATABASE_MIGRATION_URL='postgres://<owner>:<owner-password>@<host>/<database>' \
+DATABASE_URL='postgres://<runtime>:<runtime-password>@<host>/<database>' \
+pnpm db:migrate
+```
+
+The command migrates the application and Graphile schemas, prepares runtime
+grants, authenticates the runtime login, and registers its key. A precreated login
+must inherit the runtime grant role. Privileged logins are rejected rather than
+silently changed. Registered keys used by existing pools remain during rollout;
+credential retirement requires draining those instances separately.
+
+Success reports role and key readiness, not complete row-level isolation. Full
+table policies and trusted API, worker and CLI contexts must be connected before
+activation. This command does not switch the current Compose services to a new
+login. Keep owner credentials out of their shared environment files; separating
+long-running service environments remains part of that activation rollout. With
+a single login, the command retains migration compatibility and reports that
+row-level security is not enforced.
+
 ## Published images (no checkout)
 
 This installation path targets CogineBot's own registry. The publishing workflow
