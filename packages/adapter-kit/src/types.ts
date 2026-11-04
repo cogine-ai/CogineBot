@@ -997,6 +997,15 @@ export interface BrowserCapabilities {
   keyless?: boolean;
 }
 
+/** Confirmed by the running helper before versioned page actions or saved login resolution. */
+export interface PageBrowserCapabilities {
+  protocol: 2;
+  engine: "agent-browser";
+  engineVersion: "0.41.0";
+  refIdentity: "exact-node-v1";
+  loginFields: Array<"username" | "password">;
+}
+
 export interface BrowserNavigateRequest {
   url: string;
   signal?: AbortSignal;
@@ -1010,6 +1019,8 @@ export interface BrowserNavigateResult {
   /** Current observation after navigation, when the page remains readable. */
   tree?: string;
   elements?: BrowserSnapshotNode[];
+  /** Current snapshot was captured while the page was still loading. */
+  loading?: boolean;
   /** The bounded navigation/observation wait expired; this does not imply a failed mutation. */
   timedOut?: boolean;
   /** When set, the page tool could not operate; use computer_act instead. */
@@ -1028,6 +1039,14 @@ export interface BrowserSnapshotNode {
   name: string;
   value?: string;
   tag?: string;
+  options?: Array<{
+    value: string;
+    label: string;
+    selected?: boolean;
+    disabled?: boolean;
+    valueRef?: true;
+  }>;
+  optionsTotal?: number;
 }
 
 export interface BrowserSnapshotResult {
@@ -1036,20 +1055,26 @@ export interface BrowserSnapshotResult {
   /** Compact accessibility-style tree for the model. */
   tree: string;
   elements: BrowserSnapshotNode[];
+  loading?: boolean;
   fallback?: "computer_act";
   error?: string;
 }
 
-export type BrowserActKind = "click" | "fill" | "type";
+export type BrowserActKind = "click" | "fill" | "type" | "upload";
+
+export const MAX_BROWSER_UPLOAD_FILES = 10;
 
 export type BrowserActStep =
   | { kind: "click"; ref: string }
+  | { kind: "upload"; ref: string; paths: string[]; roots?: string[] }
   | {
       kind: "fill" | "type";
       ref: string;
       text: string;
       /** Refuse the step unless the page is on this origin when it is applied. */
       origin?: string;
+      /** Required together with origin for a saved login; never inferred from input labels. */
+      field?: "username" | "password";
     };
 
 export interface BrowserActRequest {
@@ -1069,18 +1094,21 @@ export interface BrowserActResult {
   /** Snapshot after the actions when available. */
   tree?: string;
   elements?: BrowserSnapshotNode[];
+  loading?: boolean;
   fallback?: "computer_act";
   error?: string;
 }
 
 /** A sandbox must route these commands through its owned screen, never generic host execution. */
 export type PageBrowserCommand =
+  | { command: "capabilities" }
   | { command: "navigate"; url: string }
   | { command: "snapshot" }
   | { command: "act"; actions: BrowserActStep[] };
 
 export type PageBrowserResult = Partial<BrowserSnapshotResult & BrowserActResult> & {
   ok: boolean;
+  capabilities?: PageBrowserCapabilities;
   /** Internal compatibility marker: failed navigation confirmation has the helper's new semantics. */
   navigationOutcomeKnown?: boolean;
 };

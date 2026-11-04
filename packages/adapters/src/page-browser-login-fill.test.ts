@@ -1,99 +1,131 @@
-import { readFileSync } from "node:fs";
-import vm from "node:vm";
-import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-
-/** The live page helper's isolated-world script, executed here rather than reimplemented. */
-function installPageHelper(url: string, html: string) {
-  const source = readFileSync(
-    new URL("../../../infra/sandboxes/computer/rakazo-page-browser", import.meta.url),
-    "utf8",
-  );
-  const match = source.match(/EVAL_HELPERS = r"""\n([\s\S]*?)\n"""/);
-  if (!match?.[1]) throw new Error("page browser helper script was not found");
-  const dom = new JSDOM(
-    `<!doctype html><html><head><title>Sign in</title></head><body>${html}</body></html>`,
-    {
-      url,
-      pretendToBeVisual: true,
-      runScripts: "outside-only",
-    },
-  );
-  const domWindow = dom.window;
-  const elementPrototype = domWindow.Element.prototype as unknown as {
-    getBoundingClientRect: () => unknown;
-  };
-  elementPrototype.getBoundingClientRect = () => ({
-    width: 10,
-    height: 10,
-    top: 0,
-    left: 0,
-    right: 10,
-    bottom: 10,
-    x: 0,
-    y: 0,
-    toJSON() {
-      return {};
-    },
-  });
-  vm.runInContext(match[1], dom.getInternalVMContext());
-  const browser = (
-    domWindow as unknown as {
-      __rakazoPageBrowser: {
-        snapshot: () => { elements: Array<{ ref: string; name: string; value?: string }> };
-        fill: (ref: string, value: string, origin?: string) => { url: string };
-      };
-    }
-  ).__rakazoPageBrowser;
-  return { domWindow, browser };
-}
-
-function fieldValue(window: JSDOM["window"], label: string): string {
-  const field = window.document.querySelector(`[aria-label="${label}"]`) as {
-    value?: string;
-  } | null;
-  return field?.value ?? "";
-}
-
-function refFor(name: string, elements: Array<{ ref: string; name: string }>) {
-  const match = elements.find((element) => element.name.includes(name));
-  if (!match) throw new Error(`missing field ${name}`);
-  return match.ref;
-}
+import { installExactPage } from "./page-browser.test-support.js";
 
 describe("live page helper saved-login fill", () => {
-  const html = `
-    <input aria-label="Email" />
-    <input aria-label="Password" type="password" />
-    <input aria-label="Phone" type="tel" />
-    <textarea aria-label="Username"></textarea>
-    <input aria-label="Query" type="search" />
-    <input aria-label="Website" type="url" />
-    <input aria-label="Pin" type="number" />
-  `;
+  const origin = "https://login.example.test";
 
-  it("types a login only into text, email, password, and tel inputs on the saved HTTPS origin", () => {
-    const { domWindow, browser } = installPageHelper("https://login.example.test/signin", html);
-    const snap = browser.snapshot();
-    const origin = "https://login.example.test";
-    browser.fill(refFor("Email", snap.elements), "fake-user", origin);
-    browser.fill(refFor("Password", snap.elements), "fake-password", origin);
-    browser.fill(refFor("Phone", snap.elements), "555", origin);
-    expect(fieldValue(domWindow, "Email")).toBe("fake-user");
-    expect(fieldValue(domWindow, "Phone")).toBe("555");
-    for (const name of ["Username", "Query", "Website", "Pin"]) {
-      expect(() => browser.fill(refFor(name, snap.elements), "leaked", origin)).toThrow(
-        /text, email, password, or telephone/,
-      );
+  it.each([
+    ["text", "username"],
+    ["email", "username"],
+    ["tel", "username"],
+    ["password", "password"],
+  ])("fills %s only as the matching %s login field", (type, field) => {
+    const { win, exact, bind, close } = installExactPage(`<input id="field" type="${type}">`);
+    try {
+      const ref = bind("#field");
+      const input = win.document.querySelector<HTMLInputElement>("#field")!;
+      let events = 0;
+      input.addEventListener("input", () => events++);
+      input.addEventListener("change", () => events++);
+      expect(exact.fill(ref, "synthetic-login", origin, field)).toBe(true);
+      expect(input.value).toBe("synthetic-login");
+      expect(events).toBe(2);
+      expect(exact.holdsLogin(input)).toBe(true);
+      expect(exact.describe(ref)).not.toHaveProperty("value");
+    } finally {
+      close();
     }
-    expect(domWindow.document.body.textContent).not.toContain("leaked");
   });
 
-  it("refuses a private-LAN HTTP origin in the same fill, even when the page matches", () => {
-    const origin = "http://192.168.2.10:8080";
-    const { domWindow, browser } = installPageHelper(`${origin}/signin`, html);
-    const email = refFor("Email", browser.snapshot().elements);
-    expect(() => browser.fill(email, "fake-user", origin)).toThrow(/HTTPS/);
-    expect(fieldValue(domWindow, "Email")).toBe("");
+  it.each([
+    ["password", "username"],
+    ["text", "password"],
+    ["email", "password"],
+    ["search", "username"],
+    ["url", "username"],
+    ["number", "username"],
+  ])("refuses %s for a %s secret without changing the page", (type, field) => {
+    const { win, exact, bind, close } = installExactPage(`<input id="field" type="${type}">`);
+    try {
+      const ref = bind("#field");
+      let events = 0;
+      win.document.body.addEventListener("input", () => events++);
+      expect(() => exact.fill(ref, "must-stay-private", origin, field)).toThrow(/field type/);
+      expect(win.document.querySelector<HTMLInputElement>("#field")!.value).toBe("");
+      expect(events).toBe(0);
+    } finally {
+      close();
+    }
+  });
+
+  it.each(["textarea", "select", 'div contenteditable="true"'])(
+    "refuses saved credentials in %s",
+    (tag) => {
+      const { exact, bind, close } = installExactPage(`<${tag} id="field"></${tag.split(" ")[0]}>`);
+      try {
+        expect(() => exact.fill(bind("#field"), "private", origin, "username")).toThrow(
+          /field type/,
+        );
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it.each(["disabled", "readonly", 'aria-disabled="true"'])(
+    "refuses a %s login field",
+    (attribute) => {
+      const { exact, bind, close } = installExactPage(`<input id="field" ${attribute}>`);
+      try {
+        expect(() => exact.fill(bind("#field"), "private", origin, "username")).toThrow(/writable/);
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it.each(["", "card", "pay", "pin", "unknown"])("refuses the unsupported field %s", (field) => {
+    const { exact, bind, close } = installExactPage('<input id="field">');
+    try {
+      expect(() => exact.fill(bind("#field"), "private", origin, field)).toThrow(/Unsupported/);
+    } finally {
+      close();
+    }
+  });
+
+  it.each(["http://192.168.2.10:8080", "http://login.example.test"])(
+    "refuses a matching insecure origin %s",
+    (insecure) => {
+      const { win, exact, bind, close } = installExactPage(
+        '<input id="field">',
+        `${insecure}/signin`,
+      );
+      try {
+        expect(() => exact.fill(bind("#field"), "private", insecure, "username")).toThrow(/secure/);
+        expect(win.document.querySelector<HTMLInputElement>("#field")!.value).toBe("");
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it.each([
+    "https://phish.example.test",
+    "https://login.example.test:444",
+    "https://login.example.test.evil.test",
+  ])("refuses another saved origin %s", (saved) => {
+    const { exact, bind, close } = installExactPage('<input id="field">');
+    try {
+      expect(() => exact.fill(bind("#field"), "private", saved, "username")).toThrow(
+        /saved login site/,
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("hides a short username and a password after the page reveals its input type", () => {
+    const { win, exact, bind, close } = installExactPage(
+      '<input id="user"><input id="password" type="password">',
+    );
+    try {
+      exact.fill(bind("#user"), "a", origin, "username");
+      exact.fill(bind("#password"), "synthetic-password", origin, "password");
+      win.document.querySelector<HTMLInputElement>("#password")!.type = "text";
+      expect(exact.describe("#user")).not.toHaveProperty("value");
+      expect(exact.describe("#password")).not.toHaveProperty("value");
+    } finally {
+      close();
+    }
   });
 });

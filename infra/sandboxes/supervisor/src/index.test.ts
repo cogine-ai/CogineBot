@@ -1,15 +1,18 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { stripTypeScriptTypes } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
 import { resolveSupervisorToken } from "@rakazo/core";
 import Docker from "dockerode";
 import { describe, expect, it, vi } from "vitest";
+import { COMPUTER_IMAGE, COMPUTER_IMAGE_CONTEXT_FILES } from "./computer-spec.js";
 import {
   MAX_SUPERVISOR_FILE_REQUEST_BYTES,
   MAX_SUPERVISOR_REQUEST_BYTES,
@@ -72,12 +75,21 @@ describe("computer image build context", () => {
           .slice(0, -1),
       );
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-    const buildSource = source.slice(source.indexOf("const stream = await docker.buildImage("));
-    const entries = buildSource.match(/src:\s*\[([^\]]+)\]/)?.[1];
-    expect(entries).toBeDefined();
-    const src = Array.from(entries!.matchAll(/"([^"\n]+)"/g), (match) => match[1]!);
+    const buildSource = source.match(/async function ensureComputerImage\(\) \{[\s\S]*?\n\}/)?.[0];
+    expect(buildSource).toBeDefined();
     const docker = new Docker({ socketPath: "/unused-build-context-test.sock" });
     let archive: Buffer | undefined;
+    const inspect = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("image is missing"))
+      .mockResolvedValue({});
+    const imageHandle = docker.getImage(COMPUTER_IMAGE);
+    imageHandle.inspect = inspect;
+    const image = vi.spyOn(docker, "getImage").mockReturnValue(imageHandle);
+    const progress = vi
+      .spyOn(docker.modem, "followProgress")
+      .mockImplementation((_stream, callback) => callback(null, []));
+    const build = vi.spyOn(docker, "buildImage");
     // Capture Dockerode's actual compressed request body, without a Docker daemon.
     const dial = vi.spyOn(docker.modem, "dial").mockImplementation((options, callback) => {
       if (!(options.file instanceof Readable) || !callback) {
@@ -93,7 +105,21 @@ describe("computer image build context", () => {
       })().catch((error) => complete(error, null));
     });
     try {
-      await docker.buildImage({ context, src });
+      // Execute the production build entry, then inspect Dockerode's actual tar stream.
+      await runInNewContext(`${stripTypeScriptTypes(buildSource!)}; ensureComputerImage()`, {
+        docker,
+        computerContext: context,
+        COMPUTER_IMAGE_CONTEXT_FILES,
+        COMPUTER_IMAGE,
+        existsSync,
+        path,
+        imageReady: undefined,
+      });
+      expect(build).toHaveBeenCalledWith(
+        { context, src: [...COMPUTER_IMAGE_CONTEXT_FILES] },
+        { t: COMPUTER_IMAGE },
+      );
+      expect(inspect).toHaveBeenCalledTimes(2);
       expect(dial).toHaveBeenCalledOnce();
       if (!archive) throw new Error("expected the Docker build context archive");
       expect(copySources.length).toBeGreaterThan(0);
@@ -103,6 +129,9 @@ describe("computer image build context", () => {
       }
     } finally {
       dial.mockRestore();
+      build.mockRestore();
+      progress.mockRestore();
+      image.mockRestore();
     }
   });
 });

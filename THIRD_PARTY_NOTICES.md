@@ -143,6 +143,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Page browser runtime
+
+The computer image includes agent-browser 0.41.0 under the Apache License, Version 2.0. Its complete license and copyright notice are retained in [agent-browser.LICENSE](infra/sandboxes/computer/agent-browser.LICENSE) and installed at `/usr/share/doc/agent-browser/LICENSE` in the image. The distributed runtime binary is unmodified.
+
 ## Mermaid diagram renderer
 
 Mermaid 11.17.2 is distributed as the fixed chat diagram library. Its MIT notice is included with both the web and server-served browser bundles. Existing notices embedded in that browser bundle are retained.

@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import base64
 import contextlib
 import io
 import json
@@ -17,6 +18,8 @@ LOADER = importlib.machinery.SourceFileLoader("page_browser_navigation_product",
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 PRODUCT = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(PRODUCT)
+CDP = PRODUCT.page_secrets
+REF = "r2." + base64.urlsafe_b64encode(json.dumps(["tab", "main", "old", "0" * 32]).encode()).decode().rstrip("=")
 
 
 class Clock:
@@ -169,18 +172,22 @@ class ProtocolSocket:
                 self.scheduled.append((self.clock.now + self.navigate_ack_delay,
                                        lambda: self.queue({"id": request["id"], "result": result})))
                 return
-        elif method == "Runtime.evaluate":
-            expression = params["expression"]
-            value = True
-            if expression.startswith("window.__rakazoPageBrowser.click("):
+        elif method == "Runtime.callFunctionOn":
+            function = params["functionDeclaration"]
+            if ".describe(" in function:
+                result = {"result": {"value": {"ref": REF, "role": "button", "name": "Save"} if self.loader == "old" else None}}
+            elif ".act(" in function:
                 self.mutations += 1
                 self.schedule_navigation()
                 if self.lose_action_ack:
                     return
-                value = {"url": "http://page.test/old", "title": "old"}
-            elif expression.startswith("Boolean(window.__rakazoPageBrowser.resolve("):
-                value = self.loader == "old"
-            elif ".snapshot()" in expression:
+                result = {"result": {"value": True}}
+            else:
+                result = {"result": {"value": True}}
+        elif method == "Runtime.evaluate":
+            expression = params["expression"]
+            value = True
+            if ".snapshot()" in expression:
                 if self.lose_snapshot_ack:
                     return
                 value = {"url": self.current_url, "title": self.document,
@@ -242,30 +249,71 @@ class ByteSocket:
         return data
 
 
+class ProtocolExact:
+    """Controlled DOM observations; all navigation and websocket processing are product code."""
+
+    def __init__(self, client):
+        self.client = client
+        self.session = "selected"
+        frame = client._sock.frame()
+        self.navigation = client.navigation = CDP.NavigationState(self.session, frame)
+
+    def assert_mutations_allowed(self):
+        # Navigation timing is isolated here; persistent guard policy has its own actual-file tests.
+        return None
+
+    def invoke(self, ref, function, *values):
+        return CDP.call_with(self.client, self.session, 7, function, ref, *values)
+
+    def act(self, ref, kind, value=None):
+        return self.invoke(ref, "function (ref, kind, value) { return window.__rakazoPageBrowserExact.act(ref, kind, value); }", kind, value)
+
+    def snapshot(self):
+        state = CDP.eval_json(self.client, self.session, "window.__rakazoPageBrowserExact.snapshot()", 7)
+        return {**state, "text": state["tree"], "masked": [], "elements": []}
+
+
+class ProtocolBrowser:
+    def __init__(self, exact):
+        self.exact = exact
+        self.deadline = exact.client.deadline
+
+    def batch(self, commands, **kwargs):
+        return [{"snapshot": self.exact.navigation.document_url.rsplit("/", 1)[-1]} for _ in commands]
+
+
+def make_page(client):
+    exact = ProtocolExact(client)
+    page = PRODUCT.PageBrowser(9222, "tab", ProtocolBrowser(exact), deadline=client.deadline)
+    page._exact = exact
+    page.settle = lambda *args, **kwargs: True
+    return page
+
+
 class NavigationProtocolTests(unittest.TestCase):
     def act(self, mode="queued", actions=None, deadline=None, lose_ack=False):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.mode, peer.lose_action_ack = mode, lose_ack
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             if deadline is not None:
                 client.deadline = deadline
             client._sock = peer
-            result = PRODUCT.act(client, "selected", actions or [{"kind": "click", "ref": "old-ref"}])
+            result = make_page(client).act(actions or [{"kind": "click", "ref": REF}])
         return result, peer, clock
 
     def run_events(self, emit, *, explicit=False, mode="queued", ack_delay=0.0, actions=None):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.mode = mode
             peer.navigate_ack_delay = ack_delay
             peer.navigation = lambda: emit(peer)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = (PRODUCT.navigate(client, "selected", "http://page.test/next") if explicit
-                      else PRODUCT.act(client, "selected", actions or [{"kind": "click", "ref": "old-ref"}]))
+            result = (make_page(client).navigate("http://page.test/next") if explicit
+                      else make_page(client).act(actions or [{"kind": "click", "ref": REF}]))
         return result, peer, clock
 
     def mixed_events(self, peer, order, *, commit=True):
@@ -283,7 +331,7 @@ class NavigationProtocolTests(unittest.TestCase):
             with self.subTest(order=order):
                 result, peer, clock = self.run_events(
                     lambda peer: self.mixed_events(peer, order),
-                    actions=[{"kind": "click", "ref": "old-ref"}] * 2,
+                    actions=[{"kind": "click", "ref": REF}] * 2,
                 )
                 self.assertEqual(peer.mutations, 1, result)
                 self.assertFalse(result["ok"])
@@ -297,7 +345,7 @@ class NavigationProtocolTests(unittest.TestCase):
             with self.subTest(order=order):
                 result, peer, clock = self.run_events(
                     lambda peer: self.mixed_events(peer, order, commit=False),
-                    actions=[{"kind": "click", "ref": "old-ref"}] * 2,
+                    actions=[{"kind": "click", "ref": REF}] * 2,
                 )
                 self.assertEqual(peer.mutations, 1, result)
                 self.assertFalse(result["ok"])
@@ -367,7 +415,7 @@ class NavigationProtocolTests(unittest.TestCase):
                     peer.within_navigation("http://page.test/old#side", "fragment")
                     peer.scheduled.append((peer.clock.now + 0.1, lambda: peer.commit_navigation(url)))
 
-                result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": "old-ref"}] * 2)
+                result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": REF}] * 2)
                 self.assertEqual(peer.mutations, 1, result)
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["completed"], 1)
@@ -457,7 +505,7 @@ class NavigationProtocolTests(unittest.TestCase):
             peer.within_navigation("http://page.test/old#side", "fragment")
             peer.scheduled.append((peer.clock.now + 0.1, peer.commit_navigation))
 
-        result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": "old-ref"}] * 2)
+        result, peer, clock = self.run_events(emit, actions=[{"kind": "click", "ref": REF}] * 2)
         self.assertEqual(peer.mutations, 1, result)
         self.assertFalse(result["ok"])
         self.assertEqual(result["completed"], 1)
@@ -523,15 +571,15 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_queued_navigation_observes_new_document_after_exactly_one_click(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.act(client, "selected", [{"kind": "click", "ref": "old-ref"}])
+            result = make_page(client).act( [{"kind": "click", "ref": REF}])
         self.assertTrue(result["ok"])
         self.assertEqual(result["completed"], 1)
         self.assertEqual(result["url"], "http://page.test/next")
-        self.assertEqual(result["tree"], "next")
+        self.assertIn("next", result["tree"])
         self.assertEqual(peer.mutations, 1)
 
     def test_fragment_trickle_cannot_extend_absolute_cdp_deadline(self):
@@ -545,9 +593,9 @@ class NavigationProtocolTests(unittest.TestCase):
                 clock.now += 0.2
                 return super().recv(1)
 
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = TrickleSocket(clock)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client.deadline = 1.0
             client._sock = peer
             with self.assertRaises(TimeoutError):
@@ -556,12 +604,12 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_explicit_navigation_does_not_infer_ack_from_new_document(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.lose_navigation_ack = True
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertTrue(result.get("uncertain"))
         self.assertIs(result.get("navigationOutcomeKnown"), False)
@@ -571,12 +619,12 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_explicit_navigation_ack_with_loader_waits_for_commit(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.mode = "no-commit-event"
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertTrue(result.get("timedOut"))
         self.assertFalse(result["uncertain"])
@@ -586,11 +634,11 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_acknowledged_navigation_marks_current_outcome_known(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertTrue(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertIs(result.get("navigationOutcomeKnown"), True)
@@ -599,12 +647,12 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_acknowledged_navigation_dcl_timeout_keeps_known_outcome(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.mode = "loading"
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertTrue(result["timedOut"])
@@ -614,12 +662,12 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_navigation_observation_failure_keeps_acknowledged_outcome_known(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.lose_snapshot_ack = True
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertTrue(result["timedOut"])
@@ -629,11 +677,11 @@ class NavigationProtocolTests(unittest.TestCase):
 
     def test_navigation_budget_failure_before_dispatch_marks_no_command_known(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.0)
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.0)
             client._sock = peer
-            result = PRODUCT.navigate(client, "selected", "http://page.test/next")
+            result = make_page(client).navigate("http://page.test/next")
         self.assertFalse(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertIs(result.get("navigationOutcomeKnown"), True)
@@ -685,14 +733,14 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertEqual(peer.mutations, 1)
 
     def test_uncommitted_request_timeout_stops_partial_batch(self):
-        actions = [{"kind": "click", "ref": "old-ref"}] * 2
+        actions = [{"kind": "click", "ref": REF}] * 2
         result, peer, clock = self.act("request-only", actions)
         self.assertFalse(result["ok"])
         self.assertTrue(result["timedOut"])
         self.assertFalse(result["uncertain"])
         self.assertEqual(result["completed"], 1)
         self.assertEqual(peer.mutations, 1)
-        self.assertEqual(result["tree"], "old")
+        self.assertIn("old", result["tree"])
         self.assertAlmostEqual(clock.now, 5.02)
 
     def test_unattributed_stop_without_commit_waits_for_bounded_navigation(self):
@@ -705,7 +753,7 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(clock.now, 5.02)
 
     def test_old_document_stopping_cannot_dispatch_next_old_ref_before_new_commit(self):
-        result, peer, clock = self.act("old-loading", [{"kind": "click", "ref": "old-ref"}] * 2)
+        result, peer, clock = self.act("old-loading", [{"kind": "click", "ref": REF}] * 2)
         self.assertEqual(peer.mutations, 1, result)
         self.assertFalse(result["ok"])
         self.assertEqual(result["completed"], 1)
@@ -723,7 +771,7 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(clock.now, 10.02)
 
     def test_old_refs_never_bind_new_document_and_keep_partial_progress(self):
-        result, peer, clock = self.act(actions=[{"kind": "click", "ref": "old-ref"}] * 2)
+        result, peer, clock = self.act(actions=[{"kind": "click", "ref": REF}] * 2)
         self.assertFalse(result["ok"])
         self.assertFalse(result["uncertain"])
         self.assertEqual(result["completed"], 1)
@@ -741,23 +789,23 @@ class NavigationProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(clock.now, 19.0)
 
     def test_whole_batch_shares_budget_and_keeps_final_observation_reserve(self):
-        result, peer, clock = self.act("none", [{"kind": "click", "ref": "old-ref"}] * 24, 4.0)
+        result, peer, clock = self.act("none", [{"kind": "click", "ref": REF}] * 24, 4.0)
         self.assertFalse(result["ok"])
         self.assertTrue(result["timedOut"])
         self.assertEqual(result["completed"], 3)
         self.assertFalse(result["uncertain"])
-        self.assertEqual(result["tree"], "old")
+        self.assertIn("old", result["tree"])
         self.assertEqual(peer.mutations, 3)
         self.assertAlmostEqual(clock.now, 1.0)
 
     def test_snapshot_failure_never_reports_an_old_observation_as_fresh(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
             peer.lose_snapshot_ack = True
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
             client._sock = peer
-            result = PRODUCT.act(client, "selected", [{"kind": "click", "ref": "old-ref"}])
+            result = make_page(client).act( [{"kind": "click", "ref": REF}])
         self.assertFalse(result["ok"])
         self.assertTrue(result["timedOut"])
         self.assertEqual(result["completed"], 1)
@@ -773,7 +821,7 @@ class NavigationProtocolTests(unittest.TestCase):
                 clock = Clock()
                 peer = ByteSocket(clock, b"HTTP/1.1 200 OK\r\n" + b"x" * 200,
                                   first_chunk=first_chunk)
-                with patch.object(PRODUCT, "time", clock), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
+                with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
                     with self.assertRaises(TimeoutError):
                         PRODUCT.http_get_json("http://127.0.0.1:9222/json/version", deadline=0.5)
                 self.assertAlmostEqual(clock.now, 0.5)
@@ -783,7 +831,7 @@ class NavigationProtocolTests(unittest.TestCase):
         clock = Clock()
         body = b'{"Browser":"Chromium"}'
         peer = ByteSocket(clock, b"", first_chunk=b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
-        with patch.object(PRODUCT, "time", clock), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
             result = PRODUCT.http_get_json("http://127.0.0.1:9222/json/version", deadline=0.5)
         self.assertEqual(result, {"Browser": "Chromium"})
         self.assertEqual(clock.now, 0)
@@ -792,18 +840,32 @@ class NavigationProtocolTests(unittest.TestCase):
     def test_websocket_handshake_trickle_is_bounded_and_closes_failed_socket(self):
         clock = Clock()
         peer = ByteSocket(clock, b"HTTP/1.1 101 Switching Protocols\r\n" + b"x" * 200)
-        with patch.object(PRODUCT, "time", clock), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.5)
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0), patch.object(PRODUCT.socket, "create_connection", return_value=peer):
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.5)
             with self.assertRaises(TimeoutError):
                 client.connect()
         self.assertAlmostEqual(clock.now, 0.5)
         self.assertTrue(peer.closed)
 
+    def test_short_cdp_call_timeout_cannot_expand_to_the_outer_deadline(self):
+        clock = Clock()
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock):
+            peer = ProtocolSocket(clock)
+            peer.lose_navigation_ack = True
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.5)
+            client._sock = peer
+            with self.assertRaises(TimeoutError):
+                client.call("Page.navigate", {"url": "http://page.test/next"}, timeout_s=0.1)
+        self.assertAlmostEqual(clock.now, 0.1)
+        self.assertEqual(client.deadline, 0.5)
+        self.assertEqual(client._pending, {})
+        self.assertEqual(peer.commands.count("Page.navigate"), 1)
+
     def test_expired_budget_dispatches_no_cdp_command(self):
         clock = Clock()
-        with patch.object(PRODUCT, "time", clock):
+        with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
             peer = ProtocolSocket(clock)
-            client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.0)
+            client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test", deadline=0.0)
             client._sock = peer
             with self.assertRaises(TimeoutError):
                 client.call("Page.navigate", {"url": "http://page.test/next"})
@@ -813,12 +875,14 @@ class NavigationProtocolTests(unittest.TestCase):
         for url in ("file:///tmp/page", "javascript:void(0)", "https://user:pass@page.test"):
             with self.subTest(url=url):
                 clock = Clock()
-                with patch.object(PRODUCT, "time", clock):
+                with patch.object(PRODUCT, "time", clock), patch.object(CDP, "time", clock), patch.object(PRODUCT, "ACTION_QUIET_SECONDS", 0.0):
                     peer = ProtocolSocket(clock)
-                    client = PRODUCT.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
+                    client = CDP.CdpClient("ws://127.0.0.1:9222/devtools/browser/test")
                     client._sock = peer
-                    with self.assertRaises(RuntimeError):
-                        PRODUCT.navigate(client, "selected", url)
+                    result = make_page(client).navigate(url)
+                self.assertFalse(result["ok"])
+                self.assertFalse(result["uncertain"])
+                self.assertTrue(result["navigationOutcomeKnown"])
                 self.assertEqual(peer.commands, [])
 
 

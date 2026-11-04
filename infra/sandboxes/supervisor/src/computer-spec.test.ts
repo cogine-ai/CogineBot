@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assertVolumeSubpathSupport,
   COMPUTER_IMAGE,
+  COMPUTER_IMAGE_CONTEXT_FILES,
   computerBridgeNameFor,
   computerDnsMatches,
   computerHomeStorage,
@@ -50,6 +51,25 @@ import {
   screenUrlWithToken,
   xdotoolCommand,
 } from "./computer-spec.js";
+
+it("includes every local Dockerfile copy in the actual computer image build context", () => {
+  const directory = path.resolve(import.meta.dirname, "../../computer");
+  const dockerfile = readFileSync(path.join(directory, "Dockerfile"), "utf8");
+  const copied = dockerfile.split("\n").flatMap((line) => {
+    if (!/^COPY\s/i.test(line) || /--from=/.test(line)) return [];
+    const words = line
+      .trim()
+      .split(/\s+/)
+      .slice(1)
+      .filter((word) => !word.startsWith("--"));
+    return words.slice(0, -1);
+  });
+  expect(copied).not.toHaveLength(0);
+  for (const file of copied) {
+    expect(COMPUTER_IMAGE_CONTEXT_FILES, file).toContain(file);
+    expect(readFileSync(path.join(directory, file)).length, file).toBeGreaterThan(0);
+  }
+});
 
 describe("computer DNS configuration", () => {
   afterEach(() => vi.unstubAllEnvs());

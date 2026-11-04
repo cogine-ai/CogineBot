@@ -1,9 +1,23 @@
-import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  BrowserActRequest,
+  ComputerRef,
+  PageBrowserCapabilities,
+  PageBrowserCommand,
+} from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBrowserProvider, resolveBrowserProviderKind } from "./browser-provider-factory.js";
 import { ComputerBrowserProvider } from "./computer-browser.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 import { pageBrowserSessionKey } from "./page-browser-session.js";
+
+const strictCapabilities: PageBrowserCapabilities = {
+  protocol: 2,
+  engine: "agent-browser",
+  engineVersion: "0.41.0",
+  refIdentity: "exact-node-v1",
+  loginFields: ["username", "password"],
+};
 
 const baseContext: AdapterContext = {
   operationId: "1",
@@ -369,25 +383,25 @@ describe("page browser safety", () => {
         ...currentPage,
       }));
       const provider = new ComputerBrowserProvider({ liveDriver: driver });
-      expect(
-        await provider.act(
-          computer,
-          {
-            actions: [
-              { kind: "click", ref: "old" },
-              { kind: "click", ref: "also-old" },
-            ],
-          },
-          baseContext,
-        ),
-      ).toMatchObject({
+      const result = await provider.act(
+        computer,
+        {
+          actions: [
+            { kind: "click", ref: "old" },
+            { kind: "click", ref: "also-old" },
+          ],
+        },
+        baseContext,
+      );
+      expect(result).toMatchObject({
         ok: false,
         completed: 1,
         uncertain,
         timedOut: true,
-        fallback: "computer_act",
         ...currentPage,
       });
+      if (uncertain) expect(result).toHaveProperty("fallback", "computer_act");
+      else expect(result).not.toHaveProperty("fallback");
       expect(driver).toHaveBeenCalledTimes(1);
     },
   );
@@ -426,5 +440,416 @@ describe("page browser safety", () => {
     const provider = new ComputerBrowserProvider({ liveDriver: driver });
     await expect(provider.snapshot(computer, {}, { ...baseContext, signal })).rejects.toThrow();
     expect(driver).not.toHaveBeenCalled();
+  });
+});
+
+describe("running helper login capability", () => {
+  const liveComputer: ComputerRef = {
+    id: "capability-computer",
+    botId: "capability-bot",
+    kind: "docker",
+    providerRef: "capability-computer",
+  };
+  const secretAction = {
+    kind: "fill" as const,
+    ref: "r2.opaque-identity",
+    text: "synthetic-password",
+    origin: "https://login.example.test",
+    field: "password" as const,
+  };
+
+  it("retains the original Run Stop after a direct request proof replaces its context signal", async () => {
+    const original = new AbortController();
+    const owner = { ...baseContext, signal: original.signal };
+    const request = { actions: [secretAction] };
+    let entered!: () => void;
+    const enteredAction = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let cancelCount = 0,
+      laterEffects = 0;
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command, actionContext) => {
+        if (command.command === "capabilities")
+          return { ok: true, capabilities: strictCapabilities };
+        entered();
+        await new Promise<void>((resolve) =>
+          actionContext.signal.addEventListener(
+            "abort",
+            () => {
+              cancelCount++;
+              resolve();
+            },
+            { once: true },
+          ),
+        );
+        actionContext.signal.throwIfAborted();
+        laterEffects++;
+        return { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    expect(await provider.supportsPageActions(liveComputer, owner, request)).toBe(true);
+    owner.signal = new AbortController().signal;
+    const outcome = provider.act(liveComputer, request, owner).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await enteredAction;
+    const reason = new Error("Original Run stopped");
+    original.abort(reason);
+    const observed = await Promise.race([
+      outcome,
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+    ]);
+    expect(observed).toEqual({ error: reason });
+    expect(cancelCount).toBe(1);
+    expect(laterEffects).toBe(0);
+  });
+
+  it.each(["owner", "signal"] as const)(
+    "rejects proof when %s changes during the probe",
+    async (change) => {
+      const owner = { ...baseContext };
+      const provider = new ComputerBrowserProvider({
+        liveDriver: async () => {
+          if (change === "owner") owner.userId = "changed-user";
+          else owner.signal = new AbortController().signal;
+          return { ok: true, capabilities: strictCapabilities };
+        },
+      });
+      await expect(
+        provider.supportsPageActions(liveComputer, owner, { actions: [secretAction] }),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it.each([
+    "request",
+    "computer",
+    "context",
+    "run",
+    "user",
+    "space",
+    "lease",
+    "image",
+    "actions",
+    "aborted",
+  ] as const)("does not reuse a request proof after %s identity changes", async (change) => {
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        return commands.length === 1
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: false, uncertain: false, error: "Old helper" };
+      },
+    });
+    const stop = new AbortController();
+    let owner: AdapterContext = {
+      ...baseContext,
+      signal: stop.signal,
+      runId: "run-a",
+      screenLeaseId: "lease-a",
+    };
+    let target = { ...liveComputer };
+    let request: BrowserActRequest = { actions: [secretAction] };
+    expect(await provider.supportsPageActions(target, owner, request)).toBe(true);
+    if (change === "request") request = { ...request };
+    if (change === "computer") target = { ...target };
+    if (change === "context") owner = { ...owner };
+    if (change === "run") owner.runId = "run-b";
+    if (change === "user") owner.userId = "other-user";
+    if (change === "space") owner.spaceId = "other-space";
+    if (change === "lease") owner.screenLeaseId = "lease-b";
+    if (change === "image") target.providerRef = "replacement-computer";
+    if (change === "actions") request.actions = [...request.actions];
+    if (change === "aborted") {
+      stop.abort(new Error("Proof owner stopped"));
+      owner.signal = new AbortController().signal;
+      await expect(provider.act(target, request, owner)).rejects.toThrow("Proof owner stopped");
+      expect(commands).toEqual(["capabilities"]);
+      return;
+    }
+    const result = await provider.act(target, request, owner);
+    expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    expect(commands).toEqual(["capabilities", "capabilities"]);
+  });
+
+  it("consumes a matching proof once and never caches a legacy two-argument probe", async () => {
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        return command.command === "capabilities"
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    const owner = { ...baseContext },
+      request = { actions: [secretAction] };
+    await provider.supportsPageActions(liveComputer, owner, request);
+    await provider.act(liveComputer, request, owner);
+    await provider.act(liveComputer, request, owner);
+    await provider.supportsPageActions(liveComputer, owner);
+    await provider.act(liveComputer, request, owner);
+    expect(commands).toEqual([
+      "capabilities",
+      "act",
+      "capabilities",
+      "act",
+      "capabilities",
+      "capabilities",
+      "act",
+    ]);
+  });
+
+  it("gives a direct action its dispatch budget after a bounded fresh probe", async () => {
+    vi.useFakeTimers();
+    const timer = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("deadline", "TimeoutError")),
+        milliseconds,
+      );
+      return controller.signal;
+    });
+    const commands: string[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        commands.push(command.command);
+        await new Promise((done) =>
+          setTimeout(done, command.command === "capabilities" ? 18_000 : 10_000),
+        );
+        return command.command === "capabilities"
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: true, completed: 1, url: secretAction.origin, title: "Current" };
+      },
+    });
+    try {
+      const task = provider.act(liveComputer, { actions: [secretAction] }, baseContext).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(28_000);
+      expect(await task).toMatchObject({ value: { ok: true, completed: 1 } });
+      expect(commands).toEqual(["capabilities", "act"]);
+    } finally {
+      timer.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["navigate", "snapshot", "act"] as const)(
+    "honors an already aborted request signal before %s reaches the helper",
+    async (method) => {
+      const controller = new AbortController();
+      controller.abort(new Error("Synthetic request Stop"));
+      const driver = vi.fn(async () => ({
+        ok: true,
+        completed: 1,
+        url: "https://example.test",
+        title: "Current",
+        tree: "Current page",
+        elements: [],
+      }));
+      const provider = new ComputerBrowserProvider({ liveDriver: driver });
+      const result =
+        method === "navigate"
+          ? provider.navigate(
+              liveComputer,
+              { url: "https://example.test", signal: controller.signal },
+              baseContext,
+            )
+          : method === "snapshot"
+            ? provider.snapshot(liveComputer, { signal: controller.signal }, baseContext)
+            : provider.act(
+                liveComputer,
+                { actions: [{ kind: "click", ref: "r2.node" }], signal: controller.signal },
+                baseContext,
+              );
+      await expect(result).rejects.toThrow("Synthetic request Stop");
+      expect(driver).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    undefined,
+    { ...strictCapabilities, protocol: 1 },
+    { ...strictCapabilities, engineVersion: "0.40.0" },
+    { ...strictCapabilities, refIdentity: "role-and-name" },
+    { ...strictCapabilities, loginFields: ["username"] },
+  ])(
+    "refuses unknown or incompatible capabilities before sending a login: %j",
+    async (capabilities) => {
+      const calls: PageBrowserCommand[] = [];
+      const provider = new ComputerBrowserProvider({
+        liveDriver: async (_computer, command) => {
+          calls.push(command);
+          return { ok: true, capabilities: capabilities as PageBrowserCapabilities | undefined };
+        },
+      });
+      const result = await provider.act(liveComputer, { actions: [secretAction] }, baseContext);
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(result).not.toHaveProperty("fallback");
+      expect(calls).toEqual([{ command: "capabilities" }]);
+      expect(JSON.stringify(calls)).not.toContain(secretAction.text);
+    },
+  );
+
+  it.each([
+    { kind: "type" as const, ref: "r2.old-node", text: "replacement" },
+    {
+      kind: "upload" as const,
+      ref: "r2.old-file",
+      paths: ["/workspace/upload.txt"],
+      roots: ["/workspace"],
+    },
+  ])("refuses an old helper before a versioned page action: %j", async (action) => {
+    const calls: PageBrowserCommand[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        calls.push(command);
+        return { ok: false, uncertain: false, error: "Unknown command" };
+      },
+    });
+    const result = await provider.act(liveComputer, { actions: [action] }, baseContext);
+    expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    expect(result).not.toHaveProperty("fallback");
+    expect(calls).toEqual([{ command: "capabilities" }]);
+    expect(JSON.stringify(calls)).not.toContain("replacement");
+    expect(JSON.stringify(calls)).not.toContain("upload.txt");
+  });
+
+  it("confirms the running helper before forwarding the exact typed login", async () => {
+    const calls: PageBrowserCommand[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        calls.push(command);
+        return command.command === "capabilities"
+          ? { ok: true, capabilities: strictCapabilities }
+          : { ok: true, completed: 1, url: secretAction.origin, title: "Login" };
+      },
+    });
+    await expect(
+      provider.act(liveComputer, { actions: [secretAction] }, baseContext),
+    ).resolves.toMatchObject({
+      ok: true,
+      completed: 1,
+    });
+    expect(calls).toEqual([
+      { command: "capabilities" },
+      { command: "act", actions: [secretAction] },
+    ]);
+  });
+
+  it("refuses a capability transport failure without sending a login or claiming desktop fallback", async () => {
+    const driver = vi.fn(async () => {
+      throw new Error("Synthetic disconnected helper");
+    });
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    const result = await provider.act(liveComputer, { actions: [secretAction] }, baseContext);
+    expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    expect(result).not.toHaveProperty("fallback");
+    expect(driver).toHaveBeenCalledExactlyOnceWith(
+      liveComputer,
+      { command: "capabilities" },
+      expect.objectContaining({ userId: baseContext.userId, spaceId: baseContext.spaceId }),
+    );
+  });
+
+  it("honors Stop during the capability response before any saved-login action", async () => {
+    const controller = new AbortController();
+    const calls: PageBrowserCommand[] = [];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async (_computer, command) => {
+        calls.push(command);
+        controller.abort(new Error("Synthetic Stop"));
+        return { ok: true, capabilities: strictCapabilities };
+      },
+    });
+    await expect(
+      provider.act(
+        liveComputer,
+        { actions: [secretAction] },
+        { ...baseContext, signal: controller.signal },
+      ),
+    ).rejects.toThrow("Synthetic Stop");
+    expect(calls).toEqual([{ command: "capabilities" }]);
+  });
+
+  it("builds a current tree from settled structured controls when the helper omits tree", async () => {
+    const elements = [
+      {
+        ref: "r2.choice",
+        role: "combobox",
+        name: 'Plan "level"',
+        options: [{ label: "One", value: "1", selected: true }],
+      },
+    ];
+    const driver = vi.fn(async () => ({
+      ok: false,
+      completed: 0,
+      uncertain: false,
+      url: "https://example.test",
+      title: "Current",
+      elements,
+      error: "No such option",
+    }));
+    const result = await new ComputerBrowserProvider({ liveDriver: driver }).act(
+      liveComputer,
+      { actions: [{ kind: "click", ref: "r2.choice" }] },
+      baseContext,
+    );
+    expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false, elements });
+    expect(result.tree).toContain(JSON.stringify('Plan "level"'));
+    expect(result.tree).toContain('"selected":true');
+    expect(result).not.toHaveProperty("fallback");
+    expect(driver).toHaveBeenCalledOnce();
+  });
+
+  it("keeps settled progress and native-option metadata without a desktop replay", async () => {
+    const elements = [
+      {
+        ref: "r2.current-node",
+        role: "combobox",
+        name: "Choice",
+        options: [{ label: "One", value: "1", selected: true }],
+        optionsTotal: 1,
+      },
+    ];
+    const driver = vi.fn(async () => ({
+      ok: false,
+      completed: 1,
+      uncertain: false,
+      timedOut: true,
+      loading: true,
+      url: "https://example.test",
+      title: "Current",
+      tree: "Native options",
+      elements,
+      error: "No such option",
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver: driver });
+    const result = await provider.act(
+      liveComputer,
+      {
+        actions: [
+          { kind: "click", ref: "r2.one" },
+          { kind: "click", ref: "r2.two" },
+        ],
+      },
+      baseContext,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      completed: 1,
+      uncertain: false,
+      timedOut: true,
+      loading: true,
+      elements,
+    });
+    expect(result).not.toHaveProperty("fallback");
+    expect(driver).toHaveBeenCalledOnce();
   });
 });

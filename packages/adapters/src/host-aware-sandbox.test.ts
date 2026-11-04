@@ -53,12 +53,58 @@ describe("host-aware sandbox", () => {
       title: "Page",
       tree: "Page",
     });
-    expect(pageBrowser).toHaveBeenCalledWith(computer, { command: "snapshot" }, ctx);
+    expect(pageBrowser).toHaveBeenCalledOnce();
+    const [routedComputer, request, routedContext] = pageBrowser.mock.calls[0]!;
+    expect(routedComputer).toEqual(computer);
+    expect(request).toEqual({ command: "snapshot" });
+    expect(routedContext).toEqual({ ...ctx, signal: routedContext.signal });
+    expect(routedContext.signal).toBeInstanceOf(AbortSignal);
+    expect(routedContext.signal.aborted).toBe(false);
 
     pageBrowser.mockClear();
     const hostResult = await browser.snapshot({ ...computer, kind: "desktop" }, {}, ctx);
     expect(hostResult.fallback).toBe("computer_act");
     expect(pageBrowser).not.toHaveBeenCalled();
+  });
+
+  it("propagates Run Stop through the routed page signal without another dispatch", async () => {
+    const controller = new AbortController();
+    const runContext = { ...ctx, signal: controller.signal };
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let routedSignal!: AbortSignal;
+    const pageBrowser = vi.spyOn(DockerSandboxProvider.prototype, "pageBrowser").mockImplementation(
+      async (_computer, _request, context) =>
+        new Promise((_resolve, reject) => {
+          routedSignal = context.signal;
+          context.signal.addEventListener("abort", () => reject(context.signal.reason), {
+            once: true,
+          });
+          started();
+        }),
+    );
+    const sandbox = createRunSandbox("docker", {
+      prisma: { deploymentSettings: { findUnique: vi.fn() } } as unknown as PrismaClient,
+    });
+    const browser = new ComputerBrowserProvider({ sandbox });
+    const computer: ComputerRef = {
+      id: "computer",
+      providerRef: "computer",
+      botId: "home",
+      kind: "docker",
+    };
+    const pending = browser.snapshot(computer, {}, runContext);
+    const stopped = new Error("Run was stopped");
+    const rejection = expect(pending).rejects.toBe(stopped);
+    await ready;
+    controller.abort(stopped);
+    await rejection;
+    expect(routedSignal.aborted).toBe(true);
+    expect(routedSignal.reason).toBe(stopped);
+    await expect(browser.snapshot(computer, {}, runContext)).rejects.toBe(stopped);
+    expect(pageBrowser).toHaveBeenCalledOnce();
   });
 
   it("does not expose page commands when neither provider supports them", () => {

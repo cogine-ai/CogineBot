@@ -1,24 +1,98 @@
 #!/usr/bin/env python3
-"""Drive the live Chromium on this computer over CDP (stdlib only).
+"""Serve the page-browser commands on the Chromium showing on this computer's DISPLAY.
 
-Attaches to the Chrome already showing on DISPLAY. Used by the host
-BrowserProvider. Not a vendor SDK. On failure prints JSON with
-fallback computer_act.
+agent-browser (pinned in the image) attaches to that Chromium over CDP and browses. This wrapper
+keeps Rakazo's contract and policy on top: which tab, refs that must still name the element the
+bot saw, the snapshot's size, masked secrets, upload confinement, and the computer_act fallback.
+Saved usernames and passwords go through the exact-node CDP boundary instead.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
+import base64
 import os
+import re
+import stat
 import socket
-import struct
+import subprocess
 import sys
-import time
+import tempfile
 import threading
-from urllib.parse import urlsplit
+import time
 from typing import Any
+from urllib.parse import urljoin, urlsplit
+
+sys.path[:0] = [os.path.dirname(os.path.realpath(__file__)), "/usr/local/lib/rakazo"]
+import page_secrets  # noqa: E402
+from page_secrets import Refused  # noqa: E402
+
+AGENT_BROWSER = os.environ.get("RAKAZO_AGENT_BROWSER") or "/usr/local/bin/agent-browser"
+
+NO_ANSWER = "The page did not answer in time."
+STALE_REF = "Stale element ref: the page has changed since that snapshot. Use a ref from the page below."
+NOT_KEPT = "The page did not keep every character typed. Check the field in this snapshot before trying again."
+
+# The snapshot goes to the model whole, in one piece of at most 12,000 characters, or the tool result
+# shortener cuts out its middle. So the control list and the page text share a budget, measured as
+# they will be sent (with their line breaks escaped).
+HELPER_TIMEOUT_S = 22.0
+SNAPSHOT_RESERVE_S = 3.0
+TREE_BUDGET = 10000
+CONTROLS_BUDGET = 5500
+MAX_CONTROLS = 80
+MIN_TEXT = 1500
+MAX_OPTIONS = 100
+OPTIONS_CHARS = 2000
+MAX_OPTION_TEXT = 80
+
+SETTLE_SECONDS = 3.0
+# The most an action's result waits for its requests and the snapshot after them together.
+ACTION_WAIT_SECONDS = 2.0
+# Requests an action sets off begin a moment after its last step.
+ACTION_QUIET_SECONDS = 0.3
+# A page is quiet once no request has begun for this long and none is still waiting for its answer.
+QUIET_SECONDS = 0.5
+# A request still unanswered after this long is a stream or a lost request, not the page loading.
+REQUEST_PATIENCE_SECONDS = 10.0
+# browser_navigate returns the page as an action does when the navigation took less than
+# NAVIGATE_SNAPSHOT_BY; the snapshot then ends by NAVIGATE_SNAPSHOT_UNTIL or is left out, inside
+# the supervisor's limit on one call.
+NAVIGATE_SECONDS = 15.0
+NAVIGATE_SNAPSHOT_BY = 12.0
+NAVIGATE_SNAPSHOT_UNTIL = 20.0
+
+MAX_UPLOAD_FILES = 10
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
+# agent-browser errors raised before anything reached the page: the step is settled.
+SETTLED_ERRORS = ("Unknown ref", "is stale", "cannot be recovered", "Could not locate element", "is covered by",
+                  "so the click would not reach it", "No option matched", "Element not found")
+
+
+class Settled(RuntimeError):
+    """A step the page cannot take as asked (stale ref, covered or disabled element, no such option).
+
+    Nothing changed, and the result carries the page as it is, so the bot can choose again.
+    """
+
+
+class PreDispatchRejected(RuntimeError):
+    """The request was rejected before any browser action could be dispatched."""
+
+
+class TypingStopped(RuntimeError):
+    """Typing ended before the last key. The message never repeats any of the text."""
+
+
+class KeysNotKept(RuntimeError):
+    """Every key was pressed, but the field did not keep them all: the step ran, its result is wrong."""
+
+
+class AbError(RuntimeError):
+    def __init__(self, message: str, index: int = 0) -> None:
+        super().__init__(message)
+        self.index = index
 
 
 def display_num() -> int:
@@ -45,44 +119,7 @@ def remaining_time(deadline: float) -> float:
 
 
 def http_get_json(url: str, timeout: float = 5.0, deadline: float | None = None) -> Any:
-    deadline = min(deadline if deadline is not None else float("inf"), time.monotonic() + timeout)
-    parsed = urlsplit(url)
-    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
-        raise RuntimeError("Unexpected CDP discovery endpoint")
-    with socket.create_connection((parsed.hostname, parsed.port), timeout=remaining_time(deadline)) as sock:
-        sock.settimeout(remaining_time(deadline))
-        sock.sendall(f"GET {parsed.path} HTTP/1.1\r\nHost: 127.0.0.1:{parsed.port}\r\nConnection: close\r\n\r\n".encode("ascii"))
-        data = bytearray()
-        while b"\r\n\r\n" not in data:
-            sock.settimeout(remaining_time(deadline))
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("CDP discovery headers closed")
-            data.extend(chunk)
-            if len(data) > 16_384:
-                raise RuntimeError("CDP discovery headers too large")
-        headers, _, body = bytes(data).partition(b"\r\n\r\n")
-        lines = headers.decode("iso-8859-1").split("\r\n")
-        if lines[0].split(" ")[1] != "200":
-            raise RuntimeError("CDP discovery request failed")
-        fields = dict(line.lower().split(":", 1) for line in lines[1:] if ":" in line)
-        if fields.get("transfer-encoding", "").strip() not in ("", "identity"):
-            raise RuntimeError("Unsupported CDP discovery transfer encoding")
-        length = int(fields["content-length"]) if "content-length" in fields else None
-        if length is not None and (length < 0 or length > 1024 * 1024):
-            raise RuntimeError("CDP discovery response too large")
-        data = bytearray(body)
-        while length is None or len(data) < length:
-            sock.settimeout(remaining_time(deadline))
-            chunk = sock.recv(min(65536, length - len(data)) if length is not None else 65536)
-            if not chunk:
-                if length is not None and len(data) < length:
-                    raise RuntimeError("CDP discovery body closed")
-                break
-            data.extend(chunk)
-            if len(data) > 1024 * 1024:
-                raise RuntimeError("CDP discovery response too large")
-        return json.loads(bytes(data[:length] if length is not None else data).decode("utf-8"))
+    return page_secrets.http_get_json(url,timeout,deadline)
 
 
 def wait_for_cdp(port: int, timeout_s: float = 3.0, deadline: float | None = None) -> None:
@@ -98,750 +135,779 @@ def wait_for_cdp(port: int, timeout_s: float = 3.0, deadline: float | None = Non
     raise RuntimeError(f"CDP not ready on port {port}: {last_error}")
 
 
-def discover_ws_url(port: int, deadline: float | None = None) -> str:
-    version = http_get_json(f"http://127.0.0.1:{port}/json/version", deadline=deadline)
-    ws = version.get("webSocketDebuggerUrl")
-    if not isinstance(ws, str) or not ws:
-        raise RuntimeError("CDP version endpoint missing webSocketDebuggerUrl")
-    parsed = urlsplit(ws)
-    if parsed.scheme != "ws" or parsed.hostname != "127.0.0.1" or parsed.port != port:
-        raise RuntimeError("Unexpected CDP endpoint")
-    return ws
 
 
-WORLD_NAME = "rakazo-page-browser"
-HELPER_TIMEOUT_S = 22.0
-SNAPSHOT_RESERVE_S = 3.0
-NAVIGATION_GRACE_S = 0.35
-NAVIGATION_COMMIT_S = 5.0
-NAVIGATION_DOM_S = 10.0
+# Chromium's own pages, such as the new tab page, which agent-browser leaves alone.
+INTERNAL_SCHEMES = ("chrome", "chrome-extension", "chrome-untrusted", "chrome-search", "devtools")
+INTERNAL_PAGE = "The browser is showing one of its own pages, which the page tools cannot read. Open a site with browser_navigate."
 
 
-class NavigationState:
-    def __init__(self, session_id: str, frame: dict[str, Any]) -> None:
-        self.session_id = session_id
-        self.frame_id = frame["id"]
-        self.loader_id = frame.get("loaderId")
-        self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
-        self.pending_url: str | None = None
-        self.pending_cross_document = False
-        self.expected_loader: str | None = None
-        self.committed_loaders: set[str] = set()
-        self.last_cross_expectation: tuple[str, str | None, int] | None = None
-        self.requested = 0
-        self.within_document = 0
-        self.committed = 0
-        self.requested_at = 0.0
-        self.committed_at = 0.0
-        self.dom_loaded = False
-
-    def mark(self) -> tuple[int, int, int]:
-        return (self.requested, self.within_document, self.committed)
-
-    def begin_action(self) -> tuple[int, int, int]:
-        # Loader evidence belongs only to the action being marked, not the helper's past work.
-        self.committed_loaders.clear()
-        return self.mark()
-
-    @property
-    def pending(self) -> bool:
-        return self.pending_url is not None
-
-    def request(self, url: Any, cross_document: bool) -> None:
-        if not self.pending:
-            self.requested_at = time.monotonic()
-        self.requested += 1
-        self.pending_url = url if isinstance(url, str) else ""
-        self.pending_cross_document = self.pending_cross_document or cross_document
-
-    def expect_navigation(self, loader_id: str, url: str, mark: tuple[int, int, int]) -> None:
-        if loader_id in self.committed_loaders:
-            return
-        successor = self.last_cross_expectation
-        if successor is not None and successor[2] > mark[0]:
-            target, expected_loader, _ = successor
-            distinct = target != url or (expected_loader is not None and expected_loader != loader_id)
-            settled = self.committed != mark[2] and (
-                expected_loader == self.loader_id if expected_loader is not None else target == self.document_url
-            )
-            if distinct and (self.pending or settled):
-                # A newer observed expectation survives even after it has committed.
-                return
-        self.request(url, True)
-        self.expected_loader = loader_id
-
-    def event(self, message: dict[str, Any]) -> None:
-        if message.get("sessionId") != self.session_id:
-            return
-        method, params = message.get("method"), message.get("params") or {}
-        if method == "Page.frameNavigated":
-            frame = params.get("frame") or {}
-            if frame.get("id") == self.frame_id:
-                previous_loader = self.loader_id
-                self.loader_id = frame.get("loaderId")
-                self.document_url = str(frame.get("url") or "") + str(frame.get("urlFragment") or "")
-                self.committed += 1
-                if isinstance(self.loader_id, str):
-                    self.committed_loaders.add(self.loader_id)
-                self.committed_at = time.monotonic()
-                self.dom_loaded = params.get("type") == "BackForwardCacheRestore"
-                if (self.expected_loader is None or self.expected_loader == self.loader_id) and (
-                    not self.pending_cross_document or self.loader_id != previous_loader or self.dom_loaded
-                ):
-                    self.pending_url = None
-                    self.pending_cross_document = False
-                    self.expected_loader = None
-        elif params.get("frameId") == self.frame_id:
-            if method == "Page.frameRequestedNavigation" and params.get("disposition") == "currentTab":
-                target = params.get("url")
-                fragment = (isinstance(target, str) and "#" in target and self.document_url
-                            and target.split("#", 1)[0] == self.document_url.split("#", 1)[0]
-                            and params.get("reason") in ("anchorClick", "scriptInitiated"))
-                self.request(target, not fragment)
-                if not fragment:
-                    self.expected_loader = None
-                    self.last_cross_expectation = (self.pending_url or "", None, self.requested)
-            elif method == "Page.frameStartedNavigating":
-                loader_id = params.get("loaderId")
-                same_document = params.get("navigationType") in ("sameDocument", "historySameDocument")
-                self.request(params.get("url"), not same_document)
-                if not same_document and isinstance(loader_id, str) and loader_id:
-                    self.expected_loader = loader_id
-                    self.last_cross_expectation = (self.pending_url or "", loader_id, self.requested)
-            elif method == "Page.navigatedWithinDocument":
-                self.within_document += 1
-                self.document_url = str(params.get("url") or "")
-                if not self.pending_cross_document and self.pending_url == params.get("url"):
-                    self.pending_url = None
-                    self.expected_loader = None
-            elif (method == "Page.lifecycleEvent" and params.get("loaderId") == self.loader_id
-                  and params.get("name") == "DOMContentLoaded"):
-                self.dom_loaded = True
+def front_tab(port: int, deadline: float | None = None) -> tuple[str, str]:
+    """The tab the person sees, and its address: Chromium lists tabs by when they were last brought to the front."""
+    for target in http_get_json(f"http://127.0.0.1:{port}/json/list", deadline=deadline):
+        if isinstance(target, dict) and target.get("type") == "page":
+            return str(target["id"]), str(target.get("url") or "")
+    raise RuntimeError("No browser tab is open. Use desktop tools to open one.")
 
 
-class CdpClient:
-    def __init__(self, ws_url: str, deadline: float | None = None) -> None:
-        self._ws_url = ws_url
-        self._sock: socket.socket | None = None
-        self._buf = bytearray()
-        self._next_id = 1
-        self.context_id: int | None = None
-        self._pending: dict[int, dict[str, Any] | None] = {}
-        # Worlds live in Chromium until navigation; rediscover them per CLI process.
-        self._contexts: dict[int, dict[str, Any]] = {}
-        self.deadline = deadline if deadline is not None else time.monotonic() + HELPER_TIMEOUT_S
-        self.navigation: NavigationState | None = None
-
-    def connect(self, deadline: float | None = None) -> None:
-        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
-        assert self._ws_url.startswith("ws://"), self._ws_url
-        rest = self._ws_url[len("ws://") :]
-        host_port, _, path = rest.partition("/")
-        if ":" in host_port:
-            host, port_s = host_port.split(":", 1)
-            port = int(port_s)
-        else:
-            host, port = host_port, 80
-        path = "/" + path
-        sock = socket.create_connection((host, port), timeout=remaining_time(deadline))
-        self._sock = sock
-        key = base64.b64encode(os.urandom(16)).decode("ascii")
-        req = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host_port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n"
-            "\r\n"
-        )
-        try:
-            sock.settimeout(remaining_time(deadline))
-            sock.sendall(req.encode("ascii"))
-            data = b""
-            while b"\r\n\r\n" not in data:
-                chunk = self._recv(deadline, 4096)
-                data += chunk
-                if len(data) > 16_384:
-                    raise RuntimeError("CDP handshake too large")
-            header, _, leftover = data.partition(b"\r\n\r\n")
-            if b"101" not in header.split(b"\r\n", 1)[0]:
-                raise RuntimeError(f"CDP websocket upgrade failed: {header[:200]!r}")
-            expected = base64.b64encode(
-                hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
-            )
-            if expected not in header:
-                raise RuntimeError("CDP websocket accept mismatch")
-            self._buf.extend(leftover)
-        except Exception:
-            self.close()
-            raise
-
-    def close(self) -> None:
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
-
-    def _send_frame(self, payload: bytes, deadline: float) -> None:
-        assert self._sock is not None
-        mask = os.urandom(4)
-        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        header = bytearray([0x81])
-        n = len(payload)
-        if n < 126:
-            header.append(0x80 | n)
-        elif n < 65536:
-            header.append(0x80 | 126)
-            header.extend(struct.pack("!H", n))
-        else:
-            header.append(0x80 | 127)
-            header.extend(struct.pack("!Q", n))
-        header.extend(mask)
-        self._sock.settimeout(remaining_time(deadline))
-        self._sock.sendall(header + masked)
-
-    def _send_control(self, opcode: int, payload: bytes, deadline: float | None = None) -> None:
-        assert self._sock is not None
-        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
-        mask = os.urandom(4)
-        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        header = bytearray([0x80 | opcode, 0x80 | len(payload)])
-        header.extend(mask)
-        self._sock.settimeout(remaining_time(deadline))
-        self._sock.sendall(header + masked)
-
-    def _recv(self, deadline: float, size: int = 65536) -> bytes:
-        assert self._sock is not None
-        self._sock.settimeout(remaining_time(deadline))
-        chunk = self._sock.recv(size)
-        if not chunk:
-            raise RuntimeError("CDP websocket closed")
-        return chunk
-
-    def _read_frame(self, deadline: float | None = None) -> bytes:
-        assert self._sock is not None
-        deadline = min(self.deadline, deadline if deadline is not None else self.deadline)
-        while True:
-            while len(self._buf) < 2:
-                self._buf.extend(self._recv(deadline))
-            b1, b2 = self._buf[0], self._buf[1]
-            opcode = b1 & 0x0F
-            masked = bool(b2 & 0x80)
-            length = b2 & 0x7F
-            offset = 2
-            if length == 126:
-                while len(self._buf) < 4:
-                    self._buf.extend(self._recv(deadline))
-                length = struct.unpack("!H", self._buf[2:4])[0]
-                offset = 4
-            elif length == 127:
-                while len(self._buf) < 10:
-                    self._buf.extend(self._recv(deadline))
-                length = struct.unpack("!Q", self._buf[2:10])[0]
-                offset = 10
-            if length > 2 * 1024 * 1024:
-                raise RuntimeError("CDP frame too large")
-            if not (b1 & 0x80):
-                raise RuntimeError("Fragmented CDP message unsupported")
-            mask = b""
-            if masked:
-                while len(self._buf) < offset + 4:
-                    self._buf.extend(self._recv(deadline))
-                mask = bytes(self._buf[offset : offset + 4])
-                offset += 4
-            while len(self._buf) < offset + length:
-                self._buf.extend(self._recv(deadline))
-            payload = bytes(self._buf[offset : offset + length])
-            del self._buf[: offset + length]
-            if masked:
-                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-            if opcode == 0x8:
-                raise RuntimeError("CDP websocket closed by peer")
-            if opcode == 0x9:
-                self._send_control(0xA, payload, deadline)
-                continue
-            if opcode in (0x1, 0x2, 0x0):
-                return payload
-
-    def _handle_event(self, message: dict[str, Any]) -> None:
-        if self.navigation is not None:
-            self.navigation.event(message)
-        method = message.get("method")
-        params = message.get("params") or {}
-        session_id = message.get("sessionId")
-        if method == "Runtime.executionContextCreated":
-            context = params.get("context")
-            if not isinstance(context, dict):
-                return
-            context_id = context.get("id")
-            if not isinstance(context_id, int):
-                return
-            recorded = dict(context)
-            recorded["_sessionId"] = session_id
-            self._contexts[context_id] = recorded
-        elif method == "Runtime.executionContextDestroyed":
-            context_id = params.get("executionContextId")
-            if isinstance(context_id, int):
-                self._contexts.pop(context_id, None)
-        elif method == "Runtime.executionContextsCleared":
-            if session_id is None:
-                self._contexts.clear()
-            else:
-                self._contexts = {
-                    cid: ctx
-                    for cid, ctx in self._contexts.items()
-                    if ctx.get("_sessionId") != session_id
-                }
-
-    def find_world_context(self, world_name: str, frame_id: str, session_id: str) -> int | None:
-        for context_id, context in self._contexts.items():
-            if context.get("name") != world_name:
-                continue
-            if context.get("_sessionId") != session_id:
-                continue
-            aux = context.get("auxData") or {}
-            if not isinstance(aux, dict) or aux.get("frameId") != frame_id or aux.get("isDefault") is not False:
-                continue
-            return context_id
-        return None
-
-    def call(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        *,
-        session_id: str | None = None,
-        timeout_s: float = 30.0,
-        deadline: float | None = None,
-    ) -> dict[str, Any]:
-        assert self._sock is not None
-        msg_id = self._next_id
-        self._next_id += 1
-        payload: dict[str, Any] = {"id": msg_id, "method": method, "params": params or {}}
-        if session_id:
-            payload["sessionId"] = session_id
-        deadline = min(self.deadline, deadline if deadline is not None else self.deadline,
-                       time.monotonic() + timeout_s)
-        self._pending[msg_id] = None
-        try:
-            self._send_frame(json.dumps(payload).encode("utf-8"), deadline)
-            while time.monotonic() < deadline:
-                pending = self._pending.get(msg_id)
-                if pending is not None:
-                    if "error" in pending:
-                        raise RuntimeError(f"{method} failed: {pending['error']}")
-                    result = pending.get("result")
-                    return result if isinstance(result, dict) else {}
-                try:
-                    frame = self._read_frame(deadline)
-                except socket.timeout:
-                    continue
-                message = json.loads(frame.decode("utf-8"))
-                if not isinstance(message, dict):
-                    continue
-                if message.get("id") in self._pending:
-                    self._pending[int(message["id"])] = message
-                elif message.get("method"):
-                    self._handle_event(message)
-            raise TimeoutError(f"CDP call timed out: {method}")
-        finally:
-            self._pending.pop(msg_id, None)
-
-    def pump_until(self, predicate: Any, deadline: float) -> bool:
-        assert self._sock is not None
-        deadline = min(deadline, self.deadline)
-        while not predicate() and time.monotonic() < deadline:
-            try:
-                message = json.loads(self._read_frame(deadline).decode("utf-8"))
-            except socket.timeout:
-                continue
-            if isinstance(message, dict):
-                if message.get("id") in self._pending:
-                    self._pending[int(message["id"])] = message
-                elif message.get("method"):
-                    self._handle_event(message)
-        return bool(predicate())
+def internal(url: str) -> bool:
+    return urlsplit(url).scheme in INTERNAL_SCHEMES
 
 
-def attach_page(client: CdpClient, deadline: float | None = None) -> str:
-    targets = client.call("Target.getTargets", deadline=deadline).get("targetInfos") or []
-    pages = [t for t in targets if isinstance(t, dict) and t.get("type") == "page"]
-    candidates = []
-    for page in pages[:32]:
-        attached = client.call("Target.attachToTarget", {
-            "targetId": page["targetId"], "flatten": True,
-        }, deadline=deadline)
-        session_id = attached["sessionId"]
-        try:
-            client.call("Page.enable", session_id=session_id, deadline=deadline)
-            ensure_world(client, session_id, deadline)
-            if eval_json(client, session_id, 'document.visibilityState === "visible"', deadline):
-                focused = eval_json(client, session_id, "document.hasFocus()", deadline)
-                candidates.append((session_id, focused))
-        except Exception:
-            continue
-    focused = [session for session, focus in candidates if focus]
-    if len(focused) == 1:
-        selected = focused[0]
-    elif len(candidates) == 1:
-        selected = candidates[0][0]
-    else:
-        raise RuntimeError("No unambiguous visible browser tab. Use desktop tools to select a tab.")
-    ensure_world(client, selected, deadline)
-    return selected
-
-
-def ensure_world(client: CdpClient, session_id: str, deadline: float | None = None) -> None:
-    # Rediscover only an isolated context bound to this frame and CDP session.
-    # Never run helpers in a page-owned default context with the same name.
-    frame = client.call("Page.getFrameTree", session_id=session_id, deadline=deadline)["frameTree"]["frame"]
-    frame_id = frame["id"]
-    client.call("Runtime.enable", session_id=session_id, deadline=deadline)
-    existing = client.find_world_context(WORLD_NAME, frame_id, session_id)
-    if existing is not None:
-        client.context_id = existing
-        return
-    world = client.call("Page.createIsolatedWorld", {
-        "frameId": frame_id, "worldName": WORLD_NAME,
-    }, session_id=session_id, deadline=deadline)
-    client.context_id = world["executionContextId"]
-
-
-EVAL_HELPERS = r"""
-(() => {
-  if (window.__rakazoPageBrowser) return true;
-  const refMap = new Map();
-  // Fields holding a saved login: snapshots never report their values, whatever their type.
-  const loginFilled = new WeakSet();
-  // New snapshots/documents never recycle references. Retain exact nodes, not selectors.
-  function newRef() {
-    return `e${Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, "0")).join("")}`;
-  }
-  function visible(el) {
-    if (!(el instanceof Element)) return false;
-    const style = window.getComputedStyle(el);
-    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
-      return false;
-    }
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-  function roleOf(el) {
-    const explicit = el.getAttribute("role");
-    if (explicit) return explicit;
-    const tag = el.tagName.toLowerCase();
-    if (tag === "a") return "link";
-    if (tag === "button") return "button";
-    if (tag === "input") {
-      const type = (el.getAttribute("type") || "text").toLowerCase();
-      if (type === "submit" || type === "button") return "button";
-      if (type === "checkbox") return "checkbox";
-      if (type === "radio") return "radio";
-      return "textbox";
-    }
-    if (tag === "textarea" || el.isContentEditable) return "textbox";
-    if (tag === "select") return "combobox";
-    if (/^h[1-6]$/.test(tag)) return "heading";
-    return tag;
-  }
-  function nameOf(el) {
-    return (
-      el.getAttribute("aria-label") ||
-      Array.from(el.labels || []).map(label => label.textContent).join(" ").trim() ||
-      el.getAttribute("placeholder") ||
-      el.getAttribute("name") ||
-      el.getAttribute("title") ||
-      (el.innerText || el.textContent || "").trim().slice(0, 80) ||
-      ""
-    );
-  }
-  function isInteractive(el) {
-    if (!(el instanceof Element)) return false;
-    const tag = el.tagName.toLowerCase();
-    if (["a", "button", "input", "textarea", "select", "summary"].includes(tag)) return true;
-    if (el.isContentEditable) return true;
-    const role = el.getAttribute("role");
-    if (
-      role &&
-      ["button", "link", "textbox", "checkbox", "radio", "menuitem", "tab", "option", "switch"].includes(
-        role
-      )
-    ) {
-      return true;
-    }
-    return typeof el.onclick === "function" || el.hasAttribute("tabindex");
-  }
-  function formatTree(elements) {
-    if (!elements.length) return "(no interactive elements)";
-    return elements
-      .map((el) => {
-        const value =
-          el.value !== undefined && el.value !== "" ? ` value=${JSON.stringify(el.value)}` : "";
-        return `- ${el.role} "${el.name}" [${el.ref}]${value}`;
-      })
-      .join("\n");
-  }
-  window.__rakazoPageBrowser = {
-    snapshot() {
-      refMap.clear();
-      const elements = [];
-      for (const el of document.querySelectorAll("body *")) {
-        if (!isInteractive(el) || !visible(el)) continue;
-        const ref = newRef();
-        refMap.set(ref, el);
-        elements.push({
-          ref,
-          role: roleOf(el),
-          name: String(nameOf(el)).slice(0, 200),
-          value: el.type === "password" || loginFilled.has(el) ? undefined
-            : ["checkbox", "radio"].includes(el.type) ? (el.checked ? "checked" : "unchecked")
-            : "value" in el ? String(el.value ?? "").slice(0, 2000) : undefined,
-          tag: el.tagName.toLowerCase(),
-        });
-        if (elements.length >= 80) break;
-      }
-      return {
-        url: location.href,
-        title: (document.title || "").slice(0, 200),
-        elements,
-        tree: (document.body?.innerText || "").slice(0, 12000) + "\n" + formatTree(elements)
-          + (document.querySelector("iframe,frame") ? "\nEmbedded frames require desktop tools." : ""),
-      };
-    },
-    resolve(ref) {
-      const el = refMap.get(String(ref));
-      if (!el || !el.isConnected || !visible(el)) return null;
-      if (el.matches(":disabled") || el.getAttribute("aria-disabled") === "true") {
-        throw new Error("Element is disabled");
-      }
-      return el;
-    },
-    click(ref) {
-      const el = this.resolve(ref);
-      if (!el) throw new Error(`Unknown element ref: ${ref}`);
-      el.focus();
-      el.click();
-      return { url: location.href, title: (document.title || "").slice(0, 200) };
-    },
-    fill(ref, value, origin) {
-      // Checked in the same evaluation as the fill, so a navigation cannot slip in between.
-      // Private-LAN plain HTTP is not a login target, even when the page origin matches.
-      if (origin) {
-        let saved = null;
-        try { saved = new URL(origin); } catch { /* rejected below */ }
-        if (!saved || saved.protocol !== "https:" || location.protocol !== "https:") {
-          throw new Error("Website logins can only be filled on HTTPS.");
-        }
-        if (location.origin !== saved.origin) {
-          throw new Error("The page is not on the site this login was saved for.");
-        }
-      }
-      const el = this.resolve(ref);
-      if (!el) throw new Error(`Unknown element ref: ${ref}`);
-      if (el.readOnly) throw new Error("Element is read-only");
-      // A username is an input. Textareas, search boxes, and editable page content stay out.
-      if (origin && !(el instanceof HTMLInputElement && ["text", "email", "password", "tel"].includes(el.type))) {
-        throw new Error("A saved login can only be typed into a text, email, password, or telephone field.");
-      }
-      el.focus();
-      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
-        if (el instanceof HTMLInputElement && !["text", "search", "email", "url", "tel", "password", "number"].includes(el.type)) {
-          throw new Error("Input type requires desktop tools");
-        }
-        const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype
-          : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLSelectElement.prototype;
-        Object.getOwnPropertyDescriptor(prototype, "value").set.call(el, String(value));
-        if (el.value !== String(value)) throw new Error("Input did not accept the requested value");
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        if (origin) loginFilled.add(el);
-        else loginFilled.delete(el);
-      } else if (el.isContentEditable) {
-        el.textContent = String(value);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        throw new Error(`Element is not fillable: ${ref}`);
-      }
-      return { url: location.href, title: (document.title || "").slice(0, 200) };
-    },
-    type(ref, text) {
-      const el = this.resolve(ref);
-      if (!el) throw new Error(`Unknown element ref: ${ref}`);
-      // Appending keeps any saved login in the field, so the field stays hidden from snapshots.
-      const holdsLogin = loginFilled.has(el);
-      const result = this.fill(ref, `${"value" in el ? el.value : el.textContent || ""}${text}`);
-      if (holdsLogin) loginFilled.add(el);
-      return result;
-    },
-  };
-  return true;
-})()
-"""
-
-
-def eval_json(client: CdpClient, session_id: str, expression: str, deadline: float | None = None) -> Any:
-    result = client.call(
-        "Runtime.evaluate",
-        {
-            "expression": expression,
-            "contextId": client.context_id,
-            "returnByValue": True,
-            "awaitPromise": True,
-        },
-        session_id=session_id,
-        deadline=deadline,
-    )
-    if result.get("exceptionDetails"):
-        details = result["exceptionDetails"]
-        text = (
-            details.get("text")
-            or (details.get("exception") or {}).get("description")
-            or "evaluate failed"
-        )
-        raise RuntimeError(str(text))
-    return (result.get("result") or {}).get("value")
-
-
-def ensure_helpers(client: CdpClient, session_id: str, deadline: float | None = None) -> None:
-    ensure_world(client, session_id, deadline)
-    eval_json(client, session_id, EVAL_HELPERS, deadline)
-
-
-def track_navigation(client: CdpClient, session_id: str, deadline: float) -> NavigationState:
-    frame = client.call("Page.getFrameTree", session_id=session_id, deadline=deadline)["frameTree"]["frame"]
-    navigation = NavigationState(session_id, frame)
-    client.navigation = navigation
-    client.call("Page.setLifecycleEventsEnabled", {"enabled": True}, session_id=session_id, deadline=deadline)
-    return navigation
-
-
-def follow_navigation(client: CdpClient, navigation: NavigationState,
-                      mark: tuple[int, int, int], deadline: float) -> bool:
-    """Follow the selected document without redispatching its action. Return timeout only."""
-    client.pump_until(lambda: navigation.pending_cross_document or navigation.committed != mark[2],
-                      min(deadline, time.monotonic() + NAVIGATION_GRACE_S))
-    dom_deadline = None
-    while True:
-        if navigation.pending:
-            commit_deadline = min(deadline, navigation.requested_at + NAVIGATION_COMMIT_S)
-            if dom_deadline is not None:
-                commit_deadline = min(commit_deadline, dom_deadline)
-            if not client.pump_until(lambda: not navigation.pending, commit_deadline):
-                return True
-        if navigation.committed != mark[2]:
-            if dom_deadline is None:
-                dom_deadline = min(deadline, navigation.committed_at + NAVIGATION_DOM_S)
-            if navigation.dom_loaded:
-                return False
-            if not client.pump_until(lambda: navigation.pending or navigation.dom_loaded, dom_deadline):
-                return True
-            if navigation.pending:
-                continue
-            return False
-        return time.monotonic() >= deadline
-
-
-def observed_result(client: CdpClient, session_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    try:
-        observed = snapshot(client, session_id,
-                            min(client.deadline, time.monotonic() + SNAPSHOT_RESERVE_S))
-        return {**observed, **result}
-    except Exception as exc:
-        detail = str(exc)
-        previous = result.get("error")
-        return {**result, "ok": False, "fallback": "computer_act",
-                "timedOut": bool(result.get("timedOut") or isinstance(exc, TimeoutError)),
-                "error": f"{previous}; observation unavailable: {detail}" if previous else f"Observation unavailable: {detail}"}
-
-
-def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
+def check_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
         raise RuntimeError("Only HTTP(S) URLs without embedded credentials are supported")
-    deadline = client.deadline - SNAPSHOT_RESERVE_S
-    uncertain = False
+
+
+ACTIVE_PROCESS: subprocess.Popen[str] | None = None
+PROCESS_LOCK = threading.Lock()
+CANCELLED = threading.Event()
+
+
+def run_engine_process(argv: list[str], *, env: dict[str,str], cwd: str, deadline: float,
+                       input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Both capability and command processes belong to the same stdin-EOF lifetime."""
+    global ACTIVE_PROCESS
+    with PROCESS_LOCK:
+        if CANCELLED.is_set():
+            raise RuntimeError("Page browser was cancelled")
+        proc = subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                text=True,env=env,cwd=cwd)
+        ACTIVE_PROCESS = proc
     try:
-        navigation = track_navigation(client, session_id, deadline)
-        mark = navigation.begin_action()
-        remaining_time(deadline)
-        uncertain = True
-        result = client.call("Page.navigate", {"url": url}, session_id=session_id, timeout_s=15.0,
-                             deadline=deadline)
+        stdout,stderr = proc.communicate(input_text,timeout=remaining_time(deadline))
+        return subprocess.CompletedProcess(argv,proc.returncode,stdout,stderr)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise TimeoutError(NO_ANSWER) from None
+    finally:
+        with PROCESS_LOCK:
+            if ACTIVE_PROCESS is proc:
+                ACTIVE_PROCESS = None
+
+
+class AgentBrowser:
+    """agent-browser's session for this display: one daemon, kept attached between calls."""
+
+    def __init__(self, port: int, deadline: float | None = None) -> None:
+        self.deadline = deadline if deadline is not None else time.monotonic() + HELPER_TIMEOUT_S
+        self.port = port
+        self.home = os.path.join(tempfile.gettempdir(), f"rakazo-ab-{os.getuid()}")
+        os.makedirs(self.home, mode=0o700, exist_ok=True)
+        info = os.lstat(self.home)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError("The page browser's own folder is not this user's")
+        # Its own configuration, never one from the bot's home or working folder.
+        self.config = os.path.join(self.home, "config.json")
+        with open(self.config, "w", encoding="utf-8") as config:
+            config.write("{}")
+        self.session = f"display-{port}"
+        self.env = {key: value for key, value in os.environ.items()
+                    if key in ("LANG", "LD_PRELOAD", "NSS_WRAPPER_PASSWD", "NSS_WRAPPER_GROUP")}
+        self.env.update({
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": self.home,
+            "AGENT_BROWSER_CONFIG": self.config,
+            "AGENT_BROWSER_SOCKET_DIR": self.home,
+            "AGENT_BROWSER_SESSION": self.session,
+            # Always the Chromium on this display: without it, agent-browser would start a browser of its own.
+            "AGENT_BROWSER_CDP": str(port),
+            "AGENT_BROWSER_IDLE_TIMEOUT_MS": "900000",
+            # Dialogs are the person's and the page's to answer, as on the screen.
+            "AGENT_BROWSER_NO_AUTO_DIALOG": "1",
+            "AGENT_BROWSER_NO_WEBMCP": "1",
+        })
+
+    def batch(self, commands: list[list[str]], *, timeout: float = 20.0, bail: bool = True) -> list[Any]:
+        """Each command's result, in one agent-browser call. Commands and their text go over stdin, not argv."""
+        proc = run_engine_process(
+            [AGENT_BROWSER,"batch","--json","--omit-command",*(["--bail"] if bail else [])],
+            env=self.env,cwd=self.home,deadline=min(self.deadline,time.monotonic() + timeout),
+            input_text=json.dumps(commands))
+        stdout,stderr = proc.stdout,proc.stderr
+        try:
+            items = json.loads(stdout)
+        except json.JSONDecodeError:
+            raise AbError("agent-browser gave no structured answer") from None
+        if not isinstance(items, list):
+            raise AbError(str((items or {}).get("error") if isinstance(items, dict) else items)[:500])
+        results: list[Any] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise AbError("agent-browser gave no answer", index)
+            data = item.get("result") if isinstance(item.get("result"), dict) else {}
+            # Only ever the browser on the screen: a page agent-browser opened itself is not the bot's.
+            if (data.get("lifecycle") or {}).get("launched") is True:
+                raise RuntimeError("Page browser is not attached to this computer's Chrome.")
+            if not item.get("success"):
+                if bail:
+                    raise AbError(str(item.get("error") or "agent-browser failed"), index)
+                results.append(None)
+                continue
+            results.append(data)
+        if len(results) < len(commands):
+            raise AbError("agent-browser stopped early", len(results))
+        return results
+
+    def use_tab(self, target_id: str) -> None:
+        """Point the session at the tab on screen when the person has switched tabs since the last call."""
+        bound = os.path.join(self.home, f"{self.session}.rakazo-tab")
+        try:
+            with open(bound, encoding="utf-8") as file:
+                if file.read() == target_id:
+                    return
+        except OSError:
+            pass
+        self.batch([["tab", target_id]])
+        with open(bound, "w", encoding="utf-8") as file:
+            file.write(target_id)
+
+
+def sent(text: str) -> int:
+    """A text's length as the bot receives it, line breaks escaped."""
+    return len(json.dumps(text, ensure_ascii=False).encode("utf-16-le", "surrogatepass")) // 2 - 2
+
+
+def cut_option(text: str) -> str:
+    # A long option keeps its start and its end, which is where long options usually differ.
+    return f"{text[:50]}…{text[-(MAX_OPTION_TEXT - 51):]}" if len(text) > MAX_OPTION_TEXT else text
+
+
+def describe_options(options: list[dict[str, Any]], total: int) -> str:
+    """The options a model reads, as many as fit; the chosen one is always shown."""
+    def describe(option: dict[str, Any]) -> str:
+        return (json.dumps(option["label"], ensure_ascii=False)
+                + (f" [value={option['value']}]" if option.get('valueRef') is True else "") + (" (selected)" if option.get("selected") else "")
+                + (" (disabled)" if option.get("disabled") else ""))
+    parts: list[str] = []
+    used = 0
+    for option in options:
+        part = describe(option)
+        if parts and used + len(part) > OPTIONS_CHARS:
+            break
+        parts.append(part)
+        used += len(part) + 2
+    chosen = next((option for option in options if option.get("selected")), None)
+    if chosen is not None and describe(chosen) not in parts:
+        parts.append(describe(chosen))
+    return ", ".join(parts) + (f", and {total - len(parts)} more" if total > len(parts) else "")
+
+
+PAGE_LOAD = r"""({ href: location.href, ready: document.readyState,
+  done: performance.getEntriesByType("resource").slice(-500).map((entry) => entry.name) })"""
+
+
+def same_site(url: Any) -> str:
+    """The site a URL is on, as its host's last two labels; close enough to tell a page's own requests apart."""
+    try:
+        host = urlsplit(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+    return ".".join(host.split(".")[-2:])
+
+
+def unframed(text: str) -> str:
+    """Page text with anything that reads like a frame's header line set apart, so a page cannot name a site."""
+    return text.replace("[frame ", "[ frame ")
+
+
+def frame_site(src: Any) -> str:
+    try:
+        parts = urlsplit(str(src or ""))
+        return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}" if parts.scheme in ("http", "https") else ""
+    except ValueError:
+        return ""
+
+
+class PageBrowser:
+    def __init__(self, port: int, target_id: str, browser: AgentBrowser, deadline: float | None = None) -> None:
+        self.port, self.target, self.ab = port, target_id, browser
+        self.deadline = deadline if deadline is not None else getattr(browser, 'deadline', time.monotonic() + HELPER_TIMEOUT_S)
+        self._exact: page_secrets.ExactPage | None = None
+        self.masked: set[str] = set()
+        self.verified_refs: set[str] = set()
+        self.verified_options: set[str] = set()
+        self.trusted_trees: dict[str, tuple[frozenset[str],list[tuple[int,int]]]] = {}
+        self.masked_contents: dict[frozenset[str],set[str]] = {}
+
+    # -- reading the page -------------------------------------------------------------------------
+
+    def pending_requests(self) -> tuple[bool, float]:
+        """Whether the page is waiting on a request of its current document, and when its latest began."""
+        state, log = self.ab.batch([["eval", PAGE_LOAD], ["network", "requests"]])
+        page = state.get("result") or {}
+        # agent-browser logs a response but never a failure; the page lists failed requests as done.
+        done = set(page.get("done") or [])
+        requests = [r for r in log.get("requests") or [] if isinstance(r, dict)]
+        documents = [r for r in requests if r.get("resourceType") == "Document"]
+        current = [r for r in documents if r.get("url") == page.get("href")] or documents
+        since = float(current[-1].get("timestamp") or 0) if current else 0.0
+        now = time.time() * 1000
+        # The page's own requests: a third-party widget or beacon that hangs does not hold the page back.
+        site = same_site(page.get("href"))
+        recent = [r for r in requests if float(r.get("timestamp") or 0) >= since and same_site(r.get("url")) == site]
+        waiting = [r for r in recent if r.get("status") is None and r.get("url") not in done
+                   and r.get("resourceType") not in ("EventSource", "WebSocket")
+                   and now - float(r.get("timestamp") or 0) < REQUEST_PATIENCE_SECONDS * 1000]
+        latest = max((float(r.get("timestamp") or 0) for r in recent), default=0.0)
+        return bool(waiting) or page.get("ready") != "complete", latest / 1000
+
+    def settle(self, seconds: float, quiet_from: float = 0.0) -> bool:
+        """Wait until the page has loaded and its requests are answered, then QUIET_SECONDS more.
+
+        Many sites draw a signed-out shell first and replace it once their own requests return,
+        so a page captured earlier can show "Sign in" to an account that is signed in.
+        """
+        deadline = min(self.deadline, time.monotonic() + max(0, seconds))
+        while True:
+            busy, latest = self.pending_requests()
+            if not busy and time.time() - max(latest, quiet_from) >= QUIET_SECONDS:
+                # agent-browser keeps every request it sees; once none is waiting, the log can start over.
+                self.ab.batch([["network", "requests", "--clear"]])
+                return True
+            if time.monotonic() >= deadline:
+                return not busy
+            time.sleep(min(0.15, max(0.0, deadline - time.monotonic())))
+
+    def exact(self) -> page_secrets.ExactPage:
+        if self._exact is None:
+            self._exact = page_secrets.ExactPage(self.port, self.target, deadline=min(self.deadline,self.ab.deadline))
+        return self._exact
+
+    def close(self) -> None:
+        if self._exact is not None:
+            self._exact.close()
+
+    def redact(self, value: Any, key: str | None = None) -> Any:
+        if isinstance(value,str):
+            if key == 'ref' and value in self.verified_refs:
+                return value
+            enums = {'role':page_secrets.CONTROL_ROLES | {'file upload','generic'},
+                'tag':{'input','textarea','select','button','a','div','span','label','summary','details'},
+                'kind':{'click','fill','type','upload'},'fallback':{'computer_act'}}
+            if key in enums and value in enums[key]:
+                return value
+            trusted = self.trusted_trees.get(value) if key == 'tree' else None
+            if trusted is not None and trusted[0] == frozenset(self.masked):
+                return value  # Its content was masked before exact protocol spans were inserted.
+
+        if isinstance(value,str):
+            fingerprint = frozenset(self.masked)
+            generated = self.masked_contents.setdefault(fingerprint,set())
+            if value in generated:
+                return value
+            forms = set()
+            for secret in self.masked:
+                if secret:
+                    forms.add(secret)
+                    forms.add(json.dumps(secret,ensure_ascii=False)[1:-1])
+            if forms:
+                pattern = '|'.join(re.escape(form) for form in sorted(forms,key=len,reverse=True))
+                masked = re.sub(pattern,lambda _match:'[hidden]',value)
+            else:
+                masked = value
+            generated.add(masked)
+            return masked
+        if isinstance(value, list):
+            return [self.redact(item) for item in value]
+        if isinstance(value, dict):
+            return {item_key: (item if item_key == 'value' and value.get('valueRef') is True
+                              and isinstance(item,str) and item in self.verified_options
+                              else self.redact(item,item_key)) for item_key,item in value.items()}
+        return value
+
+    def snapshot(self, settle: float | None = None) -> dict[str, Any]:
+        settled = self.settle(SETTLE_SECONDS if settle is None else settle)
+        (snap,) = self.ab.batch([['snapshot']])
+        state = self.exact().snapshot()
+        self.masked.update(str(value) for value in state.get('masked') or [] if value)
+        # Engine refs can fall back to a same-name replacement. Only exact controls below are callable.
+        semantic = re.sub(r'\bref=e\d+\b,?\s*', '', str(snap.get('snapshot') or ''))
+        semantic = re.sub(r'\[\s*\]', '', semantic)
+        self.verified_refs = set()
+        self.verified_options = set()
+        self.trusted_trees = {}
+        for item in state.get('elements') or []:
+            ref = item.get('ref')
+            if isinstance(ref,str):
+                page_secrets.ref_binding(ref,self.target)
+                self.verified_refs.add(ref)
+        controls = []
+        offsets = {}
+        for raw in state.get('elements') or []:
+            entry = self.redact({k:v for k,v in raw.items() if k != 'options'})
+            if isinstance(entry.get('name'),str):
+                entry['name'] = entry['name'].strip()
+            options = []
+            for original in raw.get('options') or []:
+                label = str(original.get('label') or '')
+                value = str(original.get('value') or '')
+                shown_label = cut_option(' '.join(str(self.redact(label)).split()))
+                shown_value = self.redact(value)
+                changed = (shown_label != label or shown_value != value or original.get('labelTruncated')
+                    or original.get('valueTruncated') or re.fullmatch(r'or2\.[0-9a-f]{32}',value))
+                option = {k:v for k,v in original.items() if k not in
+                    ('optionToken','labelTruncated','valueTruncated','valueRef')}
+                option['label'] = shown_label
+                if changed:
+                    token = original.get('optionToken')
+                    if not isinstance(token,str) or re.fullmatch(r'or2\.[0-9a-f]{32}',token) is None:
+                        raise RuntimeError('A bounded select option has no exact value reference.')
+                    self.verified_options.add(token)
+                    option['value'],option['valueRef'] = token,True
+                else:
+                    option['value'] = shown_value
+                options.append(option)
+            if options:
+                entry['options'] = options
+            prefix = f"- {entry['role']} {json.dumps(entry.get('name') or '', ensure_ascii=False)} ["
+            offsets[entry['ref']] = len(prefix)
+            line = prefix + entry['ref'] + ']'
+            if entry.get('frameOrigin'):
+                line += f" [frame {entry['frameOrigin']}]"
+            if entry.get('disabled'):
+                line += ' [disabled]'
+            if entry.get('value') is not None:
+                line += ': ' + str(entry['value'])[:100]
+            if options:
+                line += ' options: ' + describe_options(options, entry.get('optionsTotal') or len(options))
+            controls.append((line, entry))
+        shown, used = [], 0
+        for line, entry in controls:
+            length = sent(line) + 1
+            if len(shown) >= MAX_CONTROLS or (shown and used + length > CONTROLS_BUDGET):
+                break
+            shown.append((line, entry))
+            used += length
+        listing = '\n'.join(line for line, _ in shown) or '(no interactive elements)'
+        notices = f'[controls: showing {len(shown)} of {len(controls)}]\n' if len(shown) < len(controls) else ''
+        frames = [f"[frame {frame_site(item.get('url')) or 'unknown'}]\n{unframed(str(item.get('text') or ''))}"
+                  for item in state.get('frameText') or []]
+        # Preserve the complete engine semantic tree; it is bounded together with the exact control list.
+        text = self.redact('\n'.join([unframed(semantic or str(state.get('text') or '')), *frames]))
+        room = max(MIN_TEXT, TREE_BUDGET - sent(listing) - 200)
+        cut = len(text)
+        while cut and sent(text[:cut]) > room:
+            cut = int(cut * 0.9)
+        if cut < len(text):
+            notices += f'[page text: showing first {cut} of {len(text)} characters]\n'
+        def tree(prefix: str) -> str:
+            prefix = self.redact(notices) + prefix
+            built = prefix + listing
+            spans,cursor = [],len(prefix)
+            for line,entry in shown:
+                start = cursor + offsets[entry['ref']]
+                spans.append((start,start + len(entry['ref'])))
+                for option in entry.get('options') or []:
+                    if option.get('valueRef') is True and option.get('value') in self.verified_options:
+                        marker = '[value=' + option['value'] + ']'
+                        pos = line.rfind(marker)
+                        if pos >= 0:
+                            spans.append((cursor + pos + 7,cursor + pos + 7 + len(option['value'])))
+                cursor += len(line) + 1
+            for start,end in spans:
+                if built[start:end] not in self.verified_refs | self.verified_options:
+                    raise RuntimeError('Invalid trusted control reference span.')
+            self.trusted_trees[built] = (frozenset(self.masked),spans)
+            return built
+        result = self.redact({'ok':True, 'url':str(state.get('url') or snap.get('origin') or ''),
+            'title':str(state.get('title') or ''), 'elements':[entry for _, entry in shown],
+            **({} if settled else {'loading':True})})
+        result['tree'] = tree(text[:cut] + '\n')
+        def model_size() -> int:
+            view = {key:value for key,value in result.items() if key != 'elements'}
+            return len(json.dumps(view,ensure_ascii=False,separators=(',',':')).encode('utf-16-le','surrogatepass')) // 2
+        while model_size() > 12000 and cut:
+            excess = model_size() - 12000
+            cut = max(0,cut - max(1,excess))
+            result['tree'] = tree(text[:cut] + '\n')
+        if model_size() > 12000:
+            raise RuntimeError('The page address exceeds the bounded page snapshot.')
+        output_limit = 480 * 1024
+        size = len(json.dumps(result).encode('utf-8'))
+        budget_by = min(self.deadline,self.ab.deadline)
+        for entry in reversed(result['elements']):
+            remaining_time(budget_by)
+            if size <= output_limit:
+                break
+            options = entry.get('options')
+            if not isinstance(options,list) or not options:
+                continue
+            old_meta = {k:v for k,v in entry.items() if k != 'options'}
+            metadata = {**old_meta,'optionsTotal':entry.get('optionsTotal') or len(options),'optionsTruncated':True}
+            delta = len(json.dumps(metadata).encode('utf-8')) - len(json.dumps(old_meta).encode('utf-8'))
+            removed,remaining_count = set(),len(options)
+            for index in range(len(options)-1,-1,-1):
+                remaining_time(budget_by)
+                if size + delta <= output_limit:
+                    break
+                if options[index].get('selected') or options[index].get('valueRef') is True:
+                    continue
+                size -= len(json.dumps(options[index]).encode('utf-8')) + (2 if remaining_count > 1 else 0)
+                removed.add(index)
+                remaining_count -= 1
+            if removed:
+                entry['options'] = [option for index,option in enumerate(options) if index not in removed]
+                entry['optionsTotal'],entry['optionsTruncated'] = metadata['optionsTotal'],True
+                size += delta
+        remaining_time(budget_by)
+        if size > output_limit or len(json.dumps(result).encode('utf-8')) > output_limit:
+            raise RuntimeError('Selected page controls exceed the snapshot output budget.')
+        return result
+
+    def control(self, ref: str) -> dict[str, Any]:
+        try:
+            item = self.exact().invoke(ref, 'function (ref) { return window.__rakazoPageBrowserExact.describe(ref); }')
+        except Refused as exc:
+            raise Settled(str(exc)) from None
+        if not isinstance(item, dict):
+            raise Settled(STALE_REF)
+        return item
+
+    # -- commands ---------------------------------------------------------------------------------
+
+    def navigate(self, url: str) -> dict[str, Any]:
+        work_deadline = self.deadline - SNAPSHOT_RESERVE_S
+        try:
+            check_url(url)
+            remaining_time(work_deadline)
+        except Exception as exc:
+            return {"ok":False,"uncertain":False,"navigationOutcomeKnown":True,"error":str(exc),
+                **({"timedOut":True} if isinstance(exc,TimeoutError) else {})}
         uncertain = False
-        if result.get("errorText") or result.get("isDownload"):
-            raise RuntimeError(result.get("errorText") or "Navigation started a download")
-        if result.get("loaderId"):
-            # A command-initiated navigation need not emit frameRequestedNavigation.
-            navigation.expect_navigation(str(result["loaderId"]), url, mark)
-        if follow_navigation(client, navigation, mark, deadline):
-            raise TimeoutError("Navigation did not settle before its deadline")
-        return observed_result(client, session_id, {"ok": True, "uncertain": False, "navigationOutcomeKnown": True})
-    except Exception as exc:
-        return observed_result(client, session_id, {"ok": False, "error": str(exc),
-                              "uncertain": uncertain, "navigationOutcomeKnown": not uncertain, "fallback": "computer_act",
-                              **({"timedOut": True} if isinstance(exc, TimeoutError) else {})})
-
-
-def snapshot(client: CdpClient, session_id: str, deadline: float | None = None) -> dict[str, Any]:
-    ensure_helpers(client, session_id, deadline)
-    data = eval_json(client, session_id, "window.__rakazoPageBrowser.snapshot()", deadline)
-    if not isinstance(data, dict):
-        raise RuntimeError("snapshot returned non-object")
-    return {"ok": True, **data}
-
-
-def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
-    if not actions or len(actions) > 24:
-        raise RuntimeError("Expected 1 to 24 actions")
-    for step in actions:
-        if not isinstance(step, dict) or step.get("kind") not in ("click", "fill", "type"):
-            raise RuntimeError("Invalid browser action")
-        if not isinstance(step.get("ref"), str) or not step["ref"]:
-            raise RuntimeError("Element ref is required")
-        if step["kind"] != "click" and not isinstance(step.get("text"), str):
-            raise RuntimeError("Text is required")
-        if step.get("origin") is not None and (
-            step["kind"] != "fill" or not isinstance(step["origin"], str)
-        ):
-            raise RuntimeError("An origin applies only to fill")
-    completed = 0
-    uncertain = False
-    deadline = client.deadline - SNAPSHOT_RESERVE_S
-    try:
-        ensure_helpers(client, session_id, deadline)
-        navigation = track_navigation(client, session_id, deadline)
-        for step in actions:
-            ensure_helpers(client, session_id, deadline)
-            kind, ref = step["kind"], step["ref"]
-            # Preflight catches stale refs before a mutation is dispatched.
-            if not eval_json(client, session_id, f"Boolean(window.__rakazoPageBrowser.resolve({json.dumps(ref)}))", deadline):
-                raise RuntimeError("Stale element ref. Take a fresh snapshot.")
-            arguments = json.dumps(ref)
-            if kind != "click":
-                arguments += ", " + json.dumps(step["text"])
-            if step.get("origin"):
-                arguments += ", " + json.dumps(step["origin"])
-            mark = navigation.begin_action()
-            remaining_time(deadline)
+        try:
+            exact = self.exact()
+            try:
+                exact.assert_mutations_allowed()
+            except Refused as exc:
+                return self.observed({"ok":False,"uncertain":False,"navigationOutcomeKnown":True,"error":str(exc)})
+            exact.client.deadline = work_deadline
+            mark = exact.navigation.begin_action()
+            remaining_time(work_deadline)
             uncertain = True
-            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})", deadline)
-            if not isinstance(data, dict):
-                raise RuntimeError("Action response unavailable")
-            completed += 1
+            result = exact.client.call("Page.navigate",{"url":url,"referrerPolicy":"noReferrer"},
+                                       session_id=exact.session,timeout_s=NAVIGATE_SECONDS)
             uncertain = False
-            if follow_navigation(client, navigation, mark, deadline):
-                result = {"ok": completed == len(actions), "completed": completed, "uncertain": False,
-                          "timedOut": True}
-                if completed != len(actions):
-                    result.update({"fallback": "computer_act", "error": "Navigation wait timed out before the remaining actions."})
-                return observed_result(client, session_id, result)
-        return observed_result(client, session_id, {"ok": True, "completed": completed, "uncertain": False})
-    except Exception as exc:
-        return observed_result(client, session_id, {"ok": False, "completed": completed, "uncertain": uncertain,
-                "error": str(exc), "fallback": "computer_act", **({"timedOut": True} if isinstance(exc, TimeoutError) else {})})
+            if result.get("errorText") or result.get("isDownload"):
+                raise RuntimeError(result.get("errorText") or "Navigation started a download")
+            if result.get("loaderId"):
+                exact.navigation.expect_navigation(str(result["loaderId"]),url,mark)
+            if page_secrets.follow_navigation(exact.client,exact.navigation,mark,work_deadline):
+                raise TimeoutError("Navigation did not settle before its deadline")
+            return self.observed({"ok":True,"uncertain":False,"navigationOutcomeKnown":True})
+        except Exception as exc:
+            return self.observed({"ok":False,"uncertain":uncertain,"navigationOutcomeKnown":not uncertain,
+                "error":str(exc),"fallback":"computer_act",
+                **({"timedOut":True} if isinstance(exc,TimeoutError) else {})})
+
+    def observed(self, result: dict[str, Any]) -> dict[str, Any]:
+        observe_by = min(self.deadline,time.monotonic() + SNAPSHOT_RESERVE_S)
+        self.ab.deadline = observe_by
+        if self._exact is not None:
+            self._exact.client.deadline = observe_by
+        try:
+            return self.redact({**self.snapshot(0.0), **result})
+        except Exception as exc:
+            return self.redact({**result,'ok':False,'error':str(result.get('error') or 'Observation unavailable'),
+                **({'timedOut':True} if isinstance(exc,TimeoutError) else {})})
+        finally:
+            self.ab.deadline = self.deadline
+            if self._exact is not None:
+                self._exact.client.deadline = self.deadline
+
+    def fill(self, ref: str, text: str) -> None:
+        self.exact().act(ref, 'fill', text)
+
+    def type(self, ref: str, text: str) -> None:
+        """Real key presses into whatever has focus, as a person types: a code widget that moves
+        focus from box to box gets each key in its own box. Before each key the page must still be
+        the same document, with focus in the field or a box next to it."""
+        token = os.urandom(8).hex()
+        exact = self.exact()
+        session, world = exact.locate(ref)
+        frame, loader = page_secrets.ref_binding(ref, self.target)
+        initial_navigation = exact.client.navigations(session,frame)
+        exact.act(ref, 'focus')
+        def evaluate(expression: str) -> Any:
+            return page_secrets.eval_json(exact.client,session,expression,context_id=world)
+        info = evaluate(TYPE_START.replace("TOKEN", token).replace("EXACT_REF",json.dumps(ref))
+                        .replace("WHOLE", json.dumps(len(text) > 1))) or {}
+        multiline = info.get("multiline") is True
+        # Enter in a one-line field would submit its form; Shift+Enter breaks the line elsewhere.
+        chars = [char for char in text.replace("\r\n", "\n").replace("\r", "\n") if multiline or char != "\n"]
+        check = TYPE_CHECK.replace('TOKEN',token)
+        dispatched, final_navigation = 0, exact.client.navigations(session,frame)
+        try:
+            for index, char in enumerate(chars):
+                try:
+                    if evaluate(check) is not True:
+                        raise Refused('The typing target could not be verified.')
+                    if exact.client.navigations(session,frame) != initial_navigation:
+                        raise Refused('The typing document has started navigating.')
+                except Exception:
+                    raise TypingStopped(f'Typing stopped after {index} of {len(chars)} characters. Take a fresh snapshot.') from None
+                if index == len(chars) - 1:
+                    final_navigation = exact.client.navigations(session,frame)
+                page_secrets.type_character(exact.client,session,char)
+                dispatched += 1
+        except Refused:
+            raise TypingStopped('The page changed while typing. Take a fresh snapshot.') from None
+        def submitted() -> bool:
+            if not chars or dispatched != len(chars) or exact.client.navigations(session,frame) <= final_navigation:
+                return False
+            try:
+                return any(item['id'] == frame and item['loaderId'] != loader
+                           for item in exact.frames(require_complete=True))
+            except Exception:
+                return False
+        try:
+            done = evaluate(TYPE_DONE.replace('TOKEN',token).replace('TEXT',json.dumps(''.join(chars)))) or {}
+        except Exception:
+            if submitted():
+                return  # All keys were acknowledged, and the final key committed a new document.
+            raise KeysNotKept('Typed text could not be verified after the page changed. Inspect the current state before continuing.') from None
+        if done.get('kept') is not True:
+            if submitted():
+                return
+            raise KeysNotKept(NOT_KEPT)
+
+    def act(self, actions: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            validate_actions(actions)
+        except RuntimeError as exc:
+            raise PreDispatchRejected(str(exc)) from exc
+        completed, uncertain = 0, False
+        try:
+            exact = self.exact()
+            exact.client.deadline = self.deadline - SNAPSHOT_RESERVE_S
+            self.ab.deadline = self.deadline - SNAPSHOT_RESERVE_S
+            for step in actions:
+                kind, ref = step['kind'], step['ref']
+                remaining_time(self.deadline - SNAPSHOT_RESERVE_S)
+                self.control(ref)
+                mark = exact.navigation.begin_action()
+                uncertain = True
+                try:
+                    if step.get('origin') is not None:
+                        self.masked.add(step['text'])
+                        exact.login(step)
+                    elif kind == 'click':
+                        exact.act(ref,'click')
+                    elif kind == 'upload':
+                        exact.upload(ref,step['files'])
+                    elif kind == 'fill':
+                        self.fill(ref,step['text'])
+                    else:
+                        self.type(ref,step['text'])
+                except (KeysNotKept,page_secrets.KeysNotKept):
+                    completed += 1
+                    uncertain = False
+                    raise
+                completed += 1
+                uncertain = False
+                if page_secrets.follow_navigation(exact.client,exact.navigation,mark,
+                                                  self.deadline - SNAPSHOT_RESERVE_S):
+                    return self.observed({'ok':completed == len(actions),'completed':completed,'uncertain':False,
+                        'timedOut':True,**({'error':'Navigation wait timed out before the remaining actions.'}
+                                         if completed != len(actions) else {})})
+            ended = time.time()
+            time.sleep(min(ACTION_QUIET_SECONDS,remaining_time(self.deadline)))
+            busy = not self.settle(ACTION_WAIT_SECONDS - ACTION_QUIET_SECONDS,quiet_from=ended)
+            return self.observed({'ok':True,'completed':completed,'uncertain':False,
+                                  **({'loading':True} if busy else {})})
+        except (Settled,Refused,TypingStopped,KeysNotKept,page_secrets.KeysNotKept) as exc:
+            timed_out = False
+            if isinstance(exc,TypingStopped) and exact.navigation.mark() != mark:
+                try:
+                    timed_out = page_secrets.follow_navigation(exact.client,exact.navigation,mark,
+                                                              self.deadline - SNAPSHOT_RESERVE_S)
+                except Exception as wait_error:
+                    timed_out = isinstance(wait_error,TimeoutError)
+            return self.observed({'ok':False,'completed':completed,'uncertain':False,'error':str(exc),
+                                  **({'timedOut':True} if timed_out else {})})
+        except Exception as exc:
+            return self.observed({'ok':False,'completed':completed,'uncertain':uncertain,'error':str(exc),
+                'fallback':'computer_act',**({'timedOut':True} if isinstance(exc,TimeoutError) else {})})
+
+
+# Typing bookkeeping stays in the exact field's isolated world; native keys use the engine's CDP semantics.
+# A code is typed into its boxes: like-named one- or two-character inputs around the field, up to
+# where their numbering starts again, so a second code or a middle-initial field next to it is left alone.
+CODE_BOXES = r"""
+  const box = (input) => input instanceof HTMLInputElement && input.maxLength > 0 && input.maxLength <= 2;
+  const naming = (field) => [field.getAttribute("aria-label"), field.name, field.id,
+    ...Array.from(field.labels || [], (label) => label.textContent)].join("|").replace(/[\d\s]+/g, "").toLowerCase();
+  const numberOf = (field) => {
+    const found = /\d+/.exec(field.getAttribute("aria-label")
+      || Array.from(field.labels || [], (label) => label.textContent).join(" ") || field.name || "");
+    return found ? Number(found[0]) : null;
+  };
+  const like = (container, name) => [...container.querySelectorAll("input")].filter((input) => box(input)
+    && naming(input) === name);
+  function codeOf(el) {
+    if (!box(el)) return null;
+    for (let node = el.parentElement, up = 0; node && up < 3; node = node.parentElement, up++) {
+      if ([...node.querySelectorAll("input")].filter(box).length < 4) continue;
+      const boxes = like(node, naming(el));
+      const restarts = (a, b) => numberOf(a) !== null && numberOf(b) !== null && numberOf(b) <= numberOf(a);
+      let from = boxes.indexOf(el);
+      let to = from;
+      while (from > 0 && !restarts(boxes[from - 1], boxes[from])) from--;
+      while (to < boxes.length - 1 && !restarts(boxes[to], boxes[to + 1])) to++;
+      return { container: node, name: naming(el), from, size: to - from + 1, at: boxes.indexOf(el) };
+    }
+    return null;
+  }
+  const empty = (field) => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value").set.call(field, "");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const focused = () => {
+    let active = document.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  };
+"""
+
+TYPE_START = "(() => {" + CODE_BOXES + r"""
+  const el = window.__rakazoPageBrowserExact.resolveForTyping(EXACT_REF);
+  const initial = focused();
+  if (!document.hasFocus() || (initial !== el && !el.contains(initial))) throw new Error("The field did not retain keyboard focus.");
+  if (el instanceof HTMLIFrameElement || el instanceof HTMLFrameElement) return { frame: true };
+  if (!el || el === document.body) throw new Error("The field did not take keyboard focus. Click it, then type again.");
+  const code = codeOf(el);
+  let start = code ? code.at : 0;
+  if (code && code.size > 1 && WHOLE) {
+    // A whole code replaces the code: every box is emptied and typing starts at the first. Widgets
+    // that draw their boxes again on each input are found again in the same place each time.
+    const boxes = () => like(code.container, code.name).slice(code.from, code.from + code.size);
+    for (let i = 0; i < 24; i++) {
+      const filled = boxes().find((field) => field.value);
+      if (!filled) break;
+      empty(filled);
+    }
+    start = code.from;
+    boxes()[0]?.focus();
+  } else if (el.isContentEditable) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  } else if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.value) {
+    empty(el);
+  }
+  window.__rakazoTyping = { token: "TOKEN", el, code, start };
+  return { multiline: !(el instanceof HTMLInputElement) };
+})()"""
+
+# Focus may move on by itself to the next box of the code, and nowhere else.
+TYPE_CHECK = "(() => {" + CODE_BOXES + r"""
+  const typing = window.__rakazoTyping;
+  if (typing?.token !== "TOKEN") throw new Error("Typing stopped: page");
+  const active = focused();
+  const { el, code } = typing;
+  const holds = document.hasFocus() && ((el.isConnected && el.ownerDocument === document && (active === el || el.contains(active)))
+    || (code !== null && code.container.isConnected && code.container.ownerDocument === document
+      && like(code.container,code.name).slice(code.from,code.from + code.size).includes(active)));
+  if (!holds) throw new Error("Typing stopped: focus");
+  return true;
+})()"""
+
+TYPE_DONE = "(() => {" + CODE_BOXES + r"""
+  const typing = window.__rakazoTyping;
+  if (typing?.token !== "TOKEN") return { kept: false };
+  const { el, code, start } = typing;
+  const letters = (value) => String(value).replace(/[^\p{L}\p{N}]/gu, "").toLowerCase();
+  const wanted = letters(TEXT);
+  if (code) {
+    if (!code.container.isConnected || code.container.ownerDocument !== document) return { kept: false };
+    const shown = like(code.container, code.name).slice(start,code.from + code.size).map((field) => field.value).join("");
+    return { kept: letters(shown).slice(0, wanted.length) === wanted };
+  }
+  if (!el.isConnected || el.ownerDocument !== document) return { kept: false };
+  const shown = String(el.isContentEditable ? el.innerText : el.value).replace(/\r\n?/g,"\n");
+  const normalized = String(TEXT).replace(/\r\n?/g,"\n");
+  const expected = el instanceof HTMLInputElement ? normalized.replace(/\n/g,"") : normalized;
+  return { kept: shown === expected };
+})()"""
+
+
+def resolve_upload_paths(paths: Any, home: str | None = None, roots: list[str] | None = None) -> list[str]:
+    """Resolve regular files within trusted roots before handing them to Chromium."""
+    if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_UPLOAD_FILES:
+        raise RuntimeError(f"upload needs 1 to {MAX_UPLOAD_FILES} file paths")
+    home = os.path.realpath(home or os.environ.get("HOME") or "/home/rakazo")
+    location = "your folder or shared/" if roots is not None else "this computer's home folder"
+    allowed = [home]
+    if roots is not None:
+        allowed = []
+        for root in roots:
+            expected = os.path.normpath(os.path.join(home, root))
+            full = os.path.realpath(expected)
+            # A root redirected by a symlink (bots/b1 -> bots/b2) could reach another bot's files.
+            if os.path.isabs(root) or full != expected or os.path.commonpath([home, full]) != home:
+                raise RuntimeError(f"Upload files must be inside {location}")
+            # A folder that does not exist yet holds no files; the other root still applies.
+            if os.path.isdir(full):
+                allowed.append(full)
+    max_bytes = MAX_UPLOAD_BYTES
+    try:
+        if int(os.environ.get("RAKAZO_BROWSER_UPLOAD_MAX_BYTES", "")) > 0:
+            max_bytes = int(os.environ["RAKAZO_BROWSER_UPLOAD_MAX_BYTES"])
+    except ValueError:
+        pass
+    resolved = []
+    total = 0
+    for path in paths:
+        if not isinstance(path, str) or not path.strip():
+            raise RuntimeError("upload paths must be non-empty strings")
+        full = os.path.realpath(os.path.join(home, path))
+        # Check confinement before existence to avoid revealing outside targets.
+        if not any(os.path.commonpath([root, full]) == root for root in allowed):
+            raise RuntimeError(f"Upload files must be inside {location}: {path}")
+        try:
+            info = os.stat(full)
+        except OSError:
+            raise RuntimeError(f"File not found: {path}") from None
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(f"Not a regular file: {path}")
+        total += info.st_size
+        if total > max_bytes:
+            raise RuntimeError(f"upload files are larger than {max_bytes / (1024 * 1024):g} MB in total")
+        resolved.append(full)
+    return resolved
+
+
+def validate_actions(actions: Any) -> None:
+    """Validate the complete batch before any step can mutate a field."""
+    if not isinstance(actions,list) or not 1 <= len(actions) <= 24:
+        raise RuntimeError('Expected 1 to 24 actions')
+    for step in actions:
+        if not isinstance(step,dict) or step.get('kind') not in ('click','fill','type','upload'):
+            raise RuntimeError('Invalid browser action')
+        ref = step.get('ref')
+        if not isinstance(ref,str) or not ref.startswith('r2.') or len(ref) > 2048:
+            raise RuntimeError('Exact element ref is required')
+        try:
+            encoded = ref[3:]
+            binding = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+            page_secrets.ref_binding(ref, binding[0])
+        except (ValueError,TypeError,IndexError,Refused):
+            raise RuntimeError('Exact element ref is invalid') from None
+        if step['kind'] == 'upload':
+            step['files'] = resolve_upload_paths(step.get('paths'),roots=step.get('roots'))
+        elif step['kind'] != 'click' and not isinstance(step.get('text'),str):
+            raise RuntimeError('Text is required')
+        secret = step.get('origin') is not None or step.get('field') is not None
+        if secret and (step['kind'] != 'fill' or not isinstance(step.get('origin'),str)
+                       or not step['origin'] or step.get('field') not in ('username','password')):
+            raise RuntimeError('A saved login fill requires its origin and username or password field')
+
 
 
 def exit_when_stdin_closes() -> None:
@@ -850,6 +916,13 @@ def exit_when_stdin_closes() -> None:
         while os.read(0, 1024):
             pass
     finally:
+        CANCELLED.set()
+        with PROCESS_LOCK:
+            if ACTIVE_PROCESS is not None:
+                try:
+                    ACTIVE_PROCESS.terminate()
+                except ProcessLookupError:
+                    pass
         os._exit(130)
 
 
@@ -864,63 +937,65 @@ def read_stdin_line() -> str:
     return data.decode("utf-8")
 
 
+CAPABILITIES = {'protocol':2,'engine':'agent-browser','engineVersion':'0.41.0',
+                'refIdentity':'exact-node-v1','loginFields':['username','password']}
+
+
 def run(argv: list[str]) -> int:
     deadline = time.monotonic() + HELPER_TIMEOUT_S
-    stdin_args = (
-        read_stdin_line() if os.environ.get("RAKAZO_BROWSER_ARGS_STDIN") == "1" else None
-    )
-    if os.environ.get("RAKAZO_BROWSER_WATCH_STDIN") == "1":
-        threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
-    if len(argv) < 2:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": "usage: rakazo-page-browser <command> [json-args]",
-                    "fallback": "computer_act",
-                }
-            )
-        )
-        return 2
-    command = argv[1]
-    args: dict[str, Any] = {}
-    raw_args = stdin_args if stdin_args is not None else (argv[2] if len(argv) >= 3 else "")
-    if raw_args.strip():
-        args = json.loads(raw_args)
-    port = cdp_port()
+    stdin_args = read_stdin_line() if os.environ.get('RAKAZO_BROWSER_ARGS_STDIN') == '1' else None
+    if os.environ.get('RAKAZO_BROWSER_WATCH_STDIN') == '1':
+        threading.Thread(target=exit_when_stdin_closes,daemon=True).start()
+    command = argv[1] if len(argv) >= 2 else ''
+    connected, page = False, None
     try:
-        work_deadline = deadline - SNAPSHOT_RESERVE_S
-        wait_for_cdp(port, deadline=work_deadline)
-        ws_url = discover_ws_url(port, deadline=work_deadline)
-        client = CdpClient(ws_url, deadline)
-        client.connect(work_deadline)
-        try:
-            session_id = attach_page(client, work_deadline)
-            if command == "navigate":
-                result = navigate(client, session_id, str(args.get("url") or ""))
-            elif command == "snapshot":
-                result = snapshot(client, session_id)
-            elif command == "act":
-                actions = args.get("actions")
-                if not isinstance(actions, list):
-                    raise RuntimeError("actions must be an array")
-                result = act(client, session_id, actions)
-            else:
-                result = {
-                    "ok": False,
-                    "error": f"unknown command: {command}",
-                    "fallback": "computer_act",
-                }
-                print(json.dumps(result))
-                return 2
-            print(json.dumps(result))
-            return 0  # Structured failures preserve partial action progress.
-        finally:
-            client.close()
-    except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"ok": False, "error": str(exc), "fallback": "computer_act",
-                              "uncertain": command == "act"}))
+        if command not in ('capabilities','navigate','snapshot','act'):
+            raise RuntimeError('Unknown page-browser command')
+        raw = stdin_args if stdin_args is not None else (argv[2] if len(argv) >= 3 else '')
+        args = json.loads(raw) if raw.strip() else {}
+        if not isinstance(args,dict):
+            raise RuntimeError('Browser arguments must be an object')
+        browser = AgentBrowser(cdp_port(),deadline)
+        if command == 'capabilities':
+            result = run_engine_process([AGENT_BROWSER,'--version'],env=browser.env,cwd=browser.home,deadline=deadline)
+            if result.returncode or re.fullmatch(r'(?:agent-browser\s+)?0\.41\.0\s*',result.stdout.strip()) is None:
+                raise RuntimeError('The page-browser engine does not support this helper')
+            print(json.dumps({'ok':True,'capabilities':CAPABILITIES}))
+            return 0
+        port = cdp_port()
+        wait_for_cdp(port,deadline=deadline - SNAPSHOT_RESERVE_S)
+        connected = True
+        target,address = front_tab(port,deadline)
+        if internal(address):
+            if command != 'navigate':
+                raise PreDispatchRejected(INTERNAL_PAGE)
+            url = str(args.get('url') or '')
+            check_url(url)
+            browser.batch([['tab','new','about:blank']],timeout=NAVIGATE_SECONDS)
+            target,address = front_tab(port,deadline)
+        browser.use_tab(target)
+        page = PageBrowser(port,target,browser,deadline)
+        if command == 'navigate':
+            result = page.navigate(str(args.get('url') or ''))
+        elif command == 'snapshot':
+            result = page.snapshot()
+        else:
+            result = page.act(args.get('actions'))
+        print(json.dumps(result))
         return 0
+    except PreDispatchRejected as exc:
+        result = {'ok':False,'error':str(exc),'completed':0,'uncertain':False}
+        print(json.dumps(page.redact(result) if page is not None else result))
+        return 0
+    except Exception as exc:
+        result = {'ok':False,'error':str(exc),'fallback':'computer_act',
+                  'uncertain':command == 'act' and connected,
+                  **({'timedOut':True} if isinstance(exc,(TimeoutError,subprocess.TimeoutExpired)) else {})}
+        print(json.dumps(page.redact(result) if page is not None else result))
+        return 0
+    finally:
+        if page is not None:
+            page.close()
 
 
 if __name__ == "__main__":
