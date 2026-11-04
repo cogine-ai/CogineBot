@@ -2,12 +2,15 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import type { PoolClient } from "pg";
 import { Pool } from "pg";
 import { PrismaClient } from "./generated/prisma/client.js";
+import { installDbContext, rlsBypassKey, withRowLevelSecurity } from "./row-security.js";
 
 export type Db = PrismaClient;
 
 export interface DbClientOptions {
   poolMax?: number;
   applicationName?: string;
+  /** Enable context-aware queries during the staged row-security rollout. */
+  rowSecurity?: boolean;
 }
 
 const DEFAULT_POOL_MAX = 4;
@@ -34,6 +37,7 @@ export function createPool(connectionString: string, options: DbClientOptions = 
     client.on("error", () => undefined);
   });
   installConnectRetry(pool);
+  if (options.rowSecurity) installDbContext(pool);
   return pool;
 }
 
@@ -44,7 +48,12 @@ export function createDb(
   const pool = createPool(connectionString, options);
   const adapter = new PrismaPg(pool);
   const prisma = new PrismaClient({ adapter });
-  return { prisma, pool };
+  return {
+    prisma: options.rowSecurity
+      ? withRowLevelSecurity(prisma, rlsBypassKey(connectionString))
+      : prisma,
+    pool,
+  };
 }
 
 export function isTooManyDatabaseConnections(error: unknown): boolean {
