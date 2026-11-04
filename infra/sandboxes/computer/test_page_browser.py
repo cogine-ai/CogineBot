@@ -39,6 +39,22 @@ def page(exact=None):
 
 
 class PageBrowserTest(unittest.TestCase):
+    def test_snapshot_normalizes_control_names_after_redacting_raw_secrets(self):
+        target = page()
+        names = ["Name ", " Destination ", "  First  Last  ", " secret "]
+        target._exact.snapshot.return_value.update({
+            "masked": [" secret "],
+            "elements": [{"ref":ref(str(index)),"role":"textbox","tag":"input","name":name}
+                         for index,name in enumerate(names)],
+        })
+        result = target.snapshot()
+        self.assertEqual([item["name"] for item in result["elements"]],
+                         ["Name","Destination","First  Last","[hidden]"])
+        self.assertEqual([item["ref"] for item in result["elements"]],
+                         [ref(str(index)) for index in range(len(names))])
+        self.assertNotIn(" secret ",json.dumps(result))
+        self.assertIn('textbox "Name" [',result["tree"])
+
     def test_settle_reads_the_live_page_load_telemetry(self):
         browser = Mock(deadline=helper.time.monotonic() + 22)
         browser.batch.side_effect = [

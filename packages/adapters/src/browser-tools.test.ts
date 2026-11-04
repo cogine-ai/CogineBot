@@ -9,8 +9,10 @@ import {
   redactBrowserResult,
 } from "./browser-tools.js";
 import { ComputerBrowserProvider } from "./computer-browser.js";
+import { redactConnectorPayload } from "./connector-safety.js";
 import { filterPageBrowserTools, PAGE_BROWSER_TOOL_NAMES } from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
+import { PageBrowserSession } from "./page-browser-session.js";
 
 const context: AdapterContext = {
   operationId: "1",
@@ -28,6 +30,132 @@ const computer: ComputerRef = {
 };
 
 describe("browser tools", () => {
+  it("validates the whole saved-login batch before any field is changed", () => {
+    const session = new PageBrowserSession(
+      "https://login.example.test",
+      '<input aria-label="First" value="original"><input aria-label="Saved">',
+    );
+    try {
+      const [first, saved] = session.snapshot().elements;
+      const result = session.act([
+        { kind: "fill", ref: first!.ref, text: "must-not-land" },
+        {
+          kind: "fill",
+          ref: saved!.ref,
+          text: "private",
+          origin: "https://other.example.test",
+          field: "username",
+        },
+      ]);
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(session.snapshot().elements[0]).toMatchObject({ value: "original" });
+      expect(JSON.stringify(session.snapshot())).not.toContain("must-not-land");
+      expect(JSON.stringify(session.snapshot())).not.toContain("private");
+    } finally {
+      session.close();
+    }
+  });
+
+  it("rejects old refs after the public session loader replaces the document", () => {
+    const session = new PageBrowserSession(
+      "https://login.example.test",
+      '<input aria-label="Saved">',
+    );
+    try {
+      const old = session.snapshot().elements[0]!.ref;
+      session.load("https://other.example.test", '<input aria-label="Saved" value="untouched">');
+      const result = session.act([
+        {
+          kind: "fill",
+          ref: old,
+          text: "private",
+          origin: "https://other.example.test",
+          field: "username",
+        },
+      ]);
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(result.error).toMatch(/Stale element ref/);
+      expect(session.snapshot().elements[0]).toMatchObject({ value: "untouched" });
+    } finally {
+      session.close();
+    }
+  });
+
+  it("uses the shared escaped-secret closure without changing browser protocol exemptions", () => {
+    for (const secret of ['private"\\\n🙂', "a", "i"]) {
+      const quoted = JSON.stringify(secret).slice(1, -1);
+      const legacyForms = quoted === secret ? [secret] : [secret, quoted];
+      let encoded = secret;
+      for (let depth = 0; depth < 7; depth++) {
+        const text = `prefix ${encoded} suffix`;
+        const expected = redactConnectorPayload(text, legacyForms);
+        expect(redactConnectorPayload(text, [secret])).toEqual(expected);
+        const nested = JSON.stringify([{ type: "text", text: JSON.stringify({ value: encoded }) }]);
+        const legacyNested = redactConnectorPayload(nested, legacyForms);
+        expect(redactConnectorPayload(nested, [secret])).toEqual(legacyNested);
+        expect(redactBrowserResult({ error: nested }, [secret])).toEqual({ error: legacyNested });
+        const ref = `r2.${Buffer.from(JSON.stringify(["target", "frame", "loader", "a".repeat(32)])).toString("base64url")}`;
+        const result = redactBrowserResult(
+          {
+            title: text,
+            tree: `${text} [${ref}]`,
+            elements: [{ ref, role: "button", tag: "input", name: text, value: text }],
+          },
+          [secret],
+        ) as {
+          title: unknown;
+          tree: string;
+          elements: Array<{
+            ref: string;
+            role: string;
+            tag: string;
+            name: unknown;
+            value: unknown;
+          }>;
+        };
+        expect(result.title).toEqual(expected);
+        expect(result.tree).toBe(`${expected} [${ref}]`);
+        expect(result.elements[0]).toEqual({
+          ref,
+          role: "button",
+          tag: "input",
+          name: expected,
+          value: expected,
+        });
+        encoded = JSON.stringify(encoded);
+      }
+    }
+  });
+
+  it("keeps canonical redaction when quoted values overlap a placeholder", () => {
+    const text = String.fromCharCode(92, 34);
+    const result = redactBrowserResult(
+      {
+        error: text,
+        title: text,
+        tree: `${text} [custom-ac-ref]`,
+        elements: [{ ref: "custom-ac-ref", role: "button", tag: "input", name: text }],
+      },
+      ['"', "ac"],
+    ) as {
+      error: string;
+      title: string;
+      tree: string;
+      elements: Array<{ ref: string; role: string; tag: string; name: string }>;
+    };
+    expect(result.error).toBe("[redacted]");
+    expect(result.title).toBe("[redacted]");
+    expect(result.error).not.toContain(text);
+    expect(result.error).not.toContain(JSON.stringify(text).slice(1, -1));
+    expect(result.tree).toBe("[redacted] [custom-ac-ref]");
+    expect(result.elements[0]).toEqual({
+      ref: "custom-ac-ref",
+      role: "button",
+      tag: "input",
+      name: "[redacted]",
+    });
+  });
+
   it("probes the live helper once before resolving and dispatching a saved login", async () => {
     const commands: string[] = [];
     const browser = new ComputerBrowserProvider({

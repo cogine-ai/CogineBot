@@ -100,7 +100,7 @@ export class PageBrowserSession {
     let completed = 0;
     for (const action of actions) {
       signal?.throwIfAborted();
-      const el = action.ref === undefined ? undefined : this.refs.get(action.ref);
+      const el = this.refs.get(action.ref);
       if (!el?.isConnected || el.ownerDocument !== this.dom.window.document) {
         const snap = this.snapshot();
         return {
@@ -115,7 +115,6 @@ export class PageBrowserSession {
         };
       }
       try {
-        if (action.kind === "fill" || action.kind === "type") this.checkFillOrigin(action);
         this.applyAction(el, action);
       } catch (error) {
         const snap = this.snapshot();

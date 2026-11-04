@@ -282,10 +282,6 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
 
 /** Snapshot strings can quote a secret differently from its raw stored representation. */
 export function redactBrowserResult<T>(result: T, secrets: string[]): unknown {
-  const forms = secrets.flatMap((secret) => {
-    const quoted = JSON.stringify(secret).slice(1, -1);
-    return quoted === secret ? [secret] : [secret, quoted];
-  });
   if (result === undefined) return result;
   try {
     const value = JSON.parse(JSON.stringify(result));
@@ -333,9 +329,9 @@ export function redactBrowserResult<T>(result: T, secrets: string[]): unknown {
         if (key === "tree" && pattern)
           return item
             .split(pattern)
-            .map((part) => (tokens.has(part) ? part : redactConnectorPayload(part, forms)))
+            .map((part) => (tokens.has(part) ? part : redactConnectorPayload(part, secrets)))
             .join("");
-        return redactConnectorPayload(item, forms);
+        return redactConnectorPayload(item, secrets);
       }
       if (Array.isArray(item)) return item.map((child) => visit(child, key, depth + 1));
       if (item && typeof item === "object")

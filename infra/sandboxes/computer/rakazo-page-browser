@@ -441,6 +441,8 @@ class PageBrowser:
         offsets = {}
         for raw in state.get('elements') or []:
             entry = self.redact({k:v for k,v in raw.items() if k != 'options'})
+            if isinstance(entry.get('name'),str):
+                entry['name'] = entry['name'].strip()
             options = []
             for original in raw.get('options') or []:
                 label = str(original.get('label') or '')

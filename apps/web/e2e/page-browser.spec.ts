@@ -34,7 +34,8 @@ test("live page helper preserves identity, masks passwords, and reports partial 
   let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   try {
     context = await chromium.launchPersistentContext(profile, {
-      headless: true,
+      // Dialog ownership and foreground tabs require the visible-browser implementation.
+      headless: false,
       args: ["--remote-debugging-port=0"],
     });
     let port = "";
@@ -622,18 +623,24 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
       elements = (await command("snapshot")).elements;
     };
     async function type(name: string, text: string) {
-      await page.evaluate((name) => {
+      const visibilityChanged = await page.evaluate((name) => {
         const target = Array.from(document.querySelectorAll("[aria-label]")).find(
           (element) => element.getAttribute("aria-label") === name,
         );
         const section = target?.closest("section")?.id ?? "last";
         const visible = new Set([section, section === "last" ? "keys" : "last"]);
+        let changed = false;
         for (const group of document.querySelectorAll("section")) {
-          (group as HTMLElement).hidden = !visible.has(group.id);
+          const hidden = !visible.has(group.id);
+          if ((group as HTMLElement).hidden !== hidden) {
+            (group as HTMLElement).hidden = hidden;
+            changed = true;
+          }
         }
+        return changed;
       }, name);
       // Visibility changes keep every widget's values and listeners; only refs are refreshed.
-      await refresh();
+      if (visibilityChanged) await refresh();
       const ref = elements.find((element) => element.name === name)?.ref;
       expect(
         ref,
@@ -708,6 +715,9 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
     expect(refused.error).not.toContain("48291A");
 
     // The real input of a drawn code field is transparent, and it is still listed and typed into.
+    await page.locator("#single").evaluate((section) => {
+      (section as HTMLElement).hidden = false;
+    });
     await page.locator("#single input").fill("123456");
     await refresh();
     expect(await type("Code", "482913")).toMatchObject({ ok: true });
