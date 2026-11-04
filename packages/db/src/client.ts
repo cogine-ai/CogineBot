@@ -2,7 +2,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import type { PoolClient } from "pg";
 import { Pool } from "pg";
 import { PrismaClient } from "./generated/prisma/client.js";
-import { installDbContext, rlsBypassKey, withRowLevelSecurity } from "./row-security.js";
+import { installDbContext, withRowLevelSecurity } from "./row-security.js";
 
 export type Db = PrismaClient;
 
@@ -49,9 +49,7 @@ export function createDb(
   const adapter = new PrismaPg(pool);
   const prisma = new PrismaClient({ adapter });
   return {
-    prisma: options.rowSecurity
-      ? withRowLevelSecurity(prisma, rlsBypassKey(connectionString))
-      : prisma,
+    prisma: options.rowSecurity ? withRowLevelSecurity(prisma, installDbContext(pool)) : prisma,
     pool,
   };
 }

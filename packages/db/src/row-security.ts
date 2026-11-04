@@ -14,6 +14,8 @@ import { Prisma } from "./generated/prisma/client.js";
  *   tenants (job dispatch, reconcilers, webhooks before they resolve a tenant).
  *
  * Without a context, protected tables return no rows and reject writes.
+ * Tenant settings assume trusted backend SQL and server-derived identities.
+ * They do not authenticate a caller with arbitrary SQL execution capability.
  */
 export type DbContext =
   | { kind: "tenant"; spaceId: string; userId: string }
@@ -51,7 +53,10 @@ export function asSystem<T extends object>(client: T, reason = "test fixture"): 
       const value = Reflect.get(target, key);
       if (typeof value === "function") {
         return (...args: unknown[]) =>
-          runAsSystem(reason, () => Reflect.apply(value, target, args));
+          storage.run({ kind: "system", reason }, () => {
+            const result = Reflect.apply(value, target, args);
+            return result && typeof result === "object" ? asSystem(result, reason) : result;
+          });
       }
       if (value && typeof value === "object") return asSystem(value, reason);
       return value;
@@ -73,9 +78,10 @@ export async function runAsSystemInTransaction<T>(
   reason: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const bypassKey = Reflect.get(tx, TRANSACTION_BYPASS_KEY);
-  if (typeof bypassKey !== "string")
+  const binding = Reflect.get(tx, TRANSACTION_BYPASS_KEY);
+  if (typeof binding !== "string" && typeof binding !== "function")
     throw new Error("System transaction requires a context-aware interactive transaction");
+  const bypassKey = await resolveBypassKey(binding);
   const [previous] = await tx.$queryRaw<
     Array<{ bypass: string | null; key: string | null }>
   >`SELECT current_setting('app.rls_bypass', true) AS bypass,
@@ -194,17 +200,30 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
  * Proves a system context to the database. The policies honour app.rls_bypass only
  * alongside this key. A deployment owner must register its digest in the private
  * store before protected system access can work; the runtime cannot read that store.
- * Derived from the runtime login's password, so it needs no setting of its own.
+ * This deterministic URL-only utility does not resolve environment or pgpass
+ * credentials. Runtime contexts use the authenticated pool connection instead.
  */
 export function rlsBypassKey(connectionString: string | undefined): string {
   const { password } = databaseCredentials(connectionString);
-  return password
-    ? createHmac("sha256", password).update("coginebot rls bypass").digest("hex")
-    : "";
+  return password ? passwordBypassKey(password) : "";
 }
 
-// As pg-connection-string reads them: query parameters win over the URL's userinfo, and a
-// stray `%` is escaped first.
+function passwordBypassKey(password: string): string {
+  return createHmac("sha256", password).update("coginebot rls bypass").digest("hex");
+}
+
+export type RlsBypassKeyResolver = () => Promise<string>;
+type BypassKeySource = string | RlsBypassKeyResolver;
+
+async function resolveBypassKey(source: BypassKeySource): Promise<string> {
+  const key = typeof source === "function" ? await source() : source;
+  if (typeof key !== "string" || !key)
+    throw new Error("Protected system database access requires an authenticated password");
+  return key;
+}
+
+// Match pg-connection-string: the last query value wins, then an empty value
+// falls back to URL userinfo. Environment/pgpass belong to the connected client.
 export function databaseCredentials(connectionString: string | undefined): {
   user: string;
   password: string;
@@ -215,8 +234,8 @@ export function databaseCredentials(connectionString: string | undefined): {
   try {
     const url = new URL(normalized);
     return {
-      user: url.searchParams.get("user") || decodeURIComponent(url.username),
-      password: url.searchParams.get("password") || decodeURIComponent(url.password),
+      user: url.searchParams.getAll("user").at(-1) || decodeURIComponent(url.username),
+      password: url.searchParams.getAll("password").at(-1) || decodeURIComponent(url.password),
     };
   } catch {
     return { user: "", password: "" };
@@ -245,16 +264,21 @@ async function applySettings(client: PoolClient, settings: Settings): Promise<vo
   applied.set(client, key);
 }
 
+const poolKeys = new WeakMap<Pool, RlsBypassKeyResolver>();
+
 /**
  * Give every connection checked out of `pool` the settings of the context that
  * asked for it, captured when `connect` is called (the callback of a queued
  * checkout can run in whichever request released the connection). A
  * connection only gets a round trip when its settings change, and a checkout
  * with no context clears what an earlier one left behind.
+ * The returned resolver uses the pool's first authenticated password and shares
+ * its key with Prisma operations. Credential rotation requires a new pool and
+ * registration of its digest; a pool rejects connections with a different key.
  */
-export function installDbContext(pool: Pool): void {
-  const { connectionString } = pool.options;
-  const bypassKey = rlsBypassKey(connectionString);
+export function installDbContext(pool: Pool): RlsBypassKeyResolver {
+  const installed = poolKeys.get(pool);
+  if (installed) return installed;
   type ConnectCallback = (
     err: Error | undefined,
     client: PoolClient | undefined,
@@ -265,14 +289,49 @@ export function installDbContext(pool: Pool): void {
     (callback: ConnectCallback): void;
   };
 
+  let key: string | undefined;
+  let pending: Promise<string> | undefined;
+  const captureKey = (client: PoolClient): string => {
+    const password = client.password;
+    if (typeof password !== "string" || !password)
+      throw new Error("Protected database access requires an authenticated password");
+    const candidate = passwordBypassKey(password);
+    if (key !== undefined && key !== candidate)
+      throw new Error("Database authentication changed; create a new pool and register its key");
+    key = candidate;
+    return candidate;
+  };
+  const resolveKey: RlsBypassKeyResolver = () => {
+    if (key !== undefined) return Promise.resolve(key);
+    if (!pending)
+      pending = originalConnect()
+        .then((client) => {
+          let authenticated: string;
+          try {
+            authenticated = captureKey(client);
+          } catch (error) {
+            client.release(error as Error);
+            throw error;
+          }
+          client.release();
+          return authenticated;
+        })
+        .finally(() => {
+          pending = undefined;
+        });
+    return pending;
+  };
+  const prepare = (client: PoolClient, context: DbContext | undefined) =>
+    applySettings(client, settingsFor(context, captureKey(client)));
+
   function connect(): Promise<PoolClient>;
   function connect(callback: ConnectCallback): void;
   function connect(callback?: ConnectCallback): Promise<PoolClient> | undefined {
-    const settings = settingsFor(storage.getStore(), bypassKey);
+    const context = storage.getStore();
     if (!callback) {
       return originalConnect().then(async (client) => {
         try {
-          await applySettings(client, settings);
+          await prepare(client, context);
           return client;
         } catch (error) {
           client.release(error as Error);
@@ -282,17 +341,21 @@ export function installDbContext(pool: Pool): void {
     }
     originalConnect((err, client, done) => {
       if (err || !client) return callback(err, client, done);
-      applySettings(client, settings).then(
-        () => callback(undefined, client, done),
-        (error: Error) => {
-          done(error);
-          callback(error, undefined, () => undefined);
-        },
-      );
+      Promise.resolve()
+        .then(() => prepare(client, context))
+        .then(
+          () => callback(undefined, client, done),
+          (error: Error) => {
+            done(error);
+            callback(error, undefined, () => undefined);
+          },
+        );
     });
   }
 
   pool.connect = connect as Pool["connect"];
+  poolKeys.set(pool, resolveKey);
+  return resolveKey;
 }
 
 const LOCAL_SETTINGS = (settings: Settings) =>
@@ -303,7 +366,7 @@ const LOCAL_SETTINGS = (settings: Settings) =>
 const WRAPPED_OPERATION_OPTIONS = { maxWait: 10_000, timeout: 300_000 };
 
 type InternalParams = { transaction?: { kind?: string } };
-function bindTransactions(client: PrismaClient, bypassKey: string): PrismaClient {
+function bindTransactions(client: PrismaClient, bypassKey: BypassKeySource): PrismaClient {
   return new Proxy(client, {
     get(target, property, receiver) {
       if (property === "$extends")
@@ -369,7 +432,10 @@ export function drainUnscopedDatabaseAccess(): string[] {
  * - a batch `$transaction([...])` starts on the next tick as well, so it is
  *   rejected inside a context; use an interactive transaction instead.
  */
-export function withRowLevelSecurity(prisma: PrismaClient, bypassKey = ""): PrismaClient {
+export function withRowLevelSecurity(
+  prisma: PrismaClient,
+  bypassKey: BypassKeySource = "",
+): PrismaClient {
   const extended = prisma.$extends({
     query: {
       async $allOperations({ model, operation, args, query, ...rest }) {
@@ -385,6 +451,7 @@ export function withRowLevelSecurity(prisma: PrismaClient, bypassKey = ""): Pris
             "Batch $transaction([...]) cannot carry a database context; use an interactive transaction",
           );
         }
+        const key = context.kind === "system" ? await resolveBypassKey(bypassKey) : "";
         if (transaction || (operation !== "findUnique" && operation !== "findUniqueOrThrow")) {
           return query(args);
         }
@@ -392,7 +459,7 @@ export function withRowLevelSecurity(prisma: PrismaClient, bypassKey = ""): Pris
         // native argument validation and isolate lazy unique or fluent reads
         // with the transaction-local context before their original query.
         const [, result] = await prisma.$transaction(
-          [prisma.$executeRaw(LOCAL_SETTINGS(settingsFor(context, bypassKey))), query(args)],
+          [prisma.$executeRaw(LOCAL_SETTINGS(settingsFor(context, key))), query(args)],
           WRAPPED_OPERATION_OPTIONS as never,
         );
         return result;

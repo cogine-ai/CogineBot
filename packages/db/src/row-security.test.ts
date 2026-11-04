@@ -1,8 +1,11 @@
 import type { Pool, PoolClient } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDb } from "./client.js";
 import type { PrismaClient } from "./generated/prisma/client.js";
 import {
+  asSystem,
   currentDbContext,
+  databaseCredentials,
   drainUnscopedDatabaseAccess,
   installDbContext,
   rlsBypassKey,
@@ -16,21 +19,121 @@ afterEach(() => {
   drainUnscopedDatabaseAccess();
 });
 
-function poolBoundary(connectionString = "postgres://app:secret@db/coginebot") {
+function poolBoundary(
+  connectionString = "postgres://app:secret@db/coginebot",
+  password = "secret",
+) {
   const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] }));
   const release = vi.fn();
-  const client = { query, release } as unknown as PoolClient;
+  const client = { query, release, password } as unknown as PoolClient;
   const pool = { options: { connectionString }, connect: async () => client } as unknown as Pool;
   installDbContext(pool);
   return { pool, client, query, release };
 }
 
 describe("database context pool checkout", () => {
+  it("uses the authenticated connection password rather than URL-only credentials", async () => {
+    const { pool, query } = poolBoundary("postgres://app:other@db/coginebot", "secret");
+    await runAsSystem("effective authentication", () => pool.connect());
+    expect(query.mock.calls[0]?.[1]).toEqual([
+      "",
+      "",
+      "on",
+      "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab",
+    ]);
+  });
+
+  it("bootstraps and releases one authenticated checkout for concurrent resolver callers", async () => {
+    const client = {
+      password: "secret",
+      release: vi.fn(),
+      query: vi.fn(async () => ({ rows: [] })),
+    };
+    const connect = vi.fn(async () => client);
+    const pool = { connect } as unknown as Pool;
+    const key = installDbContext(pool);
+    expect(installDbContext(pool)).toBe(key);
+    expect(await Promise.all([key(), key()])).toEqual([
+      "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab",
+      "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab",
+    ]);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(client.release).toHaveBeenCalledOnce();
+    expect(client.query).not.toHaveBeenCalled();
+    await runAsSystem("resolved checkout", () => pool.connect());
+    expect(client.query.mock.calls[0]).toEqual([
+      expect.stringContaining("app.rls_bypass_key"),
+      ["", "", "on", await key()],
+    ]);
+  });
+
+  it("retries authentication after a transient resolver failure", async () => {
+    const failure = new Error("temporarily unavailable");
+    const client = { password: "secret", release: vi.fn() };
+    const connect = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(client);
+    const resolver = installDbContext({ connect } as unknown as Pool);
+    await expect(resolver()).rejects.toBe(failure);
+    expect(await resolver()).toBe(
+      "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab",
+    );
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "", () => "unresolved password"])(
+    "rejects missing or unresolved authenticated passwords without exposing them (%s)",
+    async (password) => {
+      const client = { password, release: vi.fn(), query: vi.fn() };
+      const resolver = installDbContext({ connect: async () => client } as unknown as Pool);
+      await expect(resolver()).rejects.toThrow(
+        "Protected database access requires an authenticated password",
+      );
+      expect(client.release).toHaveBeenCalledWith(expect.any(Error));
+      expect(client.query).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a changed physical connection credential instead of replacing its pool key", async () => {
+    const { pool, client, query, release } = poolBoundary();
+    const resolver = installDbContext(pool);
+    const original = await resolver();
+    client.password = "rotation-password-do-not-expose";
+    const result = await pool.connect().catch((error: Error) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe(
+      "Database authentication changed; create a new pool and register its key",
+    );
+    expect(await resolver()).toBe(original);
+    expect(release).toHaveBeenLastCalledWith(result);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("discards callback checkouts with unavailable effective credentials", async () => {
+    const done = vi.fn();
+    const client = { password: undefined, query: vi.fn() } as unknown as PoolClient;
+    const pool = {
+      connect(callback: (error: undefined, client: PoolClient, release: typeof done) => void) {
+        callback(undefined, client, done);
+      },
+    } as unknown as Pool;
+    installDbContext(pool);
+    const result = await new Promise<{ error: unknown; client: unknown }>((resolve) => {
+      pool.connect((error, client) => resolve({ error, client }));
+    });
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error).message).toBe(
+      "Protected database access requires an authenticated password",
+    );
+    expect(result.client).toBeUndefined();
+    expect(done).toHaveBeenCalledWith(result.error);
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
   it("keeps the queued caller's tenant when another tenant releases the connection", async () => {
     type Callback = (error: Error | undefined, client: PoolClient, done: () => void) => void;
     let checkout!: Callback;
     const query = vi.fn(async () => ({ rows: [] }));
-    const client = { query, release: vi.fn() } as unknown as PoolClient;
+    const client = { query, password: "secret", release: vi.fn() } as unknown as PoolClient;
     const pool = {
       options: { connectionString: "postgres://app:secret@db/coginebot" },
       connect(callback: Callback) {
@@ -80,6 +183,7 @@ describe("database context pool checkout", () => {
     const error = new Error("settings failed");
     const done = vi.fn();
     const client = {
+      password: "secret",
       query: vi.fn(async () => {
         throw error;
       }),
@@ -100,6 +204,106 @@ describe("database context pool checkout", () => {
 });
 
 describe("trusted database scopes", () => {
+  it("preserves synchronous SDK extension chains and method return values", async () => {
+    const { prisma, pool } = createDb("postgres://unused:unused@127.0.0.1:1/unused", {
+      rowSecurity: true,
+    });
+    try {
+      const client = asSystem(prisma, "synchronous fixture").$extends({
+        client: {
+          scope() {
+            return currentDbContext();
+          },
+          identity<T>(value: T): T {
+            return value;
+          },
+          fail() {
+            throw new Error("sync failure");
+          },
+        },
+      });
+      expect(client.scope()).toEqual({ kind: "system", reason: "synchronous fixture" });
+      expect(client.identity(42)).toBe(42);
+      expect(() => client.fail()).toThrow("sync failure");
+      expect(currentDbContext()).toBeUndefined();
+    } finally {
+      await prisma.$disconnect();
+      await pool.end();
+    }
+  });
+
+  it("defers SDK queries until awaited and keeps their system context inside a tenant", async () => {
+    const { prisma, pool } = createDb("postgres://unused:unused@127.0.0.1:1/unused");
+    const scopes: ReturnType<typeof currentDbContext>[] = [];
+    try {
+      const client = asSystem(
+        withRowLevelSecurity(prisma, "offline-test-key"),
+        "lazy SDK fixture",
+      ).$extends({
+        query: {
+          async $allOperations() {
+            scopes.push(currentDbContext());
+            return [];
+          },
+        },
+      });
+      const pending = client.thread.findMany();
+      expect(scopes).toEqual([]);
+      await runAsTenant({ spaceId: "space-a", userId: "user-a" }, async () => {
+        expect(await pending).toEqual([]);
+        expect(scopes).toEqual([{ kind: "system", reason: "lazy SDK fixture" }]);
+        expect(currentDbContext()).toEqual({
+          kind: "tenant",
+          spaceId: "space-a",
+          userId: "user-a",
+        });
+      });
+      expect(currentDbContext()).toBeUndefined();
+    } finally {
+      await prisma.$disconnect();
+      await pool.end();
+    }
+  });
+
+  it("preserves native promise catch and finally binding plus plain synchronous values", async () => {
+    const failure = new Error("native failure");
+    const scopes: ReturnType<typeof currentDbContext>[] = [];
+    const raw = {
+      marker: "native marker",
+      details: { count: 3 },
+      read() {
+        return this.marker;
+      },
+      reject() {
+        return Promise.reject(failure);
+      },
+    };
+    const client = asSystem(raw, "native fixture");
+    expect(client.read()).toBe("native marker");
+    expect(client.details).toEqual({ count: 3 });
+    expect(client.details.count).toBe(3);
+    await runAsTenant({ spaceId: "space-a", userId: "user-a" }, async () => {
+      const pending = client
+        .reject()
+        .catch((error) => {
+          expect(error).toBe(failure);
+          scopes.push(currentDbContext());
+          return 42;
+        })
+        .finally(() => {
+          scopes.push(currentDbContext());
+        });
+      expect(pending).toBeInstanceOf(Promise);
+      expect(await pending).toBe(42);
+      expect(currentDbContext()).toEqual({ kind: "tenant", spaceId: "space-a", userId: "user-a" });
+    });
+    expect(scopes).toEqual([
+      { kind: "system", reason: "native fixture" },
+      { kind: "system", reason: "native fixture" },
+    ]);
+    expect(currentDbContext()).toBeUndefined();
+  });
+
   it("awaits a lazy operation inside its scope and restores the parent after a failed bypass", async () => {
     const lazy = {
       // biome-ignore lint/suspicious/noThenProperty: Database operations are intentionally lazy thenables.
@@ -161,27 +365,35 @@ describe("trusted database scopes", () => {
   });
 });
 describe("transaction identity", () => {
-  it("keeps an explicitly passed transaction's key across clients and later extensions", async () => {
-    const calls: unknown[][] = [];
-    const tx = {
-      async $queryRaw(strings: TemplateStringsArray, ...values: unknown[]) {
-        calls.push(values);
-        return strings.join("").includes("AS bypass") ? [{ bypass: "off", key: "" }] : [];
-      },
-    };
-    const raw = {
-      $transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
-      $extends() {
-        return this;
-      },
-    } as unknown as PrismaClient;
-    const a = withRowLevelSecurity(raw, "key-a").$extends({});
-    const b = withRowLevelSecurity(raw, "key-b");
-    await a.$transaction((txA) =>
-      b.$transaction(() => runAsSystemInTransaction(txA, "nested explicit A", async () => "ok")),
-    );
-    expect(calls).toEqual([[], ["key-a"], ["off", ""]]);
-  });
+  it.each([
+    [false, false],
+    [true, false],
+    [true, true],
+  ])(
+    "keeps an explicitly passed transaction's key across clients and later extensions (system fixture=%s, resolver=%s)",
+    async (systemFixture, useResolver) => {
+      const calls: unknown[][] = [];
+      const tx = {
+        async $queryRaw(strings: TemplateStringsArray, ...values: unknown[]) {
+          calls.push(values);
+          return strings.join("").includes("AS bypass") ? [{ bypass: "off", key: "" }] : [];
+        },
+      };
+      const raw = {
+        $transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
+        $extends() {
+          return this;
+        },
+      } as unknown as PrismaClient;
+      const wrapped = withRowLevelSecurity(raw, useResolver ? async () => "key-a" : "key-a");
+      const a = (systemFixture ? asSystem(wrapped, "transaction fixture") : wrapped).$extends({});
+      const b = withRowLevelSecurity(raw, "key-b");
+      await a.$transaction((txA) =>
+        b.$transaction(() => runAsSystemInTransaction(txA, "nested explicit A", async () => "ok")),
+      );
+      expect(calls).toEqual([[], ["key-a"], ["off", ""]]);
+    },
+  );
 });
 
 describe("rlsBypassKey", () => {
@@ -193,6 +405,23 @@ describe("rlsBypassKey", () => {
     expect(rlsBypassKey("postgres://app:secret@db/coginebot?password=")).toBe(key);
     expect(rlsBypassKey("postgres://app:s%cret@db/coginebot")).toMatch(/^[0-9a-f]{64}$/);
     expect(rlsBypassKey("postgres://app:secret@db/coginebot?password=other")).not.toBe(key);
+    expect(rlsBypassKey("postgres://app:wrong@db/coginebot?password=wrong&password=secret")).toBe(
+      key,
+    );
+    expect(rlsBypassKey("postgres://app:secret@db/coginebot?password=secret&password=")).toBe(key);
+  });
+
+  it("uses the last credential query value and then falls back to URL userinfo", () => {
+    expect(
+      databaseCredentials(
+        "postgres://url-user:url-password@db/coginebot?user=first&user=last&password=first&password=last",
+      ),
+    ).toEqual({ user: "last", password: "last" });
+    expect(
+      databaseCredentials(
+        "postgres://url-user:url-password@db/coginebot?user=first&user=&password=first&password=",
+      ),
+    ).toEqual({ user: "url-user", password: "url-password" });
   });
 
   it("is empty without a password", () => {
@@ -210,7 +439,11 @@ type EngineCall = {
   __internalParams?: { transaction?: { kind: string }; dataPath?: string[] };
 };
 
-function prismaBoundary(internal: EngineCall["__internalParams"] = undefined, model = "Thread") {
+function prismaBoundary(
+  internal: EngineCall["__internalParams"] = undefined,
+  model = "Thread",
+  bypassKey: string | (() => Promise<string>) = "test-key",
+) {
   const scopes: ReturnType<typeof currentDbContext>[] = [];
   const query = vi.fn(async (args: QueryArgs) => {
     scopes.push(currentDbContext());
@@ -255,7 +488,7 @@ function prismaBoundary(internal: EngineCall["__internalParams"] = undefined, mo
     },
   } as unknown as PrismaClient;
   return {
-    client: withRowLevelSecurity(prisma, "test-key"),
+    client: withRowLevelSecurity(prisma, bypassKey),
     query,
     findFirst,
     executeRaw,
@@ -265,6 +498,28 @@ function prismaBoundary(internal: EngineCall["__internalParams"] = undefined, mo
 }
 
 describe("context-aware Prisma queries", () => {
+  it("uses the authenticated pool resolver before a system unique read borrows its connection", async () => {
+    const client = { password: "secret", release: vi.fn() };
+    const connect = vi.fn(async () => client);
+    const resolver = installDbContext({ connect } as unknown as Pool);
+    const f = prismaBoundary(undefined, "Thread", resolver);
+    await runAsSystem("system unique", () => f.client.thread.findUnique({ where: { id: "a" } }));
+    expect(client.release).toHaveBeenCalledOnce();
+    expect(f.executeRaw.mock.calls[0]?.[0]).toMatchObject({
+      values: ["", "", "on", "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab"],
+    });
+    expect(f.query).toHaveBeenCalledWith({ where: { id: "a" } });
+  });
+
+  it("rejects an empty system key before a protected query runs", async () => {
+    const f = prismaBoundary(undefined, "Thread", "");
+    await expect(
+      runAsSystem("missing credential", () => f.client.thread.findUnique({ where: { id: "a" } })),
+    ).rejects.toThrow("requires an authenticated password");
+    expect(f.query).not.toHaveBeenCalled();
+    expect(f.transaction).not.toHaveBeenCalled();
+  });
+
   it("keeps same-tick unique reads bound to their separate tenant scopes", async () => {
     const f = prismaBoundary();
     const values = await Promise.all([
