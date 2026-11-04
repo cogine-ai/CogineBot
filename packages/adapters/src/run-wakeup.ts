@@ -16,7 +16,6 @@ import { findRunRecoveryBlockers } from "./run-recovery.js";
 
 const RUN_READY_TOPIC = "runs:ready";
 const INTERACTIVE_QUEUE_WARNING_MS = 30_000;
-const RESUMABLE = ["queued", "waiting_input", "waiting_takeover"];
 
 /**
  * Starts runs in this process the moment they become due, each as its own task, so no
@@ -141,11 +140,12 @@ export class RunJobPublisher implements JobPublisher {
 
   async enqueue(job: BackgroundJob): Promise<void> {
     if (job.name !== "run.continue") return this.background.enqueue(job);
+    // A delivery is only a hint: the writer commits human wakes and retry schedules.
     await this.prisma.run.updateMany({
       where: {
         id: job.payload.runId,
-        status: { in: RESUMABLE },
-        ...(job.keepExisting ? { wakeAt: null } : {}),
+        status: "queued",
+        wakeAt: null,
       },
       data: { wakeAt: job.availableAt ?? new Date() },
     });

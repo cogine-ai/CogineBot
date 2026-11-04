@@ -1282,7 +1282,7 @@ describe("sendThreadMessage", () => {
       expect(tx.run.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ status: "waiting_input" }),
-          data: { status: "queued" },
+          data: { status: "queued", wakeAt: expect.any(Date) },
         }),
       );
       expect(tx.message.create).toHaveBeenCalledWith(
@@ -1386,7 +1386,7 @@ describe("sendThreadMessage", () => {
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ status: "waiting_input" }),
-        data: { status: "queued" },
+        data: { status: "queued", wakeAt: expect.any(Date) },
       }),
     );
     expect(tx.steeringMessage.create).not.toHaveBeenCalled();
@@ -1830,23 +1830,42 @@ describe("sendThreadMessage", () => {
   });
 
   it.each(
-    (["bot", "group"] as const).flatMap((kind) =>
-      (
-        [
-          "routine",
-          "webhook",
-          "created",
-          "bot_message",
-          "tickets",
-          "user",
-          "follow_up",
-          undefined,
-        ] as const
-      ).map((trigger) => ({ kind, trigger })),
-    ),
+    (["bot", "group"] as const)
+      .flatMap((kind) =>
+        (
+          [
+            "routine",
+            "webhook",
+            "created",
+            "bot_message",
+            "tickets",
+            "user",
+            "follow_up",
+            "messaging",
+            undefined,
+          ] as const
+        ).map((trigger) => ({ kind, trigger, status: "waiting_takeover" })),
+      )
+      .concat(
+        (["bot", "group"] as const).flatMap((kind) =>
+          (
+            [
+              "routine",
+              "webhook",
+              "created",
+              "bot_message",
+              "tickets",
+              "user",
+              "follow_up",
+              "messaging",
+              undefined,
+            ] as const
+          ).map((trigger) => ({ kind, trigger, status: "queued" })),
+        ),
+      ),
   )(
-    "routes takeover waits for $kind/$trigger without answering background work",
-    async ({ kind, trigger }) => {
+    "routes waiting and queued work for $kind/$trigger/$status without answering background work",
+    async ({ kind, trigger, status }) => {
       const background = ["routine", "webhook", "created", "bot_message", "tickets"].some(
         (name) => name === trigger,
       );
@@ -1854,7 +1873,7 @@ describe("sendThreadMessage", () => {
         id: "run-waiting",
         taskId: "task-waiting",
         botId: "bot-1",
-        status: "waiting_takeover",
+        status,
         trigger,
       };
       const tx = {
@@ -1877,7 +1896,7 @@ describe("sendThreadMessage", () => {
         run: {
           findMany: vi.fn().mockResolvedValueOnce([waiting]).mockResolvedValue([]),
           findUnique: vi.fn().mockResolvedValue({
-            status: background ? "queued" : "waiting_takeover",
+            status: background && status === "waiting_takeover" ? "queued" : status,
             startedAt: null,
           }),
           create: vi.fn().mockResolvedValue({
@@ -1939,7 +1958,7 @@ describe("sendThreadMessage", () => {
         target,
         { text: "status?", mentions: ["bot-1"], clientNonce: "nonce-wait-bypass" },
       );
-      if (background) {
+      if (background && status === "waiting_takeover") {
         expect(result).toMatchObject({ runId: "run-new", taskId: "task-new", runIds: ["run-new"] });
         expect(tx.run.create).toHaveBeenCalledExactlyOnceWith({
           data: expect.objectContaining({
@@ -1969,12 +1988,21 @@ describe("sendThreadMessage", () => {
           runIds: [waiting.id],
         });
         expect(tx.steeringMessage.create).toHaveBeenCalledExactlyOnceWith({
-          data: { messageId: "msg-1", botId: "bot-1", userId: "user-1", runId: waiting.id },
+          data: {
+            messageId: "msg-1",
+            botId: "bot-1",
+            userId: "user-1",
+            runId: background ? null : waiting.id,
+          },
         });
-        expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
-          where: { id: waiting.id, status: "waiting_takeover" },
-          data: { wakeAt: expect.any(Date) },
-        });
+        if (!background) {
+          expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+            where: { id: waiting.id, status },
+            data: { wakeAt: expect.any(Date) },
+          });
+        } else {
+          expect(tx.run.updateMany).not.toHaveBeenCalled();
+        }
         expect(tx.run.create).not.toHaveBeenCalled();
         expect(tx.task.create).not.toHaveBeenCalled();
         expect(enqueue).toHaveBeenCalledExactlyOnceWith(
@@ -1990,7 +2018,7 @@ describe("sendThreadMessage", () => {
         id: "run-waiting",
         taskId: "task-waiting",
         botId: "bot-1",
-        status: "waiting_takeover",
+        status,
         trigger,
       });
     },
@@ -2334,7 +2362,7 @@ describe("sendThreadMessage", () => {
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: "run-routine", status: "waiting_input" }),
-        data: { status: "queued" },
+        data: { status: "queued", wakeAt: expect.any(Date) },
       }),
     );
     expect(tx.steeringMessage.create).not.toHaveBeenCalled();
@@ -2439,7 +2467,7 @@ describe("sendThreadMessage", () => {
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: "run-webhook", status: "waiting_input" }),
-        data: { status: "queued" },
+        data: { status: "queued", wakeAt: expect.any(Date) },
       }),
     );
     expect(tx.steeringMessage.create).not.toHaveBeenCalled();

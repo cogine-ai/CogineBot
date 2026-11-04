@@ -385,6 +385,7 @@ import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
+import { findRunRecoveryBlockers } from "./run-recovery.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -3666,7 +3667,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           botId: run.botId,
           workerId,
           runFence: fence,
-          resumeHeldLease,
         });
         if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
           computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
@@ -3679,15 +3679,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
       } catch (error) {
         if (!(error instanceof ComputerBusyError)) throw error;
-        const heldByAnotherRun = await deps.prisma.computerExecutionLease.findFirst({
-          where: {
-            computerId: leaseTarget.computerId,
-            botId: run.botId,
-            runId: { not: runId },
-            expiresAt: { gt: new Date() },
-          },
-          select: { id: true },
-        });
+        const blockers = await findRunRecoveryBlockers(
+          deps.prisma,
+          [{ id: runId, botId: run.botId, bot: { computerId: leaseTarget.computerId } }],
+          new Date(),
+        );
         await requeueComputerRun(
           deps,
           runId,
@@ -3695,7 +3691,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           fence,
           resumeCheckpoint,
           heldForTakeover,
-          Boolean(heldByAnotherRun),
+          blockers.has(runId),
         );
         return;
       }

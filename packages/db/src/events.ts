@@ -543,9 +543,9 @@ export async function sendUserMessage(
               : {}),
           },
         });
-        if (busy.status === "waiting_takeover") {
+        if (busy.status === "waiting_takeover" || (busy.status === "queued" && !held)) {
           await tx.run.updateMany({
-            where: { id: busy.id, status: "waiting_takeover" },
+            where: { id: busy.id, status: busy.status },
             data: { wakeAt: new Date() },
           });
         }
@@ -760,6 +760,7 @@ async function commitAnswerRunInput(
     },
     data: {
       status: "queued",
+      wakeAt: new Date(),
       ...(choiceAsk ? { checkpoint: null } : {}),
     },
   });
@@ -1254,6 +1255,7 @@ export async function finalizeComputerControlRelease(
               },
               data: {
                 status: "queued",
+                wakeAt: new Date(),
                 checkpoint,
               },
             })

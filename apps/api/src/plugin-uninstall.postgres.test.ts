@@ -254,6 +254,7 @@ postgres("managed plugin uninstall acceptance", () => {
         status: "running",
       },
     });
+    const retryAt = new Date(Date.now() + 60_000);
     const run = await database.prisma.run.create({
       data: {
         userId: actor.userId,
@@ -263,6 +264,7 @@ postgres("managed plugin uninstall acceptance", () => {
         taskId: task.id,
         trigger: "follow_up",
         status: "waiting_input",
+        wakeAt: retryAt,
       },
     });
     const effect = await database.prisma.externalEffect.create({
@@ -314,6 +316,7 @@ postgres("managed plugin uninstall acceptance", () => {
         ],
       },
     });
+    const beforeResume = Date.now();
     await f.service.uninstall(actor, { installId: f.install.id, expectedRevision: 1 });
     expect(
       await database.prisma.externalEffect.findUnique({ where: { id: effect.id } }),
@@ -327,9 +330,12 @@ postgres("managed plugin uninstall acceptance", () => {
     expect(
       await database.prisma.actionApprovalRule.count({ where: { spaceId: actor.spaceId } }),
     ).toBe(0);
-    expect(await database.prisma.run.findUnique({ where: { id: run.id } })).toMatchObject({
-      status: "queued",
-    });
+    const resumed = await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
+    expect(resumed).toMatchObject({ status: "queued" });
+    expect(resumed.wakeAt).not.toBeNull();
+    expect(resumed.wakeAt!.getTime()).toBeGreaterThanOrEqual(beforeResume);
+    expect(resumed.wakeAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(resumed.wakeAt!.getTime()).toBeLessThan(retryAt.getTime());
     expect(f.jobs.enqueue).toHaveBeenCalledWith({
       name: "run.continue",
       payload: { runId: run.id },

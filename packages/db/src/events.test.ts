@@ -619,7 +619,7 @@ describe("finalizeComputerControlRelease", () => {
         botId: "bot-1",
         status: "waiting_takeover",
       },
-      data: { status: "queued", checkpoint: "takeover-skipped" },
+      data: { status: "queued", wakeAt: expect.any(Date), checkpoint: "takeover-skipped" },
     });
     expect(tx.event.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -682,7 +682,7 @@ describe("finalizeComputerControlRelease", () => {
         botId: "bot-1",
         status: "waiting_takeover",
       },
-      data: { status: "queued", checkpoint: "takeover" },
+      data: { status: "queued", wakeAt: expect.any(Date), checkpoint: "takeover" },
     });
     expect(tx.run.updateMany).toHaveBeenNthCalledWith(2, {
       where: {
@@ -1424,7 +1424,7 @@ describe("answerRunInput", () => {
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ status: "waiting_input" }),
-        data: { status: "queued", checkpoint: null },
+        data: { status: "queued", wakeAt: expect.any(Date), checkpoint: null },
       }),
     );
     expect(tx.message.update).toHaveBeenCalledWith({
@@ -1644,7 +1644,7 @@ describe("answerRunInput", () => {
       });
       expect(tx.run.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: { status: "queued", checkpoint: null },
+          data: { status: "queued", wakeAt: expect.any(Date), checkpoint: null },
         }),
       );
     },
@@ -1711,7 +1711,7 @@ describe("answerRunInput", () => {
 
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: "queued", checkpoint: null },
+        data: { status: "queued", wakeAt: expect.any(Date), checkpoint: null },
       }),
     );
     expect(tx.task.updateMany).toHaveBeenCalledWith({
@@ -1867,7 +1867,7 @@ describe("answerWaitingRunWithTextInTransaction", () => {
     });
     expect(tx.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: "queued" },
+        data: { status: "queued", wakeAt: expect.any(Date) },
       }),
     );
   });
@@ -3187,9 +3187,29 @@ describe("sendUserMessage", () => {
     { trigger: "user", incoming: "webhook" as const, status: "waiting_takeover", newRun: true },
     { trigger: "user", incoming: "webhook" as const, status: "running", newRun: false },
     { trigger: "user", incoming: "messaging" as const, status: "waiting_input", newRun: false },
+    ...(
+      [
+        "routine",
+        "webhook",
+        "created",
+        "bot_message",
+        "tickets",
+        "user",
+        "follow_up",
+        "messaging",
+      ] as const
+    ).map((trigger) => ({
+      trigger,
+      incoming: "messaging" as const,
+      status: "queued",
+      newRun: false,
+    })),
   ])(
     "routes message producers around paused work ($trigger/$status <- $incoming)",
     async ({ trigger, incoming, status, newRun }) => {
+      const held = ["routine", "webhook", "created", "bot_message", "tickets"].some(
+        (value) => value === trigger,
+      );
       const waiting = { id: "old-run", taskId: "old-task", trigger, status };
       const tx = {
         thread: {
@@ -3258,11 +3278,17 @@ describe("sendUserMessage", () => {
         expect(tx.task.create).not.toHaveBeenCalled();
         expect(tx.run.create).not.toHaveBeenCalled();
         expect(tx.steeringMessage.create).toHaveBeenCalledExactlyOnceWith({
-          data: { messageId: "message-1", botId: "bot-1", userId: "user-1", runId: waiting.id },
+          data: {
+            messageId: "message-1",
+            botId: "bot-1",
+            userId: "user-1",
+            runId: held ? null : waiting.id,
+            ...(held && incoming === "messaging" ? { originTrigger: "messaging" } : {}),
+          },
         });
-        if (status === "waiting_takeover") {
+        if (status === "waiting_takeover" || (status === "queued" && !held)) {
           expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
-            where: { id: waiting.id, status: "waiting_takeover" },
+            where: { id: waiting.id, status },
             data: { wakeAt: expect.any(Date) },
           });
         } else {

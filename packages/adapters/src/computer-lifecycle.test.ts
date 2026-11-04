@@ -1982,14 +1982,13 @@ describe("computer execution leases", () => {
     expect(prisma.create).not.toHaveBeenCalled();
   });
 
-  it("does not treat a held-takeover flag as worker ownership", async () => {
+  it("does not let an API request reclaim a live same-run lease", async () => {
     const prisma = leasePrisma({ scope: "team", uniqueConflict: true });
     await expect(
       acquireComputerExecutionLease(prisma.client, {
         computerId: "computer-1",
         runId: "run-1",
         botId: "bot-1",
-        resumeHeldLease: true,
       }),
     ).rejects.toBeInstanceOf(ComputerBusyError);
     expect(prisma.queryRaw).not.toHaveBeenCalled();
@@ -2007,7 +2006,6 @@ describe("computer execution leases", () => {
       computerId: "computer-1",
       runId: "run-1",
       botId: "bot-1",
-      resumeHeldLease: true,
       workerId: "worker-1",
       runFence: 1,
     });

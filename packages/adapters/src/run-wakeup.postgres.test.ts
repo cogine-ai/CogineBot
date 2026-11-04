@@ -441,6 +441,8 @@ describePostgres("direct run dispatch (PostgreSQL)", () => {
       expect(entered).not.toContain(waiting.id);
       expect(entered).not.toContain(delayed.id);
       await system.run.update({ where: { id: delayed.id }, data: { wakeAt: new Date(0) } });
+      // The authorized producer commits a wake before publishing its delivery hint.
+      await system.run.update({ where: { id: waiting.id }, data: { wakeAt: new Date(0) } });
       await publisher.enqueue(runContinueJob(waiting.id));
       await wait(() => {
         expect(entered).toContain(delayed.id);

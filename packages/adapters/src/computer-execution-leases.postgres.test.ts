@@ -458,7 +458,7 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
     expect((await storedLease(computer.id)).fence).toBe(second.fence);
   });
 
-  it("requires current Team worker ownership and never treats a legacy resume flag as API authority", async () => {
+  it("requires current Team worker ownership and denies API lease reclamation", async () => {
     const computer = await createComputer(bot, "team");
     const run = await createRun(bot, {
       status: "running",
@@ -474,9 +474,9 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
     });
     expect(first).not.toBeNull();
     const row = await storedLease(computer.id);
-    await expect(
-      acquireComputerExecutionLease(prisma, { ...base, resumeHeldLease: true }),
-    ).rejects.toBeInstanceOf(ComputerBusyError);
+    await expect(acquireComputerExecutionLease(prisma, base)).rejects.toBeInstanceOf(
+      ComputerBusyError,
+    );
     await prisma.run.update({
       where: { id: run.id },
       data: { leaseOwner: "new-worker", leaseFence: 2, leaseExpiresAt: future() },
@@ -486,7 +486,6 @@ describePostgres("computer execution ownership and recovery (PostgreSQL)", () =>
         ...base,
         workerId: "old-worker",
         runFence: 1,
-        resumeHeldLease: true,
       }),
     ).rejects.toBeInstanceOf(ComputerBusyError);
     expect(await storedLease(computer.id)).toEqual(row);

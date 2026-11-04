@@ -18,21 +18,24 @@ import type {
   BackgroundJobHandlers,
   JobPublisher,
 } from "@rakazo/adapter-kit";
-import { runContinueJob } from "@rakazo/adapter-kit";
+import { runContinueJob, SandboxUnavailableError } from "@rakazo/adapter-kit";
 import {
   ComposioEmulator,
   FakeSandboxProvider,
   InMemoryRealtimeFanout,
   LocalAgentHomeStore,
   MessagingTeamChatEmulator,
+  RunJobPublisher,
   RunStarter,
   RunWorkerHost,
   ScriptedAgentRuntime,
 } from "@rakazo/adapters";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadEvents } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
+import { formatCurrentTimeInstruction } from "../../adapters/src/current-time.js";
 import { createJobReconciler } from "../../adapters/src/job-reconciler.js";
 import { mirrorMessagingOutbound } from "../../adapters/src/messaging-delivery.js";
 import { modelsForRequest, PiAgentRuntime } from "../../adapters/src/pi-runtime.js";
@@ -43,10 +46,11 @@ const origin = "http://127.0.0.1:5173";
 const wait = (assertion: () => Promise<void> | void) =>
   vi.waitFor(assertion, { timeout: 10_000, interval: 20 });
 
-function loopGuardResponse(activeModel: Model<Api>, calls: ToolCall[]) {
+function piResponse(activeModel: Model<Api>, content: AssistantMessage["content"]) {
+  const hasCalls = content.some((part) => part.type === "toolCall");
   const message: AssistantMessage = {
     role: "assistant",
-    content: calls,
+    content,
     api: activeModel.api,
     provider: activeModel.provider,
     model: activeModel.id,
@@ -58,16 +62,17 @@ function loopGuardResponse(activeModel: Model<Api>, calls: ToolCall[]) {
       totalTokens: 50,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-    stopReason: "toolUse",
+    stopReason: hasCalls ? "toolUse" : "stop",
     timestamp: 1,
   };
   const stream = createAssistantMessageEventStream();
   stream.push({ type: "start", partial: { ...message, content: [] } });
-  for (const [contentIndex, toolCall] of calls.entries()) {
+  for (const [contentIndex, toolCall] of content.entries()) {
+    if (toolCall.type !== "toolCall") continue;
     stream.push({ type: "toolcall_start", contentIndex, partial: message });
     stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: message });
   }
-  stream.push({ type: "done", reason: "toolUse", message });
+  stream.push({ type: "done", reason: hasCalls ? "toolUse" : "stop", message });
   stream.end(message);
   return stream;
 }
@@ -97,6 +102,7 @@ async function openApp(
     defaultModel?: string;
     deploymentModelConfigured?: boolean;
     contextStrategy?: "current";
+    wakeupDriver?: "memory";
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "run-dispatch-fixture-"));
@@ -284,6 +290,524 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     }
   });
 
+  it("does not answer a real Pi question through a late initial dispatch hint", async () => {
+    const choice = "Continue with the saved work.";
+    const question = "Should I write the saved tail?";
+    const tailPath = "notes/human-wait-tail.txt";
+    const tailText = "Only the real user's answer authorizes this saved tail.";
+    const finalText = "The answered task is complete.";
+    const fixtureKey = "synthetic-human-wait-model-key";
+    const model: Model<"openai-completions"> = {
+      provider: "anthropic",
+      id: "synthetic-human-wait-dispatch",
+      name: "Synthetic human wait dispatch",
+      api: "openai-completions",
+      baseUrl: "https://models.invalid/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 1_024,
+    };
+    vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
+    vi.stubEnv("PI_DEFAULT_MODEL", model.id);
+    vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
+    const models = modelsForRequest(
+      { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
+      model.provider,
+    ) as MutableModels;
+    const previousProvider = models.getProvider(model.provider);
+    const modelRequests: TranscriptContext[] = [];
+    const providerFailures: unknown[] = [];
+    const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
+      try {
+        expect(activeModel.id).toBe(model.id);
+        modelRequests.push(structuredClone(context));
+        expect(modelRequests.length).toBeLessThanOrEqual(2);
+        return piResponse(
+          activeModel,
+          modelRequests.length === 1
+            ? [
+                // This real sequential tool makes the entire SDK batch retain its unstarted tail.
+                { type: "toolCall", id: "wait-order", name: "schedule_list", arguments: {} },
+                {
+                  type: "toolCall",
+                  id: "wait-question",
+                  name: "ask_user",
+                  arguments: { question, options: [choice, "Stop."] },
+                },
+                {
+                  type: "toolCall",
+                  id: "answered-tail",
+                  name: "write_file",
+                  arguments: { path: tailPath, content: tailText },
+                },
+              ]
+            : [{ type: "text", text: finalText }],
+        );
+      } catch (error) {
+        providerFailures.push(error);
+        throw error;
+      }
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: {
+          apiKey: {
+            name: "Synthetic human wait fixture",
+            resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
+          },
+        },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+    let targetRunId: string | undefined;
+    let reservations = 0;
+    const pi = new PiAgentRuntime({
+      modelCallObserver: {
+        beforeCall() {
+          reservations += 1;
+          return `human-wait-reservation-${reservations}`;
+        },
+        afterCall() {},
+      },
+    });
+    const scripted = new ScriptedAgentRuntime();
+    const runtimeRequests: Array<{ runId: string; prompt: string; checkpoint?: string }> = [];
+    const executions: Array<{ name: string; id: string }> = [];
+    const runtime: AgentRuntime = {
+      describe: () => pi.describe(),
+      run(request, context) {
+        if (request.runId !== targetRunId) return scripted.run(request, context);
+        runtimeRequests.push({
+          runId: request.runId,
+          prompt: request.prompt,
+          checkpoint: request.turnCheckpoint,
+        });
+        const execute = request.executeTool;
+        if (!execute) throw new Error("The real executor must provide executeTool");
+        request.executeTool = (name, args, id, route, observer) => {
+          executions.push({ name, id });
+          return execute(name, args, id, route, observer);
+        };
+        return pi.run(request, context);
+      },
+      abort: (runId) => pi.abort(runId),
+    };
+    const sandbox = new FakeSandboxProvider();
+    const write = vi.spyOn(sandbox, "writeFile");
+    const network = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Synthetic Pi dispatch must not make network requests"));
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    let recovery: RunWorkerHost | undefined;
+    let restoreJobs: (() => void) | undefined;
+    let starter: RunStarter | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        sandbox,
+        agentRuntime: "pi",
+        defaultProvider: model.provider,
+        defaultModel: model.id,
+        deploymentModelConfigured: true,
+        contextStrategy: "current",
+        wakeupDriver: "memory",
+      });
+      const handles = fixture.handles;
+      const seeded = await seed(handles, "human wait dispatch");
+      targetRunId = seeded.run.id;
+      const prisma = handles.prisma;
+      const fanout = new InMemoryRealtimeFanout();
+      const dispatch = new RunStarter(fanout);
+      starter = dispatch;
+      const handlers = {
+        "run.continue": async ({ runId }, execution) => {
+          if (runId !== targetRunId) return;
+          await handles.executor.continueRun(runId, "human-wait-dispatch", execution?.onRunStarted);
+        },
+      } as BackgroundJobHandlers;
+      const publisher = new RunJobPublisher(prisma, handles.jobs, dispatch);
+      const backgroundEnqueue = handles.jobs.enqueue.bind(handles.jobs);
+      const jobs = vi
+        .spyOn(handles.jobs, "enqueue")
+        .mockImplementation((job) =>
+          job.name === "run.continue" && job.payload.runId === targetRunId
+            ? publisher.enqueue(job)
+            : backgroundEnqueue(job),
+        );
+      restoreJobs = () => jobs.mockRestore();
+      recovery = new RunWorkerHost(prisma, fanout, dispatch, { intervalMs: 25 });
+      await recovery.start(handlers);
+      await wait(async () =>
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+          status: "waiting_input",
+          wakeAt: null,
+          leaseFence: 1,
+          leaseOwner: null,
+          scriptedState: null,
+        }),
+      );
+      await recovery.stop();
+      await handles.awaitIdle?.();
+      dispatch.attach(handlers);
+      const paused = await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+      const checkpoint = await prisma.externalEffect.findUniqueOrThrow({
+        where: { idempotencyKey: JSON.stringify(["runtime_checkpoint", targetRunId]) },
+      });
+      expect(checkpoint.status).toBe("runtime_checkpoint");
+      expect(typeof checkpoint.result).toBe("string");
+      expect(JSON.parse(String(checkpoint.result))).toMatchObject({
+        executionMode: "sequential",
+        pendingToolCallId: "wait-question",
+      });
+      const messages = await prisma.message.findMany({
+        where: { runId: targetRunId },
+        orderBy: { seq: "asc" },
+      });
+      const cards = messages.flatMap((message) =>
+        MessageBlockSchema.array()
+          .parse(message.blocks)
+          .flatMap((block) => (block.kind === "ask" ? [{ message, block }] : [])),
+      );
+      expect(cards).toHaveLength(1);
+      const card = cards[0]!;
+      expect(card.block).toMatchObject({
+        text: question,
+        status: "pending",
+        actions: [
+          { id: "choice-1", label: choice },
+          { id: "choice-2", label: "Stop." },
+        ],
+      });
+      const targetWrites = () =>
+        write.mock.calls.filter(([, , context]) => context.runId === targetRunId);
+      expect(targetWrites()).toHaveLength(0);
+      expect(modelRequests).toHaveLength(1);
+      expect(reservations).toBe(1);
+      expect(await prisma.attempt.count({ where: { runId: targetRunId } })).toBe(1);
+      const state = async () => ({
+        run: await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+        task: await prisma.task.findUniqueOrThrow({ where: { id: paused.taskId } }),
+        attempts: await prisma.attempt.findMany({
+          where: { runId: targetRunId },
+          orderBy: { id: "asc" },
+        }),
+        effects: await prisma.externalEffect.findMany({
+          where: { runId: targetRunId },
+          orderBy: { id: "asc" },
+        }),
+        messages: await prisma.message.findMany({
+          where: { runId: targetRunId },
+          orderBy: { seq: "asc" },
+        }),
+        events: await prisma.event.findMany({
+          where: { runId: targetRunId },
+          orderBy: { seq: "asc" },
+        }),
+        modelRequests: structuredClone(modelRequests),
+        runtimeRequests: structuredClone(runtimeRequests),
+        reservations,
+        executions: structuredClone(executions),
+        writes: structuredClone(targetWrites()),
+      });
+      const unanswered = await state();
+      for (const hint of [
+        runContinueJob(targetRunId),
+        { ...runContinueJob(targetRunId), keepExisting: true },
+        runContinueJob(targetRunId),
+      ]) {
+        await publisher.enqueue(hint);
+        await dispatch.stop();
+        await handles.awaitIdle?.();
+        expect(await state()).toEqual(unanswered);
+        dispatch.attach(handlers);
+      }
+      // A compatibility fixture for an old unanswered Run carrying a future marker.
+      const futureHumanWake = new Date(Date.now() + 60_000);
+      await prisma.run.update({ where: { id: targetRunId }, data: { wakeAt: futureHumanWake } });
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        status: "waiting_input",
+        wakeAt: futureHumanWake,
+        leaseFence: 1,
+      });
+      const answerNonce = `human-wait-answer:${randomUUID()}`;
+      await rpc(handles, seeded.cookie, "threads/answer", {
+        botId: seeded.botId,
+        runId: targetRunId,
+        messageId: card.message.id,
+        answer: "choice-1",
+        clientNonce: answerNonce,
+      });
+      await wait(async () =>
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+          status: "completed",
+          wakeAt: null,
+          leaseFence: 2,
+          leaseOwner: null,
+        }),
+      );
+      await dispatch.stop();
+      await handles.awaitIdle?.();
+      expect(providerFailures).toEqual([]);
+      expect(modelRequests).toHaveLength(2);
+      expect(reservations).toBe(2);
+      expect(runtimeRequests.map((request) => request.runId)).toEqual([targetRunId, targetRunId]);
+      expect(runtimeRequests[1]).toMatchObject({
+        checkpoint: checkpoint.result,
+      });
+      const resumedPrompt = runtimeRequests[1]!.prompt.split("\n\n");
+      const timestamp =
+        /^Current date and time: \w+, (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \(UTC\)\./.exec(
+          resumedPrompt[1] ?? "",
+        );
+      expect(timestamp).not.toBeNull();
+      expect(resumedPrompt).toEqual([
+        `Selected choice choice-1: ${choice}`,
+        formatCurrentTimeInstruction(new Date(timestamp![1]!)),
+      ]);
+      const answerResult = modelRequests[1]!.messages.find(
+        (message) => message.role === "toolResult" && message.toolCallId === "wait-question",
+      );
+      expect(answerResult?.role).toBe("toolResult");
+      expect(JSON.stringify(answerResult)).toContain(choice);
+      expect(await prisma.task.findUniqueOrThrow({ where: { id: paused.taskId } })).toMatchObject({
+        prompt: `Selected choice choice-1: ${choice}`,
+      });
+      expect(targetWrites()).toHaveLength(1);
+      expect(targetWrites()[0]?.[1]).toMatchObject({ path: `bots/${seeded.botId}/${tailPath}` });
+      expect(new TextDecoder().decode(targetWrites()[0]?.[1].content)).toBe(tailText);
+      expect(executions.map(({ name }) => name)).toEqual(["schedule_list", "write_file"]);
+      expect(new Set(executions.map(({ id }) => id)).size).toBe(2);
+      expect(
+        await prisma.attempt.findMany({ where: { runId: targetRunId }, orderBy: { fence: "asc" } }),
+      ).toEqual([
+        expect.objectContaining({ fence: 1, status: "waiting_input" }),
+        expect.objectContaining({ fence: 2, status: "completed" }),
+      ]);
+      const finalMessages = await prisma.message.findMany({ where: { runId: targetRunId } });
+      const finalCards = finalMessages.flatMap((message) =>
+        MessageBlockSchema.array()
+          .parse(message.blocks)
+          .filter((block) => block.kind === "ask"),
+      );
+      expect(finalCards).toEqual([
+        expect.objectContaining({ text: question, status: "answered", answer: "choice-1" }),
+      ]);
+      expect(JSON.stringify(finalMessages)).toContain(finalText);
+      expect(
+        await prisma.messagingOutbound.count({
+          where: { sourceMessageId: { in: finalMessages.map(({ id }) => id) } },
+        }),
+      ).toBe(0);
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      if (targetRunId) pi.abort(targetRunId);
+      await recovery?.stop();
+      await starter?.stop();
+      restoreJobs?.();
+      await fixture?.close();
+      write.mockRestore();
+      network.mockRestore();
+      if (previousProvider) models.setProvider(previousProvider);
+      else models.deleteProvider(model.provider);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves a real computer-outage retry deadline across late initial dispatch hints", async () => {
+    const filePath = "notes/queued-backoff.txt";
+    const fileText = "The real retry deadline must pass before this write.";
+    const finalText = "The computer recovered after its retry deadline.";
+    let targetRunId: string | undefined;
+    let runtimeCalls = 0;
+    const tools: Array<{ name: string; id?: string; args: unknown }> = [];
+    const scripted = new ScriptedAgentRuntime();
+    const runtime: AgentRuntime = {
+      describe: () => scripted.describe(),
+      async *run(request, context) {
+        if (request.runId !== targetRunId) {
+          yield* scripted.run(request, context);
+          return;
+        }
+        runtimeCalls += 1;
+        request.script = [
+          { toolCalls: [{ name: "write_file", args: { path: filePath, content: fileText } }] },
+          { assistant: finalText, complete: true },
+        ];
+        for await (const event of scripted.run(request, context)) {
+          if (event.type === "tool")
+            tools.push({
+              name: event.name,
+              id: event.executionId,
+              args: structuredClone(event.args),
+            });
+          yield event;
+        }
+      },
+      abort: (runId) => scripted.abort(runId),
+    };
+    const sandbox = new FakeSandboxProvider();
+    const originalPrepare = sandbox.prepare.bind(sandbox);
+    const preparations: number[] = [];
+    const prepare = vi.spyOn(sandbox, "prepare").mockImplementation(async (computer, context) => {
+      if (targetRunId && context.runId === targetRunId) {
+        preparations.push(Date.now());
+        if (preparations.length === 1) throw new SandboxUnavailableError();
+      }
+      await originalPrepare(computer, context);
+    });
+    const write = vi.spyOn(sandbox, "writeFile");
+    const network = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Synthetic outage dispatch must not make network requests"));
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    let recovery: RunWorkerHost | undefined;
+    let starter: RunStarter | undefined;
+    let restoreJobs: (() => void) | undefined;
+    try {
+      fixture = await openApp(runtime, { sandbox, wakeupDriver: "memory" });
+      const handles = fixture.handles;
+      const seeded = await seed(handles, "queued backoff", "dedicated");
+      targetRunId = seeded.run.id;
+      const prisma = handles.prisma;
+      const fanout = new InMemoryRealtimeFanout();
+      const dispatch = new RunStarter(fanout);
+      starter = dispatch;
+      const publisher = new RunJobPublisher(prisma, handles.jobs, dispatch);
+      const retries: BackgroundJob[] = [];
+      const backgroundEnqueue = handles.jobs.enqueue.bind(handles.jobs);
+      const jobs = vi.spyOn(handles.jobs, "enqueue").mockImplementation((job) => {
+        if (job.name === "run.continue" && job.payload.runId === targetRunId) {
+          if (job.availableAt) retries.push(structuredClone(job));
+          return publisher.enqueue(job);
+        }
+        return backgroundEnqueue(job);
+      });
+      restoreJobs = () => jobs.mockRestore();
+      const handlers = {
+        "run.continue": async ({ runId }, execution) => {
+          if (runId !== targetRunId) return;
+          await handles.executor.continueRun(
+            runId,
+            "queued-outage-dispatch",
+            execution?.onRunStarted,
+          );
+        },
+      } as BackgroundJobHandlers;
+      recovery = new RunWorkerHost(prisma, fanout, dispatch, { intervalMs: 25 });
+      await recovery.start(handlers);
+      await wait(async () => {
+        const run = await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        expect(run).toMatchObject({ status: "queued", leaseFence: 1, leaseOwner: null });
+        expect(run.wakeAt?.getTime()).toBeGreaterThan(Date.now());
+      });
+      await recovery.stop();
+      await handles.awaitIdle?.();
+      dispatch.attach(handlers);
+      const queued = await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+      const retryAt = queued.wakeAt;
+      expect(retryAt).toBeInstanceOf(Date);
+      if (!retryAt) throw new Error("The real typed outage must persist its retry deadline");
+      expect(preparations).toHaveLength(1);
+      expect(retryAt.getTime()).toBeGreaterThanOrEqual(preparations[0]! + 15_000);
+      expect(retries).toHaveLength(1);
+      expect(retries[0]!.availableAt).toEqual(retryAt);
+      expect(runtimeCalls).toBe(1);
+      expect(tools).toHaveLength(1);
+      expect(tools[0]?.name).toBe("write_file");
+      const targetWrites = () =>
+        write.mock.calls.filter(([, , context]) => context.runId === targetRunId);
+      expect(targetWrites()).toHaveLength(0);
+      expect(await prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
+        expect.objectContaining({ status: "setup_failed", fence: 1 }),
+      ]);
+      const state = async () => ({
+        run: await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+        task: await prisma.task.findUniqueOrThrow({ where: { id: queued.taskId } }),
+        attempts: await prisma.attempt.findMany({
+          where: { runId: targetRunId },
+          orderBy: { id: "asc" },
+        }),
+        effects: await prisma.externalEffect.findMany({
+          where: { runId: targetRunId },
+          orderBy: { id: "asc" },
+        }),
+        messages: await prisma.message.findMany({
+          where: { runId: targetRunId },
+          orderBy: { seq: "asc" },
+        }),
+        events: await prisma.event.findMany({
+          where: { runId: targetRunId },
+          orderBy: { seq: "asc" },
+        }),
+        runtimeCalls,
+        tools: structuredClone(tools),
+        preparations: [...preparations],
+        writes: structuredClone(targetWrites()),
+      });
+      const backingOff = await state();
+      for (const hint of [
+        runContinueJob(targetRunId),
+        { ...runContinueJob(targetRunId), keepExisting: true },
+        runContinueJob(targetRunId),
+        { ...runContinueJob(targetRunId), availableAt: new Date(Date.now() - 1_000) },
+        {
+          ...runContinueJob(targetRunId),
+          availableAt: new Date(retryAt.getTime() + 60_000),
+          keepExisting: true,
+        },
+      ]) {
+        await publisher.enqueue(hint);
+        await dispatch.stop();
+        await handles.awaitIdle?.();
+        expect(await state()).toEqual(backingOff);
+        dispatch.attach(handlers);
+      }
+      // The process-local timer was drained; real scanning must recover the durable date.
+      await recovery.start(handlers);
+      await vi.waitFor(
+        async () => {
+          expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+            status: "completed",
+            leaseFence: 2,
+            leaseOwner: null,
+          });
+        },
+        { timeout: 20_000, interval: 25 },
+      );
+      await recovery.stop();
+      await handles.awaitIdle?.();
+      expect(preparations).toHaveLength(2);
+      expect(preparations[1]).toBeGreaterThanOrEqual(retryAt.getTime());
+      expect(runtimeCalls).toBe(2);
+      expect(tools.map(({ name }) => name)).toEqual(["write_file", "write_file"]);
+      expect(targetWrites()).toHaveLength(1);
+      expect(targetWrites()[0]?.[1]).toMatchObject({ path: filePath });
+      expect(new TextDecoder().decode(targetWrites()[0]?.[1].content)).toBe(fileText);
+      expect(
+        await prisma.attempt.findMany({ where: { runId: targetRunId }, orderBy: { fence: "asc" } }),
+      ).toEqual([
+        expect.objectContaining({ status: "setup_failed", fence: 1 }),
+        expect.objectContaining({ status: "completed", fence: 2 }),
+      ]);
+      const messages = await prisma.message.findMany({ where: { runId: targetRunId } });
+      expect(JSON.stringify(messages)).toContain(finalText);
+      expect(retries).toHaveLength(1);
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      if (targetRunId) await scripted.abort(targetRunId);
+      await recovery?.stop();
+      await starter?.stop();
+      restoreJobs?.();
+      await fixture?.close();
+      prepare.mockRestore();
+      write.mockRestore();
+      network.mockRestore();
+    }
+  }, 30_000);
+
   it("awaits already-started parallel Pi message tools before settling a loop guard", async () => {
     const lateText = "The already-started progress message must reach the linked chat.";
     const fixtureKey = "synthetic-loop-guard-model-key";
@@ -326,7 +850,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           name: "message_user",
           arguments: { message: "" },
         };
-        return loopGuardResponse(activeModel, [
+        return piResponse(activeModel, [
           repeated,
           ...(modelRequests === 6
             ? [
@@ -667,7 +1191,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
             requests === 2 ? filePath : "message is required",
           );
         }
-        return loopGuardResponse(activeModel, [
+        return piResponse(activeModel, [
           requests === 1
             ? {
                 type: "toolCall",

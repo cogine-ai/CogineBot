@@ -596,8 +596,6 @@ export async function acquireComputerExecutionLease(
     computerId: string;
     runId: string;
     botId: string;
-    /** Kept for held-takeover callers; only the current worker claim authorizes reclaim. */
-    resumeHeldLease?: boolean;
   } & ({ workerId: string; runFence: number } | { workerId?: never; runFence?: never }),
 ): Promise<ComputerExecutionLease | null> {
   const computer = await prisma.computer.findUniqueOrThrow({ where: { id: input.computerId } });

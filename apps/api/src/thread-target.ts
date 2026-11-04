@@ -807,9 +807,12 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
-          if (active.status === "waiting_takeover") {
+          if (
+            active.status === "waiting_takeover" ||
+            (active.status === "queued" && steersUserMessage(active))
+          ) {
             await tx.run.updateMany({
-              where: { id: active.id, status: "waiting_takeover" },
+              where: { id: active.id, status: active.status },
               data: { wakeAt: new Date() },
             });
           }
@@ -989,9 +992,12 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
-          if (active.status === "waiting_takeover") {
+          if (
+            active.status === "waiting_takeover" ||
+            (active.status === "queued" && steersUserMessage(active))
+          ) {
             await tx.run.updateMany({
-              where: { id: active.id, status: "waiting_takeover" },
+              where: { id: active.id, status: active.status },
               data: { wakeAt: new Date() },
             });
           }

@@ -23,7 +23,7 @@ function fixture() {
   >();
   const updateMany = vi.fn(async ({ where, data }) => {
     const row = rows.get(where.id);
-    if (!row || !where.status.in.includes(row.status) || (where.wakeAt === null && row.wakeAt))
+    if (!row || row.status !== where.status || (where.wakeAt === null && row.wakeAt))
       return { count: 0 };
     Object.assign(row, data);
     return { count: 1 };
@@ -94,13 +94,117 @@ describe("durable direct run wakeups", () => {
       await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
       expect(f.rows.get("chat")).toMatchObject(ownership);
       expect(f.updateMany).toHaveBeenCalledExactlyOnceWith({
-        where: { id: "chat", status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
+        where: { id: "chat", status: "queued", wakeAt: null },
         data: { wakeAt: expect.any(Date) },
       });
     } finally {
       await f.starter.stop();
     }
   });
+
+  it.each(
+    (["waiting_input", "waiting_takeover"] as const).flatMap((status) =>
+      (["null", "due", "future"] as const).map((schedule) => ({ status, schedule })),
+    ),
+  )(
+    "does not authorize or reschedule a $status/$schedule wait from a delivery hint",
+    async ({ status, schedule }) => {
+      const f = fixture();
+      const wakeAt =
+        schedule === "null" ? null : new Date(Date.now() + (schedule === "due" ? -1_000 : 60_000));
+      const row = {
+        status,
+        wakeAt,
+        spaceId: "original-space",
+        userId: "original-user",
+        modelCredentialId: "original-credential",
+      };
+      f.rows.set("waiting", row);
+      const original = { ...row };
+      const start = vi.spyOn(f.starter, "start").mockImplementation(() => {});
+      const later = new Date(Date.now() + 120_000);
+      try {
+        await f.publisher.enqueue(runContinueJob("waiting"));
+        await f.publisher.enqueue({ ...runContinueJob("waiting"), availableAt: later });
+        await f.publisher.enqueue({ ...runContinueJob("waiting"), keepExisting: true });
+        await f.publisher.enqueue({
+          ...runContinueJob("waiting"),
+          availableAt: later,
+          keepExisting: true,
+        });
+        expect(f.rows.get("waiting")).toEqual(original);
+        expect(f.rows.get("waiting")!.wakeAt).toBe(wakeAt);
+        expect(start).toHaveBeenCalledTimes(4);
+        expect(f.background.enqueue).not.toHaveBeenCalled();
+      } finally {
+        start.mockRestore();
+      }
+    },
+  );
+
+  it.each(["due", "future"] as const)(
+    "preserves a queued %s schedule when ordinary or explicit hints arrive late",
+    async (schedule) => {
+      const f = fixture();
+      const wakeAt = new Date(Date.now() + (schedule === "due" ? -1_000 : 60_000));
+      f.rows.set("retry", { status: "queued", wakeAt });
+      const start = vi.spyOn(f.starter, "start").mockImplementation(() => {});
+      try {
+        for (const job of [
+          runContinueJob("retry"),
+          { ...runContinueJob("retry"), availableAt: new Date(Date.now() - 60_000) },
+          { ...runContinueJob("retry"), availableAt: new Date(Date.now() + 120_000) },
+          { ...runContinueJob("retry"), keepExisting: true },
+        ]) {
+          await f.publisher.enqueue(job);
+          expect(f.rows.get("retry")!.wakeAt).toBe(wakeAt);
+        }
+        expect(start).toHaveBeenCalledTimes(4);
+      } finally {
+        start.mockRestore();
+      }
+    },
+  );
+
+  it.each(["past", "future"] as const)(
+    "fills an unscheduled queued Run with its first explicit %s schedule",
+    async (schedule) => {
+      const f = fixture();
+      const requested = new Date(Date.now() + (schedule === "past" ? -1_000 : 120_000));
+      f.rows.set("retry", { status: "queued", wakeAt: null });
+      const start = vi.spyOn(f.starter, "start").mockImplementation(() => {});
+      try {
+        await f.publisher.enqueue({ ...runContinueJob("retry"), availableAt: requested });
+        expect(f.rows.get("retry")!.wakeAt).toBe(requested);
+        await f.publisher.enqueue({
+          ...runContinueJob("retry"),
+          availableAt: new Date(Date.now() - 60_000),
+          keepExisting: true,
+        });
+        expect(f.rows.get("retry")!.wakeAt).toBe(requested);
+      } finally {
+        start.mockRestore();
+      }
+    },
+  );
+
+  it.each(["waiting_input", "waiting_takeover"] as const)(
+    "still dispatches an already committed due %s wake",
+    async (status) => {
+      const f = fixture();
+      const wakeAt = new Date(Date.now() - 1_000);
+      f.rows.set("waiting", { status, wakeAt });
+      const handler = vi.fn();
+      try {
+        f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
+        await f.publisher.enqueue(runContinueJob("waiting"));
+        await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+        expect(f.rows.get("waiting")).toEqual({ status, wakeAt });
+      } finally {
+        await f.starter.stop();
+      }
+    },
+  );
 
   it("keeps scanning under capacity pressure and considers new chats before timer backlog", async () => {
     const f = fixture();
@@ -406,6 +510,7 @@ describe("durable direct run wakeups", () => {
     );
     const due = new Date(Date.now() + 1_000);
     await f.publisher.enqueue({ ...runContinueJob("delayed"), availableAt: due });
+    await f.publisher.enqueue(runContinueJob("delayed"));
     await f.publisher.enqueue({ ...runContinueJob("delayed"), keepExisting: true });
     expect(f.rows.get("delayed")!.wakeAt).toEqual(due);
     const handler = vi.fn(async ({ runId }) => {
