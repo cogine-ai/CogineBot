@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { ORPCError, onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import type {
@@ -66,6 +67,8 @@ import {
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
   piSessionsRoot,
+  RunJobPublisher,
+  RunStarter,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   removePiUserSessions,
@@ -292,14 +295,22 @@ export async function createApp(
     });
   }
   const jobPool = created.pool ?? ownedJobPool;
-  const jobs = inMemoryJobs
-    ? inMemoryJobs
-    : new GraphileJobPublisher(
+  const shutdown = new AbortController();
+  // Start chat where it arrives; recovery in the worker repairs a lost handoff.
+  const runs = inMemoryJobs ? undefined : new RunStarter(realtime, { signal: shutdown.signal });
+  const jobs =
+    inMemoryJobs ??
+    new RunJobPublisher(
+      prisma,
+      new GraphileJobPublisher(
         jobPool ??
           (() => {
             throw new Error("Graphile job publisher requires a PostgreSQL pool");
           })(),
-      );
+        prisma,
+      ),
+      runs!,
+    );
   const ticketChanges = createTicketChangeNotifier({
     boardEvents,
     jobs,
@@ -481,7 +492,6 @@ export async function createApp(
     CURSOR_API_KEY: env.cursorApiKey,
     CLOUD_AGENT_SPACE_ID: env.cloudAgentSpaceId,
   });
-  const shutdown = new AbortController();
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = new CodexCatalogCache();
@@ -550,7 +560,7 @@ export async function createApp(
     home,
     jobs,
     events,
-    workerId: "api",
+    workerId: `${hostname()}:${process.pid}`,
     runtime,
     secretStore: secrets,
     memoryProviders,
@@ -563,6 +573,7 @@ export async function createApp(
   if (inMemoryJobs) {
     await inMemoryJobs.start(jobHandlers);
   }
+  runs?.attach(jobHandlers);
   const reconciler = inMemoryJobs
     ? createJobReconciler({
         prisma,
@@ -1104,6 +1115,7 @@ export async function createApp(
     ),
   );
 
+  let stopPromise: Promise<void> | undefined;
   return {
     app,
     prisma,
@@ -1118,42 +1130,46 @@ export async function createApp(
     runtime,
     awaitIdle: inMemoryJobs ? () => inMemoryJobs.awaitIdle() : undefined,
     backgroundFailures: inMemoryJobs ? () => inMemoryJobs.failureCounts() : undefined,
-    stop: async () => {
-      // Abort in-flight continueRun boot waits before draining jobs so stop() cannot sit
-      // on waitForComputerReady for the full boot-wait window during shared Postgres journeys.
-      auth.disposeOidcDiscovery();
-      shutdown.abort();
-      await readiness?.close().catch(() => undefined);
-      oauthLogins.abortAll();
-      messagingStopped = true;
-      clearMessagingRetryDelay?.();
-      clearTeamChatRetryDelay?.();
-      pendingTeamChatInbound.reject(new Error("Team chat bridge stopped before startup"));
-      // Cancel in-flight start() before awaiting the retry task so stop() cannot
-      // sit on DB/reconcile work that bridge.start() is still running.
-      await settleWithTimeout(
-        teamChatBridgeInstance ? teamChatBridgeInstance.stop().catch(() => undefined) : undefined,
-        TEAM_CHAT_STARTUP_SHUTDOWN_MS,
-      );
-      await messagingInitTask?.catch(() => undefined);
-      await settleWithTimeout(teamChatInitTask, TEAM_CHAT_STARTUP_SHUTDOWN_MS);
-      await messaging?.shutdown?.();
-      await teamChatBridge?.stop();
-      await email?.drain?.();
-      await reconciler?.stop();
-      await jobs.close();
-      await deploymentTransfer.close();
-      await secrets.close();
-      await realtime.close();
-      await connector.stop();
-      await mcp.close();
-      await nativeEvents.close();
-      await native.close();
-      await prisma.$disconnect().catch(() => undefined);
-      await created.pool?.end().catch(() => undefined);
-      await ownedJobPool?.end().catch(() => undefined);
-      await logger.flush({ timeoutMs: 2_000 });
-    },
+    stop: () =>
+      (stopPromise ??= (async () => {
+        // Abort in-flight continueRun boot waits before draining jobs so stop() cannot sit
+        // on waitForComputerReady for the full boot-wait window during shared Postgres journeys.
+        auth.disposeOidcDiscovery();
+        shutdown.abort();
+        // Hand runs back while the database and realtime publisher are still open.
+        const runsStopped = runs?.stop();
+        await readiness?.close().catch(() => undefined);
+        oauthLogins.abortAll();
+        messagingStopped = true;
+        clearMessagingRetryDelay?.();
+        clearTeamChatRetryDelay?.();
+        pendingTeamChatInbound.reject(new Error("Team chat bridge stopped before startup"));
+        // Cancel in-flight start() before awaiting the retry task so stop() cannot
+        // sit on DB/reconcile work that bridge.start() is still running.
+        await settleWithTimeout(
+          teamChatBridgeInstance ? teamChatBridgeInstance.stop().catch(() => undefined) : undefined,
+          TEAM_CHAT_STARTUP_SHUTDOWN_MS,
+        );
+        await messagingInitTask?.catch(() => undefined);
+        await settleWithTimeout(teamChatInitTask, TEAM_CHAT_STARTUP_SHUTDOWN_MS);
+        await messaging?.shutdown?.();
+        await teamChatBridge?.stop();
+        await email?.drain?.();
+        await reconciler?.stop();
+        await runsStopped;
+        await jobs.close();
+        await deploymentTransfer.close();
+        await secrets.close();
+        await realtime.close();
+        await connector.stop();
+        await mcp.close();
+        await nativeEvents.close();
+        await native.close();
+        await prisma.$disconnect().catch(() => undefined);
+        await created.pool?.end().catch(() => undefined);
+        await ownedJobPool?.end().catch(() => undefined);
+        await logger.flush({ timeoutMs: 2_000 });
+      })()),
   };
 }
 

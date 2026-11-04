@@ -159,6 +159,49 @@ describe("expireStuckRun", () => {
     expect(client.message.create).not.toHaveBeenCalled();
   });
 
+  it("preserves a user's screen until the control lease is actually released", async () => {
+    const client = tx({ status: "waiting_takeover" });
+    client.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { botId: "bot-1", controlBotId: "bot-1", controlLeaseId: "lease-awaiting-revocation" },
+      ] as never);
+    expect(
+      await expireStuckRun(client as unknown as Prisma.TransactionClient, {
+        runId: "run-1",
+        threadId: "thread-1",
+        status: "waiting_takeover",
+        updatedAt,
+        now,
+      }),
+    ).toBeNull();
+    expect(client.run.updateMany).not.toHaveBeenCalled();
+    expect(client.message.create).not.toHaveBeenCalled();
+    expect(client.computer.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { botId: "bot-1", controlBotId: "bot-1", controlLeaseId: null },
+    { botId: "bot-1", controlBotId: "bot-other", controlLeaseId: "other-screen" },
+  ])("ends an untaken wait while preserving unrelated control: %j", async (screen) => {
+    const client = tx({ status: "waiting_takeover" });
+    client.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([screen] as never);
+    expect(
+      await expireStuckRun(client as unknown as Prisma.TransactionClient, {
+        runId: "run-1",
+        threadId: "thread-1",
+        status: "waiting_takeover",
+        updatedAt,
+        now,
+      }),
+    ).not.toBeNull();
+    expect(client.computer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ controlRunId: "run-1" }),
+      }),
+    );
+  });
+
   it("leaves the task running when a sibling attempt is still active", async () => {
     const client = tx({ sibling: true, status: "waiting_input" });
     await expireStuckRun(client as unknown as Prisma.TransactionClient, {

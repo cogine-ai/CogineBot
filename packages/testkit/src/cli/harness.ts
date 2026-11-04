@@ -134,8 +134,15 @@ async function main() {
     "apps/api/src/billing-status-refresh.postgres.test.ts",
     "packages/memory/src/commit.postgres.test.ts",
     "packages/adapters/src/wakeup.postgres.test.ts",
+    "packages/adapters/src/run-wakeup.postgres.test.ts",
+    "packages/adapters/src/routine-coalescing.postgres.test.ts",
+    "packages/adapters/src/legacy-run-queue.postgres.test.ts",
+    "packages/adapters/src/run-messages.postgres.test.ts",
+    "packages/adapters/src/computer-execution-leases.postgres.test.ts",
+    "packages/testkit/src/run-dispatch-runtime.postgres.test.ts",
     "packages/adapters/src/realtime.postgres.test.ts",
     "packages/adapters/src/job-reconciler.postgres.test.ts",
+    "packages/adapters/src/messaging-recovery.postgres.test.ts",
     "packages/adapters/src/cloud-agent.postgres.test.ts",
   ];
   const selectedSuites = integration ? selectIntegrationSuites(suites, e2eSpec, shard) : [];

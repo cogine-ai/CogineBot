@@ -215,6 +215,10 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       reason: "skipped" as const,
       note: "The takeover ended without the user completing it. Continue without assuming that step was done. Do not request takeover again unless you still cannot proceed.",
     },
+    {
+      reason: "steering" as const,
+      note: "Keep the screen with me and summarize what remains to check.",
+    },
   ])(
     "passes a neutral $reason takeover resume through the Pi model request",
     async ({ reason, note }) => {
@@ -323,7 +327,46 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         expect(userMessages).toContainEqual({ id: waiting.sourceMessageId });
         await rpc(handles.app, cookie, "computer/boot", { botId: bot.id });
         await rpc(handles.app, cookie, "computer/takeover", { botId: bot.id });
-        await rpc(handles.app, cookie, "computer/release", { botId: bot.id, reason });
+        await handles.awaitIdle?.();
+        if (reason === "done") {
+          const snapshot = async () => ({
+            run: await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
+            attempts: await handles.prisma.attempt.findMany({
+              where: { runId: sent.runId },
+              orderBy: { id: "asc" },
+            }),
+            effects: await handles.prisma.externalEffect.findMany({
+              where: { runId: sent.runId },
+              orderBy: { id: "asc" },
+            }),
+            computer: await handles.prisma.computer.findFirstOrThrow({
+              where: { bots: { some: { id: bot.id } } },
+            }),
+            leases: await handles.prisma.computerExecutionLease.findMany({
+              where: { botId: bot.id },
+              orderBy: { id: "asc" },
+            }),
+            messages: await handles.prisma.message.findMany({
+              where: { runId: sent.runId },
+              orderBy: { seq: "asc" },
+            }),
+            events: await handles.prisma.event.findMany({
+              where: { runId: sent.runId },
+              orderBy: { seq: "asc" },
+            }),
+            requests: structuredClone(model.requests),
+          });
+          const held = await snapshot();
+          expect(held.run).toMatchObject({ status: "waiting_takeover", wakeAt: null });
+          await handles.executor.continueRun(sent.runId, "stale-held-delivery");
+          await handles.awaitIdle?.();
+          expect(await snapshot()).toEqual(held);
+        }
+        if (reason === "steering") {
+          await rpc(handles.app, cookie, "threads/send", { botId: bot.id, text: note });
+        } else {
+          await rpc(handles.app, cookie, "computer/release", { botId: bot.id, reason });
+        }
         await expect
           .poll(
             async () => {
@@ -342,12 +385,22 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         );
         expect(takeoverResults).toHaveLength(1);
         const prompt = JSON.stringify(takeoverResults[0]!.content);
-        expect(prompt).toContain(note);
-        expect(prompt.split(note)).toHaveLength(2);
+        if (reason !== "steering") {
+          expect(prompt).toContain(note);
+          expect(prompt.split(note)).toHaveLength(2);
+        }
         const resumedContent = resumed.messages
           .map((message) => JSON.stringify(message.content))
           .join("\n");
-        expect(resumedContent.split(note)).toHaveLength(2);
+        expect(resumedContent).toContain(note);
+        if (reason !== "steering") expect(resumedContent.split(note)).toHaveLength(2);
+        if (reason === "steering") {
+          expect(
+            await handles.prisma.computer.findFirstOrThrow({
+              where: { bots: { some: { id: bot.id } } },
+            }),
+          ).toMatchObject({ controlHolder: "user" });
+        }
         expect(resumedContent).not.toMatch(/The user (?:finished|skipped) the login/i);
         const userContext = resumed.messages
           .filter((message) => message.role === "user")
@@ -360,7 +413,11 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
             select: { id: true },
             orderBy: { seq: "asc" },
           }),
-        ).toEqual(userMessages);
+        ).toEqual(
+          reason === "steering"
+            ? [...userMessages, expect.objectContaining({ id: expect.any(String) })]
+            : userMessages,
+        );
         expect(
           await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } }),
         ).toMatchObject({

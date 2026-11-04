@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Prisma, PrismaClient } from "./client.js";
 import {
+  assertRunCanWriteHistory,
   createThreadMessage,
   createThreadMessageInTransaction,
   RunHistoryWriteError,
@@ -55,6 +56,113 @@ describe("createThreadMessageInTransaction", () => {
       allowCancelledRun: true,
     });
     expect(tx.message.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe("executing run history lease", () => {
+  const lease = { owner: "worker-current", fence: 4 };
+  const activeRun = {
+    status: "running",
+    startedAt: new Date("2026-01-01T00:00:00Z"),
+    firstResponseAt: null,
+    userId: "user-1",
+    leaseOwner: lease.owner,
+    leaseFence: lease.fence,
+  };
+
+  function fixture(
+    run: (Omit<typeof activeRun, "leaseOwner"> & { leaseOwner: string | null }) | null = activeRun,
+  ) {
+    const order: string[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async (..._args: unknown[]) => {
+        order.push("share-lock");
+        return [];
+      }),
+      run: {
+        findUnique: vi.fn(async () => {
+          order.push("read");
+          return run;
+        }),
+      },
+    };
+    return { tx, order };
+  }
+
+  it("locks the row before reading the current executing attempt", async () => {
+    const { tx, order } = fixture();
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+    ).resolves.toEqual(activeRun);
+    expect(order).toEqual(["share-lock", "read"]);
+    expect(tx.$queryRaw.mock.calls[0]!.slice(1)).toEqual(["run-1"]);
+    expect((tx.$queryRaw.mock.calls[0]![0] as TemplateStringsArray).join("?")).toContain(
+      "FOR SHARE",
+    );
+  });
+
+  it.each([
+    { leaseOwner: "worker-new", leaseFence: 4 },
+    { leaseOwner: lease.owner, leaseFence: 5 },
+    { leaseOwner: null, leaseFence: 5 },
+  ])("rejects superseded owner/fence %j", async (replacement) => {
+    const { tx } = fixture({ ...activeRun, ...replacement });
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+    ).rejects.toBeInstanceOf(RunHistoryWriteError);
+  });
+
+  it.each(["waiting_input", "waiting_takeover", "completed"])(
+    "allows the same fence's final output after %s releases ownership",
+    async (status) => {
+      const run = { ...activeRun, status, leaseOwner: null };
+      const { tx } = fixture(run);
+      await expect(
+        assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+      ).resolves.toEqual(run);
+    },
+  );
+
+  it("retains the cancellation guard and checks the fence for an opted-in terminal echo", async () => {
+    const { tx } = fixture({ ...activeRun, status: "cancelled", leaseOwner: null });
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+    ).rejects.toBeInstanceOf(RunHistoryWriteError);
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", {
+        lease,
+        allowCancelled: true,
+      }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", {
+        lease: { ...lease, fence: 3 },
+        allowCancelled: true,
+      }),
+    ).rejects.toBeInstanceOf(RunHistoryWriteError);
+  });
+
+  it("keeps non-executing calls compatible without taking a lease lock", async () => {
+    const { tx } = fixture();
+    await assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1");
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient),
+    ).resolves.toBeUndefined();
+    expect(tx.run.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a missing Run and propagates a lock failure", async () => {
+    const { tx } = fixture(null);
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+    ).rejects.toBeInstanceOf(RunHistoryWriteError);
+    tx.$queryRaw.mockRejectedValueOnce(new Error("fixture lock unavailable"));
+    tx.run.findUnique.mockClear();
+    await expect(
+      assertRunCanWriteHistory(tx as unknown as Prisma.TransactionClient, "run-1", { lease }),
+    ).rejects.toThrow("fixture lock unavailable");
+    expect(tx.run.findUnique).not.toHaveBeenCalled();
   });
 });
 

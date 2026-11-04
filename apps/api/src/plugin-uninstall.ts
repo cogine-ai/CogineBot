@@ -137,7 +137,7 @@ async function closeToolApprovals(tx: Tx, owner: Scope, serverIds: string[]) {
     if (!pending) {
       const changed = await tx.run.updateMany({
         where: { id: runId, ...owner, status: "waiting_input" },
-        data: { status: "queued" },
+        data: { status: "queued", wakeAt: new Date() },
       });
       if (changed.count === 1) resumes.push(runId);
     }

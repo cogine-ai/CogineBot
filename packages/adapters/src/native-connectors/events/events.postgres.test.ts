@@ -806,10 +806,21 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       lastErrorCode: "temporarily_unavailable",
     });
     // Use the original global queued-Run scan on a separate real DB client.
+    const reconcileStartedAt = Date.now();
     await createJobReconciler({ prisma: peer, jobs }).reconcileOnce();
+    const reconcileCompletedAt = Date.now();
     const targetAttempts = () =>
       attempts.filter((job) => job.name === "run.continue" && job.payload.runId === receipt.id);
-    assert.deepEqual(targetAttempts(), [runContinueJob(receipt.id), runContinueJob(receipt.id)]);
+    const replaceLockedBefore = targetAttempts()[1]?.replaceLockedBefore;
+    assert.ok(replaceLockedBefore instanceof Date);
+    assert.ok(replaceLockedBefore.getTime() >= reconcileStartedAt - 5 * 60_000);
+    assert.ok(replaceLockedBefore.getTime() <= reconcileCompletedAt - 5 * 60_000);
+    const recoveredJob = {
+      ...runContinueJob(receipt.id),
+      keepExisting: true,
+      replaceLockedBefore,
+    };
+    assert.deepEqual(targetAttempts(), [runContinueJob(receipt.id), recoveredJob]);
     assert.equal(
       (await peer.run.findUniqueOrThrow({ where: { id: receipt.id } })).status,
       "queued",
@@ -829,10 +840,11 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       [false],
       "Replay must read the permanent receipt, not skip the source",
     );
-    assert.deepEqual(
-      targetAttempts(),
-      Array.from({ length: 3 }, () => runContinueJob(receipt.id)),
-    );
+    assert.deepEqual(targetAttempts(), [
+      runContinueJob(receipt.id),
+      recoveredJob,
+      runContinueJob(receipt.id),
+    ]);
     assert.equal(await db.run.count({ where: { ...scope, clientNonce: nonce } }), 1);
     assert.deepEqual(await counts(f), { tasks: 1, runs: 1, messages: 1, events: 0 });
     const after = await db.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: f.row.id } });

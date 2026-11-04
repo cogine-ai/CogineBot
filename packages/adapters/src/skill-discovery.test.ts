@@ -2,9 +2,15 @@ import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
 import { builtinAgentTools } from "./builtin-tools.js";
+import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { boundToolResultText } from "./context-selection.js";
 import { createRunExecutor } from "./executor.js";
 import { serializeToolResult } from "./pi-runtime.js";
+
+vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ComputerLifecycleModule>()),
+  acquireDedicatedScreenLeaseFence: async () => null,
+}));
 
 type SkillRow = {
   id: string;

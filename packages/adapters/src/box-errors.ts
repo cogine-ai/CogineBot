@@ -1,10 +1,11 @@
-import { ResponseError } from "@asciidev/box-sdk";
-import { SandboxRateLimitError } from "@rakazo/adapter-kit";
+import { FetchError, ResponseError } from "@asciidev/box-sdk";
+import { SandboxRateLimitError, SandboxUnresponsiveError } from "@rakazo/adapter-kit";
 import { redactSecrets } from "@rakazo/core";
 import { readBodyCapped } from "./web-ssrf.js";
 
 const MAX_BOX_ERROR_RESPONSE_BYTES = 16 * 1024;
 const BOX_ERROR_RESPONSE_TIMEOUT_MS = 2_000;
+const TRANSIENT_STATUSES = new Set([500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530]);
 
 /** Keep HTTP failures actionable without changing the SDK's status-based recovery contract. */
 export function wrapBoxCall<Args extends unknown[], Result>(
@@ -15,9 +16,20 @@ export function wrapBoxCall<Args extends unknown[], Result>(
     try {
       return await call(...args);
     } catch (error) {
+      const signal = (args[1] as RequestInit | undefined)?.signal;
+      if (
+        error instanceof FetchError &&
+        !signal?.aborted &&
+        !(error.cause instanceof Error && ["AbortError", "TimeoutError"].includes(error.cause.name))
+      ) {
+        throw new SandboxUnresponsiveError("Box could not be reached", { cause: error });
+      }
       if (!(error instanceof ResponseError)) throw error;
       const wrapped = await boxResponseError(error.response, apiKey);
       if (error.response.status === 429) throw new SandboxRateLimitError({ cause: wrapped });
+      if (TRANSIENT_STATUSES.has(error.response.status) || error.response.status === 402) {
+        throw new SandboxUnresponsiveError(wrapped.message, { cause: wrapped });
+      }
       throw wrapped;
     }
   };

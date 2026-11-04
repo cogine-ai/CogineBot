@@ -1,5 +1,5 @@
-import { ResponseError } from "@asciidev/box-sdk";
-import { SandboxRateLimitError } from "@rakazo/adapter-kit";
+import { FetchError, ResponseError } from "@asciidev/box-sdk";
+import { SandboxRateLimitError, SandboxUnresponsiveError } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { boxResponseError, wrapBoxCall } from "./box-errors.js";
 import { BoxSandboxProvider, isUnrecoverableBoxError } from "./box-sandbox.js";
@@ -26,6 +26,98 @@ describe("Box API errors", () => {
       ),
     ).rejects.toBeInstanceOf(SandboxRateLimitError);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530, 402])(
+    "classifies an actual SDK-backed HTTP %i rejection without resending create",
+    async (status) => {
+      const fetch = vi.fn(async () =>
+        Response.json(
+          {
+            code: "synthetic_provider_failure",
+            message:
+              "Rejected fake-box-key; Bearer private-credential; https://box.example/?token=secret",
+          },
+          { status },
+        ),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const provider = new BoxSandboxProvider({ apiKey: "fake-box-key" });
+      const error = await provider
+        .provision(
+          { botId: "bot", homePath: "/unused" },
+          {
+            operationId: "test",
+            traceId: "test",
+            spaceId: "space",
+            userId: "user",
+            signal: new AbortController().signal,
+          },
+        )
+        .catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(SandboxUnresponsiveError);
+      expect(error).toMatchObject({ cause: { response: { status } } });
+      expect(isUnrecoverableBoxError(error)).toBe(false);
+      for (const secret of ["fake-box-key", "private-credential", "token=secret"]) {
+        expect(String(error)).not.toContain(secret);
+        expect(String((error as Error).cause)).not.toContain(secret);
+      }
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([400, 401, 403, 404, 409, 422, 501])(
+    "preserves an HTTP %i error's recovery contract without calling it an outage",
+    async (status) => {
+      const call = vi.fn(async () => {
+        throw new ResponseError(
+          Response.json({ message: "synthetic request rejected" }, { status }),
+        );
+      });
+      const error = await wrapBoxCall(call, "fake-key")().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(ResponseError);
+      expect(error).not.toBeInstanceOf(SandboxUnresponsiveError);
+      expect(isUnrecoverableBoxError(error)).toBe(status === 404);
+      expect(call).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("classifies a lost SDK connection without resending a possibly accepted operation", async () => {
+    const lost = new FetchError(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      }),
+    );
+    const call = vi.fn(async () => {
+      throw lost;
+    });
+    const error = await wrapBoxCall(call, "fake-key")().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(SandboxUnresponsiveError);
+    expect((error as Error).message).toBe("Box could not be reached");
+    expect((error as Error).cause).toBe(lost);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it.each(["AbortError", "TimeoutError"])("preserves an SDK caller's %s", async (name) => {
+    const failure = new FetchError(new DOMException("synthetic cancelled request", name));
+    const call = vi.fn(async () => {
+      throw failure;
+    });
+    await expect(wrapBoxCall(call, "fake-key")()).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a network failure after its request signal was cancelled", async () => {
+    const controller = new AbortController();
+    const failure = new FetchError(new TypeError("fetch failed"));
+    const call = vi.fn(async (_request: object, _init: RequestInit) => {
+      controller.abort();
+      throw failure;
+    });
+    await expect(wrapBoxCall(call, "fake-key")({}, { signal: controller.signal })).rejects.toBe(
+      failure,
+    );
+    expect(call).toHaveBeenCalledOnce();
   });
 
   it("maps a quota rejection to a neutral error while keeping a bounded sanitized cause", async () => {

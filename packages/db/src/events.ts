@@ -13,6 +13,7 @@ import {
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
+  messageBypassesTakeoverWait,
   messagingChannelId,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
@@ -25,12 +26,14 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { ownedConnectionSelection, updateTaskConnectionSelection } from "./connection-selection.js";
+import type { RunLease } from "./messages.js";
 import {
   assertRunCanWriteHistory,
   assertRunIsCancelled,
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { isRunResponse, readRunTimingFields } from "./run-timing.js";
 import {
   clearRunTurnCheckpoints,
   loadRunTurnCheckpointSecretEffectId,
@@ -51,6 +54,8 @@ export interface AppendEventInput {
   runId?: string;
   /** Terminal echo after the run is already cancelled. Every other event stays rejected. */
   allowCancelledRun?: boolean;
+  /** The executing attempt's lease; a superseded attempt cannot write. Never serialized. */
+  lease?: RunLease;
 }
 
 export interface ThreadEvents {
@@ -62,7 +67,7 @@ export interface ThreadEvents {
     input: FinalizeComputerControlReleaseInput,
   ): Promise<FinalizeComputerControlReleaseResult | false>;
   finalizeRun(input: FinalizeRunInput): Promise<FinalizeRunResult | false>;
-  notify(threadId: string, seq: number): Promise<void>;
+  notify(threadId: string, seq: number, firstResponseRunId?: string): Promise<void>;
   pauseRunForInput(input: PauseRunForInput): Promise<boolean>;
   pauseRunForTakeover(input: PauseRunForTakeover): Promise<boolean>;
   sendUserMessage(input: SendUserMessageInput): Promise<SendUserMessageResult>;
@@ -274,7 +279,8 @@ export function createThreadEvents(
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
     finalizeRun: (input) => finalizeRun(prisma, input, realtime),
-    notify: (threadId, seq) => notifyRealtime(realtime, threadId, seq),
+    notify: (threadId, seq, firstResponseRunId) =>
+      notifyCommittedEvent(prisma, realtime, threadId, seq, firstResponseRunId),
     pauseRunForInput: (input) => pauseRunForInput(prisma, input, realtime),
     pauseRunForTakeover: (input) => pauseRunForTakeover(prisma, input, realtime),
     sendUserMessage: (input) => sendUserMessage(prisma, input, realtime),
@@ -470,12 +476,15 @@ export async function sendUserMessage(
                   in: ["running", "queued", "leased", "waiting_input", "waiting_takeover"],
                 },
               },
-              select: { id: true, taskId: true, trigger: true },
+              select: { id: true, taskId: true, trigger: true, status: true },
             })
           : [];
+      const holdingRuns = activeRuns.filter(
+        (run) => !messageBypassesTakeoverWait(run, input.trigger !== "webhook"),
+      );
       // Steer a conversational run when there is one; a routine, webhook, or intro turn only holds the queue.
       const busy =
-        activeRuns.find((run) => isConversationalRun(run.trigger)) ?? activeRuns[0] ?? null;
+        holdingRuns.find((run) => isConversationalRun(run.trigger)) ?? holdingRuns[0] ?? null;
       let task = null;
       let run = null;
       if (createRun && !busy) {
@@ -534,6 +543,12 @@ export async function sendUserMessage(
               : {}),
           },
         });
+        if (busy.status === "waiting_takeover" || (busy.status === "queued" && !held)) {
+          await tx.run.updateMany({
+            where: { id: busy.id, status: busy.status },
+            data: { wakeAt: new Date() },
+          });
+        }
         await tx.message.update({ where: { id: message.id }, data: { runId: busy.id } });
       }
       const event = await appendEventInTransaction(tx, {
@@ -745,6 +760,7 @@ async function commitAnswerRunInput(
     },
     data: {
       status: "queued",
+      wakeAt: new Date(),
       ...(choiceAsk ? { checkpoint: null } : {}),
     },
   });
@@ -991,7 +1007,7 @@ export async function pauseRunForInput(
       runId: input.runId,
     });
     await bindScriptedPause(tx, input, { kind: "input", messageId: message.id });
-    await appendEventInTransaction(tx, {
+    const response = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
       threadId: input.threadId,
       botId: input.botId,
@@ -1013,11 +1029,21 @@ export async function pauseRunForInput(
       payload: {},
     });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
-    return { threadId: waitingEvent.threadId, seq: waitingEvent.seq };
+    return {
+      threadId: waitingEvent.threadId,
+      seq: waitingEvent.seq,
+      firstResponseRunId: response.firstResponse ? input.runId : undefined,
+    };
   });
 
   if (!committed) return false;
-  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  await notifyCommittedEvent(
+    prisma,
+    realtime,
+    committed.threadId,
+    committed.seq,
+    committed.firstResponseRunId,
+  );
   return true;
 }
 
@@ -1103,6 +1129,7 @@ export async function pauseRunForTakeover(
     });
     if (marked.count !== 1) throw new Error("Computer was not available to mark for takeover");
 
+    let firstResponse = false;
     if (input.scriptedState) {
       // Durable scripted cards must commit with the receipt that makes their pause resumable.
       const blocks: MessageBlock[] = [{ kind: "computer", state: "Needs you", text: input.reason }];
@@ -1114,7 +1141,7 @@ export async function pauseRunForTakeover(
         runId: input.runId,
         markUnread: true,
       });
-      await appendEventInTransaction(tx, {
+      const response = await appendEventInTransaction(tx, {
         spaceId: input.spaceId,
         threadId: input.threadId,
         botId: input.botId,
@@ -1122,6 +1149,7 @@ export async function pauseRunForTakeover(
         runId: input.runId,
         payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
       });
+      firstResponse = response.firstResponse;
     }
 
     const waitingEvent = await appendEventInTransaction(tx, {
@@ -1138,11 +1166,21 @@ export async function pauseRunForTakeover(
     });
     await bindScriptedPause(tx, input, { kind: "takeover", eventSeq: waitingEvent.seq });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
-    return { threadId: waitingEvent.threadId, seq: waitingEvent.seq };
+    return {
+      threadId: waitingEvent.threadId,
+      seq: waitingEvent.seq,
+      firstResponseRunId: firstResponse ? input.runId : undefined,
+    };
   });
 
   if (!committed) return false;
-  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  await notifyCommittedEvent(
+    prisma,
+    realtime,
+    committed.threadId,
+    committed.seq,
+    committed.firstResponseRunId,
+  );
   return true;
 }
 
@@ -1217,6 +1255,7 @@ export async function finalizeComputerControlRelease(
               },
               data: {
                 status: "queued",
+                wakeAt: new Date(),
                 checkpoint,
               },
             })
@@ -1381,6 +1420,7 @@ interface SettleReleasedTakeoverCardsInput {
   botId: string;
   runId: string;
   reason: unknown;
+  lease?: RunLease;
 }
 
 /** Resume repairs a missed settlement without rewriting an already settled card. */
@@ -1424,6 +1464,7 @@ async function settleReleasedTakeoverCardsInTransaction(
       botId: input.botId,
       type: "thread.message.updated",
       runId: input.runId,
+      lease: input.lease,
       payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
     });
     lastSeq = updated.seq;
@@ -1441,7 +1482,13 @@ export async function appendEvent(
     prisma.$transaction((tx: Prisma.TransactionClient) => appendEventInTransaction(tx, input)),
   );
   const productEvent = mapProductEvent(event);
-  await notifyRealtime(realtime, event.threadId, event.seq);
+  await notifyCommittedEvent(
+    prisma,
+    realtime,
+    event.threadId,
+    event.seq,
+    event.firstResponse ? input.runId : undefined,
+  );
   return productEvent;
 }
 
@@ -1453,6 +1500,18 @@ export async function finalizeRun(
   const committed = await withTransactionRetry(() => finalizeRunOnce(prisma, input));
   if (!committed) return false;
   await notifyRealtime(realtime, committed.threadId, committed.seq);
+  const timing = await readRunTimingFields(prisma, input.runId);
+  if (committed.firstResponse) {
+    getLogger().info("run.first_response", { "run.id": input.runId, ...timing });
+  }
+  getLogger().info("run.finished", {
+    "run.id": input.runId,
+    "run.outcome": input.outcome,
+    ...timing,
+    "space.id": input.spaceId,
+    "thread.id": input.threadId,
+    "bot.id": input.botId,
+  });
   return { continuationRunId: committed.continuationRunId };
 }
 
@@ -1477,7 +1536,12 @@ export function completedRunBlocks(
 async function finalizeRunOnce(
   prisma: PrismaClient,
   input: FinalizeRunInput,
-): Promise<{ threadId: string; seq: number; continuationRunId: string | null } | null> {
+): Promise<{
+  threadId: string;
+  seq: number;
+  continuationRunId: string | null;
+  firstResponse: boolean;
+} | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
     let writableRun: { startedAt: Date | null } | undefined;
@@ -1537,6 +1601,7 @@ async function finalizeRunOnce(
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
     let completedMessageId: string | undefined;
+    let firstResponse = false;
     if (input.outcome === "completed") {
       const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
       if (completedBlocks.length > 0) {
@@ -1549,7 +1614,7 @@ async function finalizeRunOnce(
           markUnread: input.markUnread,
         });
         completedMessageId = message.id;
-        await appendEventInTransaction(tx, {
+        const response = await appendEventInTransaction(tx, {
           spaceId: input.spaceId,
           threadId: input.threadId,
           botId: input.botId,
@@ -1562,6 +1627,7 @@ async function finalizeRunOnce(
             blocks: completedBlocks,
           },
         });
+        firstResponse = response.firstResponse;
       }
     }
     const lastEvent = await appendEventInTransaction(tx, {
@@ -1603,7 +1669,7 @@ async function finalizeRunOnce(
     }
     const continuationRunId = await createPendingSteeringRun(tx, input);
     await tx.bot.update({ where: { id: input.botId }, data: { updatedAt: now } });
-    return { threadId: lastEvent.threadId, seq: lastEvent.seq, continuationRunId };
+    return { threadId: lastEvent.threadId, seq: lastEvent.seq, continuationRunId, firstResponse };
   });
 }
 
@@ -1727,14 +1793,19 @@ export async function appendEventInTransaction(
   });
   // run.cancelled is appended after the run row already reads cancelled, so it
   // asserts the terminal status where every other event needs a writable run.
+  let firstResponseAt: Date | null | undefined;
   if (input.type === "run.cancelled") {
     await assertRunIsCancelled(tx, input.runId);
   } else {
-    await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun });
+    const run = await assertRunCanWriteHistory(tx, input.runId, {
+      allowCancelled: input.allowCancelledRun,
+      lease: input.lease,
+    });
+    firstResponseAt = run?.firstResponseAt;
   }
   // Unpaired UTF-16 surrogates (e.g. a split emoji high half) are invalid JSON for Postgres.
   const payload = sanitizeJsonValue(input.payload);
-  return tx.event.create({
+  const event = await tx.event.create({
     data: {
       ...(eventId ? { id: eventId } : {}),
       spaceId: input.spaceId,
@@ -1746,9 +1817,37 @@ export async function appendEventInTransaction(
       runId: input.runId,
     },
   });
+  const firstResponse = Boolean(
+    input.runId &&
+      !firstResponseAt &&
+      isRunResponse(input.type, input.payload) &&
+      (
+        await tx.run.updateMany({
+          where: { id: input.runId, firstResponseAt: null },
+          data: { firstResponseAt: event.createdAt },
+        })
+      ).count === 1,
+  );
+  return { ...event, firstResponse };
 }
 
-async function notifyRealtime(
+/** Timing metadata is returned by the transaction that recorded first output. */
+async function notifyCommittedEvent(
+  prisma: PrismaClient,
+  realtime: RealtimeFanout | undefined,
+  threadId: string,
+  seq: number,
+  firstResponseRunId?: string,
+): Promise<void> {
+  await notifyRealtime(realtime, threadId, seq);
+  if (!firstResponseRunId) return;
+  getLogger().info("run.first_response", {
+    "run.id": firstResponseRunId,
+    ...(await readRunTimingFields(prisma, firstResponseRunId)),
+  });
+}
+
+export async function notifyRealtime(
   realtime: RealtimeFanout | undefined,
   threadId: string,
   cursor: number,

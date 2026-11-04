@@ -528,6 +528,38 @@ describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => 
       expect(f.reservations).toBe(1);
       await f.clientSnapshot();
 
+      const waitingSnapshot = async () => ({
+        run: await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } }),
+        task: await f.app.prisma.task.findUniqueOrThrow({ where: { id: paused.taskId } }),
+        attempts: await f.app.prisma.attempt.findMany({
+          where: { runId: f.sent.runId },
+          orderBy: { id: "asc" },
+        }),
+        effects: await f.app.prisma.externalEffect.findMany({
+          where: { runId: f.sent.runId },
+          orderBy: { id: "asc" },
+        }),
+        messages: await f.app.prisma.message.findMany({
+          where: { runId: f.sent.runId },
+          orderBy: { seq: "asc" },
+        }),
+        events: await f.app.prisma.event.findMany({
+          where: { runId: f.sent.runId },
+          orderBy: { seq: "asc" },
+        }),
+        reservations: f.reservations,
+        providerRequests: structuredClone(f.providerRequests),
+        runtimeRequests: structuredClone(f.runtimeRequests),
+        executions: structuredClone(f.actualExecutions),
+        writes: structuredClone(f.mainWrites()),
+      });
+      expect(paused.wakeAt).toBeNull();
+      const unresolved = await waitingSnapshot();
+      // A delayed legacy queue delivery must not supply an answer to the saved tool call.
+      await f.app.executor.continueRun(f.sent.runId, "checkpoint-stale-queue-worker");
+      await f.app.awaitIdle?.();
+      expect(await waitingSnapshot()).toEqual(unresolved);
+
       await f.restartRuntime();
       await f.answer();
       const answered = await f.app.prisma.task.findUniqueOrThrow({ where: { id: paused.taskId } });

@@ -12,10 +12,17 @@ export const ACTIVE_RUN_STATUSES = [
 const TERMINAL: RunStatus[] = ["completed", "failed", "cancelled"];
 /**
  * These turns carry their own prompt and must not take a user message as steering.
- * Routine and webhook runs are not the conversation. The creation intro has no tools;
- * a message that lands during it waits, and the continuation after the intro finishes answers it.
+ * Routine and webhook runs are not the conversation, and neither is a wake from another bot:
+ * its reply goes back to that bot. The creation intro has no tools; a message that lands
+ * during it waits, and the continuation after the intro finishes answers it.
  */
-const NON_CONVERSATIONAL_RUN_TRIGGERS = new Set(["routine", "webhook", "created", "tickets"]);
+const NON_CONVERSATIONAL_RUN_TRIGGERS = new Set([
+  "routine",
+  "webhook",
+  "created",
+  "tickets",
+  "bot_message",
+]);
 
 /**
  * Background triggers do internal work that must not leak into the chat: the
@@ -62,6 +69,19 @@ export function isTerminal(status: RunStatus): boolean {
 /** Whether a run's turn is part of the thread's conversation and may take user steering. */
 export function isConversationalRun(trigger: string | null | undefined): boolean {
   return !NON_CONVERSATIONAL_RUN_TRIGGERS.has(trigger ?? "");
+}
+
+/**
+ * A takeover wait holds only a conversational message it can take as steering. Any other
+ * message passes it and gets its own run; the dispatcher then ends a wait the user has not
+ * acted on so that run can start. `steerable` is false for messages that never steer a run,
+ * such as webhook deliveries.
+ */
+export function messageBypassesTakeoverWait(
+  run: { status?: string; trigger?: string | null },
+  steerable = true,
+): boolean {
+  return run.status === "waiting_takeover" && !(steerable && isConversationalRun(run.trigger));
 }
 
 export function nextFence(current: number): number {

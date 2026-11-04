@@ -18,6 +18,7 @@ import {
   callIdFromClientNonce,
   isActive,
   isConversationalRun,
+  messageBypassesTakeoverWait,
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
@@ -790,7 +791,10 @@ export async function sendThreadMessage(
             message: "Answer the pending ask first.",
           });
         }
-        const active = activeRuns.find(steersUserMessage) ?? activeRuns[0];
+        const holdingRuns = activeRuns.filter(
+          (run) => STEERABLE_RUN_STATUSES.has(run.status) && !messageBypassesTakeoverWait(run),
+        );
+        const active = holdingRuns.find(steersUserMessage) ?? holdingRuns[0];
         if (active) {
           await tx.steeringMessage.create({
             data: {
@@ -803,6 +807,15 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
+          if (
+            active.status === "waiting_takeover" ||
+            (active.status === "queued" && steersUserMessage(active))
+          ) {
+            await tx.run.updateMany({
+              where: { id: active.id, status: active.status },
+              data: { wakeAt: new Date() },
+            });
+          }
           await tx.message.update({ where: { id: message.id }, data: { runId: active.id } });
           const event = await appendEventInTransaction(tx, {
             spaceId: actor.spaceId,
@@ -953,6 +966,7 @@ export async function sendThreadMessage(
             message: "Answer the pending ask first.",
           });
         }
+        if (messageBypassesTakeoverWait(run)) continue;
         const current = activeByBotId.get(run.botId);
         if (!current || (!steersUserMessage(current) && steersUserMessage(run))) {
           activeByBotId.set(run.botId, run);
@@ -978,6 +992,15 @@ export async function sendThreadMessage(
                 : {}),
             },
           });
+          if (
+            active.status === "waiting_takeover" ||
+            (active.status === "queued" && steersUserMessage(active))
+          ) {
+            await tx.run.updateMany({
+              where: { id: active.id, status: active.status },
+              data: { wakeAt: new Date() },
+            });
+          }
           runs.push(active);
           continue;
         }

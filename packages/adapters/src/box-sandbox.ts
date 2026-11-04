@@ -25,6 +25,7 @@ import type {
   ScreenSession,
   TerminalRequest,
 } from "@rakazo/adapter-kit";
+import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { boxResponseError, wrapBoxCall } from "./box-errors.js";
 import { normalizeWorkspacePath, shellQuote, workspacePath } from "./computer-support.js";
@@ -493,9 +494,9 @@ export class BoxSandboxProvider implements SandboxProvider {
         );
         resumed = true;
       } else if (box.state === "error") {
-        throw new Error(`Box ${id} entered the error state`);
+        throw new SandboxUnavailableError();
       }
-      if (Date.now() >= deadline) throw new Error(`Box ${id} did not become ready`);
+      if (Date.now() >= deadline) throw new SandboxUnavailableError();
       await delay(1_000, undefined, { signal: context.signal });
     }
   }

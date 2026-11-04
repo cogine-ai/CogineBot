@@ -33,6 +33,7 @@ import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
   acquireComputerExecutionLease: async () => null,
+  acquireDedicatedScreenLeaseFence: async () => null,
   provisionComputer: async () => ({ id: "computer-1", kind: "desktop" }),
 }));
 
@@ -575,6 +576,26 @@ describe("group peer dispatch across runtime modes", () => {
         ),
       },
       run: {
+        updateMany: vi.fn(
+          async ({
+            where,
+            data,
+          }: {
+            where: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
+            if (where.id !== f.runRecord.id) return { count: 0 };
+            for (const key of ["status", "leaseOwner", "leaseFence"] as const) {
+              if (
+                where[key] !== undefined &&
+                where[key] !== (f.runRecord as Record<string, unknown>)[key]
+              )
+                return { count: 0 };
+            }
+            Object.assign(f.runRecord, data);
+            return { count: 1 };
+          },
+        ),
         findFirst: vi.fn(
           async ({
             where,

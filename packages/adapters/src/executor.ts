@@ -1,3 +1,26 @@
+import type { RunLease } from "@rakazo/db";
+import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
+import {
+  computerRetryDelay,
+  mayOpenModelStream,
+  providerOutageRetryDelay,
+  RUN_SETUP_FAILURE_LIMIT,
+  renewRunLease,
+  requeueComputerRun,
+  requeueRunAfterShutdown,
+  setupFailureStreak,
+  startNextWaitingRun,
+  writeComputerRunRequeue,
+} from "./run-lifecycle.js";
+import {
+  persistMessageInTransaction,
+  publishMessage,
+  runLeaseFor,
+  withRunLease,
+} from "./run-messages.js";
+
+export { mayOpenModelStream } from "./run-lifecycle.js";
+
 import { randomUUID } from "node:crypto";
 import type {
   AdapterContext,
@@ -41,6 +64,8 @@ import {
   routineWakeupJob,
   runContinueJob,
   SandboxRateLimitError,
+  SandboxUnavailableError,
+  SandboxUnresponsiveError,
 } from "@rakazo/adapter-kit";
 import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
 import {
@@ -115,7 +140,6 @@ import {
   authorizeCollaborationRunStart,
   BOT_COLLABORATION_ORIGINS,
   createSpaceForMember,
-  createThreadMessageInTransaction,
   effectiveMemoryScope,
   failScriptedRunPreservingSteering,
   findDefaultModelCredential,
@@ -126,7 +150,9 @@ import {
   loadRunTurnCheckpoint,
   Prisma,
   parseComputerMode,
+  RunHistoryWriteError,
   readHistory,
+  readRunTimingFields,
   recordUsage,
   retireModelCredential,
   SpaceLimitError,
@@ -136,7 +162,7 @@ import {
   TOOL_RESULT_HISTORY_MAX_BYTES,
   withTransactionRetry,
 } from "@rakazo/db";
-import { getLogger } from "@rakazo/logging";
+import { enrichLogContext, getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
 import {
   connectAgent,
@@ -237,6 +263,7 @@ import { BACKGROUND_WORK_LAUNCH, scheduleComputerSleep } from "./computer-idle.j
 import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import {
   acquireComputerExecutionLease,
+  acquireDedicatedScreenLeaseFence,
   ComputerBusyError,
   holdComputerExecutionLeaseForTakeover,
   provisionComputer,
@@ -358,6 +385,7 @@ import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
+import { findRunRecoveryBlockers } from "./run-recovery.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -419,12 +447,10 @@ import {
   skillReadFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
-import type { TakeoverResumeCheckpoint } from "./takeover-resume.js";
 import {
   continueRunClaimFence,
   DESKTOP_HELD_FOR_TAKEOVER_MESSAGE,
   refreshTakeoverContinuePlan,
-  TAKEOVER_RESUME_CHECKPOINTS,
   takeoverCheckpointOf,
   takeoverContinuePlan,
 } from "./takeover-resume.js";
@@ -2713,6 +2739,7 @@ function runtimeFallbackModel(runtime: AgentRuntime) {
 }
 
 export interface ExecutorDeps {
+  runLease?: RunLease & { runId: string };
   contextStrategy?: AgentContextStrategy;
   prisma: PrismaClient;
   events: ThreadEvents;
@@ -3053,6 +3080,7 @@ class RunCompletionValidationError extends Error {
 }
 
 export function createRunExecutor(deps: ExecutorDeps) {
+  const baseDeps = deps;
   const contextStrategy = deps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = deps.web ?? createWebProvider();
   const browser = deps.browser ?? createBrowserProvider(undefined, { sandbox: deps.sandbox });
@@ -3270,7 +3298,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
             new Date(Math.max(Date.now(), scheduledAt.getTime())),
             routine.timezone,
           );
-      const previousLastRunAt = routine.lastRunAt;
       const skillRecords = await listAgentSkillRecords(deps.prisma, {
         spaceId: routine.spaceId,
         userId: routine.userId,
@@ -3302,6 +3329,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
         });
         if (!currentModel) return null;
+        const timerNonce = !isOneShotRoutineCrons(routine.crons)
+          ? routineTimerNonce(routine.id, scheduledFor)
+          : undefined;
+        if (timerNonce) {
+          const pending = await findPendingRoutineTick(tx, {
+            routineId: routine.id,
+            spaceId: routine.spaceId,
+            botId: bot.id,
+            userId: routine.userId,
+            threadId: thread.id,
+            prompt: routinePrompt,
+            ...routineRunModelPin(currentModel),
+          });
+          if (pending) return { ...pending, coalesced: true };
+          const fired = await tx.run.findUnique({
+            where: { spaceId_clientNonce: { spaceId: routine.spaceId, clientNonce: timerNonce } },
+            select: { id: true },
+          });
+          if (fired) return "fired" as const;
+        }
         const task = await tx.task.create({
           data: {
             spaceId: routine.spaceId,
@@ -3312,7 +3359,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             status: "queued",
           },
         });
-        return tx.run.create({
+        const run = await tx.run.create({
           data: {
             spaceId: routine.spaceId,
             botId: bot.id,
@@ -3322,47 +3369,51 @@ export function createRunExecutor(deps: ExecutorDeps) {
             status: "queued",
             trigger: "routine",
             routineId: routine.id,
+            clientNonce: timerNonce,
             ...routineRunModelPin(currentModel),
           },
         });
+        return { ...run, coalesced: false };
       });
       if (!claimed) return;
-      // Enqueue continuation first so a thread-signal failure cannot strand the run.
+      if (claimed === "fired") {
+        if (nextRunAt) await deps.jobs.enqueue(routineWakeupJob(routine.id, nextRunAt));
+        return;
+      }
+      if ("cancelledEvents" in claimed && claimed.cancelledEvents) {
+        for (const event of claimed.cancelledEvents) {
+          await deps.events.notify(event.threadId, event.seq).catch(() => undefined);
+        }
+      }
+      // The committed run and schedule remain recoverable if the wake notification fails.
       try {
-        await deps.jobs.enqueue(runContinueJob(claimed.id));
-      } catch (error) {
-        // Restore the claim so wakeup retry / routine reconciliation can fire again.
-        await deps.prisma.$transaction(async (tx) => {
-          await tx.run.deleteMany({
-            where: { id: claimed.id, status: "queued" },
-          });
-          await tx.task.deleteMany({
-            where: { id: claimed.taskId, status: "queued" },
-          });
-          await tx.routine.updateMany({
-            where: {
-              id: routine.id,
-              nextRunAt,
-              ...(nextRunAt ? {} : { active: false }),
-            },
-            data: {
-              nextRunAt: scheduledAt,
-              active: true,
-              lastRunAt: previousLastRunAt,
-            },
-          });
+        await deps.jobs.enqueue({
+          ...runContinueJob(claimed.id),
+          ...(claimed.coalesced ? { keepExisting: true } : {}),
         });
-        throw error;
+      } catch (error) {
+        getLogger().warn("routine.run_wakeup_failed", {
+          "routine.id": routine.id,
+          "run.id": claimed.id,
+          error: redactSecrets(
+            error instanceof Error ? error.message : String(error),
+            deps.secrets,
+          ),
+        });
+      }
+      if (claimed.coalesced) {
+        getLogger().info("routine.coalesced", { "routine.id": routine.id, "run.id": claimed.id });
       }
       try {
-        await deps.events.append({
-          spaceId: routine.spaceId,
-          threadId: thread.id,
-          botId: bot.id,
-          type: "routine.fired",
-          runId: claimed.id,
-          payload: { routineId: routine.id, scheduledFor },
-        });
+        if (!claimed.coalesced)
+          await deps.events.append({
+            spaceId: routine.spaceId,
+            threadId: thread.id,
+            botId: bot.id,
+            type: "routine.fired",
+            runId: claimed.id,
+            payload: { routineId: routine.id, scheduledFor },
+          });
       } catch {
         // Best effort: the run is already queued.
       }
@@ -3377,9 +3428,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
       }
     },
 
-    async continueRun(runId: string, workerId: string) {
+    async continueRun(runId: string, workerId: string, onRunStarted?: () => void) {
+      let deps = baseDeps;
+      if (deps.shutdownSignal?.aborted) return;
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
+      enrichLogContext({
+        "run.id": runId,
+        "bot.id": run.botId,
+        "thread.id": run.threadId,
+        "space.id": run.spaceId,
+        ...(run.userId ? { "user.id": run.userId } : {}),
+      });
       if (isTerminal(run.status as RunStatus)) return;
       const settleLocalPeerDelivery = async () => {
         if (
@@ -3448,6 +3508,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             botId: run.botId,
             runId,
             reason: takeoverResume.checkpoint,
+            lease: { owner: workerId, fence },
           },
           (threadId, seq) => deps.events.notify(threadId, seq),
         );
@@ -3469,6 +3530,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                 }
               : {}),
+            AND: [
+              {
+                OR: [
+                  {
+                    status: { in: ["waiting_input", "waiting_takeover"] },
+                    wakeAt: { lte: now },
+                  },
+                  {
+                    status: { notIn: ["waiting_input", "waiting_takeover"] },
+                    OR: [{ wakeAt: null }, { wakeAt: { lte: now } }],
+                  },
+                ],
+              },
+            ],
             OR: [
               { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
               {
@@ -3484,6 +3559,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
             error: null,
             checkpoint: null,
+            wakeAt: null,
           },
         });
         if (leased.count !== 1) return false;
@@ -3506,7 +3582,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseOwner: workerId,
             leaseFence: fence,
           },
-          data: { status: "running", startedAt: current.startedAt ?? new Date() },
+          data: { status: "running" },
         });
         return started.count === 1;
       };
@@ -3566,37 +3642,82 @@ export function createRunExecutor(deps: ExecutorDeps) {
       }
       const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
         where: { id: run.botId },
-        select: { computerId: true, computerSwitching: true },
+        select: {
+          computerId: true,
+          computerSwitching: true,
+          computer: { select: { scope: true } },
+        },
       });
       if (!leaseTarget.computerId) throw new Error("Bot has no computer");
       if (leaseTarget.computerSwitching) {
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
         return;
       }
-      await settleTakeoverCards();
+      try {
+        await settleTakeoverCards();
+      } catch (error) {
+        if (error instanceof RunHistoryWriteError) return;
+        throw error;
+      }
       let computerLease: ComputerExecutionLease | null = null;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
           computerId: leaseTarget.computerId,
           runId,
           botId: run.botId,
-          resumeHeldLease,
+          workerId,
+          runFence: fence,
         });
+        if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
+          computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+            computerId: leaseTarget.computerId,
+            runId,
+            botId: run.botId,
+            workerId,
+            runFence: fence,
+          });
+        }
       } catch (error) {
         if (!(error instanceof ComputerBusyError)) throw error;
-        await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
+        const blockers = await findRunRecoveryBlockers(
+          deps.prisma,
+          [{ id: runId, botId: run.botId, bot: { computerId: leaseTarget.computerId } }],
+          new Date(),
+        );
+        await requeueComputerRun(
+          deps,
+          runId,
+          workerId,
+          fence,
+          resumeCheckpoint,
+          heldForTakeover,
+          blockers.has(runId),
+        );
         return;
       }
-      const attempt = await deps.prisma.attempt
-        .create({
-          data: { runId, fence, status: "running" },
-        })
-        .catch(async (error) => {
-          await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
-          throw error;
+      let attempt: { id: string };
+      try {
+        const executionStarted = await deps.prisma.run.updateMany({
+          where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+          data: { startedAt: run.startedAt ?? new Date() },
         });
+        if (executionStarted.count !== 1) {
+          await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          return;
+        }
+        getLogger().info("run.execution_started", {
+          ...(await readRunTimingFields(deps.prisma, runId)),
+        });
+        attempt = await deps.prisma.attempt.create({ data: { runId, fence, status: "running" } });
+      } catch (error) {
+        await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+        throw error;
+      }
+
+      deps = withRunLease(deps, runId, { owner: workerId, fence });
 
       let leaseValid = true;
+      let leaseCompleted = false;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
       let screenRelease:
@@ -3609,24 +3730,79 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
       const heartbeat = setInterval(() => {
+        if (leaseCompleted) return;
         void Promise.all([
           renewRunLease(deps, runId, workerId, fence),
           renewComputerExecutionLease(deps.prisma, computerLease),
         ])
           .then(([runRenewed, computerRenewed]) => {
+            if (leaseCompleted) return;
             if (!runRenewed || !computerRenewed) {
               leaseValid = false;
               runAbortController?.abort();
             }
           })
           .catch(() => {
+            if (leaseCompleted) return;
             leaseValid = false;
             runAbortController?.abort();
           });
       }, 60_000);
       heartbeat.unref?.();
+      const stopHeartbeatAfterCompletion = () => {
+        leaseCompleted = true;
+        clearInterval(heartbeat);
+      };
 
       const runSecrets = [...deps.secrets];
+      const settleRunFailure = async (message: string, knownBot?: { id: string; name: string }) => {
+        const failed = await deps.events.finalizeRun({
+          spaceId: run.spaceId,
+          threadId: run.threadId,
+          botId: run.botId,
+          runId,
+          taskId: run.taskId,
+          attemptId: attempt.id,
+          leaseOwner: workerId,
+          leaseFence: fence,
+          outcome: "failed",
+          error: message,
+        });
+        if (!failed) return;
+        stopHeartbeatAfterCompletion();
+        await settleLocalPeerDelivery();
+        if (failed.continuationRunId) {
+          await deps.jobs
+            .enqueue(runContinueJob(failed.continuationRunId))
+            .catch((error) => getLogger().error("steering continuation enqueue", error));
+        }
+        const bot =
+          knownBot ??
+          (await deps.prisma.bot.findUnique({
+            where: { id: run.botId },
+            select: { name: true },
+          }));
+        const displayMessage =
+          message === "platform_model_forbidden" ? normalizeRunError(message).summary : message;
+        if (run.trigger === "bot_message") {
+          await returnBotMessageOutcome(
+            deps,
+            run,
+            { id: run.botId, name: bot?.name ?? "" },
+            `Could not complete the delegated request: ${displayMessage}`,
+            "status",
+          ).catch((error) => getLogger().error("bot message failure return", error));
+        }
+        if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
+          await notifyRun(deps, run, {
+            kind: "failure",
+            title: `${bot?.name ?? "Bot"} failed`,
+            body: displayMessage.slice(0, 180),
+            botId: run.botId,
+            threadId: run.threadId,
+          });
+        }
+      };
       const parkScriptedProgress = async (error: unknown) => {
         const failed = await failScriptedRunPreservingSteering(deps.prisma, {
           runId,
@@ -3659,6 +3835,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               status: "queued",
               leaseOwner: null,
               leaseExpiresAt: null,
+              wakeAt: new Date(),
               error: "Scripted continuation progress could not be verified",
             },
           });
@@ -3673,7 +3850,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
         });
       };
+      let dispatchHandedOff = false;
       try {
+        onRunStarted?.();
+        dispatchHandedOff = Boolean(onRunStarted);
         const sourceBlocks =
           run.trigger === "messaging" && run.sourceMessageId
             ? ((
@@ -3777,6 +3957,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
               )
             : null;
         runAbortController = new AbortController();
+        const ownerSignal = runAbortController.signal;
+        const runtimeAbortController = new AbortController();
+        let toolLoopStopText: string | undefined;
+        runtimeAbortController.signal.addEventListener(
+          "abort",
+          () => {
+            // Other early exits still cancel the whole attempt. A loop guard
+            // stops tools first while retaining ownership for its checkpoint.
+            if (toolLoopStopText === undefined)
+              runAbortController?.abort(runtimeAbortController.signal.reason);
+          },
+          { once: true },
+        );
         if (!leaseValid) runAbortController.abort();
         if (deps.shutdownSignal?.aborted) runAbortController.abort(deps.shutdownSignal.reason);
         const onShutdown = () => runAbortController?.abort(deps.shutdownSignal?.reason);
@@ -3811,7 +4004,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           botId: bot.id,
           runId,
           screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
-          signal: runAbortController.signal,
+          signal: AbortSignal.any([ownerSignal, runtimeAbortController.signal]),
           connectedConnections: connectedPlugins.map((row) => ({
             id: row.id,
             connectorId: row.connectorId,
@@ -4007,6 +4200,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error: message,
           });
           if (!failed) return;
+          stopHeartbeatAfterCompletion();
           await settleLocalPeerDelivery();
           if (failed.continuationRunId) {
             await deps.jobs
@@ -4137,7 +4331,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(async () => {
           if (!runComputer.ready) return;
-          await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, context);
+          await checkpointRunComputerWorkspace(deps, storedComputer, runComputer.ready, {
+            ...context,
+            signal: ownerSignal,
+          });
         });
         let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>> = [];
         let recentThreadFiles: Awaited<ReturnType<typeof listRecentThreadFiles>> = [];
@@ -4643,17 +4840,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     scriptedStateDigest(prior.blocks) !== scriptedStateDigest(blocks)
                   )
                     throw new ScriptedStateInvalidError();
-                  return { eventSeq: undefined };
+                  return { eventSeq: undefined, firstResponseRunId: undefined };
                 }
-                return persistMessageInTransaction(tx, run, "bot", blocks, markUnread, nonce);
+                return persistMessageInTransaction(
+                  tx,
+                  run,
+                  "bot",
+                  blocks,
+                  markUnread,
+                  nonce,
+                  false,
+                  runLeaseFor(deps, runId),
+                );
               },
               { maxWait: 5_000, timeout: 20_000 },
             );
             lastScriptedState = stored;
             if (committed.eventSeq !== undefined)
-              await deps.events.notify(thread.id, committed.eventSeq).catch((error) => {
-                getLogger().error("scripted output realtime notification", error);
-              });
+              await deps.events
+                .notify(thread.id, committed.eventSeq, committed.firstResponseRunId)
+                .catch((error) => {
+                  getLogger().error("scripted output realtime notification", error);
+                });
             context.signal.throwIfAborted();
           } catch (error) {
             if (error instanceof ScriptedStateInvalidError) throw error;
@@ -4700,6 +4908,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     type: "memory.revised",
                     runId,
                     payload,
+                    lease: runLeaseFor(deps, runId),
                   },
                   id,
                 );
@@ -4758,7 +4967,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ) => {
           if (!scripted) await persistTurnCheckpoint(executionId, pendingSecretEffectId);
           try {
-            return await deps.events.pauseRunForInput(input);
+            const paused = await deps.events.pauseRunForInput(input);
+            if (paused) stopHeartbeatAfterCompletion();
+            return paused;
           } catch (error) {
             if (isSteeringContinuation) throw new ScriptedStateError();
             throw error;
@@ -4770,7 +4981,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ) => {
           if (!scripted) await persistTurnCheckpoint(executionId);
           try {
-            return await deps.events.pauseRunForTakeover(input);
+            const paused = await deps.events.pauseRunForTakeover(input);
+            if (paused) stopHeartbeatAfterCompletion();
+            return paused;
           } catch (error) {
             if (isSteeringContinuation) throw new ScriptedStateError();
             throw error;
@@ -6382,6 +6595,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const oauthLikely = needsOAuthProbe(parsed);
             let serverRow: McpServer;
             let approvalEventSeq: number | undefined;
+            let approvalFirstResponseRunId: string | undefined;
             try {
               const created = await deps.prisma.$transaction(async (tx) => {
                 if (storedCredential) {
@@ -6429,11 +6643,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     status: "pending",
                   },
                 ];
-                const committed = await persistMessageInTransaction(tx, run, "bot", blocks);
-                return { server, eventSeq: committed.eventSeq };
+                const committed = await persistMessageInTransaction(
+                  tx,
+                  run,
+                  "bot",
+                  blocks,
+                  undefined,
+                  undefined,
+                  false,
+                  runLeaseFor(deps, runId),
+                );
+                return {
+                  server,
+                  eventSeq: committed.eventSeq,
+                  firstResponseRunId: committed.firstResponseRunId,
+                };
               });
               serverRow = created.server;
               approvalEventSeq = created.eventSeq;
+              approvalFirstResponseRunId = created.firstResponseRunId;
             } catch (error) {
               if (isUniqueViolation(error)) {
                 return finish({
@@ -6443,9 +6671,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               throw error;
             }
             if (approvalEventSeq !== undefined) {
-              await deps.events.notify(run.threadId, approvalEventSeq).catch((error) => {
-                getLogger().error("MCP approval realtime notification", error);
-              });
+              await deps.events
+                .notify(run.threadId, approvalEventSeq, approvalFirstResponseRunId)
+                .catch((error) => {
+                  getLogger().error("MCP approval realtime notification", error);
+                });
             }
             return finish({
               ok: true,
@@ -7767,7 +7997,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             },
             context,
           );
-          for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
+          for await (const event of withRuntimeCleanup(runtimeEvents, runtimeAbortController)) {
+            if (deps.shutdownSignal?.aborted) return;
             if (approvalPausePending) return;
             if (!leaseValid) return;
             const now = Date.now();
@@ -8036,50 +8267,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 else helperToolCallStreaks.set(namespace, next);
               }
               if (loopGuard.stuck) {
-                approvedEffectReplays.assertDrained();
-                flushPendingTools();
-                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-                if (messageSegments.length > 0) {
-                  await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
-                }
-                await workspaceCheckpoint.flush();
-                terminalCheckpointComplete = true;
-                const stuckText = loopGuardStopText(
+                toolLoopStopText = loopGuardStopText(
                   humanizeToolName(event.name),
                   namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
                 );
-                const stopped = await deps.events.finalizeRun({
-                  spaceId: run.spaceId,
-                  threadId: thread.id,
-                  botId: bot.id,
-                  runId,
-                  taskId: run.taskId,
-                  attemptId: attempt.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                  outcome: "completed",
-                  blocks: isBackgroundRunTrigger(run.trigger)
-                    ? []
-                    : [{ kind: "text", text: stuckText }],
-                });
-                if (!stopped) return;
-                await settleLocalPeerDelivery();
-                if (stopped.continuationRunId) {
-                  await deps.jobs
-                    .enqueue(runContinueJob(stopped.continuationRunId))
-                    .catch((error) => getLogger().error("steering continuation enqueue", error));
-                }
-                if (run.trigger === "bot_message") {
-                  await returnBotMessageOutcome(
-                    deps,
-                    { ...run, sourceMessageId: run.sourceMessageId },
-                    { id: bot.id, name: bot.name },
-                    stuckText,
-                    "result",
-                  ).catch((error) => getLogger().error("bot message loop-guard return", error));
-                }
-                runAbortController?.abort();
-                return;
+                break;
               }
               if (scripted) {
                 const startedAt = Date.now();
@@ -8199,6 +8391,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
 
+          if (toolLoopStopText !== undefined) {
+            // Breaking the iterator aborts and awaits admitted parallel tools.
+            // Keep the lease alive until their writes finish, then expose terminal.
+            if (deps.shutdownSignal?.aborted || approvalPausePending || !leaseValid) return;
+            approvedEffectReplays.assertDrained();
+            flushPendingTools();
+            if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+            if (messageSegments.length > 0) {
+              await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
+            }
+            await workspaceCheckpoint.flush();
+            terminalCheckpointComplete = true;
+            const stopped = await deps.events.finalizeRun({
+              spaceId: run.spaceId,
+              threadId: thread.id,
+              botId: bot.id,
+              runId,
+              taskId: run.taskId,
+              attemptId: attempt.id,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              outcome: "completed",
+              blocks: isBackgroundRunTrigger(run.trigger)
+                ? []
+                : [{ kind: "text", text: toolLoopStopText }],
+            });
+            if (!stopped) return;
+            stopHeartbeatAfterCompletion();
+            await settleLocalPeerDelivery();
+            if (stopped.continuationRunId) {
+              await deps.jobs
+                .enqueue(runContinueJob(stopped.continuationRunId))
+                .catch((error) => getLogger().error("steering continuation enqueue", error));
+            }
+            if (run.trigger === "bot_message") {
+              await returnBotMessageOutcome(
+                deps,
+                { ...run, sourceMessageId: run.sourceMessageId },
+                { id: bot.id, name: bot.name },
+                toolLoopStopText,
+                "result",
+              ).catch((error) => getLogger().error("bot message loop-guard return", error));
+            }
+            return;
+          }
+
           runComputer.throwIfFailed();
           if (approvalPausePending || !leaseValid) return;
           try {
@@ -8280,6 +8518,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
 
+          if (deps.shutdownSignal?.aborted) {
+            if (!terminalCheckpointComplete)
+              await workspaceCheckpoint.flush().catch(() => undefined);
+            return;
+          }
           await workspaceCheckpoint.flush();
           terminalCheckpointComplete = true;
 
@@ -8344,6 +8587,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             markUnread: completionMarksUnread(run.trigger, text),
           });
           if (!completed) return;
+          stopHeartbeatAfterCompletion();
           await settleLocalPeerDelivery();
           if (completed.continuationRunId) {
             await deps.jobs
@@ -8403,6 +8647,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().error("history.compact enqueue failed", error);
           }
         } catch (error) {
+          if (deps.shutdownSignal?.aborted) {
+            if (!terminalCheckpointComplete)
+              await workspaceCheckpoint.flush().catch(() => undefined);
+            return;
+          }
+          if (error instanceof RunHistoryWriteError) return;
           if (
             error instanceof ScriptedStateInvalidError ||
             error instanceof MemoryCommitIdentityError ||
@@ -8425,48 +8675,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error instanceof Error ? error.message : String(error),
             runSecrets,
           );
-          const failed = await deps.events.finalizeRun({
-            spaceId: run.spaceId,
-            threadId: thread.id,
-            botId: bot.id,
-            runId,
-            taskId: run.taskId,
-            attemptId: attempt.id,
-            leaseOwner: workerId,
-            leaseFence: fence,
-            outcome: "failed",
-            error: message,
-          });
-          if (!failed) return;
-          await settleLocalPeerDelivery();
-          if (failed.continuationRunId) {
-            await deps.jobs
-              .enqueue(runContinueJob(failed.continuationRunId))
-              .catch((error) => getLogger().error("steering continuation enqueue", error));
-          }
-          if (run.trigger === "bot_message") {
-            await returnBotMessageOutcome(
-              deps,
-              { ...run, sourceMessageId: run.sourceMessageId },
-              { id: bot.id, name: bot.name },
-              `Could not complete the delegated request: ${message === "platform_model_forbidden" ? normalizeRunError(message).summary : message}`,
-              "status",
-            ).catch((returnError) => getLogger().error("bot message failure return", returnError));
-          }
-          if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
-            await notifyRun(deps, run, {
-              kind: "failure",
-              title: `${bot.name} failed`,
-              body: (message === "platform_model_forbidden"
-                ? normalizeRunError(message).summary
-                : message
-              ).slice(0, 180),
-              botId: bot.id,
-              threadId: thread.id,
-            });
-          }
+          await settleRunFailure(message, bot);
         }
       } catch (setupError) {
+        if (deps.shutdownSignal?.aborted || setupError instanceof RunHistoryWriteError) return;
         if (
           setupError instanceof ScriptedStateInvalidError ||
           setupError instanceof MemoryCommitIdentityError ||
@@ -8481,27 +8693,43 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const computerBusy = setupError instanceof ComputerBusyError;
         const retryForever = computerBusy || isTooManyDatabaseConnections(setupError);
+        const providerOutage =
+          setupError instanceof SandboxUnavailableError ||
+          setupError instanceof SandboxUnresponsiveError;
         const setupFailureMessage =
           setupError instanceof SandboxRateLimitError
             ? setupError.message
             : "Run setup failed; retrying";
-        if (!computerBusy) {
+        {
           // undici collapses every network failure to "fetch failed"; the cause names the
           // host and errno, which is the only part worth paging over.
           const causeMessage =
             setupError instanceof Error && setupError.cause instanceof Error
               ? `: ${setupError.cause.message}`
               : "";
-          getLogger().error(
-            "run setup failed",
-            redactSecrets(
-              setupError instanceof Error
-                ? `${setupError.message}${causeMessage}`
-                : String(setupError),
-              runSecrets,
-            ),
+          const reportedSetupError = redactSecrets(
+            setupError instanceof Error
+              ? `${setupError.message}${causeMessage}`
+              : String(setupError),
+            runSecrets,
           );
+          if (providerOutage || !leaseValid)
+            getLogger().warn("run setup failed", { error: reportedSetupError });
+          else if (!computerBusy) getLogger().error("run setup failed", reportedSetupError);
         }
+        const priorFailures = retryForever ? 0 : await setupFailureStreak(deps.prisma, runId);
+        if (!retryForever && priorFailures >= RUN_SETUP_FAILURE_LIMIT - 1) {
+          const failureMessage = redactSecrets(
+            setupError instanceof Error ? setupError.message : String(setupError),
+            runSecrets,
+          );
+          await settleRunFailure(failureMessage);
+          return;
+        }
+        const retryAt = new Date(
+          Date.now() +
+            (providerOutage ? providerOutageRetryDelay(priorFailures) : computerRetryDelay(fence)),
+        );
         const released = await writeComputerRunRequeue(
           deps,
           runId,
@@ -8510,6 +8738,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           resumeCheckpoint,
           heldForTakeover,
           retryForever ? null : setupFailureMessage,
+          retryAt,
         );
         if (released) {
           await deps.prisma.attempt.update({
@@ -8520,10 +8749,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               finishedAt: new Date(),
             },
           });
-          if (retryForever) {
+          if (retryForever || dispatchHandedOff) {
             await deps.jobs.enqueue({
               ...runContinueJob(runId),
-              availableAt: new Date(Date.now() + computerRetryDelay(fence)),
+              availableAt: retryAt,
             });
             return;
           }
@@ -8564,6 +8793,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          if (!deps.shutdownSignal?.aborted) {
+            await startNextWaitingRun(deps, run.botId, runId).catch((error) =>
+              getLogger().error("start next waiting run", error),
+            );
+          }
+        }
+        if (deps.shutdownSignal?.aborted) {
+          leaseCompleted = true;
+          await requeueRunAfterShutdown(deps, runId, workerId, fence).catch((error) =>
+            getLogger().error("shutdown run requeue", error),
+          );
         }
         await deps.prisma.attempt
           .updateMany({
@@ -8706,28 +8946,6 @@ async function notifyRun(
     .catch((error) => {
       getLogger().error("run notification", error);
     });
-}
-
-async function renewRunLease(
-  deps: ExecutorDeps,
-  runId: string,
-  workerId: string,
-  fence: number,
-): Promise<boolean> {
-  const renewed = await deps.prisma.run.updateMany({
-    where: {
-      id: runId,
-      status: "running",
-      leaseOwner: workerId,
-      leaseFence: fence,
-    },
-    data: { leaseExpiresAt: new Date(Date.now() + 5 * 60_000) },
-  });
-  return renewed.count === 1;
-}
-
-function computerRetryDelay(fence: number): number {
-  return Math.min(10_000, 250 * 2 ** Math.min(Math.max(fence - 1, 0), 5));
 }
 
 export function selectBuiltinToolsForRun(options: {
@@ -9188,18 +9406,6 @@ export function runSendsFinishNotification(trigger: string): boolean {
   return trigger !== "created" && !isBackgroundRunTrigger(trigger);
 }
 
-/** Open the model only while this worker still owns the running lease. */
-export function mayOpenModelStream(
-  run: { status: string; leaseOwner: string | null; leaseFence: number | null } | null,
-  workerId: string,
-  fence: number,
-  aborted: boolean,
-): boolean {
-  return (
-    run?.status === "running" && run.leaseOwner === workerId && run.leaseFence === fence && !aborted
-  );
-}
-
 export { isExactNoResponse, NO_RESPONSE, stripNoResponseReply };
 
 export const LONG_WORK_PROGRESS_GUIDANCE =
@@ -9345,88 +9551,6 @@ export function subagentMarksUnread(trigger: string, status: "running" | "comple
   return status === "failed" || trigger !== "routine";
 }
 
-function computerRunRequeueData(
-  resumeCheckpoint: TakeoverResumeCheckpoint | null,
-  error: string | null = null,
-  heldForTakeover = false,
-) {
-  return {
-    status:
-      heldForTakeover && !resumeCheckpoint ? ("waiting_takeover" as const) : ("queued" as const),
-    error,
-    leaseOwner: null,
-    leaseExpiresAt: null,
-    checkpoint: resumeCheckpoint,
-  };
-}
-
-async function writeComputerRunRequeue(
-  deps: ExecutorDeps,
-  runId: string,
-  workerId: string,
-  fence: number,
-  resumeCheckpoint: TakeoverResumeCheckpoint | null,
-  heldForTakeover = false,
-  error: string | null = null,
-): Promise<boolean> {
-  const whereLease = {
-    id: runId,
-    status: "running" as const,
-    leaseOwner: workerId,
-    leaseFence: fence,
-  };
-  const releasedHold = {
-    status: "queued" as const,
-    error,
-    leaseOwner: null,
-    leaseExpiresAt: null,
-  };
-  const preserve = await deps.prisma.run.updateMany({
-    where: {
-      ...whereLease,
-      checkpoint: { in: [...TAKEOVER_RESUME_CHECKPOINTS] },
-    },
-    data: releasedHold,
-  });
-  if (preserve.count === 1) return true;
-  const planned = await deps.prisma.run.updateMany({
-    where: { ...whereLease, checkpoint: null },
-    data: computerRunRequeueData(resumeCheckpoint, error, heldForTakeover),
-  });
-  if (planned.count === 1) return true;
-  const retried = await deps.prisma.run.updateMany({
-    where: {
-      ...whereLease,
-      checkpoint: { in: [...TAKEOVER_RESUME_CHECKPOINTS] },
-    },
-    data: releasedHold,
-  });
-  return retried.count === 1;
-}
-
-async function requeueComputerRun(
-  deps: ExecutorDeps,
-  runId: string,
-  workerId: string,
-  fence: number,
-  resumeCheckpoint: TakeoverResumeCheckpoint | null,
-  heldForTakeover = false,
-): Promise<void> {
-  const released = await writeComputerRunRequeue(
-    deps,
-    runId,
-    workerId,
-    fence,
-    resumeCheckpoint,
-    heldForTakeover,
-  );
-  if (!released) return;
-  await deps.jobs.enqueue({
-    ...runContinueJob(runId),
-    availableAt: new Date(Date.now() + computerRetryDelay(fence)),
-  });
-}
-
 function redactScriptedDeliveryBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {
   return blocks.map((block) => {
     if (block.kind === "text") return { ...block, text: redactSecrets(block.text, secrets) };
@@ -9477,61 +9601,6 @@ function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[]
 
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
-}
-
-async function publishMessage(
-  deps: ExecutorDeps,
-  run: { id: string; spaceId: string; threadId: string; botId: string; trigger: string },
-  role: "user" | "bot" | "system",
-  blocks: MessageBlock[],
-  markUnread?: boolean,
-  clientNonce?: string,
-) {
-  if (isBackgroundRunTrigger(run.trigger)) {
-    blocks = blocks.filter((block) => block.kind === "ask" || block.kind === "computer");
-    if (blocks.length === 0) return null;
-  }
-  const committed = await deps.prisma.$transaction((tx) =>
-    persistMessageInTransaction(tx, run, role, blocks, markUnread, clientNonce),
-  );
-  await deps.events.notify(run.threadId, committed.eventSeq).catch((error) => {
-    getLogger().error("thread message realtime notification", error);
-  });
-  return committed.message;
-}
-
-async function persistMessageInTransaction(
-  tx: Prisma.TransactionClient,
-  run: { id: string; spaceId: string; threadId: string; botId: string },
-  role: "user" | "bot" | "system",
-  blocks: MessageBlock[],
-  markUnread?: boolean,
-  clientNonce?: string,
-) {
-  const message = await createThreadMessageInTransaction(tx, {
-    threadId: run.threadId,
-    role,
-    blocks,
-    botId: run.botId,
-    runId: run.id,
-    markUnread,
-    clientNonce,
-  });
-  const event = await appendEventInTransaction(tx, {
-    spaceId: run.spaceId,
-    threadId: run.threadId,
-    botId: run.botId,
-    type: "thread.message.created",
-    runId: run.id,
-    payload: {
-      messageId: message.id,
-      messageSeq: message.seq,
-      role,
-      blocks,
-      callId: callIdFromClientNonce(clientNonce),
-    },
-  });
-  return { message, eventSeq: event.seq };
 }
 
 /** Provider tool IDs are unique only within a run, never across users or workflows. */

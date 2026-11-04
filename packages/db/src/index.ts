@@ -22,6 +22,7 @@ export * from "./model-credentials.js";
 export * from "./plugin-installs.js";
 export * from "./readiness.js";
 export * from "./repos.js";
+export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";
 export * from "./scope.js";
 export * from "./scripted-state-failure.js";

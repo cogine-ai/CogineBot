@@ -5,6 +5,7 @@ import {
   canTransition,
   isBackgroundRunTrigger,
   isConversationalRun,
+  messageBypassesTakeoverWait,
 } from "./run-state.js";
 
 describe("run state machine", () => {
@@ -21,6 +22,7 @@ describe("run state machine", () => {
     expect(isConversationalRun("webhook")).toBe(false);
     expect(isConversationalRun("created")).toBe(false);
     expect(isConversationalRun("tickets")).toBe(false);
+    expect(isConversationalRun("bot_message")).toBe(false);
   });
 
   it("marks ticket runs as background work that stays out of the chat", () => {
@@ -50,5 +52,40 @@ describe("run state machine", () => {
         },
       ),
     );
+  });
+});
+
+describe("takeover wait message routing", () => {
+  it.each(["routine", "webhook", "created", "bot_message", "tickets"])(
+    "lets a message pass a %s takeover wait",
+    (trigger) => {
+      expect(messageBypassesTakeoverWait({ status: "waiting_takeover", trigger })).toBe(true);
+    },
+  );
+
+  it.each(["user", "follow_up", null, undefined])(
+    "keeps a conversational takeover wait for trigger %s",
+    (trigger) => {
+      expect(messageBypassesTakeoverWait({ status: "waiting_takeover", trigger })).toBe(false);
+    },
+  );
+
+  it("lets a message that cannot steer pass a conversational takeover wait", () => {
+    expect(
+      messageBypassesTakeoverWait({ status: "waiting_takeover", trigger: "user" }, false),
+    ).toBe(true);
+  });
+
+  it.each([
+    "queued",
+    "leased",
+    "running",
+    "waiting_input",
+    "completed",
+    "failed",
+    "cancelled",
+    undefined,
+  ])("does not bypass a run with status %s", (status) => {
+    expect(messageBypassesTakeoverWait({ status, trigger: "routine" }, false)).toBe(false);
   });
 });
