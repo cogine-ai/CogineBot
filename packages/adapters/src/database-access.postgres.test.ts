@@ -539,6 +539,252 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it("rejects unsafe future-table default grants before reporting readiness", async () => {
+    const table = `default_acl_probe_${suffix}`;
+    const qualified = `public.${escapeIdentifier(table)}`;
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT TRUNCATE ON TABLES TO ${escapeIdentifier(grantRole)}`,
+    );
+    try {
+      const prepared = (await describeRowSecurity(runtime!.prisma)).prepared;
+      let rejected = false;
+      try {
+        await provisionRuntimeRole(databaseUrl!, runtimeUrl);
+      } catch {
+        rejected = true;
+      }
+      await owner.pool.query(
+        `CREATE TABLE ${qualified}(id integer); INSERT INTO ${qualified} VALUES(1); ALTER TABLE ${qualified} ENABLE ROW LEVEL SECURITY; CREATE POLICY deny_rows ON ${qualified} USING(false)`,
+      );
+      expect((await runtime!.pool.query(`SELECT * FROM ${qualified}`)).rows).toEqual([]);
+      await runtime!.pool.query(`TRUNCATE ${qualified}`);
+      expect(
+        (await owner.pool.query(`SELECT count(*)::int AS total FROM ${qualified}`)).rows,
+      ).toEqual([{ total: 0 }]);
+      expect({ prepared, rejected }).toEqual({ prepared: false, rejected: true });
+    } finally {
+      await owner.pool.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE TRUNCATE ON TABLES FROM ${escapeIdentifier(grantRole)}`,
+      );
+      await owner.pool.query(`DROP TABLE IF EXISTS ${qualified}`);
+    }
+  });
+
+  it.each([
+    {
+      label: "table trigger on login",
+      schema: "public",
+      objects: "TABLES",
+      privilege: "TRIGGER",
+      target: "login",
+    },
+    {
+      label: "table references on group",
+      schema: "public",
+      objects: "TABLES",
+      privilege: "REFERENCES",
+      target: "group",
+    },
+    {
+      label: "delegable application select",
+      schema: "public",
+      objects: "TABLES",
+      privilege: "SELECT",
+      target: "group",
+      delegate: true,
+      preserve: true,
+    },
+    {
+      label: "application sequence update",
+      schema: "public",
+      objects: "SEQUENCES",
+      privilege: "UPDATE",
+      target: "group",
+    },
+    {
+      label: "delegable sequence usage",
+      schema: "public",
+      objects: "SEQUENCES",
+      privilege: "USAGE",
+      target: "group",
+      delegate: true,
+      preserve: true,
+    },
+    {
+      label: "queue truncate",
+      schema: "graphile_worker",
+      objects: "TABLES",
+      privilege: "TRUNCATE",
+      target: "group",
+    },
+    {
+      label: "delegable queue execution",
+      schema: "graphile_worker",
+      objects: "FUNCTIONS",
+      privilege: "EXECUTE",
+      target: "login",
+      delegate: true,
+    },
+    {
+      label: "private table read",
+      schema: "cogine_private",
+      objects: "TABLES",
+      privilege: "SELECT",
+      target: "login",
+    },
+    {
+      label: "catalog table read",
+      schema: "pg_catalog",
+      objects: "TABLES",
+      privilege: "SELECT",
+      target: "group",
+    },
+    {
+      label: "global table read",
+      schema: "",
+      objects: "TABLES",
+      privilege: "SELECT",
+      target: "group",
+    },
+    {
+      label: "global sequence read",
+      schema: "",
+      objects: "SEQUENCES",
+      privilege: "SELECT",
+      target: "group",
+    },
+    {
+      label: "future schema usage",
+      schema: "",
+      objects: "SCHEMAS",
+      privilege: "USAGE",
+      target: "group",
+    },
+    {
+      label: "public table truncate",
+      schema: "public",
+      objects: "TABLES",
+      privilege: "TRUNCATE",
+      target: "public",
+    },
+    {
+      label: "inherited table trigger",
+      schema: "public",
+      objects: "TABLES",
+      privilege: "TRIGGER",
+      target: "inherited",
+    },
+    {
+      label: "global function execution",
+      schema: "",
+      objects: "FUNCTIONS",
+      privilege: "EXECUTE",
+      target: "group",
+    },
+    {
+      label: "private function execution",
+      schema: "cogine_private",
+      objects: "FUNCTIONS",
+      privilege: "EXECUTE",
+      target: "login",
+    },
+  ])("rejects unsafe default ACL: $label", async (fixture) => {
+    const inherited = `${login}_default_inherited`;
+    if (fixture.target === "inherited") {
+      allocated.add(inherited);
+      await owner.pool.query(`CREATE ROLE ${escapeIdentifier(inherited)} NOLOGIN`);
+      await owner.pool.query(`GRANT ${escapeIdentifier(inherited)} TO ${escapeIdentifier(login)}`);
+    }
+    const grantee =
+      fixture.target === "public"
+        ? "PUBLIC"
+        : escapeIdentifier(
+            fixture.target === "group"
+              ? grantRole
+              : fixture.target === "inherited"
+                ? inherited
+                : login,
+          );
+    const scope = fixture.schema ? ` IN SCHEMA ${escapeIdentifier(fixture.schema)}` : "";
+    const prefix = `ALTER DEFAULT PRIVILEGES${scope}`;
+    await owner.pool.query(
+      `${prefix} GRANT ${fixture.privilege} ON ${fixture.objects} TO ${grantee}${fixture.delegate ? " WITH GRANT OPTION" : ""}`,
+    );
+    try {
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({
+        prepared: false,
+        enforced: false,
+      });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(
+        `${prefix} REVOKE ${fixture.delegate && fixture.preserve ? "GRANT OPTION FOR " : ""}${fixture.privilege} ON ${fixture.objects} FROM ${grantee}`,
+      );
+      if (fixture.target === "inherited")
+        await owner.pool.query(
+          `REVOKE ${escapeIdentifier(inherited)} FROM ${escapeIdentifier(login)}`,
+        );
+    }
+    expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({
+      prepared: true,
+      enforced: false,
+    });
+  });
+
+  it("preserves ordinary function/type defaults and the creator's own ACL", async () => {
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO ${escapeIdentifier(grantRole)}`,
+    );
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES GRANT USAGE ON TYPES TO ${escapeIdentifier(login)}`,
+    );
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${escapeIdentifier(login)} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
+    );
+    try {
+      await provisionRuntimeRole(databaseUrl!, runtimeUrl);
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({
+        prepared: true,
+        enforced: false,
+      });
+    } finally {
+      await owner.pool.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM ${escapeIdentifier(grantRole)}`,
+      );
+      await owner.pool.query(
+        `ALTER DEFAULT PRIVILEGES REVOKE USAGE ON TYPES FROM ${escapeIdentifier(login)}`,
+      );
+      await owner.pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${escapeIdentifier(login)} GRANT EXECUTE ON FUNCTIONS TO PUBLIC`,
+      );
+    }
+  });
+
+  it("accepts an empty default ACL without an array error", async () => {
+    const creator = `${login}_empty_defaults`;
+    allocated.add(creator);
+    await owner.pool.query(`CREATE ROLE ${escapeIdentifier(creator)} NOLOGIN`);
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${escapeIdentifier(creator)} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
+    );
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${escapeIdentifier(creator)} REVOKE ALL ON FUNCTIONS FROM ${escapeIdentifier(creator)}`,
+    );
+    expect(
+      (
+        await owner.pool.query(
+          "SELECT cardinality(defaclacl) AS size FROM pg_default_acl WHERE defaclrole=$1::regrole",
+          [creator],
+        )
+      ).rows,
+    ).toEqual([{ size: 0 }]);
+    await provisionRuntimeRole(databaseUrl!, runtimeUrl);
+    expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({
+      prepared: true,
+      enforced: false,
+    });
+  });
+
   it("rejects executable TRIGGER authority on application tables", async () => {
     const table = `public.${escapeIdentifier(probeTable)}`;
     const trigger = escapeIdentifier(`unsafe_trigger_${suffix}`);
@@ -608,6 +854,17 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     if (version < 170000) {
       expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
       return;
+    }
+    await owner.pool.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT MAINTAIN ON TABLES TO ${escapeIdentifier(grantRole)}`,
+    );
+    try {
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE MAINTAIN ON TABLES FROM ${escapeIdentifier(grantRole)}`,
+      );
     }
     const table = `public.${escapeIdentifier(probeTable)}`;
     await owner.pool.query(`GRANT MAINTAIN ON ${table} TO ${escapeIdentifier(login)}`);
@@ -1372,6 +1629,45 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
       }
     },
   );
+
+  it("rejects a same-name runtime password before migrating a fresh database", async () => {
+    const database = `same_login_cli_${suffix}`;
+    await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(database)}`);
+    const administrator = new URL(databaseUrl!);
+    administrator.pathname = `/${database}`;
+    const bad = new URL(administrator);
+    bad.password = "incorrect-same-name-fixture-password";
+    const peer = createDb(administrator.toString(), { poolMax: 1 });
+    const digests = await digestCount();
+    try {
+      let failure: unknown;
+      try {
+        await promisify(execFile)("pnpm", ["db:migrate"], {
+          cwd: path.resolve(import.meta.dirname, "../../.."),
+          env: {
+            ...process.env,
+            DATABASE_URL: bad.toString(),
+            DATABASE_MIGRATION_URL: administrator.toString(),
+          },
+          timeout: 30_000,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      const tables = (
+        await peer.pool.query(
+          "SELECT count(*)::int AS total FROM pg_tables WHERE schemaname='public'",
+        )
+      ).rows[0].total;
+      expect({ failed: Boolean(failure), tables }).toEqual({ failed: true, tables: 0 });
+      expect((failure as { stderr?: string }).stderr).toContain("Database preparation failed");
+      expect(JSON.stringify(failure)).not.toContain("incorrect-same-name-fixture-password");
+      expect(await digestCount()).toBe(digests);
+    } finally {
+      await close(peer);
+      await owner.pool.query(`DROP DATABASE ${escapeIdentifier(database)} WITH (FORCE)`);
+    }
+  });
 
   it("keeps the shared-login migration path explicit without claiming preparation", async () => {
     const result = await promisify(execFile)("pnpm", ["db:migrate"], {

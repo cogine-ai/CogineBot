@@ -138,6 +138,22 @@ function rolePrivileges(login?: string) {
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = p.oid AND m.admin_option)
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_parameter_acl a
           WHERE pg_catalog.has_parameter_privilege(p.oid, a.parname, 'SET,ALTER SYSTEM'))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
+          LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace
+          CROSS JOIN LATERAL pg_catalog.aclexplode(
+            CASE WHEN pg_catalog.cardinality(d.defaclacl) > 0 THEN d.defaclacl END) a
+          WHERE a.grantee IN (0, p.oid) AND a.grantee <> d.defaclrole
+            AND (d.defaclnamespace = 0 OR n.nspname IN ('public', 'graphile_worker', 'cogine_private', 'pg_catalog'))
+            AND (a.is_grantable OR CASE d.defaclobjtype
+              WHEN 'r' THEN d.defaclnamespace = 0 OR n.nspname IN ('cogine_private', 'pg_catalog')
+                OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+              WHEN 'S' THEN d.defaclnamespace = 0 OR n.nspname IN ('cogine_private', 'pg_catalog')
+                OR (a.privilege_type NOT IN ('USAGE', 'SELECT')
+                  AND NOT (n.nspname = 'graphile_worker' AND a.privilege_type = 'UPDATE'))
+              WHEN 'f' THEN a.privilege_type <> 'EXECUTE'
+                OR (a.grantee <> 0 AND (d.defaclnamespace = 0 OR n.nspname IN ('cogine_private', 'pg_catalog')))
+              WHEN 'T' THEN a.privilege_type <> 'USAGE'
+              ELSE true END))
         OR pg_catalog.has_database_privilege(p.oid, pg_catalog.current_database(),
           'CREATE,CONNECT WITH GRANT OPTION,TEMPORARY WITH GRANT OPTION')
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n

@@ -50,6 +50,13 @@ temporary access to perform authentication. Existing credentials and unrelated
 permissions are preserved. Later provisioning failures are not a transaction
 that rolls back every role or grant change.
 
+Readiness also rejects existing default grants that would give future protected
+objects unsafe runtime privileges. Correct those default privileges through the
+administrator account before retrying; preparation does not remove them or
+claim to protect against later administrator changes. With one database login,
+the command verifies the actual runtime URL before running migrations, including
+its credential, and still reports that row-level security is not enforced.
+
 Each database has its own grant role, named `coginebot_app_<database-oid>`. For
 precreated roles, obtain the name with
 `SELECT 'coginebot_app_' || oid FROM pg_catalog.pg_database WHERE datname = current_database()`.

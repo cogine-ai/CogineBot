@@ -3,6 +3,7 @@ import { migrateJobQueue } from "@rakazo/adapters";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import {
   createDb,
+  createPool,
   databaseUrls,
   describeRowSecurity,
   provisionRuntimeRole,
@@ -12,6 +13,14 @@ import {
 async function main() {
   loadRootEnv();
   const urls = databaseUrls(process.env);
+  if (!urls.separate) {
+    const pool = createPool(urls.url, { poolMax: 1 });
+    try {
+      await pool.query("SELECT 1");
+    } finally {
+      await pool.end();
+    }
+  }
   const migrationUrl = new URL(urls.migrationUrl);
   migrationUrl.searchParams.set("schema", "public");
   execFileSync("pnpm", ["--filter", "@rakazo/db", "exec", "prisma", "migrate", "deploy"], {
