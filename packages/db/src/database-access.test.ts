@@ -15,6 +15,9 @@ const state = vi.hoisted(() => ({
   released: 0,
   existing: false,
   groupExists: true,
+  databaseOid: 42,
+  foreignGroup: false,
+  unsafePrivileges: false,
   privileged: false,
   member: true,
   canManage: true,
@@ -33,7 +36,7 @@ vi.mock("pg", async (importActual) => {
     rolcreaterole: false,
     rolreplication: false,
     owns: false,
-    unsafePrivileges: false,
+    unsafePrivileges: state.unsafePrivileges,
   });
   return {
     ...actual,
@@ -57,16 +60,27 @@ vi.mock("pg", async (importActual) => {
       }
       async query(sql: string, values?: unknown[]) {
         state.sent.push({ sql, values });
+        if (sql.includes('AS "grantRole"'))
+          return {
+            rows: [
+              { grantRole: `coginebot_app_${state.databaseOid}`, databaseOid: state.databaseOid },
+            ],
+          };
+        if (sql.includes('AS "foreign"')) return { rows: [{ foreign: state.foreignGroup }] };
         if (sql.includes("AS can"))
           return { rows: [{ can: state.canManage, superuser: state.canManage }], rowCount: 1 };
         if (sql.includes("AS member")) return { rows: [{ member: state.member }], rowCount: 1 };
         if (sql.includes("SELECT 1 FROM pg_roles"))
           return { rows: state.groupExists ? [{}] : [], rowCount: state.groupExists ? 1 : 0 };
-        if (sql.startsWith("CREATE ROLE coginebot_app NOLOGIN")) state.groupExists = true;
+        if (/^CREATE ROLE "coginebot_app_\d+" NOLOGIN/.test(sql)) state.groupExists = true;
         if (sql.includes("FROM pg_catalog.pg_roles r")) {
           const name = values?.at(-1) as string;
           return {
-            rows: (name === "coginebot_app" ? state.groupExists : state.existing)
+            rows: (
+              name === `coginebot_app_${state.databaseOid}`
+                ? state.groupExists
+                : state.existing
+            )
               ? [privileges(name)]
               : [],
             rowCount: 1,
@@ -123,6 +137,9 @@ beforeEach(() => {
     released: 0,
     existing: false,
     groupExists: true,
+    databaseOid: 42,
+    foreignGroup: false,
+    unsafePrivileges: false,
     privileged: false,
     member: true,
     canManage: true,
@@ -411,13 +428,13 @@ describe("runtime role preparation", () => {
   it("initializes the password when this invocation creates its grant role as the runtime login", async () => {
     state.groupExists = false;
     await expect(
-      provisionRuntimeRole(owner, "postgres://coginebot_app:secret@db/coginebot"),
+      provisionRuntimeRole(owner, "postgres://coginebot_app_42:secret@db/coginebot"),
     ).resolves.toEqual({});
     expect(
-      state.sent.some((entry) => entry.sql.startsWith("CREATE ROLE coginebot_app NOLOGIN")),
+      state.sent.some((entry) => entry.sql.startsWith('CREATE ROLE "coginebot_app_42" NOLOGIN')),
     ).toBe(true);
     expect(
-      state.sent.find((entry) => entry.sql.startsWith('ALTER ROLE "coginebot_app"'))?.sql,
+      state.sent.find((entry) => entry.sql.startsWith('ALTER ROLE "coginebot_app_42"'))?.sql,
     ).toContain("PASSWORD 'SCRAM-SHA-256$");
   });
 
@@ -489,8 +506,8 @@ describe("role and key status", () => {
         statement.text.includes("pg_roles")
           ? [
               {
-                role: RUNTIME_ROLE,
-                sessionRole: RUNTIME_ROLE,
+                role: `${RUNTIME_ROLE}_42`,
+                sessionRole: `${RUNTIME_ROLE}_42`,
                 hasRuntimeGrants: true,
                 rolsuper: false,
                 rolbypassrls: false,
@@ -507,7 +524,7 @@ describe("role and key status", () => {
     await expect(describeRowSecurity(prisma)).resolves.toMatchObject({
       prepared: true,
       enforced: false,
-      role: RUNTIME_ROLE,
+      role: `${RUNTIME_ROLE}_42`,
     });
   });
   it("does not report a registered-key login ready without inherited runtime grants", async () => {
@@ -540,7 +557,7 @@ describe("role and key status", () => {
 
   it("does not hide a privileged authenticated session behind a restricted execution role", async () => {
     const restricted = {
-      role: RUNTIME_ROLE,
+      role: `${RUNTIME_ROLE}_42`,
       sessionRole: "administrator",
       hasRuntimeGrants: true,
       rolsuper: false,

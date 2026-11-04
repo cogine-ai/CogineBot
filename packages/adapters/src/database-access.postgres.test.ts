@@ -35,6 +35,8 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
   let runtime: ReturnType<typeof createDb> | undefined;
   let runtimeUrl: string;
   let createdGroup = false;
+  let grantRole: string;
+  let knownGrantRoles: Set<string>;
 
   function urlFor(name: string, secret: string) {
     const url = new URL(databaseUrl!);
@@ -82,8 +84,16 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
 
   beforeAll(async () => {
     owner = createDb(databaseUrl!);
+    grantRole = (
+      await owner.pool.query(
+        "SELECT 'coginebot_app_' || oid::text AS role FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database()",
+      )
+    ).rows[0].role;
+    knownGrantRoles = new Set(
+      (await owner.pool.query("SELECT rolname FROM pg_roles")).rows.map((row) => row.rolname),
+    );
     createdGroup = !(
-      await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [RUNTIME_ROLE])
+      await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [grantRole])
     ).rowCount;
     runtimeUrl = urlFor(login, password);
     await owner.pool.query(
@@ -96,6 +106,13 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
   afterAll(async () => {
     if (runtime) await close(runtime);
     if (!owner) return;
+    for (const row of (await owner.pool.query("SELECT rolname FROM pg_roles")).rows)
+      if (
+        !knownGrantRoles.has(row.rolname) &&
+        row.rolname !== grantRole &&
+        row.rolname.startsWith(`${RUNTIME_ROLE}_`)
+      )
+        allocated.add(row.rolname);
     for (const name of allocated) {
       if ((await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [name])).rowCount) {
         await owner.pool.query(`DROP OWNED BY ${escapeIdentifier(name)}`);
@@ -105,7 +122,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     await owner.pool.query(`DROP TABLE IF EXISTS public.${escapeIdentifier(probeTable)}`);
     if (
       createdGroup &&
-      (await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [RUNTIME_ROLE])).rowCount
+      (await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [grantRole])).rowCount
     ) {
       const policies = await owner.pool.query(
         "SELECT n.nspname, c.relname, p.polname FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE p.polname=$1",
@@ -120,8 +137,8 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
             "." +
             escapeIdentifier(policy.relname),
         );
-      await owner.pool.query(`DROP OWNED BY ${escapeIdentifier(RUNTIME_ROLE)}`);
-      await owner.pool.query(`DROP ROLE ${escapeIdentifier(RUNTIME_ROLE)}`);
+      await owner.pool.query(`DROP OWNED BY ${escapeIdentifier(grantRole)}`);
+      await owner.pool.query(`DROP ROLE ${escapeIdentifier(grantRole)}`);
     }
     await close(owner);
   });
@@ -377,6 +394,302 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it("rejects executable TRIGGER authority on application tables", async () => {
+    const table = `public.${escapeIdentifier(probeTable)}`;
+    const trigger = escapeIdentifier(`unsafe_trigger_${suffix}`);
+    await owner.pool.query(`GRANT TRIGGER ON ${table} TO ${escapeIdentifier(login)}`);
+    try {
+      await runtime!.pool.query(
+        `CREATE TRIGGER ${trigger} BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION public.ensure_default_space_membership()`,
+      );
+      await expect(
+        runtime!.pool.query(`INSERT INTO ${table} VALUES (2, 'fixture')`),
+      ).rejects.toThrow();
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(`DROP TRIGGER IF EXISTS ${trigger} ON ${table}`);
+      await owner.pool.query(`REVOKE TRIGGER ON ${table} FROM ${escapeIdentifier(login)}`);
+    }
+  });
+
+  it("rejects a predefined role that can terminate other runtime sessions", async () => {
+    const victimName = `${login}_victim`;
+    await createLogin(victimName);
+    const victim = createDb(urlFor(victimName, password), { poolMax: 1 });
+    await owner.pool.query(`GRANT pg_signal_backend TO ${escapeIdentifier(login)}`);
+    const connection = await victim.pool.connect();
+    try {
+      const pid = (await connection.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const cancelled = await runtime!.pool.query("SELECT pg_cancel_backend($1) AS allowed", [pid]);
+      expect(cancelled.rows).toEqual([{ allowed: true }]);
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      connection.release();
+      await close(victim);
+      await owner.pool.query(`REVOKE pg_signal_backend FROM ${escapeIdentifier(login)}`);
+    }
+  });
+
+  it("rejects every grantable predefined role installed on the actual server", async () => {
+    const roles = (
+      await owner.pool.query(
+        "SELECT rolname FROM pg_catalog.pg_roles WHERE left(rolname,3)='pg_' AND rolname<>'pg_database_owner' ORDER BY rolname",
+      )
+    ).rows;
+    expect(roles.some((role) => role.rolname === "pg_signal_backend")).toBe(true);
+    for (const role of roles) {
+      await owner.pool.query(
+        `GRANT ${escapeIdentifier(role.rolname)} TO ${escapeIdentifier(login)}`,
+      );
+      try {
+        expect(await describeRowSecurity(runtime!.prisma), role.rolname).toMatchObject({
+          prepared: false,
+        });
+        await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+      } finally {
+        await owner.pool.query(
+          `REVOKE ${escapeIdentifier(role.rolname)} FROM ${escapeIdentifier(login)}`,
+        );
+      }
+    }
+  });
+
+  it("checks maintenance privileges only when supported by the server", async () => {
+    const version = Number(
+      (await owner.pool.query("SHOW server_version_num")).rows[0].server_version_num,
+    );
+    if (version < 170000) {
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
+      return;
+    }
+    const table = `public.${escapeIdentifier(probeTable)}`;
+    await owner.pool.query(`GRANT MAINTAIN ON ${table} TO ${escapeIdentifier(login)}`);
+    try {
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(`REVOKE MAINTAIN ON ${table} FROM ${escapeIdentifier(login)}`);
+    }
+  });
+
+  it.each(["view", "queue", "PUBLIC table"])(
+    "rejects TRIGGER authority through %s",
+    async (kind) => {
+      const view = `public.${escapeIdentifier(`role_view_${suffix}`)}`;
+      if (kind === "view")
+        await owner.pool.query(
+          `CREATE VIEW ${view} AS SELECT * FROM public.${escapeIdentifier(probeTable)}`,
+        );
+      const table =
+        kind === "queue"
+          ? "graphile_worker._private_jobs"
+          : kind === "view"
+            ? view
+            : `public.${escapeIdentifier(probeTable)}`;
+      const grantee = kind === "PUBLIC table" ? "PUBLIC" : escapeIdentifier(login);
+      await owner.pool.query(`GRANT TRIGGER ON ${table} TO ${grantee}`);
+      try {
+        expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+        await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+      } finally {
+        await owner.pool.query(`REVOKE TRIGGER ON ${table} FROM ${grantee}`);
+        if (kind === "view") await owner.pool.query(`DROP VIEW ${view}`);
+      }
+    },
+  );
+
+  it.each([
+    "table REFERENCES",
+    "column REFERENCES",
+    "sequence UPDATE",
+    "sequence GRANT OPTION",
+    "database CONNECT GRANT OPTION",
+    "database TEMP GRANT OPTION",
+    "schema GRANT OPTION",
+    "queue function GRANT OPTION",
+    "parameter SET",
+    "parameter ALTER SYSTEM",
+    "role ADMIN OPTION",
+    "table GRANT OPTION",
+    "column GRANT OPTION",
+    "catalog SELECT",
+    "restricted builtin EXECUTE",
+  ])("rejects additional administrative authority: %s", async (kind) => {
+    const name = escapeIdentifier(login);
+    const table = `public.${escapeIdentifier(probeTable)}`;
+    const sequence = `public.${escapeIdentifier(`role_sequence_${suffix}`)}`;
+    const database = escapeIdentifier(
+      (await owner.pool.query("SELECT current_database() AS name")).rows[0].name,
+    );
+    const queueFunction = (
+      await owner.pool.query(
+        "SELECT p.oid::regprocedure::text AS name FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='graphile_worker' AND p.proname='add_job' ORDER BY p.oid LIMIT 1",
+      )
+    ).rows[0].name;
+    const setup: Record<string, [string, string]> = {
+      "table REFERENCES": [
+        `GRANT REFERENCES ON ${table} TO ${name}`,
+        `REVOKE REFERENCES ON ${table} FROM ${name}`,
+      ],
+      "column REFERENCES": [
+        `GRANT REFERENCES (id) ON ${table} TO ${name}`,
+        `REVOKE REFERENCES (id) ON ${table} FROM ${name}`,
+      ],
+      "sequence UPDATE": [
+        `GRANT UPDATE ON SEQUENCE ${sequence} TO ${name}`,
+        `REVOKE UPDATE ON SEQUENCE ${sequence} FROM ${name}`,
+      ],
+      "sequence GRANT OPTION": [
+        `GRANT SELECT ON SEQUENCE ${sequence} TO ${name} WITH GRANT OPTION`,
+        `REVOKE SELECT ON SEQUENCE ${sequence} FROM ${name} CASCADE`,
+      ],
+      "database CONNECT GRANT OPTION": [
+        `GRANT CONNECT ON DATABASE ${database} TO ${name} WITH GRANT OPTION`,
+        `REVOKE CONNECT ON DATABASE ${database} FROM ${name} CASCADE`,
+      ],
+      "database TEMP GRANT OPTION": [
+        `GRANT TEMPORARY ON DATABASE ${database} TO ${name} WITH GRANT OPTION`,
+        `REVOKE TEMPORARY ON DATABASE ${database} FROM ${name} CASCADE`,
+      ],
+      "schema GRANT OPTION": [
+        `GRANT USAGE ON SCHEMA graphile_worker TO ${name} WITH GRANT OPTION`,
+        `REVOKE USAGE ON SCHEMA graphile_worker FROM ${name} CASCADE`,
+      ],
+      "queue function GRANT OPTION": [
+        `GRANT EXECUTE ON FUNCTION ${queueFunction} TO ${name} WITH GRANT OPTION`,
+        `REVOKE EXECUTE ON FUNCTION ${queueFunction} FROM ${name} CASCADE`,
+      ],
+      "parameter SET": [
+        `GRANT SET ON PARAMETER log_statement TO ${name}`,
+        `REVOKE SET ON PARAMETER log_statement FROM ${name}`,
+      ],
+      "parameter ALTER SYSTEM": [
+        `GRANT ALTER SYSTEM ON PARAMETER log_statement TO ${name}`,
+        `REVOKE ALTER SYSTEM ON PARAMETER log_statement FROM ${name}`,
+      ],
+      "role ADMIN OPTION": [
+        `GRANT ${escapeIdentifier(grantRole)} TO ${name} WITH ADMIN OPTION`,
+        `REVOKE ADMIN OPTION FOR ${escapeIdentifier(grantRole)} FROM ${name} CASCADE`,
+      ],
+      "table GRANT OPTION": [
+        `GRANT SELECT ON ${table} TO ${name} WITH GRANT OPTION`,
+        `REVOKE SELECT ON ${table} FROM ${name} CASCADE`,
+      ],
+      "column GRANT OPTION": [
+        `GRANT UPDATE (content) ON ${table} TO ${name} WITH GRANT OPTION`,
+        `REVOKE UPDATE (content) ON ${table} FROM ${name} CASCADE`,
+      ],
+      "catalog SELECT": [
+        `GRANT SELECT ON pg_catalog.pg_authid TO ${name}`,
+        `REVOKE SELECT ON pg_catalog.pg_authid FROM ${name}`,
+      ],
+      "restricted builtin EXECUTE": [
+        `GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO ${name}`,
+        `REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM ${name}`,
+      ],
+    };
+    if (kind.startsWith("sequence")) await owner.pool.query(`CREATE SEQUENCE ${sequence}`);
+    const [grant, revoke] = setup[kind]!;
+    await owner.pool.query(grant);
+    try {
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(revoke);
+      if (kind.startsWith("sequence")) await owner.pool.query(`DROP SEQUENCE ${sequence}`);
+    }
+  });
+
+  it("keeps ineffective catalog-write grants separate from real authority", async () => {
+    await owner.pool.query(`GRANT UPDATE ON pg_catalog.pg_authid TO ${escapeIdentifier(login)}`);
+    try {
+      await expect(
+        runtime!.pool.query("UPDATE pg_catalog.pg_authid SET rolsuper=false WHERE false"),
+      ).rejects.toMatchObject({ code: "42501" });
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
+    } finally {
+      await owner.pool.query(
+        `REVOKE UPDATE ON pg_catalog.pg_authid FROM ${escapeIdentifier(login)}`,
+      );
+    }
+  });
+
+  it("preserves native PUBLIC metadata and ordinary USERSET access", async () => {
+    await runtime!.pool.query(
+      "UPDATE pg_catalog.pg_settings SET setting=current_setting('application_name') WHERE name='application_name'",
+    );
+    expect(
+      (await runtime!.pool.query("SELECT oid FROM pg_catalog.pg_class LIMIT 1")).rows,
+    ).toHaveLength(1);
+    expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
+  });
+
+  it.each(["PUBLIC builtin EXECUTE", "catalog column SELECT"])(
+    "rejects native authority beyond the initial PUBLIC baseline: %s",
+    async (kind) => {
+      const grant =
+        kind === "PUBLIC builtin EXECUTE"
+          ? "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO PUBLIC"
+          : `GRANT SELECT (rolpassword) ON pg_catalog.pg_authid TO ${escapeIdentifier(login)}`;
+      const revoke =
+        kind === "PUBLIC builtin EXECUTE"
+          ? "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM PUBLIC"
+          : `REVOKE SELECT (rolpassword) ON pg_catalog.pg_authid FROM ${escapeIdentifier(login)}`;
+      await owner.pool.query(grant);
+      try {
+        expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+        await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+      } finally {
+        await owner.pool.query(revoke);
+      }
+    },
+  );
+
+  it.each(["direct", "inherited"])(
+    "rejects later foreign authority on the managed grant role: %s",
+    async (mode) => {
+      const peerDatabase = `foreign_${mode}_${suffix}`;
+      const parent = `${login}_foreign_${mode}`;
+      await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(peerDatabase)}`);
+      const url = new URL(databaseUrl!);
+      url.pathname = `/${peerDatabase}`;
+      const peer = createDb(url.toString(), { poolMax: 1 });
+      if (mode === "inherited") {
+        allocated.add(parent);
+        await owner.pool.query(`CREATE ROLE ${escapeIdentifier(parent)} NOLOGIN`);
+        await owner.pool.query(
+          `GRANT ${escapeIdentifier(parent)} TO ${escapeIdentifier(grantRole)}`,
+        );
+      }
+      const grantee = mode === "inherited" ? parent : grantRole;
+      try {
+        await peer.pool.query("CREATE TABLE public.foreign_probe(id integer)");
+        await peer.pool.query(
+          `GRANT SELECT ON public.foreign_probe TO ${escapeIdentifier(grantee)}`,
+        );
+        await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+        expect(
+          (
+            await peer.pool.query(
+              "SELECT has_table_privilege($1,'public.foreign_probe','SELECT') AS allowed",
+              [grantee],
+            )
+          ).rows,
+        ).toEqual([{ allowed: true }]);
+        expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      } finally {
+        if (mode === "inherited")
+          await owner.pool.query(
+            `REVOKE ${escapeIdentifier(parent)} FROM ${escapeIdentifier(grantRole)}`,
+          );
+        await close(peer);
+        await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+      }
+    },
+  );
+
   it("rejects direct protected-column and CREATE privileges", async () => {
     await owner.pool.query(
       `GRANT SELECT(digest) ON cogine_private.rls_bypass_keys TO ${escapeIdentifier(login)}`,
@@ -628,17 +941,86 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it("isolates application and queue grants between prepared databases on one cluster", async () => {
+    const peerDatabase = `isolated_${suffix}`;
+    const peerLogin = `${login}_isolated`;
+    const secret = randomBytes(24).toString("hex");
+    allocated.add(peerLogin);
+    await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(peerDatabase)}`);
+    const ownerUrl = new URL(databaseUrl!);
+    ownerUrl.pathname = `/${peerDatabase}`;
+    const peerUrl = new URL(urlFor(peerLogin, secret));
+    peerUrl.pathname = `/${peerDatabase}`;
+    const crossUrl = new URL(runtimeUrl);
+    crossUrl.pathname = `/${peerDatabase}`;
+    const peerOwner = createDb(ownerUrl.toString(), { poolMax: 1 });
+    const peer = createDb(peerUrl.toString(), { poolMax: 1 });
+    const cross = createDb(crossUrl.toString(), { poolMax: 1 });
+    const reverse = createDb(urlFor(peerLogin, secret), { poolMax: 1 });
+    const beforeRoles = new Set(
+      (await owner.pool.query("SELECT rolname FROM pg_roles")).rows.map((row) => row.rolname),
+    );
+    try {
+      await peerOwner.pool.query(
+        "CREATE SCHEMA cogine_private; REVOKE ALL ON SCHEMA cogine_private FROM PUBLIC; CREATE TABLE cogine_private.rls_bypass_keys(digest bytea PRIMARY KEY); CREATE TABLE public.isolation_probe(id integer PRIMARY KEY); INSERT INTO public.isolation_probe VALUES (7)",
+      );
+      await migrateJobQueue(ownerUrl.toString());
+      await provisionRuntimeRole(ownerUrl.toString(), peerUrl.toString());
+      await peerOwner.pool.query(
+        "SELECT graphile_worker.add_job('cross-database-fixture', '{\"origin\":\"peer\"}'::json)",
+      );
+      expect((await peer.pool.query("SELECT id FROM public.isolation_probe")).rows).toEqual([
+        { id: 7 },
+      ]);
+      expect(
+        (await peer.pool.query("SELECT count(*)::int AS total FROM graphile_worker._private_jobs"))
+          .rows,
+      ).toEqual([{ total: 1 }]);
+      const appAllowed = await cross.pool.query("SELECT id FROM public.isolation_probe").then(
+        () => true,
+        () => false,
+      );
+      const queueAllowed = await cross.pool
+        .query("SELECT payload FROM graphile_worker._private_jobs")
+        .then(
+          () => true,
+          () => false,
+        );
+      const reverseAllowed = await reverse.pool
+        .query(`SELECT * FROM public.${escapeIdentifier(probeTable)}`)
+        .then(
+          () => true,
+          () => false,
+        );
+      expect({ appAllowed, queueAllowed, reverseAllowed }).toEqual({
+        appAllowed: false,
+        queueAllowed: false,
+        reverseAllowed: false,
+      });
+      await expect(
+        cross.pool.query("SELECT digest FROM cogine_private.rls_bypass_keys"),
+      ).rejects.toThrow();
+    } finally {
+      for (const client of [cross, peer, reverse, peerOwner]) await close(client);
+      const afterRoles = (await owner.pool.query("SELECT rolname FROM pg_roles")).rows;
+      for (const row of afterRoles)
+        if (!beforeRoles.has(row.rolname) && row.rolname.startsWith(`${RUNTIME_ROLE}_`))
+          allocated.add(row.rolname);
+      await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+    }
+  });
+
   it("rejects an unsafe grant role before creating another runtime login", async () => {
     const name = `${login}_blocked`;
     allocated.add(name);
-    await owner.pool.query(`ALTER ROLE ${escapeIdentifier(RUNTIME_ROLE)} BYPASSRLS`);
+    await owner.pool.query(`ALTER ROLE ${escapeIdentifier(grantRole)} BYPASSRLS`);
     try {
       await expect(provisionRuntimeRole(databaseUrl!, urlFor(name, password))).rejects.toThrow();
       expect(
         (await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [name])).rowCount,
       ).toBe(0);
     } finally {
-      await owner.pool.query(`ALTER ROLE ${escapeIdentifier(RUNTIME_ROLE)} NOBYPASSRLS`);
+      await owner.pool.query(`ALTER ROLE ${escapeIdentifier(grantRole)} NOBYPASSRLS`);
     }
   });
 
@@ -663,7 +1045,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     await owner.pool.query(
       `CREATE ROLE ${escapeIdentifier(name)} LOGIN PASSWORD ${escapeLiteral(secret)}`,
     );
-    await owner.pool.query(`GRANT ${escapeIdentifier(RUNTIME_ROLE)} TO ${escapeIdentifier(name)}`);
+    await owner.pool.query(`GRANT ${escapeIdentifier(grantRole)} TO ${escapeIdentifier(name)}`);
     const peerUrl = new URL(urlFor(name, secret));
     peerUrl.pathname = `/${peerDatabase}`;
     const peer = createDb(peerUrl.toString(), { poolMax: 1 });

@@ -41,6 +41,20 @@ must inherit the runtime grant role. Privileged logins are rejected rather than
 silently changed. Registered keys used by existing pools remain during rollout;
 credential retirement requires draining those instances separately.
 
+Each database has its own grant role, named `coginebot_app_<database-oid>`. For
+precreated roles, obtain the name with
+`SELECT 'coginebot_app_' || oid FROM pg_catalog.pg_database WHERE datname = current_database()`.
+Create that restricted `NOLOGIN` grant role and give it to the runtime login when
+the migration account cannot create roles. Keep monitoring and administration
+on separate logins; extra server authority and permission delegation are rejected.
+Each managed grant role grants access to its own database. Additional memberships
+and direct grants remain administrator-controlled. Reusing one login across
+databases intentionally shares that login's authority.
+
+Before activating a restored database, reconcile any grant-role ACLs carried by
+the backup and prepare the restored database's role and key. Preparation does
+not migrate legacy role ACLs or change the backup/restore workflow.
+
 Preparation preserves an existing login's password and verifies the supplied
 credential as it stands. To roll out a new password without breaking reconnects,
 prepare a new login, switch the new instances to it, and drain the old instances
