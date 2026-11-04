@@ -61,9 +61,6 @@ REQUEST_PATIENCE_SECONDS = 10.0
 NAVIGATE_SECONDS = 15.0
 NAVIGATE_SNAPSHOT_BY = 12.0
 NAVIGATE_SNAPSHOT_UNTIL = 20.0
-# Typing presses each key after checking the page is still the same one with focus in the field.
-# Longer text is typed in one go and checked after.
-CHECKED_KEYS = 32
 
 MAX_UPLOAD_FILES = 10
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -583,7 +580,10 @@ class PageBrowser:
         uncertain = False
         try:
             exact = self.exact()
-            exact.assert_mutations_allowed()
+            try:
+                exact.assert_mutations_allowed()
+            except Refused as exc:
+                return self.observed({"ok":False,"uncertain":False,"navigationOutcomeKnown":True,"error":str(exc)})
             exact.client.deadline = work_deadline
             mark = exact.navigation.begin_action()
             remaining_time(work_deadline)
@@ -626,35 +626,52 @@ class PageBrowser:
         focus from box to box gets each key in its own box. Before each key the page must still be
         the same document, with focus in the field or a box next to it."""
         token = os.urandom(8).hex()
-        self.exact().act(ref, 'focus')
-        info = self.exact().eval_for_ref(ref, TYPE_START.replace("TOKEN", token).replace("EXACT_REF",json.dumps(ref))
-                                        .replace("WHOLE", json.dumps(len(text) > 1))) or {}
+        exact = self.exact()
+        session, world = exact.locate(ref)
+        frame, loader = page_secrets.ref_binding(ref, self.target)
+        initial_navigation = exact.client.navigations(session,frame)
+        exact.act(ref, 'focus')
+        def evaluate(expression: str) -> Any:
+            return page_secrets.eval_json(exact.client,session,expression,context_id=world)
+        info = evaluate(TYPE_START.replace("TOKEN", token).replace("EXACT_REF",json.dumps(ref))
+                        .replace("WHOLE", json.dumps(len(text) > 1))) or {}
         multiline = info.get("multiline") is True
         # Enter in a one-line field would submit its form; Shift+Enter breaks the line elsewhere.
         chars = [char for char in text.replace("\r\n", "\n").replace("\r", "\n") if multiline or char != "\n"]
         check = TYPE_CHECK.replace('TOKEN',token)
+        dispatched, final_navigation = 0, exact.client.navigations(session,frame)
         try:
-            if info.get('frame') or len(chars) > CHECKED_KEYS:
-                for index, line in enumerate(''.join(chars).split('\n')):
-                    self.exact().eval_for_ref(ref, check)
-                    if index:
-                        self.ab.batch([['press','Shift+Enter']], timeout=60.0)
-                    if line:
-                        self.ab.batch([['keyboard','type',line]], timeout=60.0)
-            else:
-                for index, char in enumerate(chars):
-                    try:
-                        self.exact().eval_for_ref(ref, check)
-                    except Exception:
-                        raise TypingStopped(f'Typing stopped after {index} of {len(chars)} characters. Take a fresh snapshot.') from None
-                    self.ab.batch([key_command(char)], timeout=60.0)
+            for index, char in enumerate(chars):
+                try:
+                    if evaluate(check) is not True:
+                        raise Refused('The typing target could not be verified.')
+                    if exact.client.navigations(session,frame) != initial_navigation:
+                        raise Refused('The typing document has started navigating.')
+                except Exception:
+                    raise TypingStopped(f'Typing stopped after {index} of {len(chars)} characters. Take a fresh snapshot.') from None
+                if index == len(chars) - 1:
+                    final_navigation = exact.client.navigations(session,frame)
+                page_secrets.type_character(exact.client,session,char)
+                dispatched += 1
         except Refused:
             raise TypingStopped('The page changed while typing. Take a fresh snapshot.') from None
+        def submitted() -> bool:
+            if not chars or dispatched != len(chars) or exact.client.navigations(session,frame) <= final_navigation:
+                return False
+            try:
+                return any(item['id'] == frame and item['loaderId'] != loader
+                           for item in exact.frames(require_complete=True))
+            except Exception:
+                return False
         try:
-            done = self.exact().eval_for_ref(ref, TYPE_DONE.replace('TOKEN',token).replace('TEXT',json.dumps(''.join(chars)))) or {}
-        except Refused:
-            return  # The final key may have submitted the form and replaced its document.
-        if done.get('kept') is False:
+            done = evaluate(TYPE_DONE.replace('TOKEN',token).replace('TEXT',json.dumps(''.join(chars)))) or {}
+        except Exception:
+            if submitted():
+                return  # All keys were acknowledged, and the final key committed a new document.
+            raise KeysNotKept('Typed text could not be verified after the page changed. Inspect the current state before continuing.') from None
+        if done.get('kept') is not True:
+            if submitted():
+                return
             raise KeysNotKept(NOT_KEPT)
 
     def act(self, actions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -702,13 +719,21 @@ class PageBrowser:
             return self.observed({'ok':True,'completed':completed,'uncertain':False,
                                   **({'loading':True} if busy else {})})
         except (Settled,Refused,TypingStopped,KeysNotKept,page_secrets.KeysNotKept) as exc:
-            return self.observed({'ok':False,'completed':completed,'uncertain':False,'error':str(exc)})
+            timed_out = False
+            if isinstance(exc,TypingStopped) and exact.navigation.mark() != mark:
+                try:
+                    timed_out = page_secrets.follow_navigation(exact.client,exact.navigation,mark,
+                                                              self.deadline - SNAPSHOT_RESERVE_S)
+                except Exception as wait_error:
+                    timed_out = isinstance(wait_error,TimeoutError)
+            return self.observed({'ok':False,'completed':completed,'uncertain':False,'error':str(exc),
+                                  **({'timedOut':True} if timed_out else {})})
         except Exception as exc:
             return self.observed({'ok':False,'completed':completed,'uncertain':uncertain,'error':str(exc),
                 'fallback':'computer_act',**({'timedOut':True} if isinstance(exc,TimeoutError) else {})})
 
 
-# Typing bookkeeping runs in the exact field's isolated world; native keyboard input remains agent-browser's.
+# Typing bookkeeping stays in the exact field's isolated world; native keys use the engine's CDP semantics.
 # A code is typed into its boxes: like-named one- or two-character inputs around the field, up to
 # where their numbering starts again, so a second code or a middle-initial field next to it is left alone.
 CODE_BOXES = r"""
@@ -750,7 +775,7 @@ CODE_BOXES = r"""
 TYPE_START = "(() => {" + CODE_BOXES + r"""
   const el = window.__rakazoPageBrowserExact.resolveForTyping(EXACT_REF);
   const initial = focused();
-  if (initial !== el && !el.contains(initial)) throw new Error("The field did not retain keyboard focus.");
+  if (!document.hasFocus() || (initial !== el && !el.contains(initial))) throw new Error("The field did not retain keyboard focus.");
   if (el instanceof HTMLIFrameElement || el instanceof HTMLFrameElement) return { frame: true };
   if (!el || el === document.body) throw new Error("The field did not take keyboard focus. Click it, then type again.");
   const code = codeOf(el);
@@ -784,38 +809,30 @@ TYPE_CHECK = "(() => {" + CODE_BOXES + r"""
   if (typing?.token !== "TOKEN") throw new Error("Typing stopped: page");
   const active = focused();
   const { el, code } = typing;
-  const holds = active === el || el.contains(active) || (code !== null && code.container.isConnected
-    && like(code.container,code.name).slice(code.from,code.from + code.size).includes(active));
+  const holds = document.hasFocus() && ((el.isConnected && el.ownerDocument === document && (active === el || el.contains(active)))
+    || (code !== null && code.container.isConnected && code.container.ownerDocument === document
+      && like(code.container,code.name).slice(code.from,code.from + code.size).includes(active)));
   if (!holds) throw new Error("Typing stopped: focus");
   return true;
 })()"""
 
 TYPE_DONE = "(() => {" + CODE_BOXES + r"""
   const typing = window.__rakazoTyping;
-  if (typing?.token !== "TOKEN") return { kept: true };
+  if (typing?.token !== "TOKEN") return { kept: false };
   const { el, code, start } = typing;
   const letters = (value) => String(value).replace(/[^\p{L}\p{N}]/gu, "").toLowerCase();
   const wanted = letters(TEXT);
   if (code) {
-    if (!code.container.isConnected) return { kept: true };
+    if (!code.container.isConnected || code.container.ownerDocument !== document) return { kept: false };
     const shown = like(code.container, code.name).slice(start,code.from + code.size).map((field) => field.value).join("");
     return { kept: letters(shown).slice(0, wanted.length) === wanted };
   }
-  if (!el.isConnected) return { kept: true };
+  if (!el.isConnected || el.ownerDocument !== document) return { kept: false };
   const shown = String(el.isContentEditable ? el.innerText : el.value).replace(/\r\n?/g,"\n");
   const normalized = String(TEXT).replace(/\r\n?/g,"\n");
   const expected = el instanceof HTMLInputElement ? normalized.replace(/\n/g,"") : normalized;
   return { kept: shown === expected };
 })()"""
-
-
-def key_command(char: str) -> list[str]:
-    """One character as a real key press, or as inserted text where a key cannot name it."""
-    if char == "\n":
-        return ["press", "Shift+Enter"]
-    if char.isascii() and char.isalnum():
-        return ["press", char]
-    return ["keyboard", "inserttext", char]
 
 
 def resolve_upload_paths(paths: Any, home: str | None = None, roots: list[str] | None = None) -> list[str]:

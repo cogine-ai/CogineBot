@@ -118,6 +118,32 @@ class CdpBoundaryTest(unittest.TestCase):
         self.assertEqual(secrets.world_in(client, "session-a", "frame-a"), 7)
 
 
+class NativeTypingKeyTest(unittest.TestCase):
+    def test_character_dispatch_keeps_native_key_text_and_session_fields(self):
+        for char in ("a", "A", "7", "\n"):
+            with self.subTest(char=char):
+                client = Mock()
+                secrets.type_character(client, "typing-session", char)
+                calls = client.call.call_args_list
+                self.assertEqual([call.args[0] for call in calls], ["Input.dispatchKeyEvent"] * 2)
+                self.assertEqual([call.args[1]["type"] for call in calls], ["keyDown", "keyUp"])
+                self.assertTrue(all(call.kwargs == {"session_id": "typing-session"} for call in calls))
+                down, up = [call.args[1] for call in calls]
+                self.assertEqual(down["key"], "Enter" if char == "\n" else char)
+                self.assertEqual(down["text"], "\r" if char == "\n" else char)
+                self.assertEqual(down["unmodifiedText"], down["text"])
+                self.assertNotIn("text", up)
+                if char == "\n":
+                    self.assertEqual((down["code"], down["windowsVirtualKeyCode"], down["modifiers"], up["modifiers"]), ("Enter", 13, 8, 8))
+
+    def test_unicode_and_punctuation_use_one_native_insert_without_script_interpolation(self):
+        for char in ("中", "🙂", "!", '"', " "):
+            with self.subTest(char=char):
+                client = Mock()
+                secrets.type_character(client, "typing-session", char)
+                client.call.assert_called_once_with("Input.insertText", {"text": char}, session_id="typing-session")
+
+
 class ExactReferenceTest(unittest.TestCase):
     def test_registers_the_actual_backend_node_without_a_name_lookup(self):
         client = Mock()
@@ -612,6 +638,24 @@ page.act(exact_ref(), 'click')
             self.assertNotEqual(old.path, fresh.path)
             self.assertIsNone(fresh.read())
             self.assertIsNotNone(old.read())
+
+
+class PointerGuardInspectionFailureTest(unittest.TestCase):
+    def test_all_witness_read_failures_are_settled_and_preserve_pending_guard(self):
+        for phase in ("original", "same-document-recovery", "missing-document-recovery"):
+            for error in (RuntimeError("The witness read failed"), TimeoutError("The witness read timed out")):
+                with self.subTest(phase=phase, error=type(error).__name__), tempfile.TemporaryDirectory() as directory, \
+                        patch.object(secrets.tempfile, "gettempdir", return_value=directory):
+                    page = object.__new__(secrets.ExactPage)
+                    page.target = "another-tab" if phase == "missing-document-recovery" else "original-tab"
+                    page.pointer_guard = secrets.PointerGuard("owned-browser", "original-tab", time.monotonic() + 22)
+                    page.pointer_guard.arm("a" * 32, "original-frame", "original-loader")
+                    original = page.pointer_guard.read()
+                    page.pending_document_present = Mock(return_value=phase != "missing-document-recovery")
+                    page.pointer_states = Mock(side_effect=[[], error] if phase == "same-document-recovery" else error)
+                    with self.assertRaises(secrets.Refused):
+                        page.assert_mutations_allowed()
+                    self.assertEqual(page.pointer_guard.read(), original)
 
 
 class PendingDocumentProofTest(unittest.TestCase):

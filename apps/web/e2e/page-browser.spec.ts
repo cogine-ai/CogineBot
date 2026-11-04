@@ -57,8 +57,17 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     expect(snapshot.title).toBe("Fixture");
     expect(snapshot.tree).toContain("Readable article content");
     expect(JSON.stringify(snapshot)).not.toContain("fake-test-password");
-    const ref = (snapshot: { elements: { name: string; ref: string }[] }, name: string) =>
-      snapshot.elements.find((element) => element.name === name)!.ref;
+    const ref = (
+      snapshot: { elements: { name: string; ref: string; role?: string; tag?: string }[] },
+      name: string,
+    ) => {
+      const match = snapshot.elements.find((element) => element.name === name);
+      expect(
+        match,
+        `${name}: ${JSON.stringify(snapshot.elements.map(({ role, name, tag }) => ({ role, name, tag })))}`,
+      ).toBeDefined();
+      return match!.ref;
+    };
     const result = await command("act", {
       actions: [
         { kind: "fill", ref: ref(snapshot, "Name"), text: "Example" },
@@ -303,7 +312,10 @@ test("live page helper selects enabled options, edits rich text, and uploads con
       const snapshot = await command("snapshot");
       expect(snapshot.ok).toBe(true);
       const ref = snapshot.elements.find((element: { name: string }) => element.name === name)?.ref;
-      expect(ref, name).toBeTruthy();
+      expect(
+        ref,
+        `${name}: ${JSON.stringify(snapshot.elements.map(({ role, name, tag }: { role?: string; name: string; tag?: string }) => ({ role, name, tag })))}`,
+      ).toBeTruthy();
       return command("act", { actions: [{ ref, ...action }] });
     };
     expect(await act("Destination", { kind: "fill", text: "New destination" })).toMatchObject({
@@ -409,6 +421,11 @@ test("live page helper waits for a site's sign-in check, or says the page is sti
       return JSON.parse(stdout);
     };
     const page = context.pages()[0]!;
+
+    // Attach the request observer before either timed check begins.
+    await page.goto(`http://127.0.0.1:${address.port}/?check=0`);
+    await expect(page.locator("header")).toHaveText("Signed in as test-user");
+    expect(await snapshot()).toMatchObject({ ok: true, title: "Example" });
 
     // The check answers within the wait: the snapshot shows the signed-in page.
     await page.goto(`http://127.0.0.1:${address.port}/?check=500`);
@@ -594,13 +611,34 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
       return JSON.parse(stdout);
     }
     // Each result carries a fresh snapshot, whose refs replace the previous ones.
-    let elements: Array<{ name: string; ref: string; value?: string }> = [];
+    let elements: Array<{
+      name: string;
+      ref: string;
+      value?: string;
+      role?: string;
+      tag?: string;
+    }> = [];
     const refresh = async () => {
       elements = (await command("snapshot")).elements;
     };
     async function type(name: string, text: string) {
+      await page.evaluate((name) => {
+        const target = Array.from(document.querySelectorAll("[aria-label]")).find(
+          (element) => element.getAttribute("aria-label") === name,
+        );
+        const section = target?.closest("section")?.id ?? "last";
+        const visible = new Set([section, section === "last" ? "keys" : "last"]);
+        for (const group of document.querySelectorAll("section")) {
+          (group as HTMLElement).hidden = !visible.has(group.id);
+        }
+      }, name);
+      // Visibility changes keep every widget's values and listeners; only refs are refreshed.
+      await refresh();
       const ref = elements.find((element) => element.name === name)?.ref;
-      expect(ref, name).toBeTruthy();
+      expect(
+        ref,
+        `${name}: ${JSON.stringify(elements.map(({ role, name, tag }) => ({ role, name, tag })))}`,
+      ).toBeTruthy();
       const result = await command("act", { actions: [{ kind: "type", ref, text }] });
       elements = result.elements ?? [];
       return result;

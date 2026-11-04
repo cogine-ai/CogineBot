@@ -184,6 +184,17 @@ while base.exists():
         self.assertFalse(result["uncertain"])
         self.assertEqual(target._exact.client.call.call_count, 1)
 
+    def test_pointer_guard_refusal_before_navigation_is_settled_without_fallback(self):
+        target = page()
+        target._exact.assert_mutations_allowed.side_effect = helper.page_secrets.Refused("Release the pending pointer first")
+        result = target.navigate("https://example.test")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertTrue(result["navigationOutcomeKnown"])
+        self.assertNotIn("fallback", result)
+        target._exact.client.call.assert_not_called()
+        target._exact.navigation.begin_action.assert_not_called()
+
     def test_preserves_completed_actions_when_next_response_is_lost(self):
         target = page()
         target._exact.act.side_effect = [True, TimeoutError("lost response")]
@@ -539,6 +550,205 @@ while base.exists():
             for denied in (str(foreign), str(root / "escape.txt"), str(root), str(root / "absent")):
                 with self.subTest(path=denied), self.assertRaises(RuntimeError):
                     helper.resolve_upload_paths([denied], home=directory, roots=["allowed"])
+
+
+class TypingProducerTest(unittest.TestCase):
+    def driver(self, *, multiline=False, frame=False, redirect_after=None, final_document_changed=False):
+        target = page()
+        state = {"original": "", "other": "", "redirected": False, "checks": 0, "wanted": ""}
+        def evaluate(element_ref, expression):
+            if "const el = window.__rakazoPageBrowserExact.resolveForTyping" in expression:
+                return {"multiline": multiline, "frame": frame}
+            if "return { kept:" in expression:
+                if final_document_changed:
+                    raise helper.page_secrets.Refused("The element document has changed")
+                return {"kept": state["original"] == state["wanted"]}
+            state["checks"] += 1
+            if state["redirected"]:
+                raise RuntimeError("Typing stopped: focus")
+            return True
+        def dispatch(commands, **kwargs):
+            for command in commands:
+                if command[0] == "press":
+                    value = "\n" if command[1] == "Shift+Enter" else command[1]
+                else:
+                    self.assertIn(command[:2], (["keyboard", "type"], ["keyboard", "inserttext"]))
+                    value = command[2]
+                for char in value:
+                    field = "other" if state["redirected"] else "original"
+                    state[field] += char
+                    if redirect_after is not None and len(state["original"]) >= redirect_after:
+                        state["redirected"] = True
+            return []
+        def cdp_call(method, params=None, **kwargs):
+            params = params or {}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": evaluate(ref(), params["expression"])}}
+            if method == "Input.insertText":
+                dispatch([["keyboard", "inserttext", params["text"]]])
+                return {}
+            if method == "Input.dispatchKeyEvent":
+                if params["type"] == "keyDown":
+                    value = params.get("text")
+                    if value is None and params.get("key") == "Enter":
+                        value = "\n"
+                    if value:
+                        dispatch([["keyboard", "inserttext", value.replace("\r", "\n")]])
+                return {}
+            raise AssertionError(f"Unexpected typing CDP method: {method}")
+        target._exact.eval_for_ref.side_effect = evaluate
+        target._exact.locate.return_value = ("typing-session", 7)
+        target._exact.navigation = helper.page_secrets.NavigationState("typing-session", {"id": "frame", "loaderId": "loader"})
+        target._exact.client.navigations.return_value = 0
+        target._exact.client.call.side_effect = cdp_call
+        target.ab.batch.side_effect = dispatch
+        target.observed = lambda result: result
+        return target, state
+
+    def test_long_and_frame_typing_never_dispatches_a_suffix_after_focus_changes(self):
+        text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" * 2
+        for frame in (False, True):
+            for redirect_after in (1, 17):
+                with self.subTest(frame=frame, redirect_after=redirect_after):
+                    target, state = self.driver(frame=frame, redirect_after=redirect_after)
+                    state["wanted"] = text
+                    error = None
+                    try:
+                        target.type(ref(), text)
+                    except Exception as exc:
+                        error = exc
+                    self.assertEqual(state["other"], "")
+                    self.assertEqual(state["original"], text[:redirect_after])
+                    self.assertIsInstance(error, helper.TypingStopped)
+
+    def test_normal_long_ascii_unicode_and_multiline_text_is_fully_retained(self):
+        for text, multiline in (("Long ordinary text " * 4, False), ("中文🙂标点!" * 9, False), ("First line\r\n" + "Second " * 7 + "\n尾🙂", True)):
+            with self.subTest(text=text, multiline=multiline):
+                target, state = self.driver(multiline=multiline)
+                state["wanted"] = text.replace("\r\n", "\n").replace("\r", "\n")
+                target.type(ref(), text)
+                self.assertEqual(state["original"], state["wanted"])
+                self.assertEqual(state["other"], "")
+                target._exact.locate.assert_called_once_with(ref())
+                target.ab.batch.assert_not_called()
+                self.assertTrue(all(call.kwargs.get("session_id") == "typing-session" for call in target._exact.client.call.call_args_list))
+
+    def test_navigation_request_stops_input_while_the_old_world_still_has_focus(self):
+        for start_during_clear in (False, True):
+            with self.subTest(start_during_clear=start_during_clear):
+                target, state = self.driver()
+                state["wanted"] = "Next"
+                epoch = {"value": 0}
+                original = target._exact.client.call.side_effect
+                def call(method, params=None, **kwargs):
+                    result = original(method, params, **kwargs)
+                    if method == "Runtime.evaluate" and start_during_clear:
+                        epoch["value"] = 1
+                    if method == "Input.dispatchKeyEvent":
+                        epoch["value"] = 1
+                    return result
+                target._exact.client.call.side_effect = call
+                target._exact.client.navigations.side_effect = lambda *args: epoch["value"]
+                with self.assertRaises(helper.TypingStopped):
+                    target.type(ref(), "Next")
+                self.assertEqual(state["original"], "" if start_during_clear else "N")
+                self.assertEqual(state["other"], "")
+                self.assertFalse(state["redirected"])
+
+    def test_failed_navigation_observation_preserves_preceding_completed_actions(self):
+        for error in (TimeoutError("Wait expired"), RuntimeError("CDP disconnected")):
+            with self.subTest(error=type(error).__name__):
+                target, state = self.driver()
+                def stop(*args):
+                    target._exact.navigation.request("https://next.example.test", True)
+                    raise helper.TypingStopped("Typing stopped after 1 of 4 characters.")
+                target.type = Mock(side_effect=stop)
+                with patch.object(helper.page_secrets, "follow_navigation", side_effect=[False,error]), patch.object(helper.time, "sleep"):
+                    result = target.act([{"kind":"click","ref":ref()}, {"kind":"type","ref":ref(),"text":"Next"}])
+                self.assertEqual((result["completed"],result["uncertain"]),(1,False))
+                self.assertFalse(result["ok"])
+                self.assertNotIn("fallback",result)
+                self.assertEqual(result.get("timedOut",False),isinstance(error,TimeoutError))
+
+    def test_changed_document_during_final_retention_check_is_not_reported_as_success(self):
+        target, state = self.driver(final_document_changed=True)
+        state["wanted"] = "Done"
+        with self.assertRaises(helper.KeysNotKept):
+            target.type(ref(), "Done")
+        self.assertEqual(state["original"], "Done")
+        self.assertEqual(state["other"], "")
+
+    def test_changed_document_after_acknowledged_keys_preserves_completed_count_without_fallback(self):
+        target, state = self.driver(final_document_changed=True)
+        state["wanted"] = "Done"
+        with patch.object(helper.page_secrets, "follow_navigation", return_value=False), patch.object(helper.time, "sleep"):
+            result = target.act([{"kind": "type", "ref": ref(), "text": "Done"}])
+        self.assertFalse(result["ok"])
+        self.assertEqual((result["completed"], result["uncertain"]), (1, False))
+        self.assertNotIn("fallback", result)
+        self.assertEqual(state["original"], "Done")
+        self.assertEqual(state["other"], "")
+
+    def test_focus_change_keeps_the_typed_prefix_and_does_not_replay_the_partial_action(self):
+        target, state = self.driver(redirect_after=17)
+        text = "Long ordinary text " * 4
+        state["wanted"] = text
+        result = target.act([{"kind": "type", "ref": ref(), "text": text}])
+        self.assertFalse(result["ok"])
+        self.assertEqual((result["completed"], result["uncertain"]), (0, False))
+        self.assertNotIn("fallback", result)
+        self.assertEqual(state["original"], text[:17])
+        self.assertEqual(state["other"], "")
+
+    def test_native_input_with_lost_acknowledgement_remains_unknown_without_retry(self):
+        target, state = self.driver()
+        text = "中文继续"
+        state["wanted"] = text
+        original = target._exact.client.call.side_effect
+        inputs = []
+        def lost_ack(method, params=None, **kwargs):
+            result = original(method, params, **kwargs)
+            if method == "Input.insertText":
+                inputs.append(params["text"])
+                if len(inputs) == 2:
+                    raise TimeoutError("The native key acknowledgement was lost")
+            return result
+        target._exact.client.call.side_effect = lost_ack
+        result = target.act([{"kind": "type", "ref": ref(), "text": text}])
+        self.assertFalse(result["ok"])
+        self.assertEqual((result["completed"], result["uncertain"]), (0, True))
+        self.assertEqual(result["fallback"], "computer_act")
+        self.assertEqual(inputs, ["中", "文"])
+        self.assertEqual(state["original"], "中文")
+        self.assertEqual(state["other"], "")
+
+    def test_acknowledged_final_key_with_a_confirmed_new_document_can_complete(self):
+        target, state = self.driver(final_document_changed=True)
+        state["wanted"] = "Done"
+        target._exact.client.navigations.side_effect = lambda *args: int(state["original"] == "Done")
+        target._exact.frames.return_value = [{"id": "frame", "loaderId": "new-loader"}]
+        target.type(ref(), "Done")
+        self.assertEqual(state["original"], "Done")
+        self.assertEqual(state["other"], "")
+        target._exact.frames.assert_called_once_with(require_complete=True)
+
+    def test_preexisting_navigation_or_unverified_loader_cannot_forge_final_key_submission(self):
+        for change in ("preexisting-navigation", "unchanged-loader", "frame-read-failed"):
+            with self.subTest(change=change):
+                target, state = self.driver(final_document_changed=True)
+                state["wanted"] = "Done"
+                if change == "preexisting-navigation":
+                    target._exact.client.navigations.return_value = 1
+                else:
+                    target._exact.client.navigations.side_effect = lambda *args: int(state["original"] == "Done")
+                if change == "frame-read-failed":
+                    target._exact.frames.side_effect = RuntimeError("The final loader could not be read")
+                else:
+                    target._exact.frames.return_value = [{"id": "frame", "loaderId": "loader"}]
+                with self.assertRaises(helper.KeysNotKept):
+                    target.type(ref(), "Done")
+                self.assertEqual(state["original"], "Done")
+                self.assertEqual(state["other"], "")
 
 
 if __name__ == "__main__":

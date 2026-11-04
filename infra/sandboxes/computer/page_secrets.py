@@ -863,6 +863,22 @@ def eval_json(client: CdpClient, session_id: str, expression: str, context_id: i
     }, session_id=session_id))
 
 
+def type_character(client: CdpClient, session_id: str, char: str) -> None:
+    """The engine's key/insert-text semantics on the existing CDP connection."""
+    if char == '\n' or char.isascii() and char.isalnum():
+        key = 'Enter' if char == '\n' else char
+        code = 'Enter' if char == '\n' else ('Key' + char.upper() if char.isalpha() else 'Digit' + char)
+        key_code = 13 if char == '\n' else ord(char.upper())
+        common = {'key':key,'code':code,'windowsVirtualKeyCode':key_code,'nativeVirtualKeyCode':key_code}
+        if char == '\n':
+            common['modifiers'] = 8  # Shift+Enter adds a line instead of submitting a form.
+        text = '\r' if char == '\n' else char
+        client.call('Input.dispatchKeyEvent',{'type':'keyDown',**common,'text':text,'unmodifiedText':text},session_id=session_id)
+        client.call('Input.dispatchKeyEvent',{'type':'keyUp',**common},session_id=session_id)
+    else:
+        client.call('Input.insertText',{'text':char},session_id=session_id)
+
+
 def call_with(client: CdpClient, session_id: str, world: int, function: str, *values: Any) -> Any:
     return page_value(client.call("Runtime.callFunctionOn", {
         "functionDeclaration": function, "executionContextId": world,
@@ -1095,6 +1111,14 @@ class ExactPage:
         return states
 
     def assert_mutations_allowed(self) -> None:
+        try:
+            self._resolve_pending_pointer()
+        except Refused:
+            raise
+        except Exception:
+            raise Refused("Browser pointer input is uncertain; its release could not be verified. Request takeover inspection.") from None
+
+    def _resolve_pending_pointer(self) -> None:
         pending = self.pointer_guard.read()
         if pending is None:
             return

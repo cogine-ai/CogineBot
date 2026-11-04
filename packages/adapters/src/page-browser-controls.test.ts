@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { installExactPage, typingScript } from "./page-browser.test-support.js";
 
 describe("exact saved-login controls", () => {
@@ -286,6 +286,56 @@ describe("typing focus boundaries", () => {
     }
   });
 
+  it.each(["focus", "detach"] as const)(
+    "rechecks exact typing after an input listener changes %s",
+    (change) => {
+      const { win, exact, bind, close } = installExactPage(
+        '<input id="field"><input id="other" value="untouched">',
+      );
+      try {
+        bind("#field", "field");
+        const field = win.document.querySelector<HTMLInputElement>("#field")!;
+        const other = win.document.querySelector<HTMLInputElement>("#other")!;
+        exact.act("field", "focus");
+        run(win, "TYPE_START", "field");
+        field.addEventListener(
+          "input",
+          () => {
+            if (change === "detach") field.remove();
+            other.focus();
+          },
+          { once: true },
+        );
+        field.value = "A";
+        field.dispatchEvent(
+          new win.InputEvent("input", { bubbles: true, data: "A", inputType: "insertText" }),
+        );
+        expect(() => run(win, "TYPE_CHECK", "field")).toThrow(/focus|Typing stopped|changed/i);
+        expect(other.value).toBe("untouched");
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it("rejects an unfocused document even when its old input remains the active element", () => {
+    const { win, exact, bind, close } = installExactPage('<input id="field">');
+    try {
+      bind("#field", "field");
+      exact.act("field", "focus");
+      run(win, "TYPE_START", "field");
+      const active = win.document.activeElement;
+      // JSDOM does not update nested-document hasFocus after parent or sibling focus.
+      // This isolates the browser-reported focus branch; real frames are checked in browser CI.
+      const focus = vi.spyOn(win.document, "hasFocus").mockReturnValue(false);
+      expect(win.document.activeElement).toBe(active);
+      expect(() => run(win, "TYPE_CHECK", "field")).toThrow(/focus|Typing stopped/i);
+      focus.mockRestore();
+    } finally {
+      close();
+    }
+  });
+
   it("focuses a layout-backed transparent AX input for typing while refusing fill and login", () => {
     const { win, exact, close } = installExactPage('<input id="field" style="opacity:0">');
     try {
@@ -320,6 +370,58 @@ describe("typing focus boundaries", () => {
         const field = win.document.querySelector<HTMLInputElement>("#field")!;
         expect(() => exact.bind("first", field, { ax })).toThrow(/visible/i);
         expect(field.value).toBe("");
+      } finally {
+        close();
+      }
+    },
+  );
+});
+
+describe("typing completion identity", () => {
+  it.each(["detached", "missing-token", "replaced-code-group"] as const)(
+    "does not claim retained typing after %s",
+    (change) => {
+      const html =
+        change === "replaced-code-group"
+          ? '<div id="group">' +
+            Array.from(
+              { length: 6 },
+              (_, i) => `<input maxlength="1" aria-label="Digit ${i + 1}">`,
+            ).join("") +
+            "</div>"
+          : '<input id="field">';
+      const { win, exact, bind, close } = installExactPage(html);
+      try {
+        bind("input", "field");
+        exact.act("field", "focus");
+        win.eval(
+          typingScript("TYPE_START")
+            .replaceAll("TOKEN", "token")
+            .replaceAll("WHOLE", "true")
+            .replaceAll("EXACT_REF", JSON.stringify("field")),
+        );
+        if (change === "missing-token") {
+          delete (win as unknown as { __rakazoTyping?: unknown }).__rakazoTyping;
+        } else if (change === "replaced-code-group") {
+          win.document.querySelector("#group")!.remove();
+        } else {
+          win.document.querySelector("input")!.remove();
+        }
+        let result: unknown;
+        try {
+          result = win.eval(
+            typingScript("TYPE_DONE")
+              .replaceAll("TOKEN", "token")
+              .replaceAll("TEXT", JSON.stringify("Already typed")),
+          );
+        } catch (error) {
+          expect(String(error)).toMatch(/page|document|detach|Typing stopped|changed/i);
+          return;
+        }
+        if (typeof result !== "object" || result === null || !("kept" in result)) {
+          throw new Error("Typing completion did not report a retention state");
+        }
+        expect(result.kept).not.toBe(true);
       } finally {
         close();
       }
