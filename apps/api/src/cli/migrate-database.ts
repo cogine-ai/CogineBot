@@ -12,12 +12,14 @@ import {
 async function main() {
   loadRootEnv();
   const urls = databaseUrls(process.env);
+  const migrationUrl = new URL(urls.migrationUrl);
+  migrationUrl.searchParams.set("schema", "public");
   execFileSync("pnpm", ["--filter", "@rakazo/db", "exec", "prisma", "migrate", "deploy"], {
     stdio: "inherit",
     env: {
       ...process.env,
-      DATABASE_MIGRATION_URL: urls.migrationUrl,
-      DATABASE_URL: urls.migrationUrl,
+      DATABASE_MIGRATION_URL: migrationUrl.toString(),
+      DATABASE_URL: migrationUrl.toString(),
     },
   });
   await migrateJobQueue(urls.migrationUrl);

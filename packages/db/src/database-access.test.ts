@@ -135,6 +135,32 @@ const owner = "postgres://migration:owner-password@db/coginebot";
 const runtime = "postgres://runtime:secret@db/coginebot";
 
 describe("database URLs", () => {
+  it.each(["schema=shadow", "schema=public&schema=shadow", "schema="])(
+    "rejects a non-public migration schema (%s) before child execution",
+    (query) => {
+      expect(() =>
+        databaseUrls({
+          DATABASE_MIGRATION_URL: `${owner}?${query}`,
+          DATABASE_URL: runtime,
+        }),
+      ).toThrow("public schema");
+      expect(state.sent).toEqual([]);
+    },
+  );
+
+  it.each(["schema=public", "schema=shadow&schema=public", "schema=%70ublic"])(
+    "accepts the effective public migration schema (%s)",
+    (query) => {
+      expect(() =>
+        databaseUrls({ DATABASE_MIGRATION_URL: `${owner}?${query}`, DATABASE_URL: runtime }),
+      ).not.toThrow();
+    },
+  );
+
+  it("keeps schema query handling limited to the migration CLI", async () => {
+    await expect(provisionRuntimeRole(`${owner}?schema=shadow`, runtime)).resolves.toEqual({});
+  });
+
   it("rejects a different runtime database before preparing the owner target", () => {
     expect(() =>
       databaseUrls({

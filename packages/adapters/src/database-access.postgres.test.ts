@@ -770,6 +770,80 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it("rejects a different migration schema before creating or changing its objects", async () => {
+    const shadow = `migration_schema_${suffix}`;
+    const migration = new URL(databaseUrl!);
+    migration.searchParams.set("schema", shadow);
+    try {
+      let failure: unknown;
+      try {
+        await promisify(execFile)("pnpm", ["db:migrate"], {
+          cwd: path.resolve(import.meta.dirname, "../../.."),
+          env: {
+            ...process.env,
+            DATABASE_URL: runtimeUrl,
+            DATABASE_MIGRATION_URL: migration.toString(),
+          },
+          timeout: 30_000,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(
+        (await owner.pool.query("SELECT tablename FROM pg_tables WHERE schemaname=$1", [shadow]))
+          .rows,
+      ).toEqual([]);
+      expect(failure).toBeDefined();
+    } finally {
+      await owner.pool.query(`DROP SCHEMA IF EXISTS ${escapeIdentifier(shadow)} CASCADE`);
+    }
+  });
+
+  it.each(["URL", "environment"])(
+    "keeps CLI migrations in public with a different owner startup search_path from %s",
+    async (source) => {
+      const shadow = `migration_path_${suffix}`;
+      const peerDatabase = `path_${source.toLowerCase()}_${suffix}`;
+      await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(peerDatabase)}`);
+      const migration = new URL(databaseUrl!);
+      migration.pathname = `/${peerDatabase}`;
+      const peer = createDb(migration.toString(), { poolMax: 1 });
+      const application = new URL(runtimeUrl);
+      application.pathname = `/${peerDatabase}`;
+      let prepared: ReturnType<typeof createDb> | undefined;
+      await peer.pool.query(`CREATE SCHEMA ${escapeIdentifier(shadow)}`);
+      if (source === "URL") migration.searchParams.set("options", `-csearch_path=${shadow},public`);
+      try {
+        expect(
+          (await peer.pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows,
+        ).toEqual([]);
+        await promisify(execFile)("pnpm", ["db:migrate"], {
+          cwd: path.resolve(import.meta.dirname, "../../.."),
+          env: {
+            ...process.env,
+            DATABASE_URL: application.toString(),
+            DATABASE_MIGRATION_URL: migration.toString(),
+            PGOPTIONS: source === "environment" ? `-csearch_path=${shadow},public` : "",
+          },
+          timeout: 30_000,
+        });
+        expect(
+          (await peer.pool.query("SELECT tablename FROM pg_tables WHERE schemaname=$1", [shadow]))
+            .rows,
+        ).toEqual([]);
+        expect(
+          (await peer.pool.query("SELECT to_regclass('public.bots') IS NOT NULL AS ready")).rows,
+        ).toEqual([{ ready: true }]);
+        prepared = createDb(application.toString(), { poolMax: 1, rowSecurity: true });
+        expect(await describeRowSecurity(prepared.prisma)).toMatchObject({ prepared: true });
+      } finally {
+        if (prepared) await close(prepared);
+        await close(peer);
+        await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+      }
+    },
+  );
+
   it("keeps the shared-login migration path explicit without claiming preparation", async () => {
     const result = await promisify(execFile)("pnpm", ["db:migrate"], {
       cwd: path.resolve(import.meta.dirname, "../../.."),

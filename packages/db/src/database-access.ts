@@ -59,6 +59,8 @@ function assertMigrationTarget(migrationUrl: string, migration: Client): void {
   } catch {
     throw invalid();
   }
+  if ((parsed.searchParams.getAll("schema").at(-1) ?? "public") !== "public")
+    throw new Error("Database preparation requires the migration URL to select the public schema");
   const queryHost = parsed.searchParams.getAll("host").at(-1);
   let host = queryHost ?? (parsed.hostname || "localhost");
   if (queryHost === undefined && host.startsWith("[") && host.endsWith("]"))

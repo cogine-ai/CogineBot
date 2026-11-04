@@ -22,7 +22,10 @@ DATABASE_URL='postgres://<runtime>:<runtime-password>@<host>/<database>' \
 pnpm db:migrate
 ```
 
-The command checks both destinations before migrations or role changes. The
+The command checks both destinations before migrations or role changes.
+The application schema is `public`. Other migration schema selections are
+rejected before preparation, and the migration subprocess explicitly selects
+`public` while retaining the administrator URL's other connection options. The
 migration URL must name the database in one path segment and resolve to the
 same target in the migration engine and PostgreSQL driver. Put a nondefault
 migration port in the URL authority; a conflicting query or environment port is
