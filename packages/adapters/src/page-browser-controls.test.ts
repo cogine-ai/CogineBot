@@ -581,7 +581,13 @@ it("records only a fresh trusted left-button release for pointer recovery", () =
   );
   const script = source.match(/POINTER_OBSERVER = r"""\n([\s\S]*?)\n"""/)?.[1];
   if (!script) throw new Error("Pointer observer was not found");
-  type Event = { type: string; isTrusted: boolean; button: number; buttons: number };
+  type Event = {
+    type: string;
+    isTrusted: boolean;
+    button: number;
+    buttons: number;
+    pointerType?: string;
+  };
   const handlers = new Map<string, (event: Event) => void>();
   let stamp = 0;
   const context = {
@@ -599,9 +605,35 @@ it("records only a fresh trusted left-button release for pointer recovery", () =
   runInNewContext(script, context);
   const observer = context.window.__rakazoPointerObserver!;
   const release = (button: number, isTrusted = true, buttons = 0) =>
-    handlers.get("mouseup")!({ type: "mouseup", button, buttons, isTrusted });
+    handlers.get("pointerup")!({
+      type: "pointerup",
+      pointerType: "mouse",
+      button,
+      buttons,
+      isTrusted,
+    });
   release(0); // A release before registration cannot become recovery evidence.
   observer.arm("recovery-token");
+  for (const pointerType of ["touch", "pen"]) {
+    handlers.get("pointerdown")!({
+      type: "pointerdown",
+      pointerType,
+      button: 0,
+      buttons: 1,
+      isTrusted: true,
+    });
+    handlers.get("pointerup")!({
+      type: "pointerup",
+      pointerType,
+      button: 0,
+      buttons: 0,
+      isTrusted: true,
+    });
+  }
+  // Touch and pen can also produce trusted compatibility MouseEvents.
+  handlers.get("mousedown")?.({ type: "mousedown", button: 0, buttons: 1, isTrusted: true });
+  handlers.get("mouseup")?.({ type: "mouseup", button: 0, buttons: 0, isTrusted: true });
+  expect(observer.read("recovery-token")).toEqual({ down: null, up: null });
   release(2);
   expect(observer.read("recovery-token").up).toBeNull();
   release(0, false);
@@ -610,11 +642,15 @@ it("records only a fresh trusted left-button release for pointer recovery", () =
   expect(observer.read("recovery-token").up).toBeNull();
   release(0);
   expect(observer.read("recovery-token").up).toBeGreaterThan(0);
-  const oldObserver = { version: 1 };
+  const oldObserver = { version: 2, read: (_token: string) => ({ down: 1, up: 2 }) };
   const upgraded = { ...context, window: { __rakazoPointerObserver: oldObserver } };
   runInNewContext(script, upgraded);
   expect(upgraded.window.__rakazoPointerObserver).not.toBe(oldObserver);
-  expect(upgraded.window.__rakazoPointerObserver).toMatchObject({ version: 2 });
+  expect(upgraded.window.__rakazoPointerObserver).toMatchObject({ version: 3 });
+  expect(upgraded.window.__rakazoPointerObserver?.read("recovery-token")).toEqual({
+    down: null,
+    up: null,
+  });
 });
 
 it("keeps one observer token while preserving repeated-arm object identity", () => {

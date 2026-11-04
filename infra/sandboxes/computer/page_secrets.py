@@ -470,19 +470,19 @@ def follow_navigation(client: CdpClient, navigation: NavigationState,
 
 POINTER_OBSERVER = r"""
 (() => {
-  if (window.__rakazoPointerObserver?.version === 2) return true;
+  if (window.__rakazoPointerObserver?.version === 3) return true;
   const tokens = new Map();
   const track = event => {
-    if (!event.isTrusted) return;
+    if (!event.isTrusted || event.pointerType !== 'mouse') return;
     const stamp = performance.timeOrigin + performance.now();
     for (const state of tokens.values()) {
-      if ((event.type === 'pointerdown' || event.type === 'mousedown') && (event.buttons & 1)) {
+      if (event.type === 'pointerdown' && (event.buttons & 1)) {
         state.down = stamp; state.up = null;
-      } else if ((event.type === 'pointerup' || event.type === 'mouseup') && event.button === 0 && event.buttons === 0) state.up = stamp;
+      } else if (event.type === 'pointerup' && event.button === 0 && event.buttons === 0) state.up = stamp;
     }
   };
-  for (const name of ['pointerdown','mousedown','pointerup','mouseup']) addEventListener(name,track,true);
-  window.__rakazoPointerObserver = {version:2,
+  for (const name of ['pointerdown','pointerup']) addEventListener(name,track,true);
+  window.__rakazoPointerObserver = {version:3,
     arm(token) { if (!tokens.has(token)) { tokens.clear(); tokens.set(token,{down:null,up:null}); } return tokens.get(token); },
     read(token) { return tokens.get(token) || {down:null,up:null}; }};
   return true;
