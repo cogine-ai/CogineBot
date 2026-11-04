@@ -338,6 +338,121 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it("preserves an existing unprovisioned login's authority on wrong-password preparation", async () => {
+    const name = `${login}_unprovisioned`;
+    const baseline = `${login}_baseline`;
+    const secret = randomBytes(24).toString("hex");
+    allocated.add(name);
+    await owner.pool.query(
+      `CREATE ROLE ${escapeIdentifier(name)} LOGIN PASSWORD ${escapeLiteral(secret)}`,
+    );
+    allocated.add(baseline);
+    await owner.pool.query(`CREATE ROLE ${escapeIdentifier(baseline)} NOLOGIN`);
+    await owner.pool.query(`GRANT ${escapeIdentifier(baseline)} TO ${escapeIdentifier(name)}`);
+    const validUrl = urlFor(name, secret);
+    async function authority() {
+      const client = createDb(validUrl, { poolMax: 1 });
+      try {
+        expect((await client.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+        const membership = (
+          await owner.pool.query(
+            "SELECT pg_has_role($1, $2, 'MEMBER') AS managed, pg_has_role($1, $3, 'MEMBER') AS baseline",
+            [name, grantRole, baseline],
+          )
+        ).rows[0];
+        const application = await client.pool
+          .query(`SELECT * FROM public.${escapeIdentifier(probeTable)}`)
+          .then(
+            () => true,
+            () => false,
+          );
+        const queue = await client.pool
+          .query("SELECT payload FROM graphile_worker._private_jobs")
+          .then(
+            () => true,
+            () => false,
+          );
+        return { ...membership, application, queue };
+      } finally {
+        await close(client);
+      }
+    }
+    const before = await authority();
+    expect(before).toEqual({ managed: false, baseline: true, application: false, queue: false });
+    const verifier = (
+      await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])
+    ).rows[0].rolpassword;
+    const digests = await digestCount();
+    await expect(
+      provisionRuntimeRole(databaseUrl!, urlFor(name, "incorrect-fixture-password")),
+    ).rejects.toMatchObject({ code: "28P01" });
+    expect(await digestCount()).toBe(digests);
+    expect(
+      (await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])).rows[0]
+        .rolpassword,
+    ).toBe(verifier);
+    expect(await authority()).toEqual(before);
+    await provisionRuntimeRole(databaseUrl!, validUrl);
+    expect(await authority()).toEqual({
+      managed: true,
+      baseline: true,
+      application: true,
+      queue: true,
+    });
+    expect(
+      (await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])).rows[0]
+        .rolpassword,
+    ).toBe(verifier);
+  });
+
+  it("requires existing logins to authenticate with CONNECT before adding runtime grants", async () => {
+    const name = `${login}_no_connect`;
+    await createLogin(name);
+    const url = urlFor(name, password);
+    const database = (await owner.pool.query("SELECT current_database() AS name")).rows[0].name;
+    const databaseName = escapeIdentifier(database);
+    const publicConnect = (
+      await owner.pool.query(
+        "SELECT EXISTS (SELECT 1 FROM pg_database d CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a WHERE d.datname=current_database() AND a.grantee=0 AND a.privilege_type='CONNECT') AS allowed",
+      )
+    ).rows[0].allowed;
+    expect(publicConnect).toBe(true);
+    const verifier = (
+      await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])
+    ).rows[0].rolpassword;
+    const digests = await digestCount();
+    await owner.pool.query(`REVOKE CONNECT ON DATABASE ${databaseName} FROM PUBLIC`);
+    try {
+      await expect(provisionRuntimeRole(databaseUrl!, url)).rejects.toMatchObject({
+        code: "42501",
+      });
+      expect(
+        (await owner.pool.query("SELECT pg_has_role($1,$2,'MEMBER') AS member", [name, grantRole]))
+          .rows,
+      ).toEqual([{ member: false }]);
+      expect(await digestCount()).toBe(digests);
+      expect(
+        (await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name]))
+          .rows[0].rolpassword,
+      ).toBe(verifier);
+      await owner.pool.query(
+        `GRANT CONNECT ON DATABASE ${databaseName} TO ${escapeIdentifier(name)}`,
+      );
+      await provisionRuntimeRole(databaseUrl!, url);
+      const client = createDb(url, { poolMax: 1, rowSecurity: true });
+      try {
+        expect(await describeRowSecurity(client.prisma)).toMatchObject({
+          prepared: true,
+          enforced: false,
+        });
+      } finally {
+        await close(client);
+      }
+    } finally {
+      await owner.pool.query(`GRANT CONNECT ON DATABASE ${databaseName} TO PUBLIC`);
+    }
+  });
+
   it("preserves the registry on failed authentication", async () => {
     const url = new URL(runtimeUrl);
     url.password = "";

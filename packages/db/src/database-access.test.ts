@@ -417,6 +417,9 @@ describe("runtime role preparation", () => {
     const failure = new Error("existing login password mismatch");
     state.authError = failure;
     await expect(provisionRuntimeRole(owner, runtime)).rejects.toBe(failure);
+    expect(state.sent.some((entry) => /^\s*(?:CREATE|ALTER|GRANT|REVOKE)\b/m.test(entry.sql))).toBe(
+      false,
+    );
     expect(state.sent.some((entry) => /^ALTER ROLE .*PASSWORD/.test(entry.sql))).toBe(false);
     expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(
       false,

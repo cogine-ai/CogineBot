@@ -41,6 +41,15 @@ must inherit the runtime grant role. Privileged logins are rejected rather than
 silently changed. Registered keys used by existing pools remain during rollout;
 credential retirement requires draining those instances separately.
 
+An existing restricted login must already be able to authenticate and `CONNECT`
+to the target database. Preparation verifies its actual credential before adding
+runtime grants, so an incorrect password leaves its memberships and access
+unchanged. If `CONNECT` was revoked from `PUBLIC`, an administrator must grant
+that login `CONNECT` explicitly before retrying; preparation does not grant
+temporary access to perform authentication. Existing credentials and unrelated
+permissions are preserved. Later provisioning failures are not a transaction
+that rolls back every role or grant change.
+
 Each database has its own grant role, named `coginebot_app_<database-oid>`. For
 precreated roles, obtain the name with
 `SELECT 'coginebot_app_' || oid FROM pg_catalog.pg_database WHERE datname = current_database()`.

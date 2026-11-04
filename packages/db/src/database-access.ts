@@ -229,6 +229,8 @@ export async function provisionRuntimeRole(
   assertSameDatabaseTarget(migrationUrl, runtimeUrl);
   const owner = new Client({ connectionString: migrationUrl });
   let runtime: ReturnType<typeof createPool> | undefined;
+  const runtimePool = () => (runtime ??= createPool(runtimeUrl, { poolMax: 1, rowSecurity: true }));
+  const authenticate = () => installDbContext(runtimePool())();
   let failed = false;
   let failure: unknown;
   try {
@@ -236,11 +238,9 @@ export async function provisionRuntimeRole(
     await owner.query(
       "SELECT pg_catalog.pg_advisory_lock(pg_catalog.hashtextextended(pg_catalog.current_database() || ':coginebot-runtime-role-provision', 0))",
     );
-    await provisionWith(owner, runtimeUrl);
-    runtime = createPool(runtimeUrl, { poolMax: 1, rowSecurity: true });
-    const resolveKey = installDbContext(runtime);
-    const key = await resolveKey();
-    const connected = await runtime.connect();
+    await provisionWith(owner, runtimeUrl, authenticate);
+    const key = await authenticate();
+    const connected = await runtimePool().connect();
     try {
       const statement = rolePrivileges();
       const {
@@ -291,7 +291,11 @@ export async function provisionRuntimeRole(
   if (failed) throw failure;
 }
 
-async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
+async function provisionWith(
+  owner: Client,
+  runtimeUrl: string,
+  authenticate: () => Promise<string>,
+): Promise<void> {
   const parsed = databaseCredentials(runtimeUrl);
   const configured = new Client({ connectionString: runtimeUrl });
   const login = configured.user;
@@ -305,6 +309,7 @@ async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
     throw new Error(
       "The configured runtime role is privileged or owns application data; it was not changed",
     );
+  if (loginExisted) await authenticate();
   const targetStatement = Prisma.sql`SELECT ${runtimeGrantRole} AS "grantRole", ${databaseOid} AS "databaseOid"`;
   const {
     rows: [target],
