@@ -472,6 +472,8 @@ export interface WebProvider extends WebSearchProvider, WebFetchProvider {
  */
 export interface BrowserProvider {
   describe(): AdapterDescriptor<BrowserCapabilities>;
+  /** Dynamic proof for strict login, replacement typing, and uploads; missing means unsupported. */
+  supportsPageActions?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
   navigate(
     computer: ComputerRef,
     request: BrowserNavigateRequest,

@@ -5,6 +5,28 @@ import { MAX_DESKTOP_DISPLAY, screenPorts } from "@rakazo/core/node/desktop-runt
 import type Docker from "dockerode";
 
 export const COMPUTER_IMAGE = process.env.RAKAZO_COMPUTER_IMAGE ?? "rakazo/computer:local";
+/** The actual local image build must include every copied browser runtime module. */
+export const COMPUTER_IMAGE_CONTEXT_FILES = [
+  "Dockerfile",
+  "start.sh",
+  "user-env.sh",
+  "control.py",
+  "xcapture.c",
+  "rakazo-browser",
+  "rakazo-focus-or-launch",
+  "rakazo-page-browser",
+  "page_secrets.py",
+  "install-agent-browser.sh",
+  "agent-browser.LICENSE",
+  "rakazo-browser.desktop",
+  "embed.html",
+  "clipboard-bridge.js",
+  "mobile-keyboard.js",
+  "fluxbox.init",
+  "fluxbox.apps",
+  "fluxbox.menu",
+  "rakazo-local-bin.sh",
+] as const;
 export const COMPUTER_UID = 1000;
 export const COMPUTER_GID = 1000;
 export const COMPUTER_USER = `${COMPUTER_UID}:${COMPUTER_GID}`;

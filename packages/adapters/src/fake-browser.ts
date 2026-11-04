@@ -9,6 +9,7 @@ import type {
   BrowserSnapshotResult,
   ComputerRef,
 } from "@rakazo/adapter-kit";
+import { combineSignals } from "./connector-safety.js";
 import { PageBrowserSessionStore, pageBrowserSessionKey } from "./page-browser-session.js";
 import { fetchSafeWebText } from "./web-ssrf.js";
 
@@ -51,11 +52,18 @@ export class FakeBrowserProvider implements BrowserProvider {
     };
   }
 
+  async supportsPageActions(_computer: ComputerRef, context: AdapterContext): Promise<boolean> {
+    context.signal.throwIfAborted();
+    return !this.forceFallback;
+  }
+
   async navigate(
     computer: ComputerRef,
     request: BrowserNavigateRequest,
     context: AdapterContext,
   ): Promise<BrowserNavigateResult> {
+    const signal = combineSignals(context.signal, request.signal);
+    signal.throwIfAborted();
     if (this.forceFallback) {
       return {
         url: request.url,
@@ -78,10 +86,12 @@ export class FakeBrowserProvider implements BrowserProvider {
     try {
       const { url: finalUrl, body } = await fetchSafeWebText(url, {
         fetch: this.fetchImpl,
-        signal: request.signal ?? context.signal,
+        signal,
       });
+      signal.throwIfAborted();
       return session.load(finalUrl, body);
     } catch (error) {
+      signal.throwIfAborted();
       return {
         url,
         title: "",
@@ -96,6 +106,7 @@ export class FakeBrowserProvider implements BrowserProvider {
     _request: BrowserSnapshotRequest,
     context: AdapterContext,
   ): Promise<BrowserSnapshotResult> {
+    combineSignals(context.signal, _request.signal).throwIfAborted();
     if (this.forceFallback) {
       return {
         url: "",
@@ -115,6 +126,8 @@ export class FakeBrowserProvider implements BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult> {
+    const signal = combineSignals(context.signal, request.signal);
+    signal.throwIfAborted();
     if (this.forceFallback) {
       return {
         ok: false,
@@ -136,7 +149,7 @@ export class FakeBrowserProvider implements BrowserProvider {
         fallback: "computer_act",
       };
     }
-    return this.sessions.get(pageBrowserSessionKey(computer, context)).act(request.actions);
+    return this.sessions.get(pageBrowserSessionKey(computer, context)).act(request.actions, signal);
   }
 }
 

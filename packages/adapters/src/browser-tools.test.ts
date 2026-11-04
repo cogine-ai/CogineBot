@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   browserActFromTool,
   browserNavigateFromTool,
+  browserResultForModel,
   browserSnapshotFromTool,
   parseBrowserActions,
+  redactBrowserResult,
 } from "./browser-tools.js";
 import { ComputerBrowserProvider } from "./computer-browser.js";
 import { filterPageBrowserTools, PAGE_BROWSER_TOOL_NAMES } from "./executor.js";
@@ -58,10 +60,9 @@ describe("browser tools", () => {
       timedOut: true,
       url: "https://example.test/current",
       title: "Current page",
-      fallback: "computer_act",
       elements: [{ ref: "new", role: "textbox", name: "Name" }],
-      note: expect.stringContaining("Do not replay completed or uncertain actions"),
     });
+    expect(result).not.toHaveProperty("fallback");
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(liveDriver).toHaveBeenCalledTimes(1);
   });
@@ -165,6 +166,156 @@ describe("browser tools", () => {
       origin: "https://login.example.test",
     });
 
+    it.each(["missing", "false"])(
+      "does not resolve a secret when capability proof is %s",
+      async (mode) => {
+        const browser = loginPage("https://login.example.test/signin");
+        const resolve = vi.fn(resolveSecretFill);
+        const act = vi.spyOn(browser, "act");
+        if (mode === "missing")
+          Object.defineProperty(browser, "supportsPageActions", { value: undefined });
+        else vi.spyOn(browser, "supportsPageActions").mockResolvedValue(false);
+        const result = await browserActFromTool(
+          browser,
+          computer,
+          context,
+          {
+            actions: [
+              {
+                kind: "fill_secret",
+                ref: "old-image-ref",
+                secret: "site_login",
+                field: "password",
+              },
+            ],
+          },
+          { resolveSecretFill: resolve },
+        );
+        expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+        expect(resolve).not.toHaveBeenCalled();
+        expect(act).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["type", "upload"])(
+      "refuses %s on an old helper before resolving inputs or dispatching the batch",
+      async (kind) => {
+        const browser = loginPage("https://login.example.test/signin");
+        vi.spyOn(browser, "supportsPageActions").mockResolvedValue(false);
+        const act = vi.spyOn(browser, "act");
+        const resolvePath = vi.fn((path: string) => path);
+        const result = await browserActFromTool(
+          browser,
+          computer,
+          context,
+          {
+            actions: [
+              { kind: "click", ref: "before" },
+              kind === "type"
+                ? { kind: "type", ref: "field", text: "not-dispatched" }
+                : { kind: "upload", ref: "field", paths: ["shared/report.txt"] },
+            ],
+          },
+          { resolveUploadPath: resolvePath, uploadRoots: ["shared"] },
+        );
+        expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+        expect(resolvePath).not.toHaveBeenCalled();
+        expect(act).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not resolve a secret after cancellation during the capability probe", async () => {
+      const browser = loginPage("https://login.example.test/signin");
+      const abort = new AbortController();
+      const resolve = vi.fn(resolveSecretFill);
+      const act = vi.spyOn(browser, "act");
+      vi.spyOn(browser, "supportsPageActions").mockImplementation(async () => {
+        abort.abort(new Error("cancelled-by-user"));
+        return true;
+      });
+      await expect(
+        browserActFromTool(
+          browser,
+          computer,
+          { ...context, signal: abort.signal },
+          {
+            actions: [{ kind: "fill_secret", ref: "ref", secret: "site_login", field: "password" }],
+          },
+          { resolveSecretFill: resolve },
+        ),
+      ).rejects.toThrow("cancelled-by-user");
+      expect(resolve).not.toHaveBeenCalled();
+      expect(act).not.toHaveBeenCalled();
+    });
+
+    it.each(["deadline", "stop"])(
+      "settles a pending saved-login resolver on %s without dispatching a late value",
+      async (reason) => {
+        const browser = loginPage("https://login.example.test/signin");
+        const deadline = new AbortController();
+        const stop = new AbortController();
+        const timer = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+        let resolvePending!: (value: { text: string; origin: string }) => void;
+        const pending = new Promise<{ text: string; origin: string }>((resolve) => {
+          resolvePending = resolve;
+        });
+        const resolve = vi.fn(() => pending);
+        const act = vi.spyOn(browser, "act").mockResolvedValue({
+          ok: true,
+          completed: 1,
+          url: "https://example.test",
+          title: "Page",
+        });
+        const task = browserActFromTool(
+          browser,
+          computer,
+          { ...context, signal: stop.signal },
+          {
+            actions: [{ kind: "fill_secret", ref: "ref", secret: "site_login", field: "password" }],
+          },
+          { resolveSecretFill: resolve },
+        );
+        const outcome = task.then(
+          (value) => ({ kind: "resolved" as const, value }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        );
+        try {
+          await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
+          const error = new DOMException(
+            reason,
+            reason === "deadline" ? "TimeoutError" : "AbortError",
+          );
+          (reason === "deadline" ? deadline : stop).abort(error);
+          const result = await Promise.race([
+            outcome,
+            new Promise<{ kind: "pending" }>((resolve) =>
+              setTimeout(() => resolve({ kind: "pending" }), 30),
+            ),
+          ]);
+          expect(result.kind).not.toBe("pending");
+          if (reason === "deadline") {
+            expect(result).toMatchObject({
+              kind: "resolved",
+              value: { ok: false, completed: 0, uncertain: false, timedOut: true },
+            });
+          } else {
+            expect(result).toMatchObject({ kind: "rejected", error });
+          }
+          expect(timer).toHaveBeenCalledOnce();
+          expect(timer).toHaveBeenCalledWith(22_000);
+          expect(act).not.toHaveBeenCalled();
+          resolvePending({ text: "late-private-value", origin: "https://login.example.test" });
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(act).not.toHaveBeenCalled();
+        } finally {
+          resolvePending({ text: "late-private-value", origin: "https://login.example.test" });
+          await outcome;
+          timer.mockRestore();
+        }
+      },
+    );
+
     it("types saved values on the saved origin and redacts them from the result", async () => {
       const browser = loginPage("https://login.example.test/signin");
       const { email, password } = await refs(browser, "https://login.example.test/signin");
@@ -202,7 +353,7 @@ describe("browser tools", () => {
       expect(JSON.stringify(snap)).not.toContain("ada");
     });
 
-    it("keeps a login-filled field hidden after ordinary typing appends to it", async () => {
+    it("replaces a saved username on ordinary typing without exposing the earlier secret", async () => {
       const browser = loginPage("https://login.example.test/signin");
       const { email } = await refs(browser, "https://login.example.test/signin");
       // Each result carries a fresh snapshot, whose refs replace the previous ones.
@@ -254,7 +405,7 @@ describe("browser tools", () => {
         { resolveSecretFill },
       );
       expect(acted).toMatchObject({ ok: false, completed: 0 });
-      expect(JSON.stringify(acted)).toMatch(/text, email, password, or telephone/);
+      expect(JSON.stringify(acted)).toMatch(/text, email, or telephone/g);
     });
 
     it("refuses to type a saved login into a textarea or a non-login input type", async () => {
@@ -299,7 +450,7 @@ describe("browser tools", () => {
           { resolveSecretFill },
         );
         expect(acted, name).toMatchObject({ ok: false, completed: 0 });
-        expect(JSON.stringify(acted), name).toMatch(/text, email, password, or telephone/);
+        expect(JSON.stringify(acted), name).toMatch(/text, email, or telephone/g);
       }
       const phone = await browserActFromTool(
         browser,
@@ -375,11 +526,284 @@ describe("browser tools", () => {
       expect(acted).toEqual({
         ok: false,
         completed: 0,
+        uncertain: false,
         error: "Saved logins are unavailable here.",
       });
       const snap = await browserSnapshotFromTool(browser, computer, context, {});
       expect(JSON.stringify(snap)).not.toContain("typed-before");
     });
+  });
+
+  it("maps uploads through trusted workspace paths before dispatching", async () => {
+    const browser = new FakeBrowserProvider();
+    const act = vi
+      .spyOn(browser, "act")
+      .mockResolvedValue({ ok: true, completed: 1, url: "https://example.test", title: "Page" });
+    const resolve = vi.fn((value: string) => `/home/rakazo/${value}`);
+    await browserActFromTool(
+      browser,
+      computer,
+      context,
+      {
+        actions: [
+          { kind: "upload", ref: "file-ref", paths: ["shared/report.txt", "bots/b1/chart.png"] },
+        ],
+      },
+      { resolveUploadPath: resolve, uploadRoots: ["bots/b1", "shared"] },
+    );
+    expect(resolve.mock.calls.map(([value]) => value)).toEqual([
+      "shared/report.txt",
+      "bots/b1/chart.png",
+    ]);
+    expect(act).toHaveBeenCalledOnce();
+    expect(act.mock.calls[0]?.[1].actions).toEqual([
+      {
+        kind: "upload",
+        ref: "file-ref",
+        paths: ["/home/rakazo/shared/report.txt", "/home/rakazo/bots/b1/chart.png"],
+        roots: ["bots/b1", "shared"],
+      },
+    ]);
+  });
+
+  it.each(["missing-roots", "outside-root"])(
+    "does not dispatch any step for %s upload authorization",
+    async (failure) => {
+      const browser = new FakeBrowserProvider();
+      const act = vi.spyOn(browser, "act");
+      const result = await browserActFromTool(
+        browser,
+        computer,
+        context,
+        {
+          actions: [
+            { kind: "click", ref: "before" },
+            { kind: "upload", ref: "file-ref", paths: ["../other-bot/file"] },
+          ],
+        },
+        {
+          uploadRoots: failure === "missing-roots" ? [] : ["bots/b1"],
+          resolveUploadPath: () => {
+            throw new Error("Upload path is outside this workspace");
+          },
+        },
+      );
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(act).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects eleven uploads and malformed upload batches before resolving paths", async () => {
+    const browser = new FakeBrowserProvider();
+    const act = vi.spyOn(browser, "act");
+    const resolve = vi.fn((value: string) => value);
+    for (const paths of [[], Array.from({ length: 11 }, () => "shared/file"), [""], [42]]) {
+      const result = await browserActFromTool(
+        browser,
+        computer,
+        context,
+        {
+          actions: [{ kind: "upload", ref: "file-ref", paths }],
+        },
+        { resolveUploadPath: resolve, uploadRoots: ["shared"] },
+      );
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    }
+    expect(resolve).not.toHaveBeenCalled();
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it("keeps structured controls in details and redacts quoted secrets from both views", async () => {
+    const secret = 'synthetic"password\n🙂';
+    const browser = new FakeBrowserProvider();
+    vi.spyOn(browser, "act").mockResolvedValue({
+      ok: true,
+      completed: 1,
+      url: "https://example.test",
+      title: "Page",
+      tree: `Readable ${JSON.stringify(secret)}`,
+      elements: [{ ref: "new-ref", role: "textbox", name: "Name", value: secret }],
+    });
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      {
+        actions: [{ kind: "click", ref: "ref" }],
+      },
+      { redactions: () => [secret] },
+    );
+    const modeled = browserResultForModel(result) as {
+      kind: string;
+      content: Array<{ type: string; text: string }>;
+      details: unknown;
+    };
+    expect(modeled.kind).toBe("agent_tool_result");
+    const view = JSON.parse(modeled.content[0]!.text);
+    expect(view).not.toHaveProperty("elements");
+    expect(modeled.details).toMatchObject({ elements: [{ ref: "new-ref", name: "Name" }] });
+    expect(JSON.stringify(modeled)).not.toContain(secret);
+    expect(modeled.content[0]!.text).not.toContain(JSON.stringify(secret).slice(1, -1));
+  });
+
+  it("preserves protocol refs and outcome fields while redacting short login values", () => {
+    const ref = `r2.${Buffer.from(JSON.stringify(["target", "frame", "loader", "a".repeat(32)])).toString("base64url")}`;
+    const result = redactBrowserResult(
+      {
+        ok: false,
+        completed: 1,
+        uncertain: false,
+        fallback: "computer_act",
+        tree: `Private a\n- button "a" [${ref}]`,
+        elements: [{ ref, role: "button", name: "a", tag: "button" }],
+      },
+      ["a", "1"],
+    ) as {
+      completed: number;
+      fallback: string;
+      tree: string;
+      elements: Array<{ ref: string; role: string; name: string }>;
+    };
+    expect(result.completed).toBe(1);
+    expect(result.fallback).toBe("computer_act");
+    expect(result.elements[0]).toMatchObject({ ref, role: "button", name: "[redacted]" });
+    expect(result.tree).toContain(`[${ref}]`);
+    expect(result.tree).not.toContain('"a"');
+  });
+
+  it("preserves existing provider refs when they contain a short saved login", () => {
+    for (const ref of ["e1", "custom-page-1"]) {
+      const result = redactBrowserResult(
+        {
+          elements: [{ ref, role: "button", name: "Private e1" }],
+          tree: `- button "Private e1" [${ref}]`,
+        },
+        ["e", "1"],
+      ) as { tree: string; elements: Array<{ ref: string; name: string }> };
+      expect(result.elements[0]!.ref).toBe(ref);
+      expect(result.elements[0]!.name).not.toContain("Private e1");
+      expect(result.tree).toContain(`[${ref}]`);
+    }
+  });
+
+  it("redacts page-controlled role and tag values while preserving protocol enums", () => {
+    const result = redactBrowserResult(
+      {
+        tree: "public",
+        elements: [
+          { ref: "e1", role: "private-role-secret", tag: "private-tag-secret", name: "Save" },
+          { ref: "e2", role: "button", tag: "button", name: "Save" },
+        ],
+      },
+      ["private-role-secret", "private-tag-secret", "button"],
+    ) as { elements: Array<{ role: string; tag: string }> };
+    expect(result.elements[0]).toMatchObject({ role: "[redacted]", tag: "[redacted]" });
+    expect(result.elements[1]).toMatchObject({ role: "button", tag: "button" });
+  });
+
+  it("protects registered option values without exempting page values that resemble tokens", () => {
+    const token = `or2.${"a".repeat(32)}`;
+    const raw = `or2.${"a".repeat(31)}b`;
+    const result = redactBrowserResult(
+      {
+        elements: [
+          {
+            ref: "stable-ref",
+            role: "combobox",
+            name: "Choice",
+            options: [
+              { label: "Private a", value: token, valueRef: true },
+              { label: "Public", value: raw },
+            ],
+          },
+        ],
+        tree: `Choice: ${token}, other: ${raw}`,
+      },
+      ["a"],
+    ) as {
+      tree: string;
+      elements: Array<{ options: Array<{ value: string }> }>;
+    };
+    expect(result.elements[0]!.options[0]!.value).toBe(token);
+    expect(result.elements[0]!.options[1]!.value).not.toBe(raw);
+    expect(result.tree).toContain(token);
+    expect(result.tree).not.toContain(raw);
+  });
+
+  it("bounds the final page model view after partial outcome and fallback metadata are added", () => {
+    const result = {
+      ok: false,
+      completed: 1,
+      uncertain: true,
+      fallback: "computer_act",
+      url: `https://example.test/${"u".repeat(2000)}`,
+      tree: "body ".repeat(1950),
+      error: "Uncertain operation ".repeat(15),
+      note: "Inspect before continuing. ".repeat(8),
+      elements: [{ ref: "stable-ref", role: "button", name: "Save", value: "x".repeat(2000) }],
+    };
+    const modeled = browserResultForModel(result) as {
+      kind: string;
+      content: Array<{ text: string }>;
+      details: unknown;
+    };
+    expect(modeled.kind).toBe("agent_tool_result");
+    expect(modeled.content[0]!.text.length).toBeLessThanOrEqual(12_000);
+    const parsed = JSON.parse(modeled.content[0]!.text);
+    expect(parsed.result ?? parsed).toMatchObject({
+      completed: 1,
+      uncertain: true,
+      fallback: "computer_act",
+    });
+    expect(modeled.content[0]!.text).not.toContain('"elements"');
+    expect(modeled.details).toBe(result);
+  });
+
+  it("keeps every complete control ref when clipping only the page text at the final bound", () => {
+    const elements = Array.from({ length: 15 }, (_, i) => ({
+      ref: `r2.${Buffer.from(JSON.stringify([`target${i}`, "frame", "loader", String(i).padStart(32, "a")])).toString("base64url")}`,
+      role: "button",
+      name: `Save ${i}`,
+    }));
+    const result = {
+      ok: false,
+      completed: 1,
+      uncertain: true,
+      fallback: "computer_act",
+      url: `https://example.test/${"u".repeat(3000)}`,
+      tree: `${"body ".repeat(1300)}\n${elements.map((e) => `- ${e.role} ${JSON.stringify(e.name)} [${e.ref}]`).join("\n")}`,
+      error: "Uncertain operation ".repeat(60),
+      elements,
+    };
+    const modeled = browserResultForModel(result) as {
+      content: Array<{ text: string }>;
+      details: unknown;
+    };
+    expect(modeled.content[0]!.text.length).toBeLessThanOrEqual(12_000);
+    const view = JSON.parse(modeled.content[0]!.text);
+    expect(view).toMatchObject({ completed: 1, uncertain: true });
+    for (const element of elements) expect(view.tree).toContain(`[${element.ref}]`);
+    expect(view.tree).toContain("[page text truncated]");
+    expect(modeled.details).toBe(result);
+  });
+
+  it("omits oversized page metadata without truncating a URL into another address", () => {
+    const result = {
+      ok: false,
+      completed: 1,
+      uncertain: true,
+      url: `https://example.test/${"x".repeat(13000)}`,
+      tree: '- button "Save" [stable-ref]',
+      elements: [{ role: "button", name: "Save", ref: "stable-ref" }],
+    };
+    const modeled = browserResultForModel(result) as {
+      content: Array<{ text: string }>;
+      details: unknown;
+    };
+    const view = JSON.parse(modeled.content[0]!.text);
+    expect(view).toMatchObject({ ok: false, completed: 1, uncertain: true, snapshotOmitted: true });
+    expect(view).not.toHaveProperty("url");
+    expect(modeled.details).toBe(result);
   });
 
   it("toggles checkboxes via click without undoing activation", async () => {

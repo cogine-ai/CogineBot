@@ -1,4 +1,5 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
+import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import {
   BotSecretName,
   botSecretDestinationSchema,
@@ -9,6 +10,7 @@ import {
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
+import { BROWSER_ACT_KINDS } from "./browser-tools.js";
 
 // The owner flag can land in process.env after static imports run (loadRootEnv
 // parses .env once the entry module is already executing), so the model-facing
@@ -205,7 +207,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "browser_navigate",
     description:
-      'Open a URL in the page browser on this bot\'s computer and return the document title. Prefer this over pixel clicks for web pages. If the result includes fallback:"computer_act", use computer_act on the desktop browser instead.',
+      'Open a URL in the page browser on this bot\'s computer and return the page like browser_snapshot. Prefer this over pixel clicks for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing with the desktop tools.',
     inputSchema: {
       type: "object",
       properties: {
@@ -217,14 +219,13 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "browser_snapshot",
     description:
-      "Capture an accessibility-style snapshot of the current page with element refs (e1, e2, …). Use refs with browser_act. Prefer this over computer_observe for web pages. If fallback is computer_act, use the desktop tools instead.",
+      "Capture an accessibility-style snapshot of the current page with element refs. Use those exact refs with browser_act. A dropdown lists its options, and a line says when page text or controls were cut off. Frames follow the page under their site. Prefer this over computer_observe for web pages. If loading is true, take another snapshot before deciding what the page shows. If fallback is computer_act, inspect the current state before continuing with the desktop tools.",
     inputSchema: { type: "object", properties: {} },
     readOnly: true,
   },
   {
     name: "browser_act",
-    description:
-      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead.',
+    description: `Click or fill page elements by ref from browser_snapshot (kinds: ${BROWSER_ACT_KINDS.join(", ")}). click is a real mouse click, and fill on a dropdown takes one of its options' visible labels or values. The result shows the page after the action, and a snapshot covers the whole page, so scrolling is rarely needed. upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret types the username or password of a login saved with request_secret, only on its saved HTTPS origin (in a frame, the frame's origin); you never see the value. type presses keys like a keyboard and replaces the field's text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing. Do not replay completed or uncertain actions.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -233,9 +234,19 @@ export const builtinAgentTools: ConnectorTool[] = [
           items: {
             type: "object",
             properties: {
-              kind: { type: "string", enum: ["click", "fill", "type", "fill_secret"] },
+              kind: { type: "string", enum: [...BROWSER_ACT_KINDS] },
               ref: { type: "string", description: "Element ref from browser_snapshot." },
-              text: { type: "string", description: "Text for fill or type." },
+              text: {
+                type: "string",
+                description: "Text for fill or type (type replaces the field's text).",
+              },
+              paths: {
+                type: "array",
+                items: { type: "string", minLength: 1 },
+                minItems: 1,
+                maxItems: MAX_BROWSER_UPLOAD_FILES,
+                description: "Workspace files to attach, for upload.",
+              },
               secret: { type: "string", description: "Saved login name for fill_secret." },
               field: {
                 type: "string",

@@ -13,6 +13,7 @@ import type {
   PageBrowserResult,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
+import { combineSignals } from "./connector-safety.js";
 import { FakeBrowserProvider, type FakeBrowserProviderOptions } from "./fake-browser.js";
 
 const DETACHED_MESSAGE =
@@ -67,11 +68,30 @@ export class ComputerBrowserProvider implements BrowserProvider {
     };
   }
 
+  async supportsPageActions(computer: ComputerRef, context: AdapterContext): Promise<boolean> {
+    if (this.canUseInProcess(computer)) return this.fake.supportsPageActions(computer, context);
+    const result = await this.runLive(computer, { command: "capabilities" }, context);
+    const capabilities = result.capabilities;
+    return (
+      result.ok === true &&
+      result.fallback === undefined &&
+      result.uncertain !== true &&
+      capabilities?.protocol === 2 &&
+      capabilities.engine === "agent-browser" &&
+      capabilities.engineVersion === "0.41.0" &&
+      capabilities.refIdentity === "exact-node-v1" &&
+      Array.isArray(capabilities.loginFields) &&
+      capabilities.loginFields.includes("username") &&
+      capabilities.loginFields.includes("password")
+    );
+  }
+
   async navigate(
     computer: ComputerRef,
     request: BrowserNavigateRequest,
     context: AdapterContext,
   ): Promise<BrowserNavigateResult> {
+    context = { ...context, signal: combineSignals(context.signal, request.signal) };
     if (this.canUseInProcess(computer)) {
       return this.fake.navigate(computer, request, context);
     }
@@ -98,6 +118,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
     request: BrowserSnapshotRequest,
     context: AdapterContext,
   ): Promise<BrowserSnapshotResult> {
+    context = { ...context, signal: combineSignals(context.signal, request.signal) };
     if (this.canUseInProcess(computer)) {
       return this.fake.snapshot(computer, request, context);
     }
@@ -118,6 +139,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       title: typeof live.title === "string" ? live.title : "",
       tree: typeof live.tree === "string" ? live.tree : formatTree(elements),
       elements,
+      ...(typeof live.loading === "boolean" ? { loading: live.loading } : {}),
     };
   }
 
@@ -126,6 +148,33 @@ export class ComputerBrowserProvider implements BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult> {
+    context = {
+      ...context,
+      signal: AbortSignal.any([
+        context.signal,
+        ...(request.signal ? [request.signal] : []),
+        AbortSignal.timeout(22_000),
+      ]),
+    };
+    context.signal.throwIfAborted();
+    if (
+      request.actions.some(
+        (action) =>
+          action.kind === "type" ||
+          action.kind === "upload" ||
+          (action.kind === "fill" && Boolean(action.origin || action.field)),
+      ) &&
+      !(await this.supportsPageActions(computer, context))
+    ) {
+      return {
+        ok: false,
+        completed: 0,
+        uncertain: false,
+        url: "",
+        title: "",
+        error: "Page browser action is unavailable on this computer.",
+      };
+    }
     if (this.canUseInProcess(computer)) {
       return this.fake.act(computer, request, context);
     }
@@ -134,6 +183,18 @@ export class ComputerBrowserProvider implements BrowserProvider {
       { command: "act", actions: request.actions },
       context,
     );
+    // A confirmed refusal is settled: a desktop fallback could repeat an earlier step.
+    if (live?.ok === false && live.uncertain === false && live.fallback === undefined) {
+      return {
+        ok: false,
+        completed: typeof live.completed === "number" ? live.completed : 0,
+        uncertain: false,
+        url: typeof live.url === "string" ? live.url : "",
+        title: typeof live.title === "string" ? live.title : "",
+        ...navigationObservation(live),
+        error: live.error || DETACHED_MESSAGE,
+      };
+    }
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
         ok: false,
@@ -177,7 +238,8 @@ export class ComputerBrowserProvider implements BrowserProvider {
               uncertain: false,
               navigationOutcomeKnown: true,
             };
-      if (result?.ok === true) {
+      context.signal.throwIfAborted();
+      if (result?.ok === true && request.command !== "capabilities") {
         if (typeof result.url !== "string" || typeof result.title !== "string") {
           throw new Error("Incomplete page browser response");
         }
@@ -196,6 +258,14 @@ export class ComputerBrowserProvider implements BrowserProvider {
           throw new Error("Unconfirmed page actions");
         }
       }
+      if (
+        request.command === "act" &&
+        result.completed !== undefined &&
+        (!Number.isInteger(result.completed) ||
+          result.completed < 0 ||
+          result.completed > request.actions.length)
+      )
+        throw new Error("Invalid page action progress");
       return result;
     } catch (error) {
       context.signal.throwIfAborted();
@@ -215,6 +285,7 @@ function navigationObservation(live: LivePayload | undefined) {
     elements?: BrowserSnapshotNode[];
     timedOut?: boolean;
     uncertain?: boolean;
+    loading?: boolean;
   } = {};
   if (Array.isArray(live?.elements)) {
     fields.elements = live.elements;
@@ -223,6 +294,7 @@ function navigationObservation(live: LivePayload | undefined) {
   if (typeof live?.tree === "string") fields.tree = live.tree;
   if (typeof live?.timedOut === "boolean") fields.timedOut = live.timedOut;
   if (typeof live?.uncertain === "boolean") fields.uncertain = live.uncertain;
+  if (typeof live?.loading === "boolean") fields.loading = live.loading;
   return fields;
 }
 
@@ -232,7 +304,8 @@ function formatTree(elements: BrowserSnapshotNode[]): string {
     .map((el) => {
       const value =
         el.value !== undefined && el.value !== "" ? ` value=${JSON.stringify(el.value)}` : "";
-      return `- ${el.role} "${el.name}" [${el.ref}]${value}`;
+      const options = el.options ? ` options=${JSON.stringify(el.options)}` : "";
+      return `- ${el.role} ${JSON.stringify(el.name)} [${el.ref}]${value}${options}`;
     })
     .join("\n");
 }

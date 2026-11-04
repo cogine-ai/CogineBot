@@ -24,6 +24,7 @@ import {
   assertVolumeSubpathSupport,
   COMPUTER_GID,
   COMPUTER_IMAGE,
+  COMPUTER_IMAGE_CONTEXT_FILES,
   COMPUTER_UID,
   COMPUTER_USER,
   computerBridgeNameFor,
@@ -500,6 +501,7 @@ app.post("/computers/:id/browser", async (c) => {
   signal.throwIfAborted();
   const body = z
     .discriminatedUnion("command", [
+      z.object({ command: z.literal("capabilities") }),
       z.object({
         command: z.literal("navigate"),
         url: z
@@ -518,13 +520,27 @@ app.post("/computers/:id/browser", async (c) => {
         actions: z
           .array(
             z.discriminatedUnion("kind", [
-              z.object({ kind: z.literal("click"), ref: z.string().min(1).max(200) }),
+              z.object({ kind: z.literal("click"), ref: z.string().min(1).max(2048) }),
               z.object({
-                kind: z.enum(["fill", "type"]),
-                ref: z.string().min(1).max(200),
-                text: z.string().max(32_000),
-                origin: z.string().url().max(2048).optional(),
+                kind: z.literal("upload"),
+                ref: z.string().min(1).max(2048),
+                paths: z.array(z.string().min(1).max(4096)).min(1).max(10),
+                roots: z.array(z.string().min(1).max(4096)).min(1).max(10),
               }),
+              z
+                .object({
+                  kind: z.enum(["fill", "type"]),
+                  ref: z.string().min(1).max(2048),
+                  text: z.string().max(32_000),
+                  origin: z.string().url().max(2048).optional(),
+                  field: z.enum(["username", "password"]).optional(),
+                })
+                .refine(
+                  (step) =>
+                    (!step.origin && !step.field) ||
+                    (step.kind === "fill" && Boolean(step.origin) && Boolean(step.field)),
+                  "A saved login fill requires its origin and field",
+                ),
             ]),
           )
           .min(1)
@@ -1182,24 +1198,7 @@ async function ensureComputerImage() {
       const stream = await docker.buildImage(
         {
           context: computerContext,
-          src: [
-            "Dockerfile",
-            "start.sh",
-            "user-env.sh",
-            "control.py",
-            "xcapture.c",
-            "rakazo-browser",
-            "rakazo-focus-or-launch",
-            "rakazo-page-browser",
-            "rakazo-browser.desktop",
-            "embed.html",
-            "clipboard-bridge.js",
-            "mobile-keyboard.js",
-            "fluxbox.init",
-            "fluxbox.apps",
-            "fluxbox.menu",
-            "rakazo-local-bin.sh",
-          ],
+          src: [...COMPUTER_IMAGE_CONTEXT_FILES],
         },
         { t: COMPUTER_IMAGE },
       );

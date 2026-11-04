@@ -233,7 +233,9 @@ import { createBrowserProvider } from "./browser-provider-factory.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
+  browserResultForModel,
   browserSnapshotFromTool,
+  redactBrowserResult,
 } from "./browser-tools.js";
 import {
   agentConnectionTools,
@@ -274,6 +276,7 @@ import {
 import { withComputerScreenAvailability } from "./computer-screens.js";
 import {
   displayBotWorkspacePath,
+  resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
   teamBotWorkspaceDirectory,
@@ -6299,12 +6302,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   : null;
             return computerScreenToolResult(async () => {
               const result = tool
-                ? redactConnectorPayload(
+                ? redactBrowserResult(
                     await tool(browser, await runComputer.get(), context, args),
                     redactions(),
                   )
                 : await browserActFromTool(browser, await runComputer.get(), context, args, {
                     redactions,
+                    uploadRoots:
+                      computerMode === "team"
+                        ? [teamBotWorkspaceDirectory(bot.id), "shared"]
+                        : ["."],
+                    resolveUploadPath: (path) =>
+                      computerMode === "team"
+                        ? resolveBotUploadPath(computerMode, bot.id, path)
+                        : path,
                     resolveSecretFill: async (step) => {
                       const resolved = await resolveLoginFill({
                         prisma: deps.prisma,
@@ -6323,7 +6334,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 name,
                 result,
               );
-              return result;
+              return browserResultForModel(result);
             }, finish);
           }
 

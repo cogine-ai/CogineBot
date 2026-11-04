@@ -5,6 +5,7 @@ import type {
   BrowserSnapshotNode,
   BrowserSnapshotResult,
 } from "@rakazo/adapter-kit";
+import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import { JSDOM } from "jsdom";
 
 const INTERACTIVE_SELECTOR = [
@@ -24,8 +25,15 @@ const INTERACTIVE_SELECTOR = [
   "[contenteditable='true']",
 ].join(",");
 
-/** Saved logins are typed only into these input types. Textareas stay out: a username is an input. */
-const LOGIN_FILL_INPUT_TYPES = new Set(["text", "email", "password", "tel"]);
+const REOPEN_SAVED_SITE = "Open the saved site with browser_navigate, then fill again.";
+/** Saved usernames are typed only into these input types. Textareas stay out: a username is an input. */
+const USERNAME_INPUT_TYPES = new Set(["text", "email", "tel"]);
+
+/** A saved-login fill declined before the page changed; reported as settled, not uncertain. */
+class FillRefused extends Error {}
+
+/** A step the page cannot take as asked, such as an option the dropdown does not have. */
+class SettledStep extends Error {}
 
 type DomWindow = JSDOM["window"];
 type DomElement = InstanceType<DomWindow["Element"]>;
@@ -75,11 +83,25 @@ export class PageBrowserSession {
     };
   }
 
-  act(actions: BrowserActStep[]): BrowserActResult {
+  act(actions: BrowserActStep[], signal?: AbortSignal): BrowserActResult {
+    signal?.throwIfAborted();
+    try {
+      this.validateActions(actions);
+    } catch (error) {
+      return {
+        ok: false,
+        completed: 0,
+        uncertain: false,
+        url: this.url,
+        title: this.title,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     let completed = 0;
     for (const action of actions) {
-      const el = this.refs.get(action.ref);
-      if (!el) {
+      signal?.throwIfAborted();
+      const el = action.ref === undefined ? undefined : this.refs.get(action.ref);
+      if (!el?.isConnected || el.ownerDocument !== this.dom.window.document) {
         const snap = this.snapshot();
         return {
           ok: false,
@@ -88,11 +110,12 @@ export class PageBrowserSession {
           title: snap.title,
           tree: snap.tree,
           elements: snap.elements,
-          error: `Unknown element ref "${action.ref}". Call browser_snapshot and use a fresh ref.`,
-          fallback: "computer_act",
+          error: `Stale element ref "${action.ref}": the page has changed since that snapshot. Use a ref from the page below.`,
+          uncertain: false,
         };
       }
       try {
+        if (action.kind === "fill" || action.kind === "type") this.checkFillOrigin(action);
         this.applyAction(el, action);
       } catch (error) {
         const snap = this.snapshot();
@@ -104,7 +127,9 @@ export class PageBrowserSession {
           tree: snap.tree,
           elements: snap.elements,
           error: error instanceof Error ? error.message : String(error),
-          fallback: "computer_act",
+          ...(error instanceof FillRefused || error instanceof SettledStep
+            ? { uncertain: false }
+            : { fallback: "computer_act" as const }),
         };
       }
       completed += 1;
@@ -120,8 +145,71 @@ export class PageBrowserSession {
     };
   }
 
+  private validateActions(actions: BrowserActStep[]): void {
+    if (!Array.isArray(actions) || actions.length === 0 || actions.length > 24)
+      throw new SettledStep("Expected 1 to 24 actions");
+    for (const action of actions) {
+      if (
+        !action ||
+        !["click", "fill", "type", "upload"].includes(action.kind) ||
+        typeof action.ref !== "string" ||
+        !action.ref
+      )
+        throw new SettledStep("Invalid browser action");
+      if (action.kind === "fill" || action.kind === "type") {
+        if (typeof action.text !== "string") throw new SettledStep("Text is required");
+        this.checkFillOrigin(action);
+      }
+      if (
+        action.kind === "upload" &&
+        (!Array.isArray(action.paths) ||
+          action.paths.length === 0 ||
+          action.paths.length > MAX_BROWSER_UPLOAD_FILES ||
+          action.paths.some((path) => typeof path !== "string" || !path.trim()))
+      )
+        throw new SettledStep("Upload file paths are required");
+    }
+  }
+
+  private checkFillOrigin(action: { kind: string; origin?: string; field?: string }): void {
+    if (!action.origin && !action.field) return;
+    if (
+      action.kind !== "fill" ||
+      !action.origin ||
+      !["username", "password"].includes(action.field ?? "")
+    )
+      throw new FillRefused("A saved login fill requires its origin and field.");
+    let saved: URL;
+    try {
+      saved = new URL(action.origin);
+    } catch {
+      throw new FillRefused(`Website logins can only be filled on HTTPS. ${REOPEN_SAVED_SITE}`);
+    }
+    const page = new URL(this.url);
+    if (saved.protocol !== "https:" || page.protocol !== "https:")
+      throw new FillRefused(`Website logins can only be filled on HTTPS. ${REOPEN_SAVED_SITE}`);
+    if (page.origin !== saved.origin)
+      throw new FillRefused(
+        `The page is not on the site this login was saved for. ${REOPEN_SAVED_SITE}`,
+      );
+  }
+
   private applyAction(el: DomElement, action: BrowserActStep): void {
     const win = this.dom.window;
+    if (action.kind === "upload") {
+      if (!(el instanceof win.HTMLInputElement) || el.type !== "file") {
+        throw new Error("upload needs a file upload element from browser_snapshot");
+      }
+      if (action.paths.length > 1 && !el.multiple) {
+        throw new Error("This file upload accepts one file");
+      }
+      // jsdom cannot build a FileList, so page handlers get named, empty files instead.
+      const files = action.paths.map((path) => new win.File([], path.split("/").pop() ?? path));
+      Object.defineProperty(el, "files", { configurable: true, value: files });
+      el.dispatchEvent(new win.Event("input", { bubbles: true }));
+      el.dispatchEvent(new win.Event("change", { bubbles: true }));
+      return;
+    }
     if (action.kind === "click") {
       if (el instanceof win.HTMLAnchorElement && el.href) {
         const next = new URL(el.href, this.url);
@@ -143,48 +231,56 @@ export class PageBrowserSession {
     }
     if (action.kind === "fill" || action.kind === "type") {
       if (action.origin) {
-        const page = new URL(this.url);
-        let saved: URL;
-        try {
-          saved = new URL(action.origin);
-        } catch {
-          throw new Error("Website logins can only be filled on HTTPS.");
-        }
-        // Private-LAN HTTP never qualifies, even when the page origin matches.
-        if (saved.protocol !== "https:" || page.protocol !== "https:") {
-          throw new Error("Website logins can only be filled on HTTPS.");
-        }
-        if (page.origin !== saved.origin) {
-          throw new Error("The page is not on the site this login was saved for.");
-        }
         const inputType = el instanceof win.HTMLInputElement ? el.type : "";
-        if (!LOGIN_FILL_INPUT_TYPES.has(inputType)) {
-          throw new Error(
-            "A saved login can only be typed into a text, email, password, or telephone field.",
+        if (action.field === "password" && inputType !== "password")
+          throw new FillRefused("A saved password can only be typed into a password field.");
+        if (action.field === "username" && !USERNAME_INPUT_TYPES.has(inputType))
+          throw new FillRefused(
+            "A saved username can only be typed into a text, email, or telephone field.",
           );
-        }
       }
       const text = action.text;
       const formField = el instanceof win.HTMLInputElement || el instanceof win.HTMLTextAreaElement;
       if (formField) {
-        // Only a plain fill replaces a saved login; typing appends to it.
+        // Fill and type both replace the field, and with it any saved login.
         if (action.origin) this.loginFilled.add(el);
-        else if (action.kind === "fill") this.loginFilled.delete(el);
-        if (action.kind === "fill") el.value = text;
-        else el.value = `${el.value}${text}`;
+        else this.loginFilled.delete(el);
+        el.value = text;
+        // A partly accepted login is not left on the page, as in the live helper.
+        if (action.origin && el.value !== text) {
+          el.value = "";
+          throw new FillRefused("This field didn't accept the saved login, so it was cleared.");
+        }
         el.dispatchEvent(new win.Event("input", { bubbles: true }));
         el.dispatchEvent(new win.Event("change", { bubbles: true }));
         return;
       }
       if (el instanceof win.HTMLSelectElement) {
-        const match = [...el.options].find((o) => o.value === text || o.text === text);
-        el.value = match ? match.value : text;
+        const norm = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+        const options = [...el.options];
+        const match =
+          options.find((o) => o.value === text) ??
+          options.find((o) => optionLabel(o) === text) ??
+          options.find((o) => norm(optionLabel(o)) === norm(text) || norm(o.value) === norm(text));
+        if (!match) {
+          throw new SettledStep(
+            `This dropdown has no option "${text}". Its options: ${describeOptions(optionsOf(el, win))}.`,
+          );
+        }
+        if (unavailable(win, match)) {
+          throw new SettledStep(
+            `The option "${optionLabel(match)}" is disabled. Its options: ${describeOptions(optionsOf(el, win))}.`,
+          );
+        }
+        // The old choice goes: a multiple select would keep it otherwise.
+        for (const option of options) option.selected = false;
+        match.selected = true;
+        el.dispatchEvent(new win.Event("input", { bubbles: true }));
         el.dispatchEvent(new win.Event("change", { bubbles: true }));
         return;
       }
       if (el.getAttribute("contenteditable") === "true") {
-        if (action.kind === "fill") el.textContent = text;
-        else el.textContent = `${el.textContent ?? ""}${text}`;
+        el.textContent = text;
         el.dispatchEvent(new win.Event("input", { bubbles: true }));
         return;
       }
@@ -210,9 +306,11 @@ export class PageBrowserSession {
       const tag = node.tagName.toLowerCase();
       const entry: BrowserSnapshotNode = { ref, role, name, tag };
       if (value !== undefined) entry.value = value;
+      if (node instanceof win.HTMLSelectElement) entry.options = optionsOf(node, win);
       elements.push(entry);
       const valuePart = value !== undefined ? ` value=${JSON.stringify(value)}` : "";
-      lines.push(`- ${role} ${JSON.stringify(name)} [${ref}]${valuePart}`);
+      const optionsPart = entry.options ? ` options: ${describeOptions(entry.options)}` : "";
+      lines.push(`- ${role} ${JSON.stringify(name)} [${ref}]${valuePart}${optionsPart}`);
     }
     return { elements, tree: lines.join("\n") || "(no interactive elements)" };
   }
@@ -220,11 +318,45 @@ export class PageBrowserSession {
 
 function isIgnored(win: DomWindow, el: DomElement): boolean {
   if (el instanceof win.HTMLInputElement && el.type === "hidden") return true;
-  if (el.getAttribute("aria-hidden") === "true") return true;
+  // Sites often aria-hide the real file input behind a styled button; it is still the upload target.
+  if (el.getAttribute("aria-hidden") === "true")
+    return !(el instanceof win.HTMLInputElement && el.type === "file");
   return false;
 }
 
+function optionLabel(option: { label: string; text: string }): string {
+  return (option.label || option.text).replace(/\s+/g, " ").trim();
+}
+
+/** An option is out of reach when it, or the group it is in, is disabled. */
+function unavailable(win: DomWindow, option: HTMLOptionElement): boolean {
+  const group = option.parentElement;
+  return option.disabled || (group instanceof win.HTMLOptGroupElement && group.disabled);
+}
+
+function optionsOf(select: { options: Iterable<HTMLOptionElement> }, win: DomWindow) {
+  return [...select.options].map((option) => ({
+    label: optionLabel(option),
+    value: option.value,
+    ...(option.selected ? { selected: true } : {}),
+    ...(unavailable(win, option) ? { disabled: true } : {}),
+  }));
+}
+
+function describeOptions(options: NonNullable<BrowserSnapshotNode["options"]>): string {
+  return options
+    .map(
+      (option) =>
+        JSON.stringify(option.label) +
+        (option.value !== option.label ? `=${JSON.stringify(option.value)}` : "") +
+        (option.selected ? " (selected)" : "") +
+        (option.disabled ? " (disabled)" : ""),
+    )
+    .join(", ");
+}
+
 function roleFor(win: DomWindow, el: DomElement): string {
+  if (el instanceof win.HTMLInputElement && el.type === "file") return "file upload";
   const explicit = el.getAttribute("role");
   if (explicit) return explicit;
   const tag = el.tagName.toLowerCase();
@@ -244,6 +376,20 @@ function roleFor(win: DomWindow, el: DomElement): string {
 }
 
 function nameFor(win: DomWindow, el: DomElement): string {
+  const root = el.getRootNode();
+  const labelledBy = (el.getAttribute("aria-labelledby") ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) =>
+      root instanceof win.Document || root instanceof win.ShadowRoot
+        ? (root.getElementById(id)?.textContent ?? "")
+        : "",
+    )
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (labelledBy) return labelledBy;
   const aria = el.getAttribute("aria-label")?.trim();
   if (aria) return aria;
   if (el instanceof win.HTMLInputElement || el instanceof win.HTMLTextAreaElement) {
@@ -260,6 +406,7 @@ function nameFor(win: DomWindow, el: DomElement): string {
 function valueFor(win: DomWindow, el: DomElement): string | undefined {
   if (el instanceof win.HTMLInputElement) {
     if (el.type === "checkbox" || el.type === "radio") return el.checked ? "checked" : "unchecked";
+    if (el.type === "file") return Array.from(el.files ?? [], (file) => file.name).join(", ");
     if (el.type === "password") return el.value ? "••••" : "";
     return el.value;
   }
