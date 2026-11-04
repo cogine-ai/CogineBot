@@ -227,6 +227,7 @@ async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
   let {
     rows: [role],
   } = await owner.query<RolePrivileges>(runtimeStatement.text, runtimeStatement.values);
+  const loginExisted = Boolean(role);
   if (role && unsafeRole(role))
     throw new Error(
       "The configured runtime role is privileged or owns application data; it was not changed",
@@ -294,21 +295,22 @@ async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
     if (provisioned) return;
     throw cannotChange();
   }
-  const password =
-    parsed.password ||
-    (!role && typeof configured.password === "string" ? configured.password : "");
-  if (!role && !password)
-    throw new Error(
-      "A new runtime login requires an explicit password; precreate it when using external credential resolution",
-    );
-  const secret = password ? `PASSWORD ${escapeLiteral(scramSha256Verifier(password))}` : "";
-  const limits = admin.superuser
-    ? "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION"
-    : "";
   const name = escapeIdentifier(login);
   try {
-    if (!role) await owner.query(`CREATE ROLE ${name} LOGIN ${secret} ${limits}`);
-    else await owner.query(`ALTER ROLE ${name} LOGIN ${secret} ${limits}`);
+    if (!loginExisted) {
+      const password =
+        parsed.password || (typeof configured.password === "string" ? configured.password : "");
+      if (!password)
+        throw new Error(
+          "A new runtime login requires an explicit password; precreate it when using external credential resolution",
+        );
+      const secret = `PASSWORD ${escapeLiteral(scramSha256Verifier(password))}`;
+      const limits = admin.superuser
+        ? "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION"
+        : "";
+      if (!role) await owner.query(`CREATE ROLE ${name} LOGIN ${secret} ${limits}`);
+      else await owner.query(`ALTER ROLE ${name} LOGIN ${secret} ${limits}`);
+    }
     if (login !== RUNTIME_ROLE) await owner.query(`GRANT ${RUNTIME_ROLE} TO ${name}`);
   } catch (error) {
     const denied = (error as { code?: string }).code === "42501";

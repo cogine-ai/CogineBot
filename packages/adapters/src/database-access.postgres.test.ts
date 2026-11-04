@@ -14,6 +14,7 @@ import {
   JOB_QUEUE_POLICY,
   provisionRuntimeRole,
   RUNTIME_ROLE,
+  rlsBypassKey,
   runAsSystem,
 } from "@rakazo/db";
 import { escapeIdentifier, escapeLiteral } from "pg";
@@ -178,6 +179,80 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     await provisionRuntimeRole(databaseUrl!, runtimeUrl);
     await provisionRuntimeRole(databaseUrl!, runtimeUrl);
     expect(await digestCount()).toBe(before);
+  });
+
+  it("preserves the old login credential until its instances drain", async () => {
+    const name = `${login}_rotation`;
+    allocated.add(name);
+    const originalUrl = urlFor(name, password);
+    await provisionRuntimeRole(databaseUrl!, originalUrl);
+    const replacement = new URL(originalUrl);
+    replacement.password = randomBytes(24).toString("hex");
+    const before = await digestCount();
+    const verifier = async () =>
+      (await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])).rows[0]
+        .rolpassword;
+    const originalVerifier = await verifier();
+    const oldInstance = createDb(originalUrl, { poolMax: 1 });
+    try {
+      let failure: unknown;
+      const retained = await oldInstance.pool.connect();
+      try {
+        try {
+          await provisionRuntimeRole(databaseUrl!, replacement.toString());
+        } catch (error) {
+          failure = error;
+        }
+      } finally {
+        retained.release(true);
+      }
+      const reconnects = await oldInstance.pool.query("SELECT 1").then(
+        () => true,
+        () => false,
+      );
+      expect(reconnects).toBe(true);
+      expect(await verifier()).toBe(originalVerifier);
+      expect(await digestCount()).toBe(before);
+      expect(failure).toBeDefined();
+      const nextLogin = `${login}_replacement`;
+      allocated.add(nextLogin);
+      const next = createDb(urlFor(nextLogin, replacement.password), { poolMax: 1 });
+      try {
+        await provisionRuntimeRole(databaseUrl!, urlFor(nextLogin, replacement.password));
+        expect((await next.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+        expect((await oldInstance.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+        expect(await digestCount()).toBe(before + 1);
+      } finally {
+        await close(next);
+      }
+    } finally {
+      await close(oldInstance);
+      await owner.pool.query(
+        "DELETE FROM cogine_private.rls_bypass_keys WHERE digest=sha256(convert_to($1,'UTF8'))",
+        [rlsBypassKey(replacement.toString())],
+      );
+    }
+  });
+
+  it("authenticates zero-width-space passwords using the runtime SCRAM mapping", async () => {
+    const name = `${login}_unicode`;
+    allocated.add(name);
+    const url = urlFor(name, "fixture\u200Bpassword");
+    await provisionRuntimeRole(databaseUrl!, url);
+    for (const secret of ["fixture\u200Bpassword", "fixture password"]) {
+      const client = createDb(urlFor(name, secret), { poolMax: 1 });
+      try {
+        expect((await client.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+      } finally {
+        await close(client);
+      }
+    }
+    const removed = createDb(urlFor(name, "fixturepassword"), { poolMax: 1 });
+    try {
+      await expect(removed.pool.query("SELECT 1")).rejects.toMatchObject({ code: "28P01" });
+    } finally {
+      await close(removed);
+    }
   });
 
   it("uses PGPASSWORD from successful runtime authentication", async () => {

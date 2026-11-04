@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   poolClosed: 0,
   released: 0,
   existing: false,
+  groupExists: true,
   privileged: false,
   member: true,
   canManage: true,
@@ -59,11 +60,15 @@ vi.mock("pg", async (importActual) => {
         if (sql.includes("AS can"))
           return { rows: [{ can: state.canManage, superuser: state.canManage }], rowCount: 1 };
         if (sql.includes("AS member")) return { rows: [{ member: state.member }], rowCount: 1 };
-        if (sql.includes("SELECT 1 FROM pg_roles")) return { rows: [{}], rowCount: 1 };
+        if (sql.includes("SELECT 1 FROM pg_roles"))
+          return { rows: state.groupExists ? [{}] : [], rowCount: state.groupExists ? 1 : 0 };
+        if (sql.startsWith("CREATE ROLE coginebot_app NOLOGIN")) state.groupExists = true;
         if (sql.includes("FROM pg_catalog.pg_roles r")) {
           const name = values?.at(-1) as string;
           return {
-            rows: name === "coginebot_app" || state.existing ? [privileges(name)] : [],
+            rows: (name === "coginebot_app" ? state.groupExists : state.existing)
+              ? [privileges(name)]
+              : [],
             rowCount: 1,
           };
         }
@@ -117,6 +122,7 @@ beforeEach(() => {
     poolClosed: 0,
     released: 0,
     existing: false,
+    groupExists: true,
     privileged: false,
     member: true,
     canManage: true,
@@ -363,6 +369,39 @@ describe("runtime role preparation", () => {
     expect(state.poolClosed).toBe(1);
     expect(state.released).toBe(2);
   });
+  it("preserves an existing login's password when a different supplied credential fails authentication", async () => {
+    state.existing = true;
+    const failure = new Error("existing login password mismatch");
+    state.authError = failure;
+    await expect(provisionRuntimeRole(owner, runtime)).rejects.toBe(failure);
+    expect(state.sent.some((entry) => /^ALTER ROLE .*PASSWORD/.test(entry.sql))).toBe(false);
+    expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(
+      false,
+    );
+    expect(state.ownerClosed).toBe(1);
+    expect(state.poolClosed).toBe(1);
+  });
+
+  it("initializes the password when this invocation creates its grant role as the runtime login", async () => {
+    state.groupExists = false;
+    await expect(
+      provisionRuntimeRole(owner, "postgres://coginebot_app:secret@db/coginebot"),
+    ).resolves.toEqual({});
+    expect(
+      state.sent.some((entry) => entry.sql.startsWith("CREATE ROLE coginebot_app NOLOGIN")),
+    ).toBe(true);
+    expect(
+      state.sent.find((entry) => entry.sql.startsWith('ALTER ROLE "coginebot_app"'))?.sql,
+    ).toContain("PASSWORD 'SCRAM-SHA-256$");
+  });
+
+  it("does not recompute or replace an existing login verifier during successful preparation", async () => {
+    state.existing = true;
+    await expect(provisionRuntimeRole(owner, runtime)).resolves.toEqual({});
+    expect(state.sent.some((entry) => entry.sql.startsWith('ALTER ROLE "runtime"'))).toBe(false);
+    expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(true);
+  });
+
   it("does not register any digest when authentication fails", async () => {
     const failure = new Error("authentication failed");
     state.authError = failure;

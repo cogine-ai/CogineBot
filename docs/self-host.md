@@ -38,6 +38,11 @@ must inherit the runtime grant role. Privileged logins are rejected rather than
 silently changed. Registered keys used by existing pools remain during rollout;
 credential retirement requires draining those instances separately.
 
+Preparation preserves an existing login's password and verifies the supplied
+credential as it stands. To roll out a new password without breaking reconnects,
+prepare a new login, switch the new instances to it, and drain the old instances
+before retiring the old login and its registered key.
+
 Success reports role and key readiness, not complete row-level isolation. Full
 table policies and trusted API, worker and CLI contexts must be connected before
 activation. This command does not switch the current Compose services to a new
