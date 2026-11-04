@@ -1270,6 +1270,57 @@ it("keeps untouched header secrets private and clears them only through an empty
   }
 });
 
+it.each(["https://models.example.test/v1", "https://models.example.test/"])(
+  "restores untouched saved headers after returning from another endpoint to %s",
+  async (savedAlias) => {
+    useCompatibleConnections([{ ...compatibleConnection(), headerNames: ["X-Saved"] }]);
+    const view = await renderSettings();
+    try {
+      await typeInto(
+        field(view.container, "OpenAI-compatible server URL"),
+        "https://models.example.test/v1x",
+      );
+      expect(view.container.querySelector('input[aria-label="Header name"]')).toBeNull();
+      await act(async () => buttons(view.container, "Find models")[0]?.click());
+      const probe = models.probeOpenAiCompatible.mock.calls.at(-1)?.[0];
+      expect(probe.headers).toEqual({});
+      expect(probe).not.toHaveProperty("credentialId");
+      await typeInto(field(view.container, "OpenAI-compatible server URL"), savedAlias);
+      await act(async () => buttons(view.container, "Save")[0]?.click());
+      expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+        credentialId: "connection-a",
+        expectedRevision: 7,
+        baseUrl: savedAlias,
+      });
+      expect(models.connect.mock.calls.at(-1)?.[0].headers).toBeUndefined();
+      expect(field(view.container, "Header name").value).toBe("X-Saved");
+      expect(field(view.container, "Header value").value).toBe("");
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it("keeps an explicit saved-header clear when editing only a cosmetic endpoint alias", async () => {
+  useCompatibleConnections([{ ...compatibleConnection(), headerNames: ["X-Saved"] }]);
+  const view = await renderSettings();
+  try {
+    await act(async () =>
+      view.container
+        .querySelector<HTMLButtonElement>('button[aria-label="Remove header"]')
+        ?.click(),
+    );
+    await typeInto(
+      field(view.container, "OpenAI-compatible server URL"),
+      "https://models.example.test/",
+    );
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0].headers).toEqual({});
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("preserves protocol, entered headers and the captured revision after a rejected save", async () => {
   useCompatibleConnections();
   models.connect.mockRejectedValue(new Error("Connection changed. Reopen settings."));

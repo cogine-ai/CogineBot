@@ -48,9 +48,14 @@ describe("Models save feedback", () => {
     const probe = sliceBetween(
       screen,
       "async function probeServerModels()",
-      "async function setModelDefault()",
+      "function operationCurrent(",
     );
-    expect(probe.match(/publishFeedback\(\s*"probe"/g)).toHaveLength(2);
+    const success = sliceBetween(probe, "onSuccess: (models) => {", "onError: (err) => {");
+    const failure = sliceBetween(probe, "onError: (err) => {", "\n    });");
+    expect(success.match(/publishFeedback\(\s*"probe"/g)).toHaveLength(1);
+    expect(failure.match(/publishFeedback\(\s*"probe"/g)).toHaveLength(1);
+    expect(success).not.toContain('publishFeedback("connection"');
+    expect(failure).not.toContain('publishFeedback("connection"');
     const save = sliceBetween(
       screen,
       "async function connectKey()",
@@ -88,8 +93,16 @@ describe("Models save feedback", () => {
       "async function connectKey()",
       "async function finishSubscriptionSignIn(",
     );
+    const validation = connect.indexOf("const request = modelConnectRequest(");
     const cleared = connect.indexOf("clearFeedback()");
+    const invalid = connect.indexOf('if (request.status === "invalid")');
+    const rejected = connect.indexOf('publishFeedback("connection"', invalid);
+    const returned = connect.indexOf("return;", rejected);
+    expect(validation).toBeGreaterThan(-1);
     expect(cleared).toBeGreaterThan(-1);
-    expect(cleared).toBeLessThan(connect.indexOf("parseModelMaxTokens("));
+    expect(invalid).toBeGreaterThan(validation);
+    expect(cleared).toBeLessThan(invalid);
+    expect(rejected).toBeGreaterThan(invalid);
+    expect(returned).toBeGreaterThan(rejected);
   });
 });

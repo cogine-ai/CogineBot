@@ -156,13 +156,15 @@ describe("Pi model catalog", () => {
   });
 
   it("accepts catalog model lists larger than the custom-server probe cap", async () => {
-    const ids = Array.from({ length: 600 }, (_, index) => {
+    const ids = Array.from({ length: 4001 }, (_, index) => {
       const suffix = String(index).padStart(4, "0");
       return `vendor/catalog-model-${suffix}-${"x".repeat(120)}`;
     });
     const payload = JSON.stringify({ object: "list", data: ids.map((id) => ({ id })) });
     expect(Buffer.byteLength(payload)).toBeGreaterThan(64 * 1024);
-    expect(ids).toHaveLength(600);
+    expect(ids).toHaveLength(4001);
+    expect(Buffer.byteLength(payload)).toBeLessThan(2 * 1024 * 1024);
+    expect(ids.every((id) => id.length <= 256)).toBe(true);
 
     const fetchImpl = async () =>
       new Response(payload, {
@@ -178,7 +180,7 @@ describe("Pi model catalog", () => {
     ).resolves.toEqual(ids);
     await expect(
       probeOpenAiCompatibleModels({ baseUrl: "http://127.0.0.1:8000/v1" }, fetchImpl),
-    ).rejects.toThrow(/too large/i);
+    ).rejects.toThrow(/too many or overly long model ids/i);
   });
 
   it("adds a configured OpenRouter model that is newer than the static catalog", async () => {

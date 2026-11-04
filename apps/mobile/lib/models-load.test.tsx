@@ -1398,6 +1398,64 @@ it("keeps saved native header values absent and sends an explicit empty map to c
   });
 });
 
+it.each(["https://models.example.test/v1", "https://models.example.test/"])(
+  "restores untouched saved headers after returning from another native endpoint to %s",
+  async (savedAlias) => {
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation((procedure: string, input: unknown) => {
+      if (procedure === "models/credentials")
+        return Promise.resolve([{ ...credential, headerNames: ["X-Saved"] }]);
+      if (procedure === "models/probeOpenAiCompatible") return Promise.resolve({ models: [] });
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    await act(async () => button("Custom headers").click());
+    await edit(baseUrl(), "https://models.example.test/v1x");
+    expect(container.querySelector('input[aria-label="Header name"]')).toBeNull();
+    await act(async () => button("Find models").click());
+    const probe = state.rpc.mock.calls
+      .filter(([procedure]) => procedure === "models/probeOpenAiCompatible")
+      .at(-1)?.[1];
+    expect(probe.headers).toEqual({});
+    expect(probe).not.toHaveProperty("credentialId");
+    await edit(baseUrl(), savedAlias);
+    await act(async () => button("Save").click());
+    const saved = state.rpc.mock.calls
+      .filter(([procedure]) => procedure === "models/connect")
+      .at(-1)?.[1];
+    expect(saved).toMatchObject({
+      credentialId: "connection-a",
+      expectedRevision: 7,
+      baseUrl: savedAlias,
+    });
+    expect(saved.headers).toBeUndefined();
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Header name"]')?.value,
+    ).toBe("X-Saved");
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Header value"]')?.value,
+    ).toBe("");
+  },
+);
+
+it("keeps an explicit native saved-header clear when editing only a cosmetic endpoint alias", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/credentials"
+      ? Promise.resolve([{ ...credential, headerNames: ["X-Saved"] }])
+      : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Custom headers").click());
+  await act(async () => button("Remove header").click());
+  await edit(baseUrl(), "https://models.example.test/");
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/connect").at(-1)?.[1]
+      .headers,
+  ).toEqual({});
+});
+
 it("shows all native compatible rows for an empty search and preserves hidden enabled choices", async () => {
   const ids = ["model-a", "model-b", ...Array.from({ length: 9 }, (_, index) => `extra-${index}`)];
   const normal = state.rpc.getMockImplementation()!;

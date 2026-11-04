@@ -117,3 +117,59 @@ describe("actual SDK final wire budgets", () => {
     },
   );
 });
+
+it.each([
+  { cap: 1, deadline: false },
+  { cap: 15, deadline: true },
+])(
+  "keeps SDK default CC max_completion_tokens cap$cap after replacement deadline=$deadline",
+  async ({ cap, deadline }) => {
+    const { model, models } = fixture("openai-completions");
+    delete model.compat;
+    const requests: Record<string, unknown>[] = [];
+    const beforeCall = vi.fn(() => "reservation");
+    const afterCall = vi.fn();
+    const onPayload = vi.fn((payload: unknown) => ({
+      ...(payload as Record<string, unknown>),
+      max_tokens: 99_999,
+      max_completion_tokens: 99_999,
+      max_output_tokens: 99_999,
+    }));
+    const stream = observedPiStream(
+      models,
+      model,
+      { messages: [{ role: "user", content: "Short request", timestamp: 1 }] },
+      {
+        apiKey: "synthetic-wire-key",
+        maxTokens: cap,
+        onPayload,
+        fetch: async (_input, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          return Response.json(
+            {
+              error: { message: "Synthetic serialization complete", type: "invalid_request_error" },
+            },
+            { status: 400 },
+          );
+        },
+      },
+      vi.fn(),
+      { beforeCall, afterCall },
+      undefined,
+      deadline ? { requestDeadline: Date.now() + 10_000 } : undefined,
+    );
+    for await (const _event of stream) {
+      /* Real SDK default field and final payload hook. */
+    }
+    expect((await stream.result()).stopReason).toBe("error");
+    expect(onPayload).toHaveBeenCalledOnce();
+    expect(beforeCall).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ maxOutputTokens: cap }),
+    );
+    expect(afterCall).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.max_completion_tokens).toBe(cap);
+    expect(requests[0]).not.toHaveProperty("max_tokens");
+    expect(requests[0]).not.toHaveProperty("max_output_tokens");
+  },
+);

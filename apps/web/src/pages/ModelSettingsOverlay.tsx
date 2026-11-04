@@ -542,7 +542,7 @@ export function ModelSettingsOverlay({
     selectionRevisionRef.current += 1;
     if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) {
       setApiKey("");
-      setHeaderRows([]);
+      setHeaderRows(sameOpenAiCompatibleBaseUrl(nextBaseUrl, savedBaseUrl) ? null : []);
       // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
       setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     }

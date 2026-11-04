@@ -1273,6 +1273,11 @@ test("custom model protocols save, reopen and preserve private headers", async (
       await page.getByLabel("Connection", { exact: true }).selectOption(connectionId);
       await expect(protocol).toHaveValue(apiProtocol);
       await expect(page.getByLabel("Header value", { exact: true })).toHaveValue("");
+      await page.getByLabel("OpenAI-compatible server URL").fill(`${baseUrl}/temporary`);
+      await expect(page.getByLabel("Header name", { exact: true })).toHaveCount(0);
+      await page.getByLabel("OpenAI-compatible server URL").fill(`${baseUrl}/`);
+      await expect(page.getByLabel("Header name", { exact: true })).toHaveValue("X-Project");
+      await expect(page.getByLabel("Header value", { exact: true })).toHaveValue("");
     }
     expect(receivedHeaders).toHaveLength(3);
     expect(receivedHeaders.map((headers) => headers.project)).toEqual(["en", "en", "en"]);
