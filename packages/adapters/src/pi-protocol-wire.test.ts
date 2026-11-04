@@ -206,6 +206,98 @@ describe("actual Pi three-protocol requests", () => {
     },
   );
 
+  it.each(protocols)(
+    "keeps header-only authentication without SDK placeholder auth in %s",
+    async (apiProtocol) => {
+      const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+      const runtime = new PiAgentRuntime({
+        modelFetch: async (_input, init) => {
+          requests.push({
+            headers: new Headers(init?.headers),
+            body: JSON.parse(String(init?.body)),
+          });
+          return new Response(reply(apiProtocol, false), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        },
+      });
+      const events: AgentRuntimeEvent[] = [];
+      for await (const event of runtime.run(
+        {
+          ...request(apiProtocol),
+          model: {
+            ...model(apiProtocol, { "X-Fixture-Token": "header-only-token" }),
+            apiKey: undefined,
+          },
+        },
+        { signal: AbortSignal.timeout(15000) },
+      ))
+        events.push(event);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.headers.get("x-fixture-token")).toBe("header-only-token");
+      expect(requests[0]?.headers.has("authorization")).toBe(false);
+      expect(requests[0]?.headers.has("x-api-key")).toBe(false);
+      expect(requests[0]?.body.model).toBe("synthetic-protocol");
+      expect(JSON.stringify(events)).toContain("Done: evidence 1 en xy9");
+    },
+  );
+
+  it.each(
+    protocols.flatMap((apiProtocol) => [
+      {
+        apiProtocol,
+        key: "local",
+        headers: {},
+        baseUrl: "https://127.0.0.1/v1",
+        expectedKey: "local",
+      },
+      {
+        apiProtocol,
+        key: undefined,
+        headers: { "x-api-key": "configured-header-key" },
+        baseUrl: "https://127.0.0.1/v1",
+        expectedKey: "configured-header-key",
+      },
+      {
+        apiProtocol,
+        key: undefined,
+        headers: {},
+        baseUrl: "http://127.0.0.1/v1",
+        expectedKey: undefined,
+      },
+    ]),
+  )(
+    "preserves configured authentication and keyless local in $apiProtocol/$expectedKey",
+    async ({ apiProtocol, key, headers, baseUrl, expectedKey }) => {
+      const seen: Headers[] = [];
+      const runtime = new PiAgentRuntime({
+        modelFetch: async (_input, init) => {
+          seen.push(new Headers(init?.headers));
+          return new Response(reply(apiProtocol, false), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        },
+      });
+      const events: AgentRuntimeEvent[] = [];
+      for await (const event of runtime.run(
+        {
+          ...request(apiProtocol),
+          model: { ...model(apiProtocol, headers), apiKey: key, baseUrl },
+        },
+        { signal: AbortSignal.timeout(15000) },
+      ))
+        events.push(event);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.get("authorization")).toBe(
+        key && apiProtocol !== "anthropic-messages" ? `Bearer ${key}` : null,
+      );
+      expect(seen[0]?.get("x-api-key")).toBe(
+        expectedKey && (!key || apiProtocol === "anthropic-messages") ? expectedKey : null,
+      );
+      expect(JSON.stringify(events)).toContain("Done: evidence 1 en xy9");
+    },
+  );
+
   it.each(protocols)("keeps caller abort and one reservation in %s", async (apiProtocol) => {
     const controller = new AbortController();
     const beforeCall = vi.fn(async () => "synthetic-reservation");

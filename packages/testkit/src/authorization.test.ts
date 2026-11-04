@@ -1788,11 +1788,17 @@ describeWithDatabase("API authorization and resource isolation", () => {
       apiKey: "fake-saved-key",
       reasoning: false,
     });
+    expect(saved).toMatchObject({ reasoning: false, thinkingLevels: ["off"] });
     let updated = await rpc<ModelCredential>(app, cookie, "models/connect", {
       ...connection,
       credentialId: saved.id,
       expectedRevision: saved.connectionRevision,
       reasoning: true,
+    });
+    expect(updated).toMatchObject({
+      id: saved.id,
+      reasoning: true,
+      thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     });
     const actor = await rpc<Actor>(app, cookie, "me");
     expect(
@@ -1809,12 +1815,43 @@ describeWithDatabase("API authorization and resource isolation", () => {
       modelCredentialId: updated.id,
       expectedRevision: updated.connectionRevision,
     };
+    for (const thinkingLevel of ["low", "xhigh", "max"]) {
+      expect(await rpc(app, cookie, "bots/update", { ...update, thinkingLevel })).toMatchObject({
+        modelProvider: connection.provider,
+        modelId: connection.modelId,
+        modelCredentialId: saved.id,
+        thinkingLevel,
+      });
+    }
+    updated = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      ...connection,
+      credentialId: updated.id,
+      expectedRevision: updated.connectionRevision,
+      apiProtocol: "anthropic-messages",
+      reasoning: true,
+    });
+    expect(updated).toMatchObject({
+      id: saved.id,
+      apiProtocol: "anthropic-messages",
+      thinkingLevels: ["off", "minimal", "low", "medium", "high"],
+    });
+    update.expectedRevision = updated.connectionRevision;
     expect(
-      await rpc(app, cookie, "bots/update", { ...update, thinkingLevel: "low" }),
-    ).toMatchObject({ thinkingLevel: "low" });
-    expect(
-      (await raw(app, cookie, "bots/update", { ...update, thinkingLevel: "xhigh" })).status,
-    ).toBe(400);
+      await rpc(app, cookie, "bots/update", { ...update, thinkingLevel: "high" }),
+    ).toMatchObject({ modelCredentialId: saved.id, thinkingLevel: "high" });
+    for (const thinkingLevel of ["xhigh", "max"]) {
+      const rejected = await raw(app, cookie, "bots/update", { ...update, thinkingLevel });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).toContain("Thinking level must be one of:");
+      expect(await handles.prisma.bot.findUnique({ where: { id: bot.id } })).toMatchObject({
+        userId: actor.userId,
+        spaceId: actor.spaceId,
+        modelProvider: connection.provider,
+        modelId: connection.modelId,
+        modelCredentialId: saved.id,
+        thinkingLevel: "high",
+      });
+    }
     updated = await rpc<ModelCredential>(app, cookie, "models/connect", {
       ...connection,
       credentialId: updated.id,

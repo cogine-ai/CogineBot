@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import type { LookupFunction } from "node:net";
 import { isIP } from "node:net";
@@ -125,6 +126,10 @@ function openAiCompatibleProvider(
   models: Model<"openai-completions" | "openai-responses" | "anthropic-messages">[],
   policy: { headers?: Record<string, string> } = {},
 ): Provider {
+  // The SDK requires a key even for header-authenticated or keyless endpoints.
+  // Keep its placeholder private to this provider so a real key named "local" is preserved.
+  const placeholderApiKey = randomUUID();
+  const fetchPolicy = { ...policy, placeholderApiKey };
   const api = (protocol: string) =>
     protocol === "openai-responses"
       ? openAIResponsesApi()
@@ -137,12 +142,12 @@ function openAiCompatibleProvider(
     stream: (model, context, options) =>
       api(model.api).stream(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch, undefined, policy),
+        fetch: createOpenAiCompatibleFetch(options?.fetch, undefined, fetchPolicy),
       }),
     streamSimple: (model, context, options) =>
       api(model.api).streamSimple(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch, undefined, policy),
+        fetch: createOpenAiCompatibleFetch(options?.fetch, undefined, fetchPolicy),
       }),
   };
   return createProvider({
@@ -153,7 +158,7 @@ function openAiCompatibleProvider(
       apiKey: {
         name: "OpenAI-compatible server",
         resolve: async () => ({
-          auth: { apiKey: "local" },
+          auth: { apiKey: placeholderApiKey },
           source: "OpenAI-compatible endpoint",
         }),
       },
@@ -204,16 +209,10 @@ function headersCarryAuthorization(headers: HeadersInit): boolean {
   return entries.some(([name, value]) => isAuthHeader(name, value));
 }
 
-/** Matches fetch: when init.headers is set it replaces Request headers entirely. */
-function requestCarriesAuthorization(input: RequestInfo | URL, init?: RequestInit): boolean {
-  if (init?.headers !== undefined) return headersCarryAuthorization(init.headers);
-  return input instanceof Request ? headersCarryAuthorization(input.headers) : false;
-}
-
 export function createOpenAiCompatibleFetch(
   baseFetch: typeof globalThis.fetch = dispatcherFetch,
   resolve: ResolveHostname = resolveHostname,
-  opts?: { allowPublic?: boolean; headers?: Record<string, string> },
+  opts?: { allowPublic?: boolean; headers?: Record<string, string>; placeholderApiKey?: string },
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const rawUrl = input instanceof Request ? input.url : String(input);
@@ -221,9 +220,6 @@ export function createOpenAiCompatibleFetch(
       allowPublic: opts?.allowPublic,
     });
     const customHeaders = opts?.headers === undefined ? undefined : parseModelHeaders(opts.headers);
-    if (requestCarriesAuthorization(input, init) || Object.keys(customHeaders ?? {}).length > 0) {
-      assertHttpsForKeyedOpenAiCompatibleUrl(url, "present");
-    }
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
     const dispatcher = new Agent({
       connect: {
@@ -236,7 +232,15 @@ export function createOpenAiCompatibleFetch(
     try {
       const requestInit = await requestInitFor(input, init);
       const headers = new Headers(requestInit.headers);
+      if (opts?.placeholderApiKey) {
+        if (headers.get("authorization") === `Bearer ${opts.placeholderApiKey}`)
+          headers.delete("authorization");
+        if (headers.get("x-api-key") === opts.placeholderApiKey) headers.delete("x-api-key");
+      }
       for (const [name, value] of Object.entries(customHeaders ?? {})) headers.set(name, value);
+      if (headersCarryAuthorization(headers) || Object.keys(customHeaders ?? {}).length > 0) {
+        assertHttpsForKeyedOpenAiCompatibleUrl(url, "present");
+      }
       const response = await transport(url, {
         ...requestInit,
         headers,

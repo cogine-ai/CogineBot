@@ -1045,11 +1045,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
       ...(modelConfig.maxTokens !== undefined ? { maxTokens: modelConfig.maxTokens } : {}),
     };
   }
-  const apiKey = modelConfig.oauth
-    ? undefined
-    : modelConfig.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-      ? modelConfig.apiKey || "local"
-      : modelConfig.apiKey;
+  const apiKey = modelConfig.oauth ? undefined : modelConfig.apiKey;
   return { provider, modelId, models, model, apiKey, credentials };
 }
 
