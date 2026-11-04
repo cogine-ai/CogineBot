@@ -51,6 +51,7 @@ export function asSystem<T extends object>(client: T, reason = "test fixture"): 
   return new Proxy(client, {
     get(target, key) {
       const value = Reflect.get(target, key);
+      if (key === TRANSACTION_BYPASS_KEY) return value;
       if (typeof value === "function") {
         return (...args: unknown[]) =>
           storage.run({ kind: "system", reason }, () => {
@@ -65,6 +66,38 @@ export function asSystem<T extends object>(client: T, reason = "test fixture"): 
 }
 
 const TRANSACTION_BYPASS_KEY = Symbol("transaction bypass key");
+const PRISMA_TRANSACTION_SCOPE = Symbol.for("prisma.client.transaction.scope_context");
+
+type TransactionState = {
+  bypassKey: BypassKeySource;
+  owner?: symbol;
+  queries: number;
+  poisoned: boolean;
+  closed: boolean;
+};
+type TransactionOwner = { state: TransactionState; token: symbol; parent?: TransactionOwner };
+const transactionOwner = new AsyncLocalStorage<TransactionOwner>();
+
+function ownerFor(state: TransactionState): symbol | undefined {
+  for (let frame = transactionOwner.getStore(); frame; frame = frame.parent)
+    if (frame.state === state) return frame.token;
+  return undefined;
+}
+
+function concurrentTransactionAccess(): Error {
+  return new Error("Concurrent system transaction access is not supported");
+}
+
+function guardTransactionQuery(state: TransactionState): void {
+  const owner = ownerFor(state);
+  if (
+    state.closed ||
+    state.poisoned ||
+    state.owner !== owner ||
+    (state.owner !== undefined && currentDbContext()?.kind !== "system")
+  )
+    throw concurrentTransactionAccess();
+}
 
 type SqlClient = Pick<PrismaClient, "$queryRaw">;
 
@@ -72,35 +105,61 @@ type SqlClient = Pick<PrismaClient, "$queryRaw">;
  * runAsSystem for a step inside an interactive transaction a tenant opened: the
  * transaction's connection keeps the settings it was checked out with, so this
  * turns the bypass on for `fn` and back afterwards. Name why, as for runAsSystem.
+ * The step is exclusive: reentrant steps and sibling queries are rejected.
+ * A failed restore makes the transaction unusable and requires rollback.
  */
 export async function runAsSystemInTransaction<T>(
   tx: SqlClient,
   reason: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const binding = Reflect.get(tx, TRANSACTION_BYPASS_KEY);
-  if (typeof binding !== "string" && typeof binding !== "function")
+  const state = Reflect.get(tx, TRANSACTION_BYPASS_KEY) as TransactionState | undefined;
+  if (!state || typeof state !== "object")
     throw new Error("System transaction requires a context-aware interactive transaction");
-  const bypassKey = await resolveBypassKey(binding);
-  const [previous] = await tx.$queryRaw<
-    Array<{ bypass: string | null; key: string | null }>
-  >`SELECT current_setting('app.rls_bypass', true) AS bypass,
-      current_setting('app.rls_bypass_key', true) AS key`;
-  const restore = () =>
-    tx.$queryRaw`SELECT set_config('app.rls_bypass', ${previous?.bypass ?? "off"}, true),
-      set_config('app.rls_bypass_key', ${previous?.key ?? ""}, true)`;
-  await tx.$queryRaw`SELECT set_config('app.rls_bypass', 'on', true),
-    set_config('app.rls_bypass_key', ${bypassKey}, true)`;
-  let result: T;
+  if (state.closed || state.poisoned || state.owner !== undefined || state.queries)
+    throw concurrentTransactionAccess();
+  const token = Symbol("system transaction owner");
+  state.owner = token;
+  const frame: TransactionOwner = { state, token, parent: transactionOwner.getStore() };
   try {
-    result = await within({ kind: "system", reason }, fn);
-  } catch (error) {
-    // A failed statement aborts the transaction, which drops the local setting anyway.
-    await restore().catch(() => undefined);
-    throw error;
+    return await transactionOwner.run(frame, () =>
+      within({ kind: "system", reason }, async () => {
+        const bypassKey = await resolveBypassKey(state.bypassKey);
+        const [previous] = await tx.$queryRaw<
+          Array<{ bypass: string | null; key: string | null }>
+        >`SELECT current_setting('app.rls_bypass', true) AS bypass,
+          current_setting('app.rls_bypass_key', true) AS key`;
+        const restore = () =>
+          tx.$queryRaw`SELECT set_config('app.rls_bypass', ${previous?.bypass ?? "off"}, true),
+          set_config('app.rls_bypass_key', ${previous?.key ?? ""}, true)`;
+        let failed = false;
+        let failure: unknown;
+        let result!: T;
+        try {
+          await tx.$queryRaw`SELECT set_config('app.rls_bypass', 'on', true),
+            set_config('app.rls_bypass_key', ${bypassKey}, true)`;
+          result = await fn();
+        } catch (error) {
+          failed = true;
+          failure = error;
+        }
+        try {
+          if (state.queries) throw concurrentTransactionAccess();
+          await restore();
+        } catch (error) {
+          state.poisoned = true;
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
+        if (failed) throw failure;
+        return result;
+      }),
+    );
+  } finally {
+    state.owner = undefined;
   }
-  await restore();
-  return result;
 }
 
 // Prisma operations are lazy and start when awaited. Await inside the scope so
@@ -365,26 +424,59 @@ const LOCAL_SETTINGS = (settings: Settings) =>
 // have before, instead of Prisma's 2s/5s transaction defaults.
 const WRAPPED_OPERATION_OPTIONS = { maxWait: 10_000, timeout: 300_000 };
 
-type InternalParams = { transaction?: { kind?: string } };
-function bindTransactions(client: PrismaClient, bypassKey: BypassKeySource): PrismaClient {
+type InternalParams = { transaction?: { kind?: string; id?: string } };
+function bindTransactions(
+  client: PrismaClient,
+  bypassKey: BypassKeySource,
+  transactions: Map<string, TransactionState>,
+): PrismaClient {
   return new Proxy(client, {
     get(target, property, receiver) {
       if (property === "$extends")
         return (...args: unknown[]) =>
-          bindTransactions(Reflect.apply(target.$extends, target, args), bypassKey);
+          bindTransactions(Reflect.apply(target.$extends, target, args), bypassKey, transactions);
       if (property !== "$transaction") return Reflect.get(target, property, receiver);
       return (...args: unknown[]) => {
+        const parentScope = Reflect.get(target, PRISMA_TRANSACTION_SCOPE) as
+          | { txId?: string }
+          | undefined;
+        const parentState = parentScope?.txId ? transactions.get(parentScope.txId) : undefined;
+        if (parentState) {
+          guardTransactionQuery(parentState);
+          if (parentState.owner !== undefined) throw concurrentTransactionAccess();
+        }
         const callback = args[0];
         if (typeof callback === "function")
-          args[0] = (tx: Prisma.TransactionClient) =>
-            callback(
-              new Proxy(tx, {
-                get(transaction, key, receiver) {
-                  if (key === TRANSACTION_BYPASS_KEY) return bypassKey;
-                  return Reflect.get(transaction, key, receiver);
-                },
-              }),
-            );
+          args[0] = async (tx: Prisma.TransactionClient) => {
+            const scope = Reflect.get(tx, PRISMA_TRANSACTION_SCOPE) as
+              | { txId?: string }
+              | undefined;
+            if (typeof scope?.txId !== "string")
+              throw new Error("Interactive transaction identity is unavailable");
+            const existing = transactions.get(scope.txId);
+            const state = existing ?? { bypassKey, queries: 0, poisoned: false, closed: false };
+            if (!existing) transactions.set(scope.txId, state);
+            const bound = new Proxy(tx, {
+              get(transaction, key, receiver) {
+                if (key === TRANSACTION_BYPASS_KEY) return state;
+                if (key === "$transaction")
+                  return bindTransactions(transaction as PrismaClient, bypassKey, transactions)
+                    .$transaction;
+                return Reflect.get(transaction, key, receiver);
+              },
+            });
+            try {
+              const result = await callback(bound);
+              if (state.owner !== undefined || state.queries || state.poisoned)
+                throw concurrentTransactionAccess();
+              return result;
+            } finally {
+              if (!existing) {
+                state.closed = true;
+                transactions.delete(scope.txId);
+              }
+            }
+          };
         return Reflect.apply(target.$transaction, target, args);
       };
     },
@@ -436,35 +528,48 @@ export function withRowLevelSecurity(
   prisma: PrismaClient,
   bypassKey: BypassKeySource = "",
 ): PrismaClient {
+  const transactions = new Map<string, TransactionState>();
   const extended = prisma.$extends({
     query: {
       async $allOperations({ model, operation, args, query, ...rest }) {
-        const context = storage.getStore();
-        if (!context) {
-          if (model && ROW_SECURITY_MODELS.has(model)) missingContext(model, operation);
-          return query(args);
-        }
         const internal = (rest as { __internalParams?: InternalParams }).__internalParams;
         const transaction = internal?.transaction;
-        if (transaction?.kind === "batch") {
-          throw new Error(
-            "Batch $transaction([...]) cannot carry a database context; use an interactive transaction",
+        const state =
+          transaction?.kind === "itx" && transaction.id
+            ? transactions.get(transaction.id)
+            : undefined;
+        if (state) {
+          guardTransactionQuery(state);
+          state.queries++;
+        }
+        try {
+          const context = storage.getStore();
+          if (!context) {
+            if (model && ROW_SECURITY_MODELS.has(model)) missingContext(model, operation);
+            return await query(args);
+          }
+          if (transaction?.kind === "batch") {
+            throw new Error(
+              "Batch $transaction([...]) cannot carry a database context; use an interactive transaction",
+            );
+          }
+          const key = context.kind === "system" ? await resolveBypassKey(bypassKey) : "";
+          if (transaction || (operation !== "findUnique" && operation !== "findUniqueOrThrow")) {
+            return await query(args);
+          }
+          // Prisma 7's compact runtime model omits unique constraints. Preserve
+          // native argument validation and isolate lazy unique or fluent reads
+          // with the transaction-local context before their original query.
+          const [, result] = await prisma.$transaction(
+            [prisma.$executeRaw(LOCAL_SETTINGS(settingsFor(context, key))), query(args)],
+            WRAPPED_OPERATION_OPTIONS as never,
           );
+          return result;
+        } finally {
+          if (state) state.queries--;
         }
-        const key = context.kind === "system" ? await resolveBypassKey(bypassKey) : "";
-        if (transaction || (operation !== "findUnique" && operation !== "findUniqueOrThrow")) {
-          return query(args);
-        }
-        // Prisma 7's compact runtime model omits unique constraints. Preserve
-        // native argument validation and isolate lazy unique or fluent reads
-        // with the transaction-local context before their original query.
-        const [, result] = await prisma.$transaction(
-          [prisma.$executeRaw(LOCAL_SETTINGS(settingsFor(context, key))), query(args)],
-          WRAPPED_OPERATION_OPTIONS as never,
-        );
-        return result;
       },
     },
   }) as unknown as PrismaClient;
-  return bindTransactions(extended, bypassKey);
+  return bindTransactions(extended, bypassKey, transactions);
 }

@@ -571,6 +571,205 @@ describePostgres("nonowner database context enforcement (isolated PostgreSQL)", 
     );
   });
 
+  it("rejects overlapping system steps and restores the tenant after out-of-order completion", async () => {
+    const barrier = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    await runAsTenant(tenantA, () =>
+      runtime!.prisma.$transaction(async (tx) => {
+        const firstEntered = barrier();
+        const secondEntered = barrier();
+        const releaseFirst = barrier();
+        const releaseSecond = barrier();
+        let second: Promise<unknown> | undefined;
+        let secondCallbackEntered = false;
+        const first = runAsSystemInTransaction(tx, "fixture first overlapping step", async () => {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+          expect(await tx.memoryDocument.count()).toBe(2);
+        });
+        try {
+          await firstEntered.promise;
+          second = runAsSystemInTransaction(tx, "fixture second overlapping step", async () => {
+            secondCallbackEntered = true;
+            secondEntered.resolve();
+            await releaseSecond.promise;
+          });
+          const outcome = second.then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+          await Promise.race([secondEntered.promise, outcome]);
+          releaseFirst.resolve();
+          await first;
+          releaseSecond.resolve();
+          const error = await outcome;
+          expect(
+            await tx.$queryRaw`SELECT current_setting('app.rls_bypass', true) AS bypass, current_setting('app.rls_bypass_key', true) AS key`,
+          ).toEqual([{ bypass: "off", key: "" }]);
+          expect(await tx.memoryDocument.count()).toBe(1);
+          expect(error).toBeInstanceOf(Error);
+          expect(secondCallbackEntered).toBe(false);
+        } finally {
+          releaseFirst.resolve();
+          releaseSecond.resolve();
+          await Promise.allSettled([first, ...(second ? [second] : [])]);
+        }
+      }),
+    );
+  });
+
+  it("rejects tenant sibling model and raw work while a system step owns the transaction", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await runAsTenant(tenantA, () =>
+      runtime!.prisma.$transaction(async (tx) => {
+        const pendingSibling = tx.memoryDocument.findMany({ where: { id: documentB } });
+        const system = runAsSystemInTransaction(tx, "fixture held system step", async () => {
+          expect(await tx.memoryDocument.count()).toBe(2);
+          entered();
+          await gate;
+        });
+        try {
+          await started;
+          await expect(pendingSibling).rejects.toThrow();
+          await expect(
+            tx.$queryRaw`SELECT id FROM memory_documents WHERE id = ${documentB}`,
+          ).rejects.toThrow();
+          await expect(
+            tx.memoryDocument.updateMany({
+              where: { id: documentB },
+              data: { content: "denied sibling write" },
+            }),
+          ).rejects.toThrow();
+        } finally {
+          release();
+          await system;
+        }
+        expect(await tx.memoryDocument.count()).toBe(1);
+      }),
+    );
+  });
+
+  it("rejects reentrant system and downgraded tenant work without blocking an independent transaction", async () => {
+    const independent = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+    try {
+      await runAsTenant(tenantA, () =>
+        runtime!.prisma.$transaction(async (tx) => {
+          await runAsSystemInTransaction(tx, "fixture owner scope", async () => {
+            await expect(
+              runAsSystemInTransaction(tx, "fixture nested system", async () => undefined),
+            ).rejects.toThrow();
+            await runAsTenant(tenantA, async () => {
+              await expect(tx.memoryDocument.count()).rejects.toThrow();
+              await expect(tx.$queryRaw`SELECT id FROM memory_documents`).rejects.toThrow();
+              expect(
+                await independent.prisma.$transaction((other) => other.memoryDocument.count()),
+              ).toBe(1);
+            });
+            expect(await tx.memoryDocument.count()).toBe(2);
+          });
+          expect(await tx.memoryDocument.count()).toBe(1);
+        }),
+      );
+    } finally {
+      await close(independent);
+    }
+  });
+
+  it("keeps nested SDK transaction scopes bound to the same physical ownership state", async () => {
+    await runAsTenant(tenantA, () =>
+      runtime!.prisma.$transaction(async (tx) => {
+        const nested = Reflect.get(tx, "$transaction") as (
+          callback: (child: typeof tx) => Promise<void>,
+        ) => Promise<void>;
+        await Reflect.apply(nested, tx, [
+          async (child: typeof tx) => {
+            expect(await child.memoryDocument.count()).toBe(1);
+            await runAsSystemInTransaction(child, "fixture nested SDK transaction", async () => {
+              expect(await child.memoryDocument.count()).toBe(2);
+              expect(await tx.memoryDocument.count()).toBe(2);
+            });
+            expect(await child.memoryDocument.count()).toBe(1);
+          },
+        ]);
+        expect(await tx.memoryDocument.count()).toBe(1);
+      }),
+    );
+  });
+
+  it("rejects system entry while a tenant query is paused in a later client extension", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const extended = runtime!.prisma.$extends({
+      query: {
+        memoryDocument: {
+          async count({ args, query }) {
+            entered();
+            await gate;
+            return query(args);
+          },
+        },
+      },
+    });
+    await runAsTenant(tenantA, () =>
+      extended.$transaction(async (tx) => {
+        const tenantQuery = tx.memoryDocument.count().then((count) => count);
+        try {
+          await started;
+          await expect(
+            runAsSystemInTransaction(
+              tx,
+              "fixture overlapping an in-flight query",
+              async () => undefined,
+            ),
+          ).rejects.toThrow();
+        } finally {
+          release();
+        }
+        expect(await tenantQuery).toBe(1);
+        await runAsSystemInTransaction(tx, "fixture after the tenant query settles", async () => {
+          expect(await tx.memoryDocument.count()).toBe(2);
+        });
+        expect(await tx.memoryDocument.count()).toBe(1);
+      }),
+    );
+  });
+
+  it("rejects transaction continuation after a system SQL failure", async () => {
+    const rollback = new Error("fixture rollback after aborted system SQL");
+    await expect(
+      runAsTenant(tenantA, () =>
+        runtime!.prisma.$transaction(async (tx) => {
+          await expect(
+            runAsSystemInTransaction(tx, "fixture aborted system statement", async () => {
+              await tx.$queryRaw`SELECT 1 / 0`;
+            }),
+          ).rejects.toThrow();
+          await expect(tx.memoryDocument.count()).rejects.toThrow();
+          throw rollback;
+        }),
+      ),
+    ).rejects.toBe(rollback);
+    expect(await runAsTenant(tenantA, () => runtime!.prisma.memoryDocument.count())).toBe(1);
+  });
+
   it("cannot read the protected key table or create schema objects", async () => {
     await expect(
       runtime!.prisma.$queryRaw`SELECT digest FROM cogine_private.rls_bypass_keys`,

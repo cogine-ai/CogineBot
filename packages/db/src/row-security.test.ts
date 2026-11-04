@@ -331,6 +331,10 @@ describe("trusted database scopes", () => {
     poolBoundary(connectionString);
     const calls: unknown[][] = [];
     const tx = {
+      [Symbol.for("prisma.client.transaction.scope_context")]: {
+        kind: "nested",
+        txId: "fixture-tx",
+      },
       async $queryRaw(strings: TemplateStringsArray, ...values: unknown[]) {
         calls.push(values);
         if (strings.join("").includes("AS bypass")) {
@@ -374,6 +378,10 @@ describe("transaction identity", () => {
     async (systemFixture, useResolver) => {
       const calls: unknown[][] = [];
       const tx = {
+        [Symbol.for("prisma.client.transaction.scope_context")]: {
+          kind: "nested",
+          txId: "identity-tx",
+        },
         async $queryRaw(strings: TemplateStringsArray, ...values: unknown[]) {
           calls.push(values);
           return strings.join("").includes("AS bypass") ? [{ bypass: "off", key: "" }] : [];
@@ -394,6 +402,164 @@ describe("transaction identity", () => {
       expect(calls).toEqual([[], ["key-a"], ["off", ""]]);
     },
   );
+});
+
+function isolatedTransactionBoundary() {
+  type Call = {
+    model?: string;
+    operation: string;
+    args: object;
+    query: (args: object) => Promise<unknown>;
+    __internalParams: { transaction: { kind: string; id: string } };
+  };
+  let hook!: (call: Call) => Promise<unknown>;
+  let bypass = "off";
+  let key = "";
+  const options: { pauseRead?: () => Promise<void>; failRestore?: Error } = {};
+  const dispatch = (operation: string, query: () => Promise<unknown>, model?: string) =>
+    hook({
+      model,
+      operation,
+      args: {},
+      query,
+      __internalParams: {
+        transaction: { kind: "itx", id: "guarded-tx" },
+      },
+    });
+  const tx = {
+    [Symbol.for("prisma.client.transaction.scope_context")]: { kind: "nested", txId: "guarded-tx" },
+    $queryRaw(strings: TemplateStringsArray, ...values: unknown[]) {
+      return dispatch("$queryRaw", async () => {
+        const sql = strings.join("");
+        if (sql.includes("AS bypass")) return [{ bypass, key }];
+        if (sql.includes("'on'")) {
+          bypass = "on";
+          key = values[0] as string;
+        } else {
+          if (options.failRestore) throw options.failRestore;
+          bypass = values[0] as string;
+          key = values[1] as string;
+        }
+        return [];
+      });
+    },
+    thread: {
+      findMany() {
+        return dispatch(
+          "findMany",
+          async () => {
+            await options.pauseRead?.();
+            return [{ id: "visible-row" }];
+          },
+          "Thread",
+        );
+      },
+    },
+  };
+  const raw = {
+    $transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
+    $extends(extension: { query?: { $allOperations: typeof hook } }) {
+      if (extension.query) hook = extension.query.$allOperations;
+      return this;
+    },
+  } as unknown as PrismaClient;
+  return { client: withRowLevelSecurity(raw, "key-a"), options };
+}
+
+describe("system transaction isolation", () => {
+  it("rejects overlapping system steps before either can restore the other's bypass", async () => {
+    const tx = {
+      [Symbol.for("prisma.client.transaction.scope_context")]: {
+        kind: "nested",
+        txId: "overlap-tx",
+      },
+      async $queryRaw(strings: TemplateStringsArray) {
+        return strings.join("").includes("AS bypass") ? [{ bypass: "off", key: "" }] : [];
+      },
+    };
+    const raw = {
+      $transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
+      $extends() {
+        return this;
+      },
+    } as unknown as PrismaClient;
+    const client = withRowLevelSecurity(raw, "key-a");
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    await client.$transaction(async (tx) => {
+      const first = runAsSystemInTransaction(tx, "first step", async () => {
+        entered();
+        await barrier;
+      });
+      await started;
+      try {
+        await expect(
+          runAsSystemInTransaction(tx, "overlapping step", async () => "unsafe"),
+        ).rejects.toThrow("Concurrent system transaction access");
+      } finally {
+        release();
+        await first;
+      }
+    });
+  });
+
+  it("reserves an ordinary query through downstream awaits before allowing system entry", async () => {
+    const f = isolatedTransactionBoundary();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    f.options.pauseRead = async () => {
+      entered();
+      await barrier;
+    };
+    await runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
+      f.client.$transaction(async (tx) => {
+        const pending = tx.thread.findMany();
+        await started;
+        try {
+          await expect(
+            runAsSystemInTransaction(tx, "unsafe overlap with read", async () => undefined),
+          ).rejects.toThrow("Concurrent system transaction access");
+        } finally {
+          release();
+        }
+        expect(await pending).toEqual([{ id: "visible-row" }]);
+        await expect(
+          runAsSystemInTransaction(tx, "safe sequential step", async () => "done"),
+        ).resolves.toBe("done");
+      }),
+    );
+  });
+
+  it("keeps a failed restore unusable even if the callback catches its error", async () => {
+    const f = isolatedTransactionBoundary();
+    const failure = new Error("restore hook failed before SQL");
+    f.options.failRestore = failure;
+    await expect(
+      runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
+        f.client.$transaction(async (tx) => {
+          await expect(
+            runAsSystemInTransaction(tx, "failed restore", async () => undefined),
+          ).rejects.toBe(failure);
+          f.options.failRestore = undefined;
+          await expect(tx.thread.findMany()).rejects.toThrow(
+            "Concurrent system transaction access",
+          );
+        }),
+      ),
+    ).rejects.toThrow("Concurrent system transaction access");
+  });
 });
 
 describe("rlsBypassKey", () => {
