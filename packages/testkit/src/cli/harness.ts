@@ -67,6 +67,7 @@ async function main() {
     "apps/api/src/plugin-uninstall-worker.postgres.test.ts",
     "packages/testkit/src/takeover-release.postgres.test.ts",
     "packages/testkit/src/scoped-tool-writes.postgres.test.ts",
+    "packages/testkit/src/question-routing.postgres.test.ts",
     "packages/testkit/src/history-short-product.postgres.test.ts",
     "packages/testkit/src/history-cache-default.postgres.test.ts",
     "packages/testkit/src/history-followup-product.postgres.test.ts",

@@ -103,6 +103,7 @@ async function openApp(
     deploymentModelConfigured?: boolean;
     contextStrategy?: "current";
     wakeupDriver?: "memory";
+    realtime?: InMemoryRealtimeFanout;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "run-dispatch-fixture-"));
@@ -175,6 +176,113 @@ async function seed(handles: AppHandles, label: string, computerMode?: "dedicate
 }
 
 describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
+  it("starts new work behind a protected wait before the old executor finally returns", async () => {
+    const realtime = new InMemoryRealtimeFanout();
+    const runtime = new ScriptedAgentRuntime();
+    const originalRun = runtime.run.bind(runtime);
+    const originalPublish = realtime.publish.bind(realtime);
+    let oldRunId: string | undefined;
+    let oldExecution: Promise<unknown> | undefined;
+    let heldPause = false;
+    let newRunId: string | undefined;
+    let releasePause!: () => void;
+    let releaseNew!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      releasePause = resolve;
+    });
+    const newWork = new Promise<void>((resolve) => {
+      releaseNew = resolve;
+    });
+    const f = await openApp(runtime, { realtime });
+    const runSpy = vi.spyOn(runtime, "run").mockImplementation(async function* (request, context) {
+      if (
+        oldRunId &&
+        request.runId !== oldRunId &&
+        request.prompt.includes("Start a separate report")
+      ) {
+        newRunId = request.runId;
+        await newWork;
+      }
+      yield* originalRun(request, context);
+    });
+    const publish = vi.spyOn(realtime, "publish").mockImplementation(async (topic, payload) => {
+      await originalPublish(topic, payload);
+      if (oldRunId && !heldPause) {
+        const run = await f.handles.prisma.run.findUnique({ where: { id: oldRunId } });
+        if (!heldPause && run?.status === "waiting_input") {
+          heldPause = true;
+          await paused;
+        }
+      }
+    });
+    try {
+      const seeded = await seed(f.handles, "protected input");
+      oldRunId = seeded.run.id;
+      await f.handles.prisma.task.update({
+        where: { id: seeded.run.taskId },
+        data: { prompt: "Show a secret card for a masked API key." },
+      });
+      oldExecution = f.handles.executor.continueRun(oldRunId, "pause-notification-boundary");
+      await wait(() => expect(heldPause).toBe(true));
+      const protectedState = async () => ({
+        run: await f.handles.prisma.run.findUniqueOrThrow({ where: { id: oldRunId! } }),
+        effects: await f.handles.prisma.externalEffect.findMany({
+          where: { runId: oldRunId },
+          orderBy: { id: "asc" },
+        }),
+        cards: await f.handles.prisma.message.findMany({
+          where: { runId: oldRunId },
+          orderBy: { seq: "asc" },
+        }),
+      });
+      const before = await protectedState();
+      expect(
+        before.effects.some(
+          (effect) => effect.kind === "request_secret" && effect.status === "intended",
+        ),
+      ).toBe(true);
+      const sent = await rpc<{ runId: string }>(f.handles, seeded.cookie, "threads/send", {
+        botId: seeded.botId,
+        text: "Start a separate report.",
+        clientNonce: randomUUID(),
+      });
+      expect(sent.runId).not.toBe(oldRunId);
+      await wait(() => expect(newRunId).toBe(sent.runId));
+      const lease = await f.handles.prisma.computerExecutionLease.findFirstOrThrow({
+        where: { runId: sent.runId },
+      });
+      expect(lease.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      releasePause();
+      await oldExecution;
+      expect(await protectedState()).toEqual(before);
+      expect(
+        await f.handles.prisma.computerExecutionLease.findUniqueOrThrow({
+          where: { id: lease.id },
+        }),
+      ).toMatchObject({ runId: sent.runId, fence: lease.fence, expiresAt: lease.expiresAt });
+      releaseNew();
+      await wait(async () =>
+        expect(
+          (await f.handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } })).status,
+        ).toBe("completed"),
+      );
+      expect((await protectedState()).effects).toEqual(before.effects);
+    } finally {
+      releasePause();
+      releaseNew();
+      try {
+        await oldExecution;
+      } finally {
+        try {
+          await f.close();
+        } finally {
+          publish.mockRestore();
+          runSpy.mockRestore();
+        }
+      }
+    }
+  });
+
   it("loads the stored actor and Space when a wake carries conflicting metadata", async () => {
     const f = await openApp();
     try {
@@ -290,7 +398,12 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     }
   });
 
-  it("does not answer a real Pi question through a late initial dispatch hint", async () => {
+  it.each(["card", "composer"] as const)(
+    "does not answer a real Pi question through a late initial dispatch hint (%s)",
+    verifyHumanWaitAnswer,
+  );
+
+  async function verifyHumanWaitAnswer(answerPath: "card" | "composer") {
     const choice = "Continue with the saved work.";
     const question = "Should I write the saved tail?";
     const tailPath = "notes/human-wait-tail.txt";
@@ -533,13 +646,22 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         leaseFence: 1,
       });
       const answerNonce = `human-wait-answer:${randomUUID()}`;
-      await rpc(handles, seeded.cookie, "threads/answer", {
-        botId: seeded.botId,
-        runId: targetRunId,
-        messageId: card.message.id,
-        answer: "choice-1",
-        clientNonce: answerNonce,
-      });
+      if (answerPath === "composer") {
+        const sent = await rpc<{ runId: string }>(handles, seeded.cookie, "threads/send", {
+          botId: seeded.botId,
+          text: choice,
+          clientNonce: answerNonce,
+        });
+        expect(sent.runId).toBe(targetRunId);
+      } else {
+        await rpc(handles, seeded.cookie, "threads/answer", {
+          botId: seeded.botId,
+          runId: targetRunId,
+          messageId: card.message.id,
+          answer: "choice-1",
+          clientNonce: answerNonce,
+        });
+      }
       await wait(async () =>
         expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
           status: "completed",
@@ -581,7 +703,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       expect(executions.map(({ name }) => name)).toEqual(["schedule_list", "write_file"]);
       expect(new Set(executions.map(({ id }) => id)).size).toBe(2);
       expect(
-        await prisma.attempt.findMany({ where: { runId: targetRunId }, orderBy: { fence: "asc" } }),
+        await prisma.attempt.findMany({
+          where: { runId: targetRunId },
+          orderBy: { fence: "asc" },
+        }),
       ).toEqual([
         expect.objectContaining({ fence: 1, status: "waiting_input" }),
         expect.objectContaining({ fence: 2, status: "completed" }),
@@ -614,7 +739,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       else models.deleteProvider(model.provider);
       vi.unstubAllEnvs();
     }
-  });
+  }
 
   it("preserves a real computer-outage retry deadline across late initial dispatch hints", async () => {
     const filePath = "notes/queued-backoff.txt";

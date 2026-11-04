@@ -38,6 +38,7 @@ import {
   IsolationError,
   loadThreadAttention,
   lockOwnedGroup,
+  retireWaitingQuestionInTransaction,
   touchGroupUpdatedAt,
   updateTaskConnectionSelection,
 } from "@rakazo/db";
@@ -78,9 +79,9 @@ const STEERABLE_RUN_STATUSES = new Set(["queued", "leased", "running", "waiting_
  * steering (no run): that run never claims it, and the continuation started when it finishes
  * answers with the full thread. Starting a second run beside the intro overlaps it on a
  * dedicated computer, where there is no per-bot execution lease, and both can reply.
- * Composer text answers a waiting ask, including a routine or webhook ask, only when no
- * steerable conversational run is active. When one is, the text steers that run and the
- * ask stays on its card.
+ * Composer text first answers an eligible latest ordinary question, including a routine or
+ * webhook question. Other ordinary questions may retire; protected cards stay pending.
+ * Remaining messages use the existing conversational steering or new-work route.
  */
 function steersUserMessage(run: { status: string; trigger?: string | null }) {
   return STEERABLE_RUN_STATUSES.has(run.status) && isConversationalRun(run.trigger);
@@ -733,32 +734,33 @@ export async function sendThreadMessage(
           },
           select: { id: true, taskId: true, status: true, trigger: true },
         });
-        const waitingRuns = activeRuns.filter((run) => run.status === "waiting_input");
-        if (waitingRuns.length && !activeRuns.some(steersUserMessage)) {
-          const answerText = input.text?.trim();
-          if (!answerText) {
-            throw new ORPCError("CONFLICT", {
-              message: "Answer the pending ask first.",
-            });
-          }
-          for (const run of waitingRuns) {
-            const answered = await answerWaitingRunWithTextInTransaction(tx, {
+        const answered: typeof activeRuns = [];
+        for (const run of activeRuns.filter((run) => run.status === "waiting_input")) {
+          if (
+            await answerWaitingRunWithTextInTransaction(tx, {
               spaceId: actor.spaceId,
               threadId: target.threadId,
               runId: run.id,
               answeredByUserId: actor.userId,
-              answer: answerText,
-            });
-            if (!answered) {
-              throw new ORPCError("CONFLICT", {
-                message: "Answer the pending ask first.",
-              });
-            }
+              answer: input.text ?? "",
+              beforeMessageSeq: message.seq,
+            })
+          ) {
+            answered.push({ ...run, status: "queued" });
             await updateTaskConnectionSelection(tx, actor, run.taskId, [
               mentionTargets.connectorMentionIds,
             ]);
+          } else {
+            await retireWaitingQuestionInTransaction(tx, {
+              spaceId: actor.spaceId,
+              threadId: target.threadId,
+              botId: target.botId,
+              runId: run.id,
+              answer: input.text ?? "",
+            });
           }
-          const answered = waitingRuns.map((run) => ({ ...run, status: "queued" }));
+        }
+        if (answered.length) {
           const primary = answered[0];
           if (!primary) throw new IsolationError();
           await tx.message.update({ where: { id: message.id }, data: { runId: primary.id } });
@@ -781,15 +783,6 @@ export async function sendThreadMessage(
             },
           });
           return { message, runs: answered, eventSeq: event.seq };
-        }
-        if (
-          activeRuns.some(
-            (run) => run.status !== "waiting_input" && !STEERABLE_RUN_STATUSES.has(run.status),
-          )
-        ) {
-          throw new ORPCError("CONFLICT", {
-            message: "Answer the pending ask first.",
-          });
         }
         const holdingRuns = activeRuns.filter(
           (run) => STEERABLE_RUN_STATUSES.has(run.status) && !messageBypassesTakeoverWait(run),
@@ -928,49 +921,38 @@ export async function sendThreadMessage(
       });
       const activeByBotId = new Map<string, (typeof activeRuns)[number]>();
       const answeredByBotId = new Map<string, Array<(typeof activeRuns)[number]>>();
-      const conversationalBotIds = new Set(
-        activeRuns.filter(steersUserMessage).map((run) => run.botId),
-      );
       for (const run of activeRuns) {
         if (run.status === "waiting_input") {
-          if (conversationalBotIds.has(run.botId)) continue;
-          const answerText = input.text?.trim();
-          if (!answerText) {
-            throw new ORPCError("CONFLICT", {
-              message: "Answer the pending ask first.",
-            });
-          }
           const answered = await answerWaitingRunWithTextInTransaction(tx, {
             spaceId: actor.spaceId,
             threadId: target.threadId,
             runId: run.id,
             answeredByUserId: actor.userId,
-            answer: answerText,
+            answer: input.text ?? "",
+            beforeMessageSeq: message.seq,
           });
-          if (!answered) {
-            throw new ORPCError("CONFLICT", {
-              message: "Answer the pending ask first.",
+          if (answered) {
+            await updateTaskConnectionSelection(tx, actor, run.taskId, [
+              mentionTargets.connectorMentionIds,
+            ]);
+            const queuedForBot = answeredByBotId.get(run.botId) ?? [];
+            queuedForBot.push({ ...run, status: "queued" });
+            answeredByBotId.set(run.botId, queuedForBot);
+          } else {
+            await retireWaitingQuestionInTransaction(tx, {
+              spaceId: actor.spaceId,
+              threadId: target.threadId,
+              botId: run.botId,
+              runId: run.id,
+              answer: input.text ?? "",
             });
           }
-          await updateTaskConnectionSelection(tx, actor, run.taskId, [
-            mentionTargets.connectorMentionIds,
-          ]);
-          const queuedRun = { ...run, status: "queued" };
-          const queuedForBot = answeredByBotId.get(run.botId);
-          if (queuedForBot) queuedForBot.push(queuedRun);
-          else answeredByBotId.set(run.botId, [queuedRun]);
           continue;
         }
-        if (!STEERABLE_RUN_STATUSES.has(run.status)) {
-          throw new ORPCError("CONFLICT", {
-            message: "Answer the pending ask first.",
-          });
-        }
-        if (messageBypassesTakeoverWait(run)) continue;
+        if (!STEERABLE_RUN_STATUSES.has(run.status) || messageBypassesTakeoverWait(run)) continue;
         const current = activeByBotId.get(run.botId);
-        if (!current || (!steersUserMessage(current) && steersUserMessage(run))) {
+        if (!current || (!steersUserMessage(current) && steersUserMessage(run)))
           activeByBotId.set(run.botId, run);
-        }
       }
       const runs: Array<{ id: string; taskId: string; botId: string; status: string }> = [];
       for (const botId of targetBotIds) {

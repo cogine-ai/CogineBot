@@ -71,8 +71,101 @@ describe("reconcileStuckWork", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it("reminds once for a takeover that has been waiting for hours", async () => {
-    const run = candidate("waiting_takeover", 5);
+  it("leaves a takeover alone until the full thirty minutes have elapsed", async () => {
+    const run = {
+      ...candidate("waiting_takeover", 0.5),
+      updatedAt: new Date(now.getTime() - 30 * 60 * 1000 + 1),
+    };
+    const client = expireClient(run);
+    const { jobs } = publisher();
+    const { provider, send } = notifications();
+
+    await reconcileStuckWork({
+      prisma: client as unknown as PrismaClient,
+      jobs,
+      notifications: provider,
+      now,
+      batchSize: 100,
+    });
+
+    expect(client.$transaction).not.toHaveBeenCalled();
+    expect(client.event.findMany).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["none", "delivered", "pending"] as const)(
+    "cancels a thirty-minute takeover without a reminder first (old notice=%s)",
+    async (noticeState) => {
+      const run = candidate("waiting_takeover", 0.5);
+      const client = expireClient(run);
+      client.event.findMany.mockResolvedValue(
+        (noticeState === "none"
+          ? []
+          : [
+              {
+                runId: run.id,
+                payload: {
+                  notice: STUCK_WORK_NOTICE,
+                  updatedAt: run.updatedAt.toISOString(),
+                  state: noticeState,
+                  claimedAt: now.toISOString(),
+                },
+              },
+            ]) as never,
+      );
+      const { jobs } = publisher();
+      const { provider, send } = notifications();
+
+      await reconcileStuckWork({
+        prisma: client as unknown as PrismaClient,
+        jobs,
+        notifications: provider,
+        now,
+        batchSize: 100,
+      });
+
+      expect(client.run.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: run.id, status: "waiting_takeover", updatedAt: run.updatedAt },
+          data: expect.objectContaining({ status: "cancelled", completedAt: now }),
+        }),
+      );
+      expect(send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          kind: "failure",
+          body: stuckWorkStatusMessage("waiting_takeover"),
+        }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it("scans takeovers at thirty minutes and other work at four hours", async () => {
+    const findMany = vi.fn(async () => []);
+    const prisma = { run: { findMany } } as unknown as PrismaClient;
+    const { jobs } = publisher();
+
+    await reconcileStuckWork({ prisma, jobs, now, batchSize: 100 });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              OR: [
+                { status: "queued", updatedAt: { lte: age(4) } },
+                { status: "waiting_input", updatedAt: { lte: age(4) } },
+                { status: "waiting_takeover", updatedAt: { lte: age(0.5) } },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it("reminds once for a question that has been waiting for hours", async () => {
+    const run = candidate("waiting_input", 5);
     const stamps: Array<{ runId: string | null; payload: unknown }> = [];
     const prisma = noticePrisma(run, stamps);
     const { jobs } = publisher();
@@ -96,9 +189,9 @@ describe("reconcileStuckWork", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(
       {
-        kind: "takeover",
-        title: "Ada still needs you",
-        body: "The screen has been waiting.",
+        kind: "help",
+        title: "Ada still needs an answer",
+        body: "This has been waiting on you.",
         botId: "bot-1",
         threadId: "thread-1",
       },
@@ -158,7 +251,7 @@ describe("reconcileStuckWork", () => {
   it("does not stamp a reminder until Expo has a token to deliver it", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-stuck-push-"));
     dirs.push(dataDir);
-    const run = candidate("waiting_takeover", 5);
+    const run = candidate("waiting_input", 5);
     const stamps: Array<{ runId: string | null; payload: unknown }> = [];
     const prisma = noticePrisma(run, stamps);
     const { jobs } = publisher();
@@ -190,7 +283,7 @@ describe("reconcileStuckWork", () => {
   it("drops the claim when the token is removed before Expo accepts the push", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-stuck-push-"));
     dirs.push(dataDir);
-    const run = candidate("waiting_takeover", 5);
+    const run = candidate("waiting_input", 5);
     const stamps: Array<{ id?: string; runId: string | null; payload: unknown }> = [];
     const prisma = noticePrisma(run, stamps);
     const { jobs } = publisher();
@@ -223,7 +316,7 @@ describe("reconcileStuckWork", () => {
   });
 
   it("retries a pending reminder left behind when the worker stops", async () => {
-    const run = candidate("waiting_takeover", 5);
+    const run = candidate("waiting_input", 5);
     const otherEpisode = {
       id: "event-other-episode",
       runId: run.id,
@@ -289,7 +382,7 @@ describe("reconcileStuckWork", () => {
   });
 
   it("retries the four-hour reminder when the push fails", async () => {
-    const run = candidate("waiting_takeover", 5);
+    const run = candidate("waiting_input", 5);
     const stamps: Array<{ runId: string | null; payload: unknown }> = [];
     const prisma = noticePrisma(run, stamps);
     const { jobs } = publisher();
@@ -333,7 +426,7 @@ describe("reconcileStuckWork", () => {
   });
 
   it("does not record a reminder when nothing can deliver it", async () => {
-    const run = candidate("waiting_takeover", 5);
+    const run = candidate("waiting_input", 5);
     const prisma = noticePrisma(run, []);
     const { jobs } = publisher();
 
@@ -476,8 +569,9 @@ describe("reconcileStuckWork", () => {
   it("continues the other scans when the stuck query fails", async () => {
     const prisma = {
       run: {
-        findMany: vi.fn(async (args: { where?: { status?: { in?: string[] } } }) => {
-          if (args.where?.status?.in?.includes("waiting_takeover")) throw new Error("stuck down");
+        findMany: vi.fn(async (args: { where?: unknown }) => {
+          if (JSON.stringify(args.where).includes("waiting_takeover"))
+            throw new Error("stuck down");
           return [];
         }),
       },

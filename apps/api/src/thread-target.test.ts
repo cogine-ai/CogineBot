@@ -1400,23 +1400,32 @@ describe("sendThreadMessage", () => {
     });
   });
 
-  it("continues every waiting run a free-text answer satisfies", async () => {
+  it("resumes the latest question and retires the older question when several private runs wait", async () => {
     const waitingAsk = {
       id: "ask-1",
+      seq: 1,
+      role: "bot",
+      runId: "run-waiting-1",
       blocks: [{ kind: "ask", text: "Which city should I use?", status: "pending" }],
     };
+    const transcript = [
+      { ...waitingAsk, id: "ask-older", seq: 0, runId: "run-waiting-2" },
+      waitingAsk,
+      { id: "msg-1", seq: 2, role: "user", runId: null, blocks: [{ kind: "text", text: "Paris" }] },
+    ];
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
       thread: {
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
-          data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
+          data.nextMessageSeq ? { nextMessageSeq: 3 } : { nextEventSeq: 3 },
         ),
       },
       message: {
         create: vi.fn().mockResolvedValue({
           id: "msg-1",
           threadId: "thread-1",
-          seq: 1,
+          seq: 2,
           role: "user",
           blocks: [{ kind: "text", text: "Paris" }],
           botId: null,
@@ -1424,8 +1433,16 @@ describe("sendThreadMessage", () => {
           runId: null,
           createdAt: new Date(),
         }),
-        findMany: vi.fn().mockResolvedValue([waitingAsk]),
-        findFirst: vi.fn().mockResolvedValue(waitingAsk),
+        findMany: vi.fn(async ({ where }: { where: { runId: string } }) =>
+          transcript.filter((message) => message.runId === where.runId && message.role === "bot"),
+        ),
+        findFirst: vi.fn(async ({ where }: { where: { id?: string; seq?: { lt: number } } }) =>
+          where.id
+            ? (transcript.find((message) => message.id === where.id) ?? null)
+            : (transcript
+                .filter((message) => message.seq < (where.seq?.lt ?? Number.POSITIVE_INFINITY))
+                .at(-1) ?? null),
+        ),
         update: vi.fn(),
       },
       run: {
@@ -1433,10 +1450,18 @@ describe("sendThreadMessage", () => {
           { id: "run-waiting-1", taskId: "task-1", status: "waiting_input" },
           { id: "run-waiting-2", taskId: "task-2", status: "waiting_input" },
         ]),
-        findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+        findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          botId: "bot-1",
+          userId: "user-1",
+          taskId: where.id === "run-waiting-2" ? "task-2" : "task-1",
+        })),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          status: where.id === "run-waiting-2" ? "cancelled" : "queued",
+        })),
       },
+      attempt: { updateMany: vi.fn() },
+      secret: { deleteMany: vi.fn() },
       steeringMessage: { create: vi.fn() },
       event: { create: vi.fn().mockResolvedValue({ seq: 2, threadId: "thread-1" }) },
       task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -1471,22 +1496,60 @@ describe("sendThreadMessage", () => {
     ).resolves.toMatchObject({
       runId: "run-waiting-1",
       taskId: "task-1",
-      seq: 1,
-      runIds: ["run-waiting-1", "run-waiting-2"],
+      seq: 2,
+      runIds: ["run-waiting-1"],
     });
     expect(tx.run.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.run.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: "run-waiting-2", status: "waiting_input" }),
+      data: expect.objectContaining({ status: "cancelled" }),
+    });
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "ask-older" },
+      data: { blocks: [expect.objectContaining({ status: "answered", answer: "Paris" })] },
+    });
     expect(tx.event.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         type: "thread.message.created",
-        payload: expect.objectContaining({ runIds: ["run-waiting-1", "run-waiting-2"] }),
+        payload: expect.objectContaining({ runIds: ["run-waiting-1"] }),
       }),
     });
-    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(tx.externalEffect.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", "run-waiting-2"]),
+            runId: "run-waiting-2",
+            spaceId: "workspace-1",
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
+    });
+    expect(tx.secret.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledWith({
+      where: { id: "task-2", runs: { none: { status: { in: expect.any(Array) } } } },
+      data: { status: "cancelled" },
+    });
+    expect(tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "thread.message.updated",
+        runId: "run-waiting-2",
+        payload: expect.objectContaining({ messageId: "ask-older", messageSeq: 0 }),
+      }),
+    });
+    expect(tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: "run.cancelled", runId: "run-waiting-2" }),
+    });
+    expect(enqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ payload: { runId: "run-waiting-2" } }),
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-waiting-1" } }),
-    );
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "run.continue", payload: { runId: "run-waiting-2" } }),
     );
   });
 
@@ -1568,23 +1631,32 @@ describe("sendThreadMessage", () => {
     );
   });
 
-  it("continues every waiting run for a group bot after free-text answers", async () => {
+  it("resumes the latest question and retires the older question when several group runs wait", async () => {
     const waitingAsk = {
       id: "ask-1",
+      seq: 1,
+      role: "bot",
+      runId: "run-waiting-1",
       blocks: [{ kind: "ask", text: "Which city should I use?", status: "pending" }],
     };
+    const transcript = [
+      { ...waitingAsk, id: "ask-older", seq: 0, runId: "run-waiting-2" },
+      waitingAsk,
+      { id: "msg-1", seq: 2, role: "user", runId: null, blocks: [{ kind: "text", text: "Paris" }] },
+    ];
     const tx = {
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
       thread: {
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
-          data.nextMessageSeq ? { nextMessageSeq: 2 } : { nextEventSeq: 3 },
+          data.nextMessageSeq ? { nextMessageSeq: 3 } : { nextEventSeq: 3 },
         ),
       },
       message: {
         create: vi.fn().mockResolvedValue({
           id: "msg-1",
           threadId: "thread-1",
-          seq: 1,
+          seq: 2,
           role: "user",
           blocks: [{ kind: "text", text: "Paris" }],
           botId: null,
@@ -1592,8 +1664,16 @@ describe("sendThreadMessage", () => {
           runId: null,
           createdAt: new Date(),
         }),
-        findMany: vi.fn().mockResolvedValue([waitingAsk]),
-        findFirst: vi.fn().mockResolvedValue(waitingAsk),
+        findMany: vi.fn(async ({ where }: { where: { runId: string } }) =>
+          transcript.filter((message) => message.runId === where.runId && message.role === "bot"),
+        ),
+        findFirst: vi.fn(async ({ where }: { where: { id?: string; seq?: { lt: number } } }) =>
+          where.id
+            ? (transcript.find((message) => message.id === where.id) ?? null)
+            : (transcript
+                .filter((message) => message.seq < (where.seq?.lt ?? Number.POSITIVE_INFINITY))
+                .at(-1) ?? null),
+        ),
         update: vi.fn(),
       },
       run: {
@@ -1601,11 +1681,19 @@ describe("sendThreadMessage", () => {
           { id: "run-waiting-1", taskId: "task-1", botId: "bot-a", status: "waiting_input" },
           { id: "run-waiting-2", taskId: "task-2", botId: "bot-a", status: "waiting_input" },
         ]),
-        findFirst: vi.fn().mockResolvedValue({ botId: "bot-a", userId: "user-1" }),
+        findFirst: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          botId: "bot-a",
+          userId: "user-1",
+          taskId: where.id === "run-waiting-2" ? "task-2" : "task-1",
+        })),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          status: where.id === "run-waiting-2" ? "cancelled" : "queued",
+        })),
         create: vi.fn(),
       },
+      attempt: { updateMany: vi.fn() },
+      secret: { deleteMany: vi.fn() },
       steeringMessage: { create: vi.fn() },
       event: { create: vi.fn().mockResolvedValue({ seq: 2, threadId: "thread-1" }) },
       task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -1652,32 +1740,88 @@ describe("sendThreadMessage", () => {
     ).resolves.toMatchObject({
       runId: "run-waiting-1",
       taskId: "task-1",
-      seq: 1,
-      runIds: ["run-waiting-1", "run-waiting-2"],
+      seq: 2,
+      runIds: ["run-waiting-1"],
     });
     expect(tx.run.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.run.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: "run-waiting-2", status: "waiting_input" }),
+      data: expect.objectContaining({ status: "cancelled" }),
+    });
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "ask-older" },
+      data: { blocks: [expect.objectContaining({ status: "answered", answer: "Paris" })] },
+    });
     expect(tx.task.create).not.toHaveBeenCalled();
     expect(tx.run.create).not.toHaveBeenCalled();
     expect(tx.event.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         type: "thread.message.created",
-        payload: expect.objectContaining({ runIds: ["run-waiting-1", "run-waiting-2"] }),
+        payload: expect.objectContaining({ runIds: ["run-waiting-1"] }),
       }),
     });
-    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(tx.externalEffect.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        OR: [
+          {
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", "run-waiting-2"]),
+            runId: "run-waiting-2",
+            spaceId: "workspace-1",
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+          },
+        ],
+      },
+    });
+    expect(tx.secret.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledWith({
+      where: { id: "task-2", runs: { none: { status: { in: expect.any(Array) } } } },
+      data: { status: "cancelled" },
+    });
+    expect(tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "thread.message.updated",
+        runId: "run-waiting-2",
+        payload: expect.objectContaining({ messageId: "ask-older", messageSeq: 0 }),
+      }),
+    });
+    expect(tx.event.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: "run.cancelled", runId: "run-waiting-2" }),
+    });
+    expect(enqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ payload: { runId: "run-waiting-2" } }),
+    );
+    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-waiting-1" } }),
     );
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "run.continue", payload: { runId: "run-waiting-2" } }),
-    );
   });
 
-  it("still requires the card for a pending approval ask", async () => {
+  it("preserves a pending approval and starts independent work for composer text", async () => {
+    const approval = {
+      id: "ask-1",
+      seq: 0,
+      role: "bot",
+      runId: "run-waiting",
+      blocks: [
+        {
+          kind: "ask",
+          approvalEffectId: "effect-1",
+          text: "Review before writing",
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Allow once" },
+            { id: "deny", label: "Deny" },
+          ],
+        },
+      ],
+    };
+    const effect = { id: "effect-1", status: "intended", runId: "run-waiting" };
     const tx = {
-      thread: {
-        update: vi.fn().mockResolvedValue({ nextMessageSeq: 2 }),
-      },
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+      thread: { update: vi.fn().mockResolvedValue({ nextMessageSeq: 2, nextEventSeq: 3 }) },
       message: {
         create: vi.fn().mockResolvedValue({
           id: "msg-1",
@@ -1685,38 +1829,34 @@ describe("sendThreadMessage", () => {
           seq: 1,
           role: "user",
           blocks: [{ kind: "text", text: "allow" }],
-          botId: null,
-          replyToMessageId: null,
-          runId: null,
-          createdAt: new Date(),
         }),
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "ask-1",
-            blocks: [
-              {
-                kind: "ask",
-                approvalEffectId: "effect-1",
-                text: "Review before writing",
-                status: "pending",
-                actions: [
-                  { id: "allow", label: "Allow once" },
-                  { id: "deny", label: "Deny" },
-                ],
-              },
-            ],
-          },
-        ]),
+        findMany: vi.fn().mockResolvedValue([approval]),
+        findFirst: vi.fn().mockResolvedValue(approval),
         update: vi.fn(),
       },
       run: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ id: "run-waiting", taskId: "task-1", status: "waiting_input" }]),
+          .mockResolvedValueOnce([{ id: "run-waiting", taskId: "task-1", status: "waiting_input" }])
+          .mockResolvedValue([]),
+        findFirst: vi
+          .fn()
+          .mockResolvedValue({ taskId: "task-1", botId: "bot-1", userId: "user-1" }),
+        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        create: vi.fn().mockResolvedValue({ id: "run-new", taskId: "task-new", status: "queued" }),
+        updateMany: vi.fn(),
       },
+      externalEffect: {
+        findFirst: vi.fn().mockResolvedValue(effect),
+        update: vi.fn(),
+        updateMany: vi.fn(),
+        deleteMany: vi.fn(),
+      },
+      secret: { deleteMany: vi.fn() },
+      attempt: { updateMany: vi.fn() },
       steeringMessage: { create: vi.fn() },
-      event: { create: vi.fn() },
-      task: { create: vi.fn() },
+      event: { create: vi.fn().mockResolvedValue({ seq: 2, threadId: "thread-1" }) },
+      task: { create: vi.fn().mockResolvedValue({ id: "task-new" }), updateMany: vi.fn() },
     };
     const prisma = {
       message: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -1729,26 +1869,56 @@ describe("sendThreadMessage", () => {
       threadId: "thread-1",
       bot: { computer: null },
     } as ThreadTarget;
+    const enqueue = vi.fn().mockResolvedValue(undefined);
 
     await expect(
       sendThreadMessage(
         {
           prisma,
-          events: { notify: vi.fn() } as never,
-          jobs: { enqueue: vi.fn() } as never,
+          events: { notify: vi.fn().mockResolvedValue(undefined) } as never,
+          jobs: { enqueue } as never,
         },
         actor,
         target,
-        {
-          text: "allow",
-          clientNonce: "nonce-1",
-        },
+        { text: "allow", clientNonce: "nonce-1" },
       ),
-    ).rejects.toMatchObject({
-      code: "CONFLICT",
-      message: "Answer the pending ask first.",
+    ).resolves.toMatchObject({
+      runId: "run-new",
+      taskId: "task-new",
+      runIds: ["run-new"],
     });
     expect(tx.steeringMessage.create).not.toHaveBeenCalled();
+    expect(tx.run.updateMany).not.toHaveBeenCalled();
+    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.attempt.updateMany).not.toHaveBeenCalled();
+    expect(tx.secret.deleteMany).not.toHaveBeenCalled();
+    expect(tx.externalEffect.update).not.toHaveBeenCalled();
+    expect(tx.externalEffect.updateMany).not.toHaveBeenCalled();
+    expect(tx.externalEffect.deleteMany).not.toHaveBeenCalled();
+    expect(effect).toEqual({ id: "effect-1", status: "intended", runId: "run-waiting" });
+    expect(tx.message.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: approval.id } }),
+    );
+    expect(approval.blocks[0]?.status).toBe("pending");
+    expect(tx.message.update).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "msg-1" },
+      data: { runId: "run-new" },
+    });
+    expect(tx.run.create).toHaveBeenCalledExactlyOnceWith({
+      data: expect.objectContaining({
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        botId: "bot-1",
+        threadId: "thread-1",
+        taskId: "task-new",
+        trigger: "user",
+        sourceMessageId: "msg-1",
+        clientNonce: "send:msg-1",
+      }),
+    });
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "run-new" } }),
+    );
   });
 
   it("waits for the creation intro instead of starting a second run", async () => {
@@ -2477,22 +2647,37 @@ describe("sendThreadMessage", () => {
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-webhook" } }),
     );
   });
-  it("steers a conversational run instead of answering a waiting routine", async () => {
-    let messageSeq = 0;
+  it("answers the latest waiting routine question before steering a conversational run", async () => {
+    const waitingAsk = {
+      id: "latest-waiting-ask",
+      seq: 0,
+      role: "bot",
+      runId: "run-routine",
+      blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+    };
+    let messageSeq = 1;
     let eventSeq = 0;
     const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
       thread: {
         update: vi.fn(async ({ data }: { data: { nextMessageSeq?: unknown } }) =>
           data.nextMessageSeq ? { nextMessageSeq: ++messageSeq } : { nextEventSeq: ++eventSeq },
         ),
       },
       message: {
+        findMany: vi.fn().mockResolvedValue([waitingAsk]),
+        findFirst: vi.fn(async ({ where }: { where: { id?: string; seq?: { lt: number } } }) =>
+          where.id === waitingAsk.id ||
+          (where.seq?.lt !== undefined && waitingAsk.seq < where.seq.lt)
+            ? waitingAsk
+            : { id: "msg-1", seq: 1, role: "user", blocks: [{ kind: "text", text: "Paris" }] },
+        ),
         create: vi.fn().mockResolvedValue({
           id: "msg-1",
           threadId: "thread-1",
           seq: 1,
           role: "user",
-          blocks: [{ kind: "text", text: "what about the watch?" }],
+          blocks: [{ kind: "text", text: "Paris" }],
           botId: null,
           replyToMessageId: null,
           runId: null,
@@ -2501,6 +2686,7 @@ describe("sendThreadMessage", () => {
         update: vi.fn(),
       },
       run: {
+        findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
         findMany: vi
           .fn()
           .mockResolvedValueOnce([
@@ -2513,11 +2699,13 @@ describe("sendThreadMessage", () => {
             { id: "run-user", taskId: "task-user", status: "running", trigger: "user" },
           ])
           .mockResolvedValue([]),
-        findUnique: vi.fn().mockResolvedValue({ status: "running", startedAt: new Date() }),
-        updateMany: vi.fn(),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          status: where.id === "run-routine" ? "queued" : "running",
+        })),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         create: vi.fn(),
       },
-      task: { create: vi.fn(), updateMany: vi.fn() },
+      task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       steeringMessage: { create: vi.fn() },
       event: {
         create: vi.fn().mockResolvedValue({ id: "event-1", seq: 2, createdAt: new Date() }),
@@ -2545,28 +2733,51 @@ describe("sendThreadMessage", () => {
         },
         actor,
         target,
-        { text: "what about the watch?", clientNonce: "nonce-routine-and-chat" },
+        { text: "Paris", clientNonce: "nonce-routine-and-chat" },
       ),
     ).resolves.toMatchObject({
-      runId: "run-user",
-      taskId: "task-user",
-      runIds: ["run-user"],
+      runId: "run-routine",
+      taskId: "task-routine",
+      runIds: ["run-routine"],
     });
-    expect(tx.steeringMessage.create).toHaveBeenCalledWith({
-      data: { messageId: "msg-1", botId: "bot-1", userId: "user-1", runId: "run-user" },
-    });
+    expect(tx.steeringMessage.create).not.toHaveBeenCalled();
     expect(tx.message.update).toHaveBeenCalledWith({
       where: { id: "msg-1" },
-      data: { runId: "run-user" },
+      data: { runId: "run-routine" },
     });
-    expect(tx.run.updateMany).not.toHaveBeenCalled();
-    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: waitingAsk.id },
+      data: { blocks: [expect.objectContaining({ status: "answered", answer: "Paris" })] },
+    });
+    expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        id: "run-routine",
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        status: "waiting_input",
+      },
+      data: { status: "queued", wakeAt: expect.any(Date) },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { runs: { some: { id: "run-routine" } } },
+      data: { prompt: "Paris" },
+    });
     expect(tx.task.create).not.toHaveBeenCalled();
     expect(tx.run.create).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "run-routine" } }),
+    );
+    expect(waitingAsk.blocks).toEqual([{ kind: "ask", text: "Which city?", status: "pending" }]);
   });
-  it("steers a group conversational run instead of answering a waiting webhook", async () => {
-    let messageSeq = 0;
+  it("answers the latest group webhook question before steering a conversational run", async () => {
+    const waitingAsk = {
+      id: "latest-waiting-ask",
+      seq: 0,
+      role: "bot",
+      runId: "run-webhook",
+      blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+    };
+    let messageSeq = 1;
     let eventSeq = 0;
     const tx = {
       thread: {
@@ -2575,12 +2786,19 @@ describe("sendThreadMessage", () => {
         ),
       },
       message: {
+        findMany: vi.fn().mockResolvedValue([waitingAsk]),
+        findFirst: vi.fn(async ({ where }: { where: { id?: string; seq?: { lt: number } } }) =>
+          where.id === waitingAsk.id ||
+          (where.seq?.lt !== undefined && waitingAsk.seq < where.seq.lt)
+            ? waitingAsk
+            : { id: "msg-1", seq: 1, role: "user", blocks: [{ kind: "text", text: "Paris" }] },
+        ),
         create: vi.fn().mockResolvedValue({
           id: "msg-1",
           threadId: "thread-1",
           seq: 1,
           role: "user",
-          blocks: [{ kind: "text", text: "what about the watch?" }],
+          blocks: [{ kind: "text", text: "Paris" }],
           botId: null,
           replyToMessageId: null,
           runId: null,
@@ -2589,6 +2807,7 @@ describe("sendThreadMessage", () => {
         update: vi.fn(),
       },
       run: {
+        findFirst: vi.fn().mockResolvedValue({ botId: "bot-a", userId: "user-1" }),
         findMany: vi
           .fn()
           .mockResolvedValueOnce([
@@ -2608,11 +2827,13 @@ describe("sendThreadMessage", () => {
             },
           ])
           .mockResolvedValue([]),
-        findUnique: vi.fn().mockResolvedValue({ status: "running", startedAt: new Date() }),
-        updateMany: vi.fn(),
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+          status: where.id === "run-webhook" ? "queued" : "running",
+        })),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         create: vi.fn(),
       },
-      task: { create: vi.fn(), updateMany: vi.fn() },
+      task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       steeringMessage: { create: vi.fn() },
       event: {
         create: vi.fn().mockResolvedValue({ id: "event-1", seq: 1, createdAt: new Date() }),
@@ -2653,21 +2874,41 @@ describe("sendThreadMessage", () => {
         },
         actor,
         target,
-        { text: "what about the watch?", clientNonce: "nonce-group-webhook-and-chat" },
+        { text: "Paris", clientNonce: "nonce-group-webhook-and-chat" },
       ),
     ).resolves.toMatchObject({
-      runId: "run-user",
-      taskId: "task-user",
-      runIds: ["run-user"],
+      runId: "run-webhook",
+      taskId: "task-webhook",
+      runIds: ["run-webhook"],
     });
-    expect(tx.steeringMessage.create).toHaveBeenCalledWith({
-      data: { messageId: "msg-1", botId: "bot-a", userId: "user-1", runId: "run-user" },
+    expect(tx.steeringMessage.create).not.toHaveBeenCalled();
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "msg-1" },
+      data: { runId: "run-webhook" },
     });
-    expect(tx.run.updateMany).not.toHaveBeenCalled();
-    expect(tx.task.updateMany).not.toHaveBeenCalled();
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: waitingAsk.id },
+      data: { blocks: [expect.objectContaining({ status: "answered", answer: "Paris" })] },
+    });
+    expect(tx.run.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: {
+        id: "run-webhook",
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        status: "waiting_input",
+      },
+      data: { status: "queued", wakeAt: expect.any(Date) },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { runs: { some: { id: "run-webhook" } } },
+      data: { prompt: "Paris" },
+    });
     expect(tx.task.create).not.toHaveBeenCalled();
     expect(tx.run.create).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "run-webhook" } }),
+    );
+    expect(waitingAsk.blocks).toEqual([{ kind: "ask", text: "Which city?", status: "pending" }]);
   });
   it("rejects a quote excerpt without a reply target", async () => {
     const prisma = {

@@ -8,15 +8,18 @@ import {
   type ProductEvent,
 } from "@rakazo/contracts";
 import {
+  ACTIVE_RUN_STATUSES,
   blocksToAgentHistoryText,
   callIdFromClientNonce,
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
   messageBypassesTakeoverWait,
+  messageReaction,
   messagingChannelId,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
+  runSecretKind,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
@@ -903,8 +906,95 @@ export async function answerRunInput(
   return true;
 }
 
-/** Answer a waiting question ask with composer free-text. Approval and secret cards stay on the card path. */
-export async function answerWaitingRunWithTextInTransaction(
+/** The caller holds the thread row lock acquired while accepting the new user message. */
+export async function retireWaitingQuestionInTransaction(
+  tx: Prisma.TransactionClient,
+  input: { spaceId: string; threadId: string; botId: string; runId: string; answer: string },
+): Promise<boolean> {
+  const answer = input.answer.trim();
+  if (!answer) return false;
+  const where = {
+    id: input.runId,
+    spaceId: input.spaceId,
+    threadId: input.threadId,
+    botId: input.botId,
+    status: "waiting_input",
+  };
+  const run = await tx.run.findFirst({ where, select: { taskId: true, userId: true } });
+  if (!run) return false;
+  const messages = await tx.message.findMany({
+    where: { threadId: input.threadId, runId: input.runId, role: "bot" },
+    select: { id: true, seq: true, blocks: true },
+  });
+  const questions = [];
+  for (const message of messages) {
+    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
+    if (!parsed.success) return false;
+    const pending = parsed.data.filter(
+      (block) => block.kind === "ask" && block.status !== "answered",
+    );
+    // Never implicitly dismiss credentials or authorize an external effect, even on a mixed card.
+    if (
+      pending.some(
+        (block) => block.kind === "ask" && (block.input === "secret" || block.approvalEffectId),
+      )
+    )
+      return false;
+    if (pending.length) {
+      questions.push({
+        id: message.id,
+        seq: message.seq,
+        blocks: parsed.data.map((block) =>
+          pending.includes(block) ? { ...block, status: "answered" as const, answer } : block,
+        ),
+      });
+    }
+  }
+  if (!questions.length) return false;
+  const now = new Date();
+  const retired = await tx.run.updateMany({
+    where,
+    data: {
+      status: "cancelled",
+      completedAt: now,
+      checkpoint: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    },
+  });
+  if (retired.count !== 1) return false;
+  await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
+  await tx.secret.deleteMany({
+    where: { userId: run.userId, spaceId: input.spaceId, kind: runSecretKind(input.runId) },
+  });
+  await tx.attempt.updateMany({
+    where: { runId: input.runId, status: "waiting_input" },
+    data: { status: "cancelled", finishedAt: now },
+  });
+  await tx.task.updateMany({
+    where: { id: run.taskId, runs: { none: { status: { in: [...ACTIVE_RUN_STATUSES] } } } },
+    data: { status: "cancelled" },
+  });
+  for (const question of questions) {
+    await tx.message.update({ where: { id: question.id }, data: { blocks: question.blocks } });
+    await appendEventInTransaction(tx, {
+      ...input,
+      type: "thread.message.updated",
+      allowCancelledRun: true,
+      payload: {
+        messageId: question.id,
+        messageSeq: question.seq,
+        role: "bot",
+        blocks: question.blocks,
+      },
+    });
+  }
+  await appendEventInTransaction(tx, { ...input, type: "run.cancelled", payload: {} });
+  return true;
+}
+
+/** Read-only eligibility for an ordinary question immediately preceding composer text. */
+export async function eligibleWaitingTextAnswer(
   tx: Prisma.TransactionClient,
   input: {
     spaceId: string;
@@ -912,14 +1002,39 @@ export async function answerWaitingRunWithTextInTransaction(
     runId: string;
     answeredByUserId: string;
     answer: string;
+    beforeMessageSeq?: number;
   },
-): Promise<{ threadId: string; seq: number } | null> {
-  const answer = input.answer.trim();
-  if (!answer) return null;
+): Promise<string | null> {
+  if (!input.answer.trim()) return null;
   const found = await findPendingAsk(tx, input);
-  if (!found) return null;
-  if (isApprovalAskBlock(found.pendingAsk) || isSecretAskBlock(found.pendingAsk)) return null;
-  return commitAnswerRunInput(tx, { ...input, messageId: found.messageId, answer });
+  if (!found || isApprovalAskBlock(found.pendingAsk) || isSecretAskBlock(found.pendingAsk))
+    return null;
+  let beforeSeq = input.beforeMessageSeq;
+  while (true) {
+    const latest = await tx.message.findFirst({
+      where: {
+        threadId: input.threadId,
+        ...(beforeSeq === undefined ? {} : { seq: { lt: beforeSeq } }),
+      },
+      orderBy: { seq: "desc" },
+      select: { id: true, seq: true, role: true, blocks: true, replyToMessageId: true },
+    });
+    if (!latest) return null;
+    if (!messageReaction({ ...latest, blocks: latest.blocks as MessageBlock[] }))
+      return latest.id === found.messageId ? found.messageId : null;
+    beforeSeq = latest.seq;
+  }
+}
+
+/** Commit only ordinary answers that pass the read-only composer eligibility check. */
+export async function answerWaitingRunWithTextInTransaction(
+  tx: Prisma.TransactionClient,
+  input: Parameters<typeof eligibleWaitingTextAnswer>[1],
+): Promise<{ threadId: string; seq: number } | null> {
+  const messageId = await eligibleWaitingTextAnswer(tx, input);
+  return messageId
+    ? commitAnswerRunInput(tx, { ...input, messageId, answer: input.answer.trim() })
+    : null;
 }
 
 async function bindScriptedPause(
@@ -987,6 +1102,7 @@ export async function pauseRunForInput(
       },
     });
     if (paused.count !== 1) return null;
+    await expireComputerExecutionLeases(tx, { runId: input.runId });
 
     const attempt = await tx.attempt.updateMany({
       where: {

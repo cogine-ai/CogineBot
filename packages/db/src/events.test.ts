@@ -1007,6 +1007,7 @@ describe("pauseRunForInput", () => {
         }),
       },
       attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       thread: {
         update: vi
           .fn()
@@ -1080,6 +1081,7 @@ describe("pauseRunForInput", () => {
         }),
       },
       attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       thread: {
         update: vi
           .fn()
