@@ -143,8 +143,8 @@ describe("ticket tools", () => {
   });
 });
 
-function mutationDeps(ticketBoardEnabled = true) {
-  let current = ticket();
+function mutationDeps(ticketBoardEnabled = true, initial = ticket()) {
+  let current = initial;
   const changes = vi.fn(async (_change: { wakeAssignee: boolean }) => {});
   const tx = {
     board: { update: vi.fn(async () => ({ nextNumber: 2 })) },
@@ -187,10 +187,147 @@ function mutationDeps(ticketBoardEnabled = true) {
 }
 
 describe("ticket mutations", () => {
+  it("keeps shared-space status edits available without reassigning or waking the owner", async () => {
+    const s = mutationDeps(
+      true,
+      ticket({ createdByUserId: "other-user", assigneeBotId: "other-bot" }),
+    );
+    const result = await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: "user-1",
+      id: "t1",
+      status: "doing",
+    });
+    expect(result).toMatchObject({
+      ticket: {
+        createdByUserId: "other-user",
+        assigneeBotId: "other-bot",
+        status: "doing",
+      },
+    });
+    expect(s.changes).toHaveBeenCalledOnce();
+    expect(s.changes).toHaveBeenCalledWith(expect.objectContaining({ wakeAssignee: false }));
+  });
+  it.each([
+    ["another member", { userId: "other-user" }],
+    ["another space", { spaceId: "other-space" }],
+    ["an archived bot", { archivedAt: NOW }],
+  ])(
+    "refuses reassignment to %s without changing the ticket or notifying",
+    async (_name, overrides) => {
+      const s = mutationDeps();
+      const owner = {
+        id: "bot-2",
+        spaceId: "ws",
+        userId: "user-1",
+        archivedAt: null,
+        ...overrides,
+      };
+      s.prisma.bot.findFirst.mockImplementation(async (...args: unknown[]) => {
+        const { where } = args[0] as { where: Record<string, unknown> };
+        return Object.entries(where).every(
+          ([key, value]) => value === undefined || owner[key as keyof typeof owner] === value,
+        )
+          ? { id: owner.id }
+          : (null as never);
+      });
+      await expect(
+        updateTicket(s.deps, {
+          spaceId: "ws",
+          userId: "user-1",
+          id: "t1",
+          ownerBotId: "bot-2",
+        }),
+      ).resolves.toEqual({ error: "Unknown bot." });
+      expect(s.prisma.$transaction).not.toHaveBeenCalled();
+      expect(s.changes).not.toHaveBeenCalled();
+    },
+  );
+  it.each([null, "", "  ", 123, { not: "user-1" }])(
+    "refuses malformed caller %j before any mutation",
+    async (userId) => {
+      const s = mutationDeps();
+      await expect(
+        createTicket(s.deps, {
+          spaceId: "ws",
+          userId,
+          ownerBotId: "bot-2",
+          title: "Ship",
+        } as never),
+      ).resolves.toEqual({ error: "Unknown bot." });
+      await expect(
+        updateTicket(s.deps, {
+          spaceId: "ws",
+          userId,
+          id: "t1",
+          status: "doing",
+        } as never),
+      ).resolves.toEqual({ error: "Unknown bot." });
+      expect(s.prisma.board.findUnique).not.toHaveBeenCalled();
+      expect(s.prisma.$transaction).not.toHaveBeenCalled();
+      expect(s.changes).not.toHaveBeenCalled();
+    },
+  );
+  it("refuses a missing update caller before changing a ticket or notifying", async () => {
+    const s = mutationDeps();
+    const result = await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: undefined,
+      id: "t1",
+      title: "Changed",
+    } as never);
+    expect(result).toEqual({ error: "Unknown bot." });
+    expect(s.prisma.board.findUnique).not.toHaveBeenCalled();
+    expect(s.prisma.$transaction).not.toHaveBeenCalled();
+    expect(s.changes).not.toHaveBeenCalled();
+  });
+  it("refuses a missing create caller before allocating a ticket or notifying", async () => {
+    const s = mutationDeps();
+    const result = await createTicket(s.deps, {
+      spaceId: "ws",
+      userId: undefined,
+      botId: "bot-1",
+      ownerBotId: "bot-2",
+      title: "Ship",
+    } as never);
+    expect(result).toEqual({ error: "Unknown bot." });
+    expect(s.prisma.board.findUnique).not.toHaveBeenCalled();
+    expect(s.prisma.$transaction).not.toHaveBeenCalled();
+    expect(s.changes).not.toHaveBeenCalled();
+  });
+  it("refuses assigning another member's bot in the same space before creating a ticket", async () => {
+    const s = mutationDeps();
+    const owner = { id: "bot-2", spaceId: "ws", userId: "other-user", archivedAt: null };
+    s.prisma.bot.findFirst.mockImplementation(async (...args: unknown[]) => {
+      const { where } = args[0] as { where: Record<string, unknown> };
+      return Object.entries(where).every(
+        ([key, value]) => value === undefined || owner[key as keyof typeof owner] === value,
+      )
+        ? { id: owner.id }
+        : (null as never);
+    });
+    await expect(
+      createTicket(s.deps, {
+        spaceId: "ws",
+        userId: "user-1",
+        botId: "bot-1",
+        ownerBotId: "bot-2",
+        title: "Ship",
+      }),
+    ).resolves.toEqual({ error: "Unknown bot." });
+    expect(s.prisma.$transaction).not.toHaveBeenCalled();
+    expect(s.changes).not.toHaveBeenCalled();
+  });
   it("disables every tool without database access or wake-ups", async () => {
     const s = mutationDeps(false);
-    await createTicket(s.deps, { spaceId: "ws", botId: "bot-1", title: "Ship" });
-    await updateTicket(s.deps, { spaceId: "ws", botId: "bot-1", id: "t1", ownerBotId: "bot-2" });
+    await createTicket(s.deps, { spaceId: "ws", userId: "user-1", botId: "bot-1", title: "Ship" });
+    await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: "user-1",
+      botId: "bot-1",
+      id: "t1",
+      ownerBotId: "bot-2",
+    });
     await commentTicket(s.deps, { spaceId: "ws", botId: "bot-1", id: "t1", body: "Ready" });
     await listBoardTickets(s.deps, { spaceId: "ws" });
     await getTicket(s.deps, { spaceId: "ws", ref: "RAK-1" });
@@ -208,7 +345,12 @@ describe("ticket mutations", () => {
       ownerBotId: "bot-2",
     });
     expect(result).toEqual({
-      ticket: expect.objectContaining({ ref: "RAK-1", title: "Ship", assigneeBotId: "bot-2" }),
+      ticket: expect.objectContaining({
+        ref: "RAK-1",
+        title: "Ship",
+        assigneeBotId: "bot-2",
+        createdByUserId: "user-1",
+      }),
     });
     expect(s.tx.board.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: { nextNumber: { increment: 1 } } }),
@@ -218,11 +360,23 @@ describe("ticket mutations", () => {
   });
   it("wakes on an actual reassignment once, and never on status edits or repeated assignment", async () => {
     const s = mutationDeps();
-    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2", status: "doing" });
+    await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: "user-1",
+      id: "t1",
+      ownerBotId: "bot-2",
+      status: "doing",
+    });
     expect(s.changes).toHaveBeenCalledWith(
       expect.objectContaining({ wakeAssignee: true, assigneeBotId: "bot-2" }),
     );
-    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2", status: "done" });
+    await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: "user-1",
+      id: "t1",
+      ownerBotId: "bot-2",
+      status: "done",
+    });
     expect(
       s.changes.mock.calls.map(([value]) => (value as { wakeAssignee: boolean }).wakeAssignee),
     ).toEqual([true, false]);
@@ -234,8 +388,14 @@ describe("ticket mutations", () => {
   });
   it("does not wake a bot creating or assigning a ticket to itself", async () => {
     const s = mutationDeps();
-    await createTicket(s.deps, { spaceId: "ws", botId: "bot-1", title: "Ship" });
-    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2", botId: "bot-2" });
+    await createTicket(s.deps, { spaceId: "ws", userId: "user-1", botId: "bot-1", title: "Ship" });
+    await updateTicket(s.deps, {
+      spaceId: "ws",
+      userId: "user-1",
+      id: "t1",
+      ownerBotId: "bot-2",
+      botId: "bot-2",
+    });
     expect(s.changes.mock.calls.map(([value]) => value.wakeAssignee)).toEqual([false, false]);
   });
   it("comments without waking the owner", async () => {
@@ -266,11 +426,11 @@ describe("ticket mutations", () => {
   it("rejects invalid input and foreign owners before a write", async () => {
     const s = mutationDeps();
     await expect(
-      createTicket(s.deps, { spaceId: "ws", botId: "bot-1", title: " " }),
+      createTicket(s.deps, { spaceId: "ws", userId: "user-1", botId: "bot-1", title: " " }),
     ).resolves.toHaveProperty("error");
     s.prisma.bot.findFirst.mockResolvedValueOnce(null as never);
     await expect(
-      updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "foreign" }),
+      updateTicket(s.deps, { spaceId: "ws", userId: "user-1", id: "t1", ownerBotId: "foreign" }),
     ).resolves.toHaveProperty("error");
     expect(s.prisma.$transaction).not.toHaveBeenCalled();
   });

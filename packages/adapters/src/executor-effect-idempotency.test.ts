@@ -53,6 +53,7 @@ function fixture(
     catchToolErrors?: boolean;
     contextStrategy?: AgentContextStrategy;
     toolResultHistory?: boolean;
+    ticketBoard?: boolean;
   } = {},
 ) {
   const effects: Effect[] = [];
@@ -79,6 +80,24 @@ function fixture(
     trigger: "user",
     leaseFence: 0,
   };
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const ticketRow = {
+    id: "ticket-1",
+    boardId: "board-1",
+    spaceId: run.spaceId,
+    number: 1,
+    title: "Original",
+    description: null,
+    status: "todo",
+    priority: "normal",
+    assigneeBotId: run.botId,
+    createdByBotId: null,
+    createdByUserId: "other-member",
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  };
+  const ticketChanges: unknown[] = [];
   const memoryDocuments = new Map<
     string,
     { id: string; path: string; content: string; revision: number }
@@ -161,6 +180,19 @@ function fixture(
       }),
     },
     bot: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const bots = [
+          { id: "bot-2", spaceId: run.spaceId, userId: run.userId, archivedAt: null },
+          { id: "foreign-bot", spaceId: run.spaceId, userId: "other-member", archivedAt: null },
+        ];
+        return (
+          bots.find((bot) =>
+            Object.entries(where).every(
+              ([key, value]) => value === undefined || bot[key as keyof typeof bot] === value,
+            ),
+          ) ?? null
+        );
+      }),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === run.botId ? { spaceId: run.spaceId, disabledBuiltinTools: [] } : null,
       ),
@@ -231,6 +263,21 @@ function fixture(
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: false })) },
     externalEffect,
+    board: {
+      findUnique: vi.fn(async () => ({
+        id: "board-1",
+        spaceId: run.spaceId,
+        ticketPrefix: "WORK",
+      })),
+    },
+    ticket: {
+      findFirst: vi.fn(async () => ({ ...ticketRow })),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(ticketRow, data);
+        return { ...ticketRow };
+      }),
+    },
+    $transaction: async <T>(callback: (tx: unknown) => Promise<T>): Promise<T> => callback(prisma),
   };
   const pauseRunForInput = vi.fn(async () => {
     run.status = "waiting_input";
@@ -255,6 +302,10 @@ function fixture(
   });
   const executor = createRunExecutor({
     prisma,
+    ticketBoardEnabled: options.ticketBoard,
+    onTicketChange: async (change: unknown) => {
+      ticketChanges.push(change);
+    },
     contextStrategy: options.contextStrategy,
     runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
     connector: {
@@ -293,6 +344,8 @@ function fixture(
     effects,
     results,
     scratchpadRows,
+    ticketRow,
+    ticketChanges,
     memoryCommit,
     memoryRead,
     memoryDocuments,
@@ -315,6 +368,63 @@ function fixture(
     },
   };
 }
+
+describe("ticket tool caller identity", () => {
+  it("uses the Run caller for a ticket edit despite a forged model user", async () => {
+    const f = fixture("run-ticket-caller", { ticketBoard: true });
+    f.setCalls([
+      {
+        name: "ticket_update",
+        args: {
+          id: "ticket-1",
+          title: "Updated",
+          ownerBotId: "bot-2",
+          userId: "other-member",
+        },
+        executionId: "ticket-edit",
+      },
+    ]);
+    await f.run();
+    expect(f.results).toEqual([
+      expect.objectContaining({
+        ticket: expect.objectContaining({
+          id: "ticket-1",
+          title: "Updated",
+          assigneeBotId: "bot-2",
+        }),
+      }),
+    ]);
+    expect(f.ticketChanges).toEqual([
+      expect.objectContaining({ ticketId: "ticket-1", wakeAssignee: true }),
+    ]);
+  });
+
+  it("rejects a forged model caller selecting another member's bot", async () => {
+    const f = fixture("run-ticket-foreign-owner", { ticketBoard: true });
+    f.setCalls([
+      {
+        name: "ticket_update",
+        args: {
+          id: "ticket-1",
+          title: "Must not land",
+          ownerBotId: "foreign-bot",
+          userId: "other-member",
+        },
+        executionId: "ticket-edit",
+      },
+    ]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "Unknown bot." }]);
+    expect(f.ticketRow.title).toBe("Original");
+    expect(f.ticketChanges).toEqual([]);
+    expect(f.effects).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        result: { error: "Unknown bot." },
+      }),
+    ]);
+  });
+});
 
 describe("history context capabilities", () => {
   it("rejects current-strategy message reads before querying stored history", async () => {
