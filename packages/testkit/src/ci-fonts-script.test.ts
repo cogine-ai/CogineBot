@@ -160,6 +160,45 @@ function fixture() {
 }
 
 describe("browser CI font source selection", () => {
+  it("normalizes documented regional and security Ubuntu sources to the private HTTPS selection", () => {
+    const contents = runnerSources
+      .replace("URIs: " + mirror, "URIs: http://us-west-2.ec2.archive.ubuntu.com/ubuntu/")
+      .replace("uRiS: " + mirror, "uRiS: http://security.ubuntu.com/ubuntu/");
+    const result = fixture().run(contents);
+    expect(result.status).toBe(0);
+    expect(result.calls.map((call) => call.name)).toEqual([
+      "apt-get",
+      "apt-get",
+      "fc-match",
+      "pnpm",
+    ]);
+    const expected = contents.replace(/^([Uu][Rr][Ii][Ss]: ).+$/gm, "$1" + archive);
+    expect(result.calls[0]!.source).toBe(expected);
+    expect(result.calls[1]!.source).toBe(expected);
+  });
+
+  it.each([
+    "http://archive.ubuntu.com/ubuntu",
+    "https://archive.ubuntu.com/ubuntu/",
+    "http://security.ubuntu.com/ubuntu/",
+    "https://security.ubuntu.com/ubuntu",
+    "http://azure.archive.ubuntu.com/ubuntu/",
+    "http://us.archive.ubuntu.com/ubuntu",
+    "https://de.archive.ubuntu.com/ubuntu/",
+    "http://us-west-2.ec2.archive.ubuntu.com/ubuntu/",
+    "https://eu-central-1.ec2.archive.ubuntu.com/ubuntu",
+  ])("normalizes the single documented Ubuntu source %s without changing other fields", (uri) => {
+    const contents = runnerSources.replace(
+      /^([Uu][Rr][Ii][Ss]: )mirror\+file:\/etc\/apt\/apt-mirrors\.txt/gm,
+      "$1" + uri,
+    );
+    const result = fixture().run(contents);
+    expect(result.status).toBe(0);
+    const expected = contents.replace(/^([Uu][Rr][Ii][Ss]: ).+$/gm, "$1" + archive);
+    expect(result.calls[0]!.source).toBe(expected);
+    expect(result.calls[1]!.source).toBe(expected);
+  });
+
   it("uses one private HTTPS source selection while preserving every other source byte", () => {
     const f = fixture();
     const result = f.run();
@@ -240,6 +279,23 @@ describe("browser CI font source selection", () => {
 
   it.each([
     ["unknown URI", runnerSources.replace(mirror, "https://example.invalid/ubuntu")],
+    [
+      "lookalike host",
+      runnerSources.replace(mirror, "https://archive.ubuntu.com.example.invalid/ubuntu"),
+    ],
+    ["userinfo", runnerSources.replace(mirror, "https://user:secret@archive.ubuntu.com/ubuntu")],
+    ["port", runnerSources.replace(mirror, "https://archive.ubuntu.com:443/ubuntu")],
+    ["query", runnerSources.replace(mirror, "https://archive.ubuntu.com/ubuntu?token=synthetic")],
+    ["fragment", runnerSources.replace(mirror, "https://archive.ubuntu.com/ubuntu#other")],
+    ["other path", runnerSources.replace(mirror, "https://archive.ubuntu.com/other")],
+    ["other scheme", runnerSources.replace(mirror, "ftp://archive.ubuntu.com/ubuntu")],
+    [
+      "direct multi-URI",
+      runnerSources.replace(
+        mirror,
+        "https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu",
+      ),
+    ],
     [
       "multiple URI values",
       runnerSources.replace(mirror, mirror + " https://archive.ubuntu.com/ubuntu"),

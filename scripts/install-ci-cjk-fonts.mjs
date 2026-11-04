@@ -5,13 +5,16 @@ import { join } from "node:path";
 
 const runnerMirror = "mirror+file:/etc/apt/apt-mirrors.txt";
 const officialArchive = "https://archive.ubuntu.com/ubuntu";
+// Hosted runners may use direct Ubuntu archives; APT still receives the fixed HTTPS source.
+const officialMirrorPattern =
+  /^https?:\/\/(?:(?:(?:[a-z]{2}|azure)\.)?archive\.ubuntu\.com|security\.ubuntu\.com|[a-z]{2}(?:-[a-z]+)+-\d+\.ec2\.archive\.ubuntu\.com)\/ubuntu\/?$/;
 
 /** Replace supported URI fields while preserving all other Deb822 bytes. */
 function officialSources(contents) {
   let found = false;
   let stanzaHasUri = false;
   let uriContinuation = false;
-  const unsupported = () => new Error("Unsupported Ubuntu mirror configuration.");
+  const unsupported = (reason) => new Error(`Unsupported Ubuntu mirror configuration: ${reason}.`);
   const rewritten = contents
     .split(/(?<=\n)/)
     .map((line) => {
@@ -22,22 +25,23 @@ function officialSources(contents) {
       } else if (text.startsWith("#")) {
         // Comments do not end a field's continuation context.
       } else if (/^[ \t]/.test(text)) {
-        if (uriContinuation) throw unsupported();
+        if (uriContinuation) throw unsupported("continued URI");
       } else if (/^uris:/i.test(text)) {
-        if (stanzaHasUri || text.slice(text.indexOf(":") + 1).trim() !== runnerMirror) {
-          throw unsupported();
-        }
+        const uri = text.slice(text.indexOf(":") + 1).trim();
+        if (stanzaHasUri) throw unsupported("duplicate URI field");
+        if (uri !== runnerMirror && !officialMirrorPattern.test(uri))
+          throw unsupported("unrecognized URI value");
         found = true;
         stanzaHasUri = true;
         uriContinuation = true;
-        return line.replace(runnerMirror, officialArchive);
+        return line.replace(uri, officialArchive);
       } else {
         uriContinuation = false;
       }
       return line;
     })
     .join("");
-  if (!found) throw unsupported();
+  if (!found) throw unsupported("no URI fields");
   return rewritten;
 }
 
