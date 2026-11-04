@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -273,6 +274,32 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
         ])
       ).rows,
     ).toEqual([{ member: true }]);
+  });
+
+  it("rejects application-table TRUNCATE authority that bypasses row policies", async () => {
+    const table = `public.${escapeIdentifier(probeTable)}`;
+    const policy = escapeIdentifier(`deny_probe_${suffix}`);
+    await owner.pool.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+    await owner.pool.query(`CREATE POLICY ${policy} ON ${table} USING (false)`);
+    await owner.pool.query(`GRANT TRUNCATE ON ${table} TO ${escapeIdentifier(login)}`);
+    try {
+      expect((await runtime!.pool.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+      await runtime!.pool.query(`TRUNCATE ${table}`);
+      expect((await owner.pool.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({
+        prepared: false,
+        enforced: false,
+      });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await owner.pool.query(`REVOKE TRUNCATE ON ${table} FROM ${escapeIdentifier(login)}`);
+      await owner.pool.query(`DROP POLICY ${policy} ON ${table}`);
+      await owner.pool.query(`ALTER TABLE ${table} DISABLE ROW LEVEL SECURITY`);
+      await owner.pool.query(
+        `INSERT INTO ${table} VALUES (1, $1) ON CONFLICT(id) DO UPDATE SET content=excluded.content`,
+        ["fixture content"],
+      );
+    }
   });
 
   it("rejects direct protected-column and CREATE privileges", async () => {
@@ -550,6 +577,122 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     expect(result.stdout).toContain("not activated");
     expect(result.stdout + result.stderr).not.toContain(password);
     expect(result.stdout + result.stderr).not.toContain(runtimeUrl);
+  });
+
+  it("rejects a different runtime database before changing its login or registering a key", async () => {
+    const peerDatabase = `role_peer_${suffix}`;
+    const name = `${login}_peer`;
+    const secret = randomBytes(24).toString("hex");
+    allocated.add(name);
+    await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(peerDatabase)}`);
+    await owner.pool.query(
+      `CREATE ROLE ${escapeIdentifier(name)} LOGIN PASSWORD ${escapeLiteral(secret)}`,
+    );
+    await owner.pool.query(`GRANT ${escapeIdentifier(RUNTIME_ROLE)} TO ${escapeIdentifier(name)}`);
+    const peerUrl = new URL(urlFor(name, secret));
+    peerUrl.pathname = `/${peerDatabase}`;
+    const peer = createDb(peerUrl.toString(), { poolMax: 1 });
+    const key = await installDbContext(peer.pool)();
+    await close(peer);
+    const before = await digestCount();
+    const verifier = async () =>
+      (await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [name])).rows[0]
+        .rolpassword;
+    const originalVerifier = await verifier();
+    try {
+      let failure: unknown;
+      try {
+        await provisionRuntimeRole(databaseUrl!, peerUrl.toString());
+      } catch (error) {
+        failure = error;
+      }
+      expect(await verifier()).toBe(originalVerifier);
+      expect(await digestCount()).toBe(before);
+      expect(failure).toBeDefined();
+    } finally {
+      await owner.pool.query(
+        "DELETE FROM cogine_private.rls_bypass_keys WHERE digest=sha256(convert_to($1,'UTF8'))",
+        [key],
+      );
+      await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+    }
+  });
+
+  it("rejects mismatched CLI targets before applying migrations to an empty owner database", async () => {
+    const peerDatabase = `role_cli_peer_${suffix}`;
+    await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(peerDatabase)}`);
+    const peerUrl = new URL(databaseUrl!);
+    peerUrl.pathname = `/${peerDatabase}`;
+    const peer = createDb(peerUrl.toString(), { poolMax: 1 });
+    try {
+      let failure: unknown;
+      try {
+        await promisify(execFile)("pnpm", ["db:migrate"], {
+          cwd: path.resolve(import.meta.dirname, "../../.."),
+          env: {
+            ...process.env,
+            DATABASE_URL: runtimeUrl,
+            DATABASE_MIGRATION_URL: peerUrl.toString(),
+          },
+          timeout: 30_000,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(
+        (await peer.pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows,
+      ).toEqual([]);
+      expect(failure).toBeDefined();
+      const output = failure as { stdout?: string; stderr?: string };
+      expect(output.stderr).toContain("Database preparation failed");
+      expect((output.stdout ?? "") + (output.stderr ?? "")).not.toContain(password);
+    } finally {
+      await close(peer);
+      await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+    }
+  });
+
+  it("rejects conflicting migration-driver ports before contacting the other endpoint", async () => {
+    let attempts = 0;
+    const other = createServer((socket) => {
+      attempts++;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      other.once("error", reject);
+      other.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = other.address();
+      if (!address || typeof address === "string") throw new Error("Fixture port unavailable");
+      const migration = new URL(databaseUrl!);
+      migration.hostname = "127.0.0.1";
+      migration.searchParams.set("port", migration.port);
+      migration.port = String(address.port);
+      const application = new URL(runtimeUrl);
+      application.hostname = "127.0.0.1";
+      let failure: unknown;
+      try {
+        await promisify(execFile)("pnpm", ["db:migrate"], {
+          cwd: path.resolve(import.meta.dirname, "../../.."),
+          env: {
+            ...process.env,
+            DATABASE_URL: application.toString(),
+            DATABASE_MIGRATION_URL: migration.toString(),
+          },
+          timeout: 30_000,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(attempts).toBe(0);
+      expect(failure).toBeDefined();
+      expect((failure as { stderr?: string }).stderr).toContain("Database preparation failed");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        other.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("keeps the shared-login migration path explicit without claiming preparation", async () => {

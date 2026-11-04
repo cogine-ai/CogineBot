@@ -14,14 +14,76 @@ export interface DatabaseUrls {
   separate: boolean;
 }
 
+function assertSameDatabaseTarget(migrationUrl: string, runtimeUrl: string) {
+  const migration = new Client({ connectionString: migrationUrl });
+  const runtime = new Client({ connectionString: runtimeUrl });
+  const valid = (client: Client) =>
+    typeof client.host === "string" &&
+    client.host.length > 0 &&
+    typeof client.database === "string" &&
+    client.database.length > 0 &&
+    Number.isInteger(client.port) &&
+    client.port > 0 &&
+    client.port <= 65535;
+  if (
+    !valid(migration) ||
+    !valid(runtime) ||
+    migration.host !== runtime.host ||
+    migration.port !== runtime.port ||
+    migration.database !== runtime.database
+  )
+    throw new Error(
+      "Database preparation requires migration and runtime URLs to use the same host, port, and database",
+    );
+  return { migration, runtime };
+}
+
+function assertMigrationTarget(migrationUrl: string, migration: Client): void {
+  const invalid = () =>
+    new Error(
+      "The migration URL target must match both database clients; use an explicit database path and matching host and port",
+    );
+  let parsed: URL;
+  let database: string;
+  try {
+    parsed = new URL(migrationUrl);
+    const segments = parsed.pathname.slice(1).split("/");
+    if (
+      !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+      !parsed.pathname.startsWith("/") ||
+      segments.length !== 1 ||
+      !segments[0]
+    )
+      throw invalid();
+    database = decodeURIComponent(segments[0]);
+  } catch {
+    throw invalid();
+  }
+  const queryHost = parsed.searchParams.getAll("host").at(-1);
+  let host = queryHost ?? (parsed.hostname || "localhost");
+  if (queryHost === undefined && host.startsWith("[") && host.endsWith("]"))
+    host = host.slice(1, -1);
+  const port = Number(parsed.port || "5432");
+  if (
+    !host ||
+    !database ||
+    migration.host !== host ||
+    migration.port !== port ||
+    migration.database !== database
+  )
+    throw invalid();
+}
+
 export function databaseUrls(env: Record<string, string | undefined>): DatabaseUrls {
   const url = env.DATABASE_URL?.trim();
   if (!url) throw new Error("DATABASE_URL is required");
   const migrationUrl = env.DATABASE_MIGRATION_URL?.trim() || url;
+  const targets = assertSameDatabaseTarget(migrationUrl, url);
+  assertMigrationTarget(migrationUrl, targets.migration);
   return {
     url,
     migrationUrl,
-    separate: databaseCredentials(url).user !== databaseCredentials(migrationUrl).user,
+    separate: targets.runtime.user !== targets.migration.user,
   };
 }
 
@@ -64,6 +126,9 @@ function rolePrivileges(login?: string) {
             pg_catalog.has_schema_privilege(p.oid, n.oid, 'CREATE')
             OR (n.nspname = 'cogine_private' AND pg_catalog.has_schema_privilege(p.oid, n.oid, 'USAGE'))))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+            AND pg_catalog.has_table_privilege(p.oid, c.oid, 'TRUNCATE'))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
           WHERE c.relkind IN ('r','p','v','m','f')
             AND (n.nspname = 'cogine_private' OR (n.nspname = 'public' AND c.relname = '_prisma_migrations'))
             AND (pg_catalog.has_table_privilege(p.oid, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
@@ -91,6 +156,7 @@ export async function provisionRuntimeRole(
   migrationUrl: string,
   runtimeUrl: string,
 ): Promise<{ warning?: string }> {
+  assertSameDatabaseTarget(migrationUrl, runtimeUrl);
   const owner = new Client({ connectionString: migrationUrl });
   let runtime: ReturnType<typeof createPool> | undefined;
   let failed = false;

@@ -14,13 +14,23 @@ Compose bot homes mount only their own subdirectory of the application volume us
 
 The administrative migration command can prepare a restricted runtime login and
 register its authenticated system key. Run it in a one-shot administrator
-environment, with both URLs targeting the same database:
+environment, with both URLs using the same host, port and database:
 
 ```bash
 DATABASE_MIGRATION_URL='postgres://<owner>:<owner-password>@<host>/<database>' \
 DATABASE_URL='postgres://<runtime>:<runtime-password>@<host>/<database>' \
 pnpm db:migrate
 ```
+
+The command checks both destinations before migrations or role changes. The
+migration URL must name the database in one path segment and resolve to the
+same target in the migration engine and PostgreSQL driver. Put a nondefault
+migration port in the URL authority; a conflicting query or environment port is
+rejected. Unix sockets through a `host` query remain supported. Different aliases
+or direct and pooled endpoints are rejected; use one trusted endpoint for
+preparation. These are configuration checks, not proof that a proxy routes
+different logins to the same physical database. The endpoint must route both
+logins to the same database.
 
 The command migrates the application and Graphile schemas, prepares runtime
 grants, authenticates the runtime login, and registers its key. A precreated login
