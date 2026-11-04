@@ -4,10 +4,10 @@ import type { StuckWorkStatus } from "@rakazo/core";
 import {
   isStuckWorkStatus,
   STUCK_WORK_NOTICE,
-  STUCK_WORK_NOTIFY_AFTER_MS,
   STUCK_WORK_STATUSES,
   stuckWorkAction,
   stuckWorkAgeMs,
+  stuckWorkDueAfterMs,
   stuckWorkReminder,
   stuckWorkStoppedNotification,
 } from "@rakazo/core";
@@ -56,7 +56,6 @@ export async function reconcileStuckWork(deps: {
   batchSize: number;
   cursor?: StuckCursor;
 }): Promise<StuckCursor | undefined> {
-  const cutoff = new Date(deps.now.getTime() - STUCK_WORK_NOTIFY_AFTER_MS);
   const cursorFilter = deps.cursor
     ? {
         OR: [
@@ -67,8 +66,15 @@ export async function reconcileStuckWork(deps: {
     : undefined;
   const runs = await deps.prisma.run.findMany({
     where: {
-      status: { in: [...STUCK_WORK_STATUSES] },
-      AND: [{ updatedAt: { lte: cutoff } }, ...(cursorFilter ? [cursorFilter] : [])],
+      AND: [
+        {
+          OR: STUCK_WORK_STATUSES.map((status) => ({
+            status,
+            updatedAt: { lte: new Date(deps.now.getTime() - stuckWorkDueAfterMs(status)) },
+          })),
+        },
+        ...(cursorFilter ? [cursorFilter] : []),
+      ],
     },
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
     take: deps.batchSize,
@@ -106,6 +112,7 @@ export async function reconcileStuckWork(deps: {
       (notice) => notice.runId === run.id && noticeIsDelivered(notice.payload, run.updatedAt),
     );
     const action = stuckWorkAction({
+      status: run.status,
       ageMs: stuckWorkAgeMs(run.updatedAt, deps.now),
       alreadyNotified,
     });
@@ -128,7 +135,7 @@ function readyStuckRun(
 ): StuckCandidate | null {
   if (!run.status || !isStuckWorkStatus(run.status)) return null;
   if (!(run.updatedAt instanceof Date)) return null;
-  if (stuckWorkAgeMs(run.updatedAt, now) < STUCK_WORK_NOTIFY_AFTER_MS) return null;
+  if (stuckWorkAgeMs(run.updatedAt, now) < stuckWorkDueAfterMs(run.status)) return null;
   if (!run.spaceId || !run.threadId || !run.botId || !run.userId || !run.taskId) return null;
   if (!run.bot || !run.thread) return null;
   return {
