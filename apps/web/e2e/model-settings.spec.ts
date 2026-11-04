@@ -1187,3 +1187,112 @@ test("keeps enabled models and exact connection bindings across two model server
     }
   }
 });
+
+test("custom model protocols save, reopen and preserve private headers", async ({
+  page,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const receivedHeaders: Array<{ project?: string; version?: string }> = [];
+  const server = createServer((request, response) => {
+    if (request.url?.endsWith("/models")) {
+      receivedHeaders.push({
+        project:
+          typeof request.headers["x-project"] === "string"
+            ? request.headers["x-project"]
+            : undefined,
+        version:
+          typeof request.headers["anthropic-version"] === "string"
+            ? request.headers["anthropic-version"]
+            : undefined,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ data: [{ id: "protocol-fixture-model" }, { id: "other-fixture-model" }] }),
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const stamp = Date.now();
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    await signup(
+      page,
+      `model-protocol-${stamp}@example.test`,
+      "password12",
+      "Model protocol fixture",
+    );
+    await completeOnboarding(page);
+    await openUserSettings(page, "models");
+    await page.getByPlaceholder("Search providers").fill("openai-compatible");
+    await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await page.getByLabel("OpenAI-compatible server URL").fill(baseUrl);
+    await page.getByLabel("Model id", { exact: true }).fill("protocol-fixture-model");
+    await page.getByText("API key", { exact: true }).click();
+    await page.getByLabel("API key", { exact: true }).fill("synthetic-ui-connection-key");
+    await page.getByText("Custom headers", { exact: true }).click();
+    await page.getByRole("button", { name: "Add header", exact: true }).click();
+    await page.getByLabel("Header name", { exact: true }).fill("X-Project");
+    await page.getByLabel("Header value", { exact: true }).fill("en");
+    const protocol = page.getByRole("combobox", { name: "API protocol", exact: true });
+    await expect(protocol.locator("option")).toHaveText([
+      "Chat Completions",
+      "Responses",
+      "Anthropic Messages",
+    ]);
+    let connectionId: string | undefined;
+    for (const apiProtocol of ["chat-completions", "responses", "anthropic-messages"] as const) {
+      await protocol.selectOption(apiProtocol);
+      await page.getByRole("button", { name: "Find models", exact: true }).click();
+      await expect(page.getByText("Found 2 models.", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+      const credentials = await rpc<
+        Array<{
+          id: string;
+          provider: string;
+          baseUrl?: string;
+          apiProtocol?: string;
+          headerNames?: string[];
+        }>
+      >(page, "models/credentials", {});
+      const saved = credentials.find(
+        (entry) => entry.provider === "openai-compatible" && entry.baseUrl === baseUrl,
+      );
+      expect(saved).toMatchObject({ apiProtocol, headerNames: ["X-Project"] });
+      expect(saved).not.toHaveProperty("headers");
+      expect(saved).not.toHaveProperty("apiKey");
+      if (connectionId) expect(saved?.id).toBe(connectionId);
+      connectionId = saved!.id;
+      await page.getByLabel("Connection", { exact: true }).selectOption(connectionId);
+      await expect(protocol).toHaveValue(apiProtocol);
+      await expect(page.getByLabel("Header value", { exact: true })).toHaveValue("");
+    }
+    expect(receivedHeaders).toHaveLength(3);
+    expect(receivedHeaders.map((headers) => headers.project)).toEqual(["en", "en", "en"]);
+    expect(receivedHeaders[2]?.version).toBe("2023-06-01");
+    await captureScreenshot(page, testInfo, "model-protocols-custom-connection");
+    await page.getByRole("button", { name: "Close model settings", exact: true }).click();
+    await openUserSettings(page, "models");
+    await page.getByPlaceholder("Search providers").fill("openai-compatible");
+    await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await page.getByLabel("Connection", { exact: true }).selectOption(connectionId!);
+    await expect(protocol).toHaveValue("anthropic-messages");
+    await page.getByText("Custom headers", { exact: true }).click();
+    await expect(page.getByLabel("Header value", { exact: true })).toHaveValue("");
+    await captureScreenshot(page, testInfo, "model-protocols-reopened-headers");
+    await expect(page.locator("vite-error-overlay")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

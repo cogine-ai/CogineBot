@@ -90,6 +90,7 @@ import {
   loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
+  modelConnectionErrorMessage,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   nativeSourceJob,
@@ -1452,7 +1453,9 @@ export function createRouter(deps: RouterDeps) {
               );
             } catch (error) {
               if (error instanceof SecretStoreUnavailableError)
-                throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+                throw new ORPCError("SERVICE_UNAVAILABLE", {
+                  message: "Model connection is unavailable.",
+                });
               return modelCredentialDto(selected);
             }
           }),
@@ -1552,7 +1555,9 @@ export function createRouter(deps: RouterDeps) {
             );
           } catch (error) {
             if (error instanceof SecretStoreUnavailableError)
-              throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+              throw new ORPCError("SERVICE_UNAVAILABLE", {
+                message: "Model connection is unavailable.",
+              });
             throw error;
           }
           expectedCiphertext = loaded.status === "missing" ? null : loaded.ciphertext;
@@ -1568,30 +1573,44 @@ export function createRouter(deps: RouterDeps) {
           plaintext = buildModelConnectPlaintext(input, previousPlaintext, { omitVisionModelIds });
         } catch (error) {
           throw new ORPCError("BAD_REQUEST", {
-            message: error instanceof Error ? error.message : "Invalid model connection",
+            message: modelConnectionErrorMessage(error, input),
           });
         }
-        return persistModelCredential(
-          deps,
-          context.actor,
-          {
-            provider: input.provider,
-            plaintext,
-            label: input.label,
-            modelId: input.modelId,
-            credentialId: existing?.id ?? input.credentialId,
-            expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
-            ...(existing ? { expectedCiphertext } : {}),
-            thinkingLevel: compatible ? undefined : input.thinkingLevel,
-            supportsImages: input.supportsImages,
-            signal: context.signal,
-          },
-          codexCatalog,
-        );
+        try {
+          return await persistModelCredential(
+            deps,
+            context.actor,
+            {
+              provider: input.provider,
+              plaintext,
+              label: input.label,
+              modelId: input.modelId,
+              credentialId: existing?.id ?? input.credentialId,
+              expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
+              ...(existing ? { expectedCiphertext } : {}),
+              thinkingLevel: compatible ? undefined : input.thinkingLevel,
+              supportsImages: input.supportsImages,
+              signal: context.signal,
+            },
+            codexCatalog,
+          );
+        } catch (error) {
+          if (context.signal?.aborted || (error instanceof Error && error.name === "AbortError"))
+            throw error;
+          if (error instanceof ORPCError) throw error;
+          if (error instanceof SecretStoreUnavailableError)
+            throw new ORPCError("SERVICE_UNAVAILABLE", {
+              message: "Model connection is unavailable.",
+            });
+          // Unknown persistence failures can carry the encrypted input or driver details.
+          throw new ORPCError("INTERNAL_SERVER_ERROR");
+        }
       }),
       probeOpenAiCompatible: authed.models.probeOpenAiCompatible.handler(
         async ({ context, input }) => {
           let apiKey = input.apiKey;
+          let headers = input.headers;
+          let apiProtocol = input.apiProtocol;
           if (input.credentialId) {
             const credential = await deps.prisma.userModelCredential.findFirst({
               where: {
@@ -1601,48 +1620,84 @@ export function createRouter(deps: RouterDeps) {
               },
             });
             if (!credential) throw new ORPCError("NOT_FOUND");
-            if (apiKey === undefined) {
-              const loaded = await loadConnectionSecret(
-                deps.prisma,
-                deps.secrets,
-                context.actor.userId,
-                credential.secretId,
-              );
-              let secret: ReturnType<typeof parseModelSecret>;
-              try {
-                secret = parseModelSecret(loaded.plaintext);
-              } catch {
-                throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
-              }
-              if (secret.kind !== "openai_compatible")
-                throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+            if (apiKey === undefined || headers === undefined || apiProtocol === undefined) {
               let requested: string;
-              let expected: string;
+              let expected: string | undefined;
               try {
                 requested = normalizeOpenAiCompatibleBaseUrl(input.baseUrl);
-                expected = normalizeOpenAiCompatibleBaseUrl(input.expectedBaseUrl ?? "");
+                expected =
+                  input.expectedBaseUrl === undefined
+                    ? undefined
+                    : normalizeOpenAiCompatibleBaseUrl(input.expectedBaseUrl);
               } catch {
                 throw new ORPCError("BAD_REQUEST", {
                   message: "Reload the saved connection before discovering models.",
                 });
               }
-              if (requested !== secret.baseUrl || expected !== secret.baseUrl)
-                throw new ORPCError("BAD_REQUEST", {
-                  message: "Connection address changed. Enter a key for the new address.",
-                });
-              apiKey = secret.apiKey;
+              const freshEndpoint =
+                apiKey !== undefined && expected !== undefined && requested !== expected;
+              if (!freshEndpoint) {
+                if (expected === undefined)
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Reload the saved connection before discovering models.",
+                  });
+                let loaded: Awaited<ReturnType<typeof loadConnectionSecret>>;
+                try {
+                  loaded = await loadConnectionSecret(
+                    deps.prisma,
+                    deps.secrets,
+                    context.actor.userId,
+                    credential.secretId,
+                  );
+                } catch (error) {
+                  if (error instanceof ORPCError && error.code === "SERVICE_UNAVAILABLE")
+                    throw new ORPCError("SERVICE_UNAVAILABLE", {
+                      message: "Model connection is unavailable.",
+                    });
+                  throw error;
+                }
+                let secret: ReturnType<typeof parseModelSecret>;
+                try {
+                  secret = parseModelSecret(loaded.plaintext);
+                } catch {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Model connection is unavailable.",
+                  });
+                }
+                if (secret.kind !== "openai_compatible")
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Model connection is unavailable.",
+                  });
+                let stored: string;
+                try {
+                  stored = normalizeOpenAiCompatibleBaseUrl(secret.baseUrl);
+                } catch {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Model connection is unavailable.",
+                  });
+                }
+                if (requested !== stored || expected !== stored)
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Connection address changed. Enter a key for the new address.",
+                  });
+                if (apiKey === undefined) apiKey = secret.apiKey;
+                if (headers === undefined) headers = secret.headers;
+                if (apiProtocol === undefined) apiProtocol = secret.apiProtocol;
+              }
             }
           }
           try {
             const models = await probeOpenAiCompatibleModels(
-              { ...input, apiKey },
+              { ...input, apiKey, headers, apiProtocol },
               undefined,
               context.signal,
             );
             return { models };
           } catch (error) {
+            if (context.signal?.aborted || (error instanceof Error && error.name === "AbortError"))
+              throw error;
             throw new ORPCError("BAD_REQUEST", {
-              message: error instanceof Error ? error.message : "Could not list models",
+              message: modelConnectionErrorMessage(error, { apiKey, headers }),
             });
           }
         },

@@ -1,5 +1,6 @@
 import type { ModelBackupChoice, ModelCatalogEntry, ModelCredential } from "./domain.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./domain.js";
+import { canonicalPiProviderId } from "./model-provider.js";
 import { modelConnectionLabel } from "./openai-compatible-ui.js";
 
 export type ConnectedBackupOption = ModelBackupChoice & {
@@ -32,7 +33,11 @@ export function connectedBackupOptions(
               providerName: credential.label,
             }))
             .filter((entry) => entry.id)
-        : catalog.filter((entry) => entry.provider === credential.provider && !entry.placeholder);
+        : catalog.filter(
+            (entry) =>
+              canonicalPiProviderId(entry.provider) ===
+                canonicalPiProviderId(credential.provider) && !entry.placeholder,
+          );
     for (const entry of models) {
       const option: ConnectedBackupOption = {
         provider: credential.provider,

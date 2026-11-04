@@ -291,6 +291,8 @@ export async function runAutoReviewJudge(input: {
   accountId?: string;
   gatewayId?: string;
   baseUrl?: string;
+  apiProtocol?: AgentRunModel["apiProtocol"];
+  headers?: AgentRunModel["headers"];
   cacheCapabilities?: CacheCapabilities;
   contextWindow?: number;
   maxTokens?: number;
@@ -338,6 +340,8 @@ export async function runAutoReviewJudge(input: {
           accountId: input.accountId,
           gatewayId: input.gatewayId,
           baseUrl: input.baseUrl,
+          apiProtocol: input.apiProtocol,
+          headers: input.headers,
           cacheCapabilities: input.cacheCapabilities,
           contextWindow: input.contextWindow,
           maxTokens: input.maxTokens,
@@ -391,6 +395,8 @@ export type LlmAutoReviewOptions = {
   accountId?: string;
   gatewayId?: string;
   baseUrl?: string;
+  apiProtocol?: AgentRunModel["apiProtocol"];
+  headers?: AgentRunModel["headers"];
   cacheCapabilities?: CacheCapabilities;
   contextWindow?: number;
   maxTokens?: number;

@@ -6,6 +6,154 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildModelConnectPlaintext, modelCredentialDto } from "./model-connect.js";
 import { parseModelSecret, serializeModelSecret } from "./pi-oauth.js";
 
+describe("compatible connection format preservation", () => {
+  it("rejects an unsupported saved protocol before an old-client key rotation", () => {
+    const baseUrl = "http://127.0.0.1:8000/v1";
+    const previous = JSON.stringify({
+      kind: "openai_compatible",
+      baseUrl,
+      apiKey: "original-fixture-key",
+      apiProtocol: "future-wire",
+      headers: { "X-Tenant": "synthetic-private-header" },
+    });
+    expect(() =>
+      buildModelConnectPlaintext(
+        {
+          provider: "openai-compatible",
+          baseUrl,
+          modelId: "fixture-model",
+          apiKey: "replacement-fixture-key",
+        },
+        previous,
+      ),
+    ).toThrow("Model connection is unavailable.");
+  });
+
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "preserves omitted %s metadata only on the same canonical endpoint",
+    (apiProtocol) => {
+      const baseUrl = "http://127.0.0.1:8000/v1";
+      const headers = { "X-Tenant": " en ", "X-Session": "private-session-value" };
+      const previous = serializeModelSecret({
+        kind: "openai_compatible",
+        baseUrl,
+        apiKey: "old-private-key",
+        apiProtocol,
+        headers,
+      });
+      const update = {
+        provider: "openai-compatible",
+        baseUrl: `${baseUrl}/`,
+        modelId: "fixture-model",
+      };
+      const saved = buildModelConnectPlaintext(update, previous);
+      expect(parseModelSecret(saved)).toMatchObject({
+        apiKey: "old-private-key",
+        apiProtocol,
+        headers,
+      });
+      expect(
+        parseModelSecret(buildModelConnectPlaintext({ ...update, headers: {} }, previous)),
+      ).toMatchObject({ apiProtocol, headers: {} });
+      const fresh = parseModelSecret(
+        buildModelConnectPlaintext(
+          { ...update, baseUrl: "http://127.0.0.1:8001/v1", apiKey: "new-private-key" },
+          previous,
+        ),
+      );
+      expect(fresh).toMatchObject({
+        apiKey: "new-private-key",
+        baseUrl: "http://127.0.0.1:8001/v1",
+      });
+      expect(fresh).not.toHaveProperty("apiProtocol");
+      expect(fresh).not.toHaveProperty("headers");
+      const dto = modelCredentialDto(
+        {
+          id: "fixture",
+          provider: "openai-compatible",
+          label: "Fixture",
+          isDefault: true,
+          defaultModel: "fixture-model",
+        },
+        saved,
+      );
+      expect(dto).toMatchObject({ apiProtocol, headerNames: Object.keys(headers) });
+      expect(dto).not.toHaveProperty("headers");
+      expect(JSON.stringify(dto)).not.toMatch(/old-private-key|private-session-value/);
+    },
+  );
+
+  it.each([
+    { baseUrl: "", apiProtocol: "future-wire" },
+    { baseUrl: "", headers: { "X-Tenant": "" } },
+  ])("does not hide an unsupported field behind a corrupt saved endpoint (%#)", (fields) => {
+    expect(() =>
+      buildModelConnectPlaintext(
+        {
+          provider: "openai-compatible",
+          baseUrl: "http://127.0.0.1:8000/v1",
+          modelId: "fixture-model",
+          apiKey: "new-private-key",
+        },
+        JSON.stringify({ kind: "openai_compatible", ...fields }),
+      ),
+    ).toThrow("Model connection is unavailable.");
+  });
+
+  it("does not parse or inherit unsupported old metadata after a confirmed endpoint replacement", () => {
+    const previous = JSON.stringify({
+      kind: "openai_compatible",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      apiKey: "old-private-key",
+      apiProtocol: "future-wire",
+      headers: { "X-Tenant": "old-private-header" },
+    });
+    const fresh = parseModelSecret(
+      buildModelConnectPlaintext(
+        {
+          provider: "openai-compatible",
+          baseUrl: "http://127.0.0.1:8001/v1",
+          modelId: "fixture-model",
+          apiKey: "new-private-key",
+        },
+        previous,
+      ),
+    );
+    expect(fresh).toMatchObject({ apiKey: "new-private-key", baseUrl: "http://127.0.0.1:8001/v1" });
+    expect(fresh).not.toHaveProperty("apiProtocol");
+    expect(fresh).not.toHaveProperty("headers");
+    expect(JSON.stringify(fresh)).not.toContain("old-private");
+  });
+
+  it.each(["off", "xhigh", "max"] as const)(
+    "saves a supported Anthropic effort for %s",
+    (thinkingLevel) => {
+      const saved = buildModelConnectPlaintext({
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8000/v1",
+        modelId: "fixture-model",
+        apiProtocol: "anthropic-messages",
+        reasoning: true,
+        thinkingLevel,
+      });
+      const parsed = parseModelSecret(saved);
+      expect(parsed).toMatchObject({ thinkingLevel: thinkingLevel === "off" ? "off" : "high" });
+      const dto = modelCredentialDto(
+        {
+          id: "fixture",
+          provider: "openai-compatible",
+          label: "Fixture",
+          isDefault: true,
+          defaultModel: "fixture-model",
+        },
+        saved,
+      );
+      expect(dto.thinkingLevels).not.toContain("xhigh");
+      expect(dto.thinkingLevels).not.toContain("max");
+    },
+  );
+});
+
 describe("built-in provider output limits", () => {
   const row = {
     id: "cred-builtin",
@@ -502,7 +650,9 @@ it.each([true, false])(
       ),
     ).toMatchObject({
       reasoning,
-      thinkingLevels: reasoning ? ["off", "minimal", "low", "medium", "high"] : ["off"],
+      thinkingLevels: reasoning
+        ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        : ["off"],
     });
   },
 );

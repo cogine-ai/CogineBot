@@ -16,10 +16,13 @@ import type {
   UsageOperationKind,
 } from "@rakazo/adapter-kit";
 import { Agent } from "undici";
+import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
 import type { ContextBudget } from "./context-selection.js";
+import { withGoogleToolHistory } from "./google-tool-history.js";
+import { modelConnectionStreamErrorMessage } from "./model-connection-errors.js";
 import { estimateModelContextTokens } from "./model-context.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
-import { effectivePiOutputTokens } from "./pi-output-budget.js";
+import { effectivePiOutputTokens, finalPiOutputPayload } from "./pi-output-budget.js";
 import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 /** Pi initializes absent usage to zero. Only raw numeric fields can prove reported zero. */
@@ -349,6 +352,10 @@ export function observedPiStream(
       const collectRawUsage =
         /^(openai-|anthropic-)/.test(model.api) && !model.provider.startsWith("google");
       // Each guarded reservation covers one HTTP attempt, not hidden SDK retries.
+      const payloadOptions = withGoogleToolHistory(
+        model,
+        withChatCompletionsCompatibility(model, options ?? {}),
+      );
       const streamOptions: SimpleStreamOptions = {
         ...options,
         ...(effectiveMaxTokens === undefined ? {} : { maxTokens: effectiveMaxTokens }),
@@ -359,17 +366,25 @@ export function observedPiStream(
               signal: options?.signal
                 ? AbortSignal.any([options.signal, deadlineController!.signal])
                 : deadlineController!.signal,
-              onPayload: async (payload, requestModel) => {
-                const next = await options?.onPayload?.(payload, requestModel);
-                checkDeadline();
-                payloadReady = true;
-                return next;
-              },
               onResponse: async (response, requestModel) => {
                 if (response.status >= 200 && response.status < 300) clearDeadline();
                 return options?.onResponse?.(response, requestModel);
               },
             }),
+        onPayload: async (payload, requestModel) => {
+          const original = payload && typeof payload === "object" ? { ...payload } : payload;
+          const replacement = await payloadOptions.onPayload?.(payload, requestModel);
+          const finalPayload = finalPiOutputPayload(
+            model,
+            original,
+            replacement ?? payload,
+            maxOutputTokens,
+            options,
+          );
+          checkDeadline();
+          payloadReady = true;
+          return finalPayload;
+        },
         ...(cacheRetention ? { cacheRetention } : {}),
         ...(observer ? { maxRetries: 0 } : {}),
       };
@@ -425,6 +440,14 @@ export function observedPiStream(
           }
           if (outcome.value.done) break;
           const event = outcome.value.value;
+          if (event.type === "error" && event.error.errorMessage) {
+            event.error.errorMessage = modelConnectionStreamErrorMessage(
+              models,
+              model,
+              event.error.errorMessage,
+              options?.apiKey,
+            );
+          }
           // These APIs expose no response hook; their start follows generateContentStream.
           if (
             event.type === "start" &&
@@ -465,7 +488,15 @@ export function observedPiStream(
       } finally {
         void iterator.return?.().catch(() => undefined);
       }
-      stream.end(await upstream.result());
+      const result = await upstream.result();
+      if (result.errorMessage)
+        result.errorMessage = modelConnectionStreamErrorMessage(
+          models,
+          model,
+          result.errorMessage,
+          options?.apiKey,
+        );
+      stream.end(result);
     } catch (error) {
       clearDeadline();
       let terminalError = error;
@@ -501,8 +532,12 @@ export function observedPiStream(
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
         stopReason: "error" as const,
-        errorMessage:
-          terminalError instanceof Error ? terminalError.message : String(terminalError),
+        errorMessage: modelConnectionStreamErrorMessage(
+          models,
+          model,
+          terminalError,
+          options?.apiKey,
+        ),
         timestamp: Date.now(),
       };
       if (

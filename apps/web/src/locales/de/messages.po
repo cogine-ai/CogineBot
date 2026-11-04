@@ -7043,3 +7043,35 @@ msgstr "Das Kontextfenster dieses Modells ist zu klein. Wähle ein anderes Model
 #: src/lib/run-error.ts
 msgid "This server's tool result does not fit the model. Choose another model."
 msgstr "Das Werkzeugergebnis dieses Servers passt nicht in das Modell. Wähle ein anderes Modell."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "API protocol"
+msgstr "API-Protokoll"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a protocol"
+msgstr "Protokoll auswählen"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Custom headers"
+msgstr "Benutzerdefinierte Header"
+
+#: src/components/ModelHeadersEditor.tsx
+msgid "Remove header"
+msgstr "Header entfernen"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose an API protocol."
+msgstr "Wähle ein API-Protokoll."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check the custom headers."
+msgstr "Prüfe die benutzerdefinierten Header."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Reload this connection before saving."
+msgstr "Lade diese Verbindung vor dem Speichern neu."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Maximum output tokens must be smaller than the context limit."
+msgstr "Das Ausgabelimit muss kleiner als das Kontextlimit sein."

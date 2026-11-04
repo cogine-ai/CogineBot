@@ -86,8 +86,16 @@ vi.mock("../components/settings-group", () => ({
       {children}
     </div>
   ),
-  SettingsRow: ({ title, onPress }: { title: string; onPress: () => void }) => (
-    <button type="button" onClick={onPress}>
+  SettingsRow: ({
+    title,
+    onPress,
+    disabled,
+  }: {
+    title: string;
+    onPress?: () => void;
+    disabled?: boolean;
+  }) => (
+    <button type="button" disabled={disabled} onClick={onPress}>
       {title}
     </button>
   ),
@@ -166,13 +174,21 @@ vi.mock("react-native", () => {
       onPress,
       disabled,
       accessibilityLabel,
+      accessibilityState,
     }: {
       children?: ReactNode;
       onPress: () => void;
       disabled?: boolean;
       accessibilityLabel?: string;
+      accessibilityState?: { selected?: boolean };
     }) => (
-      <button type="button" disabled={disabled} aria-label={accessibilityLabel} onClick={onPress}>
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={accessibilityLabel}
+        aria-pressed={accessibilityState?.selected}
+        onClick={onPress}
+      >
         {children}
       </button>
     ),
@@ -181,13 +197,16 @@ vi.mock("react-native", () => {
       value,
       onChangeText,
       editable,
+      secureTextEntry,
     }: {
       accessibilityLabel?: string;
       value: string;
       onChangeText: (value: string) => void;
       editable?: boolean;
+      secureTextEntry?: boolean;
     }) => (
       <input
+        type={secureTextEntry ? "password" : "text"}
         aria-label={accessibilityLabel}
         value={value}
         disabled={editable === false}
@@ -1279,3 +1298,184 @@ it.each(["space", "session", "api"] as const)(
     expect(state.push).not.toHaveBeenCalled();
   },
 );
+
+it("sends the native protocol choice and preserves entered header drafts after a conflict", async () => {
+  await act(async () => root.render(<Models />));
+  await act(async () => button("API protocol").click());
+  const menu = vi.mocked(presentMessageActionSheet).mock.calls.at(-1)?.[0];
+  await act(async () =>
+    menu?.actions.find((entry) => entry.text === "Anthropic Messages")?.onPress(),
+  );
+  expect(button("API protocol").textContent).toContain("Anthropic Messages");
+  await act(async () => button("Custom headers").click());
+  await act(async () => button("Add header").click());
+  const header = (name: string) =>
+    container.querySelector<HTMLInputElement>(`input[aria-label="${name}"]`)!;
+  await edit(header("Header name"), "X-Team");
+  await edit(header("Header value"), "en");
+  expect(header("Header value").type).toBe("password");
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls.find(([procedure]) => procedure === "models/connect")?.[1],
+  ).toMatchObject({
+    apiProtocol: "anthropic-messages",
+    headers: { "X-Team": "en" },
+    credentialId: "connection-a",
+    expectedRevision: 7,
+  });
+  expect(header("Header value").value).toBe("en");
+  expect(button("API protocol").textContent).toContain("Anthropic Messages");
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls
+      .filter(([procedure]) => procedure === "models/connect")
+      .map(([, input]) => input.expectedRevision),
+  ).toEqual([7, 7]);
+});
+
+it("does not apply a queued native protocol callback while saving", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saved = deferred<typeof credential>();
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/connect" ? saved.promise : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => button("API protocol").click());
+  const action = vi
+    .mocked(presentMessageActionSheet)
+    .mock.calls.at(-1)?.[0]
+    .actions.find((entry) => entry.text === "Responses");
+  await act(async () => {
+    button("Save").click();
+  });
+  expect(button("API protocol").disabled).toBe(true);
+  await act(async () => action?.onPress());
+  expect(button("API protocol").textContent).toContain("Chat Completions");
+  await act(async () => {
+    saved.resolve(credential);
+    await saved.promise;
+  });
+});
+
+it("does not silently select a default for an unknown stored native protocol", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/credentials"
+      ? Promise.resolve([{ ...credential, apiProtocol: "future-protocol" }])
+      : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  expect(button("API protocol").textContent).toContain("Choose a protocol");
+  expect(button("Save").disabled).toBe(true);
+  expect(state.rpc.mock.calls.some(([procedure]) => procedure === "models/connect")).toBe(false);
+});
+
+it("keeps saved native header values absent and sends an explicit empty map to clear them", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/credentials"
+      ? Promise.resolve([{ ...credential, apiProtocol: "responses", headerNames: ["X-Saved"] }])
+      : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => button("Custom headers").click());
+  const value = container.querySelector<HTMLInputElement>('input[aria-label="Header value"]')!;
+  expect(value.value).toBe("");
+  expect(value.type).toBe("password");
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls.find(([procedure]) => procedure === "models/connect")?.[1].headers,
+  ).toBeUndefined();
+  await act(async () => button("Remove header").click());
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/connect").at(-1)?.[1],
+  ).toMatchObject({
+    apiProtocol: "responses",
+    headers: {},
+    credentialId: "connection-a",
+    expectedRevision: 7,
+  });
+});
+
+it("shows all native compatible rows for an empty search and preserves hidden enabled choices", async () => {
+  const ids = ["model-a", "model-b", ...Array.from({ length: 9 }, (_, index) => `extra-${index}`)];
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/credentials"
+      ? Promise.resolve([{ ...credential, enabledModelIds: ids }])
+      : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  const checks = () => [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+  expect(checks()).toHaveLength(11);
+  const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+  await edit(search, "extra-8");
+  expect(checks()).toHaveLength(1);
+  expect(checks()[0]?.checked).toBe(true);
+  await edit(search, "   ");
+  expect(checks()).toHaveLength(11);
+  await edit(search, "extra-8");
+  await act(async () => checks()[0]?.click());
+  await act(async () => button("Save").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/connect").at(-1)?.[1],
+  ).toMatchObject({
+    credentialId: "connection-a",
+    expectedRevision: 7,
+    modelId: "model-a",
+    enabledModelIds: ids.filter((id) => id !== "model-a" && id !== "extra-8"),
+  });
+});
+
+it("shows and selects a legacy Azure connection through the catalog alias while saving its original identity", async () => {
+  const legacy = {
+    id: "azure-legacy",
+    provider: "azure-openai-responses",
+    label: "Old Azure",
+    hasKey: true,
+    isDefault: true,
+    modelId: "azure-model",
+    connectionRevision: 7,
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure: string, input: unknown) => {
+    if (procedure === "me")
+      return Promise.resolve({
+        userId: "user-1",
+        spaceId: "space-1",
+        defaultProvider: legacy.provider,
+        defaultModel: legacy.modelId,
+      });
+    if (procedure === "models/list")
+      return Promise.resolve([
+        {
+          provider: "azure",
+          providerName: "Azure",
+          id: "azure-model",
+          label: "Azure model",
+          auth: "api-key",
+          billing: "API",
+        },
+      ]);
+    if (procedure === "models/credentials") return Promise.resolve([legacy]);
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  const providerRow = button("AzureAzure model");
+  expect(providerRow.previousElementSibling?.textContent).toBe("Connected");
+  expect(providerRow.getAttribute("aria-pressed")).toBe("true");
+  await act(async () => providerRow.click());
+  expect(providerRow.getAttribute("aria-pressed")).toBe("true");
+  const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
+  await edit(key, "synthetic-azure-replacement");
+  await act(async () => button("Replace API key").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/connect").at(-1)?.[1],
+  ).toMatchObject({
+    provider: legacy.provider,
+    credentialId: legacy.id,
+    expectedRevision: 7,
+    modelId: "azure-model",
+  });
+});

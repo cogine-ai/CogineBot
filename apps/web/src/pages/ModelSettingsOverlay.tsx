@@ -1,32 +1,42 @@
 import { i18n } from "@lingui/core";
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import type { Me, ModelCredentialReference, ThinkingLevel } from "@rakazo/contracts";
+import type {
+  Me,
+  ModelApiProtocol,
+  ModelCredentialReference,
+  ModelHeaderRow,
+  ThinkingLevel,
+} from "@rakazo/contracts";
 import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
+  canonicalPiProviderId,
   cloudflareGatewayRouting,
   DEFAULT_MODEL_CONTEXT_WINDOW,
   DEFAULT_MODEL_MAX_TOKENS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  ModelApiProtocolSchema,
+  ModelHeaderRowsSchema,
   modelConnectionLabel,
+  modelHeadersInput,
   OPENAI_COMPATIBLE_PROVIDER_ID,
-  openAiCompatibleConnectReady,
   openAiCompatibleProbeSuccessMessage,
-  parseModelContextWindow,
-  parseModelMaxImagesPerPrompt,
-  parseModelMaxTokens,
   sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
   CHATGPT_USAGE_SETTINGS_URL,
-  COMPATIBLE_THINKING_LEVELS,
   canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
+  compatibleConnectionReady,
   compatibleModelRows,
+  compatibleThinkingLevels,
+  connectionFormFields,
+  connectionFormModelId,
   createModelProbe,
   filterModelCatalog,
   initialModelProbeState,
-  pickCatalogModelId,
+  matchesSearchQuery,
+  modelConnectRequest,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -60,6 +70,7 @@ import {
   ModelPreflightFeedback,
   modelPreflightTestingLabel,
 } from "../components/ModelConnectionPreflightNotice";
+import { ModelHeadersEditor } from "../components/ModelHeadersEditor";
 import { useCopyText } from "../lib/copy-text";
 import { localizedProviderHint } from "../lib/localized-provider-hint";
 import type { ModelCatalogEntry, ModelCredential } from "../lib/model-auth";
@@ -78,13 +89,6 @@ import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
-
-function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
-  if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID) {
-    return String(stored ?? DEFAULT_MODEL_MAX_TOKENS);
-  }
-  return stored !== undefined ? String(stored) : "";
-}
 
 export function ModelSettingsOverlay({
   onClose,
@@ -125,6 +129,9 @@ export function ModelSettingsOverlay({
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [apiProtocol, setApiProtocol] = useState<ModelApiProtocol | "">("chat-completions");
+  const [headerRows, setHeaderRows] = useState<ModelHeaderRow[] | null>(null);
+  const [compatibleQuery, setCompatibleQuery] = useState("");
   const [reasoning, setReasoning] = useState(false);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | null>(null);
   const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
@@ -146,6 +153,15 @@ export function ModelSettingsOverlay({
   const [codeCopied, copyOAuthCode] = useCopyText();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | "disconnect" | null>(null);
+  const pendingOwnerRef = useRef(0);
+  function beginPending(next: "connect" | "default" | "disconnect") {
+    const owner = ++pendingOwnerRef.current;
+    setPending(next);
+    return owner;
+  }
+  function finishPending(owner: number) {
+    if (owner === pendingOwnerRef.current) setPending(null);
+  }
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -235,28 +251,34 @@ export function ModelSettingsOverlay({
       return;
     if (boundSpaceId && nextMe.spaceId !== boundSpaceId) return;
     const nextProvider =
-      provider && nextCatalog.some((entry) => entry.provider === provider)
+      provider &&
+      nextCatalog.some(
+        (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
+      )
         ? provider
         : (nextMe.defaultProvider ?? nextCatalog[0]?.provider ?? "");
     const nextCredential =
       nextCredentials.find(
         (entry) =>
-          entry.provider === nextProvider && entry.id === (preferredConnectionId ?? connectionId),
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+          entry.id === (preferredConnectionId ?? connectionId),
       ) ??
-      nextCredentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
-      nextCredentials.find((entry) => entry.provider === nextProvider);
-    const nextModel =
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (nextCredential?.modelId ??
-          (nextMe.defaultProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? nextMe.defaultModel : "") ??
-          "")
-        : (nextCatalog.find((entry) => entry.provider === nextProvider && entry.id === modelId)
-            ?.id ??
-          pickCatalogModelId(
-            nextCatalog,
-            nextProvider,
-            nextCredential?.modelId ?? nextMe.defaultModel,
-          ));
+      nextCredentials.find(
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+          entry.isDefault,
+      ) ??
+      nextCredentials.find(
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+      );
+    const nextModel = connectionFormModelId({
+      catalog: nextCatalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: nextMe,
+      current: modelId,
+    });
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     setChatgptProfiles(nextProfiles);
@@ -277,34 +299,15 @@ export function ModelSettingsOverlay({
       setConnectionRevision(nextCredential?.connectionRevision);
       setSavedBaseUrl(nextCredential?.baseUrl);
       setModelId(nextModel);
-      setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
-      if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-        setBaseUrl(nextCredential?.baseUrl ?? "");
-        setReasoning(nextCredential?.reasoning ?? false);
-        setThinkingLevel(
-          clampCatalogThinkingLevel(
-            nextCredential?.modelId === nextModel ? nextCredential?.thinkingLevel : null,
-            nextCredential?.reasoning ? COMPATIBLE_THINKING_LEVELS : [],
-          ) as ThinkingLevel | null,
-        );
-        setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
-        setSupportsImages(nextCredential?.supportsImages ?? false);
-        setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
-      } else {
-        // A credential's stored effort is bound to its saved model choice.
-        const nextEntry = nextCatalog.find(
-          (entry) => entry.provider === nextProvider && entry.id === nextModel,
-        );
-        setThinkingLevel(
-          clampCatalogThinkingLevel(
-            nextCredential?.modelId === nextModel ? nextCredential.thinkingLevel : null,
-            nextEntry?.thinkingLevels,
-          ) as ThinkingLevel | null,
-        );
-      }
-      setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
-      setAccountId(nextCredential?.accountId ?? "");
-      setGatewayId(nextCredential?.gatewayId ?? "");
+      const fields = connectionFormFields({
+        catalog: nextCatalog,
+        provider: nextProvider,
+        modelId: nextModel,
+        credential: nextCredential,
+      });
+      applyConnectionFields(fields);
+      setHeaderRows(null);
+      setCompatibleQuery("");
     }
   }
 
@@ -339,11 +342,11 @@ export function ModelSettingsOverlay({
     }));
   }, [catalog]);
   const credentialByProvider = useMemo(
-    () => new Map(credentials.map((entry) => [entry.provider, entry])),
+    () => new Map(credentials.map((entry) => [canonicalPiProviderId(entry.provider), entry])),
     [credentials],
   );
   const connectedProviderIds = useMemo(
-    () => new Set(credentials.map((entry) => entry.provider)),
+    () => new Set(credentials.map((entry) => canonicalPiProviderId(entry.provider))),
     [credentials],
   );
   const searching = providerQuery.trim() !== "";
@@ -370,23 +373,33 @@ export function ModelSettingsOverlay({
     return [...matched].sort(
       (a, b) =>
         score(a) - score(b) ||
-        Number(connectedProviderIds.has(b.id)) - Number(connectedProviderIds.has(a.id)),
+        Number(connectedProviderIds.has(canonicalPiProviderId(b.id))) -
+          Number(connectedProviderIds.has(canonicalPiProviderId(a.id))),
     );
   }, [groups, providerQuery, connectedProviderIds]);
   // Browsing separates connected providers into their own section; searching
   // flattens back into one ranked list.
   const connectedGroups = useMemo(
-    () => (searching ? [] : filteredGroups.filter((group) => connectedProviderIds.has(group.id))),
+    () =>
+      searching
+        ? []
+        : filteredGroups.filter((group) =>
+            connectedProviderIds.has(canonicalPiProviderId(group.id)),
+          ),
     [searching, filteredGroups, connectedProviderIds],
   );
   const otherGroups = useMemo(
     () =>
       searching
         ? filteredGroups
-        : filteredGroups.filter((group) => !connectedProviderIds.has(group.id)),
+        : filteredGroups.filter(
+            (group) => !connectedProviderIds.has(canonicalPiProviderId(group.id)),
+          ),
     [searching, filteredGroups, connectedProviderIds],
   );
-  const modelsForProvider = catalog.filter((entry) => entry.provider === provider);
+  const modelsForProvider = catalog.filter(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
+  );
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
   selectedLabelRef.current = selected?.label;
   const selectedProviderName = selected?.providerName ?? selected?.provider ?? "";
@@ -404,9 +417,13 @@ export function ModelSettingsOverlay({
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
   const credential = credentials.find(
-    (entry) => entry.provider === provider && entry.id === connectionId,
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
+      entry.id === connectionId,
   );
-  const providerConnections = credentials.filter((entry) => entry.provider === provider);
+  const providerConnections = credentials.filter(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
+  );
   const connectionReferences = references.filter(
     (entry) => entry.modelCredentialId === credential?.id,
   );
@@ -415,7 +432,9 @@ export function ModelSettingsOverlay({
   );
   const unresolvedReferences = references.filter((entry) => entry.unresolved);
   const currentEntry = catalog.find(
-    (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(me?.defaultProvider ?? "") &&
+      entry.id === me?.defaultModel,
   );
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
@@ -426,11 +445,13 @@ export function ModelSettingsOverlay({
       ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
       : null;
   const isActive =
-    me?.defaultProvider === selected?.provider &&
+    canonicalPiProviderId(me?.defaultProvider ?? "") ===
+      canonicalPiProviderId(selected?.provider ?? "") &&
     me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
     (!isOpenAiCompatible || credential?.isDefault === true);
   // Space still bills the host while this provider matches; model id alone is not credentials.
-  const usingServerCredentials = provider === me?.hostCredentialProvider;
+  const usingServerCredentials =
+    canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
   const acceptsKey = selected?.auth !== "oauth";
   const subscriptionSignIn = selected?.signIn !== undefined;
   // Effort levels for the staged catalog model — "off" stays out, matching the
@@ -446,9 +467,11 @@ export function ModelSettingsOverlay({
   const thinkingDirty = !isOpenAiCompatible && (thinkingLevel ?? null) !== selectedStoredLevel;
   const busy = pending !== null || oauthPending;
   const effectiveBaseUrl = baseUrl.trim();
-  const openAiCompatibleReady = openAiCompatibleConnectReady({
+  const openAiCompatibleReady = compatibleConnectionReady({
     baseUrl: effectiveBaseUrl,
     modelId,
+    apiProtocol,
+    headerRows,
   });
   const compatibleRows = compatibleModelRows(
     savedCompatibleModelIds(credential, baseUrl),
@@ -474,10 +497,52 @@ export function ModelSettingsOverlay({
     return contextCurrent() && mountedRef.current && revision === preflightRevisionRef.current;
   }
 
+  function applyConnectionFields(fields: ReturnType<typeof connectionFormFields>) {
+    setEnabledModelIds(fields.enabledModelIds);
+    setBaseUrl(fields.baseUrl);
+    setApiProtocol(fields.apiProtocol);
+    setReasoning(fields.reasoning);
+    setThinkingLevel(fields.thinkingLevel);
+    setMaxTokens(fields.maxTokens);
+    setContextWindow(fields.contextWindow);
+    setSupportsImages(fields.supportsImages);
+    setMaxImagesPerPrompt(fields.maxImagesPerPrompt);
+    setAccountId(fields.accountId);
+    setGatewayId(fields.gatewayId);
+  }
+
+  function updateApiProtocol(value: string) {
+    const parsed = ModelApiProtocolSchema.safeParse(value);
+    const next = parsed.success ? parsed.data : "";
+    selectionRevisionRef.current += 1;
+    setApiProtocol(next);
+    setThinkingLevel(
+      (current) =>
+        clampCatalogThinkingLevel(
+          current,
+          reasoning ? compatibleThinkingLevels(next) : [],
+        ) as ThinkingLevel | null,
+    );
+    resetOpenAiCompatibleProbe();
+    invalidatePreflight();
+    setError(null);
+    setNotice(null);
+  }
+
+  function updateHeaderRows(rows: ModelHeaderRow[]) {
+    selectionRevisionRef.current += 1;
+    setHeaderRows(rows);
+    resetOpenAiCompatibleProbe();
+    invalidatePreflight();
+    setError(null);
+    setNotice(null);
+  }
+
   function updateBaseUrl(nextBaseUrl: string) {
     selectionRevisionRef.current += 1;
     if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) {
       setApiKey("");
+      setHeaderRows([]);
       // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
       setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     }
@@ -500,7 +565,7 @@ export function ModelSettingsOverlay({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? COMPATIBLE_THINKING_LEVELS : [],
+        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
       ) as ThinkingLevel | null,
     );
   }
@@ -512,45 +577,42 @@ export function ModelSettingsOverlay({
       nextConnectionId === null
         ? undefined
         : (credentials.find(
-            (entry) => entry.provider === nextProvider && entry.id === nextConnectionId,
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+              entry.id === nextConnectionId,
           ) ??
-          credentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
-          credentials.find((entry) => entry.provider === nextProvider));
+          credentials.find(
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+              entry.isDefault,
+          ) ??
+          credentials.find(
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+          ));
     setConnectionId(nextCredential?.id ?? null);
     setConnectionRevision(nextCredential?.connectionRevision);
     setSavedBaseUrl(nextCredential?.baseUrl);
-    const nextModelId =
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (nextCredential?.modelId ?? "")
-        : pickCatalogModelId(catalog, nextProvider, nextCredential?.modelId ?? me?.defaultModel);
+    const nextModelId = connectionFormModelId({
+      catalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: me,
+    });
     setProvider(nextProvider);
-    setReasoning(nextCredential?.reasoning ?? false);
-    const nextEntry = catalog.find(
-      (entry) => entry.provider === nextProvider && entry.id === nextModelId,
-    );
-    setThinkingLevel(
-      clampCatalogThinkingLevel(
-        nextCredential?.modelId === nextModelId ? nextCredential.thinkingLevel : null,
-        nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-          ? nextCredential?.reasoning
-            ? COMPATIBLE_THINKING_LEVELS
-            : []
-          : nextEntry?.thinkingLevels,
-      ) as ThinkingLevel | null,
-    );
-    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
-    setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
-    setSupportsImages(nextCredential?.supportsImages ?? false);
-    setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(nextModelId);
-    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
-    setBaseUrl(
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
+    applyConnectionFields(
+      connectionFormFields({
+        catalog,
+        provider: nextProvider,
+        modelId: nextModelId,
+        credential: nextCredential,
+      }),
     );
+    setHeaderRows(null);
+    setCompatibleQuery("");
     detailScrollRef.current?.scrollTo({ top: 0 });
     setApiKey("");
-    setAccountId(nextCredential?.accountId ?? "");
-    setGatewayId(nextCredential?.gatewayId ?? "");
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
     setError(null);
@@ -559,6 +621,15 @@ export function ModelSettingsOverlay({
 
   async function probeServerModels() {
     if (!baseUrl.trim()) return;
+    if (!ModelApiProtocolSchema.safeParse(apiProtocol).success) {
+      setError(t`Choose an API protocol.`);
+      return;
+    }
+    if (headerRows !== null && !ModelHeaderRowsSchema.safeParse(headerRows).success) {
+      setError(t`Check the custom headers.`);
+      return;
+    }
+    const headers = modelHeadersInput(headerRows);
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
     probeSpaceGenerationRef.current = spaceGeneration;
@@ -574,6 +645,8 @@ export function ModelSettingsOverlay({
         rpc.models.probeOpenAiCompatible(
           {
             ...input,
+            apiProtocol: apiProtocol || undefined,
+            headers,
             ...(credential && sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl)
               ? { credentialId: credential.id, expectedBaseUrl: savedBaseUrl }
               : {}),
@@ -732,12 +805,12 @@ export function ModelSettingsOverlay({
     if (isOpenAiCompatible && !activeModelId) return;
     setError(null);
     setNotice(null);
-    setPending("default");
+    const pendingOwner = beginPending("default");
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       await rpc.models.setDefault(
         {
-          provider: selected.provider,
+          provider: credential.provider,
           modelId: activeModelId,
           modelCredentialId: credential.id,
           expectedRevision: connectionRevision,
@@ -762,7 +835,7 @@ export function ModelSettingsOverlay({
       if (operationCurrent(revision, scope, spaceGeneration))
         setError(errorText(err, t`Could not change the default model`));
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -771,99 +844,56 @@ export function ModelSettingsOverlay({
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
     if (!selected) return;
-    const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
-    const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
-    const supportedThinking = isOpenAiCompatible
-      ? reasoning
-        ? COMPATIBLE_THINKING_LEVELS
-        : []
-      : selected.thinkingLevels;
-    // The staged effort belongs to the model on screen. Clamp it before connect
-    // or a limit save so a previous model's level cannot stick.
-    const stagedThinking = clampCatalogThinkingLevel(
-      thinkingLevel,
-      supportedThinking,
-    ) as ThinkingLevel | null;
-    const modelChanged = (credential?.modelId ?? null) !== (activeModelId || null);
-    if (isOpenAiCompatible) {
-      if (!effectiveBaseUrl || !modelId.trim()) return;
-    } else if (savingLimitOnly) {
-      if (!credential) return;
-    } else if (apiKey.trim().length < 8) {
-      return;
-    }
-    const parsedMaxTokens = maxTokens.trim() ? parseModelMaxTokens(maxTokens) : undefined;
-    if ((isOpenAiCompatible || maxTokens.trim()) && parsedMaxTokens === undefined) {
+    const request = modelConnectRequest({
+      form: {
+        apiKey,
+        modelId,
+        enabledModelIds,
+        baseUrl,
+        apiProtocol,
+        headerRows,
+        reasoning,
+        thinkingLevel,
+        maxTokens,
+        contextWindow,
+        supportsImages,
+        maxImagesPerPrompt,
+        accountId,
+        gatewayId,
+      },
+      selected,
+      credential,
+      credentialId: connectionId,
+      expectedRevision: connectionRevision,
+    });
+    if (request.status === "incomplete") return;
+    if (request.status === "invalid") {
       setError(
-        t`Enter a whole number from 1 to ${MAX_MODEL_MAX_TOKENS} for maximum output tokens.`,
+        request.field === "maxTokens"
+          ? t`Enter a whole number from 1 to ${MAX_MODEL_MAX_TOKENS} for maximum output tokens.`
+          : request.field === "contextWindow"
+            ? t`Enter a whole number from 1 to ${MAX_MODEL_CONTEXT_WINDOW} for the context limit.`
+            : request.field === "maxImagesPerPrompt"
+              ? t`Enter a whole number from 1 to 1000 for the image limit.`
+              : request.field === "outputRoom"
+                ? t`Maximum output tokens must be smaller than the context limit.`
+                : request.field === "apiProtocol"
+                  ? t`Choose an API protocol.`
+                  : request.field === "headers"
+                    ? t`Check the custom headers.`
+                    : t`Reload this connection before saving.`,
       );
       return;
     }
-    const parsedMaxImagesPerPrompt = isOpenAiCompatible
-      ? parseModelMaxImagesPerPrompt(maxImagesPerPrompt, supportsImages)
-      : undefined;
-    if (
-      isOpenAiCompatible &&
-      supportsImages &&
-      maxImagesPerPrompt.trim() &&
-      parsedMaxImagesPerPrompt === undefined
-    ) {
-      setError(t`Enter a whole number from 1 to 1000 for the image limit.`);
-      return;
-    }
-    const maxImagesPerPromptInput =
-      supportsImages && !maxImagesPerPrompt.trim() ? null : parsedMaxImagesPerPrompt;
-    const parsedContextWindow = isOpenAiCompatible
-      ? parseModelContextWindow(contextWindow)
-      : undefined;
-    if (isOpenAiCompatible && parsedContextWindow === undefined) {
-      setError(
-        t`Enter a whole number from 1 to ${MAX_MODEL_CONTEXT_WINDOW} for the context limit.`,
-      );
-      return;
-    }
-    if (isOpenAiCompatible && parsedMaxTokens === undefined) return;
+    const { savingLimitOnly } = request;
     setError(null);
     setNotice(null);
-    setPending("connect");
+    const pendingOwner = beginPending("connect");
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
-      const savedConnection = await rpc.models.connect(
-        isOpenAiCompatible
-          ? {
-              provider: selected.provider,
-              ...(connectionId
-                ? { credentialId: connectionId, expectedRevision: connectionRevision }
-                : {}),
-              baseUrl: effectiveBaseUrl,
-              modelId: modelId.trim(),
-              // The server adds the default itself.
-              enabledModelIds: enabledModelIds.filter((id) => id !== modelId.trim()),
-              reasoning,
-              thinkingLevel: stagedThinking,
-              maxTokens: parsedMaxTokens,
-              contextWindow: parsedContextWindow,
-              supportsImages,
-              maxImagesPerPrompt: maxImagesPerPromptInput,
-              apiKey: apiKey.trim() || undefined,
-              label: selected.providerName ?? selected.provider,
-            }
-          : {
-              provider: selected.provider,
-              ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-              ...(isCloudflareGateway
-                ? { accountId: accountId.trim(), gatewayId: gatewayId.trim() }
-                : {}),
-              modelId: selected.id,
-              // A limits-only save leaves the stored effort alone while the model
-              // stays put. Changing the model sends the clamped level, including
-              // null, so the previous model's effort is not reused.
-              ...(!savingLimitOnly || modelChanged ? { thinkingLevel: stagedThinking } : {}),
-              maxTokens: parsedMaxTokens ?? null,
-              label: selected.providerName ?? selected.provider,
-            },
-        { context: { spaceId: scope?.spaceId } },
-      );
+      const savedConnection = await rpc.models.connect(request.input, {
+        context: { spaceId: scope?.spaceId },
+      });
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       if (scope)
         setConnectionSave({
@@ -873,6 +903,7 @@ export function ModelSettingsOverlay({
           credential: savedConnection,
         });
       setApiKey("");
+      setHeaderRows(null);
       await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
@@ -885,7 +916,7 @@ export function ModelSettingsOverlay({
       if (operationCurrent(revision, scope, spaceGeneration))
         setError(errorText(err, t`Could not connect this provider`));
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -897,12 +928,12 @@ export function ModelSettingsOverlay({
     cancelOAuthAttempt();
     setError(null);
     setNotice(null);
-    setPending("disconnect");
+    const pendingOwner = beginPending("disconnect");
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       const result = await rpc.models.disconnect(
         {
-          provider: selected.provider,
+          provider: credential.provider,
           credentialId: credential.id,
           expectedRevision: connectionRevision,
         },
@@ -925,7 +956,7 @@ export function ModelSettingsOverlay({
       if (operationCurrent(revision, scope, spaceGeneration))
         setError(errorText(err, t`Could not disconnect this provider`));
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -943,7 +974,7 @@ export function ModelSettingsOverlay({
     };
     setNotice(null);
     void startSubscriptionSignIn({
-      provider: selected.provider,
+      provider: credential?.provider ?? selected.provider,
       modelId:
         selected.provider === "chatgpt-plan" &&
         (selected.placeholder ||
@@ -968,7 +999,8 @@ export function ModelSettingsOverlay({
   }
 
   function renderProviderRow(group: (typeof groups)[number], connectedSection: boolean) {
-    const rowCredential = credentialByProvider.get(group.id);
+    const rowCredential = credentialByProvider.get(canonicalPiProviderId(group.id));
+    const isSelected = canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? "");
     const savedModelLabel = rowCredential?.modelId
       ? (group.entries.find((entry) => entry.id === rowCredential.modelId)?.label ??
         rowCredential.modelId)
@@ -977,10 +1009,10 @@ export function ModelSettingsOverlay({
       <button
         key={group.id}
         type="button"
-        aria-current={group.id === provider ? "true" : undefined}
+        aria-current={isSelected ? "true" : undefined}
         onClick={() => chooseProvider(group.id)}
         className={`flex w-full items-center gap-3 border-b border-border px-3.5 py-3 text-start last:border-0 ${
-          group.id === provider ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+          isSelected ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
         }`}
       >
         <span className="min-w-0 flex-1">
@@ -1417,7 +1449,7 @@ export function ModelSettingsOverlay({
 
   // OpenAI-compatible connections keep an optional key behind a disclosure.
   const compatKeyBlock = isOpenAiCompatible ? (
-    <div className="mt-5">
+    <div className="mt-4 space-y-3">
       <details className="text-[13.5px] text-muted-foreground">
         <summary className="w-fit cursor-pointer select-none">
           <Trans>API key</Trans>
@@ -1429,9 +1461,28 @@ export function ModelSettingsOverlay({
           placeholder={credential?.hasKey ? t`Paste a replacement key` : t`Optional`}
           type="password"
           autoComplete="new-password"
+          disabled={busy}
           className="mt-2 h-10 text-foreground"
         />
       </details>
+      <details className="text-[13.5px] text-muted-foreground">
+        <summary className="w-fit cursor-pointer select-none">
+          <Trans>Custom headers</Trans>
+        </summary>
+        <ModelHeadersEditor
+          rows={headerRows}
+          savedNames={
+            sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl) ? credential?.headerNames : []
+          }
+          onChange={updateHeaderRows}
+          disabled={busy}
+        />
+      </details>
+    </div>
+  ) : null;
+
+  const compatSaveButton = isOpenAiCompatible ? (
+    <div className="mt-5">
       <Button
         type="button"
         variant="secondary"
@@ -1641,6 +1692,31 @@ export function ModelSettingsOverlay({
                       className="mt-2 h-10 text-foreground"
                     />
                   </label>
+                  <label className="mt-4 block" htmlFor="model-api-protocol">
+                    <Trans>API protocol</Trans>
+                    <NativeSelect
+                      id="model-api-protocol"
+                      aria-label={t`API protocol`}
+                      value={apiProtocol}
+                      disabled={busy}
+                      onChange={(event) => updateApiProtocol(event.target.value)}
+                      className="mt-2 w-full text-foreground"
+                    >
+                      {apiProtocol === "" ? (
+                        <NativeSelectOption value="" disabled>
+                          <Trans>Choose a protocol</Trans>
+                        </NativeSelectOption>
+                      ) : null}
+                      <NativeSelectOption value="chat-completions">
+                        Chat Completions
+                      </NativeSelectOption>
+                      <NativeSelectOption value="responses">Responses</NativeSelectOption>
+                      <NativeSelectOption value="anthropic-messages">
+                        Anthropic Messages
+                      </NativeSelectOption>
+                    </NativeSelect>
+                  </label>
+                  {compatKeyBlock}
                   <details className="mt-2 text-[13px] leading-[1.5] text-muted-foreground">
                     <summary className="w-fit cursor-pointer select-none">
                       <Trans>Setup help</Trans>
@@ -1733,24 +1809,38 @@ export function ModelSettingsOverlay({
                         className="mt-2 h-10 text-foreground"
                       />
                     )}
+                    {compatibleRows.length > 10 ? (
+                      <Input
+                        aria-label={t`Search models`}
+                        placeholder={t`Search models`}
+                        value={compatibleQuery}
+                        onChange={(event) => setCompatibleQuery(event.target.value)}
+                        className="mt-3"
+                      />
+                    ) : null}
                     {compatibleRows.length ? (
                       <div className="mt-3 grid gap-2">
-                        {compatibleRows.map((id) => (
-                          <Label key={id} className="font-normal text-foreground">
-                            <Checkbox
-                              checked={id === modelId || enabledModelIds.includes(id)}
-                              disabled={busy || id === modelId}
-                              onCheckedChange={(checked) => {
-                                selectionRevisionRef.current += 1;
-                                setEnabledModelIds((current) =>
-                                  toggleEnabledModelId(current, id, checked),
-                                );
-                                setNotice(null);
-                              }}
-                            />
-                            <span className="min-w-0 break-all">{id}</span>
-                          </Label>
-                        ))}
+                        {compatibleRows
+                          .filter(
+                            (id) =>
+                              !compatibleQuery.trim() || matchesSearchQuery(compatibleQuery, id),
+                          )
+                          .map((id) => (
+                            <Label key={id} className="font-normal text-foreground">
+                              <Checkbox
+                                checked={id === modelId || enabledModelIds.includes(id)}
+                                disabled={busy || id === modelId}
+                                onCheckedChange={(checked) => {
+                                  selectionRevisionRef.current += 1;
+                                  setEnabledModelIds((current) =>
+                                    toggleEnabledModelId(current, id, checked),
+                                  );
+                                  setNotice(null);
+                                }}
+                              />
+                              <span className="min-w-0 break-all">{id}</span>
+                            </Label>
+                          ))}
                       </div>
                     ) : null}
                     {probeModels.length && !compatibleRows.includes(modelId) ? (
@@ -1785,14 +1875,10 @@ export function ModelSettingsOverlay({
                       setThinkingLevel(value as ThinkingLevel | null);
                       setNotice(null);
                     }}
-                    thinkingLevelOptions={[
-                      { value: "minimal", label: t`Minimal` },
-                      { value: "low", label: t`Low` },
-                      { value: "medium", label: t`Medium` },
-                      { value: "high", label: t`High` },
-                      { value: "xhigh", label: t`Extra high` },
-                      { value: "max", label: t`Max` },
-                    ]}
+                    thinkingLevelOptions={compatibleThinkingLevels(apiProtocol).map((value) => ({
+                      value,
+                      label: thinkingLevelLabel(value as ThinkingLevel),
+                    }))}
                     thinkingLevelLabel={t`Reasoning effort`}
                     thinkingLevelDefaultLabel={t`Default`}
                     maxTokens={maxTokens}
@@ -1828,14 +1914,15 @@ export function ModelSettingsOverlay({
               ) : null}
               {isOpenAiCompatible ? (
                 <>
-                  {compatKeyBlock}
+                  {compatSaveButton}
                   {saveButton}
                 </>
               ) : credential ? (
                 <>
                   {/* The key may be the default in another space while this one runs on server
                       credentials; saving here switches this space to the key. */}
-                  {provider === me?.hostCredentialProvider ? (
+                  {canonicalPiProviderId(provider) ===
+                  canonicalPiProviderId(me?.hostCredentialProvider ?? "") ? (
                     <div className="mb-5">{serverCredentialsNote}</div>
                   ) : null}
                   <div className="flex items-start justify-between gap-3">
@@ -1866,7 +1953,8 @@ export function ModelSettingsOverlay({
                   {saveButton}
                   <div className="mt-6 border-t border-border pt-5">{connectionControls}</div>
                 </>
-              ) : provider === me?.hostCredentialProvider ? (
+              ) : canonicalPiProviderId(provider) ===
+                canonicalPiProviderId(me?.hostCredentialProvider ?? "") ? (
                 <>
                   {serverCredentialsNote}
                   {ownKeyProvider !== provider ? chatgptUsageLink : null}

@@ -10,6 +10,7 @@ import {
 import { ThreadMessageSchema } from "./events.js";
 import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
 import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
+import { ModelHeadersSchema } from "./model-headers.js";
 import { NativeRoutineTriggerSchema, NativeRoutineTriggersInputSchema } from "./native-events.js";
 import { RunTriggerSchema } from "./runs.js";
 
@@ -1141,6 +1142,14 @@ export function modelOutputLeavesInputRoom(
   return typeof maxTokens !== "number" || contextWindow === undefined || maxTokens < contextWindow;
 }
 
+/** Wire protocol selected for one OpenAI-compatible connection. */
+export const ModelApiProtocolSchema = z.enum([
+  "chat-completions",
+  "responses",
+  "anthropic-messages",
+]);
+export type ModelApiProtocol = z.infer<typeof ModelApiProtocolSchema>;
+
 export const ModelCredentialSchema = z.object({
   ...ModelContextLimitsSchema.shape,
   id: Id,
@@ -1150,6 +1159,8 @@ export const ModelCredentialSchema = z.object({
   hasKey: z.boolean(),
   isDefault: z.boolean(),
   baseUrl: z.string().optional(),
+  apiProtocol: ModelApiProtocolSchema.optional(),
+  headerNames: z.array(z.string()).optional(),
   accountId: z.string().optional(),
   gatewayId: z.string().optional(),
   modelId: z.string().optional(),
@@ -1226,6 +1237,8 @@ export const ModelConnectInputSchema = z
     credentialId: Id.optional(),
     expectedRevision: z.number().int().positive().optional(),
     apiKey: z.string().optional(),
+    apiProtocol: ModelApiProtocolSchema.optional(),
+    headers: ModelHeadersSchema.optional(),
     accountId: z.string().optional(),
     gatewayId: z.string().optional(),
     baseUrl: z.string().optional(),

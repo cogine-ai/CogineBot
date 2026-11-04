@@ -19,6 +19,8 @@ export * from "./local-settings.js";
 export * from "./markdown-text.js";
 export * from "./mcp.js";
 export * from "./model-backups.js";
+export * from "./model-headers.js";
+export * from "./model-provider.js";
 export * from "./native-connectors.js";
 export * from "./native-event-hooks.js";
 export * from "./native-event-jobs.js";

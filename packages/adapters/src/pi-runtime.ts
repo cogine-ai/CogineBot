@@ -32,7 +32,7 @@ import type {
   ModelCallObserver,
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
-import { usableModelId } from "@rakazo/contracts";
+import { canonicalPiProviderId, usableModelId } from "@rakazo/contracts";
 import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult, uncertainEffectResult } from "./approval-effect.js";
@@ -75,6 +75,7 @@ import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js
 import { supplementPiModels } from "./pi-current-models.js";
 import { estimatePiImageTokens } from "./pi-image-context.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
+import { applyPiModelCompatibility } from "./pi-model-compat.js";
 import { codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -134,7 +135,7 @@ const toolCallBudgetsByRun = new Map<string, ToolCallBudget>();
 let catalogModelsCache: Models | undefined;
 function catalogModels(): Models {
   catalogModelsCache ??= registerOpenAiCompatibleCatalog(
-    registerLocalProvider(supplementPiModels(builtinModels())),
+    registerLocalProvider(applyPiModelCompatibility(supplementPiModels(builtinModels()))),
   );
   return catalogModelsCache;
 }
@@ -151,14 +152,17 @@ const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
   "Your last turn ended right after a tool result, without a reply. Continue the original task from the latest tool result. If you need information or a decision from the user, ask them instead of guessing, even if you were told to stay silent. Otherwise, if you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply; if not, use any remaining tools needed, then give the user the final answer.",
 );
 
-// Shown as a failed-run error, not an assistant message. Asking the user to
-// continue stores that sentence as the reply, and the next "continue" runs
-// tools and misses a final answer again.
-export { MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
+export {
+  // Shown as a failed-run error, not an assistant message. Asking the user to
+  // continue stores that sentence as the reply, and the next "continue" runs
+  // tools and misses a final answer again.
+  MISSING_TOOL_FINAL_RESPONSE_ERROR,
+} from "@rakazo/core";
 export {
   pruneComputerScreenshotContext,
   pruneStalePageStateContext,
 } from "./context-pruning.js";
+export { acceptedReasoningEfforts } from "./pi-model-compat.js";
 
 // Reasoning-capable models must not start at "off": for OpenRouter, pi-ai maps
 // that to reasoning.effort "none", which 400s on endpoints that mandate
@@ -505,10 +509,7 @@ export class PiAgentRuntime implements AgentRuntime {
               },
             );
             host.activeModel = target;
-            const nextThinkingLevel = thinkingLevelFor(
-              target.model,
-              target.config.thinkingLevel ?? request.model.thinkingLevel,
-            );
+            const nextThinkingLevel = thinkingLevelFor(target.model, target.config.thinkingLevel);
             agent.state.model = target.model;
             agent.state.thinkingLevel = nextThinkingLevel;
             host.models = target.models;
@@ -1006,7 +1007,10 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   /** Live credential store; OAuth refreshes swap the credential mid-run. */
   credentials: PiRuntimeCredentialStore | undefined;
 } {
-  const provider = modelConfig.provider === "scripted" ? "openrouter" : modelConfig.provider;
+  const provider =
+    modelConfig.provider === "scripted"
+      ? "openrouter"
+      : canonicalPiProviderId(modelConfig.provider);
   const envDefaultModel = process.env.PI_DEFAULT_MODEL?.trim();
   const envDefaultProvider = process.env.PI_DEFAULT_PROVIDER?.trim() || "openrouter";
   const requestedId =
@@ -1074,7 +1078,9 @@ export function modelsForRequest(
   if (provider === CHATGPT_PLAN_PROVIDER_ID) {
     const oauth = loadProviderOAuth(CHATGPT_PLAN_PROVIDER_ID);
     const models = registerOpenAiCompatibleCatalog(
-      registerLocalProvider(supplementPiModels(builtinModels({ credentials: store }))),
+      registerLocalProvider(
+        applyPiModelCompatibility(supplementPiModels(builtinModels({ credentials: store }))),
+      ),
     );
     return registerChatGPTPlanRuntime(models, {
       models: store ? readChatGPTPlanModels(request.model.oauth?.credential) : [],
@@ -1083,7 +1089,9 @@ export function modelsForRequest(
   }
   if (store) {
     return registerOpenAiCompatibleCatalog(
-      registerLocalProvider(supplementPiModels(builtinModels({ credentials: store }))),
+      registerLocalProvider(
+        applyPiModelCompatibility(supplementPiModels(builtinModels({ credentials: store }))),
+      ),
     );
   }
   if (
@@ -1092,7 +1100,7 @@ export function modelsForRequest(
     request.model.id.trim()
   ) {
     const models = registerOpenAiCompatibleCatalog(
-      registerLocalProvider(supplementPiModels(builtinModels())),
+      registerLocalProvider(applyPiModelCompatibility(supplementPiModels(builtinModels()))),
     );
     return registerOpenAiCompatibleRuntime(models, {
       modelId: request.model.id,
@@ -1101,6 +1109,8 @@ export function modelsForRequest(
       acceptsImages: request.model.acceptsImages,
       maxTokens: request.model.maxTokens,
       contextWindow: request.model.contextWindow,
+      apiProtocol: request.model.apiProtocol,
+      headers: request.model.headers,
     });
   }
   return catalogModels();
@@ -2884,7 +2894,6 @@ function fallbackSupportsContext(
   candidate: RuntimeModelTarget,
   context: TranscriptContext,
   options: ModelsSimpleStreamOptions | undefined,
-  requestedThinkingLevel: AgentRunRequest["model"]["thinkingLevel"],
   tools: readonly ConnectorTool[],
   verbatimMcpServers: AgentRunRequest["verbatimMcpServers"],
   preserveAllContext = false,
@@ -2989,12 +2998,10 @@ function fallbackSupportsContext(
   ) {
     return false;
   }
-  const reasoningLevel = options?.reasoning ?? requestedThinkingLevel;
   const requiresReasoning =
-    (reasoningLevel !== undefined && reasoningLevel !== null && reasoningLevel !== "off") ||
-    (candidate.config.thinkingLevel !== undefined &&
-      candidate.config.thinkingLevel !== null &&
-      candidate.config.thinkingLevel !== "off");
+    candidate.config.thinkingLevel !== undefined &&
+    candidate.config.thinkingLevel !== null &&
+    candidate.config.thinkingLevel !== "off";
   return !requiresReasoning || candidate.model.reasoning;
 }
 
@@ -3085,7 +3092,7 @@ function fallbackAwareModelStream(
         const resolved = resolveRuntimeModel(config);
         if (
           !resolved.model ||
-          resolved.model.provider !== config.provider ||
+          resolved.model.provider !== canonicalPiProviderId(config.provider) ||
           resolved.model.id !== config.id
         ) {
           continue;
@@ -3102,7 +3109,6 @@ function fallbackAwareModelStream(
             candidate,
             requestContext(true),
             options,
-            state.request.model.thinkingLevel,
             state.request.tools,
             state.request.verbatimMcpServers,
             state.request.contextStrategy === "current" && state.request.contextRestored !== true,
@@ -3176,12 +3182,7 @@ function fallbackAwareModelStream(
         }
         const apiKey = target.credentials?.accessToken ?? target.apiKey;
         const thinkingLevel = target.model.reasoning
-          ? thinkingLevelFor(
-              target.model,
-              target.config.thinkingLevel ??
-                options?.reasoning ??
-                state.request.model.thinkingLevel,
-            )
+          ? thinkingLevelFor(target.model, target.config.thinkingLevel)
           : "off";
         const reasoning = thinkingLevel === "off" ? undefined : thinkingLevel;
         // The outer loop reauthorizes retries. SDK-internal retries would bypass that boundary.

@@ -454,6 +454,55 @@ describe("team chat judge platform model policy", () => {
 });
 
 describe("team chat judge connection bindings", () => {
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "keeps an owned %s connection's headers and protocol off the other connection and prompt",
+    async (apiProtocol) => {
+      const f = bindingFixture();
+      for (const [index, suffix] of ["a", "b"].entries()) {
+        f.secrets.get(`secret-${suffix}`)!.ciphertext = serializeModelSecret({
+          kind: "openai_compatible",
+          baseUrl: `https://server-${index}.example.test/v1`,
+          apiKey: `fake-key-${index}`,
+          apiProtocol: index === 0 ? apiProtocol : "chat-completions",
+          headers: { "X-Judge": `synthetic-private-header-${suffix}` },
+          enabledModelIds: ["same-model"],
+        });
+      }
+      await expect(f.judge().decide(judgeInput())).resolves.toMatchObject({ act: true });
+      await expect(
+        f.judge().decide(judgeInput({ modelCredentialId: "connection-b" })),
+      ).resolves.toMatchObject({ act: true });
+      await expect(f.judge().decide(judgeInput())).resolves.toMatchObject({ act: true });
+      expect(
+        f.run.mock.calls.map(([input]) => ({
+          id: input.model.modelCredentialId,
+          protocol: input.model.apiProtocol,
+          headers: input.model.headers,
+        })),
+      ).toEqual([
+        {
+          id: "connection-a",
+          protocol: apiProtocol,
+          headers: { "X-Judge": "synthetic-private-header-a" },
+        },
+        {
+          id: "connection-b",
+          protocol: "chat-completions",
+          headers: { "X-Judge": "synthetic-private-header-b" },
+        },
+        {
+          id: "connection-a",
+          protocol: apiProtocol,
+          headers: { "X-Judge": "synthetic-private-header-a" },
+        },
+      ]);
+      for (const [input] of f.run.mock.calls) {
+        expect(input.prompt).not.toContain("synthetic-private-header");
+        expect(input.instructions).not.toContain("synthetic-private-header");
+      }
+    },
+  );
+
   it("uses the Bot's exact endpoint, key and connection ID despite a different default/newest connection", async () => {
     const fixture = bindingFixture();
     await expect(fixture.judge().decide(judgeInput())).resolves.toMatchObject({ act: true });

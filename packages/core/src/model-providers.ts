@@ -1,5 +1,11 @@
-import type { ModelCatalogEntry } from "@rakazo/contracts";
-import { modelConnectionLabel, normalizeOpenAiCompatibleBaseUrl } from "@rakazo/contracts";
+import type { ModelApiProtocol, ModelCatalogEntry } from "@rakazo/contracts";
+import {
+  canonicalPiProviderId,
+  DEFAULT_MODEL_MAX_TOKENS,
+  modelConnectionLabel,
+  normalizeOpenAiCompatibleBaseUrl,
+  OPENAI_COMPATIBLE_PROVIDER_ID,
+} from "@rakazo/contracts";
 import { matchesSearchQuery } from "./search.js";
 
 /** Effort choices an OpenAI-compatible endpoint stores when reasoning is enabled. */
@@ -11,6 +17,26 @@ export const COMPATIBLE_THINKING_LEVELS = [
   "xhigh",
   "max",
 ] as const;
+
+const ANTHROPIC_COMPATIBLE_THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
+
+/** Effort choices supported by the selected compatible protocol. */
+export function compatibleThinkingLevels(
+  apiProtocol?: ModelApiProtocol | "",
+): readonly (typeof COMPATIBLE_THINKING_LEVELS)[number][] {
+  if (apiProtocol === "") return [];
+  return apiProtocol === "anthropic-messages"
+    ? ANTHROPIC_COMPATIBLE_THINKING_LEVELS
+    : COMPATIBLE_THINKING_LEVELS;
+}
+
+export function connectionMaxTokensField(provider: string, stored: number | undefined): string {
+  return provider === OPENAI_COMPATIBLE_PROVIDER_ID
+    ? String(stored ?? DEFAULT_MODEL_MAX_TOKENS)
+    : stored !== undefined
+      ? String(stored)
+      : "";
+}
 
 const THINKING_LEVELS = ["off", ...COMPATIBLE_THINKING_LEVELS] as const;
 
@@ -61,7 +87,7 @@ export function featuredModelProviders(
   providers: readonly ModelCatalogEntry[],
   selectedProvider: string,
 ): ModelCatalogEntry[] {
-  const byId = new Map(providers.map((entry) => [entry.provider, entry]));
+  const byId = new Map(providers.map((entry) => [canonicalPiProviderId(entry.provider), entry]));
   const ordered = [
     ...POPULAR_MODEL_PROVIDER_IDS.map((id) => byId.get(id)).filter(
       (entry): entry is ModelCatalogEntry => entry !== undefined,
@@ -69,9 +95,15 @@ export function featuredModelProviders(
     ...providers.filter((entry) => !POPULAR_MODEL_PROVIDER_ID_SET.has(entry.provider)),
   ];
   const featured = ordered.slice(0, DEFAULT_PROVIDER_COUNT);
-  const selected = byId.get(selectedProvider);
+  const selected = byId.get(canonicalPiProviderId(selectedProvider));
 
-  if (!selected || featured.some((entry) => entry.provider === selectedProvider)) return featured;
+  if (
+    !selected ||
+    featured.some(
+      (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(selectedProvider),
+    )
+  )
+    return featured;
   return [...featured.slice(0, DEFAULT_PROVIDER_COUNT - 1), selected];
 }
 
@@ -90,7 +122,9 @@ export function pickCatalogModelId(
   provider: string,
   preferredId?: string | null,
 ): string {
-  const entries = catalog.filter((entry) => entry.provider === provider);
+  const entries = catalog.filter(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider),
+  );
   if (preferredId) {
     if (entries.some((entry) => entry.id === preferredId)) return preferredId;
     const basename = preferredId.split("/").at(-1);
@@ -108,10 +142,16 @@ export function selectedProviderOutsideSearchResults(
   allProviders: readonly ModelCatalogEntry[],
   selectedProvider: string,
 ): ModelCatalogEntry | undefined {
-  if (filteredProviders.some((entry) => entry.provider === selectedProvider)) {
+  if (
+    filteredProviders.some(
+      (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(selectedProvider),
+    )
+  ) {
     return undefined;
   }
-  return allProviders.find((entry) => entry.provider === selectedProvider);
+  return allProviders.find(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(selectedProvider),
+  );
 }
 
 /**
@@ -172,7 +212,7 @@ export function modelOptionKey(
 ): string {
   return modelCredentialId
     ? JSON.stringify([provider, modelId, modelCredentialId])
-    : `${provider}::${modelId}`;
+    : `${canonicalPiProviderId(provider)}::${modelId}`;
 }
 
 export function parseModelOptionKey(
@@ -195,7 +235,10 @@ export function parseModelOptionKey(
   }
   const separator = key.indexOf("::");
   if (separator <= 0) return null;
-  return { provider: key.slice(0, separator), modelId: key.slice(separator + 2) };
+  return {
+    provider: canonicalPiProviderId(key.slice(0, separator)),
+    modelId: key.slice(separator + 2),
+  };
 }
 
 /** Resolve only an explicitly selected account connection. */
@@ -209,7 +252,7 @@ export function credentialForModel<C extends CredentialModelRef>(
   return credentials.find(
     (credential) =>
       credential.id === modelCredentialId &&
-      credential.provider === provider &&
+      canonicalPiProviderId(credential.provider) === canonicalPiProviderId(provider) &&
       (provider !== "openai-compatible" ||
         (credential.enabledModelIds ?? [credential.modelId]).includes(modelId)),
   );
@@ -229,7 +272,11 @@ export function resolveSelectableModelId(
   if (!trimmed) return "";
   const canonical = canonicalApiModelId(provider, trimmed);
   if (canonical) return canonical;
-  const entries = catalog.filter((entry) => entry.provider === provider && !entry.placeholder);
+  const entries = catalog.filter(
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider) &&
+      !entry.placeholder,
+  );
   if (entries.some((entry) => entry.id === trimmed)) return trimmed;
   const token = modelToken(trimmed);
   const byId = entries.filter((entry) => modelToken(entry.id) === token);
@@ -254,7 +301,9 @@ export function connectedModelChoices(
   const seen = new Set<string>();
   for (const credential of credentials) {
     const providerModels = catalog.filter(
-      (entry) => entry.provider === credential.provider && !entry.placeholder,
+      (entry) =>
+        canonicalPiProviderId(entry.provider) === canonicalPiProviderId(credential.provider) &&
+        !entry.placeholder,
     );
     const raw = credential.modelId?.trim() ?? "";
     const resolved = raw ? resolveSelectableModelId(providerModels, credential.provider, raw) : "";
@@ -285,8 +334,8 @@ export function connectedModelChoices(
               const modelId = resolveSelectableModelId(providerModels, entry.provider, entry.id);
               return {
                 ...binding,
-                key: modelOptionKey(entry.provider, modelId, credential.id),
-                provider: entry.provider,
+                key: modelOptionKey(credential.provider, modelId, credential.id),
+                provider: credential.provider,
                 modelId,
                 label: `${credential.id ? credential.label : (entry.providerName ?? entry.provider)} · ${entry.label}`,
               };

@@ -1,9 +1,10 @@
-import type { AutoReviewProvider } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import type { AgentRunRequest, AutoReviewProvider } from "@rakazo/adapter-kit";
+import { describe, expect, it, vi } from "vitest";
 import { LlmAutoReviewProvider } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
 import { JevAutoReviewProvider } from "./jev-auto-review.js";
 import { ScriptedAutoReviewProvider } from "./scripted-auto-review.js";
+import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 const context = {
   operationId: "auto-review",
@@ -23,6 +24,48 @@ const request = {
 };
 
 describe("createAutoReviewProvider", () => {
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "passes the bound %s configuration to the checker without putting secrets in its prompt",
+    async (apiProtocol) => {
+      const runtime = new ScriptedAgentRuntime();
+      const inputs: AgentRunRequest[] = [];
+      vi.spyOn(runtime, "run").mockImplementation(async function* (input) {
+        inputs.push(input);
+        yield { type: "done", text: '{"decision":"pass"}' };
+      });
+      const headers = { "X-Checker": "synthetic-checker-header-secret" };
+      const provider = createAutoReviewProvider("llm", {
+        llm: {
+          runtime,
+          checker: { provider: "openai-compatible", model: "checker-model" },
+          modelCredentialId: "checker-connection",
+          apiKey: "synthetic-checker-key",
+          baseUrl: "https://checker.example.test/v1",
+          apiProtocol,
+          headers,
+          runId: "run",
+          spaceId: "space",
+          userId: "user",
+          botId: "bot",
+          threadId: "thread",
+        },
+      });
+      await expect(provider.review(request, context)).resolves.toMatchObject({ decision: "pass" });
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]!.model).toMatchObject({
+        modelCredentialId: "checker-connection",
+        apiProtocol,
+        headers,
+        baseUrl: "https://checker.example.test/v1",
+        apiKey: "synthetic-checker-key",
+      });
+      expect(inputs[0]!.tools).toEqual([]);
+      expect(inputs[0]!.prompt).not.toContain(headers["X-Checker"]);
+      expect(inputs[0]!.prompt).not.toContain("synthetic-checker-key");
+      expect(inputs[0]!.instructions).not.toContain(headers["X-Checker"]);
+    },
+  );
+
   it("constructs Jev, LLM, and scripted adapters", () => {
     expect(createAutoReviewProvider("jev", { apiKey: "ts-key" })).toBeInstanceOf(
       JevAutoReviewProvider,
