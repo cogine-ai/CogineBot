@@ -27,6 +27,21 @@ function nativeEndpoint(baseUrl: string, origin: string, path: string): boolean 
   }
 }
 
+function claudeHighResolutionTier(id: string): boolean {
+  // A snapshot date after a major-only release is not its minor version.
+  const version = /^claude-(?:opus|sonnet|haiku|fable)-([1-9]\d*)(?:-(0|[1-9]\d*))?$/.exec(
+    id.replace(/-\d{8}$/, ""),
+  );
+  if (!version) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return (
+    Number.isSafeInteger(major) &&
+    Number.isSafeInteger(minor) &&
+    (major > 4 || (major === 4 && minor >= 7))
+  );
+}
+
 /** Bind context planning to the serialized target; custom services retain legacy estimates. */
 export function createPiImageTokenEstimator(
   model: Pick<Model<Api>, "provider" | "id" | "api" | "baseUrl">,
@@ -43,7 +58,7 @@ export function createPiImageTokenEstimator(
   if (
     model.provider === "anthropic" &&
     model.api === "anthropic-messages" &&
-    model.id === "claude-sonnet-5-5" &&
+    claudeHighResolutionTier(model.id) &&
     nativeEndpoint(model.baseUrl, "https://api.anthropic.com", "")
   )
     return (image) => estimateImageTokens(image, claudeHighResolutionFrameTokens, 0, true);
@@ -52,7 +67,7 @@ export function createPiImageTokenEstimator(
     : (image) => estimateImageTokens(image, legacyFrameTokens, MIN_IMAGE_TOKENS);
 }
 
-/** Default Sonnet 5.5 geometry with the planning floor, rather than exact provider billing. */
+/** Automatic Claude 4.7+ geometry with the planning floor, rather than exact billing. */
 function claudeHighResolutionFrameTokens(width: number, height: number): number {
   if (!Number.isSafeInteger(width * height)) return Number.MAX_SAFE_INTEGER;
   const patches = (w: number, h: number) => Math.ceil(w / 28) * Math.ceil(h / 28);

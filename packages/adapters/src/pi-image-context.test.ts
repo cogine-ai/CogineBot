@@ -4,6 +4,18 @@ import { ContextBudgetError, estimateContextTokens, selectContext } from "./cont
 import { createPiImageTokenEstimator, estimatePiImageTokens } from "./pi-image-context.js";
 
 describe("target image context planning", () => {
+  it("uses the high-resolution tier for native Opus 5.5", async () => {
+    const part = await pngPart(4096, 4096);
+    const target = { ...sonnetTarget, id: "claude-opus-5-5" };
+    expect(createPiImageTokenEstimator(target)(part)).toBe(4761);
+    expect(
+      createPiImageTokenEstimator({ ...target, baseUrl: "https://models.example" })(part),
+    ).toBe(262_144);
+    expect(createPiImageTokenEstimator({ ...target, provider: "anthropic-compatible" })(part)).toBe(
+      262_144,
+    );
+  });
+
   it("uses Sonnet 5.5's automatic high-resolution patches without an opt-in", async () => {
     const image = await sharp({
       create: { width: 2000, height: 1500, channels: 3, background: "white" },
@@ -61,6 +73,29 @@ async function pngPart(width: number, height: number) {
 }
 
 describe("target image policy boundaries", () => {
+  it.each([
+    ["claude-sonnet-5-5", 4761],
+    ["claude-haiku-5-5", 4761],
+    ["claude-fable-5", 4761],
+    ["claude-fable-5-1", 4761],
+    ["claude-opus-5", 4761],
+    ["claude-sonnet-5", 4761],
+    ["claude-opus-4-8", 4761],
+    ["claude-opus-4-7", 4761],
+    ["claude-opus-4-7-20261015", 4761],
+    ["claude-opus-4-6", 262_144],
+    ["claude-sonnet-4-20250514", 262_144],
+    ["claude-haiku-4-5-20251001", 262_144],
+    ["claude-opus-latest", 262_144],
+    ["claude-unknown-5-5", 262_144],
+    ["claude-opus-5-5-preview", 262_144],
+    ["claude-opus-4-7-20261015-extra", 262_144],
+    ["claude-opus-9007199254740992", 262_144],
+  ])("resolves the documented native Claude resolution tier for %s", async (id, expected) => {
+    const part = await pngPart(4096, 4096);
+    expect(createPiImageTokenEstimator({ ...sonnetTarget, id })(part)).toBe(expected);
+  });
+
   it.each([
     ["native Responses", astraTarget, 19_661],
     ["native ChatGPT plan Responses", { ...astraTarget, provider: "chatgpt-plan" }, 19_661],
