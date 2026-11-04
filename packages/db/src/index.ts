@@ -22,6 +22,19 @@ export * from "./model-credentials.js";
 export * from "./plugin-installs.js";
 export * from "./readiness.js";
 export * from "./repos.js";
+export {
+  asSystem,
+  currentDbContext,
+  type DbContext,
+  drainUnscopedDatabaseAccess,
+  installDbContext,
+  ROW_SECURITY_MODELS,
+  rlsBypassKey,
+  runAsSystem,
+  runAsSystemInTransaction,
+  runAsTenant,
+  withRowLevelSecurity,
+} from "./row-security.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";
 export * from "./scope.js";
