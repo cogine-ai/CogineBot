@@ -11,6 +11,7 @@ import type {
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AgentRunRequest, AgentRuntimeEvent, ModelCallObserver } from "@rakazo/adapter-kit";
 import type * as Core from "@rakazo/core";
+import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const providerState = vi.hoisted(() => ({
@@ -218,6 +219,106 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("Pi runtime completion recovery", () => {
+  it("uses each current target's image policy for candidate admission and switched reservations", async () => {
+    const astra = {
+      ...model("openai", "gpt-6-astra", 65_536),
+      api: "openai-responses" as const,
+      baseUrl: "https://api.openai.com/v1",
+    };
+    const sonnet = {
+      ...model("anthropic", "claude-sonnet-5-5", 65_536),
+      api: "anthropic-messages" as const,
+      baseUrl: "https://api.anthropic.com",
+    };
+    for (const target of [astra, sonnet])
+      providerState.models.set(
+        `${target.provider}/${target.id}`,
+        target as unknown as Record<string, unknown>,
+      );
+    const image = await sharp({
+      create: { width: 4096, height: 4096, channels: 3, background: "white" },
+    })
+      .png()
+      .toBuffer();
+    const input = request([
+      { provider: astra.provider, id: astra.id, modelCredentialId: "small-vision" },
+      { provider: sonnet.provider, id: sonnet.id, modelCredentialId: "fitting-vision" },
+    ]);
+    input.model = {
+      provider: astra.provider,
+      id: astra.id,
+      apiKey: "fake-primary-key",
+      modelCredentialId: "primary-vision",
+      maxTokens: 1024,
+    };
+    input.currentTurnImages = [{ name: "synthetic.png", mimeType: "image/png", data: image }];
+    input.resolveFallbackModel = vi.fn(async (provider, id, modelCredentialId) => ({
+      provider,
+      id,
+      modelCredentialId,
+      apiKey: "fake-backup-key",
+      maxTokens: 1024,
+      contextWindow: modelCredentialId === "small-vision" ? 16_384 : 65_536,
+    }));
+    input.onModelChange = vi.fn(async () => undefined);
+    let sonnetCalls = 0;
+    const reservationInputs: Array<{ provider: string; inputTokensEstimate: number }> = [];
+    const observer: ModelCallObserver = {
+      beforeCall: vi.fn(async (call) => {
+        reservationInputs.push(call);
+        return `image-reservation-${reservationInputs.length}`;
+      }),
+      afterCall: vi.fn(async () => undefined),
+    };
+    providerState.stream.mockImplementation((target: Model<Api>, context: Context) => {
+      expect(JSON.stringify(context.messages)).toContain(image.toString("base64"));
+      if (target.provider === astra.provider)
+        return stream(target, message(target, [], "error", "429 rate_limit_error"));
+      if (++sonnetCalls === 1)
+        return stream(
+          target,
+          message(
+            target,
+            [
+              {
+                type: "toolCall",
+                id: "image-effect-once",
+                name: "write_effect",
+                arguments: { value: "once" },
+              },
+            ],
+            "toolUse",
+          ),
+        );
+      return stream(
+        target,
+        message(target, [{ type: "text", text: "Current image policy fits." }], "stop"),
+      );
+    });
+    const events = await run(input, [], new PiAgentRuntime({ modelCallObserver: observer }));
+    expect(
+      providerState.stream.mock.calls.map(([target]) => (target as Model<Api>).provider),
+    ).toEqual([astra.provider, sonnet.provider, sonnet.provider]);
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(
+      sonnet.provider,
+      sonnet.id,
+      "fitting-vision",
+    );
+    expect(reservationInputs.map((call) => call.provider)).toEqual([
+      astra.provider,
+      sonnet.provider,
+      sonnet.provider,
+    ]);
+    expect(reservationInputs[0]!.inputTokensEstimate).toBeGreaterThanOrEqual(19_661);
+    for (const call of reservationInputs.slice(1)) {
+      expect(call.inputTokensEstimate).toBeGreaterThanOrEqual(4784);
+      expect(call.inputTokensEstimate).toBeLessThan(8000);
+    }
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Current image policy fits." });
+  });
+
   it("recovers from an empty truncated completion without configured backups", async () => {
     providerState.stream
       .mockImplementationOnce(() =>

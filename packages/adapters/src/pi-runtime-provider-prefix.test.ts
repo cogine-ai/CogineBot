@@ -7,6 +7,114 @@ import { userTurnInstructions } from "./executor.js";
 import { PiAgentRuntime, resolveRuntimeModel } from "./pi-runtime.js";
 
 describe("Pi outgoing provider prefixes", () => {
+  it("rejects a current-model original-resolution image before reservation when it cannot fit", async () => {
+    const image = await sharp({
+      create: { width: 4096, height: 4096, channels: 3, background: "white" },
+    })
+      .png()
+      .toBuffer();
+    const beforeCall = vi.fn(async () => "unused-reservation");
+    const modelFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { message: "Fixture transport reached" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const runtime = new PiAgentRuntime({
+      modelFetch,
+      modelCallObserver: { beforeCall, afterCall: vi.fn() },
+    });
+    const consume = async () => {
+      for await (const _event of runtime.run(
+        {
+          botId: "bot-fixture",
+          threadId: "thread-fixture",
+          runId: "run-current-image-limit",
+          prompt: "Inspect the image.",
+          instructions: "Be concise.",
+          history: [],
+          tools: [],
+          contextStrategy: "retrieval",
+          currentTurnImages: [{ name: "synthetic.png", mimeType: "image/png", data: image }],
+          model: {
+            provider: "openai",
+            id: "gpt-6-astra",
+            apiKey: "fake-fixture-key",
+            contextWindow: 16_384,
+            maxTokens: 4096,
+          },
+        },
+        { signal: AbortSignal.timeout(15_000) },
+      )) {
+      }
+    };
+    await expect(consume()).rejects.toThrow("Required context exceeds the model");
+    expect(modelFetch).not.toHaveBeenCalled();
+    expect(beforeCall).not.toHaveBeenCalled();
+  });
+
+  it("reserves the current target's original-image budget and preserves Responses auto and bytes", async () => {
+    const image = await sharp({
+      create: { width: 4096, height: 4096, channels: 3, background: "white" },
+    })
+      .png()
+      .toBuffer();
+    const payloads: Array<{
+      input: Array<{ content?: Array<{ type: string; detail?: string; image_url?: string }> }>;
+    }> = [];
+    const beforeCall = vi.fn(async (call: { inputTokensEstimate: number }) => {
+      expect(call.inputTokensEstimate).toBeGreaterThanOrEqual(19_661);
+      expect(call.inputTokensEstimate).toBeLessThan(25_000);
+      return "current-image-reservation";
+    });
+    const modelFetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      payloads.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ error: { message: "Fixture payload captured" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const runtime = new PiAgentRuntime({
+      modelFetch,
+      modelCallObserver: { beforeCall, afterCall: vi.fn() },
+    });
+    const consume = async () => {
+      for await (const _event of runtime.run(
+        {
+          botId: "bot-fixture",
+          threadId: "thread-fixture",
+          runId: "run-current-image-wire",
+          prompt: "Inspect the image.",
+          instructions: "Be concise.",
+          history: [],
+          tools: [],
+          contextStrategy: "retrieval",
+          currentTurnImages: [{ name: "synthetic.png", mimeType: "image/png", data: image }],
+          model: {
+            provider: "openai",
+            id: "gpt-6-astra",
+            apiKey: "fake-fixture-key",
+            contextWindow: 65_536,
+            maxTokens: 4096,
+          },
+        },
+        { signal: AbortSignal.timeout(15_000) },
+      )) {
+      }
+    };
+    await expect(consume()).rejects.toThrow("Fixture payload captured");
+    expect(beforeCall).toHaveBeenCalledOnce();
+    expect(modelFetch).toHaveBeenCalledOnce();
+    const parts = payloads[0]!.input.flatMap((item) => item.content ?? []);
+    expect(parts.filter((part) => part.type === "input_image")).toEqual([
+      expect.objectContaining({
+        detail: "auto",
+        image_url: `data:image/png;base64,${image.toString("base64")}`,
+      }),
+    ]);
+  });
+
   it("keeps the completion ceiling when the SDK adds a budget-based thinking allowance", async () => {
     const payloads: Array<{ max_tokens: number; thinking?: { budget_tokens?: number } }> = [];
     const beforeCall = vi.fn(async (_call: { maxOutputTokens: number }) => "fixture-reservation");
@@ -93,7 +201,7 @@ describe("Pi outgoing provider prefixes", () => {
       if (!address || typeof address === "string") throw new Error("Fixture endpoint unavailable");
       try {
         const beforeCall = vi.fn(async (call: { inputTokensEstimate: number }) => {
-          expect(call.inputTokensEstimate).toBeGreaterThan(1399);
+          expect(call.inputTokensEstimate).toBeGreaterThan(16_384);
           expect(call.inputTokensEstimate).toBeLessThan(128_000 - 4096);
           return "image-reservation";
         });

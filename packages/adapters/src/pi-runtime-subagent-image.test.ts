@@ -1,9 +1,14 @@
-import type { Context, Model } from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import sharp from "sharp";
 import { expect, it, vi } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
 
-const captured = vi.hoisted(() => ({ policies: [] as unknown[] }));
+const captured = vi.hoisted(() => ({
+  policies: [] as unknown[],
+  childTarget: undefined as
+    | { model_provider: string; model_id: string; model_credential_id: string }
+    | undefined,
+}));
 
 vi.mock("./runtime-context.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./runtime-context.js")>();
@@ -38,7 +43,11 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
     async prompt() {
       await this.tools
         .find((tool) => tool.name === "run_subagent")
-        ?.execute("subagent-call", { name: "helper", task: "Inspect the screen" });
+        ?.execute("subagent-call", {
+          name: "helper",
+          task: "Inspect the screen",
+          ...captured.childTarget,
+        });
     }
     async waitForIdle() {}
     abort() {}
@@ -47,20 +56,28 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
 
 vi.mock("@earendil-works/pi-ai/providers/all", () => ({
   builtinModels: () => ({
-    getModel: (provider: string, id: string) =>
-      provider === "test" && id === "vision-test-model"
+    getModel: (provider: string, id: string) => {
+      const legacy = provider === "test" && id === "vision-test-model";
+      const astra = provider === "openai" && id === "gpt-6-astra";
+      const sonnet = provider === "anthropic" && id === "claude-sonnet-5-5";
+      return legacy || astra || sonnet
         ? {
             provider,
             id,
-            api: "openai-completions",
-            baseUrl: "http://127.0.0.1/unused",
+            api: astra ? "openai-responses" : sonnet ? "anthropic-messages" : "openai-completions",
+            baseUrl: astra
+              ? "https://api.openai.com/v1"
+              : sonnet
+                ? "https://api.anthropic.com"
+                : "http://127.0.0.1/unused",
             contextWindow: 128_000,
             maxTokens: 4096,
             reasoning: false,
             input: ["text", "image"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           }
-        : undefined,
+        : undefined;
+    },
     streamSimple: () => {
       throw new Error("The fake agent must not make a model request");
     },
@@ -170,3 +187,101 @@ it("uses the image planner in a nested subagent's screenshot context", async () 
   });
   expect(policy.getDecision()!.estimatedInputTokens).toBeLessThan(128_000 - 4096);
 });
+
+it.each([false, true])(
+  "keeps parent and selected child current-model image policies separate (%s)",
+  async (childIsAstra) => {
+    captured.policies = [];
+    const astra = {
+      provider: "openai",
+      id: "gpt-6-astra",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    };
+    const sonnet = {
+      provider: "anthropic",
+      id: "claude-sonnet-5-5",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+    };
+    const child = childIsAstra ? astra : sonnet;
+    const parent = childIsAstra ? sonnet : astra;
+    captured.childTarget = {
+      model_provider: child.provider,
+      model_id: child.id,
+      model_credential_id: "child-connection",
+    };
+    const resolveModel = vi.fn(
+      async (provider: string, id: string, modelCredentialId?: string | null) => ({
+        provider,
+        id,
+        modelCredentialId,
+        contextWindow: 16_384,
+        maxTokens: 4096,
+        apiKey: "fake-child-key",
+      }),
+    );
+    try {
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "bot",
+          threadId: "thread",
+          runId: "run-current-child-policy",
+          prompt: "Delegate this image task.",
+          instructions: "Be concise.",
+          history: [],
+          tools: builtinAgentTools,
+          model: {
+            provider: parent.provider,
+            id: parent.id,
+            modelCredentialId: "parent-connection",
+            contextWindow: 16_384,
+            maxTokens: 4096,
+          },
+          resolveModel,
+        },
+        { signal: new AbortController().signal },
+      )) {
+      }
+      expect(resolveModel).toHaveBeenCalledExactlyOnceWith(
+        child.provider,
+        child.id,
+        "child-connection",
+      );
+      expect(captured.policies).toHaveLength(2);
+      const png = await sharp({
+        create: { width: 4096, height: 4096, channels: 3, background: "white" },
+      })
+        .png()
+        .toBuffer();
+      const part = { type: "image" as const, data: png.toString("base64"), mimeType: "image/png" };
+      const context = {
+        systemPrompt: "Inspect the image.",
+        tools: [],
+        messages: [{ role: "user" as const, content: [part], timestamp: 1 }],
+      } satisfies Context;
+      for (const [index, target] of [parent, child].entries()) {
+        const policy = captured.policies[index] as ReturnType<typeof createRuntimeContextPolicy>;
+        const model = {
+          ...target,
+          contextWindow: 16_384,
+          maxTokens: 4096,
+          input: ["text", "image"],
+          reasoning: false,
+          name: target.id,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        } as Model<Api>;
+        if (target === astra)
+          expect(() => policy.prepareContext(context, model)).toThrow(/context.*exceed/i);
+        else {
+          const prepared = policy.prepareContext(context, model);
+          expect(prepared.messages[0]!.content).toEqual([part]);
+          expect(policy.getDecision()!.estimatedInputTokens).toBeGreaterThanOrEqual(4784);
+          expect(policy.getDecision()!.estimatedInputTokens).toBeLessThan(8000);
+        }
+      }
+    } finally {
+      captured.childTarget = undefined;
+    }
+  },
+);

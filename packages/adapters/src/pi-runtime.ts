@@ -73,7 +73,7 @@ import {
 } from "./openai-tool-parameters.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
-import { estimatePiImageTokens } from "./pi-image-context.js";
+import { createPiImageTokenEstimator } from "./pi-image-context.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import { applyPiModelCompatibility } from "./pi-model-compat.js";
 import { codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
@@ -418,7 +418,7 @@ export class PiAgentRuntime implements AgentRuntime {
         const contextRequest = restored ? { ...request, contextRestored: true } : request;
         let contextPolicy = createRuntimeContextPolicy(contextRequest, context, {
           credentialScope: apiKey,
-          imageTokens: estimatePiImageTokens,
+          imageTokens: createPiImageTokenEstimator(initialModelTarget.model),
         });
         let sentContext: { context: Context; sourceLength: number } | undefined;
         const prepareContext = (ctx: Context, target: Model<Api>) => {
@@ -428,7 +428,6 @@ export class PiAgentRuntime implements AgentRuntime {
         };
         const usageHooks = {
           prepareContext,
-          imageTokens: estimatePiImageTokens,
           recordUsage: request.onUsage,
           onUsage: (usage: AgentUsage) => {
             contextPolicy.onUsage(usage);
@@ -480,6 +479,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   {
                     ...usageHooks,
                     prepareContext,
+                    imageTokens: createPiImageTokenEstimator(target.model),
                     onProviderError: (message) => providerFailures.add(message.content),
                     requestDeadline,
                     onRequestDeadlineExceeded: (message) =>
@@ -504,7 +504,7 @@ export class PiAgentRuntime implements AgentRuntime {
               context,
               {
                 credentialScope: target.credentials?.accessToken ?? target.apiKey,
-                imageTokens: estimatePiImageTokens,
+                imageTokens: createPiImageTokenEstimator(target.model),
                 reserveFallbackMargin: true,
               },
             );
@@ -1897,7 +1897,10 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       sourceMessageId: undefined,
     },
     host.context,
-    { credentialScope: selectedModel.apiKey, imageTokens: estimatePiImageTokens },
+    {
+      credentialScope: selectedModel.apiKey,
+      imageTokens: createPiImageTokenEstimator(nestedHost.activeModel.model),
+    },
   );
   let nested!: Agent;
   const providerFailures = new WeakSet<AssistantMessage["content"]>();
@@ -1936,7 +1939,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
             },
             {
               prepareContext: contextPolicy.prepareContext,
-              imageTokens: estimatePiImageTokens,
+              imageTokens: createPiImageTokenEstimator(target.model),
               recordUsage: host.request.onUsage,
               onProviderError: (message) => providerFailures.add(message.content),
               requestDeadline,
@@ -2894,6 +2897,7 @@ function fallbackSupportsContext(
   verbatimMcpServers: AgentRunRequest["verbatimMcpServers"],
   preserveAllContext = false,
 ): boolean {
+  const imageTokens = createPiImageTokenEstimator(candidate.model);
   const outputTokens = resolveCompletionMaxTokens(
     candidate.model.maxTokens,
     candidate.config.maxTokens,
@@ -2919,10 +2923,10 @@ function fallbackSupportsContext(
       verbatimMcpToolResultIndexes(context.messages, verbatimMcpServers),
       protectedIndexes,
     );
-    const rawInput = estimateModelContextTokens({ ...context, messages }, estimatePiImageTokens);
+    const rawInput = estimateModelContextTokens({ ...context, messages }, imageTokens);
     const labelledInput = estimateModelContextTokens(
       { ...context, messages: automatedToolMessages(messages) },
-      estimatePiImageTokens,
+      imageTokens,
     );
     const labels = Math.max(0, labelledInput - rawInput);
     const selectionOptions = {
@@ -2934,7 +2938,7 @@ function fallbackSupportsContext(
         // The SDK has already folded prompt and tools into system messages.
         systemPrompt: "",
         tools: [],
-        imageTokens: estimatePiImageTokens,
+        imageTokens,
         maxImages: candidate.config.maxImagesPerPrompt,
       },
       strategy: "current" as const,
@@ -2974,7 +2978,7 @@ function fallbackSupportsContext(
     if (error instanceof ModelImageLimitError || error instanceof ContextBudgetError) return false;
     throw error;
   }
-  const inputTokens = estimateModelContextTokens(context, estimatePiImageTokens);
+  const inputTokens = estimateModelContextTokens(context, imageTokens);
   // Token counts are estimates and can differ by provider/tokenizer. Reserve a
   // small input-relative margin, not a fixed 4096 tokens that would exclude
   // otherwise usable small-context models on short turns.
