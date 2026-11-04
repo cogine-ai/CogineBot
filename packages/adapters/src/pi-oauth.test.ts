@@ -116,6 +116,65 @@ describe("model secrets", () => {
     };
     expect(parseModelSecret(serializeModelSecret(secret))).toEqual(secret);
   });
+
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "round-trips the encrypted compatible protocol %s and exact validated headers",
+    (apiProtocol) => {
+      const secret = {
+        kind: "openai_compatible" as const,
+        baseUrl: "http://127.0.0.1:8000/v1",
+        apiProtocol,
+        headers: { "X-Tenant": " en ", "X-Session": 'printable"session\\value' },
+        apiKey: "fake-api-key",
+      };
+      expect(parseModelSecret(serializeModelSecret(secret))).toEqual(secret);
+      const legacy = parseModelSecret(
+        JSON.stringify({ kind: "openai_compatible", baseUrl: secret.baseUrl }),
+      );
+      expect(legacy).not.toHaveProperty("apiProtocol");
+      expect(legacy).not.toHaveProperty("headers");
+    },
+  );
+
+  it.each([
+    { apiProtocol: "future-wire" },
+    { apiProtocol: null },
+    { apiProtocol: 1 },
+    { apiProtocol: "" },
+    { headers: null },
+    { headers: [] },
+    { headers: { "X-Tenant": "" } },
+    { headers: { "X-Tenant": "private\r\nvalue" } },
+    { headers: { Authorization: "private-canary" } },
+    { baseUrl: "", apiProtocol: "future-wire" },
+    { baseUrl: "", headers: { "X-Tenant": "" } },
+  ])("rejects a present unsupported connection field without echoing its value (%#)", (fields) => {
+    const stored = JSON.stringify({
+      kind: "openai_compatible",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      ...fields,
+    });
+    expect(() => parseModelSecret(stored)).toThrow(/^Model connection is unavailable\.$/);
+  });
+
+  it("registers only long normalized header tokens for global text redaction", () => {
+    const values = secretValuesToRedact({
+      kind: "openai_compatible",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      apiKey: "fake-api-key",
+      headers: {
+        "X-Short": "          en          ",
+        "X-One": "1",
+        "X-Route": "xy9",
+        "X-Blank": " ",
+        "X-Long": "  private-token  ",
+        "X-Same": "private-token",
+      },
+    });
+    expect(values).toEqual(["fake-api-key", "  private-token  ", "private-token"]);
+    expect(values).not.toContain("");
+    expect(values).not.toContain("en");
+  });
   it("treats plaintext as an API key", () => {
     expect(parseModelSecret("sk-or-v1-abc")).toEqual({ kind: "api_key", key: "sk-or-v1-abc" });
   });

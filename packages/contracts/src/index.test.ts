@@ -14,7 +14,9 @@ import {
   canReactToThreadMessage,
   McpServerConfigInput,
   MessageBlock,
+  ModelApiProtocolSchema,
   ModelConnectInputSchema,
+  ModelCredentialSchema,
   ModelOAuthBeginSchema,
   normalizeCreateBotProfile,
   ProductEventType,
@@ -32,6 +34,62 @@ import {
   UpdateGroupInput,
   usableModelId,
 } from "./index.js";
+
+describe("compatible model connection protocol contract", () => {
+  const input = {
+    provider: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    modelId: "fixture-model",
+  };
+
+  it.each(ModelApiProtocolSchema.options)("accepts the supported protocol %s", (apiProtocol) => {
+    expect(
+      ModelConnectInputSchema.parse({ ...input, apiProtocol, headers: { "X-Tenant": "en" } }),
+    ).toMatchObject({ apiProtocol, headers: { "X-Tenant": "en" } });
+  });
+
+  it.each([null, 4, "", "future-wire"])(
+    "rejects a present invalid protocol (%#)",
+    (apiProtocol) => {
+      expect(ModelConnectInputSchema.safeParse({ ...input, apiProtocol }).success).toBe(false);
+    },
+  );
+
+  it("preserves omitted fields and explicit header removal as different intents", () => {
+    const omitted = ModelConnectInputSchema.parse(input);
+    expect(omitted).not.toHaveProperty("apiProtocol");
+    expect(omitted).not.toHaveProperty("headers");
+    expect(ModelConnectInputSchema.parse({ ...input, headers: {} }).headers).toEqual({});
+    expect(ModelConnectInputSchema.safeParse({ ...input, headers: null }).success).toBe(false);
+  });
+
+  it("keeps model credentials metadata-only and retains revision validation", () => {
+    const dto = ModelCredentialSchema.parse({
+      id: "credential-fixture",
+      provider: "openai-compatible",
+      label: "Fixture",
+      hasKey: true,
+      isDefault: false,
+      connectionRevision: 2,
+      apiProtocol: "responses",
+      headerNames: ["X-Tenant"],
+      headers: { "X-Tenant": "synthetic-private-value" },
+    });
+    expect(dto).toMatchObject({ apiProtocol: "responses", headerNames: ["X-Tenant"] });
+    expect(dto).not.toHaveProperty("headers");
+    expect(JSON.stringify(dto)).not.toContain("synthetic-private-value");
+    expect(ModelConnectInputSchema.safeParse({ ...input, credentialId: dto.id }).success).toBe(
+      false,
+    );
+    expect(
+      ModelConnectInputSchema.safeParse({
+        ...input,
+        credentialId: dto.id,
+        expectedRevision: dto.connectionRevision,
+      }).success,
+    ).toBe(true);
+  });
+});
 
 const localizedUnassignedNames = [
   "Unassigned",

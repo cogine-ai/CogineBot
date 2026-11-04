@@ -480,7 +480,7 @@ describe("openai-compatible provider", () => {
   });
 
   it("rejects oversized model lists", async () => {
-    const fetchImpl = async () => new Response("x".repeat(64 * 1024 + 1));
+    const fetchImpl = async () => new Response("x".repeat(2 * 1024 * 1024 + 1));
     await expect(
       probeOpenAiCompatibleModels({ baseUrl: "http://127.0.0.1:8000/v1" }, fetchImpl),
     ).rejects.toThrow(/too large.*explicit model id/is);
@@ -495,7 +495,7 @@ describe("openai-compatible provider", () => {
             cancelled = true;
           },
         }),
-        { headers: { "content-length": String(64 * 1024 + 1) } },
+        { headers: { "content-length": String(2 * 1024 * 1024 + 1) } },
       );
     await expect(
       probeOpenAiCompatibleModels({ baseUrl: "http://127.0.0.1:8000/v1" }, fetchImpl),

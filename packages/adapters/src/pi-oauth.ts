@@ -12,6 +12,7 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import type {
+  ModelApiProtocol,
   ModelContextLimits,
   ModelOAuthBegin,
   ModelOAuthSignInMode,
@@ -20,7 +21,9 @@ import type {
 import {
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  ModelApiProtocolSchema,
   ModelContextLimitsSchema,
+  parseModelHeaders,
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
@@ -88,6 +91,14 @@ const SIGN_IN_START_WAIT_MS = 30_000;
 const REFRESH_KICK_TIMEOUT_MS = 30_000;
 const CORRUPT_MODEL_SECRET_MESSAGE =
   "Stored model credential is corrupt. Connect the provider again.";
+
+/** A recognized connection format must not be overwritten as a legacy key. */
+export class ModelConnectionConfigurationError extends Error {
+  constructor() {
+    super("Model connection is unavailable.");
+    this.name = "ModelConnectionConfigurationError";
+  }
+}
 
 const TERMINAL_REFRESH_ERROR_MARKERS = [
   ...CHATGPT_PLAN_TERMINAL_REFRESH_ERROR_CODES,
@@ -287,6 +298,8 @@ export type StoredModelSecret =
       kind: "openai_compatible";
       baseUrl: string;
       apiKey?: string;
+      apiProtocol?: ModelApiProtocol;
+      headers?: Record<string, string>;
       reasoning?: boolean;
       thinkingLevel?: ThinkingLevel | null;
       maxTokens?: number;
@@ -397,6 +410,22 @@ function parsedModelIds(value: unknown): string[] | undefined {
     : undefined;
 }
 
+function modelSecretProtocol(input: unknown): ModelApiProtocol | undefined {
+  if (input === undefined) return undefined;
+  const parsed = ModelApiProtocolSchema.safeParse(input);
+  if (!parsed.success) throw new ModelConnectionConfigurationError();
+  return parsed.data;
+}
+
+function modelSecretHeaders(input: unknown): Record<string, string> | undefined {
+  if (input === undefined) return undefined;
+  try {
+    return parseModelHeaders(input);
+  } catch {
+    throw new ModelConnectionConfigurationError();
+  }
+}
+
 export function parseModelSecret(plaintext: string): StoredModelSecret {
   const trimmed = plaintext.trim();
   if (!trimmed.startsWith("{")) return { kind: "api_key", key: plaintext };
@@ -408,6 +437,8 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
     return { kind: "api_key", key: plaintext };
   }
   if (parsed.kind === "openai_compatible") {
+    const apiProtocol = modelSecretProtocol(parsed.apiProtocol);
+    const headers = modelSecretHeaders(parsed.headers);
     if (typeof parsed.baseUrl !== "string" || !parsed.baseUrl.trim()) {
       throw new Error(CORRUPT_MODEL_SECRET_MESSAGE);
     }
@@ -434,6 +465,8 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
     return {
       kind: "openai_compatible",
       baseUrl: parsed.baseUrl.trim(),
+      ...(apiProtocol !== undefined ? { apiProtocol } : {}),
+      ...(headers !== undefined ? { headers } : {}),
       ...(apiKey ? { apiKey } : {}),
       ...(typeof parsed.reasoning === "boolean" ? { reasoning: parsed.reasoning } : {}),
       ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
@@ -490,10 +523,14 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
     });
   }
   if (secret.kind === "openai_compatible") {
+    const apiProtocol = modelSecretProtocol(secret.apiProtocol);
+    const headers = modelSecretHeaders(secret.headers);
     return JSON.stringify({
       kind: "openai_compatible",
       ...modelLimits(secret as unknown as Record<string, unknown>),
       baseUrl: secret.baseUrl,
+      ...(apiProtocol !== undefined ? { apiProtocol } : {}),
+      ...(headers !== undefined ? { headers } : {}),
       ...(secret.apiKey ? { apiKey: secret.apiKey } : {}),
       ...(secret.reasoning !== undefined ? { reasoning: secret.reasoning } : {}),
       ...(secret.thinkingLevel !== undefined ? { thinkingLevel: secret.thinkingLevel } : {}),
@@ -527,7 +564,14 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
 
 export function secretValuesToRedact(secret: StoredModelSecret): string[] {
   if (secret.kind === "api_key") return secret.key ? [secret.key] : [];
-  if (secret.kind === "openai_compatible") return secret.apiKey ? [secret.apiKey] : [];
+  if (secret.kind === "openai_compatible") {
+    // Short routing values belong to request-error sanitization, not model text redaction.
+    const headers = Object.values(secret.headers ?? {}).flatMap((value) => {
+      const normalized = value.trim();
+      return normalized.length >= 8 ? [value, normalized] : [];
+    });
+    return [...new Set([...(secret.apiKey ? [secret.apiKey] : []), ...headers])];
+  }
   const idToken = (secret.credential as Record<string, unknown>).idToken;
   const pending = (secret.credential as Record<string, unknown>).pendingRotation as
     | { response?: Record<string, unknown> }

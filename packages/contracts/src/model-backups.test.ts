@@ -64,6 +64,64 @@ const choices: ModelBackupChoice[] = [
 ];
 
 describe("connected backup model choices", () => {
+  it("matches a legacy provider catalog alias without combining connection identities", () => {
+    const azureCatalog: ModelCatalogEntry[] = [
+      {
+        provider: "azure",
+        providerName: "Azure",
+        id: "azure-model",
+        label: "Azure model",
+        billing: "API",
+      },
+      {
+        provider: "azure",
+        id: "azure-placeholder",
+        label: "Azure",
+        billing: "API",
+        placeholder: true,
+      },
+    ];
+    const legacy: ModelCredential = {
+      id: "azure-legacy",
+      provider: "azure-openai-responses",
+      label: "Old Azure",
+      hasKey: true,
+      isDefault: true,
+      modelId: "azure-model",
+      connectionRevision: 7,
+    };
+    const current: ModelCredential = {
+      ...legacy,
+      id: "azure-current",
+      provider: "azure",
+      isDefault: false,
+      connectionRevision: 19,
+    };
+    expect(connectedBackupOptions(azureCatalog, [legacy, current])).toEqual([
+      {
+        provider: "azure-openai-responses",
+        modelId: "azure-model",
+        modelCredentialId: "azure-legacy",
+        expectedRevision: 7,
+        label: "Azure model",
+        providerName: "Azure",
+      },
+      {
+        provider: "azure",
+        modelId: "azure-model",
+        modelCredentialId: "azure-current",
+        expectedRevision: 19,
+        label: "Azure model",
+        providerName: "Azure",
+      },
+    ]);
+    expect(legacy).toMatchObject({
+      provider: "azure-openai-responses",
+      id: "azure-legacy",
+      connectionRevision: 7,
+    });
+  });
+
   it("keeps the native catalog provider name when a credential label is a provider id", () => {
     const options = connectedBackupOptions(catalog, [{ ...credentials[0]!, label: "anthropic" }]);
     expect(options[0]?.providerName).toBe("Anthropic");

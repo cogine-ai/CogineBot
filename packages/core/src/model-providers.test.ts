@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   clampCatalogThinkingLevel,
   connectedModelChoices,
+  credentialForModel,
   featuredModelProviders,
   filterModelCatalog,
+  modelOptionKey,
+  parseModelOptionKey,
   pickCatalogModelId,
   resolveSelectableModelId,
   selectedProviderOutsideSearchResults,
@@ -276,5 +279,42 @@ describe("filterModelCatalog", () => {
 
   it("returns nothing when no model matches", () => {
     expect(filterModelCatalog(models, "gemini")).toEqual([]);
+  });
+});
+
+describe("native provider aliases retain exact connection identities", () => {
+  it("matches the Azure catalog while preserving bound provider and credential IDs", () => {
+    const legacy = {
+      id: "azure-old",
+      connectionRevision: 7,
+      provider: "azure-openai-responses",
+      label: "Old Azure",
+      modelId: "azure-model",
+    };
+    const other = {
+      id: "azure-other",
+      connectionRevision: 9,
+      provider: "azure",
+      label: "Other Azure",
+      modelId: "azure-model",
+    };
+    const catalog = [{ provider: "azure", id: "azure-model", label: "Azure model" }];
+    expect(pickCatalogModelId(catalog, legacy.provider, legacy.modelId)).toBe("azure-model");
+    expect(credentialForModel([legacy, other], "azure", "azure-model", legacy.id)).toBe(legacy);
+    const choices = connectedModelChoices([legacy, other], catalog);
+    expect(choices.map((choice) => [choice.modelCredentialId, choice.provider])).toEqual([
+      [legacy.id, legacy.provider],
+      [other.id, other.provider],
+    ]);
+    expect(parseModelOptionKey(choices[0]!.key)).toEqual({
+      provider: legacy.provider,
+      modelId: "azure-model",
+      modelCredentialId: legacy.id,
+    });
+    expect(modelOptionKey(legacy.provider, "azure-model")).toBe("azure::azure-model");
+    expect(parseModelOptionKey("azure-openai-responses::azure-model")).toEqual({
+      provider: "azure",
+      modelId: "azure-model",
+    });
   });
 });

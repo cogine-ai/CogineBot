@@ -88,6 +88,7 @@ import {
   MessagingChannelMembershipSchema,
   MessagingLinkedIdentitySchema,
   MessagingStatusSchema,
+  ModelApiProtocolSchema,
   ModelBackupChoiceSchema,
   ModelBackupListSchema,
   ModelCatalogEntrySchema,
@@ -137,6 +138,7 @@ import {
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
 import { PluginServerConnectionInputSchema } from "./mcp.js";
+import { ModelHeadersSchema } from "./model-headers.js";
 import {
   NativeBeginInputSchema,
   NativeConfigEditableSchema,
@@ -338,6 +340,8 @@ export const appContract = {
         z.object({
           baseUrl: z.string(),
           apiKey: z.string().optional(),
+          apiProtocol: ModelApiProtocolSchema.optional(),
+          headers: ModelHeadersSchema.optional(),
           credentialId: Id.optional(),
           expectedBaseUrl: z.string().optional(),
         }),

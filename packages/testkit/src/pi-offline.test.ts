@@ -394,7 +394,7 @@ describe("real Pi against an offline model HTTP endpoint", () => {
           expect(request) {
             expect(request.messages.at(-1)).toMatchObject({
               role: "user",
-              content: [{ type: "text", text: "Save hello to notes.txt." }],
+              content: "Save hello to notes.txt.",
             });
             expect(request.tools).toContainEqual(
               expect.objectContaining({
@@ -466,6 +466,8 @@ describe("real Pi against an offline model HTTP endpoint", () => {
         id: JSON.stringify(["pi-tool", "main", "write-1"]),
       },
     ]);
+    expect(server.requests).toHaveLength(2);
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(2);
     expect(await readFile(path.join(dir, "notes.txt"), "utf8")).toBe("hello\n");
     expect(events.at(-1)).toEqual({ type: "done", text: "Saved notes.txt." });
   });

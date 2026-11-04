@@ -1,12 +1,15 @@
 import type {
+  ModelApiProtocol,
   ModelBackupChoice,
   ModelCredentialReference,
+  ModelHeaderRow,
   ModelOAuthBegin,
   ThinkingLevel,
 } from "@rakazo/contracts";
 import {
   backupChoiceKey,
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
+  canonicalPiProviderId,
   cloudflareGatewayRouting,
   connectedBackupOptions,
   DEFAULT_MODEL_CONTEXT_WINDOW,
@@ -14,28 +17,31 @@ import {
   MAX_MODEL_BACKUPS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  ModelApiProtocolSchema,
+  ModelHeaderRowsSchema,
   modelConnectionLabel,
+  modelHeadersInput,
   moveBackupChoice,
   OPENAI_COMPATIBLE_BASE_URL_HINT,
   OPENAI_COMPATIBLE_PROVIDER_ID,
-  openAiCompatibleConnectReady,
-  parseModelContextWindow,
-  parseModelMaxImagesPerPrompt,
-  parseModelMaxTokens,
   sameBackupChoices,
   sameOpenAiCompatibleBaseUrl,
 } from "@rakazo/contracts";
 import {
   CHATGPT_USAGE_SETTINGS_URL,
-  COMPATIBLE_THINKING_LEVELS,
   canUseCompatibleModelAsDefault,
   clampCatalogThinkingLevel,
+  compatibleConnectionReady,
   compatibleModelRows,
+  compatibleThinkingLevels,
+  connectionFormFields,
+  connectionFormModelId,
   createModelProbe,
   featuredModelProviders,
   filterModelCatalog,
   initialModelProbeState,
-  pickCatalogModelId,
+  matchesSearchQuery,
+  modelConnectRequest,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -56,6 +62,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HeaderRowsEditor } from "../../components/header-rows-editor";
 import { MenuPicker } from "../../components/menu-picker";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
@@ -82,22 +89,6 @@ import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native
 import { currentSessionGeneration } from "../../lib/session";
 import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
 import { errorText } from "../../lib/user-error";
-
-function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
-  if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID) {
-    return String(stored ?? DEFAULT_MODEL_MAX_TOKENS);
-  }
-  return stored !== undefined ? String(stored) : "";
-}
-
-const THINKING_LEVEL_OPTIONS: ThinkingLevel[] = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
 
 /** Providers with more models than this get a search field. */
 const MODEL_SEARCH_THRESHOLD = 10;
@@ -189,6 +180,9 @@ function ModelsForm({
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [apiProtocol, setApiProtocol] = useState<ModelApiProtocol | "">("chat-completions");
+  const [headerRows, setHeaderRows] = useState<ModelHeaderRow[] | null>(null);
+  const [showHeaders, setShowHeaders] = useState(false);
   const [reasoning, setReasoning] = useState(false);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | null>(null);
   const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
@@ -222,6 +216,16 @@ function ModelsForm({
   const [pasteCode, setPasteCode] = useState("");
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | "disconnect" | null>(null);
+  const busyRef = useRef(false);
+  const pendingOwnerRef = useRef(0);
+  function beginPending(next: "connect" | "default" | "disconnect") {
+    const owner = ++pendingOwnerRef.current;
+    setPending(next);
+    return owner;
+  }
+  function finishPending(owner: number) {
+    if (owner === pendingOwnerRef.current) setPending(null);
+  }
   const [oauthPending, setOauthPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backupModels, setBackupModels] = useState<ModelBackupChoice[]>([]);
@@ -334,28 +338,37 @@ function ModelsForm({
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
     const nextProvider =
-      (preferred.provider && nextCatalog.some((entry) => entry.provider === preferred.provider)
+      (preferred.provider &&
+      nextCatalog.some(
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(preferred.provider ?? ""),
+      )
         ? preferred.provider
         : nextMe.defaultProvider) ??
       nextCatalog[0]?.provider ??
       "";
     const nextCredential =
       nextCredentials.find(
-        (entry) => entry.provider === nextProvider && entry.id === preferred.connectionId,
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+          entry.id === preferred.connectionId,
       ) ??
-      nextCredentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
-      nextCredentials.find((entry) => entry.provider === nextProvider);
-    const nextModel =
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? preferred.modelId?.trim() ||
-          nextCredential?.modelId ||
-          (nextMe.defaultProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? nextMe.defaultModel : "") ||
-          ""
-        : pickCatalogModelId(
-            nextCatalog,
-            nextProvider,
-            preferred.modelId || nextCredential?.modelId || nextMe.defaultModel,
-          );
+      nextCredentials.find(
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+          entry.isDefault,
+      ) ??
+      nextCredentials.find(
+        (entry) =>
+          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+      );
+    const nextModel = connectionFormModelId({
+      catalog: nextCatalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: nextMe,
+      current: preferred.modelId,
+    });
     resetOpenAiCompatibleProbe();
     setProvider(nextProvider);
     setConnectionId(nextCredential?.id ?? null);
@@ -365,34 +378,16 @@ function ModelsForm({
       current.provider === nextProvider ? current : { provider: nextProvider, query: "" },
     );
     setModelId(nextModel);
-    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
-    if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-      setBaseUrl(nextCredential?.baseUrl ?? "");
-      setReasoning(nextCredential?.reasoning ?? false);
-      setThinkingLevel(
-        clampCatalogThinkingLevel(
-          nextCredential?.modelId === nextModel ? nextCredential?.thinkingLevel : null,
-          nextCredential?.reasoning ? COMPATIBLE_THINKING_LEVELS : [],
-        ) as ThinkingLevel | null,
-      );
-      setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
-      setSupportsImages(nextCredential?.supportsImages ?? false);
-      setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
-    } else {
-      // A credential's stored effort is bound to its saved model choice.
-      const nextEntry = nextCatalog.find(
-        (entry) => entry.provider === nextProvider && entry.id === nextModel,
-      );
-      setThinkingLevel(
-        clampCatalogThinkingLevel(
-          nextCredential?.modelId === nextModel ? nextCredential.thinkingLevel : null,
-          nextEntry?.thinkingLevels,
-        ) as ThinkingLevel | null,
-      );
-    }
-    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
-    setAccountId(nextCredential?.accountId ?? "");
-    setGatewayId(nextCredential?.gatewayId ?? "");
+    applyConnectionFields(
+      connectionFormFields({
+        catalog: nextCatalog,
+        provider: nextProvider,
+        modelId: nextModel,
+        credential: nextCredential,
+      }),
+    );
+    setHeaderRows(null);
+    setShowHeaders(false);
     return nextMe;
   }, []);
 
@@ -523,11 +518,11 @@ function ModelsForm({
     [groups, provider],
   );
   const connectedProviderIds = useMemo(
-    () => new Set(credentials.map((entry) => entry.provider)),
+    () => new Set(credentials.map((entry) => canonicalPiProviderId(entry.provider))),
     [credentials],
   );
   const credentialByProvider = useMemo(
-    () => new Map(credentials.map((entry) => [entry.provider, entry])),
+    () => new Map(credentials.map((entry) => [canonicalPiProviderId(entry.provider), entry])),
     [credentials],
   );
   const backupOptions = useMemo(
@@ -547,7 +542,7 @@ function ModelsForm({
   // Connected providers always get their own top section; the rest follow the
   // curated order (featured first, everything behind "Show more").
   const connectedGroups = useMemo(
-    () => groups.filter((group) => connectedProviderIds.has(group.id)),
+    () => groups.filter((group) => connectedProviderIds.has(canonicalPiProviderId(group.id))),
     [groups, connectedProviderIds],
   );
   const otherGroups = useMemo(() => {
@@ -559,9 +554,11 @@ function ModelsForm({
             .map((entry) => byId.get(entry.provider))
             .filter((group): group is (typeof groups)[number] => group !== undefined);
         })();
-    return list.filter((group) => !connectedProviderIds.has(group.id));
+    return list.filter((group) => !connectedProviderIds.has(canonicalPiProviderId(group.id)));
   }, [groups, featuredProviders, showAllProviders, connectedProviderIds]);
-  const modelsForProvider = catalog.filter((entry) => entry.provider === provider);
+  const modelsForProvider = catalog.filter(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
+  );
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
   const showModelSearch = modelsForProvider.length > MODEL_SEARCH_THRESHOLD;
   // Hide a query typed for another provider until load()/chooseProvider clears it.
@@ -588,9 +585,13 @@ function ModelsForm({
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
   const credential = credentials.find(
-    (entry) => entry.provider === provider && entry.id === connectionId,
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
+      entry.id === connectionId,
   );
-  const providerConnections = credentials.filter((entry) => entry.provider === provider);
+  const providerConnections = credentials.filter(
+    (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
+  );
   const connectionReferences = references.filter(
     (entry) => entry.modelCredentialId === connectionId,
   );
@@ -599,7 +600,9 @@ function ModelsForm({
   );
   const unresolvedReferences = references.filter((entry) => entry.unresolved);
   const currentEntry = catalog.find(
-    (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(me?.defaultProvider ?? "") &&
+      entry.id === me?.defaultModel,
   );
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
@@ -615,11 +618,13 @@ function ModelsForm({
     probeModels,
   );
   const isActive =
-    me?.defaultProvider === selected?.provider &&
+    canonicalPiProviderId(me?.defaultProvider ?? "") ===
+      canonicalPiProviderId(selected?.provider ?? "") &&
     me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
     (!isOpenAiCompatible || credential?.isDefault === true);
   // Space still bills the host while this provider matches; model id alone is not credentials.
-  const usingServerCredentials = provider === me?.hostCredentialProvider;
+  const usingServerCredentials =
+    canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
   const acceptsKey = selected?.auth !== "oauth";
   const subscriptionSignIn = selected?.signIn !== undefined;
   // Effort levels for the staged catalog model — "off" stays out, matching the
@@ -638,10 +643,13 @@ function ModelsForm({
       : null;
   const thinkingDirty = !isOpenAiCompatible && (thinkingLevel ?? null) !== selectedStoredLevel;
   const busy = pending !== null || oauthPending;
+  busyRef.current = busy;
   const effectiveBaseUrl = baseUrl.trim();
-  const openAiCompatibleReady = openAiCompatibleConnectReady({
+  const openAiCompatibleReady = compatibleConnectionReady({
     baseUrl: effectiveBaseUrl,
     modelId,
+    apiProtocol,
+    headerRows,
   });
   const builtinLimitSave =
     !isOpenAiCompatible &&
@@ -649,10 +657,50 @@ function ModelsForm({
     Boolean(credential) &&
     apiKey.trim().length === 0;
 
+  function applyConnectionFields(fields: ReturnType<typeof connectionFormFields>) {
+    setEnabledModelIds(fields.enabledModelIds);
+    setBaseUrl(fields.baseUrl);
+    setApiProtocol(fields.apiProtocol);
+    setReasoning(fields.reasoning);
+    setThinkingLevel(fields.thinkingLevel);
+    setMaxTokens(fields.maxTokens);
+    setContextWindow(fields.contextWindow);
+    setSupportsImages(fields.supportsImages);
+    setMaxImagesPerPrompt(fields.maxImagesPerPrompt);
+    setAccountId(fields.accountId);
+    setGatewayId(fields.gatewayId);
+  }
+
+  function updateApiProtocol(value: string) {
+    if (busyRef.current) return;
+    const parsed = ModelApiProtocolSchema.safeParse(value);
+    const next = parsed.success ? parsed.data : "";
+    selectionRevisionRef.current += 1;
+    setApiProtocol(next);
+    setThinkingLevel(
+      (current) =>
+        clampCatalogThinkingLevel(
+          current,
+          reasoning ? compatibleThinkingLevels(next) : [],
+        ) as ThinkingLevel | null,
+    );
+    resetOpenAiCompatibleProbe();
+    clearFeedback();
+  }
+
+  function updateHeaderRows(rows: ModelHeaderRow[]) {
+    if (busyRef.current) return;
+    selectionRevisionRef.current += 1;
+    setHeaderRows(rows);
+    resetOpenAiCompatibleProbe();
+    clearFeedback();
+  }
+
   function updateBaseUrl(nextBaseUrl: string) {
     selectionRevisionRef.current += 1;
     if (!sameOpenAiCompatibleBaseUrl(baseUrl, nextBaseUrl)) {
       setApiKey("");
+      setHeaderRows(sameOpenAiCompatibleBaseUrl(nextBaseUrl, savedBaseUrl) ? null : []);
       // A new endpoint starts with no ticks; the saved endpoint gets its saved list back.
       setEnabledModelIds(savedCompatibleModelIds(credential, nextBaseUrl));
     }
@@ -674,52 +722,59 @@ function ModelsForm({
       nextConnectionId === null
         ? undefined
         : (credentials.find(
-            (entry) => entry.provider === nextProvider && entry.id === nextConnectionId,
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+              entry.id === nextConnectionId,
           ) ??
-          credentials.find((entry) => entry.provider === nextProvider && entry.isDefault) ??
-          credentials.find((entry) => entry.provider === nextProvider));
+          credentials.find(
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+              entry.isDefault,
+          ) ??
+          credentials.find(
+            (entry) =>
+              canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+          ));
     setConnectionId(nextCredential?.id ?? null);
     setConnectionRevision(nextCredential?.connectionRevision);
     setSavedBaseUrl(nextCredential?.baseUrl);
-    const nextModelId =
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (nextCredential?.modelId ?? "")
-        : pickCatalogModelId(catalog, nextProvider, nextCredential?.modelId ?? me?.defaultModel);
+    const nextModelId = connectionFormModelId({
+      catalog,
+      provider: nextProvider,
+      credential: nextCredential,
+      defaults: me,
+    });
     Keyboard.dismiss();
     setProvider(nextProvider);
     setModelSearch({ provider: nextProvider, query: "" });
-    setReasoning(nextCredential?.reasoning ?? false);
-    const nextEntry = catalog.find(
-      (entry) => entry.provider === nextProvider && entry.id === nextModelId,
-    );
-    setThinkingLevel(
-      clampCatalogThinkingLevel(
-        nextCredential?.modelId === nextModelId ? nextCredential.thinkingLevel : null,
-        nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-          ? nextCredential?.reasoning
-            ? COMPATIBLE_THINKING_LEVELS
-            : []
-          : nextEntry?.thinkingLevels,
-      ) as ThinkingLevel | null,
-    );
-    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
-    setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
-    setSupportsImages(nextCredential?.supportsImages ?? false);
-    setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(nextModelId);
-    setEnabledModelIds(nextCredential?.enabledModelIds ?? []);
-    setBaseUrl(
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
+    applyConnectionFields(
+      connectionFormFields({
+        catalog,
+        provider: nextProvider,
+        modelId: nextModelId,
+        credential: nextCredential,
+      }),
     );
+    setHeaderRows(null);
+    setShowHeaders(false);
     setApiKey("");
-    setAccountId(nextCredential?.accountId ?? "");
-    setGatewayId(nextCredential?.gatewayId ?? "");
     resetOpenAiCompatibleProbe();
     clearFeedback();
   }
 
   async function probeServerModels() {
     if (!baseUrl.trim()) return;
+    if (!ModelApiProtocolSchema.safeParse(apiProtocol).success) {
+      publishFeedback("probe", { error: t("Choose an API protocol.") });
+      return;
+    }
+    if (headerRows !== null && !ModelHeaderRowsSchema.safeParse(headerRows).success) {
+      publishFeedback("probe", { error: t("Check the custom headers.") });
+      return;
+    }
+    const headers = modelHeadersInput(headerRows);
+    const revision = selectionRevisionRef.current;
     const probeScope = {
       spaceGeneration: currentSpaceSelectionGeneration(),
       sessionGeneration: currentSessionGeneration(),
@@ -727,6 +782,8 @@ function ModelsForm({
     };
     probeScopeRef.current = probeScope;
     const isCurrent = () =>
+      revision === selectionRevisionRef.current &&
+      settingsCurrent() &&
       probeScope.spaceGeneration === currentSpaceSelectionGeneration() &&
       probeScope.sessionGeneration === currentSessionGeneration() &&
       probeScope.apiBase === currentApiBase();
@@ -742,6 +799,8 @@ function ModelsForm({
           "models/probeOpenAiCompatible",
           {
             ...input,
+            apiProtocol: apiProtocol || undefined,
+            headers,
             ...(connectionId && sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl)
               ? { credentialId: connectionId, expectedBaseUrl: savedBaseUrl }
               : {}),
@@ -802,7 +861,7 @@ function ModelsForm({
     if (isOpenAiCompatible && !activeModelId) return;
     Keyboard.dismiss();
     clearFeedback();
-    setPending("default");
+    const pendingOwner = beginPending("default");
     try {
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
@@ -810,7 +869,7 @@ function ModelsForm({
       await rpc(
         "models/setDefault",
         {
-          provider: selected.provider,
+          provider: credential.provider,
           modelId: activeModelId,
           modelCredentialId: credential.id,
           expectedRevision: connectionRevision,
@@ -843,7 +902,7 @@ function ModelsForm({
         error: errorText(err, t("Could not change the default model")),
       });
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -855,7 +914,7 @@ function ModelsForm({
     if (!selected || !credential) return;
     cancelOAuth();
     clearFeedback();
-    setPending("disconnect");
+    const pendingOwner = beginPending("disconnect");
     try {
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
@@ -863,7 +922,7 @@ function ModelsForm({
       const result = await rpc<{ ok: true; remoteRevocationConfirmed?: boolean }>(
         "models/disconnect",
         {
-          provider: selected.provider,
+          provider: credential.provider,
           credentialId: connectionId,
           expectedRevision: connectionRevision,
         },
@@ -896,7 +955,7 @@ function ModelsForm({
         error: errorText(err, t("Could not disconnect this provider")),
       });
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -906,7 +965,7 @@ function ModelsForm({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? COMPATIBLE_THINKING_LEVELS : [],
+        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
       ) as ThinkingLevel | null,
     );
   }
@@ -917,111 +976,68 @@ function ModelsForm({
     const spaceGeneration = currentSpaceSelectionGeneration();
     const sessionGeneration = currentSessionGeneration();
     if (!selected) return;
-    const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
-    const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
-    const supportedThinking = isOpenAiCompatible
-      ? reasoning
-        ? COMPATIBLE_THINKING_LEVELS
-        : []
-      : selected.thinkingLevels;
-    const stagedThinking = clampCatalogThinkingLevel(
-      thinkingLevel,
-      supportedThinking,
-    ) as ThinkingLevel | null;
-    const modelChanged = (credential?.modelId ?? null) !== (activeModelId || null);
-    if (isOpenAiCompatible) {
-      if (!effectiveBaseUrl || !modelId.trim()) return;
-    } else if (savingLimitOnly) {
-      if (!credential) return;
-    } else if (apiKey.trim().length < 8) {
-      return;
-    }
-    // Drop the previous result before the limit check so it cannot sit beside the new one.
+    const request = modelConnectRequest({
+      form: {
+        apiKey,
+        modelId,
+        enabledModelIds,
+        baseUrl,
+        apiProtocol,
+        headerRows,
+        reasoning,
+        thinkingLevel,
+        maxTokens,
+        contextWindow,
+        supportsImages,
+        maxImagesPerPrompt,
+        accountId,
+        gatewayId,
+      },
+      selected,
+      credential,
+      credentialId: connectionId,
+      expectedRevision: connectionRevision,
+    });
+    if (request.status === "incomplete") return;
     Keyboard.dismiss();
     clearFeedback();
-    const parsedMaxTokens = maxTokens.trim() ? parseModelMaxTokens(maxTokens) : undefined;
-    if ((isOpenAiCompatible || maxTokens.trim()) && parsedMaxTokens === undefined) {
+    if (request.status === "invalid") {
       publishFeedback("connection", {
-        error: t("Enter a whole number from 1 to {max} for maximum output tokens.", {
-          max: MAX_MODEL_MAX_TOKENS,
-        }),
+        error:
+          request.field === "maxTokens"
+            ? t("Enter a whole number from 1 to {max} for maximum output tokens.", {
+                max: MAX_MODEL_MAX_TOKENS,
+              })
+            : request.field === "contextWindow"
+              ? t("Enter a whole number from 1 to {max} for the context limit.", {
+                  max: MAX_MODEL_CONTEXT_WINDOW,
+                })
+              : request.field === "maxImagesPerPrompt"
+                ? t("Enter a whole number from 1 to 1000 for the image limit.")
+                : request.field === "outputRoom"
+                  ? t("Maximum output tokens must be smaller than the context limit.")
+                  : request.field === "apiProtocol"
+                    ? t("Choose an API protocol.")
+                    : request.field === "headers"
+                      ? t("Check the custom headers.")
+                      : t("Reload this connection before saving."),
       });
       return;
     }
-    const parsedMaxImagesPerPrompt = isOpenAiCompatible
-      ? parseModelMaxImagesPerPrompt(maxImagesPerPrompt, supportsImages)
-      : undefined;
-    if (
-      isOpenAiCompatible &&
-      supportsImages &&
-      maxImagesPerPrompt.trim() &&
-      parsedMaxImagesPerPrompt === undefined
-    ) {
-      publishFeedback("connection", {
-        error: t("Enter a whole number from 1 to 1000 for the image limit."),
-      });
-      return;
-    }
-    const maxImagesPerPromptInput =
-      supportsImages && !maxImagesPerPrompt.trim() ? null : parsedMaxImagesPerPrompt;
-    const parsedContextWindow = isOpenAiCompatible
-      ? parseModelContextWindow(contextWindow)
-      : undefined;
-    if (isOpenAiCompatible && parsedContextWindow === undefined) {
-      publishFeedback("connection", {
-        error: t("Enter a whole number from 1 to {max} for the context limit.", {
-          max: MAX_MODEL_CONTEXT_WINDOW,
-        }),
-      });
-      return;
-    }
-    if (isOpenAiCompatible && parsedMaxTokens === undefined) return;
-    setPending("connect");
+    const { savingLimitOnly } = request;
+    const pendingOwner = beginPending("connect");
     try {
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      const savedConnection = await rpc<MobileModelCredential>(
-        "models/connect",
-        isOpenAiCompatible
-          ? {
-              provider: selected.provider,
-              ...(connectionId
-                ? { credentialId: connectionId, expectedRevision: connectionRevision }
-                : {}),
-              baseUrl: effectiveBaseUrl,
-              modelId: modelId.trim(),
-              // The server adds the default itself.
-              enabledModelIds: enabledModelIds.filter((id) => id !== modelId.trim()),
-              reasoning,
-              thinkingLevel: stagedThinking,
-              maxTokens: parsedMaxTokens,
-              contextWindow: parsedContextWindow,
-              supportsImages,
-              maxImagesPerPrompt: maxImagesPerPromptInput,
-              apiKey: apiKey.trim() || undefined,
-              label: selected.providerName ?? selected.provider,
-            }
-          : {
-              provider: selected.provider,
-              ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-              ...(provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID
-                ? { accountId: accountId.trim(), gatewayId: gatewayId.trim() }
-                : {}),
-              modelId: selected.id,
-              // A limits-only save leaves the stored effort alone while the model
-              // stays put. Changing the model sends the clamped level, including
-              // null, so the previous model's effort is not reused.
-              ...(!savingLimitOnly || modelChanged ? { thinkingLevel: stagedThinking } : {}),
-              maxTokens: parsedMaxTokens ?? null,
-              label: selected.providerName ?? selected.provider,
-            },
-        { requestContext },
-      );
+      const savedConnection = await rpc<MobileModelCredential>("models/connect", request.input, {
+        requestContext,
+      });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
       acceptSavedBackupConnection(savedConnection);
       setApiKey("");
+      setHeaderRows(null);
       await load({ provider, modelId, connectionId: savedConnection.id });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
@@ -1037,7 +1053,7 @@ function ModelsForm({
         error: errorText(err, t("Could not connect this provider")),
       });
     } finally {
-      setPending(null);
+      finishPending(pendingOwner);
     }
   }
 
@@ -1249,6 +1265,67 @@ function ModelsForm({
       />
       <Pressable
         accessibilityRole="button"
+        accessibilityLabel={t("API protocol")}
+        accessibilityValue={{
+          text:
+            apiProtocol === "chat-completions"
+              ? "Chat Completions"
+              : apiProtocol === "responses"
+                ? "Responses"
+                : apiProtocol === "anthropic-messages"
+                  ? "Anthropic Messages"
+                  : t("Choose a protocol"),
+        }}
+        disabled={busy}
+        onPress={() => {
+          if (busyRef.current) return;
+          const revision = selectionRevisionRef.current;
+          const scope = me;
+          const spaceGeneration = currentSpaceSelectionGeneration();
+          const sessionGeneration = currentSessionGeneration();
+          const apiBase = currentApiBase();
+          const choose = (protocol: ModelApiProtocol) => {
+            if (
+              apiBase === currentApiBase() &&
+              operationCurrent(revision, scope, spaceGeneration, sessionGeneration)
+            )
+              updateApiProtocol(protocol);
+          };
+          presentMessageActionSheet({
+            title: t("API protocol"),
+            cancel: t("Cancel"),
+            more: t("More"),
+            colorScheme,
+            actions: [
+              { text: "Chat Completions", onPress: () => choose("chat-completions") },
+              { text: "Responses", onPress: () => choose("responses") },
+              {
+                text: "Anthropic Messages",
+                onPress: () => choose("anthropic-messages"),
+              },
+            ],
+          });
+        }}
+        style={({ pressed }) => [
+          styles.modelRow,
+          busy && styles.disabled,
+          pressed && styles.pressed,
+        ]}
+      >
+        <Text style={styles.modelLabel}>{t("API protocol")}</Text>
+        <Text style={styles.rowValue}>
+          {apiProtocol === "chat-completions"
+            ? "Chat Completions"
+            : apiProtocol === "responses"
+              ? "Responses"
+              : apiProtocol === "anthropic-messages"
+                ? "Anthropic Messages"
+                : t("Choose a protocol")}
+        </Text>
+      </Pressable>
+      {renderCompatKeyFields()}
+      <Pressable
+        accessibilityRole="button"
         accessibilityState={{ expanded: showEndpointHelp }}
         onPress={() => setShowEndpointHelp((visible) => !visible)}
         style={({ pressed }) => [pressed && styles.pressed]}
@@ -1269,37 +1346,51 @@ function ModelsForm({
       {feedbackAnchor === "probe" ? feedback : null}
       <Text style={[styles.sectionTitle, { marginTop: 12 }]}>{t("Model")}</Text>
       {/* The switches stay visible while the default is "Other model…" or a typed id. */}
+      {compatibleRows.length > MODEL_SEARCH_THRESHOLD ? (
+        <TextInput
+          accessibilityLabel={t("Search models")}
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={modelQuery}
+          onChangeText={(query) => setModelSearch({ provider, query })}
+          placeholder={t("Search models")}
+          placeholderTextColor={native.tertiaryLabel}
+          style={styles.keyInput}
+        />
+      ) : null}
       {compatibleRows.length ? (
         <View style={styles.card}>
-          {compatibleRows.map((entry) => (
-            // The switch sits beside the radio, not inside it: an accessible
-            // Pressable would merge it into the row and hide it from VoiceOver.
-            <View key={entry} style={styles.modelRow}>
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityState={{ selected: entry === modelId }}
-                disabled={probing}
-                onPress={() => stageCompatibleModelId(entry)}
-                style={({ pressed }) => [
-                  styles.modelRowChoice,
-                  probing && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.modelLabel}>{entry}</Text>
-                {entry === modelId ? <Checkmark /> : null}
-              </Pressable>
-              <NativeSwitch
-                accessibilityLabel={entry}
-                value={entry === modelId || enabledModelIds.includes(entry)}
-                onValueChange={(value) => {
-                  selectionRevisionRef.current += 1;
-                  setEnabledModelIds((current) => toggleEnabledModelId(current, entry, value));
-                }}
-                disabled={busy || entry === modelId}
-              />
-            </View>
-          ))}
+          {compatibleRows
+            .filter((entry) => !modelQuery.trim() || matchesSearchQuery(modelQuery, entry))
+            .map((entry) => (
+              // The switch sits beside the radio, not inside it: an accessible
+              // Pressable would merge it into the row and hide it from VoiceOver.
+              <View key={entry} style={styles.modelRow}>
+                <Pressable
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: entry === modelId }}
+                  disabled={probing}
+                  onPress={() => stageCompatibleModelId(entry)}
+                  style={({ pressed }) => [
+                    styles.modelRowChoice,
+                    probing && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.modelLabel}>{entry}</Text>
+                  {entry === modelId ? <Checkmark /> : null}
+                </Pressable>
+                <NativeSwitch
+                  accessibilityLabel={entry}
+                  value={entry === modelId || enabledModelIds.includes(entry)}
+                  onValueChange={(value) => {
+                    selectionRevisionRef.current += 1;
+                    setEnabledModelIds((current) => toggleEnabledModelId(current, entry, value));
+                  }}
+                  disabled={busy || entry === modelId}
+                />
+              </View>
+            ))}
           {compatibleRows.includes(modelId) ? (
             <Pressable
               accessibilityRole="radio"
@@ -1374,7 +1465,7 @@ function ModelsForm({
                         text: t("Default"),
                         onPress: () => setThinkingLevel(null),
                       },
-                      ...THINKING_LEVEL_OPTIONS.map((level) => ({
+                      ...compatibleThinkingLevels(apiProtocol).map((level) => ({
                         text: thinkingLevelLabel(level, t),
                         onPress: () => setThinkingLevel(level),
                       })),
@@ -1421,8 +1512,8 @@ function ModelsForm({
     </Text>
   );
 
-  const compatKeySection =
-    isOpenAiCompatible && acceptsKey ? (
+  function renderCompatKeyFields() {
+    return isOpenAiCompatible && acceptsKey ? (
       <View style={styles.keySection}>
         {disclosureRow(t("API key"), showApiKey, () => setShowApiKey((visible) => !visible))}
         {showApiKey ? (
@@ -1442,7 +1533,26 @@ function ModelsForm({
             value={apiKey}
           />
         ) : null}
+        {disclosureRow(t("Custom headers"), showHeaders, () =>
+          setShowHeaders((visible) => !visible),
+        )}
+        {showHeaders ? (
+          <HeaderRowsEditor
+            rows={headerRows}
+            savedNames={
+              sameOpenAiCompatibleBaseUrl(baseUrl, savedBaseUrl) ? credential?.headerNames : []
+            }
+            onChange={updateHeaderRows}
+            disabled={busy}
+          />
+        ) : null}
+      </View>
+    ) : null;
+  }
 
+  const compatKeySection =
+    isOpenAiCompatible && acceptsKey ? (
+      <View style={styles.keySection}>
         <NativeActionButton
           disabled={
             busy || (isOpenAiCompatible ? !openAiCompatibleReady : apiKey.trim().length < 8)
@@ -1995,7 +2105,9 @@ function ModelsForm({
             <>
               <Text style={styles.groupLabel}>{t("Connected")}</Text>
               {connectedGroups.map((group) => {
-                const groupCredential = credentialByProvider.get(group.id);
+                const groupCredential = credentialByProvider.get(canonicalPiProviderId(group.id));
+                const isSelected =
+                  canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? "");
                 const savedModelLabel = groupCredential?.modelId
                   ? (group.entries.find((entry) => entry.id === groupCredential.modelId)?.label ??
                     groupCredential.modelId)
@@ -2004,7 +2116,7 @@ function ModelsForm({
                   <Pressable
                     key={group.id}
                     accessibilityRole="button"
-                    accessibilityState={{ selected: group.id === provider }}
+                    accessibilityState={{ selected: isSelected }}
                     onPress={() => chooseProvider(group.id)}
                     style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
                   >
@@ -2014,7 +2126,7 @@ function ModelsForm({
                         <Text style={styles.secondary}>{savedModelLabel}</Text>
                       ) : null}
                     </View>
-                    {group.id === provider ? <Checkmark /> : null}
+                    {isSelected ? <Checkmark /> : null}
                   </Pressable>
                 );
               })}
@@ -2027,14 +2139,18 @@ function ModelsForm({
             <Pressable
               key={group.id}
               accessibilityRole="button"
-              accessibilityState={{ selected: group.id === provider }}
+              accessibilityState={{
+                selected: canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? ""),
+              }}
               onPress={() => chooseProvider(group.id)}
               style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
             >
               <View style={styles.providerCopy}>
                 <Text style={styles.providerName}>{group.name}</Text>
               </View>
-              {group.id === provider ? <Checkmark /> : null}
+              {canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? "") ? (
+                <Checkmark />
+              ) : null}
             </Pressable>
           ))}
           {groups.length > featuredProviders.length ? (
@@ -2062,7 +2178,10 @@ function ModelsForm({
             </>
           ) : credential ? (
             <>
-              {provider === me?.hostCredentialProvider ? serverCredentialsNote : null}
+              {canonicalPiProviderId(provider) ===
+              canonicalPiProviderId(me?.hostCredentialProvider ?? "")
+                ? serverCredentialsNote
+                : null}
               {connectedStatusRow}
               <Text style={styles.sectionTitle}>{t("Model")}</Text>
               {catalogModelCard}
@@ -2071,7 +2190,8 @@ function ModelsForm({
               <View style={styles.maintenanceSection}>{catalogConnectionControls}</View>
               {feedbackAnchor === "model" ? null : feedback}
             </>
-          ) : provider === me?.hostCredentialProvider ? (
+          ) : canonicalPiProviderId(provider) ===
+            canonicalPiProviderId(me?.hostCredentialProvider ?? "") ? (
             <>
               {serverCredentialsNote}
               {ownKeyProvider !== provider ? chatgptUsageControl : null}

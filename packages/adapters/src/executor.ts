@@ -3128,6 +3128,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
       apiKey: resolved.oauth ? undefined : resolved.apiKey,
       ...cloudflareRunFields(resolved),
       baseUrl: resolved.baseUrl,
+      apiProtocol: resolved.apiProtocol,
+      headers: resolved.headers,
       cacheCapabilities: resolved.cacheCapabilities,
       contextWindow: resolved.contextWindow,
 
@@ -3228,6 +3230,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         apiKey: resolved.oauth ? undefined : resolved.apiKey,
         ...cloudflareRunFields(resolved),
         baseUrl: resolved.baseUrl,
+        apiProtocol: resolved.apiProtocol,
+        headers: resolved.headers,
         cacheCapabilities: resolved.cacheCapabilities,
         contextWindow: resolved.contextWindow,
 
@@ -5449,6 +5453,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       accountId: judgeKey.accountId,
                       gatewayId: judgeKey.gatewayId,
                       baseUrl: judgeKey.baseUrl,
+                      apiProtocol: judgeKey.apiProtocol,
+                      headers: judgeKey.headers,
                       cacheCapabilities: judgeKey.cacheCapabilities,
                       contextWindow: judgeKey.contextWindow,
                       maxTokens: judgeKey.maxTokens,
@@ -7803,6 +7809,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 ...cloudflareRunFields(resolved),
                 baseUrl: resolved.baseUrl,
+                apiProtocol: resolved.apiProtocol,
+                headers: resolved.headers,
                 cacheCapabilities: resolved.cacheCapabilities,
                 contextWindow: resolved.contextWindow,
 
@@ -9852,6 +9860,8 @@ async function resolveModelKey(
   accountId?: string;
   gatewayId?: string;
   baseUrl?: string;
+  apiProtocol?: AgentRunRequest["model"]["apiProtocol"];
+  headers?: AgentRunRequest["model"]["headers"];
   cacheCapabilities?: AgentRunRequest["model"]["cacheCapabilities"];
   contextWindow?: number;
   reasoning?: boolean;
@@ -9974,6 +9984,10 @@ async function resolveModelKey(
           accountId,
           gatewayId,
           baseUrl,
+          apiProtocol:
+            resolved.secret.kind === "openai_compatible" ? resolved.secret.apiProtocol : undefined,
+          headers:
+            resolved.secret.kind === "openai_compatible" ? resolved.secret.headers : undefined,
           cacheCapabilities:
             resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
           contextWindow:

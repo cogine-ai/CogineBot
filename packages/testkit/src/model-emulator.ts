@@ -65,7 +65,16 @@ export async function startModelEmulator(options: {
     void (async () => {
       assert.equal(request.method, "POST", "Expected a model POST request");
       assert.equal(request.url, "/v1/chat/completions", "Unexpected model endpoint");
-      assert.equal(request.headers.authorization, `Bearer ${options.apiKey ?? "local"}`);
+      assert.equal(
+        request.headers.authorization,
+        options.apiKey === undefined ? undefined : `Bearer ${options.apiKey}`,
+        "Model fixture authentication changed",
+      );
+      assert.equal(
+        request.headers["x-api-key"],
+        undefined,
+        "Unexpected model authentication header",
+      );
       const chunks: Buffer[] = [];
       let bytes = 0;
       for await (const chunk of request) {

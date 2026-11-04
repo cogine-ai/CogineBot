@@ -1,6 +1,7 @@
 import type {
   CacheCapabilities as ConnectionCacheCapabilities,
   ConnectionCatalogItem,
+  ModelApiProtocol,
   NativeDiscordSignalJob,
   NativeNotionSignalJobPayload,
   NativeSlackLifecycleJobPayload,
@@ -462,6 +463,10 @@ export interface AgentRunModel {
   /** Cloudflare AI Gateway id stored with a gateway BYOK credential. */
   gatewayId?: string;
   baseUrl?: string;
+  /** Wire protocol for this compatible model connection. */
+  apiProtocol?: ModelApiProtocol;
+  /** Validated custom headers for this model connection. */
+  headers?: Record<string, string>;
   /** Whether this custom connection accepts standard reasoning_effort. */
   reasoning?: boolean;
   /** Whether this custom connection accepts image input. */

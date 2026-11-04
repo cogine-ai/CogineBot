@@ -1206,4 +1206,13 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Waiting for the target": "等待目标端",
   "Write authorization expired. Existing results can still be checked.":
     "写入授权已失效，仍可核验已有结果。",
+  "API protocol": "API 协议",
+  "Choose a protocol": "选择协议",
+  "Custom headers": "自定义请求头",
+  "Remove header": "移除请求头",
+  "Choose an API protocol.": "请选择 API 协议。",
+  "Check the custom headers.": "请检查自定义请求头。",
+  "Reload this connection before saving.": "请先重新加载此连接再保存。",
+  "Maximum output tokens must be smaller than the context limit.":
+    "输出 token 上限必须小于上下文上限。",
 };

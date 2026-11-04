@@ -3,6 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
   ComposedSecretStore,
   EncryptedSecretStore,
@@ -19,6 +21,7 @@ import {
   retireModelCredential,
   sendUserMessage,
 } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
@@ -438,6 +441,146 @@ describePostgres("model connection HTTP acceptance", () => {
     ]);
   });
 
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "persists model protocol %s and preserves or clears its encrypted headers explicitly",
+    async (apiProtocol) => {
+      const { cookie, actor } = await account();
+      const headers = { "X-Tenant": " en ", "X-Session": "synthetic-private-session" };
+      const credential = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        input({ apiProtocol, headers }),
+      );
+      expect(credential).toMatchObject({ apiProtocol, headerNames: Object.keys(headers) });
+      expect(JSON.stringify(credential)).not.toContain("synthetic-private-session");
+      expect(credential).not.toHaveProperty("headers");
+      const saved = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        edit(credential, { apiKey: undefined, baseUrl: "http://127.0.0.1:11434/v1/" }),
+      );
+      expect(saved).toMatchObject({ apiProtocol, headerNames: Object.keys(headers) });
+      const row = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: credential.id },
+      });
+      const secret = await handles.prisma.secret.findUniqueOrThrow({ where: { id: row.secretId } });
+      expect(secret).toMatchObject({ userId: actor.userId, spaceId: null });
+      expect(
+        parseModelSecret(
+          await new EncryptedSecretStore(encryptionKey).load(secret.ciphertext, secret.id),
+        ),
+      ).toMatchObject({ apiProtocol, headers, apiKey: "fake-model-key" });
+      const cleared = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        edit(saved, { apiKey: undefined, headers: {} }),
+      );
+      expect(cleared).toMatchObject({ apiProtocol, headerNames: [] });
+      const preferences = await handles.prisma.spaceModelPreference.findMany({
+        where: { userId: actor.userId, credentialId: credential.id },
+      });
+      expect(preferences).toEqual([
+        expect.objectContaining({ spaceId: actor.spaceId, credentialId: credential.id }),
+      ]);
+    },
+  );
+
+  it("rejects unsupported stored model protocol edits and probes without mutating the connection", async () => {
+    const vault = externalSecrets();
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ data: [{ id: "same-model" }] }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing server address");
+    const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+    try {
+      const { cookie, actor } = await account();
+      const credential = await rpc<ModelCredential>(cookie, "models/connect", input({ baseUrl }));
+      const before = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: credential.id },
+      });
+      const stored = await handles.prisma.secret.findUniqueOrThrow({
+        where: { id: before.secretId },
+      });
+      const preferences = await handles.prisma.spaceModelPreference.findMany({
+        where: { userId: actor.userId, credentialId: credential.id },
+      });
+      for (const invalid of [
+        { apiProtocol: "future-wire" },
+        { apiProtocol: null },
+        { apiProtocol: 8 },
+        { apiProtocol: "" },
+        { headers: null },
+        { headers: { "X-Tenant": "" } },
+      ]) {
+        vault.values.set(
+          stored.ciphertext,
+          JSON.stringify({
+            kind: "openai_compatible",
+            baseUrl,
+            apiKey: "old-private-key",
+            ...invalid,
+          }),
+        );
+        const edited = await raw(
+          cookie,
+          "models/connect",
+          edit(credential, { baseUrl, apiKey: "new-private-key" }),
+        );
+        expect(edited.status).toBe(400);
+        expect(await edited.text()).not.toMatch(/old-private-key|new-private-key/);
+        const probed = await raw(cookie, "models/probeOpenAiCompatible", {
+          credentialId: credential.id,
+          expectedBaseUrl: baseUrl,
+          baseUrl,
+          apiKey: "new-private-key",
+        });
+        expect(probed.status).toBe(400);
+        expect(await probed.text()).toContain("unavailable");
+        expect(requests).toBe(0);
+        expect(vault.writes).toHaveLength(1);
+        expect(
+          await handles.prisma.userModelCredential.findUniqueOrThrow({
+            where: { id: credential.id },
+          }),
+        ).toEqual(before);
+        expect(
+          await handles.prisma.spaceModelPreference.findMany({
+            where: { userId: actor.userId, credentialId: credential.id },
+          }),
+        ).toEqual(preferences);
+      }
+      const fresh = await rpc<ModelCredential>(
+        cookie,
+        "models/connect",
+        edit(credential, { baseUrl: `${baseUrl}/different`, apiKey: "fresh-private-key" }),
+      );
+      const freshRow = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: fresh.id },
+      });
+      const freshSecret = await handles.prisma.secret.findUniqueOrThrow({
+        where: { id: freshRow.secretId },
+      });
+      const freshConfig = parseModelSecret(vault.values.get(freshSecret.ciphertext)!);
+      expect(freshConfig).toMatchObject({
+        kind: "openai_compatible",
+        baseUrl: `${baseUrl}/different/v1`,
+        apiKey: "fresh-private-key",
+      });
+      expect(freshConfig).not.toHaveProperty("apiProtocol");
+      expect(freshConfig).not.toHaveProperty("headers");
+      expect(requests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("reuses a saved key only for its owned ID and canonical unchanged endpoint", async () => {
     const requests: Array<{ url?: string; authorization?: string }> = [];
     const server = createServer((request, response) => {
@@ -510,6 +653,161 @@ describePostgres("model connection HTTP acceptance", () => {
     });
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("unavailable");
+  });
+
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "uses the exact saved model protocol and headers for %s discovery without borrowing on a new endpoint",
+    async (apiProtocol) => {
+      const requests: Array<Record<string, string | string[] | undefined>> = [];
+      const server = createServer((request, response) => {
+        requests.push({
+          url: request.url,
+          authorization: request.headers.authorization,
+          apiKey: request.headers["x-api-key"],
+          version: request.headers["anthropic-version"],
+          tenant: request.headers["x-tenant"],
+        });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ data: [{ id: "same-model" }] }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+      try {
+        const owner = await account();
+        const stranger = await account();
+        const credential = await rpc<ModelCredential>(
+          owner.cookie,
+          "models/connect",
+          input({ baseUrl, apiProtocol, headers: { "X-Tenant": " en " } }),
+        );
+        const probe = { credentialId: credential.id, expectedBaseUrl: baseUrl, baseUrl };
+        expect((await raw(stranger.cookie, "models/probeOpenAiCompatible", probe)).status).toBe(
+          404,
+        );
+        expect(requests).toHaveLength(0);
+        expect(await rpc(owner.cookie, "models/probeOpenAiCompatible", probe)).toEqual({
+          models: ["same-model"],
+        });
+        expect(requests[0]).toEqual({
+          url: "/v1/models",
+          authorization: apiProtocol === "anthropic-messages" ? undefined : "Bearer fake-model-key",
+          apiKey: apiProtocol === "anthropic-messages" ? "fake-model-key" : undefined,
+          version: apiProtocol === "anthropic-messages" ? "2023-06-01" : undefined,
+          tenant: "en",
+        });
+        await rpc(owner.cookie, "models/probeOpenAiCompatible", {
+          ...probe,
+          apiKey: "replacement-private-key",
+        });
+        expect(requests[1]).toMatchObject({
+          tenant: "en",
+          authorization:
+            apiProtocol === "anthropic-messages" ? undefined : "Bearer replacement-private-key",
+          apiKey: apiProtocol === "anthropic-messages" ? "replacement-private-key" : undefined,
+        });
+        await rpc(owner.cookie, "models/probeOpenAiCompatible", {
+          ...probe,
+          apiKey: "",
+          headers: {},
+        });
+        expect(requests[2]).toMatchObject({
+          tenant: undefined,
+          authorization: undefined,
+          apiKey: undefined,
+        });
+        const load = vi
+          .spyOn(ComposedSecretStore.prototype, "load")
+          .mockRejectedValueOnce(new SecretStoreUnavailableError());
+        await rpc(owner.cookie, "models/probeOpenAiCompatible", {
+          ...probe,
+          baseUrl: `http://127.0.0.1:${address.port}/changed/v1`,
+          apiKey: "fresh-private-key",
+        });
+        expect(load).not.toHaveBeenCalled();
+        expect(requests[3]).toEqual({
+          url: "/changed/v1/models",
+          authorization: "Bearer fresh-private-key",
+          apiKey: undefined,
+          version: undefined,
+          tenant: undefined,
+        });
+        load.mockRestore();
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+  );
+
+  it("preserves unavailable model storage and mutation failures without disclosing header values", async () => {
+    const { cookie } = await account();
+    const credential = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      input({
+        apiProtocol: "responses",
+        headers: { "X-Tenant": ' api-mutation-private-canary"\\value ' },
+      }),
+    );
+    const logged = vi.spyOn(getLogger(), "error");
+    try {
+      const before = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: credential.id },
+      });
+      const load = vi
+        .spyOn(ComposedSecretStore.prototype, "load")
+        .mockRejectedValue(
+          new SecretStoreUnavailableError(503, '503: X-Tenant=api-mutation-private-canary"\\value'),
+        );
+      const put = vi.spyOn(ComposedSecretStore.prototype, "put");
+      const editResponse = await raw(
+        cookie,
+        "models/connect",
+        edit(credential, { apiKey: "replacement-private-key" }),
+      );
+      expect(editResponse.status).toBe(503);
+      expect(await editResponse.text()).not.toMatch(
+        /api-mutation-private-canary|replacement-private-key/,
+      );
+      const probeResponse = await raw(cookie, "models/probeOpenAiCompatible", {
+        credentialId: credential.id,
+        baseUrl: credential.baseUrl,
+        expectedBaseUrl: credential.baseUrl,
+      });
+      expect(probeResponse.status).toBe(503);
+      expect(await probeResponse.text()).not.toContain("api-mutation-private-canary");
+      const listed = await raw(cookie, "models/credentials");
+      expect(listed.status).toBe(503);
+      expect(await listed.text()).not.toContain("api-mutation-private-canary");
+      expect(put).not.toHaveBeenCalled();
+      expect(
+        await handles.prisma.userModelCredential.findUniqueOrThrow({
+          where: { id: credential.id },
+        }),
+      ).toEqual(before);
+      load.mockRestore();
+      put.mockRejectedValueOnce(
+        new Error('Database write reflected api-mutation-private-canary"\\value'),
+      );
+      const failedWrite = await raw(
+        cookie,
+        "models/connect",
+        edit(credential, { headers: { "X-Tenant": 'api-mutation-private-canary"\\value' } }),
+      );
+      expect(failedWrite.status).toBe(500);
+      expect(await failedWrite.text()).not.toContain("api-mutation-private-canary");
+      expect(
+        await handles.prisma.userModelCredential.findUniqueOrThrow({
+          where: { id: credential.id },
+        }),
+      ).toEqual(before);
+      expect(inspect(logged.mock.calls, { depth: 6 })).not.toContain("api-mutation-private-canary");
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("checks every pin and exposes references before shrink or disconnect", async () => {
@@ -1198,14 +1496,34 @@ describePostgres("model connection HTTP acceptance", () => {
     const { cookie } = await account();
     const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
     const results = await Promise.all(
-      ["First", "Second"].map((label) =>
-        raw(cookie, "models/connect", edit(credential, { label })),
-      ),
+      [
+        {
+          label: "First",
+          apiProtocol: "responses",
+          headers: { "X-Tenant": "first-private-value" },
+        },
+        {
+          label: "Second",
+          apiProtocol: "anthropic-messages",
+          headers: { "X-Tenant": "second-private-value" },
+        },
+      ].map((change) => raw(cookie, "models/connect", edit(credential, change))),
     );
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
     expect(await rpc<ModelCredential[]>(cookie, "models/credentials")).toEqual([
       expect.objectContaining({ id: credential.id, connectionRevision: 2 }),
     ]);
+    const winner = (await results.find((result) => result.status === 200)!.json())
+      .json as ModelCredential;
+    const listed = await rpc<ModelCredential[]>(cookie, "models/credentials");
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: credential.id,
+        apiProtocol: winner.label === "First" ? "responses" : "anthropic-messages",
+        headerNames: ["X-Tenant"],
+      }),
+    ]);
+    expect(JSON.stringify(listed)).not.toMatch(/first-private-value|second-private-value/);
   });
 
   it("serializes a new pin against an overlapping enabled-model shrink", async () => {

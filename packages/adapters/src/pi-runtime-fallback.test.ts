@@ -1964,7 +1964,7 @@ describe("Pi runtime ordered model fallback", () => {
     },
   );
 
-  it("skips backups without the primary turn's reasoning capability", async () => {
+  it("skips backups unable to meet their own explicit reasoning setting", async () => {
     const reasoningPrimary = { ...primary, reasoning: true };
     const textOnlyBackup = { ...backupA, reasoning: false };
     const reasoningBackup = { ...backupB, reasoning: true };
@@ -1972,8 +1972,13 @@ describe("Pi runtime ordered model fallback", () => {
     providerState.models.set(`${backupA.provider}/${backupA.id}`, textOnlyBackup);
     providerState.models.set(`${backupB.provider}/${backupB.id}`, reasoningBackup);
     const input = request([
-      { provider: backupA.provider, id: backupA.id, apiKey: "text-only-key" },
-      { provider: backupB.provider, id: backupB.id, apiKey: "reasoning-key" },
+      {
+        provider: backupA.provider,
+        id: backupA.id,
+        apiKey: "text-only-key",
+        thinkingLevel: "high",
+      },
+      { provider: backupB.provider, id: backupB.id, apiKey: "reasoning-key", thinkingLevel: "low" },
     ]);
     input.model.reasoning = true;
     input.model.thinkingLevel = "high";
@@ -1990,6 +1995,113 @@ describe("Pi runtime ordered model fallback", () => {
         ([target]) => (target as Model<"openai-completions">).provider,
       ),
     ).toEqual([primary.provider, backupB.provider]);
+  });
+
+  it.each([
+    { reasoning: false, own: undefined, effective: "off" },
+    { reasoning: true, own: "low", effective: "low" },
+    { reasoning: true, own: "off", effective: "off" },
+    { reasoning: true, own: undefined, effective: "medium" },
+  ] as const)(
+    "uses backup own thinking=$own reasoning=$reasoning for eligibility, Agent and both wire turns",
+    async ({ reasoning, own, effective }) => {
+      const reasoningPrimary = { ...primary, reasoning: true };
+      const ownBackup = { ...backupA, reasoning };
+      providerState.models.set(`${primary.provider}/${primary.id}`, reasoningPrimary);
+      providerState.models.set(`${backupA.provider}/${backupA.id}`, ownBackup);
+      const input = request([
+        { provider: backupA.provider, id: backupA.id, apiKey: "backup-key", thinkingLevel: own },
+      ]);
+      input.model.reasoning = true;
+      input.model.thinkingLevel = "high";
+      let backupCalls = 0;
+      providerState.stream.mockImplementation(
+        (target: Model<Api>, _context: Context, options: { reasoning?: string }) => {
+          if (target.provider === primary.provider)
+            return stream(target, message(target, [], "error", "402 insufficient_quota"));
+          backupCalls++;
+          expect(options.reasoning).toBe(effective === "off" ? undefined : effective);
+          expect(providerState.agent?.state.thinkingLevel).toBe(effective);
+          return stream(
+            target,
+            message(
+              target,
+              backupCalls === 1
+                ? [
+                    {
+                      type: "toolCall",
+                      id: "own-thinking-write",
+                      name: "write_effect",
+                      arguments: { value: "one" },
+                    },
+                  ]
+                : [{ type: "text", text: "Backup completed." }],
+              backupCalls === 1 ? "toolUse" : "stop",
+            ),
+          );
+        },
+      );
+      const events = await run(input);
+      expect(providerState.stream).toHaveBeenCalledTimes(3);
+      expect(backupCalls).toBe(2);
+      expect(input.executeTool).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toEqual({ type: "done", text: "Backup completed." });
+    },
+  );
+
+  it("resolves a legacy Azure backup without changing its credential identity or own thinking", async () => {
+    const azure = { ...model("azure", "legacy-azure-backup", 16_384), reasoning: true };
+    providerState.models.set("azure/legacy-azure-backup", azure);
+    providerState.models.set(`${primary.provider}/${primary.id}`, { ...primary, reasoning: true });
+    const input = request([
+      { provider: "azure-openai-responses", id: azure.id, modelCredentialId: "azure-credential" },
+    ]);
+    input.model.thinkingLevel = "high";
+    input.resolveFallbackModel = vi.fn(async () => ({
+      provider: "azure-openai-responses",
+      id: azure.id,
+      modelCredentialId: "azure-credential",
+      apiKey: "azure-account-key",
+      thinkingLevel: "low" as const,
+    }));
+    let calls = 0;
+    providerState.stream.mockImplementation(
+      (target: Model<Api>, _context: Context, options: { reasoning?: string; apiKey?: string }) => {
+        if (target.provider === primary.provider)
+          return stream(target, message(target, [], "error", "402 insufficient_quota"));
+        calls++;
+        expect(target.provider).toBe("azure");
+        expect(options.apiKey).toBe("azure-account-key");
+        expect(options.reasoning).toBe("low");
+        expect(providerState.agent?.state.thinkingLevel).toBe("low");
+        return stream(
+          target,
+          message(
+            target,
+            calls === 1
+              ? [
+                  {
+                    type: "toolCall",
+                    id: "azure-write",
+                    name: "write_effect",
+                    arguments: { value: "approved" },
+                  },
+                ]
+              : [{ type: "text", text: "Azure backup completed." }],
+            calls === 1 ? "toolUse" : "stop",
+          ),
+        );
+      },
+    );
+    const events = await run(input);
+    expect(input.resolveFallbackModel).toHaveBeenCalledExactlyOnceWith(
+      "azure-openai-responses",
+      azure.id,
+      "azure-credential",
+    );
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toEqual({ type: "done", text: "Azure backup completed." });
   });
 
   it.each([...IMAGE_RETURNING_COMPUTER_TOOLS, "write_effect"])(

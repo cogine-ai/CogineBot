@@ -7043,3 +7043,35 @@ msgstr "Контекстное окно этой модели слишком м�
 #: src/lib/run-error.ts
 msgid "This server's tool result does not fit the model. Choose another model."
 msgstr "Результат инструмента этого сервера не помещается в модель. Выберите другую модель."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "API protocol"
+msgstr "Протокол API"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a protocol"
+msgstr "Выберите протокол"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Custom headers"
+msgstr "Пользовательские заголовки"
+
+#: src/components/ModelHeadersEditor.tsx
+msgid "Remove header"
+msgstr "Удалить заголовок"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose an API protocol."
+msgstr "Выберите протокол API."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check the custom headers."
+msgstr "Проверьте пользовательские заголовки."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Reload this connection before saving."
+msgstr "Перезагрузите это подключение перед сохранением."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Maximum output tokens must be smaller than the context limit."
+msgstr "Лимит выходных токенов должен быть меньше лимита контекста."

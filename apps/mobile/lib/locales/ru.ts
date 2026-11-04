@@ -1250,4 +1250,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "Waiting for the target": "Ожидание назначения",
   "Write authorization expired. Existing results can still be checked.":
     "Разрешение на запись истекло. Существующие результаты по-прежнему можно проверить.",
+  "API protocol": "Протокол API",
+  "Choose a protocol": "Выберите протокол",
+  "Custom headers": "Пользовательские заголовки",
+  "Remove header": "Удалить заголовок",
+  "Choose an API protocol.": "Выберите протокол API.",
+  "Check the custom headers.": "Проверьте пользовательские заголовки.",
+  "Reload this connection before saving.": "Перезагрузите это подключение перед сохранением.",
+  "Maximum output tokens must be smaller than the context limit.":
+    "Лимит выходных токенов должен быть меньше лимита контекста.",
 };

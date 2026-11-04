@@ -7043,3 +7043,35 @@ msgstr "La ventana de contexto de este modelo es demasiado pequeña. Elige otro 
 #: src/lib/run-error.ts
 msgid "This server's tool result does not fit the model. Choose another model."
 msgstr "El resultado de la herramienta de este servidor supera la capacidad del modelo. Elige otro modelo."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "API protocol"
+msgstr "API protocol"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a protocol"
+msgstr "Choose a protocol"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Custom headers"
+msgstr "Custom headers"
+
+#: src/components/ModelHeadersEditor.tsx
+msgid "Remove header"
+msgstr "Remove header"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose an API protocol."
+msgstr "Choose an API protocol."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check the custom headers."
+msgstr "Check the custom headers."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Reload this connection before saving."
+msgstr "Reload this connection before saving."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Maximum output tokens must be smaller than the context limit."
+msgstr "Maximum output tokens must be smaller than the context limit."

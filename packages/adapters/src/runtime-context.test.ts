@@ -1251,19 +1251,24 @@ describe("optional history and effective output capacity", () => {
     expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(attainable);
     expect(prepared.messages.at(-1)).toEqual(mandatory.messages[0]);
   });
-  it("preserves the explicit diagnostic strategy and bypasses unknown API behavior", () => {
+  it("preserves diagnostic input and separates audited and uncalibrated API budgets", () => {
     const { request, context } = capacityFixture();
     request.contextStrategy = "current";
     const prepared = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
     expect(prepared.messages).toEqual(context.messages);
     expect(effectivePiOutputTokens(ccModel, prepared, 1024)).toBe(1);
     request.contextStrategy = undefined;
-    const unknown = createRuntimeContextPolicy(request).prepareContext(context, {
-      ...ccModel,
-      api: "openai-responses",
-    });
     const bounded = createRuntimeContextPolicy(request).prepareContext(context, ccModel);
-    expect(bounded.messages.length).toBeLessThan(unknown.messages.length);
+    for (const api of ["openai-responses", "anthropic-messages"] as const) {
+      const audited = { ...ccModel, api };
+      const equivalent = createRuntimeContextPolicy(request).prepareContext(context, audited);
+      expect(equivalent.messages).toEqual(bounded.messages);
+      expect(effectivePiOutputTokens(audited, equivalent, 1024)).toBe(1024);
+    }
+    const uncalibrated = { ...ccModel, api: "google-generative-ai" } as Model<Api>;
+    const normal = createRuntimeContextPolicy(request).prepareContext(context, uncalibrated);
+    expect(effectivePiOutputTokens(uncalibrated, normal, 1024)).toBeUndefined();
+    expect(bounded.messages.length).toBeLessThan(normal.messages.length);
   });
   it("keeps restored diagnostic input bounded with attainable output", () => {
     const { request, context } = capacityFixture();

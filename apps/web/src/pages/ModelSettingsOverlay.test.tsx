@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ModelBackupChoice, ModelCredentialReference } from "@rakazo/contracts";
+import { i18n } from "@lingui/core";
+import type {
+  ModelApiProtocol,
+  ModelBackupChoice,
+  ModelCredential,
+  ModelCredentialReference,
+} from "@rakazo/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -221,6 +227,8 @@ async function renderSettings() {
 }
 
 beforeEach(() => {
+  i18n.load("en", {});
+  i18n.activate("en");
   Element.prototype.scrollTo = vi.fn();
   scope.generation = 0;
   scope.spaceId = "space-1";
@@ -237,6 +245,66 @@ beforeEach(() => {
   models.cancelOAuth.mockResolvedValue({ ok: true });
   models.chatgptProfiles.mockResolvedValue([]);
 });
+
+it.each([
+  { provider: "openai", newRegistration: false },
+  { provider: "chatgpt-plan", newRegistration: false },
+  { provider: "chatgpt-plan", newRegistration: true },
+])(
+  "starts a first $provider authorization without a stored credential (new account: $newRegistration)",
+  async ({ provider, newRegistration }) => {
+    models.list.mockResolvedValue([
+      {
+        provider,
+        providerName: "Subscription provider",
+        id: "subscription-model",
+        label: "Subscription model",
+        billing: "Subscription",
+        auth: "oauth",
+        signIn: "auth-url",
+        oauthLabel: "Continue with subscription",
+      },
+    ]);
+    vi.mocked(rpc.me).mockResolvedValue(account(provider, "subscription-model"));
+    models.credentials.mockResolvedValue([]);
+    if (newRegistration)
+      models.chatgptProfiles.mockResolvedValue([
+        { id: "existing-profile", label: "Existing account", status: "registered" },
+      ]);
+    models.beginOAuth.mockResolvedValue({
+      loginId: "first-subscription-login",
+      provider,
+      mode: "auth-url",
+      callbackTransport: "desktop",
+      verificationUri: "https://signin.example.test/authorize?state=first-sign-in",
+      expiresInSeconds: 60,
+    });
+    const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+    const view = await renderSettings();
+    try {
+      await act(async () =>
+        buttons(
+          view.container,
+          newRegistration ? "Add account" : "Continue with subscription",
+        )[0]?.click(),
+      );
+      expect(models.beginOAuth).toHaveBeenCalledOnce();
+      expect(models.beginOAuth).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider,
+          modelId: provider === "chatgpt-plan" ? undefined : "subscription-model",
+          ...(provider === "chatgpt-plan" ? { newRegistration, registrationId: undefined } : {}),
+        }),
+        expect.anything(),
+      );
+      expect(view.container.textContent).not.toContain("Could not start sign-in");
+      expect(models.connect).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+      open.mockRestore();
+    }
+  },
+);
 
 it.each([true, false])(
   "reconnects a saved ChatGPT account without carrying another account's model (placeholder: %s)",
@@ -590,7 +658,10 @@ it("shows a stored OpenAI-compatible key and stays empty when none is saved", as
   }
 });
 
-function compatibleConnection(id = "connection-a", baseUrl = "https://models.example.test/v1") {
+function compatibleConnection(
+  id = "connection-a",
+  baseUrl = "https://models.example.test/v1",
+): ModelCredential {
   return {
     id,
     provider: "openai-compatible",
@@ -784,6 +855,35 @@ it("discovers without enabling models and saves explicit enabled choices with co
       }),
       { context: { spaceId: "space-1" } },
     );
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("shows all compatible models for an empty search and keeps hidden enabled choices when filtering", async () => {
+  const ids = ["model-a", "model-b", ...Array.from({ length: 9 }, (_, index) => `extra-${index}`)];
+  useCompatibleConnections([{ ...compatibleConnection(), enabledModelIds: ids }]);
+  const view = await renderSettings();
+  const checks = () => [
+    ...view.container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  ];
+  try {
+    expect(checks()).toHaveLength(11);
+    const search = field(view.container, "Search models");
+    await typeInto(search, "extra-8");
+    expect(checks()).toHaveLength(1);
+    expect(checks()[0]?.checked).toBe(true);
+    await typeInto(search, "   ");
+    expect(checks()).toHaveLength(11);
+    await typeInto(search, "extra-8");
+    await act(async () => checks()[0]?.click());
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+      credentialId: "connection-a",
+      expectedRevision: 7,
+      modelId: "model-a",
+      enabledModelIds: ids.filter((id) => id !== "model-a" && id !== "extra-8"),
+    });
   } finally {
     await view.unmount();
   }
@@ -1104,3 +1204,262 @@ it.each(["https://models.example.test/", "https://models.example.test/v1/"])(
     }
   },
 );
+
+it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+  "saves and reopens a custom %s connection with its captured revision",
+  async (apiProtocol) => {
+    let saved = compatibleConnection();
+    useCompatibleConnections([saved]);
+    models.credentials.mockImplementation(async () => [saved]);
+    models.connect.mockImplementation(async (input) => {
+      saved = { ...saved, apiProtocol: input.apiProtocol, connectionRevision: 8 };
+      return saved;
+    });
+    const view = await renderSettings();
+    try {
+      await choose(select(view.container, "API protocol"), apiProtocol);
+      await act(async () => buttons(view.container, "Save")[0]?.click());
+      expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+        apiProtocol,
+        credentialId: "connection-a",
+        expectedRevision: 7,
+      });
+      expect(select(view.container, "API protocol").value).toBe(apiProtocol);
+      await choose(select(view.container, "Connection"), "connection-a");
+      expect(select(view.container, "API protocol").value).toBe(apiProtocol);
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it("keeps untouched header secrets private and clears them only through an empty replacement", async () => {
+  const saved = {
+    ...compatibleConnection(),
+    apiProtocol: "responses" as const,
+    headerNames: ["X-First", "X-Second"],
+  };
+  useCompatibleConnections([saved]);
+  const view = await renderSettings();
+  try {
+    const disclosure = [...view.container.querySelectorAll("summary")].find(
+      (entry) => entry.textContent === "Custom headers",
+    );
+    await act(async () => disclosure?.click());
+    expect(
+      [
+        ...view.container.querySelectorAll<HTMLInputElement>('input[aria-label="Header value"]'),
+      ].map((input) => [input.value, input.type]),
+    ).toEqual([
+      ["", "password"],
+      ["", "password"],
+    ]);
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0].headers).toBeUndefined();
+    const remove = () => [
+      ...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove header"]'),
+    ];
+    await act(async () => remove()[0]?.click());
+    expect(buttons(view.container, "Save")[0]?.disabled).toBe(true);
+    expect(view.container.textContent).toContain("Check the custom headers.");
+    await act(async () => remove()[0]?.click());
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0].headers).toEqual({});
+  } finally {
+    await view.unmount();
+  }
+});
+
+it.each(["https://models.example.test/v1", "https://models.example.test/"])(
+  "restores untouched saved headers after returning from another endpoint to %s",
+  async (savedAlias) => {
+    useCompatibleConnections([{ ...compatibleConnection(), headerNames: ["X-Saved"] }]);
+    const view = await renderSettings();
+    try {
+      await typeInto(
+        field(view.container, "OpenAI-compatible server URL"),
+        "https://models.example.test/v1x",
+      );
+      expect(view.container.querySelector('input[aria-label="Header name"]')).toBeNull();
+      await act(async () => buttons(view.container, "Find models")[0]?.click());
+      const probe = models.probeOpenAiCompatible.mock.calls.at(-1)?.[0];
+      expect(probe.headers).toEqual({});
+      expect(probe).not.toHaveProperty("credentialId");
+      await typeInto(field(view.container, "OpenAI-compatible server URL"), savedAlias);
+      await act(async () => buttons(view.container, "Save")[0]?.click());
+      expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+        credentialId: "connection-a",
+        expectedRevision: 7,
+        baseUrl: savedAlias,
+      });
+      expect(models.connect.mock.calls.at(-1)?.[0].headers).toBeUndefined();
+      expect(field(view.container, "Header name").value).toBe("X-Saved");
+      expect(field(view.container, "Header value").value).toBe("");
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it("keeps an explicit saved-header clear when editing only a cosmetic endpoint alias", async () => {
+  useCompatibleConnections([{ ...compatibleConnection(), headerNames: ["X-Saved"] }]);
+  const view = await renderSettings();
+  try {
+    await act(async () =>
+      view.container
+        .querySelector<HTMLButtonElement>('button[aria-label="Remove header"]')
+        ?.click(),
+    );
+    await typeInto(
+      field(view.container, "OpenAI-compatible server URL"),
+      "https://models.example.test/",
+    );
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0].headers).toEqual({});
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("preserves protocol, entered headers and the captured revision after a rejected save", async () => {
+  useCompatibleConnections();
+  models.connect.mockRejectedValue(new Error("Connection changed. Reopen settings."));
+  const view = await renderSettings();
+  try {
+    await choose(select(view.container, "API protocol"), "anthropic-messages");
+    await act(async () =>
+      [...view.container.querySelectorAll("summary")]
+        .find((entry) => entry.textContent === "Custom headers")
+        ?.click(),
+    );
+    await act(async () => buttons(view.container, "Add header")[0]?.click());
+    await typeInto(field(view.container, "Header name"), "X-Team");
+    await typeInto(field(view.container, "Header value"), "en");
+    await typeInto(compatibleKeyField(view.container), "synthetic-replacement-key");
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(select(view.container, "API protocol").value).toBe("anthropic-messages");
+    expect(field(view.container, "Header value").value).toBe("en");
+    expect(compatibleKeyField(view.container).value).toBe("synthetic-replacement-key");
+    await act(async () => buttons(view.container, "Save")[0]?.click());
+    expect(
+      models.connect.mock.calls.map(([input]) => [
+        input.expectedRevision,
+        input.apiProtocol,
+        input.headers,
+      ]),
+    ).toEqual([
+      [7, "anthropic-messages", { "X-Team": "en" }],
+      [7, "anthropic-messages", { "X-Team": "en" }],
+    ]);
+    await typeInto(
+      field(view.container, "OpenAI-compatible server URL"),
+      "https://models.example.test/",
+    );
+    expect(field(view.container, "Header value").value).toBe("en");
+    await typeInto(
+      field(view.container, "OpenAI-compatible server URL"),
+      "https://other.example.test/v1",
+    );
+    expect(view.container.querySelector('input[aria-label="Header value"]')).toBeNull();
+    expect(compatibleKeyField(view.container).value).toBe("");
+    expect(select(view.container, "API protocol").value).toBe("anthropic-messages");
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("ignores a late discovery after the selected protocol changes", async () => {
+  useCompatibleConnections();
+  const probe = deferred<{ models: string[] }>();
+  models.probeOpenAiCompatible.mockReturnValue(probe.promise);
+  const view = await renderSettings();
+  try {
+    await act(async () => {
+      buttons(view.container, "Find models")[0]?.click();
+    });
+    await choose(select(view.container, "API protocol"), "responses");
+    await act(async () => {
+      probe.resolve({ models: ["late-model"] });
+      await probe.promise;
+    });
+    expect(view.container.textContent).not.toContain("late-model");
+    expect(select(view.container, "API protocol").value).toBe("responses");
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("does not label an unknown stored protocol as Chat Completions", async () => {
+  useCompatibleConnections([
+    { ...compatibleConnection(), apiProtocol: "future-protocol" as ModelApiProtocol },
+  ]);
+  const view = await renderSettings();
+  try {
+    expect(select(view.container, "API protocol").value).toBe("");
+    expect(select(view.container, "API protocol").selectedOptions[0]?.textContent).toBe(
+      "Choose a protocol",
+    );
+    expect(buttons(view.container, "Save")[0]?.disabled).toBe(true);
+    expect(models.connect).not.toHaveBeenCalled();
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("reopens and saves a legacy Azure row through its catalog alias without rebinding another connection", async () => {
+  let saved: ModelCredential = {
+    id: "azure-old",
+    provider: "azure-openai-responses",
+    label: "Old Azure",
+    hasKey: true,
+    isDefault: true,
+    connectionRevision: 7,
+    modelId: "azure-model",
+  };
+  const other: ModelCredential = {
+    ...saved,
+    id: "azure-other",
+    provider: "azure",
+    label: "Other Azure",
+    isDefault: false,
+    connectionRevision: 19,
+  };
+  vi.mocked(rpc.me).mockResolvedValue(account(saved.provider, "azure-model"));
+  models.list.mockResolvedValue([
+    {
+      provider: "azure",
+      providerName: "Azure",
+      id: "azure-model",
+      label: "Azure model",
+      auth: "api-key",
+      billing: "API",
+    },
+  ]);
+  models.credentials.mockImplementation(async () => [saved, other]);
+  models.connect.mockImplementation(async () => {
+    saved = { ...saved, connectionRevision: 8 };
+    return saved;
+  });
+  const view = await renderSettings();
+  try {
+    expect(keyField(view.container).placeholder).toBe(STORED_PLACEHOLDER);
+    const providerRow = buttons(view.container, "Azure")[0]!;
+    expect(providerRow.previousElementSibling?.textContent).toBe("Connected");
+    expect(providerRow.textContent).toContain("Azure model");
+    expect(providerRow.getAttribute("aria-current")).toBe("true");
+    await act(async () => providerRow.click());
+    expect(providerRow.getAttribute("aria-current")).toBe("true");
+    await typeInto(keyField(view.container), "synthetic-azure-replacement");
+    await act(async () => buttons(view.container, "Replace API key")[0]?.click());
+    expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+      provider: "azure-openai-responses",
+      credentialId: "azure-old",
+      expectedRevision: 7,
+      modelId: "azure-model",
+    });
+    expect(models.connect.mock.calls.at(-1)?.[0].credentialId).not.toBe(other.id);
+    expect(other.connectionRevision).toBe(19);
+  } finally {
+    await view.unmount();
+  }
+});

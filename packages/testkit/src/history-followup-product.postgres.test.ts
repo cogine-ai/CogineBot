@@ -30,11 +30,25 @@ describe.skipIf(!enabled)("persisted source-verified history followups", () => {
       const followup = (request: ModelEmulatorRequest, index: number) => {
         const serialized = JSON.stringify(request.messages);
         expect(serialized).toContain(questions[index]);
-        expect(
-          request.messages.filter((row) =>
-            String(row.content).includes(`Assistant: ${verifiedReply}`),
-          ),
-        ).toHaveLength(index);
+        // Count original replies, including when wire normalization groups adjacent messages.
+        const wireText = request.messages.map((row) => String(row.content ?? "")).join("\n\n");
+        const replyMarker = `Assistant: ${verifiedReply}`;
+        expect(wireText.split(replyMarker).length - 1).toBe(index);
+        for (const question of questions.slice(0, index + 1)) {
+          expect(wireText.split(question).length - 1).toBe(1);
+        }
+        const chronology = questions
+          .slice(0, index)
+          .flatMap((question) => [question, replyMarker])
+          .concat(questions[index]!);
+        let cursor = 0;
+        for (const text of chronology) {
+          const position = wireText.indexOf(text, cursor);
+          expect(position, `Missing or reordered source text: ${text}`).toBeGreaterThanOrEqual(
+            cursor,
+          );
+          cursor = position + text.length;
+        }
         expect(serialized).toContain("do not repeat retrieval solely because the user asks again");
       };
       const key = "synthetic-history-followup-key";

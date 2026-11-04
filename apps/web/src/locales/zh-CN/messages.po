@@ -7043,3 +7043,35 @@ msgstr "此模型的上下文容量太小。请选择其他模型。"
 #: src/lib/run-error.ts
 msgid "This server's tool result does not fit the model. Choose another model."
 msgstr "此服务器的完整工具结果超出模型容量。请选择其他模型。"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "API protocol"
+msgstr "API 协议"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose a protocol"
+msgstr "选择协议"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Custom headers"
+msgstr "自定义请求头"
+
+#: src/components/ModelHeadersEditor.tsx
+msgid "Remove header"
+msgstr "移除请求头"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Choose an API protocol."
+msgstr "请选择 API 协议。"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check the custom headers."
+msgstr "请检查自定义请求头。"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Reload this connection before saving."
+msgstr "请先重新加载此连接再保存。"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Maximum output tokens must be smaller than the context limit."
+msgstr "输出 token 上限必须小于上下文上限。"

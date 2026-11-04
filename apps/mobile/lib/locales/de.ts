@@ -1251,4 +1251,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "Waiting for the target": "Warten auf das Ziel",
   "Write authorization expired. Existing results can still be checked.":
     "Die Schreibberechtigung ist abgelaufen. Vorhandene Ergebnisse können weiterhin geprüft werden.",
+  "API protocol": "API-Protokoll",
+  "Choose a protocol": "Protokoll auswählen",
+  "Custom headers": "Benutzerdefinierte Header",
+  "Remove header": "Header entfernen",
+  "Choose an API protocol.": "Wähle ein API-Protokoll.",
+  "Check the custom headers.": "Prüfe die benutzerdefinierten Header.",
+  "Reload this connection before saving.": "Lade diese Verbindung vor dem Speichern neu.",
+  "Maximum output tokens must be smaller than the context limit.":
+    "Das Ausgabelimit muss kleiner als das Kontextlimit sein.",
 };
