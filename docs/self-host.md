@@ -60,6 +60,16 @@ credential as it stands. To roll out a new password without breaking reconnects,
 prepare a new login, switch the new instances to it, and drain the old instances
 before retiring the old login and its registered key.
 
+Use a randomly generated, URL-safe password for a runtime login shared with
+administration tools. Runtime preparation follows the application's PostgreSQL
+driver's password mapping. Passwords that fail SASLprep's prohibition or
+bidirectional checks can be incompatible across clients when normalization also
+changes their characters. They can authenticate through the application driver
+but fail through libpq/psql; a password set directly by the server can have the
+opposite result. Preparation verifies the application connection, not
+compatibility with every PostgreSQL client. Avoid these mixed-character
+passwords when the same login must work across clients.
+
 Success reports role and key readiness, not complete row-level isolation. Full
 table policies and trusted API, worker and CLI contexts must be connected before
 activation. This command does not switch the current Compose services to a new

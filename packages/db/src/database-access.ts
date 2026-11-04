@@ -225,7 +225,7 @@ function unsafeRole(role: RolePrivileges): string | undefined {
 export async function provisionRuntimeRole(
   migrationUrl: string,
   runtimeUrl: string,
-): Promise<{ warning?: string }> {
+): Promise<void> {
   assertSameDatabaseTarget(migrationUrl, runtimeUrl);
   const owner = new Client({ connectionString: migrationUrl });
   let runtime: ReturnType<typeof createPool> | undefined;
@@ -248,18 +248,22 @@ export async function provisionRuntimeRole(
       } = await connected.query<RolePrivileges>(statement.text, statement.values);
       if (!role?.sessionRole || unsafeRole(role))
         throw new Error("The authenticated runtime role is not restricted");
-      let session = role;
       if (role.sessionRole !== role.role) {
         const sessionStatement = rolePrivileges(role.sessionRole);
         const result = await connected.query<RolePrivileges>(
           sessionStatement.text,
           sessionStatement.values,
         );
-        if (!result.rows[0]) throw new Error("The authenticated session role is unavailable");
-        session = result.rows[0];
+        const session = result.rows[0];
+        if (!session) throw new Error("The authenticated session role is unavailable");
+        if (unsafeRole(session))
+          throw new Error("The authenticated session role is not restricted");
+        if (!session.hasRuntimeGrants)
+          throw new Error(
+            "The runtime execution and session roles must inherit their required runtime grants",
+          );
       }
-      if (unsafeRole(session)) throw new Error("The authenticated session role is not restricted");
-      if (!role.hasRuntimeGrants || !session.hasRuntimeGrants)
+      if (!role.hasRuntimeGrants)
         throw new Error(
           "The runtime execution and session roles must inherit their required runtime grants",
         );
@@ -285,7 +289,6 @@ export async function provisionRuntimeRole(
     }
   }
   if (failed) throw failure;
-  return {};
 }
 
 async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
@@ -418,11 +421,14 @@ async function provisionWith(owner: Client, runtimeUrl: string): Promise<void> {
 }
 
 /**
- * The SCRAM-SHA-256 verifier PostgreSQL would store for `password`. Sending it
- * instead of the password keeps the plaintext out of server logs and audit trails.
+ * A SCRAM-SHA-256 verifier matching the supported pg 8.23 client's password
+ * mapping. Sending it keeps the plaintext out of server logs and audit trails.
+ * This mapping does not implement PostgreSQL's entire-raw-password fallback when
+ * SASLprep's prohibition or bidirectional checks fail. Libpq compatibility is not
+ * assured when that fallback differs from pg's mapping.
  */
 export function scramSha256Verifier(password: string, salt = randomBytes(16), iterations = 4096) {
-  // SASLprep's mappings (RFC 4013), as PostgreSQL and pg apply them.
+  // Byte mappings used by the supported pg client (RFC 4013).
   const prepared = password
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, " ")
     .replace(
@@ -538,9 +544,4 @@ export async function describeRowSecurity(prisma: PrismaClient): Promise<RowSecu
         }
       : { systemBlocked: true, reason: "the system key is not registered" }),
   };
-}
-
-export function rowSecurityWarning(status: RowSecurityStatus): string | undefined {
-  if (status.enforced) return undefined;
-  return `Row-level security is not enforced: ${status.reason ?? "runtime role preparation is incomplete"}.`;
 }

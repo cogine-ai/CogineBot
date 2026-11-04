@@ -144,7 +144,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
   });
 
   it("creates a restricted login, registers its authenticated key and reports preparation without enforcement", async () => {
-    expect(await provisionRuntimeRole(databaseUrl!, runtimeUrl)).toEqual({});
+    await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).resolves.toBeUndefined();
     expect(
       (await owner.pool.query("SELECT rolname FROM pg_roles WHERE rolname=$1", [login])).rows,
     ).toEqual([{ rolname: login }]);
@@ -271,6 +271,36 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
       await close(removed);
     }
   });
+
+  it.each([
+    { label: "private-use", characters: "\uE000\uFB01" },
+    { label: "bidirectional", characters: "\u0627\uFB01" },
+  ])(
+    "authenticates $label normalization passwords through the runtime driver",
+    async ({ label, characters }) => {
+      const name = `${login}_${label.replaceAll("-", "_")}`;
+      allocated.add(name);
+      const secret = `fixture-${characters}-password`;
+      const url = urlFor(name, secret);
+      await provisionRuntimeRole(databaseUrl!, url);
+      const client = createDb(url, { poolMax: 1, rowSecurity: true });
+      try {
+        expect((await client.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+        expect(await describeRowSecurity(client.prisma)).toMatchObject({
+          prepared: true,
+          enforced: false,
+        });
+      } finally {
+        await close(client);
+      }
+      const incorrect = createDb(urlFor(name, "incorrect-fixture-password"), { poolMax: 1 });
+      try {
+        await expect(incorrect.pool.query("SELECT 1")).rejects.toMatchObject({ code: "28P01" });
+      } finally {
+        await close(incorrect);
+      }
+    },
+  );
 
   it("uses PGPASSWORD from successful runtime authentication", async () => {
     const url = new URL(runtimeUrl);
@@ -801,7 +831,9 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
       (await owner.pool.query("SELECT rolcreaterole FROM pg_roles WHERE rolname=$1", [limited]))
         .rows,
     ).toEqual([{ rolcreaterole: false }]);
-    expect(await provisionRuntimeRole(urlFor(limited, password), runtimeUrl)).toEqual({});
+    await expect(
+      provisionRuntimeRole(urlFor(limited, password), runtimeUrl),
+    ).resolves.toBeUndefined();
     const bad = new URL(runtimeUrl);
     bad.password = "invalid-precreated-fixture-password";
     const before = await digestCount();
@@ -929,7 +961,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
         provisionRuntimeRole(databaseUrl!, url),
         provisionRuntimeRole(databaseUrl!, url),
       ]),
-    ).toEqual([{}, {}]);
+    ).toEqual([undefined, undefined]);
     const client = createDb(url, { poolMax: 1, rowSecurity: true });
     try {
       expect(await describeRowSecurity(client.prisma)).toMatchObject({

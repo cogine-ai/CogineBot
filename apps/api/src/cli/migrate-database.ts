@@ -26,8 +26,7 @@ async function main() {
   if (!urls.separate) {
     process.stderr.write(`WARNING: ${SINGLE_DATABASE_URL_WARNING}\n`);
   } else {
-    const { warning } = await provisionRuntimeRole(urls.migrationUrl, urls.url);
-    if (warning) throw new Error(warning);
+    await provisionRuntimeRole(urls.migrationUrl, urls.url);
     const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
     try {
       const status = await describeRowSecurity(prisma);

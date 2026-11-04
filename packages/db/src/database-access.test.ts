@@ -175,7 +175,7 @@ describe("database URLs", () => {
   );
 
   it("keeps schema query handling limited to the migration CLI", async () => {
-    await expect(provisionRuntimeRole(`${owner}?schema=shadow`, runtime)).resolves.toEqual({});
+    await expect(provisionRuntimeRole(`${owner}?schema=shadow`, runtime)).resolves.toBeUndefined();
   });
 
   it("rejects a different runtime database before preparing the owner target", () => {
@@ -247,7 +247,7 @@ describe("database URLs", () => {
     };
     await expect(
       provisionRuntimeRole(env.DATABASE_MIGRATION_URL, env.DATABASE_URL),
-    ).resolves.toEqual({});
+    ).resolves.toBeUndefined();
     expect(() => databaseUrls(env)).toThrow(
       "migration URL target must match both database clients",
     );
@@ -398,7 +398,7 @@ describe("SCRAM verifier", () => {
 
 describe("runtime role preparation", () => {
   it("registers only an authenticated effective key, preserving old digests and closing resources", async () => {
-    await expect(provisionRuntimeRole(owner, runtime)).resolves.toEqual({});
+    await expect(provisionRuntimeRole(owner, runtime)).resolves.toBeUndefined();
     const insert = state.sent.find((entry) => entry.sql.includes("INSERT INTO cogine_private"));
     expect(insert?.values).toEqual([
       "e3ab53f78a8d87ee6f8476b690739dd5823af9545de951578b0c157049ce1cab",
@@ -429,7 +429,7 @@ describe("runtime role preparation", () => {
     state.groupExists = false;
     await expect(
       provisionRuntimeRole(owner, "postgres://coginebot_app_42:secret@db/coginebot"),
-    ).resolves.toEqual({});
+    ).resolves.toBeUndefined();
     expect(
       state.sent.some((entry) => entry.sql.startsWith('CREATE ROLE "coginebot_app_42" NOLOGIN')),
     ).toBe(true);
@@ -440,7 +440,7 @@ describe("runtime role preparation", () => {
 
   it("does not recompute or replace an existing login verifier during successful preparation", async () => {
     state.existing = true;
-    await expect(provisionRuntimeRole(owner, runtime)).resolves.toEqual({});
+    await expect(provisionRuntimeRole(owner, runtime)).resolves.toBeUndefined();
     expect(state.sent.some((entry) => entry.sql.startsWith('ALTER ROLE "runtime"'))).toBe(false);
     expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(true);
   });
@@ -484,7 +484,7 @@ describe("runtime role preparation", () => {
   it("keeps the managed precreated-role path without password mutation", async () => {
     state.existing = true;
     state.canManage = false;
-    await expect(provisionRuntimeRole(owner, runtime)).resolves.toEqual({});
+    await expect(provisionRuntimeRole(owner, runtime)).resolves.toBeUndefined();
     expect(state.sent.some((entry) => entry.sql.startsWith('ALTER ROLE "runtime"'))).toBe(false);
     expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(true);
   });
