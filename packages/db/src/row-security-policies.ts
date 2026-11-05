@@ -3,7 +3,6 @@ import { createDb } from "./client.js";
 import { databaseUrls, describeRowSecurity } from "./database-access.js";
 import type { PrismaClient } from "./generated/prisma/client.js";
 import { Prisma } from "./generated/prisma/client.js";
-import { runAsSystem } from "./row-security.js";
 
 export type RowSecurityPolicyScope = "tenant" | "user/account" | "explicit-system";
 
@@ -630,12 +629,10 @@ function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
 export async function describeRowSecurityPolicies(
   prisma: PrismaClient,
 ): Promise<RowSecurityPolicyStatus> {
-  const catalog = await runAsSystem("inspect registered database row policies", () =>
-    prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL search_path = pg_catalog, pg_temp`;
-      return readCatalog(<T>(statement: Prisma.Sql) => tx.$queryRaw<T[]>(statement));
-    }),
-  );
+  const catalog = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL search_path = pg_catalog, pg_temp`;
+    return readCatalog(<T>(statement: Prisma.Sql) => tx.$queryRaw<T[]>(statement));
+  });
   const status = report(catalog, false);
   if (!status.guardValid) return status;
   const runtime = await describeRowSecurity(prisma);

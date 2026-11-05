@@ -131,6 +131,23 @@ describe("row-security maintenance command", () => {
     expect(output(stderr)).not.toContain("postgres:");
   });
 
+  it("redacts a throwing error message getter without failing its error handler", async () => {
+    const failure = Object.defineProperty(new Error("synthetic"), "message", {
+      get() {
+        throw new Error(`Synthetic getter failure at ${runtimeUrl}`);
+      },
+    });
+    mocks.describe.mockRejectedValue(failure);
+    await run("status");
+    expect(mocks.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.end).toHaveBeenCalledOnce();
+    expect(process.exitCode).toBe(1);
+    expect(output(stderr)).toBe(
+      "Database preparation failed. Check the administrator connection, runtime role grants, and credential configuration.\n",
+    );
+    expect(output(stdout)).toBe("");
+  });
+
   it("reports a committed installation without exposing the failed probe's cause", async () => {
     mocks.apply.mockRejectedValue(
       new Error("Database policies were committed, but runtime verification failed", {

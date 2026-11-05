@@ -527,11 +527,42 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     const before = await catalog();
     const preparation = await describeRowSecurity(runtime!.prisma);
     expect(preparation).toMatchObject({ prepared: true, enforced: false });
-    expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
+    const contexts: Array<ReturnType<typeof currentDbContext>> = [];
+    const checked = new Proxy(runtime!.prisma, {
+      get(target, property, receiver) {
+        if (property !== "$transaction") return Reflect.get(target, property, receiver);
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction(async (tx) => {
+            contexts.push(currentDbContext());
+            return callback(tx);
+          });
+      },
+    });
+    const expected = {
       policyInstalled: true,
       connectionEnforced: true,
       deploymentEnforced: false,
+    };
+    expect(await describeRowSecurityPolicies(checked)).toMatchObject(expected);
+    expect(currentDbContext()).toBeUndefined();
+    await inA(async () => {
+      expect(await describeRowSecurityPolicies(checked)).toMatchObject(expected);
+      expect(currentDbContext()).toEqual({ kind: "tenant", spaceId: spaceA, userId: userA });
+      expect(await ids("memory_documents")).toEqual([{ id: id("document-a") }]);
+      expect(await runtime!.prisma.nativeAppConfig.count()).toBe(0);
     });
+    const reason = "inspect a synthetic policy status from an existing system caller";
+    await runAsSystem(reason, async () => {
+      expect(await describeRowSecurityPolicies(checked)).toMatchObject(expected);
+      expect(currentDbContext()).toEqual({ kind: "system", reason });
+    });
+    expect(contexts).toEqual([
+      undefined,
+      { kind: "tenant", spaceId: spaceA, userId: userA },
+      { kind: "system", reason },
+    ]);
+    expect(currentDbContext()).toBeUndefined();
+    expect(await ids("memory_documents")).toEqual([]);
     expect(await catalog()).toEqual(before);
   });
 
