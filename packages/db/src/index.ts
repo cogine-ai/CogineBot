@@ -38,6 +38,15 @@ export {
   withRowLevelSecurity,
   withTransactionContext,
 } from "./row-security.js";
+export type {
+  RowSecurityPolicyScope,
+  RowSecurityPolicyStatus,
+  RowSecurityTableStatus,
+} from "./row-security-policies.js";
+export {
+  applyRowSecurityPolicies,
+  describeRowSecurityPolicies,
+} from "./row-security-policies.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";
 export * from "./scope.js";

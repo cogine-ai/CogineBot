@@ -17,7 +17,12 @@ import type {
   PluginInstallReceipt,
 } from "@rakazo/contracts";
 import type { PluginCredentialCleanupEntry, Prisma } from "@rakazo/db";
-import { lockPluginInstall, readPluginCleanupRefs, Prisma as Sql } from "@rakazo/db";
+import {
+  lockPluginInstall,
+  readPluginCleanupRefs,
+  runAsSystemInTransaction,
+  Prisma as Sql,
+} from "@rakazo/db";
 import { pluginInstallReceipt } from "./plugin-install-receipt.js";
 import type { RouterDeps } from "./router.js";
 
@@ -342,10 +347,12 @@ export function createPluginInstallsService(deps: Deps) {
         });
         const managed = rows.filter((row) => row.userId !== context.actor.userId);
         const users = managed.length
-          ? await tx.user.findMany({
-              where: { id: { in: [...new Set(managed.map((row) => row.userId))] } },
-              select: { id: true, name: true },
-            })
+          ? await runAsSystemInTransaction(tx, "resolve names of authorized plugin owners", () =>
+              tx.user.findMany({
+                where: { id: { in: [...new Set(managed.map((row) => row.userId))] } },
+                select: { id: true, name: true },
+              }),
+            )
           : [];
         const names = new Map(users.map((user) => [user.id, user.name]));
         context.signal?.throwIfAborted();

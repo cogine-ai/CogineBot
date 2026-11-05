@@ -107,6 +107,7 @@ async function main() {
     "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",
     "packages/db/src/readiness.postgres.test.ts",
     "packages/db/src/row-security.postgres.test.ts",
+    "apps/api/src/row-security-policies.postgres.test.ts",
     "packages/db/src/scripted-state-failure.postgres.test.ts",
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",
@@ -239,6 +240,12 @@ async function main() {
                 suite === remainingLifecycleSuite ? "harness_isolated" : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE_DATABASE:
                 suite === remainingLifecycleSuite ? database : "",
+              VERIFY_ROW_SECURITY_POLICIES:
+                suite === "apps/api/src/row-security-policies.postgres.test.ts"
+                  ? "harness_isolated"
+                  : "",
+              VERIFY_ROW_SECURITY_POLICIES_DATABASE:
+                suite === "apps/api/src/row-security-policies.postgres.test.ts" ? database : "",
               OPENROUTER_API_KEY: "",
               MODEL_API_KEY: "",
             },
