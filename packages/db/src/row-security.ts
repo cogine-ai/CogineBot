@@ -451,6 +451,7 @@ function bindTransactions(
         return (...args: unknown[]) =>
           bindTransactions(Reflect.apply(target.$extends, target, args), binding, transactions);
       if (property !== "$transaction") return Reflect.get(target, property, receiver);
+      const transact = target.$transaction;
       return (...args: unknown[]) => {
         const parentScope = Reflect.get(target, PRISMA_TRANSACTION_SCOPE) as
           | { txId?: string }
@@ -497,7 +498,7 @@ function bindTransactions(
               }
             }
           };
-        return Reflect.apply(target.$transaction, target, args);
+        return Reflect.apply(transact, target, args);
       };
     },
   });

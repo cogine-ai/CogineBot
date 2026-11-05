@@ -370,6 +370,31 @@ describe("trusted database scopes", () => {
   });
 });
 describe("transaction identity", () => {
+  it.each([true, false])(
+    "supports a saved transaction method after an SDK-level override (row security=%s)",
+    async (rowSecurity) => {
+      const f = isolatedTransactionBoundary(rowSecurity);
+      const original = f.client.$transaction;
+      const injected = new Error("Synthetic transaction failure before checkout");
+      const spy = vi
+        .spyOn(f.client, "$transaction")
+        .mockImplementation(((...args: unknown[]) =>
+          Reflect.apply(original, f.client, args)) as typeof f.client.$transaction);
+      try {
+        spy.mockRejectedValueOnce(injected);
+        await expect(f.client.$transaction(async () => "unreachable")).rejects.toBe(injected);
+        expect(
+          await runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
+            f.client.$transaction(async (tx) => (await tx.thread.findMany()).length),
+          ),
+        ).toBe(1);
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
   it.each([
     [false, false],
     [true, false],

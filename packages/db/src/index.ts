@@ -29,6 +29,7 @@ export {
   type DbContext,
   drainUnscopedDatabaseAccess,
   installDbContext,
+  isInteractiveTransaction,
   ROW_SECURITY_MODELS,
   rlsBypassKey,
   runAsSystem,

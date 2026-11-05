@@ -29,6 +29,7 @@ import {
   leaseNativeEventSource,
   listNativeRoutineTriggersBatch,
   nativeConnectionMatches,
+  nativeEventConnectionSnapshot,
   nativeEventRunNonce,
   nativeObservationMatches,
   replaceNativeRoutineTriggersTx,
@@ -258,6 +259,40 @@ const SPECS: NativeRoutineEventSpec[] = [
     target: { type: "discussion", discussionId: DISCUSSION, anchorBlockId: BLOCK, pageId: PAGE },
   },
 ];
+
+test("reads native connection metadata through a root client without retaining system authority", async () => {
+  const { db } = database({ protectMetadata: true });
+  await runAsTenant(scope, async () => {
+    assert.equal(
+      (await nativeEventConnectionSnapshot(db, scope, "connection-a")).configId,
+      "config-a",
+    );
+    assert.deepEqual(currentDbContext(), { kind: "tenant", ...scope });
+  });
+});
+
+test("rejects unbound and completed native snapshot transactions without a root fallback", async () => {
+  const query = async () => {
+    throw new Error("An unbound transaction must not execute SQL");
+  };
+  const raw = {
+    $queryRaw: query,
+    [Symbol.for("prisma.client.transaction.scope_context")]: { kind: "nested", txId: randomUUID() },
+  } as unknown as PrismaClient;
+  await assert.rejects(
+    nativeEventConnectionSnapshot(raw, scope, "connection-a"),
+    /context-aware interactive transaction/,
+  );
+  const { db } = database();
+  let closed!: PrismaClient;
+  await db.$transaction(async (tx) => {
+    closed = tx as PrismaClient;
+  });
+  await assert.rejects(
+    nativeEventConnectionSnapshot(closed, scope, "connection-a"),
+    /Concurrent system transaction access/,
+  );
+});
 
 test("replaces native triggers from a tenant while global metadata stays a narrow system step", async () => {
   const { db, writes } = database({ protectMetadata: true });

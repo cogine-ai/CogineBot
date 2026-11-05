@@ -18,7 +18,12 @@ import {
 } from "@rakazo/contracts";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma, runAsSystemInTransaction } from "@rakazo/db";
+import {
+  isInteractiveTransaction,
+  Prisma,
+  runAsSystem,
+  runAsSystemInTransaction,
+} from "@rakazo/db";
 import { routineRunModelPin } from "../../model-selection.js";
 
 type Tx = Prisma.TransactionClient;
@@ -125,17 +130,15 @@ export function nativeConnectionMatches(
       snapshot.provider === proof.appId)
   );
 }
-/** Read only non-secret binding fields. The verifier obtains credentials through NativeOAuthStore. */
+/** Read only non-secret binding fields. The verifier obtains credentials through NativeOAuthStore.
+ * Root reads use a named system context; held reads use that transaction's scoped system step. */
 export async function nativeEventConnectionSnapshot(
   db: Pick<PrismaClient, "$queryRaw"> | Tx,
   scope: NativeEventScope,
   connectionId: string,
 ): Promise<NativeEventConnectionSnapshot> {
-  const rows = await runAsSystemInTransaction(
-    db,
-    "read exact native event connection authorization",
-    () =>
-      db.$queryRaw<NativeEventConnectionSnapshot[]>(Prisma.sql`/*native-event:connection*/
+  const read = () =>
+    db.$queryRaw<NativeEventConnectionSnapshot[]>(Prisma.sql`/*native-event:connection*/
     SELECT c.id AS "connectionId",c."userId",c."spaceId",c."connectorId",c.provider,c.status,
       c.metadata->>'authRevision' AS "authorizationRevision",g.id AS "grantId",g."authGeneration",
       c."nativeConfigId" AS "configId",c."nativeConfigRevision" AS "configRevision",a.revision AS "currentConfigRevision",
@@ -144,8 +147,11 @@ export async function nativeEventConnectionSnapshot(
     FROM connections c JOIN native_oauth_grants g ON g.id=c."oauthGrantId" JOIN native_app_configs a ON a.id=c."nativeConfigId"
     WHERE c.id=${connectionId} AND c."userId"=${scope.userId} AND c."spaceId"=${scope.spaceId}
       AND jsonb_typeof(c.metadata->'authRevision')='string'
-      AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=${scope.userId} AND m."spaceId"=${scope.spaceId})`),
-  );
+      AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=${scope.userId} AND m."spaceId"=${scope.spaceId})`);
+  const reason = "read exact native event connection authorization";
+  const rows = await (isInteractiveTransaction(db)
+    ? runAsSystemInTransaction(db, reason, read)
+    : runAsSystem(reason, read));
   const snapshot = rows[0];
   if (!snapshot || !nativeConnectionMatches(snapshot, scope)) throw unavailable();
   return snapshot;

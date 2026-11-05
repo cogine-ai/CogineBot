@@ -279,6 +279,12 @@ describePostgres("mixed database authority on a restricted single-connection poo
     expect(await owner.prisma.bot.count({ where: { id: foreign.id } })).toBe(1);
     await runAsTenant(tenant, async () => {
       expect(await runtime.prisma.nativeAppConfig.count()).toBe(0);
+      expect(
+        (await nativeEventConnectionSnapshot(runtime.prisma, tenant, fixture.connection.id))
+          .configId,
+      ).toBe(fixture.config.id);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...tenant });
+      expect(await runtime.prisma.nativeAppConfig.count()).toBe(0);
       const rollback = new Error("Synthetic outer rollback");
       await expect(
         runtime.prisma.$transaction(async (tx) => {
