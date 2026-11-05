@@ -1612,11 +1612,37 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     await owner.pool.query(
       "ALTER POLICY memory_documents_system ON public.memory_documents USING (current_setting('app.rls_bypass',true)='on')",
     );
+    await owner.pool.query(
+      "ALTER POLICY memory_documents_tenant ON public.memory_documents USING (public.app_rls_version() >= 2)",
+    );
+    await owner.pool.query(
+      "ALTER POLICY native_slack_event_inbox_system ON public.native_slack_event_inbox USING (public.app_rls_version() >= 2)",
+    );
     expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
       policyInstalled: false,
       connectionEnforced: false,
-      legacyPolicyCount: 1,
+      legacyPolicyCount: 3,
     });
+    const external = `policy_external_version_${suffix}`;
+    const blockedBefore = await catalog();
+    try {
+      await owner.pool.query(
+        `CREATE FUNCTION public.${escapeIdentifier(external)}() RETURNS integer LANGUAGE SQL RETURN public.app_rls_version()`,
+      );
+      await expect(applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).rejects.toMatchObject({
+        code: "2BP01",
+      });
+      expect(await catalog()).toEqual(blockedBefore);
+      expect(
+        (
+          await owner.pool.query(
+            "SELECT to_regprocedure('public.app_rls_version()') IS NOT NULL AS kept",
+          )
+        ).rows,
+      ).toEqual([{ kept: true }]);
+    } finally {
+      await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(external)}()`);
+    }
     expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
       policyInstalled: true,
       connectionEnforced: true,

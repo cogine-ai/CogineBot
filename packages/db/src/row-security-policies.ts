@@ -726,7 +726,6 @@ export async function applyRowSecurityPolicies(
       await owner.query(
         `DROP POLICY ${escapeIdentifier(policy.name)} ON public.${escapeIdentifier(policy.table)}`,
       );
-    if (before.versionFunction) await owner.query("DROP FUNCTION public.app_rls_version()");
     for (const definition of [...ROW_SECURITY_POLICIES].sort((a, b) =>
       a.table.localeCompare(b.table),
     )) {
@@ -744,6 +743,7 @@ export async function applyRowSecurityPolicies(
       if (!before.relations.find((relation) => relation.table === definition.table)?.enabled)
         await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
     }
+    if (before.versionFunction) await owner.query("DROP FUNCTION public.app_rls_version()");
     const installed = report(await readCatalog(query), false);
     if (!installed.policyInstalled || !installed.policyEnabled || !installed.guardValid)
       throw new Error("The database policy installation did not match the registered definitions");
