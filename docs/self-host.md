@@ -73,6 +73,13 @@ Each managed grant role grants access to its own database. Additional membership
 and direct grants remain administrator-controlled. Reusing one login across
 databases intentionally shares that login's authority.
 
+A precreated grant role must be `NOLOGIN` unless it is itself the configured
+runtime login. Preparation and readiness reject a separately authenticating
+grant role; preparation does not disable its login or change its password. If
+an existing runtime uses the grant role itself as its login, moving to a different
+login requires an administrator-controlled transition. The ordinary new-login
+rollout below does not automatically convert that existing grant role.
+
 Before activating a restored database, reconcile any grant-role ACLs carried by
 the backup and prepare the restored database's role and key. Preparation does
 not migrate legacy role ACLs or change the backup/restore workflow.

@@ -119,7 +119,7 @@ type RolePrivileges = {
   unsafePrivileges: boolean;
 };
 
-function rolePrivileges(login?: string) {
+function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
   return Prisma.sql`SELECT r.rolname AS role, session_user AS "sessionRole", r.rolsuper, r.rolbypassrls,
     r.rolcreatedb, r.rolcreaterole, r.rolreplication,
     (EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -219,11 +219,12 @@ function rolePrivileges(login?: string) {
               WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))
       )) OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles g
         WHERE g.rolname = ${runtimeGrantRole} AND pg_catalog.pg_has_role(r.oid, g.oid, 'MEMBER')
-          AND ${foreignGrantDependencies(Prisma.sql`g.oid`)})) AS "unsafePrivileges",
+          AND (${foreignGrantDependencies(Prisma.sql`g.oid`)}
+            OR (g.rolcanlogin AND g.rolname <> ${runtimeLogin === undefined ? Prisma.sql`session_user` : runtimeLogin})))) AS "unsafePrivileges",
     EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE g.rolname = ${runtimeGrantRole}
       AND pg_catalog.pg_has_role(r.oid, g.oid, 'USAGE')) AS "hasRuntimeGrants"
   FROM pg_catalog.pg_roles r
-  WHERE r.rolname = ${login === undefined ? Prisma.sql`current_user` : login}`;
+  WHERE r.rolname = ${targetRole === undefined ? Prisma.sql`current_user` : targetRole}`;
 }
 
 function unsafeRole(role: RolePrivileges): string | undefined {
@@ -316,7 +317,7 @@ async function provisionWith(
   const configured = new Client({ connectionString: runtimeUrl });
   const login = configured.user;
   if (!login) throw new Error("DATABASE_URL must name the runtime login");
-  const runtimeStatement = rolePrivileges(login);
+  const runtimeStatement = rolePrivileges(login, login);
   let {
     rows: [role],
   } = await owner.query<RolePrivileges>(runtimeStatement.text, runtimeStatement.values);
@@ -366,7 +367,7 @@ async function provisionWith(
         );
       });
   }
-  const grantStatement = rolePrivileges(groupRole);
+  const grantStatement = rolePrivileges(groupRole, login);
   const {
     rows: [grantRole],
   } = await owner.query<RolePrivileges>(grantStatement.text, grantStatement.values);

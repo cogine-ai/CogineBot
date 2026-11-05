@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1449,6 +1449,134 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
         if (!beforeRoles.has(row.rolname) && row.rolname.startsWith(`${RUNTIME_ROLE}_`))
           allocated.add(row.rolname);
       await owner.pool.query(`DROP DATABASE ${escapeIdentifier(peerDatabase)} WITH (FORCE)`);
+    }
+  });
+
+  it.each(["different", "group"])(
+    "limits a precreated LOGIN grant group to its configured identity: %s",
+    async (selected) => {
+      const database = `login_group_${selected}_${suffix}`;
+      await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(database)}`);
+      const ownerUrl = new URL(databaseUrl!);
+      ownerUrl.pathname = `/${database}`;
+      const peer = createDb(ownerUrl.toString(), { poolMax: 1 });
+      try {
+        await peer.pool.query(
+          await readFile(
+            new URL(
+              "../../db/prisma/migrations/20261105023000_database_context_bypass_guard/migration.sql",
+              import.meta.url,
+            ),
+            "utf8",
+          ),
+        );
+        await peer.pool.query(
+          "CREATE TABLE public.group_login_probe(id integer); INSERT INTO public.group_login_probe VALUES(7)",
+        );
+        await migrateJobQueue(ownerUrl.toString());
+        await peer.pool.query(
+          "SELECT graphile_worker.add_job('group-login-fixture','{\"source\":\"fixture\"}'::json)",
+        );
+        const group = (
+          await peer.pool.query(
+            "SELECT 'coginebot_app_'||oid::text AS name FROM pg_database WHERE datname=current_database()",
+          )
+        ).rows[0].name as string;
+        allocated.add(group);
+        const groupPassword = randomBytes(24).toString("hex");
+        await peer.pool.query(
+          `CREATE ROLE ${escapeIdentifier(group)} LOGIN PASSWORD ${escapeLiteral(groupPassword)}`,
+        );
+        const selectedLogin = selected === "group" ? group : `${login}_group_peer`;
+        allocated.add(selectedLogin);
+        const url = (name: string, secret: string) => {
+          const u = new URL(ownerUrl);
+          u.username = name;
+          u.password = secret;
+          return u.toString();
+        };
+        async function access() {
+          const holder = createDb(url(group, groupPassword), { poolMax: 1 });
+          try {
+            expect((await holder.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+            const application = await holder.pool
+              .query("SELECT id FROM public.group_login_probe")
+              .then(
+                () => true,
+                () => false,
+              );
+            const queue = await holder.pool
+              .query("SELECT payload FROM graphile_worker._private_jobs")
+              .then(
+                () => true,
+                () => false,
+              );
+            return { application, queue };
+          } finally {
+            await close(holder);
+          }
+        }
+        expect(await access()).toEqual({ application: false, queue: false });
+        const verifier = (
+          await peer.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [group])
+        ).rows[0].rolpassword;
+        const runtime = url(selectedLogin, selected === "group" ? groupPassword : password);
+        let accepted = false;
+        try {
+          await provisionRuntimeRole(ownerUrl.toString(), runtime);
+          accepted = true;
+        } catch {}
+        const after = await access();
+        const keys = (
+          await peer.pool.query("SELECT count(*)::int AS total FROM cogine_private.rls_bypass_keys")
+        ).rows[0].total;
+        expect(
+          (await peer.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [group]))
+            .rows[0].rolpassword,
+        ).toBe(verifier);
+        expect({ accepted, ...after, keys }).toEqual(
+          selected === "group"
+            ? { accepted: true, application: true, queue: true, keys: 1 }
+            : { accepted: false, application: false, queue: false, keys: 0 },
+        );
+        if (selected === "group") {
+          const client = createDb(runtime, { poolMax: 1, rowSecurity: true });
+          try {
+            expect(await describeRowSecurity(client.prisma)).toMatchObject({
+              prepared: true,
+              enforced: false,
+            });
+          } finally {
+            await close(client);
+          }
+        }
+      } finally {
+        await close(peer);
+        await owner.pool.query(`DROP DATABASE ${escapeIdentifier(database)} WITH (FORCE)`);
+      }
+    },
+  );
+
+  it("rejects a LOGIN grant group under normal and switched execution roles", async () => {
+    const verifier = (
+      await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [grantRole])
+    ).rows[0].rolpassword;
+    await owner.pool.query(
+      `ALTER ROLE ${escapeIdentifier(grantRole)} LOGIN PASSWORD ${escapeLiteral(randomBytes(24).toString("hex"))}`,
+    );
+    const url = new URL(runtimeUrl);
+    url.searchParams.set("options", `-crole=${grantRole}`);
+    const switched = createDb(url.toString(), { poolMax: 1, rowSecurity: true });
+    try {
+      const normalReady = (await describeRowSecurity(runtime!.prisma)).prepared;
+      const switchedReady = (await describeRowSecurity(switched.prisma)).prepared;
+      expect({ normalReady, switchedReady }).toEqual({ normalReady: false, switchedReady: false });
+      await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow();
+    } finally {
+      await close(switched);
+      await owner.pool.query(
+        `ALTER ROLE ${escapeIdentifier(grantRole)} NOLOGIN PASSWORD ${verifier === null ? "NULL" : escapeLiteral(verifier)}`,
+      );
     }
   });
 
