@@ -13,8 +13,10 @@ import type {
   TerminalRequest,
 } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { runAsSystem } from "@rakazo/db";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
-import { createSandboxProvider, type SandboxProviderOptions } from "./sandbox-factory.js";
+import type { SandboxProviderOptions } from "./sandbox-factory.js";
+import { createSandboxProvider } from "./sandbox-factory.js";
 
 export function sandboxKindForBot(envKind: string, computerHost: string | null | undefined) {
   if (envKind === "docker" && computerHost === "this-mac") return "desktop";
@@ -40,9 +42,12 @@ export function createRunSandbox(
       hostRoots: [homedir()],
     }),
     async () => {
-      const settings = await opts.prisma!.deploymentSettings.findUnique({
-        where: { id: "default" },
-      });
+      const settings = await runAsSystem("read deployment computer host for sandbox routing", () =>
+        opts.prisma!.deploymentSettings.findUnique({
+          where: { id: "default" },
+          select: { computerHost: true },
+        }),
+      );
       return settings?.computerHost === "this-mac";
     },
   );

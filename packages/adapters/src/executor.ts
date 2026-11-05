@@ -3192,9 +3192,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             )
           : Promise.resolve(null),
         findDefaultModelCredential(deps.prisma, scope),
-        deps.prisma.deploymentSettings.findUnique({
-          where: { id: "default" },
-        }),
+        runAsSystem("resolve deployment defaults for a model request", () =>
+          deps.prisma.deploymentSettings.findUnique({
+            where: { id: "default" },
+            select: { defaultModelProvider: true, defaultModelId: true },
+          }),
+        ),
       ]);
       if (hasOverride && override) {
         const error = pinnedModelCredentialError(override, overrideCredential);
@@ -3914,9 +3917,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             },
           }),
           findDefaultModelCredential(deps.prisma, run),
-          deps.prisma.deploymentSettings.findUnique({
-            where: { id: "default" },
-          }),
+          runAsSystem("read deployment defaults for a run", () =>
+            deps.prisma.deploymentSettings.findUnique({
+              where: { id: "default" },
+              select: { defaultModelProvider: true, defaultModelId: true },
+            }),
+          ),
           deps.memoryProviders.resolve(run.spaceId),
           deps.prisma.taughtSkill.findMany({
             where: { botId: run.botId, spaceId: run.spaceId, status: "saved" },

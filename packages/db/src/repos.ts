@@ -18,6 +18,7 @@ import type { Prisma, PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
 import { ComputerLimitError, ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
+import { isInteractiveTransaction, runAsSystem, runAsSystemInTransaction } from "./row-security.js";
 import { BotSectionNameConflictError, IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
 import {
@@ -53,7 +54,15 @@ export type CreateBotRecordsInput = {
 };
 
 export async function botCreationComputerKind(prisma: Pick<PrismaClient, "deploymentSettings">) {
-  const settings = await prisma.deploymentSettings.findUnique({ where: { id: "default" } });
+  const read = () =>
+    prisma.deploymentSettings.findUnique({
+      where: { id: "default" },
+      select: { computerHost: true },
+    });
+  const reason = "read deployment computer host for bot creation";
+  const settings = isInteractiveTransaction(prisma)
+    ? await runAsSystemInTransaction(prisma, reason, read)
+    : await runAsSystem(reason, read);
   const envKind = process.env.SANDBOX_PROVIDER ?? "docker";
   return envKind === "docker" && settings?.computerHost === "this-mac" ? "desktop" : envKind;
 }
