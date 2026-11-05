@@ -55,6 +55,10 @@ const commandHints = new Map([
     "Database policies were committed, but runtime verification failed. The policy installation was not rolled back.",
   ],
   [
+    "Database policies were committed, but the administrator connection did not close cleanly",
+    "Database policies were committed, but the administrator connection did not close cleanly. The policy installation was not rolled back.",
+  ],
+  [
     "Use db:row-security status or db:row-security apply",
     "Use db:row-security status or db:row-security apply.",
   ],

@@ -1719,6 +1719,76 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     });
   }, 120_000);
 
+  it.each([false, true])(
+    "verifies a fresh runtime after administrator close failure (probe fails: %s)",
+    async (probeFails) => {
+      await owner.pool.query(
+        "ALTER TABLE public.native_slack_event_inbox DISABLE ROW LEVEL SECURITY",
+      );
+      const connection = await owner.pool.connect();
+      const ownerLogin = Reflect.get(connection, "user");
+      const prototype = Object.getPrototypeOf(connection);
+      const originalEnd = Reflect.get(prototype, "end");
+      const originalQuery = Reflect.get(prototype, "query");
+      connection.release();
+      const closeFailure = new Error("Synthetic administrator close failure: private-fixture");
+      let closed = false;
+      let freshQueries = 0;
+      const close = vi.spyOn(prototype, "end").mockImplementation(function (
+        this: object,
+        ...args: unknown[]
+      ) {
+        const result = Reflect.apply(originalEnd, this, args);
+        if (!closed && Reflect.get(this, "user") === ownerLogin) {
+          return Promise.resolve(result).then(() => {
+            closed = true;
+            throw closeFailure;
+          });
+        }
+        return result;
+      });
+      const query = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: object,
+        ...args: unknown[]
+      ) {
+        if (closed && Reflect.get(this, "user") === role) {
+          freshQueries++;
+          if (probeFails) return Promise.reject(new Error("Synthetic fresh runtime failure"));
+        }
+        return Reflect.apply(originalQuery, this, args);
+      });
+      try {
+        let failure: unknown;
+        try {
+          await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
+        } catch (error) {
+          failure = error;
+        }
+        expect(closed).toBe(true);
+        expect(freshQueries).toBeGreaterThan(0);
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe(
+          probeFails
+            ? "Database policies were committed, but runtime verification failed"
+            : "Database policies were committed, but the administrator connection did not close cleanly",
+        );
+        if (probeFails) expect((failure as Error).cause).not.toBe(closeFailure);
+        else expect((failure as Error).cause).toBe(closeFailure);
+        const committed = await catalog();
+        expect(committed.every((table) => table.relrowsecurity)).toBe(true);
+        expect(committed).toHaveLength(154);
+      } finally {
+        query.mockRestore();
+        close.mockRestore();
+      }
+      expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
+        connectionEnforced: true,
+        deploymentEnforced: false,
+      });
+    },
+    120_000,
+  );
+
   it("reports committed installation when a fresh runtime login fails after commit", async () => {
     const trigger = `policy_login_fault_${suffix}`;
     const fn = `policy_login_fault_fn_${suffix}`;

@@ -162,6 +162,24 @@ describe("row-security maintenance command", () => {
     expect(output(stderr)).not.toContain("postgres:");
   });
 
+  it("distinguishes administrator cleanup failure from runtime verification and redacts its cause", async () => {
+    mocks.apply.mockRejectedValue(
+      new Error(
+        "Database policies were committed, but the administrator connection did not close cleanly",
+        { cause: new Error(`Synthetic administrator close failure at ${ownerUrl}`) },
+      ),
+    );
+    await run("apply");
+    expect(process.exitCode).toBe(1);
+    expect(output(stderr)).toContain("administrator connection did not close cleanly");
+    expect(output(stderr)).toContain("not rolled back");
+    expect(output(stderr)).not.toContain("runtime verification failed");
+    expect(output(stderr)).not.toContain("uncertain");
+    expect(output(stderr)).not.toContain("synthetic-owner");
+    expect(output(stderr)).not.toContain("postgres:");
+    expect(output(stdout)).toBe("");
+  });
+
   it("reports an uncertain commit without implying rollback or exposing its cause", async () => {
     mocks.apply.mockRejectedValue(
       new Error("Database policy commit outcome is uncertain; policies may have committed", {

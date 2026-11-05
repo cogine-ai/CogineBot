@@ -141,6 +141,9 @@ through a fresh restricted connection. Unknown custom policies are preserved and
 block installation. A failed policy transaction rolls back. If installation
 commits but the fresh connection fails, the command reports that it was not
 rolled back; correct the connection problem before retrying.
+If the administrator connection fails to close after an acknowledged commit,
+fresh runtime verification still runs. If verification succeeds, the command
+reports the cleanup failure separately; the installation is not rolled back.
 If the COMMIT acknowledgement is lost, installation reports an uncertain outcome:
 policies may have committed. Inspect status before retrying; the command does not
 infer rollback or retry the installation automatically.

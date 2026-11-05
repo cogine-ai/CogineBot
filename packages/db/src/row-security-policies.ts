@@ -772,14 +772,13 @@ export async function applyRowSecurityPolicies(
       });
     throw failure;
   }
+  let status: RowSecurityPolicyStatus;
   try {
-    if (failed) throw failure;
     const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
     try {
-      const status = await describeRowSecurityPolicies(prisma);
+      status = await describeRowSecurityPolicies(prisma);
       if (!status.connectionEnforced)
         throw new Error("The runtime connection did not verify the installed database policies");
-      return status;
     } finally {
       try {
         await prisma.$disconnect();
@@ -792,4 +791,10 @@ export async function applyRowSecurityPolicies(
       cause: error,
     });
   }
+  if (failed)
+    throw new Error(
+      "Database policies were committed, but the administrator connection did not close cleanly",
+      { cause: failure },
+    );
+  return status;
 }
