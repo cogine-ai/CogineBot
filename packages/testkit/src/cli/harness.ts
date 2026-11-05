@@ -107,6 +107,7 @@ async function main() {
     "packages/adapters/src/chatgpt-plan-credential-lock.postgres.test.ts",
     "packages/db/src/readiness.postgres.test.ts",
     "packages/db/src/row-security.postgres.test.ts",
+    "apps/api/src/row-security-policies.postgres.test.ts",
     "packages/db/src/scripted-state-failure.postgres.test.ts",
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",

@@ -12,6 +12,7 @@ import type {
   TicketComment as TicketCommentRow,
   Ticket as TicketRow,
 } from "./client.js";
+import { isInteractiveTransaction, runAsSystem, runAsSystemInTransaction } from "./row-security.js";
 
 /** skipDuplicates tolerates concurrent first opens without aborting their transactions. */
 export async function ensureBoard(prisma: PrismaClient, spaceId: string): Promise<BoardRow> {
@@ -112,15 +113,34 @@ export function toTicketDto(row: TicketRow, ticketPrefix: string): Ticket {
 }
 
 export async function listTicketComments(
-  prisma: Pick<PrismaClient, "ticketComment">,
+  prisma: Pick<PrismaClient, "ticketComment" | "user">,
   spaceId: string,
   ticketId: string,
 ) {
-  return prisma.ticketComment.findMany({
+  const rows = await prisma.ticketComment.findMany({
     where: { ticketId, spaceId },
-    include: { authorBot: { select: { name: true } }, authorUser: { select: { name: true } } },
+    include: { authorBot: { select: { name: true } } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
+  const authorIds = [
+    ...new Set(rows.flatMap((row) => (row.authorUserId ? [row.authorUserId] : []))),
+  ];
+  const loadAuthors = () =>
+    prisma.user.findMany({
+      where: { id: { in: authorIds } },
+      select: { id: true, name: true },
+    });
+  const reason = "resolve names of visible ticket comment authors";
+  const authors = authorIds.length
+    ? await (isInteractiveTransaction(prisma)
+        ? runAsSystemInTransaction(prisma, reason, loadAuthors)
+        : runAsSystem(reason, loadAuthors))
+    : [];
+  const names = new Map(authors.map((author) => [author.id, { name: author.name }]));
+  return rows.map((row) => ({
+    ...row,
+    authorUser: row.authorUserId ? (names.get(row.authorUserId) ?? null) : null,
+  }));
 }
 
 export function toTicketCommentDto(

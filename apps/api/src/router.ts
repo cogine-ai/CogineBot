@@ -6620,10 +6620,14 @@ export function createRouter(deps: RouterDeps) {
     },
     messaging: {
       status: authed.messaging.status.handler(async ({ context }) => {
-        const identities = await deps.prisma.messagingIdentity.findMany({
-          where: { userId: context.actor.userId },
-          orderBy: { createdAt: "asc" },
-        });
+        const identities = await runAsSystem(
+          "list the authenticated user messaging identities",
+          () =>
+            deps.prisma.messagingIdentity.findMany({
+              where: { userId: context.actor.userId },
+              orderBy: { createdAt: "asc" },
+            }),
+        );
         return {
           enabled: deps.messaging?.enabled ?? false,
           providers: deps.messaging?.providers ?? [],
@@ -6647,10 +6651,12 @@ export function createRouter(deps: RouterDeps) {
           if (!bot) throw new ORPCError("NOT_FOUND");
           // One chat identity per bot: delivery mirrors a bot's replies to
           // exactly one conversation.
-          const linked = await deps.prisma.messagingIdentity.findUnique({
-            where: { botId: bot.id },
-            select: { id: true },
-          });
+          const linked = await runAsSystem("check the verified bot messaging link", () =>
+            deps.prisma.messagingIdentity.findUnique({
+              where: { botId: bot.id },
+              select: { id: true },
+            }),
+          );
           if (linked) {
             throw new ORPCError("BAD_REQUEST", {
               message: "That bot is already linked to a chat app; unlink it first.",
@@ -6669,9 +6675,13 @@ export function createRouter(deps: RouterDeps) {
       },
       identities: {
         setBot: authed.messaging.identities.setBot.handler(async ({ context, input }) => {
-          const identity = await deps.prisma.messagingIdentity.findFirst({
-            where: { id: input.identityId, userId: context.actor.userId },
-          });
+          const identity = await runAsSystem(
+            "move an owned messaging identity to the verified bot",
+            () =>
+              deps.prisma.messagingIdentity.findFirst({
+                where: { id: input.identityId, userId: context.actor.userId },
+              }),
+          );
           if (!identity) throw new ORPCError("NOT_FOUND");
           const bot = await deps.prisma.bot.findFirst({
             where: {
@@ -6684,12 +6694,16 @@ export function createRouter(deps: RouterDeps) {
           });
           if (!bot) throw new ORPCError("NOT_FOUND");
           try {
-            const updated = await deps.prisma.messagingIdentity.update({
-              where: { id: identity.id },
-              // The identity must live in the bot's space: runs resolve
-              // credentials, memory, and approval rules from run.spaceId.
-              data: { botId: bot.id, spaceId: context.actor.spaceId },
-            });
+            const updated = await runAsSystem(
+              "move an owned messaging identity to the verified bot",
+              () =>
+                deps.prisma.messagingIdentity.update({
+                  where: { id: identity.id },
+                  // The identity must live in the bot's space: runs resolve
+                  // credentials, memory, and approval rules from run.spaceId.
+                  data: { botId: bot.id, spaceId: context.actor.spaceId },
+                }),
+            );
             return messagingIdentityDto(deps.prisma, updated);
           } catch (error) {
             // botId is unique: the target bot is already linked elsewhere.
@@ -6702,9 +6716,11 @@ export function createRouter(deps: RouterDeps) {
           }
         }),
         unlink: authed.messaging.identities.unlink.handler(async ({ context, input }) => {
-          const { count } = await deps.prisma.messagingIdentity.deleteMany({
-            where: { id: input.identityId, userId: context.actor.userId },
-          });
+          const { count } = await runAsSystem("unlink an owned messaging identity", () =>
+            deps.prisma.messagingIdentity.deleteMany({
+              where: { id: input.identityId, userId: context.actor.userId },
+            }),
+          );
           if (count === 0) throw new ORPCError("NOT_FOUND");
           return { ok: true as const };
         }),
@@ -6713,57 +6729,75 @@ export function createRouter(deps: RouterDeps) {
         list: authed.messaging.channels.list.handler(async ({ context }) => {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           if (identities.length === 0) return [];
-          const memberships = await deps.prisma.messagingChannelMember.findMany({
-            where: { identityId: { in: identities.map((identity) => identity.id) } },
-            include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
-            orderBy: { updatedAt: "desc" },
-          });
+          const memberships = await runAsSystem(
+            "list channels for owned messaging identities",
+            () =>
+              deps.prisma.messagingChannelMember.findMany({
+                where: { identityId: { in: identities.map((identity) => identity.id) } },
+                include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
+                orderBy: { updatedAt: "desc" },
+              }),
+          );
           return memberships.map((membership) => messagingChannelDto(membership));
         }),
         respond: authed.messaging.channels.respond.handler(async ({ context, input }) => {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           const membership = identities.length
-            ? await deps.prisma.messagingChannelMember.findFirst({
-                where: {
-                  id: input.membershipId,
-                  identityId: { in: identities.map((identity) => identity.id) },
-                },
-                include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
-              })
+            ? await runAsSystem("respond to a verified messaging channel invitation", () =>
+                deps.prisma.messagingChannelMember.findFirst({
+                  where: {
+                    id: input.membershipId,
+                    identityId: { in: identities.map((identity) => identity.id) },
+                  },
+                  include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
+                }),
+              )
             : null;
           if (membership?.status !== "invited") {
             throw new ORPCError("NOT_FOUND");
           }
-          const { count } = await deps.prisma.messagingChannelMember.updateMany({
-            where: { id: membership.id, status: "invited" },
-            data: { status: input.accept ? "approved" : "declined" },
-          });
+          const { count } = await runAsSystem(
+            "respond to a verified messaging channel invitation",
+            () =>
+              deps.prisma.messagingChannelMember.updateMany({
+                where: { id: membership.id, status: "invited" },
+                data: { status: input.accept ? "approved" : "declined" },
+              }),
+          );
           if (count === 0) {
             // Lost a race with leave/sweep: approval must not resurrect a
             // departed member.
             throw new ORPCError("NOT_FOUND");
           }
-          const updated = await deps.prisma.messagingChannelMember.findUniqueOrThrow({
-            where: { id: membership.id },
-            include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
-          });
+          const updated = await runAsSystem(
+            "respond to a verified messaging channel invitation",
+            () =>
+              deps.prisma.messagingChannelMember.findUniqueOrThrow({
+                where: { id: membership.id },
+                include: { channel: { include: { members: ACTIVE_CHANNEL_MEMBERS } } },
+              }),
+          );
           return messagingChannelDto(updated);
         }),
         leave: authed.messaging.channels.leave.handler(async ({ context, input }) => {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           const membership = identities.length
-            ? await deps.prisma.messagingChannelMember.findFirst({
-                where: {
-                  id: input.membershipId,
-                  identityId: { in: identities.map((identity) => identity.id) },
-                },
-              })
+            ? await runAsSystem("leave a verified messaging channel membership", () =>
+                deps.prisma.messagingChannelMember.findFirst({
+                  where: {
+                    id: input.membershipId,
+                    identityId: { in: identities.map((identity) => identity.id) },
+                  },
+                }),
+              )
             : null;
           if (!membership) throw new ORPCError("NOT_FOUND");
-          await deps.prisma.messagingChannelMember.update({
-            where: { id: membership.id },
-            data: { status: "left" },
-          });
+          await runAsSystem("leave a verified messaging channel membership", () =>
+            deps.prisma.messagingChannelMember.update({
+              where: { id: membership.id },
+              data: { status: "left" },
+            }),
+          );
           return { ok: true as const };
         }),
       },
@@ -6772,12 +6806,14 @@ export function createRouter(deps: RouterDeps) {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           if (identities.length === 0) return [];
           const botIds = identities.map((identity) => identity.botId);
-          const connections = await deps.prisma.agentConnection.findMany({
-            where: {
-              OR: [{ requesterBotId: { in: botIds } }, { targetBotId: { in: botIds } }],
-            },
-            orderBy: { updatedAt: "desc" },
-          });
+          const connections = await runAsSystem("list connections for owned messaging bots", () =>
+            deps.prisma.agentConnection.findMany({
+              where: {
+                OR: [{ requesterBotId: { in: botIds } }, { targetBotId: { in: botIds } }],
+              },
+              orderBy: { updatedAt: "desc" },
+            }),
+          );
           const myBotIds = new Set(botIds);
           return Promise.all(
             connections.map((connection) =>
@@ -6789,53 +6825,59 @@ export function createRouter(deps: RouterDeps) {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           const myBotIds = new Set(identities.map((identity) => identity.botId));
           const connection = identities.length
-            ? await deps.prisma.agentConnection.findFirst({
-                where: {
-                  id: input.connectionId,
-                  targetBotId: { in: [...myBotIds] },
-                  status: "pending",
-                },
-              })
+            ? await runAsSystem("respond atomically to an authorized messaging connection", () =>
+                deps.prisma.agentConnection.findFirst({
+                  where: {
+                    id: input.connectionId,
+                    targetBotId: { in: [...myBotIds] },
+                    status: "pending",
+                  },
+                }),
+              )
             : null;
           if (!connection) throw new ORPCError("NOT_FOUND");
-          const { updated, notifyRequester } = await deps.prisma.$transaction(async (tx) => {
-            // The claim holds the connection row lock through commit, so a
-            // revoke either beats it or waits — it can never interleave with
-            // the confirmation write below.
-            const { count } = await tx.agentConnection.updateMany({
-              where: { id: connection.id, status: "pending" },
-              data: { status: input.accept ? "approved" : "declined" },
-            });
-            if (count === 0) {
-              // Lost a race with revoke: approval must never overwrite it.
-              throw new ORPCError("NOT_FOUND");
-            }
-            const row = await tx.agentConnection.findUniqueOrThrow({
-              where: { id: connection.id },
-            });
-            if (!input.accept) return { updated: row, notifyRequester: false };
-            // Parity with the text-command path: the requester hears about it.
-            const requesterIdentity = await tx.messagingIdentity.findUnique({
-              where: { botId: connection.requesterBotId },
-            });
-            if (!requesterIdentity) return { updated: row, notifyRequester: false };
-            const key = `command:connected:${connection.id}`;
-            // A re-approved pair starts a fresh cycle; clear the stale row or
-            // skipDuplicates would swallow the new confirmation.
-            await tx.messagingOutbound.deleteMany({ where: { idempotencyKey: key } });
-            await tx.messagingOutbound.createMany({
-              data: [
-                {
-                  idempotencyKey: key,
-                  kind: "dm",
-                  identityId: requesterIdentity.id,
-                  body: "Your connection request was accepted. Your agents can now message each other.",
-                },
-              ],
-              skipDuplicates: true,
-            });
-            return { updated: row, notifyRequester: true };
-          });
+          const { updated, notifyRequester } = await runAsSystem(
+            "respond atomically to an authorized messaging connection",
+            () =>
+              deps.prisma.$transaction(async (tx) => {
+                // The claim holds the connection row lock through commit, so a
+                // revoke either beats it or waits — it can never interleave with
+                // the confirmation write below.
+                const { count } = await tx.agentConnection.updateMany({
+                  where: { id: connection.id, status: "pending" },
+                  data: { status: input.accept ? "approved" : "declined" },
+                });
+                if (count === 0) {
+                  // Lost a race with revoke: approval must never overwrite it.
+                  throw new ORPCError("NOT_FOUND");
+                }
+                const row = await tx.agentConnection.findUniqueOrThrow({
+                  where: { id: connection.id },
+                });
+                if (!input.accept) return { updated: row, notifyRequester: false };
+                // Parity with the text-command path: the requester hears about it.
+                const requesterIdentity = await tx.messagingIdentity.findUnique({
+                  where: { botId: connection.requesterBotId },
+                });
+                if (!requesterIdentity) return { updated: row, notifyRequester: false };
+                const key = `command:connected:${connection.id}`;
+                // A re-approved pair starts a fresh cycle; clear the stale row or
+                // skipDuplicates would swallow the new confirmation.
+                await tx.messagingOutbound.deleteMany({ where: { idempotencyKey: key } });
+                await tx.messagingOutbound.createMany({
+                  data: [
+                    {
+                      idempotencyKey: key,
+                      kind: "dm",
+                      identityId: requesterIdentity.id,
+                      body: "Your connection request was accepted. Your agents can now message each other.",
+                    },
+                  ],
+                  skipDuplicates: true,
+                });
+                return { updated: row, notifyRequester: true };
+              }),
+          );
           if (notifyRequester) {
             await deps.jobs.enqueue(messagingDeliverJob()).catch((error) => {
               getLogger().error("messaging connection confirmation enqueue error", error);
@@ -6847,12 +6889,16 @@ export function createRouter(deps: RouterDeps) {
           const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
           const botIds = identities.map((identity) => identity.botId);
           const connection = identities.length
-            ? await deps.prisma.agentConnection.findFirst({
-                where: {
-                  id: input.connectionId,
-                  OR: [{ requesterBotId: { in: botIds } }, { targetBotId: { in: botIds } }],
-                },
-              })
+            ? await runAsSystem(
+                "revoke an authorized messaging connection and its pending invitation",
+                () =>
+                  deps.prisma.agentConnection.findFirst({
+                    where: {
+                      id: input.connectionId,
+                      OR: [{ requesterBotId: { in: botIds } }, { targetBotId: { in: botIds } }],
+                    },
+                  }),
+              )
             : null;
           if (!connection) throw new ORPCError("NOT_FOUND");
           // Claim + invite cancel in one transaction. The status update holds
@@ -6861,24 +6907,28 @@ export function createRouter(deps: RouterDeps) {
           // finish — otherwise it could reopen and create a fresh invite that
           // a post-commit deleteMany would then wipe while leaving the row
           // pending with no approval prompt.
-          await deps.prisma.$transaction(async (tx) => {
-            const { count } = await tx.agentConnection.updateMany({
-              where: { id: connection.id, status: connection.status },
-              data: { status: "revoked" },
-            });
-            if (count === 0) throw new ORPCError("NOT_FOUND");
-            // Cancel undelivered invites, including rows the drain already
-            // claimed (status sent, no providerHandle yet). Connect-invite
-            // delivery holds this connection row FOR UPDATE through
-            // sendDirect, so revoke either waits until the DM is sent or
-            // deletes the claim before send starts.
-            await tx.messagingOutbound.deleteMany({
-              where: {
-                idempotencyKey: `connect:${connection.requesterBotId}:${connection.targetBotId}`,
-                OR: [{ status: "pending" }, { status: "sent", providerHandle: null }],
-              },
-            });
-          });
+          await runAsSystem(
+            "revoke an authorized messaging connection and its pending invitation",
+            () =>
+              deps.prisma.$transaction(async (tx) => {
+                const { count } = await tx.agentConnection.updateMany({
+                  where: { id: connection.id, status: connection.status },
+                  data: { status: "revoked" },
+                });
+                if (count === 0) throw new ORPCError("NOT_FOUND");
+                // Cancel undelivered invites, including rows the drain already
+                // claimed (status sent, no providerHandle yet). Connect-invite
+                // delivery holds this connection row FOR UPDATE through
+                // sendDirect, so revoke either waits until the DM is sent or
+                // deletes the claim before send starts.
+                await tx.messagingOutbound.deleteMany({
+                  where: {
+                    idempotencyKey: `connect:${connection.requesterBotId}:${connection.targetBotId}`,
+                    OR: [{ status: "pending" }, { status: "sent", providerHandle: null }],
+                  },
+                });
+              }),
+          );
           return { ok: true as const };
         }),
       },
@@ -8460,21 +8510,25 @@ async function messagingIdentitiesFor(
   prisma: PrismaClient,
   userId: string,
 ): Promise<MessagingIdentityRecord[]> {
-  return prisma.messagingIdentity.findMany({
-    where: { userId },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, botId: true },
-  });
+  return runAsSystem("resolve the authenticated user messaging identity IDs", () =>
+    prisma.messagingIdentity.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, botId: true },
+    }),
+  );
 }
 
 async function messagingIdentityDto(
   prisma: PrismaClient,
   identity: { id: string; provider: string; address: string; botId: string },
 ) {
-  const bot = await prisma.bot.findUnique({
-    where: { id: identity.botId },
-    select: { name: true },
-  });
+  const bot = await runAsSystem("resolve the bot label for an owned messaging identity", () =>
+    prisma.bot.findUnique({
+      where: { id: identity.botId },
+      select: { name: true },
+    }),
+  );
   return {
     id: identity.id,
     provider: identity.provider,
@@ -8534,19 +8588,27 @@ async function messagingConnectionDto(
     };
   }
   const peerBotId = incoming ? connection.requesterBotId : connection.targetBotId;
-  const peerBot = await prisma.bot.findUnique({
-    where: { id: peerBotId },
-    select: { name: true },
-  });
-  const peerIdentity = await prisma.messagingIdentity.findUnique({
-    where: { botId: peerBotId },
-    select: { userId: true },
-  });
+  const peerBot = await runAsSystem("resolve the permitted messaging connection peer label", () =>
+    prisma.bot.findUnique({
+      where: { id: peerBotId },
+      select: { name: true },
+    }),
+  );
+  const peerIdentity = await runAsSystem(
+    "resolve the permitted messaging connection peer label",
+    () =>
+      prisma.messagingIdentity.findUnique({
+        where: { botId: peerBotId },
+        select: { userId: true },
+      }),
+  );
   const peerOwner = peerIdentity
-    ? await prisma.user.findUnique({
-        where: { id: peerIdentity.userId },
-        select: { name: true },
-      })
+    ? await runAsSystem("resolve the permitted messaging connection peer label", () =>
+        prisma.user.findUnique({
+          where: { id: peerIdentity.userId },
+          select: { name: true },
+        }),
+      )
     : null;
   return {
     id: connection.id,

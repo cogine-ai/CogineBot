@@ -113,6 +113,42 @@ long-running service environments remains part of that activation rollout. With
 a single login, the command retains migration compatibility and reports that
 row-level security is not enforced.
 
+### Inspect and install row policies
+
+The maintenance command inspects the actual runtime connection, table policies
+and system-key protection:
+
+~~~bash
+pnpm db:row-security
+~~~
+
+It defaults to read-only status. A verified connection requires every registered
+table and policy to match, enabled row security, a restricted runtime role and a
+working protected system key. An extra policy, an unclassified application table,
+changed policy permissions or an unsafe key store prevents verification. Enabled
+table counts alone do not establish isolation.
+
+During this staged rollout, use explicit installation against isolated validation
+databases with the separate administrator and runtime URLs described above:
+
+~~~bash
+pnpm db:row-security apply
+~~~
+
+Installation authenticates the prepared runtime login, checks the administrator's
+authority, reconciles recognized policies in one transaction, and verifies them
+through a fresh restricted connection. Unknown custom policies are preserved and
+block installation. A failed policy transaction rolls back. If installation
+commits but the fresh connection fails, the command reports that it was not
+rolled back; correct the connection problem before retrying.
+
+The current API and worker defaults have not activated these policies. Ordinary
+schema migration does not run this command. Production activation still requires
+the coordinated context-aware runtime switch, stopping incompatible writers and
+the applicable restore and credential checks. The maintenance command reports
+connection verification and deployment verification separately; it does not
+observe or certify every running instance.
+
 ## Published images (no checkout)
 
 This installation path targets CogineBot's own registry. The publishing workflow

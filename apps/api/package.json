@@ -9,7 +9,8 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --root ../.. apps/api/src",
     "secrets:infisical": "tsx src/cli/secrets-infisical.ts",
-    "db:migrate": "tsx src/cli/migrate-database.ts"
+    "db:migrate": "tsx src/cli/migrate-database.ts",
+    "db:row-security": "tsx src/cli/row-security.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.1",
