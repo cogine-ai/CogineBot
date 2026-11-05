@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { createRouterClient } from "@orpc/server";
 import * as adapters from "@rakazo/adapters";
 import {
+  BillingEmulator,
   createDeploymentTransferPeer,
   EncryptedSecretStore,
   InMemoryRealtimeFanout,
+  MessagingTeamChatEmulator,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { SCREEN_TARGET_ENDPOINT } from "@rakazo/core/node/screen-capability";
@@ -16,13 +18,16 @@ import {
   createBoardEvents,
   createDb,
   currentDbContext,
+  requireMembership,
   rlsBypassKey,
   runAsTenant,
 } from "@rakazo/db";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
-import { createApp } from "./app.js";
+import { actorFromMembership, createApp } from "./app.js";
+import { BILLING_RETURN_PATH, createBillingService } from "./billing.js";
+import { BILLING_WEBHOOK_PATH, mountBillingRoutes } from "./billing-webhook.js";
 import { createDeploymentTransferService } from "./deployment-transfer.js";
 import { mountDeploymentTransferHttp } from "./deployment-transfer-http.js";
 import type { RouterDeps } from "./router.js";
@@ -57,6 +62,10 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     ["deployment_transfer_sessions", "false"],
     ["deployment_transfer_items", "false"],
     [
+      "billing_accounts",
+      'EXISTS (SELECT 1 FROM space_members m WHERE m."organizationId" = billing_accounts."organizationId" AND m."userId" = NULLIF(current_setting(\'app.user_id\', true), \'\'))',
+    ],
+    [
       "secrets",
       "\"userId\" = NULLIF(current_setting('app.user_id', true), '') AND (\"spaceId\" IS NULL OR \"spaceId\" = NULLIF(current_setting('app.space_id', true), ''))",
     ],
@@ -64,6 +73,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   const previousRls = new Map<string, boolean>();
   const store = new EncryptedSecretStore("offline-request-context-key");
   const realtime = new InMemoryRealtimeFanout();
+  const messaging = new MessagingTeamChatEmulator({
+    provider: "context-messaging",
+    capabilities: { groups: false },
+  });
+  const registeredInbound = vi.spyOn(messaging, "onInbound");
+  const inboundContexts: unknown[] = [];
   const deleted = vi.spyOn(store, "delete");
   const screenSecret = "offline-screen-context-secret";
   let owner: ReturnType<typeof createDb>;
@@ -115,6 +130,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     const instrumented = runtime.prisma.$extends({
       query: {
+        messagingOutbound: {
+          async updateMany({ args, query }) {
+            inboundContexts.push(currentDbContext());
+            return query(args);
+          },
+        },
         bot: {
           async findFirst({ args, query }) {
             botReads++;
@@ -149,6 +170,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       ticketBoardEnabled: true,
       secretStore: store,
       realtime,
+      messaging,
       screenProxySecret: screenSecret,
       webOrigin: origin,
       authUrl: origin,
@@ -256,6 +278,97 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     expect((await raw(first.cookie, "me", {}, second.actor.spaceId)).status).toBe(403);
     expect(await runtime.prisma.user.findMany()).toEqual([]);
     expect(runtime.pool.totalCount).toBe(1);
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("syncs signed billing events and verified checkout returns through their real account scope", async () => {
+    const provider = new BillingEmulator();
+    const billing = createBillingService({ prisma: runtime.prisma, provider, webOrigin: origin });
+    await runAsTenant(first.actor, () => billing.checkout(first.actor));
+    const space = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: first.actor.spaceId },
+    });
+    const account = await owner.prisma.billingAccount.findUniqueOrThrow({
+      where: { organizationId: space.organizationId },
+    });
+    provider.completeCheckout(account.customerId);
+    const fetched = vi.spyOn(provider, "getCustomerSubscription");
+    const app = new Hono();
+    mountBillingRoutes(app, {
+      billing,
+      provider,
+      webOrigin: origin,
+      authenticate: async (request, spaceId) => {
+        if (request.headers.get("cookie") !== first.cookie) return null;
+        return actorFromMembership(
+          requireMembership(runtime.prisma, first.actor.userId, spaceId ?? first.actor.spaceId),
+        );
+      },
+    });
+    const signed = provider.signWebhook({
+      type: "customer.subscription.updated",
+      data: { object: { customer: account.customerId } },
+    });
+    expect(
+      (
+        await app.request(BILLING_WEBHOOK_PATH, {
+          method: "POST",
+          headers: { "stripe-signature": "invalid" },
+          body: signed.body,
+        })
+      ).status,
+    ).toBe(400);
+    expect(fetched).not.toHaveBeenCalled();
+    const alien = { spaceId: "space-billing-alien", userId: "user-billing-alien" };
+    await runAsTenant(alien, async () => {
+      expect((await app.request(BILLING_WEBHOOK_PATH, { method: "POST", ...signed })).status).toBe(
+        200,
+      );
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    expect(
+      await owner.prisma.billingAccount.findUnique({
+        where: { organizationId: space.organizationId },
+      }),
+    ).toMatchObject({ status: "trialing" });
+    fetched.mockClear();
+    provider.completeCheckout(account.customerId, "active");
+    await app.request(`${BILLING_RETURN_PATH}?space=${second.actor.spaceId}`, {
+      headers: { cookie: first.cookie },
+    });
+    expect(fetched).not.toHaveBeenCalled();
+    await runAsTenant(alien, async () => {
+      const response = await app.request(`${BILLING_RETURN_PATH}?space=${first.actor.spaceId}`, {
+        headers: { cookie: first.cookie },
+      });
+      expect(response.status).toBe(303);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    expect(fetched).toHaveBeenCalledOnce();
+    expect(
+      await owner.prisma.billingAccount.findUnique({
+        where: { organizationId: space.organizationId },
+      }),
+    ).toMatchObject({ status: "active" });
+    expect(await runtime.prisma.billingAccount.count()).toBe(0);
+    expect(runtime.pool.waitingCount).toBe(0);
+    fetched.mockRestore();
+  });
+
+  it("owns the messaging status callback context independently of its caller", async () => {
+    const sink = registeredInbound.mock.calls[0]![0];
+    const alien = { spaceId: "space-inbound-alien", userId: "user-inbound-alien" };
+    const before = inboundContexts.length;
+    await runAsTenant(alien, async () => {
+      await sink({
+        type: "status",
+        provider: messaging.provider,
+        handle: "offline-status",
+        status: "ERROR",
+      });
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    expect(inboundContexts.slice(before)).toEqual([{ kind: "system", reason: expect.any(String) }]);
     expect(runtime.pool.waitingCount).toBe(0);
   });
 

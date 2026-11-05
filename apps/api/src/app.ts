@@ -8,6 +8,7 @@ import type {
   BillingProvider,
   JobPublisher,
   ManagedConnectorProvider,
+  MessagingInboundEvent,
   MessagingSurface,
   RealtimeFanout,
   SandboxProvider,
@@ -1044,7 +1045,7 @@ async function buildApp(
         })();
       }
     }
-    messaging.onInbound(async (event) => {
+    const handleInbound = async (event: MessagingInboundEvent) => {
       if (event.type !== "message") {
         await applyMessagingOutboundStatus(prisma, event);
         return;
@@ -1069,7 +1070,8 @@ async function buildApp(
         throw new Error("Team chat bridge is unavailable");
       }
       await inbound(event);
-    });
+    };
+    messaging.onInbound((event) => runAsSystem("messaging inbound", () => handleInbound(event)));
     mountMessagingWebhookRoutes(app, { messaging });
     // Start polling-mode adapters (e.g. Telegram with no public webhook URL
     // registered) immediately rather than waiting for the first webhook
