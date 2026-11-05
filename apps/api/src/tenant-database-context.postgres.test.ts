@@ -53,6 +53,11 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     ["user", "id = NULLIF(current_setting('app.user_id', true), '')"],
     ["session", "\"userId\" = NULLIF(current_setting('app.user_id', true), '')"],
     ["space_members", "\"userId\" = NULLIF(current_setting('app.user_id', true), '')"],
+    // Space discovery follows this user's actual memberships across selections.
+    [
+      "spaces",
+      "EXISTS (SELECT 1 FROM space_members m WHERE m.\"spaceId\" = spaces.id AND m.\"userId\" = NULLIF(current_setting('app.user_id', true), ''))",
+    ],
     ["bots", tenantPredicate],
     ["computers", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["boards", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
@@ -725,6 +730,14 @@ describePostgres("trusted request contexts on a restricted single-connection poo
 
   it("switches to a verified target Space while retaining owner and deletion checks", async () => {
     const target = await rpc<{ id: string }>(first.cookie, "spaces/create", { name: "Draft" });
+    await runAsTenant({ ...scope(first.actor), spaceId: target.id }, async () => {
+      const visible = await runtime.prisma.space.findMany({ select: { id: true } });
+      expect(visible.map((space) => space.id)).toEqual(
+        expect.arrayContaining([first.actor.spaceId, target.id]),
+      );
+      expect(visible.map((space) => space.id)).not.toContain(second.actor.spaceId);
+    });
+    expect(await runtime.prisma.space.count()).toBe(0);
     expect(
       await rpc(first.cookie, "spaces/rename", { spaceId: target.id, name: "Renamed" }),
     ).toEqual({ id: target.id, name: "Renamed" });
