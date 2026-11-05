@@ -3,6 +3,7 @@ import {
   SCREEN_TARGET_ENDPOINT,
 } from "@rakazo/core/node/screen-capability";
 import type { PrismaClient } from "@rakazo/db";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { addScreenProxyCapability, mountScreenTarget } from "./screen-proxy.js";
@@ -54,6 +55,23 @@ function fixture(
 }
 
 describe("screen capability lifecycle authorization", () => {
+  it("resolves a verified capability in a named system scope and restores the caller", async () => {
+    const { request, findFirst } = fixture();
+    const lookup = findFirst.getMockImplementation()!;
+    const contexts: unknown[] = [];
+    findFirst.mockImplementation(async (args) => {
+      await Promise.resolve();
+      contexts.push(currentDbContext());
+      return lookup(args);
+    });
+    const caller = { spaceId: "space-unrelated", userId: "user-unrelated" };
+    await runAsTenant(caller, async () => {
+      expect((await request()).status).toBe(200);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...caller });
+    });
+    expect(contexts).toEqual([{ kind: "system", reason: expect.any(String) }]);
+    expect(currentDbContext()).toBeUndefined();
+  });
   it("allows repeat assets and reconnects during the same active lifecycle", async () => {
     const { request, path } = fixture();
     expect((await request()).status).toBe(200);

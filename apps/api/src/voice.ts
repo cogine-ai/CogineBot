@@ -12,6 +12,7 @@ import {
 } from "@rakazo/adapters";
 import type { Actor, VoiceCredential, VoiceStatus } from "@rakazo/contracts";
 import { toUtterances } from "@rakazo/core";
+import type { PrismaClient } from "@rakazo/db";
 import {
   deleteUnreferencedCredentialSecret,
   findDefaultVoiceCredential,
@@ -19,7 +20,7 @@ import {
   IsolationError,
   newestVoiceCredentialOrder,
   Prisma,
-  type PrismaClient,
+  runAsTenant,
   selectSpaceVoicePreference,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -419,16 +420,18 @@ export function mountVoiceHttpRoutes(
     if (raw === null) return c.json({ error: "Request body is too large." }, 413);
     const body = parseVoiceRequestBody(raw);
     try {
-      await deps.assertAccess?.(actor);
-      const clip = await synthesizeVoice(deps, actor, {
-        text: String((body as { text?: unknown }).text ?? ""),
-        voiceId: optionalString((body as { voiceId?: unknown }).voiceId),
-        botId: optionalString((body as { botId?: unknown }).botId),
-        signal: AbortSignal.any(
-          [c.req.raw.signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)].filter(
-            Boolean,
-          ) as AbortSignal[],
-        ),
+      const clip = await runAsTenant(actor, async () => {
+        await deps.assertAccess?.(actor);
+        return synthesizeVoice(deps, actor, {
+          text: String((body as { text?: unknown }).text ?? ""),
+          voiceId: optionalString((body as { voiceId?: unknown }).voiceId),
+          botId: optionalString((body as { botId?: unknown }).botId),
+          signal: AbortSignal.any(
+            [c.req.raw.signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)].filter(
+              Boolean,
+            ) as AbortSignal[],
+          ),
+        });
       });
       // Copy into a fresh ArrayBuffer-backed view: DOM-lib BodyInit rejects
       // Uint8Array<ArrayBufferLike> since TS 5.7.
@@ -452,13 +455,15 @@ export function mountVoiceHttpRoutes(
     const audioBase64 = String((body as { audioBase64?: unknown }).audioBase64 ?? "");
     const language = optionalString((body as { language?: unknown }).language);
     try {
-      await deps.assertAccess?.(actor);
-      const audio = decodeAudioBase64(audioBase64);
-      const result = await transcribeVoice(deps, actor, {
-        audio,
-        mimeType: String((body as { mimeType?: unknown }).mimeType ?? "audio/webm"),
-        language,
-        signal: c.req.raw.signal,
+      const result = await runAsTenant(actor, async () => {
+        await deps.assertAccess?.(actor);
+        const audio = decodeAudioBase64(audioBase64);
+        return transcribeVoice(deps, actor, {
+          audio,
+          mimeType: String((body as { mimeType?: unknown }).mimeType ?? "audio/webm"),
+          language,
+          signal: c.req.raw.signal,
+        });
       });
       return c.json({ text: result.text });
     } catch (error) {

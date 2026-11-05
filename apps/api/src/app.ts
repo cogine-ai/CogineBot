@@ -680,6 +680,7 @@ async function buildApp(
     ["/api/connectors/oauth/*", "connector authorization callback"],
     ["/api/connectors/events/*", "native event webhook"],
     ["/api/connectors/enterprise/*", "native enterprise webhook"],
+    ["/api/deployment-transfer/v1/*", "deployment transfer peer protocol"],
     ["/api/v1/bots/*", "bot webhook"],
     ["/api/v1/messaging/*", "messaging webhook"],
     ["/api/v1/phone/*", "messaging webhook"],

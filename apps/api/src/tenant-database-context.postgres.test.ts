@@ -3,25 +3,37 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRouterClient } from "@orpc/server";
-import { EncryptedSecretStore, InMemoryRealtimeFanout } from "@rakazo/adapters";
+import * as adapters from "@rakazo/adapters";
+import {
+  createDeploymentTransferPeer,
+  EncryptedSecretStore,
+  InMemoryRealtimeFanout,
+} from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
+import { SCREEN_TARGET_ENDPOINT } from "@rakazo/core/node/screen-capability";
 import {
   boardEventTopic,
   createBoardEvents,
   createDb,
+  currentDbContext,
   rlsBypassKey,
   runAsTenant,
 } from "@rakazo/db";
+import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
+import { createDeploymentTransferService } from "./deployment-transfer.js";
+import { mountDeploymentTransferHttp } from "./deployment-transfer-http.js";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
+import { addScreenProxyCapability } from "./screen-proxy.js";
+import { voiceContext } from "./voice.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres =
   process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe.sequential : describe.skip;
-const origin = "http://127.0.0.1:5173";
+const origin = "https://context.example.test";
 
 describePostgres("trusted request contexts on a restricted single-connection pool", () => {
   const suffix = randomBytes(10).toString("hex");
@@ -37,9 +49,13 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     ["session", "\"userId\" = NULLIF(current_setting('app.user_id', true), '')"],
     ["space_members", "\"userId\" = NULLIF(current_setting('app.user_id', true), '')"],
     ["bots", tenantPredicate],
+    ["computers", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["boards", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["connections", tenantPredicate],
     ["ai_data_consents", tenantPredicate],
+    ["deployment_identities", "false"],
+    ["deployment_transfer_sessions", "false"],
+    ["deployment_transfer_items", "false"],
     [
       "secrets",
       "\"userId\" = NULLIF(current_setting('app.user_id', true), '') AND (\"spaceId\" IS NULL OR \"spaceId\" = NULLIF(current_setting('app.space_id', true), ''))",
@@ -49,6 +65,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   const store = new EncryptedSecretStore("offline-request-context-key");
   const realtime = new InMemoryRealtimeFanout();
   const deleted = vi.spyOn(store, "delete");
+  const screenSecret = "offline-screen-context-secret";
   let owner: ReturnType<typeof createDb>;
   let runtime: ReturnType<typeof createDb>;
   let runtimeUrl: string;
@@ -58,6 +75,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let second: { cookie: string; actor: Actor };
   let rejectConsent: string | undefined;
   let rejectRevocation = false;
+  let botReads = 0;
 
   beforeAll(async () => {
     owner = createDb(databaseUrl!);
@@ -97,6 +115,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     const instrumented = runtime.prisma.$extends({
       query: {
+        bot: {
+          async findFirst({ args, query }) {
+            botReads++;
+            return query(args);
+          },
+        },
         aiDataConsent: {
           async upsert({ args, query }) {
             if (args.create.recipientKey === rejectConsent)
@@ -125,6 +149,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       ticketBoardEnabled: true,
       secretStore: store,
       realtime,
+      screenProxySecret: screenSecret,
       webOrigin: origin,
       authUrl: origin,
     });
@@ -234,6 +259,202 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     expect(runtime.pool.waitingCount).toBe(0);
   });
 
+  it("resolves the public peer identity in system context without borrowing a caller's tenant", async () => {
+    const ambient = { spaceId: "space-unrelated", userId: "user-unrelated" };
+    const unscoped = new Hono();
+    const service = createDeploymentTransferService({
+      prisma: handles.prisma,
+      secrets: store,
+      origin,
+      peer: createDeploymentTransferPeer(),
+    });
+    mountDeploymentTransferHttp(unscoped, service);
+    try {
+      expect(
+        (await runAsTenant(ambient, () => unscoped.request("/api/deployment-transfer/v1/identity")))
+          .status,
+      ).toBe(400);
+    } finally {
+      await service.close();
+    }
+    await runAsTenant(ambient, async () => {
+      const response = await handles.app.request("/api/deployment-transfer/v1/identity");
+      expect(response.status).toBe(200);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...ambient });
+    });
+    expect(await owner.prisma.deploymentIdentity.count()).toBe(1);
+    expect(await runtime.prisma.deploymentIdentity.count()).toBe(0);
+    const before = await owner.prisma.deploymentTransferSession.count();
+    const invalid = await runAsTenant(ambient, () =>
+      handles.app.request("/api/deployment-transfer/v1/item", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${"a".repeat(43)}` },
+        body: JSON.stringify({ unsigned: "sensitive-marker" }),
+      }),
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).not.toContain("sensitive-marker");
+    expect(await owner.prisma.deploymentTransferSession.count()).toBe(before);
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("resolves sealed screen capabilities after authentication while preserving lifecycle fences", async () => {
+    const botId = randomUUID();
+    const computer = await owner.prisma.computer.create({
+      data: {
+        ...scope(first.actor),
+        scope: "dedicated",
+        scopeKey: `context-screen-${suffix}`,
+        homeKey: `context-screen-home-${suffix}`,
+        kind: "fake",
+        state: "running",
+        providerRef: `offline-screen-${suffix}`,
+        controlHolder: "user",
+        controlLeaseId: "screen-lease",
+        controlBotId: botId,
+        controlLeaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const bot = await owner.prisma.bot.create({
+      data: {
+        id: botId,
+        ...scope(first.actor),
+        name: "Screen",
+        color: "blue",
+        computerId: computer.id,
+      },
+    });
+    const path = new URL(
+      addScreenProxyCapability(
+        "http://127.0.0.1:49152/embed.html?view_only=false",
+        screenSecret,
+        origin,
+        {
+          botId: bot.id,
+          computerId: computer.id,
+          botGeneration: bot.screenGeneration,
+          computerGeneration: computer.screenGeneration,
+          controlLeaseId: "screen-lease",
+        },
+      ),
+    ).pathname;
+    const request = (credential: string, capability = path) =>
+      handles.app.request(SCREEN_TARGET_ENDPOINT, {
+        method: "POST",
+        headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" },
+        body: JSON.stringify({ path: capability }),
+      });
+    const before = botReads;
+    expect((await request("wrong")).status).toBe(403);
+    expect((await request(screenSecret, "invalid-capability")).status).toBe(403);
+    expect(botReads).toBe(before);
+    const alien = { spaceId: "space-alien", userId: "user-alien" };
+    await runAsTenant(alien, async () => {
+      expect(await runtime.prisma.bot.findUnique({ where: { id: bot.id } })).toBeNull();
+      expect((await request(screenSecret)).status).toBe(200);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    await owner.prisma.computer.update({
+      where: { id: computer.id },
+      data: { controlLeaseId: "replacement-lease" },
+    });
+    expect((await request(screenSecret)).status).toBe(403);
+    await owner.prisma.bot.update({
+      where: { id: bot.id },
+      data: { screenGeneration: { increment: 1 } },
+    });
+    expect((await request(screenSecret)).status).toBe(403);
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it.each(["speak", "transcribe"])(
+    "uses the real session actor for voice %s and rejects foreign access before the provider",
+    async (route) => {
+      const caller = await account(`Voice-${route}`);
+      const secretId = randomUUID();
+      const sealed = await store.put("offline-voice-key", voiceContext(caller.actor), {
+        recordId: secretId,
+      });
+      await owner.prisma.secret.create({
+        data: {
+          id: secretId,
+          userId: caller.actor.userId,
+          spaceId: null,
+          kind: "voice",
+          ciphertext: sealed.ref,
+        },
+      });
+      const credential = await owner.prisma.userVoiceCredential.create({
+        data: { userId: caller.actor.userId, provider: "openai", secretId },
+      });
+      await owner.prisma.spaceVoicePreference.create({
+        data: {
+          ...scope(caller.actor),
+          credentialId: credential.id,
+          voiceId: "alloy",
+          isDefault: true,
+        },
+      });
+      const bot = await owner.prisma.bot.create({
+        data: { ...scope(first.actor), name: "Other voice", color: "blue" },
+      });
+      const providerCall = vi.fn(async () => {
+        expect(currentDbContext()).toEqual({ kind: "tenant", ...scope(caller.actor) });
+      });
+      const provider = vi.spyOn(adapters, "createVoiceProvider").mockReturnValue({
+        synthesize: async () => {
+          await providerCall();
+          return { bytes: new Uint8Array([1]), mimeType: "audio/wav" };
+        },
+        transcribe: async () => {
+          await providerCall();
+          return { text: "Recorded" };
+        },
+      } as never);
+      const request = (cookie: string, body: Record<string, unknown>, spaceId?: string) =>
+        handles.app.request(`/api/voice/${route}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie,
+            origin,
+            ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      const input =
+        route === "speak" ? { text: "Hello" } : { audioBase64: "AQ==", mimeType: "audio/wav" };
+      const alien = { spaceId: "space-alien", userId: "user-alien" };
+      try {
+        await runAsTenant(alien, async () => {
+          const response = await request(caller.cookie, {
+            ...input,
+            userId: "forged-user",
+            spaceId: "forged-space",
+          });
+          expect(response.status).toBe(200);
+          expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+        });
+        expect(providerCall).toHaveBeenCalledOnce();
+        expect((await request("", input)).status).toBe(401);
+        expect((await request(caller.cookie, input, first.actor.spaceId)).status).toBe(403);
+        if (route === "speak")
+          expect((await request(caller.cookie, { ...input, botId: bot.id })).status).toBe(404);
+        else {
+          const outsider = await account("Voice-outsider");
+          expect(
+            (await request(outsider.cookie, { ...input, credentialId: credential.id })).status,
+          ).toBe(409);
+        }
+        expect(providerCall).toHaveBeenCalledOnce();
+        expect(await runtime.prisma.secret.count()).toBe(0);
+        expect(runtime.pool.waitingCount).toBe(0);
+      } finally {
+        provider.mockRestore();
+      }
+    },
+  );
+
   it("keeps Board sharing by Space and Bot access private to the authenticated owner", async () => {
     const space = await owner.prisma.space.findUniqueOrThrow({
       where: { id: first.actor.spaceId },
@@ -337,6 +558,19 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       activeSpaceId: first.actor.spaceId,
     });
     expect(await owner.prisma.space.findUnique({ where: { id: target.id } })).toBeNull();
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("deletes the selected empty Space and restores another verified membership", async () => {
+    const target = await rpc<{ id: string }>(first.cookie, "spaces/create", { name: "Selected" });
+    expect(
+      await rpc(first.cookie, "spaces/remove", { spaceId: target.id }, target.id),
+    ).toMatchObject({ ok: true, activeSpaceId: first.actor.spaceId });
+    expect((await raw(first.cookie, "me", {}, target.id)).status).toBe(403);
+    expect(await rpc(first.cookie, "me")).toMatchObject({
+      userId: first.actor.userId,
+      spaceId: first.actor.spaceId,
+    });
     expect(runtime.pool.waitingCount).toBe(0);
   });
 
