@@ -10,6 +10,109 @@ For source development in WSL, keep the checkout and `data` directory in the Lin
 
 Compose bot homes mount only their own subdirectory of the application volume using Docker volume semantics. Docker's internal volume paths are never used as host bind mounts.
 
+## Database role preparation
+
+The administrative migration command can prepare a restricted runtime login and
+register its authenticated system key. Run it in a one-shot administrator
+environment, with both URLs using the same host, port and database:
+
+```bash
+DATABASE_MIGRATION_URL='postgres://<owner>:<owner-password>@<host>/<database>' \
+DATABASE_URL='postgres://<runtime>:<runtime-password>@<host>/<database>' \
+pnpm db:migrate
+```
+
+The command checks both destinations before migrations or role changes.
+The application schema is `public`. Other migration schema selections are
+rejected before preparation, and the migration subprocess explicitly selects
+`public` while retaining the administrator URL's other connection options. The
+migration URL must name the database in one path segment and resolve to the
+same target in the migration engine and PostgreSQL driver. Put a nondefault
+migration port in the URL authority; a conflicting query or environment port is
+rejected. Unix sockets through a `host` query remain supported. Different aliases
+or direct and pooled endpoints are rejected; use one trusted endpoint for
+preparation. These are configuration checks, not proof that a proxy routes
+different logins to the same physical database. The endpoint must route both
+logins to the same database.
+
+The command migrates the application and Graphile schemas, prepares runtime
+grants, authenticates the runtime login, and registers its key. A precreated login
+must inherit the runtime grant role. Privileged logins are rejected rather than
+silently changed. Registered keys used by existing pools remain during rollout;
+credential retirement requires draining those instances separately.
+
+An existing restricted login must already be able to authenticate and `CONNECT`
+to the target database. Preparation verifies its actual credential before adding
+runtime grants, so an incorrect password leaves its memberships and access
+unchanged. If `CONNECT` was revoked from `PUBLIC`, an administrator must grant
+that login `CONNECT` explicitly before retrying; preparation does not grant
+temporary access to perform authentication. Existing credentials and unrelated
+permissions are preserved. Later provisioning failures are not a transaction
+that rolls back every role or grant change.
+
+Readiness also rejects existing default grants that would give future protected
+objects unsafe runtime privileges. Correct those default privileges through the
+administrator account before retrying; preparation does not remove them or
+claim to protect against later administrator changes. With one database login,
+the command verifies the actual runtime URL before running migrations, including
+its credential, and still reports that row-level security is not enforced.
+
+Command failures include a generic preparation hint and, when available, a
+SQLSTATE. Recognized preparation errors also include a safe remediation message,
+such as selecting the public schema or precreating the required runtime role.
+Unknown connection and server error text, credentials and exception details are
+omitted from this command's failure message.
+
+Each database has its own grant role, named `coginebot_app_<database-oid>`. For
+precreated roles, obtain the name with
+`SELECT 'coginebot_app_' || oid FROM pg_catalog.pg_database WHERE datname = current_database()`.
+Create that restricted `NOLOGIN` grant role and give it to the runtime login when
+the migration account cannot create roles. Keep monitoring and administration
+on separate logins; extra server authority and permission delegation are rejected.
+Each managed grant role grants access to its own database. Its canonical
+`coginebot_app_<database-oid>` identity must not be selected as another database's
+runtime login, including when its original database no longer exists. Existing
+foreign managed identities are rejected before managed authorization changes:
+granting a new database's role to them would also authorize their existing
+inheriting members. Use an ordinary runtime login instead. Additional memberships
+and direct grants remain administrator-controlled. Deliberately reusing an
+ordinary login across databases still shares that login's authority; membership
+in a foreign grant group alone does not make that ordinary login a managed group.
+
+A precreated grant role must be `NOLOGIN` unless it is itself the configured
+runtime login. Preparation and readiness reject a separately authenticating
+grant role; preparation does not disable its login or change its password. If
+an existing runtime uses the grant role itself as its login, moving to a different
+login requires an administrator-controlled transition. The ordinary new-login
+rollout below does not automatically convert that existing grant role.
+
+Before activating a restored database, reconcile any grant-role ACLs carried by
+the backup and prepare the restored database's role and key. Preparation does
+not migrate legacy role ACLs or change the backup/restore workflow.
+
+Preparation preserves an existing login's password and verifies the supplied
+credential as it stands. To roll out a new password without breaking reconnects,
+prepare a new login, switch the new instances to it, and drain the old instances
+before retiring the old login and its registered key.
+
+Use a randomly generated, URL-safe password for a runtime login shared with
+administration tools. Runtime preparation follows the application's PostgreSQL
+driver's password mapping. Passwords that fail SASLprep's prohibition or
+bidirectional checks can be incompatible across clients when normalization also
+changes their characters. They can authenticate through the application driver
+but fail through libpq/psql; a password set directly by the server can have the
+opposite result. Preparation verifies the application connection, not
+compatibility with every PostgreSQL client. Avoid these mixed-character
+passwords when the same login must work across clients.
+
+Success reports role and key readiness, not complete row-level isolation. Full
+table policies and trusted API, worker and CLI contexts must be connected before
+activation. This command does not switch the current Compose services to a new
+login. Keep owner credentials out of their shared environment files; separating
+long-running service environments remains part of that activation rollout. With
+a single login, the command retains migration compatibility and reports that
+row-level security is not enforced.
+
 ## Published images (no checkout)
 
 This installation path targets CogineBot's own registry. The publishing workflow
