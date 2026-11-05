@@ -20,9 +20,9 @@ import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-pol
 
 const databaseUrl = process.env.DATABASE_URL;
 // DDL below uses only generated fixture identifiers and synthetic SCRAM values.
-const escapeIdentifier = (value: string) => '"' + value.replaceAll('"', '""') + '"';
+const escapeIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const escapeLiteral = (value: string) =>
-  "E'" + value.replaceAll("\\", "\\\\").replaceAll("'", "''") + "'";
+  `E'${value.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
 const postgres =
   process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe.sequential : describe.skip;
 
@@ -30,9 +30,9 @@ const postgres =
 // production policies, without the permissive canary policies used elsewhere.
 postgres("complete database policies (isolated PostgreSQL)", () => {
   const suffix = randomBytes(10).toString("hex");
-  const role = "policy_runtime_" + suffix;
+  const role = `policy_runtime_${suffix}`;
   const password = randomBytes(24).toString("hex");
-  const id = (name: string) => "policy-" + name + "-" + suffix;
+  const id = (name: string) => `policy-${name}-${suffix}`;
   const userA = id("user-a");
   const userB = id("user-b");
   const orgA = id("org-a");
@@ -50,7 +50,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   const inA = <T>(fn: () => Promise<T>) => runAsTenant({ spaceId: spaceA, userId: userA }, fn);
   const ids = (table: string) =>
     runtime!.prisma.$queryRawUnsafe<Array<{ id: string }>>(
-      "SELECT id FROM public." + escapeIdentifier(table) + " ORDER BY id",
+      `SELECT id FROM public.${escapeIdentifier(table)} ORDER BY id`,
     );
   const catalog = async () =>
     (
@@ -77,15 +77,15 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     const database = await owner.pool.query<{ oid: number }>(
       "SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database()",
     );
-    groupRole = "coginebot_app_" + database.rows[0]!.oid;
+    groupRole = `coginebot_app_${database.rows[0]!.oid}`;
     await provisionRuntimeRole(databaseUrl!, runtimeUrl);
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     beforePolicies = await describeRowSecurityPolicies(runtime.prisma);
 
     await owner.prisma.user.createMany({
       data: [
-        { id: userA, name: "Policy A", email: id("a") + "@example.test" },
-        { id: userB, name: "Policy B", email: id("b") + "@example.test" },
+        { id: userA, name: "Policy A", email: `${id("a")}@example.test` },
+        { id: userB, name: "Policy B", email: `${id("b")}@example.test` },
       ],
     });
     await owner.prisma.organization.createMany({
@@ -149,14 +149,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     ]) {
       await owner.prisma.memoryDocument.create({
         data: {
-          id: id("document-" + side),
+          id: id(`document-${side}`),
           spaceId: spaceId!,
           userId: userId!,
           scope: "isolated",
           path: "MEMORY.md",
           content: "Synthetic memory",
           revisions: {
-            create: { id: id("revision-" + side), revision: 1, content: "Synthetic revision" },
+            create: { id: id(`revision-${side}`), revision: 1, content: "Synthetic revision" },
           },
         },
       });
@@ -208,7 +208,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     ]) {
       await owner.prisma.bot.create({
         data: {
-          id: id("bot-" + side),
+          id: id(`bot-${side}`),
           spaceId: spaceId!,
           userId: userId!,
           name: "Fixture",
@@ -217,16 +217,16 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       });
       await owner.prisma.thread.create({
         data: {
-          id: id("thread-" + side),
+          id: id(`thread-${side}`),
           spaceId: spaceId!,
           userId: userId!,
-          botId: id("bot-" + side),
+          botId: id(`bot-${side}`),
         },
       });
       await owner.prisma.message.create({
         data: {
-          id: id("message-" + side),
-          threadId: id("thread-" + side),
+          id: id(`message-${side}`),
+          threadId: id(`thread-${side}`),
           seq: 1,
           role: "assistant",
           blocks: [],
@@ -234,68 +234,68 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       });
       await owner.prisma.task.create({
         data: {
-          id: id("task-" + side),
+          id: id(`task-${side}`),
           spaceId: spaceId!,
           userId: userId!,
-          botId: id("bot-" + side),
-          threadId: id("thread-" + side),
+          botId: id(`bot-${side}`),
+          threadId: id(`thread-${side}`),
           prompt: "Synthetic",
           status: "running",
         },
       });
       await owner.prisma.run.create({
         data: {
-          id: id("run-" + side),
+          id: id(`run-${side}`),
           spaceId: spaceId!,
           userId: userId!,
-          botId: id("bot-" + side),
-          threadId: id("thread-" + side),
-          taskId: id("task-" + side),
+          botId: id(`bot-${side}`),
+          threadId: id(`thread-${side}`),
+          taskId: id(`task-${side}`),
           status: "running",
           trigger: "human",
         },
       });
       await owner.prisma.routine.create({
         data: {
-          id: id("routine-" + side),
+          id: id(`routine-${side}`),
           spaceId: spaceId!,
           userId: userId!,
-          botId: id("bot-" + side),
+          botId: id(`bot-${side}`),
           name: "Synthetic",
           prompt: "Synthetic",
         },
       });
       await owner.prisma.nativeOAuthGrant.create({
         data: {
-          id: id("grant-" + side),
+          id: id(`grant-${side}`),
           spaceId: spaceId!,
           userId: userId!,
           configId: id("config"),
           configRevision: 1,
           authority: "fixture",
-          subject: id("subject-" + side),
+          subject: id(`subject-${side}`),
         },
       });
       await owner.prisma.connection.create({
         data: {
-          id: id("connection-" + side),
+          id: id(`connection-${side}`),
           spaceId: spaceId!,
           userId: userId!,
           connectorId: "native",
           provider: "fixture",
           displayName: "Synthetic",
           status: "connected",
-          oauthGrantId: id("grant-" + side),
+          oauthGrantId: id(`grant-${side}`),
           nativeConfigId: id("config"),
           nativeConfigRevision: 1,
         },
       });
       await owner.prisma.botPackageImport.create({
         data: {
-          id: id("import-" + side),
+          id: id(`import-${side}`),
           spaceId: spaceId!,
           userId: userId!,
-          clientNonce: id("nonce-" + side),
+          clientNonce: id(`nonce-${side}`),
         },
       });
     }
@@ -439,8 +439,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         await cleanup(async () => {
           const exists = await owner.pool.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [name]);
           if (exists.rowCount) {
-            await owner.pool.query("DROP OWNED BY " + escapeIdentifier(name));
-            await owner.pool.query("DROP ROLE " + escapeIdentifier(name));
+            await owner.pool.query(`DROP OWNED BY ${escapeIdentifier(name)}`);
+            await owner.pool.query(`DROP ROLE ${escapeIdentifier(name)}`);
           }
         });
       }
@@ -735,12 +735,12 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       ["a", spaceA],
       ["b", spaceB],
     ]) {
-      await owner.prisma.board.create({ data: { id: id("board-" + side), spaceId: spaceId! } });
+      await owner.prisma.board.create({ data: { id: id(`board-${side}`), spaceId: spaceId! } });
       await owner.prisma.ticket.create({
         data: {
-          id: id("ticket-" + side),
+          id: id(`ticket-${side}`),
           spaceId: spaceId!,
-          boardId: id("board-" + side),
+          boardId: id(`board-${side}`),
           number: 1,
           title: "Synthetic",
         },
@@ -1010,8 +1010,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         },
       ],
     });
-    const inviteKey = "connect:" + peerBot + ":" + myBot;
-    const confirmationKey = "command:connected:" + incoming;
+    const inviteKey = `connect:${peerBot}:${myBot}`;
+    const confirmationKey = `command:connected:${incoming}`;
     await owner.prisma.messagingOutbound.create({
       data: {
         idempotencyKey: inviteKey,
@@ -1051,7 +1051,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     const call = async (path: string, body: unknown = {}) =>
       inA(async () => {
         const { response } = await handler.handle(
-          new Request("http://127.0.0.1/rpc/" + path, {
+          new Request(`http://127.0.0.1/rpc/${path}`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ json: body }),
@@ -1207,7 +1207,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   }, 120_000);
 
   it("blocks an extra permissive policy and an unclassified application table without changing either", async () => {
-    const extraPolicy = "policy_fixture_extra_" + suffix;
+    const extraPolicy = `policy_fixture_extra_${suffix}`;
     try {
       await owner.pool.query(
         "CREATE POLICY " +
@@ -1223,13 +1223,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       expect(await catalog()).toEqual(before);
     } finally {
       await owner.pool.query(
-        "DROP POLICY IF EXISTS " + escapeIdentifier(extraPolicy) + " ON public.memory_documents",
+        `DROP POLICY IF EXISTS ${escapeIdentifier(extraPolicy)} ON public.memory_documents`,
       );
     }
-    const extraTable = "policy_fixture_unclassified_" + suffix;
+    const extraTable = `policy_fixture_unclassified_${suffix}`;
     try {
       await owner.pool.query(
-        "CREATE TABLE public." + escapeIdentifier(extraTable) + " (id text PRIMARY KEY)",
+        `CREATE TABLE public.${escapeIdentifier(extraTable)} (id text PRIMARY KEY)`,
       );
       expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
         policyInstalled: false,
@@ -1241,12 +1241,12 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       expect(
         (
           await owner.pool.query("SELECT to_regclass($1) IS NOT NULL AS present", [
-            "public." + extraTable,
+            `public.${extraTable}`,
           ])
         ).rows,
       ).toEqual([{ present: true }]);
     } finally {
-      await owner.pool.query("DROP TABLE IF EXISTS public." + escapeIdentifier(extraTable));
+      await owner.pool.query(`DROP TABLE IF EXISTS public.${escapeIdentifier(extraTable)}`);
     }
   }, 120_000);
 
@@ -1272,9 +1272,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       await owner.pool.query(original);
     }
     try {
-      await owner.pool.query("GRANT USAGE ON SCHEMA cogine_private TO " + escapeIdentifier(role));
+      await owner.pool.query(`GRANT USAGE ON SCHEMA cogine_private TO ${escapeIdentifier(role)}`);
       await owner.pool.query(
-        "GRANT SELECT(digest) ON cogine_private.rls_bypass_keys TO " + escapeIdentifier(role),
+        `GRANT SELECT(digest) ON cogine_private.rls_bypass_keys TO ${escapeIdentifier(role)}`,
       );
       expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
         connectionEnforced: false,
@@ -1285,10 +1285,10 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       expect(await catalog()).toEqual(before);
     } finally {
       await owner.pool.query(
-        "REVOKE SELECT(digest) ON cogine_private.rls_bypass_keys FROM " + escapeIdentifier(role),
+        `REVOKE SELECT(digest) ON cogine_private.rls_bypass_keys FROM ${escapeIdentifier(role)}`,
       );
       await owner.pool.query(
-        "REVOKE USAGE ON SCHEMA cogine_private FROM " + escapeIdentifier(role),
+        `REVOKE USAGE ON SCHEMA cogine_private FROM ${escapeIdentifier(role)}`,
       );
     }
     expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
@@ -1332,8 +1332,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   }, 120_000);
 
   it("rolls back earlier table enablement when a later administrative DDL operation fails", async () => {
-    const trigger = "policy_fail_ddl_" + suffix;
-    const fn = "policy_fail_ddl_fn_" + suffix;
+    const trigger = `policy_fail_ddl_${suffix}`;
+    const fn = `policy_fail_ddl_fn_${suffix}`;
     await owner.pool.query("ALTER TABLE public.ai_data_consents DISABLE ROW LEVEL SECURITY");
     await owner.pool.query(
       "ALTER TABLE public.native_slack_event_inbox DISABLE ROW LEVEL SECURITY",
@@ -1359,8 +1359,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       await expect(applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).rejects.toThrow();
       expect(await catalog()).toEqual(before);
     } finally {
-      await owner.pool.query("DROP EVENT TRIGGER IF EXISTS " + escapeIdentifier(trigger));
-      await owner.pool.query("DROP FUNCTION IF EXISTS public." + escapeIdentifier(fn) + "()");
+      await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
+      await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);
       await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
     }
     expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
@@ -1370,8 +1370,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   }, 120_000);
 
   it("reports committed installation when a fresh runtime login fails after commit", async () => {
-    const trigger = "policy_login_fault_" + suffix;
-    const fn = "policy_login_fault_fn_" + suffix;
+    const trigger = `policy_login_fault_${suffix}`;
+    const fn = `policy_login_fault_fn_${suffix}`;
     const otherVerifier = scramSha256Verifier(randomBytes(24).toString("hex"));
     await owner.pool.query(
       "ALTER TABLE public.native_slack_event_inbox DISABLE ROW LEVEL SECURITY",
@@ -1404,8 +1404,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
       expect(committed).toHaveLength(154);
     } finally {
-      await owner.pool.query("DROP EVENT TRIGGER IF EXISTS " + escapeIdentifier(trigger));
-      await owner.pool.query("DROP FUNCTION IF EXISTS public." + escapeIdentifier(fn) + "()");
+      await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
+      await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);
       await owner.pool.query(
         "ALTER ROLE " +
           escapeIdentifier(role) +

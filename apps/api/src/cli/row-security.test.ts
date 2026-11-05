@@ -109,7 +109,7 @@ describe("row-security maintenance command", () => {
 
   it("closes the runtime client and pool and redacts a failed inspection", async () => {
     mocks.describe.mockRejectedValue(
-      new Error("Synthetic driver failure at " + runtimeUrl, {
+      new Error(`Synthetic driver failure at ${runtimeUrl}`, {
         cause: new Error("synthetic-secret-cause"),
       }),
     );
@@ -124,7 +124,7 @@ describe("row-security maintenance command", () => {
   });
 
   it("still closes the pool if client disconnection fails", async () => {
-    mocks.disconnect.mockRejectedValue(new Error("Synthetic close failure at " + runtimeUrl));
+    mocks.disconnect.mockRejectedValue(new Error(`Synthetic close failure at ${runtimeUrl}`));
     await run("status");
     await vi.waitFor(() => expect(process.exitCode).toBe(1));
     expect(mocks.end).toHaveBeenCalledOnce();
@@ -134,7 +134,7 @@ describe("row-security maintenance command", () => {
   it("reports a committed installation without exposing the failed probe's cause", async () => {
     mocks.apply.mockRejectedValue(
       new Error("Database policies were committed, but runtime verification failed", {
-        cause: new Error("Synthetic authentication failure at " + runtimeUrl),
+        cause: new Error(`Synthetic authentication failure at ${runtimeUrl}`),
       }),
     );
     await run("apply");
