@@ -6,7 +6,8 @@ import {
   LOCAL_SETTINGS_RPC,
   LOCAL_SETTINGS_TOKEN_HEADER,
 } from "@rakazo/contracts";
-import { type PrismaClient, requireMembership } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { requireMembership, runAsSystem } from "@rakazo/db";
 import type { Hono } from "hono";
 
 export function validLocalSettingsToken(
@@ -39,7 +40,9 @@ export function mountLocalSettings(
     if (c.req.method !== "POST" || !isLocalSettingsProcedure(new URL(c.req.url).pathname)) {
       return c.json({ error: "Not available in local settings" }, 403);
     }
-    const owner = await deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } });
+    const owner = await runAsSystem("find the local settings deployment owner", () =>
+      deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+    );
     const actor = owner?.ownerUserId
       ? await requireMembership(deps.prisma, owner.ownerUserId).catch(() => null)
       : null;

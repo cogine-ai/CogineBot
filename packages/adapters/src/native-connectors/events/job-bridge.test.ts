@@ -1,10 +1,12 @@
 import { dispatchBackgroundJob } from "@rakazo/adapter-kit";
+import { currentDbContext } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { createBackgroundJobHandlers } from "../../background-job-handlers.js";
 import { NativeActionError } from "../action.js";
 import { nativeSourceJob, nativeSourceRetry } from "./worker.js";
 
 const U = "11111111-1111-4111-8111-111111111111";
+const owner = { userId: "user-stored", spaceId: "space-stored" };
 const payload = {
   triggerId: "trigger-a",
   triggerVersion: 2,
@@ -25,13 +27,24 @@ function fixture() {
     notionSignal = vi.fn(async () => undefined),
     slackSignal = vi.fn(async () => undefined),
     slackLifecycle = vi.fn(async () => undefined),
+    discordSignal = vi.fn(async () => undefined),
     continueRun = vi.fn(),
     wakeRoutine = vi.fn();
   const handlers = createBackgroundJobHandlers({
-    nativeEvents: { poll, notionSignal, slackSignal, slackLifecycle },
+    prisma: { $queryRaw: vi.fn(async () => [owner]) },
+    nativeEvents: { poll, notionSignal, slackSignal, slackLifecycle, discordSignal },
     executor: { continueRun, wakeRoutine },
   } as unknown as Parameters<typeof createBackgroundJobHandlers>[0]);
-  return { handlers, poll, notionSignal, slackSignal, slackLifecycle, continueRun, wakeRoutine };
+  return {
+    handlers,
+    poll,
+    notionSignal,
+    slackSignal,
+    slackLifecycle,
+    discordSignal,
+    continueRun,
+    wakeRoutine,
+  };
 }
 describe("native events use existing job dispatch", () => {
   it("dispatches source ID/version and signed delivery to their exact native handlers", async () => {
@@ -91,12 +104,52 @@ describe("native events use existing job dispatch", () => {
     expect(f.notionSignal).not.toHaveBeenCalled();
   });
   it("a missing configured native consumer fails rather than acknowledging and dropping its durable job", async () => {
-    const handlers = createBackgroundJobHandlers(
-      {} as Parameters<typeof createBackgroundJobHandlers>[0],
-    );
+    const handlers = createBackgroundJobHandlers({
+      prisma: { $queryRaw: vi.fn(async () => [owner]) },
+    } as unknown as Parameters<typeof createBackgroundJobHandlers>[0]);
     await expect(
       dispatchBackgroundJob(handlers, "native.source.poll", { triggerId: "a", triggerVersion: 1 }),
     ).rejects.toThrow("Native event processing is unavailable");
+  });
+  it("requires Discord payload identity to match its persisted trigger owner", async () => {
+    const f = fixture();
+    const observed: unknown[] = [];
+    f.discordSignal.mockImplementation(async () => {
+      observed.push(currentDbContext());
+    });
+    const job = {
+      triggerId: "trigger-a",
+      triggerVersion: 1,
+      ...owner,
+      configId: "config-a",
+      configRevision: 1,
+      connectionId: "connection-a",
+      authorizationRevision: "1",
+      grantId: "grant-a",
+      authGeneration: 1,
+      interaction: {
+        id: "123456",
+        applicationId: "123456",
+        guildId: "123456",
+        channelId: "123456",
+        commandId: "123456",
+        commandName: "check",
+        userId: "123456",
+        options: [],
+      },
+    };
+    await dispatchBackgroundJob(f.handlers, "native.discord.signal", {
+      ...job,
+      userId: "forged-user",
+    });
+    await dispatchBackgroundJob(f.handlers, "native.discord.signal", {
+      ...job,
+      spaceId: "forged-space",
+    });
+    expect(f.discordSignal).not.toHaveBeenCalled();
+    await dispatchBackgroundJob(f.handlers, "native.discord.signal", job);
+    expect(f.discordSignal).toHaveBeenCalledOnce();
+    expect(observed).toEqual([{ kind: "tenant", ...owner }]);
   });
   it("retry cooldown preserves the old cursor and honors the service retry interval without retaining raw errors", () => {
     const now = new Date("2026-10-18T00:00:00Z"),

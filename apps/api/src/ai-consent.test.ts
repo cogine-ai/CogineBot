@@ -29,7 +29,7 @@ function setup() {
       spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       aiDataConsent: { findMany: vi.fn(async () => []), upsert },
-      $transaction: vi.fn(async (queries) => Promise.all(queries)),
+      $transaction: vi.fn(async (work) => work(deps.prisma)),
     },
   } as unknown as RouterDeps;
   return { deps, upsert, actor: { userId: "user", spaceId: "space" } as Actor };

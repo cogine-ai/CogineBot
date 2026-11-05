@@ -8,6 +8,7 @@ import type {
   BillingProvider,
   JobPublisher,
   ManagedConnectorProvider,
+  MessagingInboundEvent,
   MessagingSurface,
   RealtimeFanout,
   SandboxProvider,
@@ -96,6 +97,7 @@ import {
   provisionMessagingIdentity,
   pushSessionExpiresAt,
   requireMembership,
+  runAsSystem,
 } from "@rakazo/db";
 import type { Logger } from "@rakazo/logging";
 import {
@@ -170,7 +172,11 @@ export interface AppHandles {
   stop: () => Promise<void>;
 }
 
-export async function createApp(
+export function createApp(...args: Parameters<typeof buildApp>): Promise<AppHandles> {
+  return runAsSystem("api startup and background work", () => buildApp(...args));
+}
+
+async function buildApp(
   overrides: Partial<AppEnv> & {
     prisma?: PrismaClient;
     realtime?: RealtimeFanout;
@@ -670,6 +676,18 @@ export async function createApp(
       c.header("cache-control", "no-store");
     });
   }
+  for (const [path, reason] of [
+    ["/api/auth/*", "authentication"],
+    ["/api/connectors/oauth/*", "connector authorization callback"],
+    ["/api/connectors/events/*", "native event webhook"],
+    ["/api/connectors/enterprise/*", "native enterprise webhook"],
+    ["/api/deployment-transfer/v1/*", "deployment transfer peer protocol"],
+    ["/api/v1/bots/*", "bot webhook"],
+    ["/api/v1/messaging/*", "messaging webhook"],
+    ["/api/v1/phone/*", "messaging webhook"],
+  ] as const) {
+    app.use(path, (_c, next) => runAsSystem(reason, next));
+  }
   registerNativeEventWebhooks(app, nativeEvents);
   registerNativeEnterpriseWebhooks(app, native.enterpriseHooks);
   app.get("/api/connectors/oauth/start", async (c) => {
@@ -761,14 +779,15 @@ export async function createApp(
     return auth.handler(emptyAuthBodyAsJson(c.req.raw));
   });
   mountLocalSettings(app, { token: env.desktopStackToken, prisma, rpc });
-  const requestSession = async (request: Request) => {
-    const session = await auth.api.getSession({ headers: sessionHeaders(request) });
-    if (!session?.user) return null;
-    const actor = await actorFromMembership(
-      requireMembership(prisma, session.user.id, request.headers.get("x-rakazo-space-id")),
-    );
-    return { actor, sessionId: session.session.id, sessionUserId: session.user.id };
-  };
+  const requestSession = async (request: Request) =>
+    runAsSystem("authenticate the request session", async () => {
+      const session = await auth.api.getSession({ headers: sessionHeaders(request) });
+      if (!session?.user) return null;
+      const actor = await actorFromMembership(
+        requireMembership(prisma, session.user.id, request.headers.get("x-rakazo-space-id")),
+      );
+      return { actor, sessionId: session.session.id, sessionUserId: session.user.id };
+    });
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
   app.use("/rpc/*", async (c, next) => {
     const session = await requestSession(c.req.raw);
@@ -1026,7 +1045,7 @@ export async function createApp(
         })();
       }
     }
-    messaging.onInbound(async (event) => {
+    const handleInbound = async (event: MessagingInboundEvent) => {
       if (event.type !== "message") {
         await applyMessagingOutboundStatus(prisma, event);
         return;
@@ -1051,7 +1070,8 @@ export async function createApp(
         throw new Error("Team chat bridge is unavailable");
       }
       await inbound(event);
-    });
+    };
+    messaging.onInbound((event) => runAsSystem("messaging inbound", () => handleInbound(event)));
     mountMessagingWebhookRoutes(app, { messaging });
     // Start polling-mode adapters (e.g. Telegram with no public webhook URL
     // registered) immediately rather than waiting for the first webhook
@@ -1131,7 +1151,7 @@ export async function createApp(
     awaitIdle: inMemoryJobs ? () => inMemoryJobs.awaitIdle() : undefined,
     backgroundFailures: inMemoryJobs ? () => inMemoryJobs.failureCounts() : undefined,
     stop: () =>
-      (stopPromise ??= (async () => {
+      (stopPromise ??= runAsSystem("api shutdown", async () => {
         // Abort in-flight continueRun boot waits before draining jobs so stop() cannot sit
         // on waitForComputerReady for the full boot-wait window during shared Postgres journeys.
         auth.disposeOidcDiscovery();
@@ -1169,7 +1189,7 @@ export async function createApp(
         await created.pool?.end().catch(() => undefined);
         await ownedJobPool?.end().catch(() => undefined);
         await logger.flush({ timeoutMs: 2_000 });
-      })()),
+      })),
   };
 }
 

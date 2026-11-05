@@ -1,5 +1,6 @@
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "./client.js";
+import { runAsSystem } from "./row-security.js";
 
 export class IsolationError extends Error {
   constructor(message = "Resource not found") {
@@ -21,26 +22,28 @@ export async function requireMembership(
   userId: string,
   requestedSpaceId?: string | null,
 ): Promise<Actor> {
-  const membership = await prisma.spaceMember.findFirst({
-    where: {
-      userId,
-      ...(requestedSpaceId ? { spaceId: requestedSpaceId } : {}),
-    },
-    orderBy: [{ space: { isDefault: "desc" } }, { createdAt: "asc" }, { id: "asc" }],
-    include: { member: { include: { user: true } } },
+  return runAsSystem("resolve authenticated Space membership", async () => {
+    const membership = await prisma.spaceMember.findFirst({
+      where: {
+        userId,
+        ...(requestedSpaceId ? { spaceId: requestedSpaceId } : {}),
+      },
+      orderBy: [{ space: { isDefault: "desc" } }, { createdAt: "asc" }, { id: "asc" }],
+      include: { member: { include: { user: true } } },
+    });
+    if (!membership) {
+      throw new IsolationError("No personal space");
+    }
+    const settings = await prisma.deploymentSettings.findUnique({
+      where: { id: "default" },
+    });
+    return {
+      userId: membership.userId,
+      spaceId: membership.spaceId,
+      email: membership.member.user.email,
+      isDeploymentOwner: settings?.ownerUserId === membership.userId,
+    };
   });
-  if (!membership) {
-    throw new IsolationError("No personal space");
-  }
-  const settings = await prisma.deploymentSettings.findUnique({
-    where: { id: "default" },
-  });
-  return {
-    userId: membership.userId,
-    spaceId: membership.spaceId,
-    email: membership.member.user.email,
-    isDeploymentOwner: settings?.ownerUserId === membership.userId,
-  };
 }
 
 export function scoped<T extends { spaceId: string; userId?: string }>(

@@ -1,5 +1,6 @@
 import type { BillingProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import type { BillingService } from "./billing.js";
@@ -43,6 +44,22 @@ function post(body: string) {
 }
 
 describe("billing webhook", () => {
+  it("syncs only a verified customer in a named system context and restores the caller", async () => {
+    const contexts: unknown[] = [];
+    const { app } = mount(() => ({ customerId: "cus_verified" }), {
+      sync: async () => {
+        await Promise.resolve();
+        contexts.push(currentDbContext());
+      },
+    });
+    const alien = { spaceId: "space-unrelated", userId: "user-unrelated" };
+    await runAsTenant(alien, async () => {
+      expect((await app.request(BILLING_WEBHOOK_PATH, post("{}"))).status).toBe(200);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    expect(contexts).toEqual([{ kind: "system", reason: expect.any(String) }]);
+    expect(currentDbContext()).toBeUndefined();
+  });
   it("rejects a request whose signature does not verify", async () => {
     const { app, sync } = mount(() => null);
     const res = await app.request(BILLING_WEBHOOK_PATH, post("{}"));
@@ -89,6 +106,31 @@ describe("billing webhook", () => {
 });
 
 describe("billing checkout return", () => {
+  it("syncs for the verified actor after authentication and restores the caller context", async () => {
+    let authenticated = false;
+    const { app, syncForActor } = mount(() => null, {
+      authenticate: async () => {
+        await Promise.resolve();
+        authenticated = true;
+        return actor;
+      },
+    });
+    const contexts: unknown[] = [];
+    syncForActor.mockImplementation(async () => {
+      expect(authenticated).toBe(true);
+      await Promise.resolve();
+      contexts.push(currentDbContext());
+    });
+    const alien = { spaceId: "space-unrelated", userId: "user-unrelated" };
+    await runAsTenant(alien, async () => {
+      const response = await app.request(`${BILLING_RETURN_PATH}?space=unverified-space`);
+      expect(response.status).toBe(303);
+      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    });
+    expect(syncForActor).toHaveBeenCalledExactlyOnceWith(actor);
+    expect(contexts).toEqual([{ kind: "tenant", spaceId: actor.spaceId, userId: actor.userId }]);
+    expect(currentDbContext()).toBeUndefined();
+  });
   it("passes the initiating Space to authentication before sync", async () => {
     const authenticate = vi.fn(async (_request: Request, spaceId?: string) => ({
       ...actor,

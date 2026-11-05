@@ -1,6 +1,7 @@
 import type { BackgroundJobHandlers } from "@rakazo/adapter-kit";
 import { messagingDeliverJob, routineWakeupJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -63,13 +64,16 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
     const entered: string[] = [];
     const target = handlers({
       "run.continue": async ({ runId }, execution) => {
+        expect(currentDbContext()).toMatchObject({ kind: "system", reason: expect.any(String) });
         entered.push(runId);
         execution!.onRunStarted();
         await release.promise;
       },
     });
     try {
-      await host.start(target);
+      await runAsTenant({ spaceId: "space-enqueue", userId: "user-enqueue" }, () =>
+        host.start(target),
+      );
       for (let i = 0; i < 4; i++)
         await publisher.enqueue({ name: "run.continue", payload: { runId: `waiting-agent-${i}` } });
       await waitFor(() => expect(entered).toHaveLength(4));

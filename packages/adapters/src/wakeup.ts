@@ -8,7 +8,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { dispatchBackgroundJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
-import { isTooManyDatabaseConnections } from "@rakazo/db";
+import { isTooManyDatabaseConnections, runAsSystem } from "@rakazo/db";
 import { runCorrelatedJob, unwrapJobPayload, wrapJobPayload } from "@rakazo/logging";
 import type { Runner, WorkerUtils } from "graphile-worker";
 import { makeWorkerUtils, run } from "graphile-worker";
@@ -140,6 +140,18 @@ export class GraphileJobPublisher implements JobPublisher {
   }
 }
 
+/** Reset the enqueuer's tenant; handlers then resolve their durable owner. */
+function dispatchJob(
+  handlers: BackgroundJobHandlers,
+  name: string,
+  payload: unknown,
+  execution?: BackgroundJobExecution,
+) {
+  return runAsSystem(`background job ${name}`, () =>
+    dispatchBackgroundJob(handlers, name, payload, execution),
+  );
+}
+
 /** Prepare the queue schema as the migration owner before runtime login grants. */
 export async function migrateJobQueue(connectionString: string): Promise<void> {
   const utils = await makeWorkerUtils({ connectionString });
@@ -226,7 +238,7 @@ export class GraphileJobWorkerHost implements JobWorkerHost {
                 name,
                 payload: unpacked.payload,
                 correlation: unpacked.correlation,
-                run: () => dispatchBackgroundJob(handlers, name, unpacked.payload, execution),
+                run: () => dispatchJob(handlers, name, unpacked.payload, execution),
               });
             if (name === "run.continue") await this.executions.execute(execute);
             else await execute();
@@ -519,7 +531,7 @@ export class InMemoryJobQueue implements JobPublisher, JobWorkerHost {
       name: job.name,
       payload: unpacked.payload,
       correlation: unpacked.correlation,
-      run: () => dispatchBackgroundJob(handlers, job.name, unpacked.payload),
+      run: () => dispatchJob(handlers, job.name, unpacked.payload),
     }).catch(() => {
       this.failures.set(job.name, (this.failures.get(job.name) ?? 0) + 1);
     });

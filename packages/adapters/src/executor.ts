@@ -155,6 +155,7 @@ import {
   readRunTimingFields,
   recordUsage,
   retireModelCredential,
+  runAsSystem,
   SpaceLimitError,
   searchHistory,
   settleReleasedTakeoverCards,
@@ -3595,11 +3596,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
       };
       let started: boolean;
       if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
-        const admission = await withTransactionRetry(() =>
-          deps.prisma.$transaction(async (tx) => {
-            const gate = await authorizeCollaborationRunStart(tx, runId);
-            return { started: gate.allowed && (await claimAndStart(tx)), notices: gate.notices };
-          }),
+        const admission = await runAsSystem("admit an approved bot collaboration run", () =>
+          withTransactionRetry(() =>
+            deps.prisma.$transaction(async (tx) => {
+              const gate = await authorizeCollaborationRunStart(tx, runId);
+              return { started: gate.allowed && (await claimAndStart(tx)), notices: gate.notices };
+            }),
+          ),
         );
         await notifyCollaborationNotices(deps.events, admission.notices);
         started = admission.started;

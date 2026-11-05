@@ -1,5 +1,6 @@
 import type { BillingProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { runAsSystem, runAsTenant } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 import type { BillingService } from "./billing.js";
@@ -26,7 +27,9 @@ export function mountBillingRoutes(
     if (parsed === null) return c.json({ error: "Invalid signature" }, 400);
     if (parsed === "ignored") return c.json({ ok: true });
     try {
-      await deps.billing.sync(parsed.customerId);
+      await runAsSystem("sync billing from a verified provider webhook", () =>
+        deps.billing.sync(parsed.customerId),
+      );
     } catch (error) {
       // A non-2xx makes the provider retry the delivery.
       getLogger().error("billing webhook sync failed", error);
@@ -40,7 +43,7 @@ export function mountBillingRoutes(
     const actor = await deps.authenticate(c.req.raw, target);
     if (!actor) return c.redirect(deps.webOrigin, 303);
     try {
-      await deps.billing.syncForActor(actor);
+      await runAsTenant(actor, () => deps.billing.syncForActor(actor));
     } catch (error) {
       // The webhook still delivers the change; the app shows the paywall until it lands.
       getLogger().error("billing return sync failed", error);
