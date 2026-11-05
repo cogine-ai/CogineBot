@@ -15,7 +15,7 @@ import {
   scramSha256Verifier,
   toTicketCommentDto,
 } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -24,7 +24,11 @@ const escapeIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const escapeLiteral = (value: string) =>
   `E'${value.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
 const postgres =
-  process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe.sequential : describe.skip;
+  process.env.VERIFY_DATABASE === "1" &&
+  process.env.VERIFY_ROW_SECURITY_POLICIES === "harness_isolated" &&
+  databaseUrl
+    ? describe.sequential
+    : describe.skip;
 
 // The integration harness gives this file its own database. These are the
 // production policies, without the permissive canary policies used elsewhere.
@@ -48,6 +52,27 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   let installed: RowSecurityPolicyStatus;
 
   const inA = <T>(fn: () => Promise<T>) => runAsTenant({ spaceId: spaceA, userId: userA }, fn);
+  function databaseCodes(error: unknown, seen = new Set<object>()): string[] {
+    if (!error || typeof error !== "object" || seen.has(error)) return [];
+    seen.add(error);
+    const record = error as Record<string, unknown>;
+    const codes = [record.code, record.originalCode].filter(
+      (code): code is string => typeof code === "string",
+    );
+    for (const key of ["cause", "meta", "driverAdapterError"])
+      codes.push(...databaseCodes(record[key], seen));
+    return codes;
+  }
+  async function rejectedByPolicy(operation: Promise<unknown>): Promise<void> {
+    let failure: unknown;
+    try {
+      await operation;
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeDefined();
+    expect(databaseCodes(failure)).toContain("42501");
+  }
   const ids = (table: string) =>
     runtime!.prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM public.${escapeIdentifier(table)} ORDER BY id`,
@@ -67,16 +92,27 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     ).rows;
 
   beforeAll(async () => {
-    owner = createDb(databaseUrl!);
     const url = new URL(databaseUrl!);
+    const expectedDatabase = process.env.VERIFY_ROW_SECURITY_POLICIES_DATABASE;
+    const databaseName = url.pathname.slice(1);
+    if (
+      !["postgres:", "postgresql:"].includes(url.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      Number(url.port) <= 1024 ||
+      !/^integration_(0|[1-9][0-9]*)$/.test(databaseName) ||
+      databaseName !== expectedDatabase
+    )
+      throw new Error("Row-policy tests require the explicitly isolated harness database");
+    owner = createDb(databaseUrl!);
     url.username = role;
     url.password = password;
     url.searchParams.delete("user");
     url.searchParams.delete("password");
     runtimeUrl = url.toString();
-    const database = await owner.pool.query<{ oid: number }>(
-      "SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database()",
+    const database = await owner.pool.query<{ oid: number; name: string }>(
+      "SELECT oid,datname AS name FROM pg_catalog.pg_database WHERE datname=current_database()",
     );
+    expect(database.rows[0]?.name).toBe(expectedDatabase);
     groupRole = `coginebot_app_${database.rows[0]!.oid}`;
     await provisionRuntimeRole(databaseUrl!, runtimeUrl);
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
@@ -181,8 +217,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     });
     await owner.prisma.secret.createMany({
       data: [
-        { id: id("account-secret-a"), userId: userA, kind: "fixture", ciphertext: "synthetic-a" },
-        { id: id("account-secret-b"), userId: userB, kind: "fixture", ciphertext: "synthetic-b" },
+        { id: id("account-secret-a"), userId: userA, kind: "model", ciphertext: "synthetic-a" },
+        { id: id("account-secret-b"), userId: userB, kind: "voice", ciphertext: "synthetic-b" },
         {
           id: id("space-secret-a"),
           userId: userB,
@@ -414,7 +450,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         authGeneration: 1,
         configId: id("config"),
         configRevision: 1,
-        kind: "fixture",
+        kind: "calendar.event_changed",
         resourceType: "fixture",
         resourceId: "fixture",
         spec: {},
@@ -512,7 +548,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   });
 
   it("rejects foreign raw writes and foreign parent links while permitting an authorized revision", async () => {
-    await expect(
+    await rejectedByPolicy(
       inA(() =>
         runtime!.prisma.$executeRawUnsafe(
           'INSERT INTO memory_documents(id,"spaceId","userId",scope,path,content,"updatedAt") VALUES ($1,$2,$3,$4,$5,$6,now())',
@@ -524,7 +560,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           "Synthetic",
         ),
       ),
-    ).rejects.toThrow();
+    );
     expect(
       await inA(() =>
         runtime!.prisma.$executeRawUnsafe(
@@ -534,13 +570,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         ),
       ),
     ).toBe(0);
-    await expect(
+    await rejectedByPolicy(
       inA(() =>
         runtime!.prisma.memoryRevision.create({
           data: { documentId: id("document-b"), revision: 2, content: "Foreign" },
         }),
       ),
-    ).rejects.toThrow();
+    );
     await inA(() =>
       runtime!.prisma.memoryRevision.create({
         data: {
@@ -555,7 +591,18 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       id("authorized-revision"),
     );
     expect(await inA(() => ids("bot_package_components"))).toEqual([{ id: id("component-a") }]);
-    await expect(
+    await inA(() =>
+      runtime!.prisma.botPackageComponent.create({
+        data: {
+          importId: id("import-a"),
+          botId: id("bot-a"),
+          key: "authorized",
+          kind: "skill",
+          name: "Authorized",
+        },
+      }),
+    );
+    await rejectedByPolicy(
       inA(() =>
         runtime!.prisma.botPackageComponent.create({
           data: {
@@ -567,7 +614,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           },
         }),
       ),
-    ).rejects.toThrow();
+    );
   });
 
   it("keeps account membership across selected Spaces without recursive policies", async () => {
@@ -630,7 +677,19 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     expect(await inA(() => ids("native_oauth_sessions"))).toEqual([{ id: id("session-a") }]);
     expect(await inA(() => ids("native_oauth_grants"))).toEqual([{ id: id("grant-a") }]);
     expect(await inA(() => ids("native_routine_triggers"))).toEqual([{ id: id("trigger-a") }]);
-    await expect(
+    await inA(() =>
+      runtime!.prisma.externalEffect.create({
+        data: {
+          spaceId: spaceA,
+          runId: id("run-a"),
+          kind: "runtime_checkpoint",
+          idempotencyKey: id("authorized-effect"),
+          status: "prepared",
+          request: {},
+        },
+      }),
+    );
+    await rejectedByPolicy(
       inA(() =>
         runtime!.prisma.externalEffect.create({
           data: {
@@ -643,8 +702,25 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           },
         }),
       ),
-    ).rejects.toThrow();
-    await expect(
+    );
+    await inA(() =>
+      runtime!.prisma.nativeRoutineTrigger.create({
+        data: {
+          routineId: id("routine-a"),
+          connectionId: id("connection-a"),
+          grantId: id("grant-a"),
+          authorizationRevision: "synthetic",
+          authGeneration: 1,
+          configId: id("config"),
+          configRevision: 1,
+          kind: "calendar.event_changed",
+          resourceType: "fixture",
+          resourceId: "fixture",
+          spec: {},
+        },
+      }),
+    );
+    await rejectedByPolicy(
       inA(() =>
         runtime!.prisma.nativeRoutineTrigger.create({
           data: {
@@ -655,14 +731,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
             authGeneration: 1,
             configId: id("config"),
             configRevision: 1,
-            kind: "fixture",
+            kind: "calendar.event_changed",
             resourceType: "fixture",
             resourceId: "fixture",
             spec: {},
           },
         }),
       ),
-    ).rejects.toThrow();
+    );
   });
 
   it("preserves DM identity movement and source-message group ownership without interpreting provider thread IDs", async () => {
@@ -828,7 +904,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         name: "Synthetic",
         source: "https://github.com/fixture/plugin",
         version: "a".repeat(40),
-        digest: "b".repeat(64),
+        digest: `sha256:${"b".repeat(64)}`,
+        requestBinding: "c".repeat(64),
       })),
     });
     let checkedTransactions = 0;
@@ -1327,8 +1404,28 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       ).rows,
     ).toEqual([{ retired: true }]);
     const before = await catalog();
-    await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
-    expect(await catalog()).toEqual(before);
+    const trigger = `policy_reject_noop_${suffix}`;
+    const fn = `policy_reject_noop_fn_${suffix}`;
+    try {
+      await owner.pool.query(
+        "CREATE FUNCTION public." +
+          escapeIdentifier(fn) +
+          "() RETURNS event_trigger LANGUAGE plpgsql AS $policy_fault$ " +
+          "BEGIN RAISE EXCEPTION 'A matching policy installation must not ALTER tables'; END; $policy_fault$",
+      );
+      await owner.pool.query(
+        "CREATE EVENT TRIGGER " +
+          escapeIdentifier(trigger) +
+          " ON ddl_command_end WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION public." +
+          escapeIdentifier(fn) +
+          "()",
+      );
+      await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
+      expect(await catalog()).toEqual(before);
+    } finally {
+      await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
+      await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);
+    }
   }, 120_000);
 
   it("rolls back earlier table enablement when a later administrative DDL operation fails", async () => {
@@ -1347,7 +1444,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           "DECLARE command record; BEGIN " +
           "FOR command IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP " +
           "IF command.object_identity='public.native_slack_event_inbox' THEN " +
-          "RAISE EXCEPTION 'Synthetic policy DDL failure'; END IF; END LOOP; END $policy_fault$",
+          "RAISE EXCEPTION 'Synthetic policy DDL failure'; END IF; END LOOP; END; $policy_fault$",
       );
       await owner.pool.query(
         "CREATE EVENT TRIGGER " +
@@ -1388,7 +1485,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           escapeIdentifier(role) +
           " PASSWORD " +
           escapeLiteral(otherVerifier) +
-          "; END IF; END LOOP; END $policy_fault$",
+          "; END IF; END LOOP; END; $policy_fault$",
       );
       await owner.pool.query(
         "CREATE EVENT TRIGGER " +
@@ -1424,4 +1521,56 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       await fresh.pool.end();
     }
   }, 120_000);
+  it.each([false, true])(
+    "keeps a failed COMMIT acknowledgement uncertain (server executed: %s)",
+    async (serverExecuted) => {
+      await owner.pool.query(
+        "ALTER TABLE public.native_slack_event_inbox DISABLE ROW LEVEL SECURITY",
+      );
+      const probe = await owner.pool.connect();
+      const ownerLogin = Reflect.get(probe, "user");
+      const prototype = Object.getPrototypeOf(probe);
+      const originalQuery = Reflect.get(prototype, "query");
+      probe.release();
+      let injected = false;
+      const transport = vi.spyOn(prototype, "query").mockImplementation(function (
+        this: object,
+        ...args: unknown[]
+      ) {
+        if (
+          !injected &&
+          Reflect.get(this, "user") === ownerLogin &&
+          typeof args[0] === "string" &&
+          args[0].trim().toUpperCase() === "COMMIT"
+        ) {
+          injected = true;
+          const fault = () => {
+            throw new Error("Synthetic COMMIT acknowledgement loss");
+          };
+          return serverExecuted
+            ? Promise.resolve(Reflect.apply(originalQuery, this, args)).then(fault)
+            : Promise.reject(new Error("Synthetic COMMIT transport failure before send"));
+        }
+        return Reflect.apply(originalQuery, this, args);
+      });
+      try {
+        await expect(applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).rejects.toThrow(
+          "Database policy commit outcome is uncertain; policies may have committed",
+        );
+        expect(injected).toBe(true);
+        const result = await owner.pool.query<{ enabled: boolean }>(
+          "SELECT relrowsecurity AS enabled FROM pg_class WHERE oid='public.native_slack_event_inbox'::regclass",
+        );
+        expect(result.rows).toEqual([{ enabled: serverExecuted }]);
+      } finally {
+        transport.mockRestore();
+        await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
+      }
+      expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
+        connectionEnforced: true,
+        deploymentEnforced: false,
+      });
+    },
+    120_000,
+  );
 });

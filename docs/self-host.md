@@ -141,6 +141,9 @@ through a fresh restricted connection. Unknown custom policies are preserved and
 block installation. A failed policy transaction rolls back. If installation
 commits but the fresh connection fails, the command reports that it was not
 rolled back; correct the connection problem before retrying.
+If the COMMIT acknowledgement is lost, installation reports an uncertain outcome:
+policies may have committed. Inspect status before retrying; the command does not
+infer rollback or retry the installation automatically.
 
 The current API and worker defaults have not activated these policies. Ordinary
 schema migration does not run this command. Production activation still requires

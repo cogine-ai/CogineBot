@@ -145,6 +145,23 @@ describe("row-security maintenance command", () => {
     expect(output(stderr)).not.toContain("postgres:");
   });
 
+  it("reports an uncertain commit without implying rollback or exposing its cause", async () => {
+    mocks.apply.mockRejectedValue(
+      new Error("Database policy commit outcome is uncertain; policies may have committed", {
+        cause: new Error(`Synthetic lost acknowledgement at ${runtimeUrl}`),
+      }),
+    );
+    await run("apply");
+    expect(process.exitCode).toBe(1);
+    expect(output(stderr)).toContain("outcome is uncertain");
+    expect(output(stderr)).toContain("may have committed");
+    expect(output(stderr)).toContain("Run db:row-security status before retrying");
+    expect(output(stderr)).not.toContain("were committed");
+    expect(output(stderr)).not.toContain("rolled back");
+    expect(output(stderr)).not.toContain("postgres:");
+    expect(output(stdout)).toBe("");
+  });
+
   it("does not promote fully enabled tables when their policies are not verified", async () => {
     mocks.describe.mockResolvedValue({
       ...state(),

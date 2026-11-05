@@ -47,6 +47,10 @@ async function main(): Promise<void> {
 
 const commandHints = new Map([
   [
+    "Database policy commit outcome is uncertain; policies may have committed",
+    "Database policy commit outcome is uncertain; policies may have committed. Run db:row-security status before retrying.",
+  ],
+  [
     "Database policies were committed, but runtime verification failed",
     "Database policies were committed, but runtime verification failed. The policy installation was not rolled back.",
   ],

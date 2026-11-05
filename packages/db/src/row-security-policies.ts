@@ -545,6 +545,7 @@ function expectedPolicies(definition: PolicyDefinition) {
   ];
 }
 
+/** A FOR ALL policy without WITH CHECK applies its USING predicate to writes too. */
 function matches(policy: PolicyRow, predicate: string): boolean {
   return (
     policy.command === "*" &&
@@ -625,7 +626,7 @@ function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
   };
 }
 
-/** Inspect policy definitions and this connection; never assert that every deployed service is activated. */
+/** Inspect definitions and this connection, without certifying activation of API or worker pools. */
 export async function describeRowSecurityPolicies(
   prisma: PrismaClient,
 ): Promise<RowSecurityPolicyStatus> {
@@ -641,6 +642,7 @@ export async function describeRowSecurityPolicies(
   return report(catalog, runtime.prepared);
 }
 
+/** Retire only the registered compatibility shape; other policies need explicit review. */
 function canRetire(policy: PolicyRow): boolean {
   if (
     !knownTables.has(policy.table) ||
@@ -673,7 +675,12 @@ function assertInstallable(catalog: Catalog): void {
   }
 }
 
-/** Apply the registered policy set explicitly as administrator; ordinary schema migrations do not call this. */
+/**
+ * Authenticate the prepared runtime, install in one owner transaction, then verify a fresh runtime.
+ * Changes roll back before a commit attempt; a missing commit acknowledgement leaves the outcome
+ * uncertain. Verification failure after an acknowledged commit leaves the installation committed.
+ * This explicit maintenance operation does not activate services or run in ordinary migrations.
+ */
 export async function applyRowSecurityPolicies(
   migrationUrl: string,
   runtimeUrl: string,
@@ -684,6 +691,7 @@ export async function applyRowSecurityPolicies(
     connectionTimeoutMillis: 10_000,
   });
   let inTransaction = false;
+  let commitAttempted = false;
   let committed = false;
   let failed = false;
   let failure: unknown;
@@ -736,16 +744,18 @@ export async function applyRowSecurityPolicies(
           `CREATE POLICY ${escapeIdentifier(policy.name)} ON ${table} FOR ALL TO PUBLIC USING (${policy.predicate})`,
         );
       }
-      await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+      if (!before.relations.find((relation) => relation.table === definition.table)?.enabled)
+        await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
     }
     const installed = report(await readCatalog(query), false);
     if (!installed.policyInstalled || !installed.policyEnabled || !installed.guardValid)
       throw new Error("The database policy installation did not match the registered definitions");
+    commitAttempted = true;
     await owner.query("COMMIT");
     inTransaction = false;
     committed = true;
   } catch (error) {
-    if (inTransaction) await owner.query("ROLLBACK").catch(() => undefined);
+    if (inTransaction && !commitAttempted) await owner.query("ROLLBACK").catch(() => undefined);
     failed = true;
     failure = error;
   } finally {
@@ -758,7 +768,13 @@ export async function applyRowSecurityPolicies(
       }
     }
   }
-  if (failed && !committed) throw failure;
+  if (failed && !committed) {
+    if (commitAttempted)
+      throw new Error("Database policy commit outcome is uncertain; policies may have committed", {
+        cause: failure,
+      });
+    throw failure;
+  }
   try {
     if (failed) throw failure;
     const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
