@@ -68,8 +68,15 @@ export function asSystem<T extends object>(client: T, reason = "test fixture"): 
 const TRANSACTION_BYPASS_KEY = Symbol("transaction bypass key");
 const PRISMA_TRANSACTION_SCOPE = Symbol.for("prisma.client.transaction.scope_context");
 
-type TransactionState = {
-  bypassKey: BypassKeySource;
+/** SDK transaction identity only; system steps separately verify the context binding. */
+export function isInteractiveTransaction(value: object): value is Prisma.TransactionClient {
+  const scope = Reflect.get(value, PRISMA_TRANSACTION_SCOPE) as { txId?: unknown } | undefined;
+  return typeof scope?.txId === "string";
+}
+
+type TransactionBinding = { mode: "disabled" } | { mode: "enabled"; bypassKey: BypassKeySource };
+
+type TransactionState = TransactionBinding & {
   owner?: symbol;
   queries: number;
   poisoned: boolean;
@@ -105,6 +112,8 @@ type SqlClient = Pick<PrismaClient, "$queryRaw">;
  * runAsSystem for a step inside an interactive transaction a tenant opened: the
  * transaction's connection keeps the settings it was checked out with, so this
  * turns the bypass on for `fn` and back afterwards. Name why, as for runAsSystem.
+ * A compatibility-mode transaction changes only the execution context, without
+ * reading or changing connection settings or supplying an RLS bypass key.
  * The step is exclusive: reentrant steps and sibling queries are rejected.
  * A failed restore makes the transaction unusable and requires rollback.
  */
@@ -124,20 +133,26 @@ export async function runAsSystemInTransaction<T>(
   try {
     return await transactionOwner.run(frame, () =>
       within({ kind: "system", reason }, async () => {
-        const bypassKey = await resolveBypassKey(state.bypassKey);
-        const [previous] = await tx.$queryRaw<
-          Array<{ bypass: string | null; key: string | null }>
-        >`SELECT current_setting('app.rls_bypass', true) AS bypass,
-          current_setting('app.rls_bypass_key', true) AS key`;
-        const restore = () =>
-          tx.$queryRaw`SELECT set_config('app.rls_bypass', ${previous?.bypass ?? "off"}, true),
-          set_config('app.rls_bypass_key', ${previous?.key ?? ""}, true)`;
+        let enable: (() => Promise<unknown>) | undefined;
+        let restore: (() => Promise<unknown>) | undefined;
+        if (state.mode === "enabled") {
+          const bypassKey = await resolveBypassKey(state.bypassKey);
+          const [previous] = await tx.$queryRaw<
+            Array<{ bypass: string | null; key: string | null }>
+          >`SELECT current_setting('app.rls_bypass', true) AS bypass,
+            current_setting('app.rls_bypass_key', true) AS key`;
+          restore = () =>
+            tx.$queryRaw`SELECT set_config('app.rls_bypass', ${previous?.bypass ?? "off"}, true),
+            set_config('app.rls_bypass_key', ${previous?.key ?? ""}, true)`;
+          enable = () =>
+            tx.$queryRaw`SELECT set_config('app.rls_bypass', 'on', true),
+              set_config('app.rls_bypass_key', ${bypassKey}, true)`;
+        }
         let failed = false;
         let failure: unknown;
         let result!: T;
         try {
-          await tx.$queryRaw`SELECT set_config('app.rls_bypass', 'on', true),
-            set_config('app.rls_bypass_key', ${bypassKey}, true)`;
+          await enable?.();
           result = await fn();
         } catch (error) {
           failed = true;
@@ -145,7 +160,7 @@ export async function runAsSystemInTransaction<T>(
         }
         try {
           if (state.queries) throw concurrentTransactionAccess();
-          await restore();
+          await restore?.();
         } catch (error) {
           state.poisoned = true;
           if (!failed) {
@@ -427,15 +442,16 @@ const WRAPPED_OPERATION_OPTIONS = { maxWait: 10_000, timeout: 300_000 };
 type InternalParams = { transaction?: { kind?: string; id?: string } };
 function bindTransactions(
   client: PrismaClient,
-  bypassKey: BypassKeySource,
+  binding: TransactionBinding,
   transactions: Map<string, TransactionState>,
 ): PrismaClient {
   return new Proxy(client, {
     get(target, property, receiver) {
       if (property === "$extends")
         return (...args: unknown[]) =>
-          bindTransactions(Reflect.apply(target.$extends, target, args), bypassKey, transactions);
+          bindTransactions(Reflect.apply(target.$extends, target, args), binding, transactions);
       if (property !== "$transaction") return Reflect.get(target, property, receiver);
+      const transact = target.$transaction;
       return (...args: unknown[]) => {
         const parentScope = Reflect.get(target, PRISMA_TRANSACTION_SCOPE) as
           | { txId?: string }
@@ -454,13 +470,18 @@ function bindTransactions(
             if (typeof scope?.txId !== "string")
               throw new Error("Interactive transaction identity is unavailable");
             const existing = transactions.get(scope.txId);
-            const state = existing ?? { bypassKey, queries: 0, poisoned: false, closed: false };
+            const state: TransactionState = existing ?? {
+              ...binding,
+              queries: 0,
+              poisoned: false,
+              closed: false,
+            };
             if (!existing) transactions.set(scope.txId, state);
             const bound = new Proxy(tx, {
               get(transaction, key, receiver) {
                 if (key === TRANSACTION_BYPASS_KEY) return state;
                 if (key === "$transaction")
-                  return bindTransactions(transaction as PrismaClient, bypassKey, transactions)
+                  return bindTransactions(transaction as PrismaClient, binding, transactions)
                     .$transaction;
                 return Reflect.get(transaction, key, receiver);
               },
@@ -477,7 +498,7 @@ function bindTransactions(
               }
             }
           };
-        return Reflect.apply(target.$transaction, target, args);
+        return Reflect.apply(transact, target, args);
       };
     },
   });
@@ -516,6 +537,42 @@ export function drainUnscopedDatabaseAccess(): string[] {
   return sites;
 }
 
+function beginTransactionQuery(
+  internal: InternalParams | undefined,
+  transactions: Map<string, TransactionState>,
+): TransactionState | undefined {
+  const transaction = internal?.transaction;
+  const state =
+    transaction?.kind === "itx" && transaction.id ? transactions.get(transaction.id) : undefined;
+  if (state) {
+    guardTransactionQuery(state);
+    state.queries++;
+  }
+  return state;
+}
+
+/**
+ * Bind explicit system steps to factory transactions during the compatibility
+ * rollout without changing ordinary query settings, unique reads or batch calls.
+ */
+export function withTransactionContext(prisma: PrismaClient): PrismaClient {
+  const transactions = new Map<string, TransactionState>();
+  const extended = prisma.$extends({
+    query: {
+      async $allOperations({ args, query, ...rest }) {
+        const internal = (rest as { __internalParams?: InternalParams }).__internalParams;
+        const state = beginTransactionQuery(internal, transactions);
+        try {
+          return await query(args);
+        } finally {
+          if (state) state.queries--;
+        }
+      },
+    },
+  }) as unknown as PrismaClient;
+  return bindTransactions(extended, { mode: "disabled" }, transactions);
+}
+
 /**
  * Covers the two cases where Prisma, not the caller, decides when a
  * connection is checked out, so the pool would see the wrong context:
@@ -534,14 +591,7 @@ export function withRowLevelSecurity(
       async $allOperations({ model, operation, args, query, ...rest }) {
         const internal = (rest as { __internalParams?: InternalParams }).__internalParams;
         const transaction = internal?.transaction;
-        const state =
-          transaction?.kind === "itx" && transaction.id
-            ? transactions.get(transaction.id)
-            : undefined;
-        if (state) {
-          guardTransactionQuery(state);
-          state.queries++;
-        }
+        const state = beginTransactionQuery(internal, transactions);
         try {
           const context = storage.getStore();
           if (!context) {
@@ -571,5 +621,5 @@ export function withRowLevelSecurity(
       },
     },
   }) as unknown as PrismaClient;
-  return bindTransactions(extended, bypassKey, transactions);
+  return bindTransactions(extended, { mode: "enabled", bypassKey }, transactions);
 }

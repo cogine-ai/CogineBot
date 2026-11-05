@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import {
@@ -7,17 +8,44 @@ import {
   resolveMaxComputersPerUser,
   restoreBotUnderComputerQuota,
 } from "./computers.js";
+import { currentDbContext, runAsTenant, withTransactionContext } from "./row-security.js";
 
-function fakePrisma(count = 0, existing = false) {
-  return {
-    // Looks like a TransactionClient: $queryRaw present, no $transaction.
+// Keep the existing external database doubles, but deliver interactive clients
+// through the same binding entry as the staged factory instead of method shape.
+function factoryClient(raw: PrismaClient): PrismaClient {
+  return withTransactionContext({
+    ...raw,
+    $extends() {
+      return this;
+    },
+    $transaction: (work: (tx: object) => Promise<unknown>) =>
+      raw.$transaction((tx) =>
+        work({
+          ...tx,
+          [Symbol.for("prisma.client.transaction.scope_context")]: {
+            kind: "nested",
+            txId: randomUUID(),
+          },
+        }),
+      ),
+  } as unknown as PrismaClient);
+}
+
+function fakePrisma(count = 0, existing = false, protectAggregate = false) {
+  const api = {
     $queryRaw: vi.fn(async () => [{ lock: "1" }]),
     computer: {
       findUnique: vi.fn(async () => (existing ? { id: "existing" } : null)),
-      count: vi.fn(async () => count),
+      count: vi.fn(async () =>
+        !protectAggregate || currentDbContext()?.kind === "system" ? count : 0,
+      ),
       upsert: vi.fn(async (args) => args.update as object),
     },
-  } as unknown as PrismaClient;
+  };
+  return factoryClient({
+    ...api,
+    $transaction: async (work: (tx: object) => Promise<unknown>) => work(api),
+  } as unknown as PrismaClient);
 }
 
 function fakeRestorePrisma(results: { alreadyLive: number; inUse: number }) {
@@ -149,7 +177,7 @@ function fakeSerializingPrisma(initialInUse = 0) {
     },
   } as unknown as PrismaClient;
 
-  return { prisma, state, refs };
+  return { prisma: factoryClient(prisma), transactionSpy: prisma.$transaction, state, refs };
 }
 
 /**
@@ -232,7 +260,7 @@ function fakeSerializingRestorePrisma(
     }),
   } as unknown as PrismaClient;
 
-  return { prisma, inUse };
+  return { prisma: factoryClient(prisma), transactionSpy: prisma.$transaction, inUse };
 }
 
 const baseInput = {
@@ -263,6 +291,22 @@ describe("resolveMaxComputersPerUser", () => {
     for (const value of ["-1", "1.5", "not-a-number"])
       expect(() => resolveMaxComputersPerUser(value)).toThrow(/positive integer/);
   });
+});
+
+it("checks the cross-space aggregate inside an already held factory transaction", async () => {
+  process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
+  const prisma = fakePrisma(1, false, true);
+  await runAsTenant(baseInput, () =>
+    prisma.$transaction(async (tx) => {
+      await expect(ensureComputerRecord(tx, baseInput)).rejects.toThrow(ComputerLimitError);
+      expect(currentDbContext()).toEqual({
+        kind: "tenant",
+        spaceId: baseInput.spaceId,
+        userId: baseInput.userId,
+      });
+    }),
+  );
+  expect(prisma.computer.upsert).not.toHaveBeenCalled();
 });
 
 describe("ensureComputerRecord", () => {
@@ -300,7 +344,7 @@ describe("ensureComputerRecord", () => {
 
   it("serializes parallel creates so concurrent callers cannot exceed the cap", async () => {
     process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
-    const { prisma, state } = fakeSerializingPrisma(0);
+    const { prisma, state, transactionSpy } = fakeSerializingPrisma(0);
 
     const results = await Promise.allSettled([
       ensureComputerRecord(prisma, {
@@ -323,7 +367,7 @@ describe("ensureComputerRecord", () => {
       ComputerLimitError,
     );
     expect(state.inUse).toBe(1);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(transactionSpy).toHaveBeenCalledTimes(2);
   });
 
   it("allows the initial dedicated create at cap 1: the bot's team reference is being re-linked", async () => {
@@ -376,6 +420,34 @@ describe("ensureComputerRecord", () => {
 });
 
 describe("assertComputerQuotaForRestore", () => {
+  it("rejects unbound SDK transactions and transactions reused after their callback", async () => {
+    process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
+    const raw = {
+      ...fakeRestorePrisma({ alreadyLive: 0, inUse: 1 }),
+      $queryRaw: vi.fn(),
+      [Symbol.for("prisma.client.transaction.scope_context")]: {
+        kind: "nested",
+        txId: randomUUID(),
+      },
+    };
+    await expect(
+      assertComputerQuotaForRestore(raw, { userId: "user-1", computerId: "computer-a" }),
+    ).rejects.toThrow("context-aware interactive transaction");
+    expect(raw.$queryRaw).not.toHaveBeenCalled();
+    const root = factoryClient({
+      computer: raw.computer,
+      $queryRaw: raw.$queryRaw,
+      $transaction: async (work: (tx: object) => Promise<unknown>) => work(raw),
+    } as unknown as PrismaClient);
+    let closed!: PrismaClient;
+    await root.$transaction(async (tx) => {
+      closed = tx as PrismaClient;
+    });
+    await expect(
+      assertComputerQuotaForRestore(closed, { userId: "user-1", computerId: "computer-a" }),
+    ).rejects.toThrow("Concurrent system transaction access");
+  });
+
   it("rejects the archive, create, restore bypass when the user is at the cap", async () => {
     process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
     // The archived bot's computer has no live bot referencing it (alreadyLive=0)
@@ -415,7 +487,7 @@ describe("assertComputerQuotaForRestore", () => {
 describe("restoreBotUnderComputerQuota", () => {
   it("serializes overlapping restores so only one can take the last quota slot", async () => {
     process.env.SANDBOX_MAX_COMPUTERS_PER_USER = "1";
-    const { prisma, inUse } = fakeSerializingRestorePrisma([
+    const { prisma, inUse, transactionSpy } = fakeSerializingRestorePrisma([
       { id: "computer-a", archivedBots: ["bot-a"] },
       { id: "computer-b", archivedBots: ["bot-b"] },
     ]);
@@ -441,7 +513,7 @@ describe("restoreBotUnderComputerQuota", () => {
       ComputerLimitError,
     );
     expect(inUse()).toBe(1);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(transactionSpy).toHaveBeenCalledTimes(2);
   });
 
   it("unarchives under the lock when the user is below the cap", async () => {

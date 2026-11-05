@@ -15,7 +15,7 @@ import {
 } from "@rakazo/contracts";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import { persistPreparedSecret } from "../../secret-persistence.js";
 import { NativeActionError } from "../action.js";
 import { NativeConfigSettingsSchema } from "../config.js";
@@ -152,14 +152,18 @@ export class NativeSlackHookStore {
   ): Promise<NativeSlackHookStatus> {
     owner(mayConfigure);
     const { configId } = NativeSlackHookStatusInputSchema.parse(raw);
-    const app = await this.prisma.nativeAppConfig.findFirst({
-      where: { id: configId, appId: "slack" },
-      select: { id: true },
-    });
+    const app = await runAsSystem("read Slack webhook configuration for its administrator", () =>
+      this.prisma.nativeAppConfig.findFirst({
+        where: { id: configId, appId: "slack" },
+        select: { id: true },
+      }),
+    );
     if (!app)
       throw new NativeActionError("not_configured", "Select a Slack application configuration.");
-    const rows = await this.prisma.$queryRaw<HookRow[]>(
-      Prisma.sql`${join()} WHERE h."configId"=${configId} ORDER BY h."createdAt",h.id`,
+    const rows = await runAsSystem("list Slack webhooks for their administrator", () =>
+      this.prisma.$queryRaw<HookRow[]>(
+        Prisma.sql`${join()} WHERE h."configId"=${configId} ORDER BY h."createdAt",h.id`,
+      ),
     );
     return {
       configId,
@@ -179,7 +183,14 @@ export class NativeSlackHookStore {
         "not_configured",
         "Slack Events requires a public HTTPS API origin.",
       );
-    const before = input.id ? (await this.rows(input.id))[0] : undefined;
+    const previousId = input.id;
+    const before = previousId
+      ? (
+          await runAsSystem("read Slack webhook metadata for its administrator", () =>
+            this.rows(previousId),
+          )
+        )[0]
+      : undefined;
     if (
       input.id &&
       (!before || before.configId !== input.configId || before.revision !== input.expectedRevision)
@@ -198,55 +209,57 @@ export class NativeSlackHookStore {
         this.secrets,
         { id: recordId, ciphertext: secret.ciphertext },
         () =>
-          this.prisma.$transaction(async (tx) => {
-            await tx.$queryRaw(
-              Prisma.sql`SELECT id FROM native_app_configs WHERE id=${input.configId} FOR UPDATE`,
-            );
-            const app = await tx.nativeAppConfig.findUnique({ where: { id: input.configId } }),
-              settings = NativeConfigSettingsSchema.safeParse(app?.config);
-            if (
-              !app?.enabled ||
-              app.appId !== "slack" ||
-              !settings.success ||
-              settings.data.actor !== "bot"
-            )
-              throw new NativeActionError(
-                "not_configured",
-                "Configure a Slack bot connection source first.",
+          runAsSystem("save the Slack webhook for its administrator", () =>
+            this.prisma.$transaction(async (tx) => {
+              await tx.$queryRaw(
+                Prisma.sql`SELECT id FROM native_app_configs WHERE id=${input.configId} FOR UPDATE`,
               );
-            if (before) {
-              const current = (
-                await tx.$queryRaw<HookRow[]>(
-                  Prisma.sql`${join()} WHERE h.id=${id} AND h."configId"=${input.configId} FOR UPDATE OF h`,
-                )
-              )[0];
+              const app = await tx.nativeAppConfig.findUnique({ where: { id: input.configId } }),
+                settings = NativeConfigSettingsSchema.safeParse(app?.config);
               if (
-                !current ||
-                current.revision !== input.expectedRevision ||
-                current.secretRecordId !== before.secretRecordId
+                !app?.enabled ||
+                app.appId !== "slack" ||
+                !settings.success ||
+                settings.data.actor !== "bot"
               )
-                conflict();
-              // Every save advances the public edit version. Only subscription changes
-              // invalidate signed durable deliveries; signing keys have their own CAS.
-              const sameSubscription =
-                enabled(current) &&
-                current.configRevision === app.revision &&
-                current.appId === input.appId &&
-                current.teamId === (settings.data.tenantId ?? null) &&
-                stableJsonValue([...current.botEvents].sort()) ===
-                  stableJsonValue([...input.botEvents].sort());
-              await tx.$executeRaw(
-                Prisma.sql`UPDATE native_slack_hooks SET "configRevision"=${app.revision},revision=revision+1,"deliveryRevision"="deliveryRevision"+${sameSubscription ? 0 : 1},"appId"=${input.appId},"teamId"=${settings.data.tenantId ?? null},"botEvents"=ARRAY[${Prisma.join(input.botEvents)}]::text[],"secretRecordId"=${recordId},ciphertext=${secret.ciphertext},enabled=true,"disabledAt"=NULL,"ownerConfirmedAt"=${this.clock()},"lastVerifiedAt"=NULL,"updatedAt"=${this.clock()} WHERE id=${id} AND revision=${input.expectedRevision}`,
-              );
-            } else {
-              await tx.$executeRaw(
-                Prisma.sql`INSERT INTO native_slack_hooks(id,"configId","configRevision","appId","teamId","botEvents","secretRecordId",ciphertext,"ownerConfirmedAt","setupOwnerUserId","setupSpaceId") VALUES(${id},${app.id},${app.revision},${input.appId},${settings.data.tenantId ?? null},ARRAY[${Prisma.join(input.botEvents)}]::text[],${recordId},${secret.ciphertext},${this.clock()},${context.userId},${context.spaceId})`,
-              );
-            }
-            const saved = (await this.rows(id, tx))[0];
-            if (!saved) conflict();
-            return this.dto(saved);
-          }),
+                throw new NativeActionError(
+                  "not_configured",
+                  "Configure a Slack bot connection source first.",
+                );
+              if (before) {
+                const current = (
+                  await tx.$queryRaw<HookRow[]>(
+                    Prisma.sql`${join()} WHERE h.id=${id} AND h."configId"=${input.configId} FOR UPDATE OF h`,
+                  )
+                )[0];
+                if (
+                  !current ||
+                  current.revision !== input.expectedRevision ||
+                  current.secretRecordId !== before.secretRecordId
+                )
+                  conflict();
+                // Every save advances the public edit version. Only subscription changes
+                // invalidate signed durable deliveries; signing keys have their own CAS.
+                const sameSubscription =
+                  enabled(current) &&
+                  current.configRevision === app.revision &&
+                  current.appId === input.appId &&
+                  current.teamId === (settings.data.tenantId ?? null) &&
+                  stableJsonValue([...current.botEvents].sort()) ===
+                    stableJsonValue([...input.botEvents].sort());
+                await tx.$executeRaw(
+                  Prisma.sql`UPDATE native_slack_hooks SET "configRevision"=${app.revision},revision=revision+1,"deliveryRevision"="deliveryRevision"+${sameSubscription ? 0 : 1},"appId"=${input.appId},"teamId"=${settings.data.tenantId ?? null},"botEvents"=ARRAY[${Prisma.join(input.botEvents)}]::text[],"secretRecordId"=${recordId},ciphertext=${secret.ciphertext},enabled=true,"disabledAt"=NULL,"ownerConfirmedAt"=${this.clock()},"lastVerifiedAt"=NULL,"updatedAt"=${this.clock()} WHERE id=${id} AND revision=${input.expectedRevision}`,
+                );
+              } else {
+                await tx.$executeRaw(
+                  Prisma.sql`INSERT INTO native_slack_hooks(id,"configId","configRevision","appId","teamId","botEvents","secretRecordId",ciphertext,"ownerConfirmedAt","setupOwnerUserId","setupSpaceId") VALUES(${id},${app.id},${app.revision},${input.appId},${settings.data.tenantId ?? null},ARRAY[${Prisma.join(input.botEvents)}]::text[],${recordId},${secret.ciphertext},${this.clock()},${context.userId},${context.spaceId})`,
+                );
+              }
+              const saved = (await this.rows(id, tx))[0];
+              if (!saved) conflict();
+              return this.dto(saved);
+            }),
+          ),
       ),
     );
   }
@@ -257,7 +270,11 @@ export class NativeSlackHookStore {
   ): Promise<NativeSlackHook> {
     owner(mayConfigure);
     const input = DisableNativeSlackHookInputSchema.parse(raw),
-      before = (await this.rows(input.id))[0];
+      before = (
+        await runAsSystem("read Slack webhook metadata for its administrator", () =>
+          this.rows(input.id),
+        )
+      )[0];
     if (!before || before.configId !== input.configId || before.revision !== input.expectedRevision)
       conflict();
     const old =
@@ -265,18 +282,20 @@ export class NativeSlackHookStore {
         ? { id: before.secretRecordId, ciphertext: before.ciphertext }
         : undefined;
     return persistPreparedSecret(this.prisma, this.secrets, old, () =>
-      this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw(
-          Prisma.sql`SELECT id FROM native_app_configs WHERE id=${input.configId} FOR UPDATE`,
-        );
-        const count = await tx.$executeRaw(
-          Prisma.sql`UPDATE native_slack_hooks SET enabled=false,"disabledAt"=${this.clock()},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"deliveryRevision"="deliveryRevision"+1,"updatedAt"=${this.clock()} WHERE id=${input.id} AND "configId"=${input.configId} AND revision=${input.expectedRevision}`,
-        );
-        if (count !== 1) conflict();
-        const row = (await this.rows(input.id, tx))[0];
-        if (!row) conflict();
-        return this.dto(row);
-      }),
+      runAsSystem("disable the Slack webhook for its administrator", () =>
+        this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw(
+            Prisma.sql`SELECT id FROM native_app_configs WHERE id=${input.configId} FOR UPDATE`,
+          );
+          const count = await tx.$executeRaw(
+            Prisma.sql`UPDATE native_slack_hooks SET enabled=false,"disabledAt"=${this.clock()},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"deliveryRevision"="deliveryRevision"+1,"updatedAt"=${this.clock()} WHERE id=${input.id} AND "configId"=${input.configId} AND revision=${input.expectedRevision}`,
+          );
+          if (count !== 1) conflict();
+          const row = (await this.rows(input.id, tx))[0];
+          if (!row) conflict();
+          return this.dto(row);
+        }),
+      ),
     );
   }
   async accept(

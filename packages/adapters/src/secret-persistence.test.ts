@@ -1,14 +1,18 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { withTransactionRetry } from "@rakazo/db";
+import { currentDbContext, withTransactionRetry } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
 import { McpConnector } from "./mcp-connector.js";
 import { McpOAuthBroker } from "./mcp-oauth.js";
 import { McpSession } from "./mcp-transport.js";
 import { createRunSecretWriter } from "./run-secret.js";
-import { persistPreparedSecret, withSecretPersistence } from "./secret-persistence.js";
+import {
+  deferPreparedSecretCleanup,
+  persistPreparedSecret,
+  withSecretPersistence,
+} from "./secret-persistence.js";
 import { ComposedSecretStore } from "./secret-store-factory.js";
 import { infisicalFake } from "./secret-store-fake.js";
 import { EncryptedSecretStore } from "./secrets.js";
@@ -225,6 +229,62 @@ function database() {
 }
 
 describe("secret persistence cleanup", () => {
+  it("defers held-transaction reference cleanup and preserves a global reference using the base client", async () => {
+    const f = database();
+    const store = new EncryptedSecretStore("offline-deferred-global-ref");
+    const written = await store.put("synthetic-shared-material", context, {
+      recordId: "synthetic-global-ref",
+    });
+    f.tables
+      .get("nativeAppConfig")!
+      .push({ id: "global-config", ciphertext: written.ciphertext, secretRecordId: written.id });
+    const deleted = vi.spyOn(store, "delete");
+    const baseCount = vi.spyOn(f.prisma.nativeAppConfig, "count");
+    const scopedCount = vi.fn(async () => {
+      throw new Error("Held client must not perform completion cleanup");
+    });
+    const scoped = { ...f.prisma, secret: { count: scopedCount } } as unknown as PrismaClient;
+    await deferPreparedSecretCleanup(f.prisma, async () => {
+      await persistPreparedSecret(scoped, store, written, async () => "saved");
+      expect(scopedCount).not.toHaveBeenCalled();
+      expect(baseCount).not.toHaveBeenCalled();
+      expect(deleted).not.toHaveBeenCalled();
+    });
+    expect(baseCount).toHaveBeenCalledOnce();
+    expect(scopedCount).not.toHaveBeenCalled();
+    expect(deleted).not.toHaveBeenCalled();
+  });
+
+  it("cleans a rolled-back prepared ref only after the physical transaction settles and preserves its error", async () => {
+    const f = database();
+    const store = new EncryptedSecretStore("offline-deferred-rollback-ref");
+    const written = await store.put("synthetic-orphan-material", context, {
+      recordId: "synthetic-orphan-ref",
+    });
+    let settled = false;
+    const observations: Array<{ settled: boolean; kind: string | undefined }> = [];
+    const originalDelete = store.delete.bind(store);
+    const deleted = vi.spyOn(store, "delete").mockImplementation(async (...args) => {
+      observations.push({ settled, kind: currentDbContext()?.kind });
+      return originalDelete(...args);
+    });
+    const failure = new Error("Synthetic outer transaction rollback");
+    await expect(
+      deferPreparedSecretCleanup(f.prisma, async () => {
+        try {
+          await persistPreparedSecret(f.prisma, store, written, async () => {
+            throw failure;
+          });
+        } finally {
+          expect(deleted).not.toHaveBeenCalled();
+          settled = true;
+        }
+      }),
+    ).rejects.toBe(failure);
+    expect(deleted).toHaveBeenCalledOnce();
+    expect(observations).toEqual([{ settled: true, kind: "system" }]);
+  });
+
   it.each(["update", "upsert", "delete"] as const)(
     "captures a compound unique selector and its complete predicate before %s",
     async (operation) => {

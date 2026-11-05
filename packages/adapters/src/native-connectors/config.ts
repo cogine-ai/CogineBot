@@ -13,7 +13,7 @@ import {
   remainingNativeProfile,
 } from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import { z } from "zod";
 import { assertNoSensitiveQuery } from "../connector-http.js";
 import { actorMayUsePrivateEndpoint } from "../private-endpoint.js";
@@ -53,6 +53,8 @@ export const NativeConfigSettingsSchema = z.object({
   googleWatch: NativeGoogleWatchConfigSchema.optional(),
 });
 export type NativeConfigSettings = z.infer<typeof NativeConfigSettingsSchema>;
+
+export type NativeSystemStep = <T>(reason: string, work: () => Promise<T>) => Promise<T>;
 
 const NOTION_CAPABILITIES = new Set([
   "read_content",
@@ -254,9 +256,11 @@ export class NativeConfigStore {
   }
 
   async statuses(spaceId?: string): Promise<NativeConfigStatus[]> {
-    const rows = await this.prisma.nativeAppConfig.findMany({
-      orderBy: [{ appId: "asc" }, { id: "asc" }],
-    });
+    const rows = await runAsSystem("list native application configuration", () =>
+      this.prisma.nativeAppConfig.findMany({
+        orderBy: [{ appId: "asc" }, { id: "asc" }],
+      }),
+    );
     return Promise.all(
       rows.filter((row) => nativeConfigVisibleInSpace(row, spaceId)).map((row) => this.status(row)),
     );
@@ -269,9 +273,13 @@ export class NativeConfigStore {
   ): Promise<NativeConfigEditable> {
     if (!isDeploymentOwner)
       throw new Error("Only the deployment administrator can read application configuration");
-    const row = await this.prisma.nativeAppConfig.findUniqueOrThrow({
-      where: { id },
-    });
+    const row = await runAsSystem(
+      "read native application configuration for its administrator",
+      () =>
+        this.prisma.nativeAppConfig.findUniqueOrThrow({
+          where: { id },
+        }),
+    );
     if (!nativeConfigVisibleInSpace(row, spaceId))
       throw new Error("Application configuration is unavailable in this space");
     const secret =
@@ -308,11 +316,21 @@ export class NativeConfigStore {
     });
   }
 
+  async require(id: string): Promise<NativeAppConfig>;
   async require(
     id: string,
-    database: Pick<PrismaClient, "nativeAppConfig"> = this.prisma,
+    database: Pick<PrismaClient, "nativeAppConfig">,
+    systemStep: NativeSystemStep,
+  ): Promise<NativeAppConfig>;
+  async require(
+    id: string,
+    ...access: [] | [Pick<PrismaClient, "nativeAppConfig">, NativeSystemStep]
   ): Promise<NativeAppConfig> {
-    const row = await database.nativeAppConfig.findUnique({ where: { id } });
+    const database = access.length === 0 ? this.prisma : access[0];
+    const systemStep: NativeSystemStep = access.length === 0 ? runAsSystem : access[1];
+    const row = await systemStep("read a configured native application", () =>
+      database.nativeAppConfig.findUnique({ where: { id } }),
+    );
     if (!row?.enabled || !(await this.status(row)).configured)
       throw new Error("This connection source is not configured");
     if (row.callbackUri !== this.callbackUri)
@@ -439,17 +457,18 @@ export class NativeConfigStore {
     if (config.endpoint) {
       assertNoSensitiveQuery(config.endpoint);
       await assertSafeRemoteUrl(config.endpoint, this.network.resolveHostname, {
-        allowPrivateEndpoint: await actorMayUsePrivateEndpoint(
-          this.prisma,
-          context.userId,
-          this.allowPrivateEndpoint,
+        allowPrivateEndpoint: await runAsSystem(
+          "check native application endpoint access for its administrator",
+          () => actorMayUsePrivateEndpoint(this.prisma, context.userId, this.allowPrivateEndpoint),
         ),
       });
     }
     const previous = input.id
-      ? await this.prisma.nativeAppConfig.findUnique({
-          where: { id: input.id },
-        })
+      ? await runAsSystem("read native application configuration before saving", () =>
+          this.prisma.nativeAppConfig.findUnique({
+            where: { id: input.id },
+          }),
+        )
       : null;
     if (input.id && (!previous || previous.revision !== input.expectedRevision))
       throw new Error("Application configuration changed; refresh before saving");
@@ -511,72 +530,78 @@ export class NativeConfigStore {
       previous.callbackUri !== this.callbackUri ||
       JSON.stringify(NativeConfigSettingsSchema.parse(previous.config)) !== JSON.stringify(config);
     return persistPreparedSecret(this.prisma, this.secrets, material, async () => {
-      const row = await this.prisma.$transaction(async (tx) => {
-        if (config.googleWatch && input.enabled) {
-          const configuredWatch = config.googleWatch;
-          // Configuration is deployment-owned. Serialize one project's fixed mailbox topic across admin writers.
-          await tx.$executeRaw(
-            Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-gmail-watch-project'),hashtext(${configuredWatch.projectId}))`,
-          );
-          const peers = await tx.nativeAppConfig.findMany({
-            where: {
-              appId: "gmail",
-              enabled: true,
-              ...(input.id ? { id: { not: input.id } } : {}),
-            },
-            select: { config: true },
-          });
-          for (const peer of peers) {
-            const watch = NativeConfigSettingsSchema.parse(peer.config).googleWatch;
-            if (
-              watch?.projectId === configuredWatch.projectId &&
-              watch.topicName !== configuredWatch.topicName
-            )
-              throw new Error(
-                "Gmail configurations in this instance must share one fixed topic per Google project.",
+      const row = await runAsSystem(
+        "save native application configuration for its administrator",
+        () =>
+          this.prisma.$transaction(async (tx) => {
+            if (config.googleWatch && input.enabled) {
+              const configuredWatch = config.googleWatch;
+              // Configuration is deployment-owned. Serialize one project's fixed mailbox topic across admin writers.
+              await tx.$executeRaw(
+                Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-gmail-watch-project'),hashtext(${configuredWatch.projectId}))`,
               );
-            if (
-              watch?.subscriptionName === configuredWatch.subscriptionName &&
-              (watch.callbackAudience !== configuredWatch.callbackAudience ||
-                watch.pushServiceAccountEmail !== configuredWatch.pushServiceAccountEmail)
-            )
-              throw new Error(
-                "A Gmail push subscription requires one exact callback audience and service account.",
-              );
-          }
-        }
-        const data = {
-          appId: input.appId,
-          label: input.label,
-          ownership: input.ownership,
-          credentialKind: input.credentialKind,
-          enabled: input.enabled,
-          config,
-          callbackUri: this.callbackUri,
-          ciphertext: material?.ciphertext ?? previous?.ciphertext ?? null,
-          secretRecordId: material?.id ?? previous?.secretRecordId ?? null,
-        };
-        if (!previous) return tx.nativeAppConfig.create({ data });
-        const changed = await tx.nativeAppConfig.updateMany({
-          where: { id: previous.id, revision: input.expectedRevision },
-          data: {
-            appId: data.appId,
-            label: data.label,
-            ownership: data.ownership,
-            credentialKind: data.credentialKind,
-            enabled: data.enabled,
-            config: data.config,
-            callbackUri: data.callbackUri,
-            ...(material ? { ciphertext: material.ciphertext, secretRecordId: material.id } : {}),
-            ...(advancesAuthorization ? { revision: { increment: 1 } } : {}),
-          },
-        });
-        if (!changed.count)
-          throw new Error("Application configuration changed; refresh before saving");
-        return tx.nativeAppConfig.findUniqueOrThrow({
-          where: { id: previous.id },
-        });
-      });
+              const peers = await tx.nativeAppConfig.findMany({
+                where: {
+                  appId: "gmail",
+                  enabled: true,
+                  ...(input.id ? { id: { not: input.id } } : {}),
+                },
+                select: { config: true },
+              });
+              for (const peer of peers) {
+                const watch = NativeConfigSettingsSchema.parse(peer.config).googleWatch;
+                if (
+                  watch?.projectId === configuredWatch.projectId &&
+                  watch.topicName !== configuredWatch.topicName
+                )
+                  throw new Error(
+                    "Gmail configurations in this instance must share one fixed topic per Google project.",
+                  );
+                if (
+                  watch?.subscriptionName === configuredWatch.subscriptionName &&
+                  (watch.callbackAudience !== configuredWatch.callbackAudience ||
+                    watch.pushServiceAccountEmail !== configuredWatch.pushServiceAccountEmail)
+                )
+                  throw new Error(
+                    "A Gmail push subscription requires one exact callback audience and service account.",
+                  );
+              }
+            }
+            const data = {
+              appId: input.appId,
+              label: input.label,
+              ownership: input.ownership,
+              credentialKind: input.credentialKind,
+              enabled: input.enabled,
+              config,
+              callbackUri: this.callbackUri,
+              ciphertext: material?.ciphertext ?? previous?.ciphertext ?? null,
+              secretRecordId: material?.id ?? previous?.secretRecordId ?? null,
+            };
+            if (!previous) return tx.nativeAppConfig.create({ data });
+            const changed = await tx.nativeAppConfig.updateMany({
+              where: { id: previous.id, revision: input.expectedRevision },
+              data: {
+                appId: data.appId,
+                label: data.label,
+                ownership: data.ownership,
+                credentialKind: data.credentialKind,
+                enabled: data.enabled,
+                config: data.config,
+                callbackUri: data.callbackUri,
+                ...(material
+                  ? { ciphertext: material.ciphertext, secretRecordId: material.id }
+                  : {}),
+                ...(advancesAuthorization ? { revision: { increment: 1 } } : {}),
+              },
+            });
+            if (!changed.count)
+              throw new Error("Application configuration changed; refresh before saving");
+            return tx.nativeAppConfig.findUniqueOrThrow({
+              where: { id: previous.id },
+            });
+          }),
+      );
       return this.status(row);
     });
   }

@@ -1,6 +1,7 @@
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import { NativeConfigInputSchema, NativeConfigStatusSchema } from "@rakazo/contracts";
 import type { NativeAppConfig, PrismaClient } from "@rakazo/db";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { EncryptedSecretStore } from "../secrets.js";
 import {
@@ -28,24 +29,30 @@ const configInput = () =>
     scopes: ["openid", "https://www.googleapis.com/auth/calendar.events"],
   });
 
-function database() {
+function database(protectConfigs = false) {
   let row: NativeAppConfig | null = null;
+  const visible = () => !protectConfigs || currentDbContext()?.kind === "system";
+  const assertWritable = () => {
+    if (!visible()) throw new Error("Application metadata write denied");
+  };
   const stored = new Map<string, { id: string; ciphertext: string }>();
   const nativeAppConfig = {
-    findUnique: vi.fn(async () => row),
+    findUnique: vi.fn(async () => (visible() ? row : null)),
     findUniqueOrThrow: vi.fn(async () => {
-      if (!row) throw new Error("missing");
+      if (!visible() || !row) throw new Error("missing");
       return row;
     }),
-    findMany: vi.fn(async () => (row ? [row] : [])),
-    count: vi.fn(async ({ where }) => Number(row?.ciphertext === where.ciphertext)),
+    findMany: vi.fn(async () => (visible() && row ? [row] : [])),
+    count: vi.fn(async ({ where }) => Number(visible() && row?.ciphertext === where.ciphertext)),
     create: vi.fn(async ({ data }) => {
+      assertWritable();
       row = { id: "config-1", revision: 1, createdAt: new Date(), updatedAt: new Date(), ...data };
       if (row?.ciphertext && row.secretRecordId)
         stored.set(row.secretRecordId, { id: row.secretRecordId, ciphertext: row.ciphertext });
       return row;
     }),
     updateMany: vi.fn(async ({ where, data }) => {
+      assertWritable();
       if (!row || row.id !== where.id || row.revision !== where.revision) return { count: 0 };
       const next: NativeAppConfig = {
         ...row,
@@ -79,6 +86,57 @@ function database() {
 }
 
 describe("native application configuration boundary", () => {
+  it("loads configured application metadata for a tenant without retaining system authority", async () => {
+    const { db } = database(true);
+    const service = new NativeConfigStore(
+      db,
+      new EncryptedSecretStore("offline-config-require"),
+      "https://api.example.test",
+    );
+    await runAsTenant(context, async () => {
+      const configured = await service.save(
+        { ...configInput(), clientSecret: "synthetic-require-secret" },
+        context,
+        true,
+      );
+      expect((await service.require(configured.id)).id).toBe(configured.id);
+      expect(currentDbContext()).toEqual({
+        kind: "tenant",
+        userId: context.userId,
+        spaceId: context.spaceId,
+      });
+    });
+  });
+
+  it("configures deployment metadata from a tenant without granting members administrator access", async () => {
+    const { db } = database(true);
+    const service = new NativeConfigStore(
+      db,
+      new EncryptedSecretStore("offline-config-context"),
+      "https://api.example.test",
+    );
+    const input = { ...configInput(), clientSecret: "synthetic-config-secret" };
+    await runAsTenant(context, async () => {
+      await expect(service.save(input, context, false)).rejects.toThrow(
+        "Only the deployment administrator",
+      );
+      const saved = await service.save(input, context, true);
+      expect(saved.configured).toBe(true);
+      expect(await service.statuses(context.spaceId)).toEqual([saved]);
+      const editable = await service.configuration(saved.id, true, context.spaceId);
+      expect(editable.hasClientSecret).toBe(true);
+      expect(JSON.stringify(editable)).not.toContain(input.clientSecret);
+      await expect(service.configuration(saved.id, false, context.spaceId)).rejects.toThrow(
+        "Only the deployment administrator",
+      );
+      expect(currentDbContext()).toEqual({
+        kind: "tenant",
+        spaceId: context.spaceId,
+        userId: context.userId,
+      });
+    });
+  });
+
   it.each([
     ["https://knowai.example.test", "https://knowai.example.test"],
     ["https://knowai.example.test/api/v1", "https://knowai.example.test"],

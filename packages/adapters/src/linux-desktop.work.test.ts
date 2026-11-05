@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -346,15 +347,31 @@ describe("LinuxDesktop finite work allocation", () => {
   it("holds the lifecycle lock only for actual input and releases the registry lock", async () => {
     const f = fixture();
     await f.idle();
+    let held!: () => void;
+    let failed!: (error: Error) => void;
+    const holding = new Promise<void>((resolve, reject) => {
+      held = resolve;
+      failed = reject;
+    });
+    const watcher = watch(f.root, () => {
+      if (existsSync(f.held)) held();
+    });
+    watcher.on("error", failed);
     const work = f.desktop.sendInput(computer, { kind: "clipboard", text: "held-input" }, context);
     try {
-      await vi.waitFor(() => expect(existsSync(f.held)).toBe(true));
+      await Promise.race([
+        holding,
+        work.then(() => {
+          throw new Error("Input finished without holding the lifecycle lock");
+        }),
+      ]);
       const lifecycle = f.slot().replace(/\.slot$/, ".lifecycle-lock");
       expect(f.lockFree(lifecycle)).toBe(false);
       expect(f.lockFree(path.join(f.runtime, "desktop-assignments", ".lock"))).toBe(true);
       await expect(f.watch(f.peer)).rejects.toBeInstanceOf(ComputerScreenUnavailableError);
       expect(f.state()[4]).toBe("idle");
     } finally {
+      watcher.close();
       writeFileSync(f.gate, "continue");
       await work;
     }

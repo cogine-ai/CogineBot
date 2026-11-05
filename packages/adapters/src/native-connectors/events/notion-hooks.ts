@@ -13,7 +13,7 @@ import {
   RevealNativeNotionHookTokenInputSchema,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import { z } from "zod";
 import { persistPreparedSecret } from "../../secret-persistence.js";
 import { NativeActionError } from "../action.js";
@@ -177,17 +177,23 @@ export class NativeNotionHookStore {
   ): Promise<NativeNotionHookStatus> {
     requireOwner(mayConfigure);
     const input = NativeNotionHookStatusInputSchema.parse(raw);
-    const config = await this.prisma.nativeAppConfig.findFirst({
-      where: { id: input.configId, appId: "notion", credentialKind: "oauth" },
-      select: { id: true },
-    });
+    const config = await runAsSystem(
+      "read Notion webhook configuration for its administrator",
+      () =>
+        this.prisma.nativeAppConfig.findFirst({
+          where: { id: input.configId, appId: "notion", credentialKind: "oauth" },
+          select: { id: true },
+        }),
+    );
     if (!config)
       throw new NativeActionError(
         "not_configured",
         "Select a public Notion OAuth application configuration.",
       );
-    const rows = await this.prisma.$queryRaw<HookRow[]>(
-      Prisma.sql`${hookJoinSql()} WHERE h."configId"=${input.configId} ORDER BY h."createdAt",h.id`,
+    const rows = await runAsSystem("list Notion webhooks for their administrator", () =>
+      this.prisma.$queryRaw<HookRow[]>(
+        Prisma.sql`${hookJoinSql()} WHERE h."configId"=${input.configId} ORDER BY h."createdAt",h.id`,
+      ),
     );
     return {
       configId: input.configId,
@@ -205,51 +211,53 @@ export class NativeNotionHookStore {
     const input = BeginNativeNotionHookSetupInputSchema.parse(raw);
     if (!nativeEventWebhookOrigin(this.apiUrl))
       throw new NativeActionError("not_configured", "A public HTTPS API origin is required.");
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockConfig(tx, input.configId);
-      const app = await tx.nativeAppConfig.findUnique({ where: { id: input.configId } });
-      const probe: HookRow = {
-        id: "probe",
-        configId: input.configId,
-        configRevision: app?.revision ?? 0,
-        revision: 1,
-        integrationId: null,
-        candidateIntegrationId: null,
-        subscriptionId: null,
-        secretRecordId: null,
-        ciphertext: null,
-        enabled: false,
-        disabledAt: null,
-        setupOwnerUserId: context.userId,
-        setupSpaceId: context.spaceId,
-        setupExpiresAt: now,
-        ownerConfirmedAt: null,
-        lastVerifiedAt: null,
-        currentConfigRevision: app?.revision,
-        configEnabled: app?.enabled,
-        credentialKind: app?.credentialKind,
-        appId: app?.appId,
-        config: app?.config,
-        applicationSecret: app?.ciphertext,
-        applicationSecretRecordId: app?.secretRecordId,
-      };
-      if (!configured(probe))
-        throw new NativeActionError(
-          "not_configured",
-          "Configure public Notion OAuth with read content access first.",
+    return runAsSystem("begin Notion webhook setup for its administrator", () =>
+      this.prisma.$transaction(async (tx) => {
+        await this.lockConfig(tx, input.configId);
+        const app = await tx.nativeAppConfig.findUnique({ where: { id: input.configId } });
+        const probe: HookRow = {
+          id: "probe",
+          configId: input.configId,
+          configRevision: app?.revision ?? 0,
+          revision: 1,
+          integrationId: null,
+          candidateIntegrationId: null,
+          subscriptionId: null,
+          secretRecordId: null,
+          ciphertext: null,
+          enabled: false,
+          disabledAt: null,
+          setupOwnerUserId: context.userId,
+          setupSpaceId: context.spaceId,
+          setupExpiresAt: now,
+          ownerConfirmedAt: null,
+          lastVerifiedAt: null,
+          currentConfigRevision: app?.revision,
+          configEnabled: app?.enabled,
+          credentialKind: app?.credentialKind,
+          appId: app?.appId,
+          config: app?.config,
+          applicationSecret: app?.ciphertext,
+          applicationSecretRecordId: app?.secretRecordId,
+        };
+        if (!configured(probe))
+          throw new NativeActionError(
+            "not_configured",
+            "Configure public Notion OAuth with read content access first.",
+          );
+        const pending = await tx.$queryRaw<HookRow[]>(
+          Prisma.sql`${hookJoinSql()} WHERE h."configId"=${input.configId} AND h."configRevision"=${probe.configRevision} AND h."setupOwnerUserId"=${context.userId} AND h.enabled=false AND h."disabledAt" IS NULL AND h."ownerConfirmedAt" IS NULL AND h."setupExpiresAt">${now} ORDER BY h."createdAt" LIMIT 1 FOR UPDATE OF h`,
         );
-      const pending = await tx.$queryRaw<HookRow[]>(
-        Prisma.sql`${hookJoinSql()} WHERE h."configId"=${input.configId} AND h."configRevision"=${probe.configRevision} AND h."setupOwnerUserId"=${context.userId} AND h.enabled=false AND h."disabledAt" IS NULL AND h."ownerConfirmedAt" IS NULL AND h."setupExpiresAt">${now} ORDER BY h."createdAt" LIMIT 1 FOR UPDATE OF h`,
-      );
-      if (pending[0]) return this.dto(pending[0], now);
-      const id = randomBytes(32).toString("base64url");
-      await tx.$executeRaw(
-        Prisma.sql`INSERT INTO native_notion_hooks(id,"configId","configRevision","setupOwnerUserId","setupSpaceId","setupExpiresAt") VALUES(${id},${input.configId},${probe.configRevision},${context.userId},${context.spaceId},${new Date(now.getTime() + SETUP_MS)})`,
-      );
-      const row = await this.current(tx, id, input.configId);
-      if (!row) conflict();
-      return this.dto(row, now);
-    });
+        if (pending[0]) return this.dto(pending[0], now);
+        const id = randomBytes(32).toString("base64url");
+        await tx.$executeRaw(
+          Prisma.sql`INSERT INTO native_notion_hooks(id,"configId","configRevision","setupOwnerUserId","setupSpaceId","setupExpiresAt") VALUES(${id},${input.configId},${probe.configRevision},${context.userId},${context.spaceId},${new Date(now.getTime() + SETUP_MS)})`,
+        );
+        const row = await this.current(tx, id, input.configId);
+        if (!row) conflict();
+        return this.dto(row, now);
+      }),
+    );
   }
   /** Anonymous input may fill one untrusted pending slot, never enable a source or replace a secret. */
   async captureChallenge(id: string, raw: Uint8Array, now = new Date()): Promise<boolean> {
@@ -294,7 +302,11 @@ export class NativeNotionHookStore {
   ): Promise<RevealedNativeNotionHookToken> {
     requireOwner(mayConfigure);
     const input = RevealNativeNotionHookTokenInputSchema.parse(raw),
-      row = (await this.rows(input.id))[0];
+      row = (
+        await runAsSystem("read Notion webhook metadata for its administrator", () =>
+          this.rows(input.id),
+        )
+      )[0];
     if (!row || row.configId !== input.configId || row.revision !== input.expectedRevision)
       conflict();
     if (
@@ -315,7 +327,11 @@ export class NativeNotionHookStore {
         "not_configured",
         "The pending verification token is unavailable.",
       );
-    const current = (await this.rows(input.id))[0],
+    const current = (
+        await runAsSystem("read Notion webhook metadata for its administrator", () =>
+          this.rows(input.id),
+        )
+      )[0],
       respondAt = this.clock();
     if (
       !current ||
@@ -340,40 +356,42 @@ export class NativeNotionHookStore {
   ): Promise<NativeNotionHook> {
     requireOwner(mayConfigure);
     const input = ConfirmNativeNotionHookSetupInputSchema.parse(raw);
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockConfig(tx, input.configId);
-      const row = await this.current(tx, input.id, input.configId);
-      if (!row || row.revision !== input.expectedRevision) conflict();
-      if (
-        !setupPending(row, this.clock()) ||
-        row.setupOwnerUserId !== context.userId ||
-        !row.secretRecordId
-      )
-        throw new NativeActionError(
-          "authorization_required",
-          "Complete this setup in Notion within its window first.",
+    return runAsSystem("confirm Notion webhook setup for its administrator", () =>
+      this.prisma.$transaction(async (tx) => {
+        await this.lockConfig(tx, input.configId);
+        const row = await this.current(tx, input.id, input.configId);
+        if (!row || row.revision !== input.expectedRevision) conflict();
+        if (
+          !setupPending(row, this.clock()) ||
+          row.setupOwnerUserId !== context.userId ||
+          !row.secretRecordId
+        )
+          throw new NativeActionError(
+            "authorization_required",
+            "Complete this setup in Notion within its window first.",
+          );
+        const integrationId = input.integrationId.toLowerCase();
+        if (row.candidateIntegrationId && row.candidateIntegrationId !== integrationId)
+          throw new NativeActionError(
+            "invalid_input",
+            "Check the exact signed integration identity before confirming.",
+          );
+        const active = await tx.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`SELECT id FROM native_notion_hooks WHERE "configId"=${input.configId} AND enabled=true AND id<>${input.id}`,
         );
-      const integrationId = input.integrationId.toLowerCase();
-      if (row.candidateIntegrationId && row.candidateIntegrationId !== integrationId)
-        throw new NativeActionError(
-          "invalid_input",
-          "Check the exact signed integration identity before confirming.",
+        if (active.length)
+          throw new NativeActionError(
+            "version_conflict",
+            "Stop the current webhook explicitly before confirming its replacement.",
+          );
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE native_notion_hooks SET "integrationId"=${integrationId},enabled=true,"ownerConfirmedAt"=${now},revision=revision+1,"updatedAt"=${now} WHERE id=${row.id} AND revision=${row.revision}`,
         );
-      const active = await tx.$queryRaw<Array<{ id: string }>>(
-        Prisma.sql`SELECT id FROM native_notion_hooks WHERE "configId"=${input.configId} AND enabled=true AND id<>${input.id}`,
-      );
-      if (active.length)
-        throw new NativeActionError(
-          "version_conflict",
-          "Stop the current webhook explicitly before confirming its replacement.",
-        );
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE native_notion_hooks SET "integrationId"=${integrationId},enabled=true,"ownerConfirmedAt"=${now},revision=revision+1,"updatedAt"=${now} WHERE id=${row.id} AND revision=${row.revision}`,
-      );
-      const saved = await this.current(tx, row.id, row.configId);
-      if (!saved) conflict();
-      return this.dto(saved, now);
-    });
+        const saved = await this.current(tx, row.id, row.configId);
+        if (!saved) conflict();
+        return this.dto(saved, now);
+      }),
+    );
   }
   async disable(
     raw: unknown,
@@ -383,7 +401,11 @@ export class NativeNotionHookStore {
   ): Promise<NativeNotionHook> {
     requireOwner(mayConfigure);
     const input = DisableNativeNotionHookInputSchema.parse(raw),
-      before = (await this.rows(input.id))[0];
+      before = (
+        await runAsSystem("read Notion webhook metadata for its administrator", () =>
+          this.rows(input.id),
+        )
+      )[0];
     if (!before || before.configId !== input.configId || before.revision !== input.expectedRevision)
       conflict();
     const material =
@@ -391,17 +413,19 @@ export class NativeNotionHookStore {
         ? { id: before.secretRecordId, ciphertext: before.ciphertext }
         : undefined;
     return persistPreparedSecret(this.prisma, this.secrets, material, () =>
-      this.prisma.$transaction(async (tx) => {
-        await this.lockConfig(tx, input.configId);
-        const row = await this.current(tx, input.id, input.configId);
-        if (!row || row.revision !== input.expectedRevision) conflict();
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE native_notion_hooks SET enabled=false,"disabledAt"=${now},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"updatedAt"=${now} WHERE id=${row.id} AND revision=${row.revision}`,
-        );
-        const saved = await this.current(tx, row.id, row.configId);
-        if (!saved) conflict();
-        return this.dto(saved, now);
-      }),
+      runAsSystem("disable the Notion webhook for its administrator", () =>
+        this.prisma.$transaction(async (tx) => {
+          await this.lockConfig(tx, input.configId);
+          const row = await this.current(tx, input.id, input.configId);
+          if (!row || row.revision !== input.expectedRevision) conflict();
+          await tx.$executeRaw(
+            Prisma.sql`UPDATE native_notion_hooks SET enabled=false,"disabledAt"=${now},"secretRecordId"=NULL,ciphertext=NULL,revision=revision+1,"updatedAt"=${now} WHERE id=${row.id} AND revision=${row.revision}`,
+          );
+          const saved = await this.current(tx, row.id, row.configId);
+          if (!saved) conflict();
+          return this.dto(saved, now);
+        }),
+      ),
     );
   }
   async acceptSigned(

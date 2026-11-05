@@ -29,12 +29,14 @@ export {
   type DbContext,
   drainUnscopedDatabaseAccess,
   installDbContext,
+  isInteractiveTransaction,
   ROW_SECURITY_MODELS,
   rlsBypassKey,
   runAsSystem,
   runAsSystemInTransaction,
   runAsTenant,
   withRowLevelSecurity,
+  withTransactionContext,
 } from "./row-security.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";

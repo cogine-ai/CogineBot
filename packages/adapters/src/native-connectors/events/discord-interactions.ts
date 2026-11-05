@@ -6,7 +6,8 @@ import {
   NativeRoutineEventSpecSchema,
   nativeEventResource,
 } from "@rakazo/contracts";
-import { Prisma, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import type { RemoteTransportDependencies } from "../../remote-mcp.js";
 import { NativeActionError } from "../action.js";
 import { verifyDiscordInteraction } from "../bot-platforms/interactions.js";
@@ -173,8 +174,10 @@ export async function processDiscordRoutine(
     payload.triggerVersion,
   );
   if (!row?.leaseId) {
-    const busy = await prisma.$queryRaw<Array<{ id: string }>>(
-      Prisma.sql`/*native-event:discord-busy*/ SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId} AND r.active=true AND t."configId"=${payload.configId} AND t."configRevision"=${payload.configRevision} AND t."grantId"=${payload.grantId} AND t."authGeneration"=${payload.authGeneration} AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND t."leaseUntil">now()`,
+    const busy = await runAsSystem("read the current Discord native source lease", () =>
+      prisma.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`/*native-event:discord-busy*/ SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId} AND r.active=true AND t."configId"=${payload.configId} AND t."configRevision"=${payload.configRevision} AND t."grantId"=${payload.grantId} AND t."authGeneration"=${payload.authGeneration} AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND t."leaseUntil">now()`,
+      ),
     );
     if (busy.length)
       throw new NativeActionError(

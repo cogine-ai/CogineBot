@@ -1,6 +1,7 @@
 import type { ComputerMode } from "@rakazo/contracts";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
+import { isInteractiveTransaction, runAsSystem, runAsSystemInTransaction } from "./row-security.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 export type { ComputerMode } from "@rakazo/contracts";
@@ -68,14 +69,21 @@ async function countInUseComputersForUser(
   userId: string,
   excludeBotId?: string,
 ): Promise<number> {
-  return prisma.computer.count({
-    where: {
-      userId,
-      bots: {
-        some: excludeBotId ? { archivedAt: null, id: { not: excludeBotId } } : { archivedAt: null },
+  const count = () =>
+    prisma.computer.count({
+      where: {
+        userId,
+        bots: {
+          some: excludeBotId
+            ? { archivedAt: null, id: { not: excludeBotId } }
+            : { archivedAt: null },
+        },
       },
-    },
-  });
+    });
+  const reason = "computer quota across the user's Spaces";
+  return isInteractiveTransaction(prisma)
+    ? runAsSystemInTransaction(prisma, reason, count)
+    : runAsSystem(reason, count);
 }
 
 /**
@@ -226,7 +234,7 @@ async function ensureComputerRecordWithQuota(
 }
 
 function isTransactionClient(prisma: ComputerClient): prisma is ComputerTx {
-  return typeof prisma.$queryRaw === "function" && typeof prisma.$transaction !== "function";
+  return isInteractiveTransaction(prisma);
 }
 
 export async function ensureComputerRecord(
