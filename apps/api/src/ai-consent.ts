@@ -18,6 +18,7 @@ import {
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   findModelCredential,
+  runAsSystem,
 } from "@rakazo/db";
 import type { RouterDeps } from "./router.js";
 import { resolveThreadTarget } from "./thread-target.js";
@@ -119,7 +120,11 @@ export async function aiConsentStatus(
     uses.includes("memory")
       ? deps.prisma.spaceMemoryConfig.findUnique({ where: { spaceId: actor.spaceId } })
       : null,
-    modelsEnabled ? deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }) : null,
+    modelsEnabled
+      ? runAsSystem("read deployment model settings for consent", () =>
+          deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+        )
+      : null,
     deps.prisma.aiDataConsent.findMany({
       where: { userId: actor.userId, spaceId: actor.spaceId, version: AI_DISCLOSURE_VERSION },
     }),
@@ -302,9 +307,9 @@ export async function allowAiConsent(
   ) {
     throw new ORPCError("CONFLICT", { message: "AI data sharing changed. Review it again." });
   }
-  await deps.prisma.$transaction(
-    input.keys.map((recipientKey) =>
-      deps.prisma.aiDataConsent.upsert({
+  await deps.prisma.$transaction(async (tx) => {
+    for (const recipientKey of input.keys)
+      await tx.aiDataConsent.upsert({
         where: {
           userId_spaceId_recipientKey: {
             userId: actor.userId,
@@ -319,9 +324,8 @@ export async function allowAiConsent(
           version: current.version,
         },
         update: { version: current.version, grantedAt: new Date() },
-      }),
-    ),
-  );
+      });
+  });
   return {
     ...current,
     recipients: current.recipients.map((recipient) =>

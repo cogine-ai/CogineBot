@@ -1,6 +1,7 @@
 import type {
   AgentHomeStore,
   AgentRuntime,
+  BackgroundJobExecution,
   BackgroundJobHandlers,
   JobPublisher,
   MessagingSurface,
@@ -10,6 +11,7 @@ import type {
 import { messagingDeliverJob } from "@rakazo/adapter-kit";
 import type { PlatformModelAllowlist } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { runAsSystem, runAsTenant } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { pollCloudAgent } from "./cloud-agent-poll.js";
@@ -21,7 +23,25 @@ import { compactHistory } from "./history-compaction.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { deliverMessagingOutbound, mirrorMessagingOutbound } from "./messaging-delivery.js";
 import type { NativeRoutineEventService } from "./native-connectors/events/service.js";
+import { nativeTriggerScope } from "./native-connectors/events/store.js";
 import { expireTaughtSkillTeaching } from "./teaching-session.js";
+
+type Tenant = { spaceId: string; userId: string };
+
+/** Resolve one durable owner before running the whole background operation in that scope. */
+function asOwner<Key, P extends Key>(
+  owner: (payload: Key) => Promise<Tenant | null | undefined>,
+  handler: (payload: P, execution?: BackgroundJobExecution) => Promise<void>,
+): (payload: P, execution?: BackgroundJobExecution) => Promise<void> {
+  return async (payload, execution) => {
+    const tenant = await runAsSystem("find the tenant a background job acts for", () =>
+      owner(payload),
+    );
+    if (tenant) await runAsTenant(tenant, () => handler(payload, execution));
+  };
+}
+
+const OWNER = { spaceId: true, userId: true } as const;
 
 export function createBackgroundJobHandlers(deps: {
   executor: ReturnType<typeof createRunExecutor>;
@@ -42,46 +62,74 @@ export function createBackgroundJobHandlers(deps: {
   nativeEvents?: Pick<NativeRoutineEventService, "poll" | "notionSignal"> &
     Partial<Pick<NativeRoutineEventService, "slackSignal" | "slackLifecycle" | "discordSignal">>;
 }): BackgroundJobHandlers {
-  const deliverMessaging = async (runId?: string) => {
-    if (!deps.messaging) return;
-    await deliverMessagingOutbound(
-      { prisma: deps.prisma, messaging: deps.messaging, events: deps.events, jobs: deps.jobs },
-      { runId },
-      {
-        operationId: `messaging.deliver:${runId ?? "drain"}`,
-        traceId: `messaging.deliver:${runId ?? "drain"}`,
-        spaceId: "",
-        userId: "",
-        signal: new AbortController().signal,
-      },
-    );
+  const run = ({ runId }: { runId: string }) =>
+    deps.prisma.run.findUnique({ where: { id: runId }, select: OWNER });
+  const routine = ({ routineId }: { routineId: string }) =>
+    deps.prisma.routine.findUnique({ where: { id: routineId }, select: OWNER });
+  const computer = ({ computerId }: { computerId: string }) =>
+    deps.prisma.computer.findUnique({ where: { id: computerId }, select: OWNER });
+  const thread = ({ threadId }: { threadId: string }) =>
+    deps.prisma.thread.findUnique({ where: { id: threadId }, select: OWNER });
+  const skill = ({ skillId }: { skillId: string }) =>
+    deps.prisma.taughtSkill.findUnique({ where: { id: skillId }, select: OWNER });
+  const cloudAgent = ({ agentId }: { agentId: string }) =>
+    deps.prisma.cloudAgent.findUnique({ where: { id: agentId }, select: OWNER });
+  const updatedComputer = async ({ updateId }: { updateId: string }) =>
+    (
+      await deps.prisma.computerUpdate.findUnique({
+        where: { id: updateId },
+        select: { computer: { select: OWNER } },
+      })
+    )?.computer ?? null;
+  const native = ({ triggerId }: { triggerId: string }) =>
+    nativeTriggerScope(deps.prisma, triggerId);
+  const discord = async (payload: { triggerId: string; userId: string; spaceId: string }) => {
+    const owner = await native(payload);
+    return owner?.userId === payload.userId && owner.spaceId === payload.spaceId ? owner : null;
   };
+  const deliverMessaging = async (runId?: string) =>
+    runAsSystem("drain the messaging outbox across Spaces", async () => {
+      if (!deps.messaging) return;
+      await deliverMessagingOutbound(
+        { prisma: deps.prisma, messaging: deps.messaging, events: deps.events, jobs: deps.jobs },
+        { runId },
+        {
+          operationId: `messaging.deliver:${runId ?? "drain"}`,
+          traceId: `messaging.deliver:${runId ?? "drain"}`,
+          spaceId: "",
+          userId: "",
+          signal: new AbortController().signal,
+        },
+      );
+    });
 
   return {
-    "native.source.poll": async (payload) => {
+    "native.source.poll": asOwner(native, async (payload) => {
       if (!deps.nativeEvents) throw new Error("Native event processing is unavailable");
       await deps.nativeEvents.poll(payload, new AbortController().signal);
-    },
+    }),
     "native.slack.lifecycle": async (payload) => {
       if (!deps.nativeEvents?.slackLifecycle)
         throw new Error("Native Slack event processing is unavailable");
-      await deps.nativeEvents.slackLifecycle(payload);
+      await runAsSystem("apply a verified Slack lifecycle receipt", () =>
+        deps.nativeEvents!.slackLifecycle!(payload),
+      );
     },
-    "native.discord.signal": async (payload) => {
+    "native.discord.signal": asOwner(discord, async (payload) => {
       if (!deps.nativeEvents?.discordSignal)
         throw new Error("Native Discord event processing is unavailable");
       await deps.nativeEvents.discordSignal(payload, new AbortController().signal);
-    },
-    "native.slack.signal": async (payload) => {
+    }),
+    "native.slack.signal": asOwner(native, async (payload) => {
       if (!deps.nativeEvents?.slackSignal)
         throw new Error("Native Slack event processing is unavailable");
       await deps.nativeEvents.slackSignal(payload, new AbortController().signal);
-    },
-    "native.notion.signal": async (payload) => {
+    }),
+    "native.notion.signal": asOwner(native, async (payload) => {
       if (!deps.nativeEvents) throw new Error("Native event processing is unavailable");
       await deps.nativeEvents.notionSignal(payload, new AbortController().signal);
-    },
-    "run.continue": async (payload, execution) => {
+    }),
+    "run.continue": asOwner(run, async (payload, execution) => {
       if (execution)
         await deps.executor.continueRun(payload.runId, deps.workerId, execution.onRunStarted);
       else await deps.executor.continueRun(payload.runId, deps.workerId);
@@ -97,28 +145,28 @@ export function createBackgroundJobHandlers(deps: {
           await deliverMessaging();
         });
       }
-    },
+    }),
     "messaging.deliver": async (payload) => {
       await deliverMessaging(payload.runId);
     },
-    "routine.wakeup": async (payload) => {
+    "routine.wakeup": asOwner(routine, async (payload) => {
       await deps.executor.wakeRoutine(payload.routineId, payload.scheduledFor);
-    },
-    "computer.update": async ({ updateId }) => {
+    }),
+    "computer.update": asOwner(updatedComputer, async ({ updateId }) => {
       await performComputerUpdate(deps, updateId);
-    },
-    "computer.sleep": async (payload) => {
+    }),
+    "computer.sleep": asOwner(computer, async (payload) => {
       await sleepComputerIfIdle(deps, payload.computerId);
-    },
-    "computer.control-expire": async (payload) => {
+    }),
+    "computer.control-expire": asOwner(computer, async (payload) => {
       if (await expireComputerControl(deps, payload.computerId, payload.leaseId)) {
         scheduleComputerSleep(deps.jobs, payload.computerId);
       }
-    },
-    "skill.teaching-expire": async (payload) => {
+    }),
+    "skill.teaching-expire": asOwner(skill, async (payload) => {
       await expireTaughtSkillTeaching(deps, payload.skillId);
-    },
-    "cloud_agent.poll": async (payload) => {
+    }),
+    "cloud_agent.poll": asOwner(cloudAgent, async (payload) => {
       await pollCloudAgent(
         {
           prisma: deps.prisma,
@@ -128,8 +176,8 @@ export function createBackgroundJobHandlers(deps: {
         },
         payload,
       );
-    },
-    "history.compact": async (payload) => {
+    }),
+    "history.compact": asOwner(thread, async (payload) => {
       // Retrieval policies use stored context without paid message-count compaction.
       // Skip legacy backlog work after a policy change.
       if (deps.executor.contextStrategy && deps.executor.contextStrategy !== "current") return;
@@ -146,6 +194,6 @@ export function createBackgroundJobHandlers(deps: {
         },
         payload.threadId,
       );
-    },
+    }),
   };
 }

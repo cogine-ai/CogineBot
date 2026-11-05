@@ -1,6 +1,7 @@
 import { RPCHandler } from "@orpc/server/fetch";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { currentDbContext } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
@@ -19,7 +20,14 @@ type TargetSpace = {
 } | null;
 
 function renameHarness(target: TargetSpace, currentOrganizationId: string | null = "org-1") {
-  const update = vi.fn(async () => ({ id: "space-target" }));
+  const update = vi.fn(async () => {
+    expect(currentDbContext()).toEqual({
+      kind: "tenant",
+      spaceId: "space-target",
+      userId: actor.userId,
+    });
+    return { id: "space-target" };
+  });
   const tx = {
     $queryRaw: vi.fn(async () => []),
     spaceMember: {
@@ -41,7 +49,18 @@ function renameHarness(target: TargetSpace, currentOrganizationId: string | null
   const transaction = vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
     callback(tx),
   );
-  const prisma = { $transaction: transaction } as unknown as PrismaClient;
+  const prisma = {
+    spaceMember: {
+      ...tx.spaceMember,
+      findFirst: vi.fn(async ({ where }: { where: { spaceId: string; userId: string } }) => {
+        expect(currentDbContext()).toMatchObject({ kind: "system", reason: expect.any(String) });
+        return target && where.spaceId === "space-target" && where.userId === actor.userId
+          ? { id: "member-target" }
+          : null;
+      }),
+    },
+    $transaction: transaction,
+  } as unknown as PrismaClient;
   const deps = {
     prisma,
     env: {

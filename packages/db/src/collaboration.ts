@@ -5,6 +5,7 @@ import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { appendEventInTransaction } from "./events.js";
+import { runAsSystem } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import { lockSpaceLifecycle, SpaceDeletionInProgressError, SpaceNotFoundError } from "./spaces.js";
 import { withTransactionRetry } from "./transaction-retry.js";
@@ -254,7 +255,13 @@ async function settleRows(
 }
 
 /** Return settlement is durable, so disabling never turns into a delayed return on reopen. */
-export async function settleCollaborationDelivery(
+export function settleCollaborationDelivery(...args: Parameters<typeof settleDelivery>) {
+  return runAsSystem("settle an authorized bot collaboration delivery", () =>
+    settleDelivery(...args),
+  );
+}
+
+async function settleDelivery(
   prisma: PrismaClient,
   runId: string,
   status: "completed" | "policy_disabled",
@@ -432,7 +439,15 @@ export async function authorizeCollaborationRunStart(
 }
 
 /** Owner-only compare-and-set update and pending-delivery settlement commit together. */
-export async function updateSpaceCollaborationForMember(
+export function updateSpaceCollaborationForMember(
+  ...args: Parameters<typeof updateSpaceCollaboration>
+) {
+  return runAsSystem("update collaboration policy for verified Space memberships", () =>
+    updateSpaceCollaboration(...args),
+  );
+}
+
+async function updateSpaceCollaboration(
   prisma: PrismaClient,
   input: {
     currentSpaceId: string;

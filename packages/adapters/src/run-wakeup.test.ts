@@ -1,6 +1,7 @@
 import type { BackgroundJobHandlers, JobPublisher } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryRealtimeFanout } from "./realtime.js";
@@ -84,13 +85,16 @@ describe("durable direct run wakeups", () => {
     };
     f.rows.set("chat", { ...ownership, status: "queued", wakeAt: null });
     const handler = vi.fn(async ({ runId }) => {
+      expect(currentDbContext()).toMatchObject({ kind: "system", reason: expect.any(String) });
       expect(runId).toBe("chat");
       expect(f.rows.get(runId)).toMatchObject(ownership);
       f.rows.get(runId)!.status = "completed";
     });
     try {
       f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
-      await f.publisher.enqueue(runContinueJob("chat"));
+      await runAsTenant({ spaceId: "space-enqueue", userId: "user-enqueue" }, () =>
+        f.publisher.enqueue(runContinueJob("chat")),
+      );
       await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
       expect(f.rows.get("chat")).toMatchObject(ownership);
       expect(f.updateMany).toHaveBeenCalledExactlyOnceWith({

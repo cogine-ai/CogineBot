@@ -1,4 +1,5 @@
 import type { BackgroundJobHandlers } from "@rakazo/adapter-kit";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryJobQueue } from "./wakeup.js";
 
@@ -23,6 +24,41 @@ function handlers(): BackgroundJobHandlers {
 
 describe("InMemoryJobQueue", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("resets the enqueuing tenant before dispatching delayed work and its descendants", async () => {
+    vi.useFakeTimers();
+    const queue = new InMemoryJobQueue();
+    const target = handlers();
+    const contexts: unknown[] = [];
+    target["run.continue"] = async () => {
+      contexts.push(currentDbContext());
+      await runAsTenant({ spaceId: "space-handler", userId: "user-handler" }, () =>
+        queue.enqueue({ name: "history.compact", payload: { threadId: "thread-later" } }),
+      );
+    };
+    target["history.compact"] = async () => {
+      contexts.push(currentDbContext());
+    };
+    try {
+      await runAsTenant({ spaceId: "space-enqueue", userId: "user-enqueue" }, async () => {
+        await queue.start(target);
+        await queue.enqueue({
+          name: "run.continue",
+          payload: { runId: "run-later" },
+          availableAt: new Date(Date.now() + 100),
+        });
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await queue.awaitIdle();
+      expect(contexts).toEqual([
+        { kind: "system", reason: expect.any(String) },
+        { kind: "system", reason: expect.any(String) },
+      ]);
+      expect(currentDbContext()).toBeUndefined();
+    } finally {
+      await queue.close();
+    }
+  });
 
   it("reports failed descendants after draining without exposing payloads or errors", async () => {
     const queue = new InMemoryJobQueue();

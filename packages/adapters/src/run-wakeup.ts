@@ -8,7 +8,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { dispatchBackgroundJob } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { endTakeoverWaits, isTooManyDatabaseConnections } from "@rakazo/db";
+import { endTakeoverWaits, isTooManyDatabaseConnections, runAsSystem } from "@rakazo/db";
 import { getLogger, runCorrelatedJob } from "@rakazo/logging";
 import type { Pool } from "pg";
 import { RunExecutionHost } from "./run-execution.js";
@@ -106,8 +106,10 @@ export class RunStarter {
             name: "run.continue",
             payload: { runId },
             run: () =>
-              dispatchBackgroundJob(handlers, "run.continue", { runId }, execution).finally(() =>
-                this.finished(runId),
+              runAsSystem("run dispatch", () =>
+                dispatchBackgroundJob(handlers, "run.continue", { runId }, execution).finally(() =>
+                  this.finished(runId),
+                ),
               ),
           }),
         { waitForCapacity: false },
@@ -233,7 +235,7 @@ export class RunWorkerHost implements JobWorkerHost {
     this.scanAgain = true;
     this.wakeRequested = true;
     if (this.scanning) return;
-    this.scanning = (async () => {
+    this.scanning = runAsSystem("run recovery scan", async () => {
       try {
         while (this.scanAgain && !this.stopping) {
           this.scanAgain = false;
@@ -243,7 +245,7 @@ export class RunWorkerHost implements JobWorkerHost {
         this.scanAgain = false;
         if (!this.stopping) getLogger().error("run dispatch scan", error);
       }
-    })().finally(() => {
+    }).finally(() => {
       this.scanning = undefined;
       if (this.scanAgain && !this.stopping) this.wake();
     });
@@ -258,7 +260,7 @@ export class RunWorkerHost implements JobWorkerHost {
     const now = Date.now();
     if (this.queueCheck || now < this.nextQueueCheckAt) return;
     this.nextQueueCheckAt = now + INTERACTIVE_QUEUE_WARNING_MS;
-    this.queueCheck = (async () => {
+    this.queueCheck = runAsSystem("interactive queue health", async () => {
       const cutoff = new Date(now - INTERACTIVE_QUEUE_WARNING_MS);
       const [delayed] = await this.prisma.$queryRaw<
         { delayedRuns: number; oldestDueAt: Date | null; oldestRunId: string | null }[]
@@ -294,7 +296,7 @@ export class RunWorkerHost implements JobWorkerHost {
         this.queueDelayed = false;
         getLogger().info("run.queue_recovered");
       }
-    })()
+    })
       .catch((error) => {
         if (!this.stopping) getLogger().error("run queue health", error);
       })

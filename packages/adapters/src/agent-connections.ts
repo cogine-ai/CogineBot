@@ -16,6 +16,7 @@ import {
   BotCollaborationSourceInactiveError,
   collaborationRunFields,
   createThreadMessageInTransaction,
+  runAsSystem,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { currentBotMessageHop } from "./bot-messages.js";
@@ -45,7 +46,13 @@ type Result =
  * messages ride the existing internal bot-message machinery and never
  * transit iMessage.
  */
-export async function connectAgent(
+export function connectAgent(...args: Parameters<typeof requestConnection>): Promise<Result> {
+  return runAsSystem("request an agent connection in another Space", () =>
+    requestConnection(...args),
+  );
+}
+
+async function requestConnection(
   deps: AgentConnectionDeps,
   _run: ConnectionRun,
   sender: { id: string; name: string },
@@ -184,7 +191,15 @@ export async function connectAgent(
 }
 
 /** The target bot answers a pending request on its owner's instruction. */
-export async function respondAgentConnection(
+export function respondAgentConnection(
+  ...args: Parameters<typeof respondToConnection>
+): Promise<Result> {
+  return runAsSystem("respond to an agent connection in another Space", () =>
+    respondToConnection(...args),
+  );
+}
+
+async function respondToConnection(
   deps: AgentConnectionDeps,
   _run: ConnectionRun,
   sender: { id: string; name: string },
@@ -209,7 +224,15 @@ export async function respondAgentConnection(
  * Mirror of messageBot across Spaces: the target is resolved through an
  * approved connection instead of the sender's Space roster.
  */
-export async function messageConnectedAgent(
+export function messageConnectedAgent(
+  ...args: Parameters<typeof deliverToConnectedAgent>
+): Promise<Result> {
+  return runAsSystem("deliver a message to a connected agent in another Space", () =>
+    deliverToConnectedAgent(...args),
+  );
+}
+
+async function deliverToConnectedAgent(
   deps: AgentConnectionDeps,
   run: ConnectionRun,
   sender: { id: string; name: string },

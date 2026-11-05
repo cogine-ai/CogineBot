@@ -69,6 +69,7 @@ import {
   isTooManyDatabaseConnections,
   parsePositiveInteger,
   pushSessionExpiresAt,
+  runAsSystem,
 } from "@rakazo/db";
 import { SERVICE_NAMES } from "@rakazo/logging";
 import { createRootLogger } from "@rakazo/logging/axiom";
@@ -365,7 +366,7 @@ async function main() {
   logger.info("worker ready", { degraded: secrets.describe().capabilities.degraded ?? false });
 }
 
-main().catch(async (error) => {
+runAsSystem("worker process", main).catch(async (error) => {
   logger.error("worker startup failed", error);
   await logger.flush({ timeoutMs: 2_000 });
   // jobHost.start retries 53300 without bound above, so a saturated Postgres at

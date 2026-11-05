@@ -6,6 +6,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import { createBackgroundJobHandlers } from "./background-job-handlers.js";
@@ -22,6 +23,14 @@ vi.mock("./messaging-delivery.js", () => ({
 
 describe("createBackgroundJobHandlers", () => {
   it("delivers directly when shutdown rejects a completed run's mirror job", async () => {
+    const owner = { spaceId: "space-job", userId: "user-job" };
+    const scopes: unknown[] = [];
+    vi.mocked(mirrorMessagingOutbound).mockImplementationOnce(async () => {
+      scopes.push({ step: "mirror", context: currentDbContext() });
+    });
+    vi.mocked(deliverMessagingOutbound).mockImplementationOnce(async () => {
+      scopes.push({ step: "fallback", context: currentDbContext() });
+    });
     const enqueueError = new Error("Background job publisher is closing");
     const jobs = {
       enqueue: vi.fn(async () => {
@@ -34,7 +43,7 @@ describe("createBackgroundJobHandlers", () => {
       executor: {
         continueRun: vi.fn(async () => undefined),
       } as unknown as ReturnType<typeof createRunExecutor>,
-      prisma: {} as unknown as PrismaClient,
+      prisma: { run: { findUnique: vi.fn(async () => owner) } } as unknown as PrismaClient,
       sandbox: {} as unknown as SandboxProvider,
       home: {} as unknown as AgentHomeStore,
       jobs,
@@ -46,7 +55,13 @@ describe("createBackgroundJobHandlers", () => {
       messaging: {} as unknown as MessagingSurface,
     });
 
-    await handlers["run.continue"]({ runId: "run-1" });
+    await runAsTenant({ spaceId: "space-enqueue", userId: "user-enqueue" }, () =>
+      handlers["run.continue"]({ runId: "run-1" }),
+    );
+    expect(scopes).toEqual([
+      { step: "mirror", context: { kind: "tenant", ...owner } },
+      { step: "fallback", context: { kind: "system", reason: expect.any(String) } },
+    ]);
 
     expect(mirrorMessagingOutbound).toHaveBeenCalledWith(
       expect.objectContaining({ prisma: expect.anything(), messaging: expect.anything(), jobs }),
@@ -64,7 +79,11 @@ describe("createBackgroundJobHandlers", () => {
   });
 
   it("compacts the requested thread with the runtime, job publisher, and model key it was given", async () => {
-    const prisma = {} as unknown as PrismaClient;
+    const prisma = {
+      thread: {
+        findUnique: vi.fn(async () => ({ spaceId: "space-thread", userId: "user-thread" })),
+      },
+    } as unknown as PrismaClient;
     const runtime = {} as unknown as AgentRuntime;
     const jobs = {} as unknown as JobPublisher;
     const secretStore = {} as unknown as EncryptedSecretStore;
@@ -115,7 +134,11 @@ describe("createBackgroundJobHandlers", () => {
                 typeof createRunExecutor
               >[0])
             : ({ contextStrategy } as ReturnType<typeof createRunExecutor>),
-        prisma: {} as unknown as PrismaClient,
+        prisma: {
+          thread: {
+            findUnique: vi.fn(async () => ({ spaceId: "space-thread", userId: "user-thread" })),
+          },
+        } as unknown as PrismaClient,
         sandbox: {} as unknown as SandboxProvider,
         home: {} as unknown as AgentHomeStore,
         jobs: {} as unknown as JobPublisher,

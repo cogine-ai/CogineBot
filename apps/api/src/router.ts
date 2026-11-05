@@ -233,6 +233,8 @@ import {
   renewSpaceDeletionClaim,
   replaceSpaceBackupModels,
   restoreBotUnderComputerQuota,
+  runAsSystem,
+  runAsTenant,
   SPACE_DELETION_CLAIM_TIMEOUT_MS,
   SpaceDeletionInProgressError,
   SpaceLimitError,
@@ -330,6 +332,7 @@ import {
 } from "./server-update.js";
 import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 import { assertTeachingSendAllowed, createTaughtSkillsService } from "./taught-skills.js";
+import { asTenant } from "./tenant-context.js";
 import {
   isBackgroundRun,
   isPeerRun,
@@ -395,35 +398,29 @@ async function reconcilePendingConnections(
     connectedProviderKeys.has(row.provider.trim().toLowerCase()),
   );
   const sync = planLiveConnectionSync(rows, connectedProviders);
-  const updates = [
-    ...(sync.connectIds.length > 0
-      ? [
-          prisma.connection.updateMany({
-            where: {
-              id: { in: sync.connectIds },
-              spaceId: owner.spaceId,
-              userId: owner.userId,
-              status: "pending",
-            },
-            data: { status: "connected" },
-          }),
-        ]
-      : []),
-    ...(sync.revokeIds.length > 0
-      ? [
-          prisma.connection.updateMany({
-            where: {
-              id: { in: sync.revokeIds },
-              spaceId: owner.spaceId,
-              userId: owner.userId,
-              status: "pending",
-            },
-            data: { status: "revoked" },
-          }),
-        ]
-      : []),
-  ];
-  if (updates.length > 0) await prisma.$transaction(updates);
+  if (sync.connectIds.length === 0 && sync.revokeIds.length === 0) return;
+  await prisma.$transaction(async (tx) => {
+    if (sync.connectIds.length > 0)
+      await tx.connection.updateMany({
+        where: {
+          id: { in: sync.connectIds },
+          spaceId: owner.spaceId,
+          userId: owner.userId,
+          status: "pending",
+        },
+        data: { status: "connected" },
+      });
+    if (sync.revokeIds.length > 0)
+      await tx.connection.updateMany({
+        where: {
+          id: { in: sync.revokeIds },
+          spaceId: owner.spaceId,
+          userId: owner.userId,
+          status: "pending",
+        },
+        data: { status: "revoked" },
+      });
+  });
 }
 
 /** Serialize begin/revoke for one user+provider so slug-wide remote deletes cannot race a new connect. */
@@ -1016,7 +1013,8 @@ export function createRouter(deps: RouterDeps) {
     throw new ORPCError("UNAUTHORIZED");
   }
   const authed = os.use(async ({ context, next }) => {
-    return next({ context: { ...context, actor: authenticatedActor(context) } });
+    const actor = authenticatedActor(context);
+    return asTenant(actor, () => next({ context: { ...context, actor } }));
   });
 
   const newWork = authed.use(async ({ context, next }) => {
@@ -1030,7 +1028,8 @@ export function createRouter(deps: RouterDeps) {
       return next();
     })
     .use(async ({ context, next }) => {
-      return next({ context: { ...context, actor: authenticatedActor(context) } });
+      const actor = authenticatedActor(context);
+      return asTenant(actor, () => next({ context: { ...context, actor } }));
     });
   const ticketDeps = {
     prisma: deps.prisma,
@@ -1092,209 +1091,221 @@ export function createRouter(deps: RouterDeps) {
       list: authed.spaces.list.handler(async ({ context }) =>
         spaceNavigationDto(deps, context.actor, repos, groupRepos),
       ),
-      create: authed.spaces.create.handler(async ({ context, input }) => {
-        let space: { id: string; name: string };
-        try {
-          space = await createSpaceForMember(deps.prisma, {
-            currentSpaceId: context.actor.spaceId,
-            userId: context.actor.userId,
-            name: input.name,
-          });
-        } catch (error) {
-          if (error instanceof SpaceLimitError || error instanceof InvalidSpaceNameError) {
-            throw new ORPCError("BAD_REQUEST", { message: error.message });
+      create: authed.spaces.create.handler(({ context, input }) =>
+        runAsSystem("create a Space for its member", async () => {
+          let space: { id: string; name: string };
+          try {
+            space = await createSpaceForMember(deps.prisma, {
+              currentSpaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              name: input.name,
+            });
+          } catch (error) {
+            if (error instanceof SpaceLimitError || error instanceof InvalidSpaceNameError) {
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            throw error;
           }
-          throw error;
-        }
-        return {
-          id: space.id,
-          name: space.name,
-          isDefault: false,
-          hasContent: false,
-          canRename: true,
-          canDelete: true,
-          allowBotCollaboration: true,
-          collaborationRevision: 0,
-          canManageCollaboration: true,
-          bots: [],
-          groups: [],
-          externalConversations: [],
-          botSections: [],
-        };
-      }),
-      update: authed.spaces.update.handler(async ({ context, input }) => {
-        // Policy changes are a person/session setting, never an agent tool capability.
-        if (!context.sessionId) throw new ORPCError("FORBIDDEN");
-        try {
-          const committed = await updateSpaceCollaborationForMember(deps.prisma, {
-            currentSpaceId: context.actor.spaceId,
-            userId: context.actor.userId,
-            ...input,
-          });
-          for (const notice of committed.notices)
-            await deps.events.notify(notice.threadId, notice.seq).catch(() => undefined);
-          return committed.policy;
-        } catch (error) {
-          if (error instanceof CannotChangeCollaborationError)
-            throw new ORPCError("FORBIDDEN", { message: error.message });
-          if (error instanceof SpaceNotFoundError)
-            throw new ORPCError("NOT_FOUND", { message: error.message });
-          if (
-            error instanceof CollaborationRevisionConflictError ||
-            error instanceof SpaceDeletionInProgressError
-          )
-            throw new ORPCError("CONFLICT", { message: error.message });
-          throw error;
-        }
-      }),
-      rename: authed.spaces.rename.handler(async ({ context, input }) => {
-        try {
-          return await renameSpaceForMember(deps.prisma, {
+          return {
+            id: space.id,
+            name: space.name,
+            isDefault: false,
+            hasContent: false,
+            canRename: true,
+            canDelete: true,
+            allowBotCollaboration: true,
+            collaborationRevision: 0,
+            canManageCollaboration: true,
+            bots: [],
+            groups: [],
+            externalConversations: [],
+            botSections: [],
+          };
+        }),
+      ),
+      update: authed.spaces.update.handler(({ context, input }) =>
+        runAsSystem("update collaboration policy for verified Space memberships", async () => {
+          // Policy changes are a person/session setting, never an agent tool capability.
+          if (!context.sessionId) throw new ORPCError("FORBIDDEN");
+          try {
+            const committed = await updateSpaceCollaborationForMember(deps.prisma, {
+              currentSpaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              ...input,
+            });
+            for (const notice of committed.notices)
+              await deps.events.notify(notice.threadId, notice.seq).catch(() => undefined);
+            return committed.policy;
+          } catch (error) {
+            if (error instanceof CannotChangeCollaborationError)
+              throw new ORPCError("FORBIDDEN", { message: error.message });
+            if (error instanceof SpaceNotFoundError)
+              throw new ORPCError("NOT_FOUND", { message: error.message });
+            if (
+              error instanceof CollaborationRevisionConflictError ||
+              error instanceof SpaceDeletionInProgressError
+            )
+              throw new ORPCError("CONFLICT", { message: error.message });
+            throw error;
+          }
+        }),
+      ),
+      rename: authed.spaces.rename.handler(({ context, input }) =>
+        asMemberOf(deps.prisma, context.actor, input.spaceId, async () => {
+          try {
+            return await renameSpaceForMember(deps.prisma, {
+              currentSpaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              spaceId: input.spaceId,
+              name: input.name,
+            });
+          } catch (error) {
+            if (error instanceof SpaceNotFoundError) {
+              throw new ORPCError("NOT_FOUND", { message: error.message });
+            }
+            if (error instanceof CannotRenameSpaceAsNonOwnerError) {
+              throw new ORPCError("FORBIDDEN", { message: error.message });
+            }
+            if (error instanceof InvalidSpaceNameError) {
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            if (error instanceof SpaceDeletionInProgressError) {
+              throw new ORPCError("CONFLICT", { message: error.message });
+            }
+            throw error;
+          }
+        }),
+      ),
+      remove: authed.spaces.remove.handler(({ context, input }) =>
+        asMemberOf(deps.prisma, context.actor, input.spaceId, async () => {
+          let claimId: string | null = null;
+          let claimActive = false;
+          let claimHealthy = true;
+          let claimReleasable = false;
+          let claimRenewal: ReturnType<typeof setInterval> | null = null;
+          const deleteInput = {
             currentSpaceId: context.actor.spaceId,
             userId: context.actor.userId,
             spaceId: input.spaceId,
-            name: input.name,
-          });
-        } catch (error) {
-          if (error instanceof SpaceNotFoundError) {
-            throw new ORPCError("NOT_FOUND", { message: error.message });
-          }
-          if (error instanceof CannotRenameSpaceAsNonOwnerError) {
-            throw new ORPCError("FORBIDDEN", { message: error.message });
-          }
-          if (error instanceof InvalidSpaceNameError) {
-            throw new ORPCError("BAD_REQUEST", { message: error.message });
-          }
-          if (error instanceof SpaceDeletionInProgressError) {
-            throw new ORPCError("CONFLICT", { message: error.message });
-          }
-          throw error;
-        }
-      }),
-      remove: authed.spaces.remove.handler(async ({ context, input }) => {
-        let claimId: string | null = null;
-        let claimActive = false;
-        let claimHealthy = true;
-        let claimReleasable = false;
-        let claimRenewal: ReturnType<typeof setInterval> | null = null;
-        const deleteInput = {
-          currentSpaceId: context.actor.spaceId,
-          userId: context.actor.userId,
-          spaceId: input.spaceId,
-        };
-        try {
-          // Claim emptiness before external teardown. Bot and group creation
-          // take the same lifecycle lock and reject the Space until deletion
-          // finishes or this claim is released.
-          const claim = await claimEmptySpaceDeletionForMember(deps.prisma, deleteInput);
-          claimId = claim.claimId;
-          claimActive = true;
-          // A recovered worker can safely finish deletion, but cannot know
-          // whether the previous worker still has provider teardown in flight.
-          // Keep the Space claimed on failure so content cannot reuse it.
-          claimReleasable = !claim.recovered;
-          const claimedInput = { ...deleteInput, claimId };
-          const assertClaim = async () => {
-            if (!claimHealthy) throw new SpaceDeletionInProgressError();
-            try {
-              const renewed = await renewSpaceDeletionClaim(deps.prisma, claimedInput);
-              if (!renewed) {
+          };
+          try {
+            // Claim emptiness before external teardown. Bot and group creation
+            // take the same lifecycle lock and reject the Space until deletion
+            // finishes or this claim is released.
+            const claim = await claimEmptySpaceDeletionForMember(deps.prisma, deleteInput);
+            claimId = claim.claimId;
+            claimActive = true;
+            // A recovered worker can safely finish deletion, but cannot know
+            // whether the previous worker still has provider teardown in flight.
+            // Keep the Space claimed on failure so content cannot reuse it.
+            claimReleasable = !claim.recovered;
+            const claimedInput = { ...deleteInput, claimId };
+            const assertClaim = async () => {
+              if (!claimHealthy) throw new SpaceDeletionInProgressError();
+              try {
+                const renewed = await renewSpaceDeletionClaim(deps.prisma, claimedInput);
+                if (!renewed) {
+                  claimHealthy = false;
+                  claimReleasable = false;
+                  throw new SpaceDeletionInProgressError();
+                }
+              } catch (error) {
                 claimHealthy = false;
                 claimReleasable = false;
-                throw new SpaceDeletionInProgressError();
+                throw error;
               }
-            } catch (error) {
-              claimHealthy = false;
-              claimReleasable = false;
-              throw error;
-            }
-          };
-          claimRenewal = setInterval(() => {
-            void assertClaim().catch((renewalError) => {
-              if (claimActive) {
-                getLogger().error("space deletion claim renewal failed", renewalError);
-              }
-            });
-          }, SPACE_DELETION_CLAIM_TIMEOUT_MS / 5);
-          const adapterContext = connectionContext(context.actor, "spaces.remove", context.signal);
-          for (const computer of claim.computers) {
-            await assertClaim();
-            // Provider errors are ambiguous: teardown may have reached the
-            // remote service. From this point, only successful deletion may
-            // unblock content creation; a stale recovery must finish it.
-            claimReleasable = false;
-            let teardownTimer: ReturnType<typeof setTimeout> | undefined;
-            try {
-              await Promise.race([
-                deps.sandbox.destroy(toComputerRef(computer), {
-                  ...adapterContext,
-                  botId: computer.homeKey,
-                }),
-                new Promise<never>((_, reject) => {
-                  teardownTimer = setTimeout(() => {
-                    // Stop renewal so the claim goes stale and a later
-                    // worker can recover; never release after teardown
-                    // started, since the hung destroy may still complete.
-                    claimHealthy = false;
-                    claimReleasable = false;
-                    reject(new Error("Space sandbox teardown timed out"));
-                  }, spaceTeardownTimeoutMs());
-                }),
-              ]);
-            } finally {
-              if (teardownTimer !== undefined) clearTimeout(teardownTimer);
-            }
-            // Never clear a provider handle after this worker loses its claim.
-            await assertClaim();
-            await deps.prisma.computer.updateMany({
-              where: {
-                spaceId: input.spaceId,
-                homeKey: computer.homeKey,
-                providerRef: computer.providerRef,
-                space: { deletionClaimId: claimId },
-              },
-              data: { state: "stopped", providerRef: null },
-            });
-          }
-          await assertClaim();
-          claimActive = false;
-          if (claimRenewal) {
-            clearInterval(claimRenewal);
-            claimRenewal = null;
-          }
-          const fallback = await deleteEmptySpaceForMember(deps.prisma, claimedInput);
-          return { ok: true as const, activeSpaceId: fallback.id };
-        } catch (error) {
-          if (context.signal?.aborted) claimReleasable = false;
-          if (claimId && claimReleasable) {
-            await releaseSpaceDeletionClaim(deps.prisma, { ...deleteInput, claimId }).catch(
-              (releaseError) => {
-                getLogger().error("space deletion claim release failed", releaseError);
-              },
+            };
+            claimRenewal = setInterval(() => {
+              void assertClaim().catch((renewalError) => {
+                if (claimActive) {
+                  getLogger().error("space deletion claim renewal failed", renewalError);
+                }
+              });
+            }, SPACE_DELETION_CLAIM_TIMEOUT_MS / 5);
+            const adapterContext = connectionContext(
+              context.actor,
+              "spaces.remove",
+              context.signal,
             );
+            for (const computer of claim.computers) {
+              await assertClaim();
+              // Provider errors are ambiguous: teardown may have reached the
+              // remote service. From this point, only successful deletion may
+              // unblock content creation; a stale recovery must finish it.
+              claimReleasable = false;
+              let teardownTimer: ReturnType<typeof setTimeout> | undefined;
+              try {
+                await Promise.race([
+                  deps.sandbox.destroy(toComputerRef(computer), {
+                    ...adapterContext,
+                    botId: computer.homeKey,
+                  }),
+                  new Promise<never>((_, reject) => {
+                    teardownTimer = setTimeout(() => {
+                      // Stop renewal so the claim goes stale and a later
+                      // worker can recover; never release after teardown
+                      // started, since the hung destroy may still complete.
+                      claimHealthy = false;
+                      claimReleasable = false;
+                      reject(new Error("Space sandbox teardown timed out"));
+                    }, spaceTeardownTimeoutMs());
+                  }),
+                ]);
+              } finally {
+                if (teardownTimer !== undefined) clearTimeout(teardownTimer);
+              }
+              // Never clear a provider handle after this worker loses its claim.
+              await assertClaim();
+              await deps.prisma.computer.updateMany({
+                where: {
+                  spaceId: input.spaceId,
+                  homeKey: computer.homeKey,
+                  providerRef: computer.providerRef,
+                  space: { deletionClaimId: claimId },
+                },
+                data: { state: "stopped", providerRef: null },
+              });
+            }
+            await assertClaim();
+            claimActive = false;
+            if (claimRenewal) {
+              clearInterval(claimRenewal);
+              claimRenewal = null;
+            }
+            const fallback = await deleteEmptySpaceForMember(deps.prisma, claimedInput);
+            return { ok: true as const, activeSpaceId: fallback.id };
+          } catch (error) {
+            if (context.signal?.aborted) claimReleasable = false;
+            if (claimId && claimReleasable) {
+              await releaseSpaceDeletionClaim(deps.prisma, { ...deleteInput, claimId }).catch(
+                (releaseError) => {
+                  getLogger().error("space deletion claim release failed", releaseError);
+                },
+              );
+            }
+            if (error instanceof SpaceNotFoundError) {
+              throw new ORPCError("NOT_FOUND", { message: error.message });
+            }
+            if (error instanceof CannotDeleteSpaceAsNonOwnerError) {
+              throw new ORPCError("FORBIDDEN", { message: error.message });
+            }
+            if (error instanceof SpaceDeletionInProgressError) {
+              throw new ORPCError("CONFLICT", { message: error.message });
+            }
+            if (
+              error instanceof CannotDeleteDefaultSpaceError ||
+              error instanceof CannotDeleteLastSpaceError ||
+              error instanceof SpaceNotEmptyError
+            ) {
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            throw error;
+          } finally {
+            claimActive = false;
+            if (claimRenewal) clearInterval(claimRenewal);
           }
-          if (error instanceof SpaceNotFoundError) {
-            throw new ORPCError("NOT_FOUND", { message: error.message });
-          }
-          if (error instanceof CannotDeleteSpaceAsNonOwnerError) {
-            throw new ORPCError("FORBIDDEN", { message: error.message });
-          }
-          if (error instanceof SpaceDeletionInProgressError) {
-            throw new ORPCError("CONFLICT", { message: error.message });
-          }
-          if (
-            error instanceof CannotDeleteDefaultSpaceError ||
-            error instanceof CannotDeleteLastSpaceError ||
-            error instanceof SpaceNotEmptyError
-          ) {
-            throw new ORPCError("BAD_REQUEST", { message: error.message });
-          }
-          throw error;
-        } finally {
-          claimActive = false;
-          if (claimRenewal) clearInterval(claimRenewal);
-        }
-      }),
+        }),
+      ),
     },
     bootstrap: authed.bootstrap.handler(async ({ context, input }) => {
       const actor = context.actor;
@@ -1339,25 +1350,31 @@ export function createRouter(deps: RouterDeps) {
               "This Mac mode is only available when SANDBOX_PROVIDER=docker on a personal local app.",
           });
         }
-        await deps.prisma.deploymentSettings.upsert({
-          where: { id: "default" },
-          create: {
-            id: "default",
-            ownerUserId: context.actor.userId,
-            signupsEnabled: input.signupsEnabled ?? true,
-            signupAllowlist: (input.signupAllowlist ?? []).join(","),
-            signupPolicyInitialized: true,
-            computerHost: input.computerHost ?? undefined,
-          },
-          update: {
-            ...(input.signupsEnabled === undefined ? {} : { signupsEnabled: input.signupsEnabled }),
-            ...(input.signupAllowlist ? { signupAllowlist: input.signupAllowlist.join(",") } : {}),
-            ...(input.signupsEnabled === undefined && input.signupAllowlist === undefined
-              ? {}
-              : { signupPolicyInitialized: true }),
-            ...(input.computerHost === undefined ? {} : { computerHost: input.computerHost }),
-          },
-        });
+        await runAsSystem("update deployment settings for the verified owner", () =>
+          deps.prisma.deploymentSettings.upsert({
+            where: { id: "default" },
+            create: {
+              id: "default",
+              ownerUserId: context.actor.userId,
+              signupsEnabled: input.signupsEnabled ?? true,
+              signupAllowlist: (input.signupAllowlist ?? []).join(","),
+              signupPolicyInitialized: true,
+              computerHost: input.computerHost ?? undefined,
+            },
+            update: {
+              ...(input.signupsEnabled === undefined
+                ? {}
+                : { signupsEnabled: input.signupsEnabled }),
+              ...(input.signupAllowlist
+                ? { signupAllowlist: input.signupAllowlist.join(",") }
+                : {}),
+              ...(input.signupsEnabled === undefined && input.signupAllowlist === undefined
+                ? {}
+                : { signupPolicyInitialized: true }),
+              ...(input.computerHost === undefined ? {} : { computerHost: input.computerHost }),
+            },
+          }),
+        );
         return deploymentDto(deps.prisma, deps.env.sandboxProvider);
       }),
     },
@@ -7338,7 +7355,32 @@ function mapUpdaterError(error: unknown): never {
   });
 }
 
-async function spaceNavigationDto(
+/** Select another Space only after verifying the same actor's persisted membership. */
+async function asMemberOf<T>(
+  prisma: PrismaClient,
+  actor: Actor,
+  spaceId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const member = await runAsSystem("verify membership before switching Spaces", () =>
+    prisma.spaceMember.findFirst({
+      where: { spaceId, userId: actor.userId },
+      select: { id: true },
+    }),
+  );
+  if (!member) throw new ORPCError("NOT_FOUND", { message: new SpaceNotFoundError().message });
+  return runAsTenant({ spaceId, userId: actor.userId }, fn);
+}
+
+function spaceNavigationDto(
+  ...args: Parameters<typeof memberSpaceNavigation>
+): Promise<SpaceNavigation> {
+  return runAsSystem("space navigation across the member's Spaces", () =>
+    memberSpaceNavigation(...args),
+  );
+}
+
+async function memberSpaceNavigation(
   deps: RouterDeps,
   actor: Actor,
   repos: ReturnType<typeof createRepos>,
@@ -7629,7 +7671,9 @@ async function requireTargetModelAccess(
 async function modelSetup(deps: RouterDeps, actor: Actor) {
   const [credential, settings] = await Promise.all([
     findDefaultModelCredential(deps.prisma, actor),
-    deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+    runAsSystem("read deployment model settings", () =>
+      deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+    ),
   ]);
   const platformAllowed = await canUsePlatformModel(
     deps.prisma,
@@ -7890,7 +7934,9 @@ async function computerScreenContext(
 }
 
 async function deploymentDto(prisma: PrismaClient, sandboxProvider: string) {
-  const settings = await prisma.deploymentSettings.findUnique({ where: { id: "default" } });
+  const settings = await runAsSystem("read deployment settings", () =>
+    prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+  );
   return {
     ownerUserId: settings?.ownerUserId ?? null,
     signupsEnabled: settings?.signupsEnabled ?? true,
