@@ -4,13 +4,10 @@ import type {
   ManagedConnectorProvider,
   SecretStore,
 } from "@rakazo/adapter-kit";
-import {
-  type IntegrationProviderConfig,
-  IntegrationProviderConfigSchema,
-  type IntegrationProviderId,
-  IntegrationProviderIdSchema,
-} from "@rakazo/contracts";
+import type { IntegrationProviderConfig, IntegrationProviderId } from "@rakazo/contracts";
+import { IntegrationProviderConfigSchema, IntegrationProviderIdSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { runAsSystem, runAsSystemInTransaction } from "@rakazo/db";
 import { ComposioConnector } from "./composio-connector.js";
 import { credentialDigest } from "./credential-digest.js";
 import { PipedreamConnector } from "./pipedream-connector.js";
@@ -47,10 +44,12 @@ export class IntegrationProviderSettings {
   async configured(id: IntegrationProviderId): Promise<boolean> {
     return (
       Boolean(
-        await this.prisma.integrationProviderConfig.findUnique({
-          where: { id },
-          select: { id: true },
-        }),
+        await runAsSystem("inspect integration provider configuration", () =>
+          this.prisma.integrationProviderConfig.findUnique({
+            where: { id },
+            select: { id: true },
+          }),
+        ),
       ) || Boolean(this.fallbacks[id])
     );
   }
@@ -62,7 +61,9 @@ export class IntegrationProviderSettings {
   async prepare(
     id: IntegrationProviderId,
   ): Promise<{ provider: ManagedConnectorProvider | undefined; ref: string | null }> {
-    const row = await this.prisma.integrationProviderConfig.findUnique({ where: { id } });
+    const row = await runAsSystem("resolve integration provider configuration", () =>
+      this.prisma.integrationProviderConfig.findUnique({ where: { id } }),
+    );
     if (!row) {
       this.cache.delete(id);
       return { provider: this.fallbacks[id], ref: null };
@@ -102,11 +103,13 @@ export class IntegrationProviderSettings {
     const stored = await this.secrets.put(JSON.stringify(config), context, {
       recordId: `integration-provider:${config.provider}`,
     });
-    await this.prisma.integrationProviderConfig.upsert({
-      where: { id: config.provider },
-      create: { id: config.provider, ciphertext: stored.ciphertext },
-      update: { ciphertext: stored.ciphertext },
-    });
+    await runAsSystem("save verified integration provider configuration", () =>
+      this.prisma.integrationProviderConfig.upsert({
+        where: { id: config.provider },
+        create: { id: config.provider, ciphertext: stored.ciphertext },
+        update: { ciphertext: stored.ciphertext },
+      }),
+    );
     // The store may have expired or invalidated this ref while persistence waited.
     // Re-resolve through it before retaining any provider credentials.
     this.cache.delete(config.provider);
@@ -140,11 +143,16 @@ class ConfiguredIntegrationProvider implements ManagedConnectorProvider {
       provider: prepared.provider
         ? new ConfiguredIntegrationProvider(this.id, this.settings, prepared.provider)
         : undefined,
-      recheck: async (client: Pick<PrismaClient, "integrationProviderConfig">) => {
-        const current = await client.integrationProviderConfig.findUnique({
-          where: { id: this.id },
-          select: { ciphertext: true },
-        });
+      recheck: async (client: Pick<PrismaClient, "integrationProviderConfig" | "$queryRaw">) => {
+        const current = await runAsSystemInTransaction(
+          client,
+          "recheck prepared integration provider configuration",
+          () =>
+            client.integrationProviderConfig.findUnique({
+              where: { id: this.id },
+              select: { ciphertext: true },
+            }),
+        );
         return (current?.ciphertext ?? null) === prepared.ref;
       },
     };

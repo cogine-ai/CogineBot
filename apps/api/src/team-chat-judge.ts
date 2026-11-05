@@ -26,6 +26,7 @@ import {
   findModelCredential,
   recordUsage,
   retireModelCredential,
+  runAsSystem,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
@@ -243,9 +244,12 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
       });
       if (!credential) return null;
     } else {
-      const settings = await this.deps.prisma.deploymentSettings.findUnique({
-        where: { id: "default" },
-      });
+      const settings = await runAsSystem("read deployment defaults for the team chat judge", () =>
+        this.deps.prisma.deploymentSettings.findUnique({
+          where: { id: "default" },
+          select: { defaultModelProvider: true, defaultModelId: true },
+        }),
+      );
       credential = await findDefaultModelCredential(this.deps.prisma, scope);
       provider =
         credential?.provider ?? settings?.defaultModelProvider ?? this.deps.deploymentProvider;

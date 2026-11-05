@@ -17,7 +17,7 @@ import type {
 } from "@rakazo/contracts";
 import { containsSecret } from "@rakazo/core";
 import type { CapabilityInstall as InstallRow, Prisma } from "@rakazo/db";
-import { Prisma as Sql } from "@rakazo/db";
+import { runAsSystem, runAsSystemInTransaction, Prisma as Sql } from "@rakazo/db";
 import { z } from "zod";
 import type { RouterDeps } from "./router.js";
 
@@ -284,14 +284,18 @@ export function createOpenApiImportService(deps: Dependencies) {
     }
     const settings = tx
       ? (
-          await tx.$queryRaw<Array<{ ownerUserId: string | null }>>(
-            Sql.sql`SELECT "ownerUserId" FROM deployment_settings WHERE id='default' FOR SHARE`,
+          await runAsSystemInTransaction(tx, "check deployment owner for an OpenAPI import", () =>
+            tx.$queryRaw<Array<{ ownerUserId: string | null }>>(
+              Sql.sql`SELECT "ownerUserId" FROM deployment_settings WHERE id='default' FOR SHARE`,
+            ),
           )
         )[0]
-      : await db.deploymentSettings.findUnique({
-          where: { id: "default" },
-          select: { ownerUserId: true },
-        });
+      : await runAsSystem("check deployment owner for an OpenAPI import", () =>
+          db.deploymentSettings.findUnique({
+            where: { id: "default" },
+            select: { ownerUserId: true },
+          }),
+        );
     return deps.env.mcpAllowPrivateEndpoint === true || settings?.ownerUserId === userId;
   }
   const find = (context: Context, claims: Claims) =>

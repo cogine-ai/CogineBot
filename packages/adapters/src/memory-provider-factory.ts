@@ -1,5 +1,6 @@
 import type { DurableMemoryScope, SecretStore, SemanticMemoryProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
+import { runAsSystem } from "@rakazo/db";
 import {
   classifySerenityConnectionSettings,
   createSerenityProvider,
@@ -163,10 +164,14 @@ export class SpaceMemoryProviderResolver implements MemoryProviderResolver {
     if (!config) return null;
     const settings = toStringRecord(config.settings);
     if (memoryProviderRequiresDeploymentOwner(config.provider, settings)) {
-      const deployment = await this.prisma.deploymentSettings.findUnique({
-        where: { id: "default" },
-        select: { ownerUserId: true },
-      });
+      const deployment = await runAsSystem(
+        "read the deployment owner for saved memory configuration",
+        () =>
+          this.prisma.deploymentSettings.findUnique({
+            where: { id: "default" },
+            select: { ownerUserId: true },
+          }),
+      );
       // Also disable pre-existing local configurations authored outside the deployment boundary.
       if (!deployment?.ownerUserId || deployment.ownerUserId !== config.userId) return null;
     }

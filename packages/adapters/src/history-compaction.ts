@@ -4,7 +4,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
 import { blocksToAgentHistoryText, PlatformModelForbiddenError } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { recordUsage } from "@rakazo/db";
+import { recordUsage, runAsSystem } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
@@ -353,9 +353,14 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
           apiKey: deps.deploymentModelKey,
         }
       : await (async () => {
-          const settings = await deps.prisma.deploymentSettings.findUnique({
-            where: { id: "default" },
-          });
+          const settings = await runAsSystem(
+            "read deployment defaults for history compaction",
+            () =>
+              deps.prisma.deploymentSettings.findUnique({
+                where: { id: "default" },
+                select: { defaultModelProvider: true, defaultModelId: true },
+              }),
+          );
           return {
             provider: settings?.defaultModelProvider ?? "scripted",
             id: settings?.defaultModelId ?? "scripted",
