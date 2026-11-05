@@ -1,6 +1,7 @@
 import { RPCHandler } from "@orpc/server/fetch";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { withTransactionContext } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { createRouter, type RouterDeps } from "./router.js";
 
@@ -246,12 +247,26 @@ function messagingDeps(
   (prisma as { messagingOutbound?: unknown }).messagingOutbound = messagingOutbound;
   // The claim-and-confirm handlers run inside one interactive transaction;
   // the mock passes the same stateful models as the tx delegate.
+  let transactionId = 0;
   (prisma as { $transaction?: unknown }).$transaction = vi.fn(
-    async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    async (fn: (tx: unknown) => Promise<unknown>) => {
+      const scope = { txId: `messaging-fixture-${++transactionId}` };
+      return fn(
+        new Proxy(prisma, {
+          get(target, property, receiver) {
+            return property === Symbol.for("prisma.client.transaction.scope_context")
+              ? scope
+              : Reflect.get(target, property, receiver);
+          },
+        }),
+      );
+    },
   );
+  (prisma as { $queryRaw?: unknown }).$queryRaw = vi.fn(async () => []);
+  (prisma as { $extends?: unknown }).$extends = () => prisma;
   const enqueue = vi.fn(async () => undefined);
   const deps = {
-    prisma,
+    prisma: withTransactionContext(prisma),
     jobs: { enqueue },
     env: {
       defaultProvider: "fake",
@@ -702,6 +717,7 @@ describe("messaging.connections", () => {
       async (fn: (tx: unknown) => Promise<unknown>) => {
         order.push("tx-start");
         const result = await fn({
+          [Symbol.for("prisma.client.transaction.scope_context")]: { txId: "revoke-fixture" },
           agentConnection: {
             updateMany: async (args: unknown) => {
               order.push("update");
@@ -747,6 +763,7 @@ describe("messaging.connections", () => {
     (prisma as unknown as Record<string, unknown>).$transaction = vi.fn(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
+          [Symbol.for("prisma.client.transaction.scope_context")]: { txId: "reconnect-fixture" },
           agentConnection: {
             updateMany: async (args: unknown) => baseUpdateMany(args),
           },
@@ -901,6 +918,7 @@ describe("messaging.connections.respond confirmation atomicity", () => {
     (prisma as unknown as Record<string, unknown>).$transaction = vi.fn(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
+          [Symbol.for("prisma.client.transaction.scope_context")]: { txId: "confirm-fixture" },
           agentConnection: prisma.agentConnection,
           messagingIdentity: prisma.messagingIdentity,
           messagingOutbound: {

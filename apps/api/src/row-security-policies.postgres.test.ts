@@ -6,8 +6,10 @@ import {
   currentDbContext,
   describeRowSecurity,
   describeRowSecurityPolicies,
+  issueMessagingLinkCode,
   listTicketComments,
   provisionRuntimeRole,
+  redeemMessagingLinkCode,
   renameSpaceForMember,
   runAsSystem,
   runAsSystemInTransaction,
@@ -299,6 +301,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           botId: id(`bot-${side}`),
           name: "Synthetic",
           prompt: "Synthetic",
+          crons: [],
         },
       });
       await owner.prisma.nativeOAuthGrant.create({
@@ -741,6 +744,163 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
   });
 
+  async function createLinkBots(label: string) {
+    const a = id(`${label}-a`);
+    const c = id(`${label}-c`);
+    await owner.prisma.bot.createMany({
+      data: [
+        { id: a, spaceId: spaceA, userId: userA, name: "Link fixture", color: "ink" },
+        { id: c, spaceId: spaceC, userId: userA, name: "Link fixture", color: "ink" },
+      ],
+    });
+    return { a, c };
+  }
+
+  it("supersedes messaging link codes across Spaces and redeems only the current code once", async () => {
+    const bots = await createLinkBots("link-sequential");
+    const checked = new Proxy(runtime!.prisma, {
+      get(target, property, receiver) {
+        if (property !== "$transaction") return Reflect.get(target, property, receiver);
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction(async (tx) => {
+            const result = await callback(tx);
+            expect(currentDbContext()?.kind).toBe("tenant");
+            expect(await tx.user.findMany({ select: { id: true } })).toEqual([{ id: userA }]);
+            expect(await tx.nativeAppConfig.count()).toBe(0);
+            return result;
+          });
+      },
+    });
+    const old = await inA(() =>
+      issueMessagingLinkCode(checked, { userId: userA, spaceId: spaceA, botId: bots.a }),
+    );
+    const current = await runAsTenant({ spaceId: spaceC, userId: userA }, () =>
+      issueMessagingLinkCode(checked, { userId: userA, spaceId: spaceC, botId: bots.c }),
+    );
+    expect(
+      await owner.prisma.messagingLinkCode.findMany({
+        where: { userId: userA },
+        select: { code: true, spaceId: true },
+      }),
+    ).toEqual([{ code: current.code, spaceId: spaceC }]);
+    const redeem = (code: string) =>
+      runAsSystem("redeem a synthetic inbound link code", () =>
+        redeemMessagingLinkCode(runtime!.prisma, {
+          code,
+          provider: "fixture",
+          address: id("link-address"),
+          dmThreadId: null,
+        }),
+      );
+    expect(await redeem(old.code)).toBeNull();
+    expect(await redeem(current.code)).toMatchObject({
+      userId: userA,
+      spaceId: spaceC,
+      botId: bots.c,
+    });
+    expect(await redeem(current.code)).toBeNull();
+  });
+
+  it("serializes concurrent messaging link codes across Spaces without deleting another user's code", async () => {
+    const bots = await createLinkBots("link-concurrent");
+    const other = await runAsTenant({ spaceId: spaceB, userId: userB }, () =>
+      issueMessagingLinkCode(runtime!.prisma, {
+        userId: userB,
+        spaceId: spaceB,
+        botId: id("bot-b"),
+      }),
+    );
+    const peer = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+    let holdFirst!: () => void;
+    let firstReady!: () => void;
+    const held = new Promise<void>((resolve) => {
+      firstReady = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      holdFirst = resolve;
+    });
+    const firstClient = new Proxy(runtime!.prisma, {
+      get(target, property, receiver) {
+        if (property !== "$transaction") return Reflect.get(target, property, receiver);
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction(async (tx) => {
+            const result = await callback(tx);
+            firstReady();
+            await released;
+            return result;
+          });
+      },
+    });
+    const first = inA(() =>
+      issueMessagingLinkCode(firstClient, { userId: userA, spaceId: spaceA, botId: bots.a }),
+    );
+    let second: ReturnType<typeof issueMessagingLinkCode> | undefined;
+    try {
+      await Promise.race([
+        held,
+        first.then(() => {
+          throw new Error("Expected the first issuance transaction to pause");
+        }),
+      ]);
+      second = runAsTenant({ spaceId: spaceC, userId: userA }, () =>
+        issueMessagingLinkCode(peer.prisma, { userId: userA, spaceId: spaceC, botId: bots.c }),
+      );
+      void second.catch(() => undefined);
+      await expect
+        .poll(
+          async () => {
+            const waiting = await owner.pool.query<{ waiting: boolean }>(
+              "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity WHERE usename=$1 " +
+                "AND wait_event_type='Lock' AND query ILIKE '%pg_advisory_xact_lock%') AS waiting",
+              [role],
+            );
+            return waiting.rows[0]?.waiting;
+          },
+          { timeout: 2_000, interval: 10 },
+        )
+        .toBe(true);
+      holdFirst();
+      const codes = await Promise.all([first, second]);
+      const active = await owner.prisma.messagingLinkCode.findMany({
+        where: { userId: userA },
+        select: { code: true },
+      });
+      expect(active).toHaveLength(1);
+      expect(codes.map(({ code }) => code)).toContain(active[0]!.code);
+      expect(
+        await owner.prisma.messagingLinkCode.findUnique({ where: { code: other.code } }),
+      ).toMatchObject({ userId: userB, spaceId: spaceB });
+    } finally {
+      holdFirst();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+      await peer.prisma.$disconnect();
+      await peer.pool.end();
+    }
+  });
+
+  it("rolls back supersession when a messaging link code cannot be created in tenant scope", async () => {
+    const bots = await createLinkBots("link-rollback");
+    const previous = await inA(() =>
+      issueMessagingLinkCode(runtime!.prisma, { userId: userA, spaceId: spaceA, botId: bots.a }),
+    );
+    await rejectedByPolicy(
+      inA(() =>
+        issueMessagingLinkCode(runtime!.prisma, {
+          userId: userA,
+          spaceId: spaceB,
+          botId: id("bot-b"),
+        }),
+      ),
+    );
+    expect(
+      await owner.prisma.messagingLinkCode.findMany({
+        where: { userId: userA },
+        select: { code: true, spaceId: true },
+      }),
+    ).toEqual([{ code: previous.code, spaceId: spaceA }]);
+    expect(await inA(() => runtime!.prisma.nativeAppConfig.count())).toBe(0);
+  });
+
   it("preserves DM identity movement and source-message group ownership without interpreting provider thread IDs", async () => {
     await owner.prisma.messagingIdentity.create({
       data: {
@@ -1138,6 +1298,42 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         if (!response) throw new Error("Synthetic RPC path was not matched");
         return response;
       });
+    const linkBots = await createLinkBots("link-rpc");
+    const sharedForeignBot = id("link-rpc-shared-foreign");
+    await owner.prisma.bot.create({
+      data: { id: sharedForeignBot, spaceId: spaceA, userId: userB, name: "Foreign", color: "ink" },
+    });
+    const issued = await call("messaging/link/start", { botId: linkBots.a });
+    expect(issued.status).toBe(200);
+    const issuedBody = (await issued.json()).json as { code: string };
+    expect(issuedBody.code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    expect((await call("messaging/link/start", { botId: linkBots.c })).status).toBe(404);
+    expect((await call("messaging/link/start", { botId: sharedForeignBot })).status).toBe(404);
+    try {
+      await owner.prisma.bot.update({
+        where: { id: linkBots.a },
+        data: { archivedAt: new Date() },
+      });
+      expect((await call("messaging/link/start", { botId: linkBots.a })).status).toBe(404);
+    } finally {
+      await owner.prisma.bot.update({ where: { id: linkBots.a }, data: { archivedAt: null } });
+    }
+    await owner.prisma.messagingIdentity.create({
+      data: {
+        provider: "fixture",
+        address: id("link-rpc-address"),
+        userId: userA,
+        spaceId: spaceA,
+        botId: linkBots.a,
+      },
+    });
+    expect((await call("messaging/link/start", { botId: linkBots.a })).status).toBe(400);
+    expect(
+      await owner.prisma.messagingLinkCode.findMany({
+        where: { userId: userA },
+        select: { code: true },
+      }),
+    ).toEqual([{ code: issuedBody.code.replaceAll("-", "") }]);
     const channels = await call("messaging/channels/list");
     expect(channels.status).toBe(200);
     expect(await channels.json()).toMatchObject({
