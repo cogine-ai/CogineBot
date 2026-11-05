@@ -7,10 +7,11 @@ import type {
 import type { IntegrationProviderConfig, IntegrationProviderId } from "@rakazo/contracts";
 import { IntegrationProviderConfigSchema, IntegrationProviderIdSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { runAsSystem, runAsSystemInTransaction } from "@rakazo/db";
+import { Prisma, runAsSystem, runAsSystemInTransaction } from "@rakazo/db";
 import { ComposioConnector } from "./composio-connector.js";
 import { credentialDigest } from "./credential-digest.js";
 import { PipedreamConnector } from "./pipedream-connector.js";
+import { persistPreparedSecret } from "./secret-persistence.js";
 
 /** Resolve persisted credentials on every operation so API and workers observe changes.
  * Cache adapters by ciphertext to preserve sessions without retaining old credentials. */
@@ -103,12 +104,21 @@ export class IntegrationProviderSettings {
     const stored = await this.secrets.put(JSON.stringify(config), context, {
       recordId: `integration-provider:${config.provider}`,
     });
-    await runAsSystem("save verified integration provider configuration", () =>
-      this.prisma.integrationProviderConfig.upsert({
-        where: { id: config.provider },
-        create: { id: config.provider, ciphertext: stored.ciphertext },
-        update: { ciphertext: stored.ciphertext },
-      }),
+    await persistPreparedSecret(this.prisma, this.secrets, stored, () =>
+      runAsSystem("save verified integration provider configuration", () =>
+        this.prisma.$transaction(async (tx) => {
+          const [deployment] = await tx.$queryRaw<Array<{ ownerUserId: string | null }>>(
+            Prisma.sql`SELECT "ownerUserId" FROM deployment_settings WHERE id='default' FOR SHARE`,
+          );
+          if (!context.userId || deployment?.ownerUserId !== context.userId)
+            throw new Error("Only the deployment owner can configure integrations");
+          await tx.integrationProviderConfig.upsert({
+            where: { id: config.provider },
+            create: { id: config.provider, ciphertext: stored.ciphertext },
+            update: { ciphertext: stored.ciphertext },
+          });
+        }),
+      ),
     );
     // The store may have expired or invalidated this ref while persistence waited.
     // Re-resolve through it before retaining any provider credentials.

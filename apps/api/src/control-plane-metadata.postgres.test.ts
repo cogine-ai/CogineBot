@@ -504,6 +504,158 @@ postgres("control-plane metadata with complete row policies", () => {
     expect(runtime.pool.waitingCount).toBe(0);
   });
 
+  it("holds the current owner lock through the provider-config write on one connection", async () => {
+    let held = false;
+    let writes = 0;
+    const states: Array<Awaited<ReturnType<typeof connectionState>>> = [];
+    const prisma = new Proxy(runtime.prisma, {
+      get(target, property) {
+        if (property === "$transaction")
+          return async (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+            target.$transaction(async (tx) => {
+              held = true;
+              const original = tx.integrationProviderConfig.upsert.bind(
+                tx.integrationProviderConfig,
+              );
+              const write = vi
+                .spyOn(tx.integrationProviderConfig, "upsert")
+                .mockImplementation((...args) => {
+                  const pending = (async () => {
+                    writes++;
+                    expect(currentDbContext()).toMatchObject({ kind: "system" });
+                    states.push(await connectionState(tx));
+                    const contender = await owner.pool.connect();
+                    try {
+                      await contender.query("BEGIN");
+                      await contender.query("SET LOCAL lock_timeout='100ms'");
+                      await expect(
+                        contender.query(
+                          "UPDATE deployment_settings SET \"ownerUserId\"=$1 WHERE id='default'",
+                          [userA],
+                        ),
+                      ).rejects.toMatchObject({ code: "55P03" });
+                    } finally {
+                      await contender.query("ROLLBACK");
+                      contender.release();
+                    }
+                    const result = await original(...args);
+                    states.push(await connectionState(tx));
+                    return result;
+                  })();
+                  Object.defineProperty(pending, Symbol.toStringTag, { value: "PrismaPromise" });
+                  return pending as ReturnType<typeof original>;
+                });
+              try {
+                return await callback(tx);
+              } finally {
+                write.mockRestore();
+                held = false;
+              }
+            });
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const secrets = new EncryptedSecretStore("synthetic-owner-lock-key");
+    const put = secrets.put.bind(secrets);
+    vi.spyOn(secrets, "put").mockImplementation((...args) => {
+      assertTenant();
+      expect(held).toBe(false);
+      return put(...args);
+    });
+    const settings = new IntegrationProviderSettings(
+      prisma,
+      secrets,
+      "synthetic-identity",
+      {},
+      () =>
+        ({
+          listConnectedExternalIds: async () => {
+            assertTenant();
+            expect(held).toBe(false);
+            return [];
+          },
+        }) as unknown as ManagedConnectorProvider,
+    );
+    await inTenant(async () => {
+      await settings.save({ provider: "composio", apiKey: "synthetic-owner-lock-key" }, context());
+      assertTenant();
+      expect(await runtime.prisma.integrationProviderConfig.count()).toBe(0);
+    });
+    expect(writes).toBe(1);
+    expect(states).toHaveLength(2);
+    expect(states[1]).toEqual(states[0]);
+    expect(states[0]![0]).toMatchObject({ bypass: "on", key: true });
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it.each(["changed", "cleared"] as const)(
+    "rejects stale owner setup after ownership is %s during secret preparation",
+    async (change) => {
+      const secrets = new EncryptedSecretStore("synthetic-stale-owner-key");
+      const provider = {
+        listConnectedExternalIds: vi.fn(async () => {
+          assertTenant();
+          return [];
+        }),
+      } as unknown as ManagedConnectorProvider;
+      const settings = new IntegrationProviderSettings(
+        runtime.prisma,
+        secrets,
+        "synthetic-identity",
+        {},
+        () => provider,
+      );
+      await inTenant(() =>
+        settings.save({ provider: "composio", apiKey: "synthetic-working-key" }, context()),
+      );
+      const previous = await owner.prisma.integrationProviderConfig.findUniqueOrThrow({
+        where: { id: "composio" },
+      });
+      const originalPut = secrets.put.bind(secrets);
+      let candidate: Awaited<ReturnType<typeof originalPut>> | undefined;
+      vi.spyOn(secrets, "put").mockImplementation(async (...args) => {
+        assertTenant();
+        candidate = await originalPut(...args);
+        await owner.prisma.deploymentSettings.update({
+          where: { id: "default" },
+          data: { ownerUserId: change === "changed" ? userB : null },
+        });
+        return candidate;
+      });
+      const deleted = vi.spyOn(secrets, "delete");
+      const call = await integrationRpc(settings, runtime.prisma);
+      try {
+        const response = await call("integrationSetup/save", {
+          provider: "composio",
+          apiKey: "synthetic-stale-owner-key",
+        });
+        expect(response.status).toBe(400);
+        expect(await response.text()).toContain("Could not verify or save these credentials");
+        expect(
+          await owner.prisma.integrationProviderConfig.findUnique({ where: { id: "composio" } }),
+        ).toEqual(previous);
+        expect(candidate).toBeDefined();
+        expect(candidate!.ciphertext).not.toBe(previous.ciphertext);
+        expect(deleted).toHaveBeenCalledExactlyOnceWith(
+          candidate!.ciphertext,
+          "integration-provider:composio",
+        );
+        await inTenant(async () => {
+          expect(await settings.resolve("composio")).toBe(provider);
+          expect(await runtime.prisma.integrationProviderConfig.count()).toBe(0);
+          assertTenant();
+        });
+        expect(runtime.pool.waitingCount).toBe(0);
+      } finally {
+        await owner.prisma.deploymentSettings.update({
+          where: { id: "default" },
+          data: { ownerUserId: userA },
+        });
+      }
+    },
+  );
+
   it("restores the held tenant after an error following the actual provider metadata query", async () => {
     const secrets = new EncryptedSecretStore("synthetic-integration-error-key");
     const provider = {

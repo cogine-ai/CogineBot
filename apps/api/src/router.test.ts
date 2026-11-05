@@ -20,6 +20,7 @@ import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
 import { parsePlatformModelAllowlist } from "@rakazo/core";
 import { openScreenCapability } from "@rakazo/core/node/screen-capability";
 import type { PrismaClient } from "@rakazo/db";
+import { withTransactionContext } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
@@ -1747,14 +1748,24 @@ describe("connections.complete", () => {
         $executeRaw: vi.fn(),
         $queryRaw: vi.fn(async () => []),
       };
-      const prisma = {
+      let transactionId = 0;
+      const raw = {
         ...client,
         $transaction: vi.fn(async (fn: (tx: typeof client) => Promise<unknown>) => {
           const started = elapsed;
           if (changed) ref = "replacement-ref";
           inTransaction = true;
           try {
-            const result = await fn(client);
+            const scope = { txId: `configured-provider-fixture-${++transactionId}` };
+            const result = await fn(
+              new Proxy(client, {
+                get(target, property, receiver) {
+                  return property === Symbol.for("prisma.client.transaction.scope_context")
+                    ? scope
+                    : Reflect.get(target, property, receiver);
+                },
+              }),
+            );
             expect(elapsed - started).toBeLessThan(5_000);
             return result;
           } finally {
@@ -1762,6 +1773,8 @@ describe("connections.complete", () => {
           }
         }),
       };
+      Object.assign(raw, { $extends: () => raw });
+      const prisma = withTransactionContext(raw as unknown as PrismaClient);
       const complete = vi.fn(async () => ({ connectionRef: "gmail" }));
       const revoke = vi.fn(async () => undefined);
       const adapter = {
