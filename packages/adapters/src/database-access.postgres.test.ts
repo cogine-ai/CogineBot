@@ -785,6 +785,44 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     });
   });
 
+  it.each(["public", "graphile_worker", "cogine_private", "pg_catalog"])(
+    "rejects function grant options in %s",
+    async (schema) => {
+      const fn = `${escapeIdentifier(schema)}.${escapeIdentifier(`delegation_probe_${suffix}`)}()`;
+      await owner.pool.query(`CREATE FUNCTION ${fn} RETURNS integer LANGUAGE sql AS 'SELECT 7'`);
+      await owner.pool.query(`REVOKE EXECUTE ON FUNCTION ${fn} FROM PUBLIC`);
+      await owner.pool.query(
+        `GRANT EXECUTE ON FUNCTION ${fn} TO ${escapeIdentifier(login)} WITH GRANT OPTION`,
+      );
+      try {
+        const prepared = (await describeRowSecurity(runtime!.prisma)).prepared;
+        let rejected = false;
+        try {
+          await provisionRuntimeRole(databaseUrl!, runtimeUrl);
+        } catch {
+          rejected = true;
+        }
+        if (schema === "public") {
+          const outsider = `${login}_function_outsider`;
+          await createLogin(outsider);
+          const client = createDb(urlFor(outsider, password), { poolMax: 1 });
+          try {
+            await expect(client.pool.query(`SELECT ${fn}`)).rejects.toMatchObject({
+              code: "42501",
+            });
+            await runtime!.pool.query(`GRANT EXECUTE ON FUNCTION ${fn} TO PUBLIC`);
+            expect((await client.pool.query(`SELECT ${fn} AS value`)).rows).toEqual([{ value: 7 }]);
+          } finally {
+            await close(client);
+          }
+        }
+        expect({ prepared, rejected }).toEqual({ prepared: false, rejected: true });
+      } finally {
+        await owner.pool.query(`DROP FUNCTION ${fn}`);
+      }
+    },
+  );
+
   it("rejects executable TRIGGER authority on application tables", async () => {
     const table = `public.${escapeIdentifier(probeTable)}`;
     const trigger = escapeIdentifier(`unsafe_trigger_${suffix}`);
@@ -1580,6 +1618,10 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
           .rows,
       ).toEqual([]);
       expect(failure).toBeDefined();
+      expect((failure as { stderr?: string }).stderr).toContain(
+        "Database preparation requires the migration URL to select the public schema",
+      );
+      expect((failure as { stderr?: string }).stderr).not.toContain(password);
     } finally {
       await owner.pool.query(`DROP SCHEMA IF EXISTS ${escapeIdentifier(shadow)} CASCADE`);
     }

@@ -9,6 +9,7 @@ import {
   provisionRuntimeRole,
   SINGLE_DATABASE_URL_WARNING,
 } from "@rakazo/db";
+import { formatDatabasePreparationFailure } from "./migrate-database-error.js";
 
 async function main() {
   loadRootEnv();
@@ -54,10 +55,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  const sqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? ` (${code})` : "";
-  process.stderr.write(
-    `Database preparation failed${sqlState}. Check the administrator connection, runtime role grants, and credential configuration.\n`,
-  );
+  process.stderr.write(formatDatabasePreparationFailure(error));
   process.exitCode = 1;
 });

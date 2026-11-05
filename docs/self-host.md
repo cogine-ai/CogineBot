@@ -57,6 +57,12 @@ claim to protect against later administrator changes. With one database login,
 the command verifies the actual runtime URL before running migrations, including
 its credential, and still reports that row-level security is not enforced.
 
+Command failures include a generic preparation hint and, when available, a
+SQLSTATE. Recognized preparation errors also include a safe remediation message,
+such as selecting the public schema or precreating the required runtime role.
+Unknown connection and server error text, credentials and exception details are
+omitted from this command's failure message.
+
 Each database has its own grant role, named `coginebot_app_<database-oid>`. For
 precreated roles, obtain the name with
 `SELECT 'coginebot_app_' || oid FROM pg_catalog.pg_database WHERE datname = current_database()`.

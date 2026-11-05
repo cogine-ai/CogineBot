@@ -174,7 +174,7 @@ function rolePrivileges(login?: string) {
             OR pg_catalog.has_sequence_privilege(p.oid, c.oid,
               'USAGE WITH GRANT OPTION,SELECT WITH GRANT OPTION,UPDATE WITH GRANT OPTION')))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
-          WHERE n.nspname = 'graphile_worker'
+          WHERE n.nspname IN ('public', 'graphile_worker', 'cogine_private', 'pg_catalog')
             AND pg_catalog.has_function_privilege(p.oid, f.oid, 'EXECUTE WITH GRANT OPTION'))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
           WHERE c.relkind IN ('r','p','v','m','f')
