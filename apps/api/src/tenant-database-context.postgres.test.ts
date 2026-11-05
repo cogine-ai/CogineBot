@@ -411,6 +411,112 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     expect(runtime.pool.waitingCount).toBe(0);
   });
 
+  it("recovers transfer receipts through persisted ownership while enforcing real sessions and revisions", async () => {
+    const caller = await account("Transfer");
+    const bot = await owner.prisma.bot.create({
+      data: { ...scope(caller.actor), name: "Transfer context", color: "blue" },
+    });
+    const otherBot = await owner.prisma.bot.create({
+      data: { ...scope(caller.actor), name: "Other transfer context", color: "green" },
+    });
+    const clientNonce = randomUUID();
+    const input = { targetBotId: bot.id, sourceOrigin: "https://source.example.test", clientNonce };
+    const created = await rpc<{ transferId: string; revision: number; phase: string }>(
+      caller.cookie,
+      "transfer/start",
+      input,
+    );
+    expect(created.phase).toBe("created");
+    const statusInput = { transferId: created.transferId };
+    const nonceInput = { side: "target", clientNonce };
+    expect(await rpc(caller.cookie, "transfer/status", nonceInput)).toEqual(created);
+    expect(
+      await rpc(caller.cookie, "transfer/status", statusInput, "missing-selected-space"),
+    ).toEqual(created);
+    const otherSpace = await rpc<{ id: string }>(caller.cookie, "spaces/create", {
+      name: "Other transfer Space",
+    });
+    expect(await rpc(caller.cookie, "transfer/status", statusInput, otherSpace.id)).toEqual(
+      created,
+    );
+    const recent = await rpc<Array<{ transferId: string }>>(
+      caller.cookie,
+      "transfer/recent",
+      { botId: bot.id },
+      caller.actor.spaceId,
+    );
+    expect(recent.map((item) => item.transferId)).toContain(created.transferId);
+    const before = await owner.prisma.deploymentTransferSession.findUniqueOrThrow({
+      where: { id: created.transferId },
+    });
+    expect((await raw("", "transfer/status", statusInput)).status).toBe(401);
+    expect((await raw(second.cookie, "transfer/status", statusInput)).status).toBe(404);
+    expect(
+      (await raw(caller.cookie, "transfer/start", input, "missing-selected-space")).status,
+    ).toBe(403);
+    expect(
+      (
+        await raw(
+          caller.cookie,
+          "transfer/start",
+          { ...input, targetBotId: otherBot.id },
+          caller.actor.spaceId,
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await raw(
+          caller.cookie,
+          "transfer/cancel",
+          {
+            transferId: created.transferId,
+            expectedRevision: created.revision + 1,
+          },
+          caller.actor.spaceId,
+        )
+      ).status,
+    ).toBe(409);
+    const membership = await owner.prisma.spaceMember.findFirstOrThrow({
+      where: scope(caller.actor),
+    });
+    await owner.prisma.spaceMember.delete({ where: { id: membership.id } });
+    try {
+      // The existing Space lifecycle lock rejects missing membership before
+      // the protocol session check; its sanitized public response is 400.
+      expect((await raw(caller.cookie, "transfer/status", statusInput, otherSpace.id)).status).toBe(
+        400,
+      );
+    } finally {
+      await owner.prisma.spaceMember.create({ data: membership });
+    }
+    const session = await owner.prisma.session.findUniqueOrThrow({
+      where: { id: before.localSessionId },
+    });
+    await owner.prisma.session.update({
+      where: { id: session.id },
+      data: { expiresAt: new Date(0) },
+    });
+    try {
+      expect((await raw(caller.cookie, "transfer/status", statusInput, otherSpace.id)).status).toBe(
+        401,
+      );
+    } finally {
+      await owner.prisma.session.upsert({
+        where: { id: session.id },
+        create: session,
+        update: { expiresAt: session.expiresAt },
+      });
+    }
+    expect(
+      await owner.prisma.deploymentTransferSession.findUniqueOrThrow({
+        where: { id: created.transferId },
+      }),
+    ).toEqual(before);
+    expect(await runtime.prisma.deploymentTransferSession.count()).toBe(0);
+    expect(runtime.pool.waitingCount).toBe(0);
+  });
+
   it("resolves sealed screen capabilities after authentication while preserving lifecycle fences", async () => {
     const botId = randomUUID();
     const computer = await owner.prisma.computer.create({
@@ -465,6 +571,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     await runAsTenant(alien, async () => {
       expect(await runtime.prisma.bot.findUnique({ where: { id: bot.id } })).toBeNull();
       expect((await request(screenSecret)).status).toBe(200);
+      expect(botReads).toBeGreaterThan(before);
       expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
     });
     await owner.prisma.computer.update({

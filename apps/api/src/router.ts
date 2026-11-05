@@ -1016,6 +1016,9 @@ export function createRouter(deps: RouterDeps) {
     const actor = authenticatedActor(context);
     return asTenant(actor, () => next({ context: { ...context, actor } }));
   });
+  const transferProtocol = os.use(({ next }) =>
+    runAsSystem("deployment transfer RPC", () => next()),
+  );
 
   const newWork = authed.use(async ({ context, next }) => {
     await deps.billing?.assertAccess(context.actor);
@@ -4566,20 +4569,30 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     transfer: {
-      start: os.transfer.start.handler(({ context, input }) => transfer.start(context, input)),
-      preview: os.transfer.preview.handler(({ context, input }) =>
+      start: transferProtocol.transfer.start.handler(({ context, input }) =>
+        transfer.start(context, input),
+      ),
+      preview: transferProtocol.transfer.preview.handler(({ context, input }) =>
         transfer.preview(context, input),
       ),
-      propose: os.transfer.propose.handler(({ context, input }) =>
+      propose: transferProtocol.transfer.propose.handler(({ context, input }) =>
         transfer.propose(context, input),
       ),
-      approve: os.transfer.approve.handler(({ context, input }) =>
+      approve: transferProtocol.transfer.approve.handler(({ context, input }) =>
         transfer.approve(context, input),
       ),
-      commit: os.transfer.commit.handler(({ context, input }) => transfer.commit(context, input)),
-      status: os.transfer.status.handler(({ context, input }) => transfer.status(context, input)),
-      recent: os.transfer.recent.handler(({ context, input }) => transfer.recent(context, input)),
-      cancel: os.transfer.cancel.handler(({ context, input }) => transfer.cancel(context, input)),
+      commit: transferProtocol.transfer.commit.handler(({ context, input }) =>
+        transfer.commit(context, input),
+      ),
+      status: transferProtocol.transfer.status.handler(({ context, input }) =>
+        transfer.status(context, input),
+      ),
+      recent: transferProtocol.transfer.recent.handler(({ context, input }) =>
+        transfer.recent(context, input),
+      ),
+      cancel: transferProtocol.transfer.cancel.handler(({ context, input }) =>
+        transfer.cancel(context, input),
+      ),
     },
     botPackages: {
       preview: authed.botPackages.preview.handler(({ context, input }) =>
