@@ -69,9 +69,15 @@ precreated roles, obtain the name with
 Create that restricted `NOLOGIN` grant role and give it to the runtime login when
 the migration account cannot create roles. Keep monitoring and administration
 on separate logins; extra server authority and permission delegation are rejected.
-Each managed grant role grants access to its own database. Additional memberships
-and direct grants remain administrator-controlled. Reusing one login across
-databases intentionally shares that login's authority.
+Each managed grant role grants access to its own database. Its canonical
+`coginebot_app_<database-oid>` identity must not be selected as another database's
+runtime login, including when its original database no longer exists. Existing
+foreign managed identities are rejected before managed authorization changes:
+granting a new database's role to them would also authorize their existing
+inheriting members. Use an ordinary runtime login instead. Additional memberships
+and direct grants remain administrator-controlled. Deliberately reusing an
+ordinary login across databases still shares that login's authority; membership
+in a foreign grant group alone does not make that ordinary login a managed group.
 
 A precreated grant role must be `NOLOGIN` unless it is itself the configured
 runtime login. Preparation and readiness reject a separately authenticating

@@ -1452,6 +1452,184 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     }
   });
 
+  it.each(["1", "0", "01", "4294967296", "99999999999", "custom", "1-extra"])(
+    "checks only canonical foreign identities under normal and switched roles: %s",
+    async (suffix) => {
+      const name = `${RUNTIME_ROLE}_${suffix}`;
+      await createLogin(name);
+      await owner.pool.query(`GRANT ${escapeIdentifier(grantRole)} TO ${escapeIdentifier(name)}`);
+      const url = urlFor(name, password);
+      const normal = createDb(url, { poolMax: 1, rowSecurity: true });
+      const switchedUrl = new URL(url);
+      switchedUrl.searchParams.set("options", `-crole=${grantRole}`);
+      const switched = createDb(switchedUrl.toString(), { poolMax: 1, rowSecurity: true });
+      try {
+        expect(
+          (await normal.pool.query("SELECT current_user AS role, session_user AS login")).rows,
+        ).toEqual([{ role: name, login: name }]);
+        expect(
+          (await switched.pool.query("SELECT current_user AS role, session_user AS login")).rows,
+        ).toEqual([{ role: grantRole, login: name }]);
+        expect(
+          (
+            await runAsSystem("canonical identity fixture", () =>
+              normal.pool.query("SELECT public.app_rls_bypass() AS allowed"),
+            )
+          ).rows,
+        ).toEqual([{ allowed: true }]);
+        const prepared = suffix !== "1";
+        expect(await describeRowSecurity(normal.prisma)).toMatchObject({
+          prepared,
+          enforced: false,
+        });
+        expect(await describeRowSecurity(switched.prisma)).toMatchObject({
+          prepared,
+          enforced: false,
+        });
+      } finally {
+        await close(normal);
+        await close(switched);
+      }
+    },
+  );
+
+  it.each(["managed", "orphan", "ordinary"])(
+    "keeps foreign managed recipients from extending their members: %s",
+    async (kind) => {
+      const database = `recipient_${kind}_${suffix}`;
+      await owner.pool.query(`CREATE DATABASE ${escapeIdentifier(database)}`);
+      const ownerUrl = new URL(databaseUrl!);
+      ownerUrl.pathname = `/${database}`;
+      const peerOwner = createDb(ownerUrl.toString(), { poolMax: 1 });
+      const victimLogin = `${login}_recipient_${kind}`;
+      await createLogin(victimLogin);
+      const selectedGroup = kind === "orphan" ? `${RUNTIME_ROLE}_4294967295` : grantRole;
+      const groupPassword = randomBytes(24).toString("hex");
+      const originalVerifier = (
+        await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [grantRole])
+      ).rows[0].rolpassword;
+      if (kind === "orphan") {
+        allocated.add(selectedGroup);
+        expect(
+          (await owner.pool.query("SELECT 1 FROM pg_database WHERE oid=4294967295::oid")).rowCount,
+        ).toBe(0);
+        await owner.pool.query(
+          `CREATE ROLE ${escapeIdentifier(selectedGroup)} LOGIN PASSWORD ${escapeLiteral(groupPassword)}`,
+        );
+      } else if (kind === "managed") {
+        await owner.pool.query(
+          `ALTER ROLE ${escapeIdentifier(selectedGroup)} LOGIN PASSWORD ${escapeLiteral(groupPassword)}`,
+        );
+      }
+      await owner.pool.query(
+        `GRANT ${escapeIdentifier(selectedGroup)} TO ${escapeIdentifier(victimLogin)}`,
+      );
+      const selectedLogin = kind === "ordinary" ? login : selectedGroup;
+      const selectedSecret = kind === "ordinary" ? password : groupPassword;
+      const selectedUrl = new URL(urlFor(selectedLogin, selectedSecret));
+      selectedUrl.pathname = `/${database}`;
+      const victimUrl = new URL(urlFor(victimLogin, password));
+      victimUrl.pathname = `/${database}`;
+      const victim = createDb(victimUrl.toString(), { poolMax: 1 });
+      const selected = createDb(selectedUrl.toString(), { poolMax: 1, rowSecurity: true });
+      const sourceVictim = createDb(urlFor(victimLogin, password), { poolMax: 1 });
+      try {
+        await peerOwner.pool.query(
+          await readFile(
+            new URL(
+              "../../db/prisma/migrations/20261105023000_database_context_bypass_guard/migration.sql",
+              import.meta.url,
+            ),
+            "utf8",
+          ),
+        );
+        await peerOwner.pool.query(
+          "CREATE TABLE public.recipient_probe(id integer); INSERT INTO public.recipient_probe VALUES(9)",
+        );
+        await migrateJobQueue(ownerUrl.toString());
+        await peerOwner.pool.query(
+          "SELECT graphile_worker.add_job('recipient-fixture','{\"source\":\"fixture\"}'::json)",
+        );
+        const targetGroup = (
+          await peerOwner.pool.query(
+            "SELECT 'coginebot_app_'||oid::text AS name FROM pg_database WHERE datname=current_database()",
+          )
+        ).rows[0].name as string;
+        allocated.add(targetGroup);
+        async function victimAccess() {
+          expect((await victim.pool.query("SELECT 1 AS ok")).rows).toEqual([{ ok: 1 }]);
+          const application = await victim.pool.query("SELECT id FROM public.recipient_probe").then(
+            () => true,
+            () => false,
+          );
+          const queue = await victim.pool
+            .query("SELECT payload FROM graphile_worker._private_jobs")
+            .then(
+              () => true,
+              () => false,
+            );
+          return { application, queue };
+        }
+        expect(await victimAccess()).toEqual({ application: false, queue: false });
+        if (kind !== "orphan")
+          expect(
+            (await sourceVictim.pool.query(`SELECT id FROM public.${escapeIdentifier(probeTable)}`))
+              .rows,
+          ).toEqual([{ id: 1 }]);
+        const verifier = (
+          await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [
+            selectedLogin,
+          ])
+        ).rows[0].rolpassword;
+        let failure: unknown;
+        try {
+          await provisionRuntimeRole(ownerUrl.toString(), selectedUrl.toString());
+        } catch (error) {
+          failure = error;
+        }
+        const after = await victimAccess();
+        const keys = (
+          await peerOwner.pool.query(
+            "SELECT count(*)::int AS total FROM cogine_private.rls_bypass_keys",
+          )
+        ).rows[0].total;
+        expect({ accepted: failure === undefined, ...after, keys }).toEqual(
+          kind === "ordinary"
+            ? { accepted: true, application: false, queue: false, keys: 1 }
+            : { accepted: false, application: false, queue: false, keys: 0 },
+        );
+        if (kind === "ordinary") {
+          expect((await selected.pool.query("SELECT id FROM public.recipient_probe")).rows).toEqual(
+            [{ id: 9 }],
+          );
+          expect(await describeRowSecurity(selected.prisma)).toMatchObject({ prepared: true });
+        } else {
+          expect(failure).toBeInstanceOf(Error);
+          expect((failure as Error).message).toContain("privileged");
+        }
+        expect(
+          (
+            await owner.pool.query("SELECT rolpassword FROM pg_authid WHERE rolname=$1", [
+              selectedLogin,
+            ])
+          ).rows[0].rolpassword,
+        ).toBe(verifier);
+        if (kind !== "orphan")
+          expect(
+            (await sourceVictim.pool.query(`SELECT id FROM public.${escapeIdentifier(probeTable)}`))
+              .rows,
+          ).toEqual([{ id: 1 }]);
+      } finally {
+        for (const client of [victim, selected, sourceVictim, peerOwner]) await close(client);
+        await owner.pool.query(`DROP DATABASE ${escapeIdentifier(database)} WITH (FORCE)`);
+        if (kind === "managed")
+          await owner.pool.query(
+            `ALTER ROLE ${escapeIdentifier(grantRole)} NOLOGIN PASSWORD ${originalVerifier === null ? "NULL" : escapeLiteral(originalVerifier)}`,
+          );
+      }
+    },
+  );
+
   it.each(["different", "group"])(
     "limits a precreated LOGIN grant group to its configured identity: %s",
     async (selected) => {
@@ -1522,10 +1700,17 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
         ).rows[0].rolpassword;
         const runtime = url(selectedLogin, selected === "group" ? groupPassword : password);
         let accepted = false;
+        let failure: unknown;
         try {
           await provisionRuntimeRole(ownerUrl.toString(), runtime);
           accepted = true;
-        } catch {}
+        } catch (error) {
+          failure = error;
+        }
+        if (selected === "different") {
+          expect(failure).toBeInstanceOf(Error);
+          expect((failure as Error).message).toContain("not restricted");
+        }
         const after = await access();
         const keys = (
           await peer.pool.query("SELECT count(*)::int AS total FROM cogine_private.rls_bypass_keys")

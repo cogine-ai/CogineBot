@@ -131,7 +131,11 @@ function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
         WHERE n.nspname IN ('public', 'cogine_private', 'graphile_worker', 'pg_catalog')
           AND pg_catalog.pg_has_role(r.oid, f.proowner, 'MEMBER'))) AS owns,
-    (EXISTS (SELECT 1 FROM pg_catalog.pg_roles p
+    (CASE WHEN r.rolname ~ ${`^${RUNTIME_ROLE}_[1-9][0-9]{0,9}$`}
+      THEN pg_catalog.substr(r.rolname, ${RUNTIME_ROLE.length + 2})::pg_catalog.numeric <= 4294967295
+        AND r.rolname <> ${runtimeGrantRole}
+      ELSE false END
+      OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles p
       WHERE pg_catalog.pg_has_role(r.oid, p.oid, 'MEMBER') AND (
         p.rolsuper OR p.rolbypassrls OR p.rolcreatedb OR p.rolcreaterole OR p.rolreplication
         OR pg_catalog.left(p.rolname, 3) = 'pg_'
