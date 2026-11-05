@@ -10,6 +10,7 @@ import { createDb } from "./client.js";
 import { PrismaClient } from "./generated/prisma/client.js";
 import {
   asSystem,
+  currentDbContext,
   installDbContext,
   rlsBypassKey,
   runAsSystem,
@@ -54,6 +55,62 @@ describePostgres("database execution contexts (isolated PostgreSQL)", () => {
         SELECT app_rls_bypass() AS allowed`;
       expect(result).toEqual([{ allowed: false }]);
     });
+  });
+});
+
+describePostgres("staged transaction context compatibility (isolated PostgreSQL)", () => {
+  it("binds default-mode transactions without changing ordinary queries or connection settings", async () => {
+    const db = createDb(databaseUrl!, { poolMax: 1 });
+    const tenant = { spaceId: "binding-space", userId: "binding-user" };
+    type Settings = {
+      pid: number;
+      space: string | null;
+      bypass: string | null;
+      key: string | null;
+    };
+    try {
+      await runAsTenant(tenant, () =>
+        db.prisma.$transaction(async (tx) => {
+          const read = () => tx.$queryRaw<Settings[]>`
+            SELECT pg_backend_pid() AS pid, current_setting('app.space_id', true) AS space,
+              current_setting('app.rls_bypass', true) AS bypass,
+              current_setting('app.rls_bypass_key', true) AS key`;
+          const before = await read();
+          await runAsSystemInTransaction(
+            tx,
+            "read deployment metadata in compatible mode",
+            async () => {
+              expect(currentDbContext()).toEqual({
+                kind: "system",
+                reason: "read deployment metadata in compatible mode",
+              });
+              expect(await read()).toEqual(before);
+            },
+          );
+          expect(currentDbContext()).toEqual({ kind: "tenant", ...tenant });
+          expect(await read()).toEqual(before);
+          await expect(
+            runAsSystemInTransaction(tx, "failed compatible metadata read", async () => {
+              throw new Error("Synthetic metadata failure");
+            }),
+          ).rejects.toThrow("Synthetic metadata failure");
+          expect(currentDbContext()).toEqual({ kind: "tenant", ...tenant });
+          expect(await read()).toEqual(before);
+        }),
+      );
+      expect(
+        await runAsTenant(tenant, () =>
+          db.prisma.$transaction([
+            db.prisma.$queryRaw`SELECT 1 AS value`,
+            db.prisma.$queryRaw`SELECT 2 AS value`,
+          ]),
+        ),
+      ).toEqual([[{ value: 1 }], [{ value: 2 }]]);
+      expect(db.pool.waitingCount).toBe(0);
+    } finally {
+      await db.prisma.$disconnect();
+      await db.pool.end();
+    }
   });
 });
 

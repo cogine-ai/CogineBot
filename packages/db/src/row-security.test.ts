@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "./client.js";
-import type { PrismaClient } from "./generated/prisma/client.js";
+import type { Prisma, PrismaClient } from "./generated/prisma/client.js";
 import {
   asSystem,
   currentDbContext,
@@ -13,6 +13,7 @@ import {
   runAsSystemInTransaction,
   runAsTenant,
   withRowLevelSecurity,
+  withTransactionContext,
 } from "./row-security.js";
 
 afterEach(() => {
@@ -404,7 +405,7 @@ describe("transaction identity", () => {
   );
 });
 
-function isolatedTransactionBoundary() {
+function isolatedTransactionBoundary(rowSecurity = true) {
   type Call = {
     model?: string;
     operation: string;
@@ -463,7 +464,10 @@ function isolatedTransactionBoundary() {
       return this;
     },
   } as unknown as PrismaClient;
-  return { client: withRowLevelSecurity(raw, "key-a"), options };
+  return {
+    client: rowSecurity ? withRowLevelSecurity(raw, "key-a") : withTransactionContext(raw),
+    options,
+  };
 }
 
 describe("system transaction isolation", () => {
@@ -509,37 +513,107 @@ describe("system transaction isolation", () => {
     });
   });
 
-  it("reserves an ordinary query through downstream awaits before allowing system entry", async () => {
-    const f = isolatedTransactionBoundary();
+  it.each([true, false])(
+    "reserves an ordinary query through downstream awaits before allowing system entry (row security=%s)",
+    async (rowSecurity) => {
+      const f = isolatedTransactionBoundary(rowSecurity);
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      f.options.pauseRead = async () => {
+        entered();
+        await barrier;
+      };
+      await runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
+        f.client.$transaction(async (tx) => {
+          const pending = tx.thread.findMany();
+          await started;
+          try {
+            await expect(
+              runAsSystemInTransaction(tx, "unsafe overlap with read", async () => undefined),
+            ).rejects.toThrow("Concurrent system transaction access");
+          } finally {
+            release();
+          }
+          expect(await pending).toEqual([{ id: "visible-row" }]);
+          await expect(
+            runAsSystemInTransaction(tx, "safe sequential step", async () => "done"),
+          ).resolves.toBe("done");
+        }),
+      );
+    },
+  );
+
+  it("rejects sibling queries and late reuse in compatibility mode", async () => {
+    const f = isolatedTransactionBoundary(false);
+    let closed!: Prisma.TransactionClient;
+    await runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
+      f.client.$transaction(async (tx) => {
+        closed = tx;
+        let release!: () => void;
+        const barrier = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const pending = runAsSystemInTransaction(tx, "exclusive compatibility step", async () => {
+          expect(await tx.thread.findMany()).toEqual([{ id: "visible-row" }]);
+          entered();
+          await barrier;
+        });
+        await started;
+        try {
+          await expect(tx.thread.findMany()).rejects.toThrow(
+            "Concurrent system transaction access",
+          );
+          await expect(
+            runAsSystemInTransaction(tx, "sibling compatibility step", async () => undefined),
+          ).rejects.toThrow("Concurrent system transaction access");
+        } finally {
+          release();
+          await pending;
+        }
+      }),
+    );
+    await expect(
+      runAsSystemInTransaction(closed, "late compatibility step", async () => undefined),
+    ).rejects.toThrow("Concurrent system transaction access");
+  });
+
+  it("requires rollback for an unfinished compatibility query and rejects unbound clients", async () => {
+    const f = isolatedTransactionBoundary(false);
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let entered!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    f.options.pauseRead = async () => {
-      entered();
-      await barrier;
-    };
-    await runAsTenant({ spaceId: "space-a", userId: "user-a" }, () =>
-      f.client.$transaction(async (tx) => {
-        const pending = tx.thread.findMany();
-        await started;
-        try {
+    let pending: Promise<unknown> | undefined;
+    f.options.pauseRead = () => barrier;
+    try {
+      await expect(
+        f.client.$transaction(async (tx) => {
           await expect(
-            runAsSystemInTransaction(tx, "unsafe overlap with read", async () => undefined),
+            runAsSystemInTransaction(tx, "unfinished compatibility read", async () => {
+              pending = tx.thread.findMany();
+            }),
           ).rejects.toThrow("Concurrent system transaction access");
-        } finally {
-          release();
-        }
-        expect(await pending).toEqual([{ id: "visible-row" }]);
-        await expect(
-          runAsSystemInTransaction(tx, "safe sequential step", async () => "done"),
-        ).resolves.toBe("done");
-      }),
-    );
+        }),
+      ).rejects.toThrow("Concurrent system transaction access");
+    } finally {
+      release();
+      await pending;
+    }
+    const query = vi.fn();
+    await expect(
+      runAsSystemInTransaction({ $queryRaw: query }, "unknown raw client", async () => undefined),
+    ).rejects.toThrow("context-aware interactive transaction");
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("keeps a failed restore unusable even if the callback catches its error", async () => {

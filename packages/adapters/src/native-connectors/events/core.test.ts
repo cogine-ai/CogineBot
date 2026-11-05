@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type {
   NativeEventObservation,
   NativeEventScope,
@@ -13,6 +13,7 @@ import {
   nativeEventResource,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { currentDbContext, runAsTenant, withTransactionContext } from "@rakazo/db";
 import { it as test } from "vitest";
 import {
   calendarChannelTokenHash,
@@ -131,6 +132,7 @@ function database(
     existingRun?: { id: string; taskId: string };
     hasOtherTrigger?: boolean;
     fail?: string;
+    protectMetadata?: boolean;
   } = {},
 ) {
   const binding = options.binding ?? row();
@@ -140,9 +142,12 @@ function database(
   const api = {
     $queryRaw: async (query: Query) => {
       queries.push(query);
+      if (options.protectMetadata && query.sql.includes("FROM native_app_configs"))
+        assert.equal(currentDbContext()?.kind, "system");
       if (options.fail && query.sql.includes(options.fail))
         throw new Error("synthetic SQL failure");
       if (query.sql.includes("native-event:connection")) {
+        if (options.protectMetadata && currentDbContext()?.kind !== "system") return [];
         assert.ok(
           query.sql.includes('c."userId"=') &&
             query.sql.includes('c."spaceId"=') &&
@@ -172,6 +177,8 @@ function database(
       if (query.sql.includes("native-event:lease"))
         return [{ ...binding, leaseId: "new-lease", leaseUntil: new Date(NOW.getTime() + 120000) }];
       if (query.sql.includes("native-event:update") || query.sql.includes("native-event:insert")) {
+        if (options.protectMetadata)
+          assert.deepEqual(currentDbContext(), { kind: "tenant", ...scope });
         writes.push({ table: "binding", args: { values: query.values } });
         return [{ ...binding, version: binding.version + 1 }];
       }
@@ -217,10 +224,20 @@ function database(
       },
     },
   };
-  const db = {
+  const db = withTransactionContext({
     ...api,
-    $transaction: async (fn: (tx: typeof api) => Promise<unknown>) => fn(api),
-  } as unknown as PrismaClient;
+    $extends() {
+      return this;
+    },
+    $transaction: async (fn: (tx: typeof api) => Promise<unknown>) =>
+      fn({
+        ...api,
+        [Symbol.for("prisma.client.transaction.scope_context")]: {
+          txId: randomUUID(),
+          kind: "nested",
+        },
+      } as typeof api),
+  } as unknown as PrismaClient);
   return { db, queries, writes };
 }
 const SPECS: NativeRoutineEventSpec[] = [
@@ -241,6 +258,38 @@ const SPECS: NativeRoutineEventSpec[] = [
     target: { type: "discussion", discussionId: DISCUSSION, anchorBlockId: BLOCK, pageId: PAGE },
   },
 ];
+
+test("replaces native triggers from a tenant while global metadata stays a narrow system step", async () => {
+  const { db, writes } = database({ protectMetadata: true });
+  const spec = SPECS[0]!;
+  const binding = snapshot();
+  const proof = {
+    ...scope,
+    connectionId: binding.connectionId,
+    authorizationRevision: binding.authorizationRevision,
+    grantId: binding.grantId,
+    authGeneration: binding.authGeneration,
+    configId: binding.configId,
+    configRevision: binding.configRevision,
+    appId: "google-calendar" as const,
+    resource: nativeEventResource(spec),
+    spec,
+  };
+  await runAsTenant(scope, () =>
+    db.$transaction(async (tx) => {
+      const saved = await replaceNativeRoutineTriggersTx(
+        tx,
+        scope,
+        "routine-a",
+        [{ input: { connectionId: binding.connectionId, spec }, proof }],
+        NOW,
+      );
+      assert.equal(saved.length, 1);
+      assert.deepEqual(currentDbContext(), { kind: "tenant", ...scope });
+      assert.equal(writes.filter((item) => item.table === "binding").length, 1);
+    }),
+  );
+});
 for (const spec of SPECS)
   test(`strict contract and resource matching: ${spec.kind}`, () => {
     const input = NativeRoutineTriggerInputSchema.parse({ connectionId: "connection-a", spec });

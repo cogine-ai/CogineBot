@@ -116,6 +116,7 @@ async function main() {
     "packages/testkit/src/executor-lifecycle.test.ts",
     "packages/testkit/src/connections.test.ts",
     "packages/adapters/src/native-connectors/config.postgres.test.ts",
+    "packages/adapters/src/native-connectors/mixed-context.postgres.test.ts",
     "packages/adapters/src/native-connectors/oauth.postgres.test.ts",
     remainingLifecycleSuite,
     "packages/adapters/src/native-connectors/mcp.postgres.test.ts",

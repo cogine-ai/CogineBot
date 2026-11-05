@@ -9,7 +9,7 @@ import {
 } from "@rakazo/contracts";
 import { expandSkillReferencesInPrompt } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import { z } from "zod";
 import type { RemoteTransportDependencies } from "../../remote-mcp.js";
 import { listAgentSkillRecords } from "../../skill-tools.js";
@@ -339,8 +339,12 @@ export class NativeRoutineEventService {
         if (app === "gmail") {
           if (!settings.googleWatch) return;
           // Gmail has one watch per developer project/mailbox. A stable active source manages a fixed full-mailbox topic.
-          const leaders = await this.prisma.$queryRaw<Array<{ id: string }>>(
-            Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" JOIN bots b ON b.id=r."botId" WHERE t."configId"=${context.row.configId} AND t."configRevision"=${context.row.configRevision} AND g.subject=${subject} AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND c.provider='gmail' AND c."connectorId"='native' AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND a.enabled=true AND a.revision=t."configRevision" AND t.kind LIKE 'gmail.%' AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") ORDER BY t.id LIMIT 1`,
+          const leaders = await runAsSystem(
+            "choose the Gmail watch leader for the exact account",
+            () =>
+              this.prisma.$queryRaw<Array<{ id: string }>>(
+                Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" JOIN bots b ON b.id=r."botId" WHERE t."configId"=${context.row.configId} AND t."configRevision"=${context.row.configRevision} AND g.subject=${subject} AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND c.provider='gmail' AND c."connectorId"='native' AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND a.enabled=true AND a.revision=t."configRevision" AND t.kind LIKE 'gmail.%' AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") ORDER BY t.id LIMIT 1`,
+              ),
           );
           if (leaders[0]?.id === context.row.id)
             await ensureGmailWatch(watchContext, settings.googleWatch);
@@ -393,7 +397,9 @@ export class NativeRoutineEventService {
   }
   async notionSignal(raw: unknown, signal: AbortSignal): Promise<void> {
     const payload = NativeNotionSignalJobSchema.parse(raw),
-      hook = await this.hooks.load(payload.hookId, payload.hookRevision);
+      hook = await runAsSystem("load the verified Notion event hook", () =>
+        this.hooks.load(payload.hookId, payload.hookRevision),
+      );
     if (
       !hook ||
       payload.signal.integrationId !== hook.integrationId ||
@@ -410,8 +416,10 @@ export class NativeRoutineEventService {
     );
     if (!row?.leaseId) {
       // A signal job must retry a CURRENT busy source, not disappear behind a concurrent compensation poll.
-      const busy = await this.prisma.$queryRaw<Array<{ id: string }>>(
-        Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN bots b ON b.id=r."botId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND c."connectorId"='native' AND c.status='connected' AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."oauthGrantId"=g.id AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND g."authGeneration"=t."authGeneration" AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") AND t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId} AND t."configId"=${hook.configId} AND c.provider='notion' AND t."leaseUntil">now()`,
+      const busy = await runAsSystem("read the current Notion native source lease", () =>
+        this.prisma.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN bots b ON b.id=r."botId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE r.active=true AND b."archivedAt" IS NULL AND b."userId"=r."userId" AND b."spaceId"=r."spaceId" AND c."userId"=r."userId" AND c."spaceId"=r."spaceId" AND c."connectorId"='native' AND c.status='connected' AND c.metadata->>'authRevision'=t."authorizationRevision" AND c."oauthGrantId"=g.id AND c."nativeConfigId"=t."configId" AND c."nativeConfigRevision"=t."configRevision" AND g."userId"=r."userId" AND g."spaceId"=r."spaceId" AND g."authGeneration"=t."authGeneration" AND g."configId"=t."configId" AND g."configRevision"=t."configRevision" AND g."revokedAt" IS NULL AND g."secretId" IS NOT NULL AND a.enabled=true AND a.revision=t."configRevision" AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=r."userId" AND m."spaceId"=r."spaceId") AND t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId} AND t."configId"=${hook.configId} AND c.provider='notion' AND t."leaseUntil">now()`,
+        ),
       );
       if (busy.length)
         throw new NativeActionError(
@@ -602,10 +610,8 @@ export class NativeRoutineEventService {
   }
   async slackSignal(raw: unknown, signal: AbortSignal): Promise<void> {
     const payload = NativeSlackSignalJobSchema.parse(raw),
-      accepted = await this.slackHooks?.loadInbox(
-        payload.inboxId,
-        payload.hookId,
-        payload.hookRevision,
+      accepted = await runAsSystem("load the accepted Slack native event receipt", () =>
+        this.slackHooks?.loadInbox(payload.inboxId, payload.hookId, payload.hookRevision),
       );
     if (!accepted) return;
     const { hook, signal: event } = accepted,
@@ -618,8 +624,10 @@ export class NativeRoutineEventService {
       payload.triggerVersion,
     );
     if (!row?.leaseId) {
-      const busy = await this.prisma.$queryRaw<Array<{ id: string }>>(
-        Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND t."configId"=${hook.configId} AND t."configRevision"=${hook.configRevision} AND r.active=true AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND a.enabled=true AND a.revision=t."configRevision" AND t."leaseUntil">now()`,
+      const busy = await runAsSystem("read the current Slack native source lease", () =>
+        this.prisma.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`SELECT t.id FROM native_routine_triggers t JOIN routines r ON r.id=t."routineId" JOIN connections c ON c.id=t."connectionId" JOIN native_oauth_grants g ON g.id=t."grantId" JOIN native_app_configs a ON a.id=t."configId" WHERE t.id=${payload.triggerId} AND t.version=${payload.triggerVersion} AND t."configId"=${hook.configId} AND t."configRevision"=${hook.configRevision} AND r.active=true AND c.status='connected' AND c."oauthGrantId"=g.id AND c.metadata->>'authRevision'=t."authorizationRevision" AND g."authGeneration"=t."authGeneration" AND g."revokedAt" IS NULL AND a.enabled=true AND a.revision=t."configRevision" AND t."leaseUntil">now()`,
+        ),
       );
       if (busy.length)
         throw new NativeActionError(

@@ -7,11 +7,35 @@ import { deleteSecretBestEffort } from "./secret-store-factory.js";
 
 type Candidate = { id: string; ciphertext: string };
 type Cleanup = { old: Candidate[]; written: Candidate[]; client?: Prisma.TransactionClient };
+const preparedCleanup = new AsyncLocalStorage<Map<SecretStore, Candidate[]>>();
+
+/** Check prepared references with the base client after the physical transaction settles. */
+export async function deferPreparedSecretCleanup<T>(
+  prisma: PrismaClient,
+  work: () => Promise<T>,
+): Promise<T> {
+  if (preparedCleanup.getStore()) return work();
+  const pending = new Map<SecretStore, Candidate[]>();
+  try {
+    return await preparedCleanup.run(pending, work);
+  } finally {
+    for (const [store, candidates] of pending) await cleanupUnreferenced(prisma, store, candidates);
+  }
+}
+
 function cleanupUnreferenced(
   prisma: PrismaClient,
   store: SecretStore,
   candidates: Candidate[],
 ): Promise<void> {
+  const pending = preparedCleanup.getStore();
+  if (pending) {
+    const captured = candidates.map(({ id, ciphertext }) => ({ id, ciphertext }));
+    const queued = pending.get(store);
+    if (queued) queued.push(...captured);
+    else pending.set(store, captured);
+    return Promise.resolve();
+  }
   return runAsSystem("secret reference count", () => deleteUnreferenced(prisma, store, candidates));
 }
 

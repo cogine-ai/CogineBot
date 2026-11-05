@@ -35,6 +35,7 @@ export {
   runAsSystemInTransaction,
   runAsTenant,
   withRowLevelSecurity,
+  withTransactionContext,
 } from "./row-security.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";

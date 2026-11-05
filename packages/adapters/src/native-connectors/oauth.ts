@@ -3,10 +3,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterContext, SecretStore } from "@rakazo/adapter-kit";
 import { NativeRemainingAppIdSchema } from "@rakazo/contracts";
 import type { Connection, NativeAppConfig, NativeOAuthGrant, PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystem, runAsSystemInTransaction } from "@rakazo/db";
 import { asRecord } from "../connector-http.js";
 import { actorMayUsePrivateEndpoint } from "../private-endpoint.js";
-import { persistPreparedSecret } from "../secret-persistence.js";
+import { deferPreparedSecretCleanup, persistPreparedSecret } from "../secret-persistence.js";
 import { deferSecretNotifications } from "../secret-store-factory.js";
 import { NativeActionError } from "./action.js";
 import type {
@@ -16,11 +16,8 @@ import type {
   NativeTokenMaterial,
 } from "./authorities.js";
 import { DRIVE_PICKER_SCOPE, requireDrivePickerConfig } from "./authorities.js";
-import {
-  NativeConfigSettingsSchema,
-  type NativeConfigStore,
-  nativeConfigVisibleInSpace,
-} from "./config.js";
+import type { NativeConfigStore, NativeSystemStep } from "./config.js";
+import { NativeConfigSettingsSchema, nativeConfigVisibleInSpace } from "./config.js";
 import type { NativeMcpPending } from "./mcp.js";
 
 const TTL = 10 * 60_000;
@@ -44,6 +41,7 @@ export class NativeOAuthStore {
     private readonly configs: NativeConfigStore,
     private readonly authorities: NativeOAuthAuthorities,
     private readonly allowPrivateEndpoint = false,
+    private readonly systemStep: NativeSystemStep = runAsSystem,
   ) {}
 
   async begin(
@@ -1098,7 +1096,7 @@ export class NativeOAuthStore {
     const grant = connection?.oauthGrant;
     if (!connection || !grant || grant.revokedAt || !grant.secretId) throw unavailable();
     if (grant.userId !== context.userId || grant.spaceId !== context.spaceId) throw unavailable();
-    const config = await this.configs.require(grant.configId, this.prisma);
+    const config = await this.configs.require(grant.configId, this.prisma, this.systemStep);
     if (!nativeConfigVisibleInSpace(config, context.spaceId)) throw unavailable();
     if (
       config.revision !== grant.configRevision ||
@@ -1191,7 +1189,10 @@ export class NativeOAuthStore {
     };
   }
   private async privateEndpoint(userId: string): Promise<boolean> {
-    return actorMayUsePrivateEndpoint(this.prisma, userId, this.allowPrivateEndpoint);
+    if (this.allowPrivateEndpoint) return true;
+    return this.systemStep("check endpoint access for a native account", () =>
+      actorMayUsePrivateEndpoint(this.prisma, userId, this.allowPrivateEndpoint),
+    );
   }
   private mcpPending(value: unknown): NativeMcpPending {
     const pending = asRecord(value),
@@ -1223,79 +1224,83 @@ export class NativeOAuthStore {
         : config.appId === "discord"
           ? `${String(identity.context.applicationId)}:${identity.tenant}`
           : identity.subject;
-    await tx.$executeRaw(
-      Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-external-binding'),hashtext(${`${config.appId}:${namespace}`}))`,
-    );
-    const peers = await tx.nativeOAuthGrant.findMany({
-      where: {
-        revokedAt: null,
-        secretId: { not: null },
-        subject: identity.subject,
-        authority: identity.authority,
-        config: { appId: config.appId },
-      },
-      include: { config: true },
-    });
-    if (config.appId === "figma") {
-      const replaced = peers.filter((peer) => {
-        if (
-          !peer.config.enabled ||
-          peer.configRevision !== peer.config.revision ||
-          peer.config.credentialKind !== "oauth"
-        )
-          return false;
-        return NativeConfigSettingsSchema.parse(peer.config.config).clientId === settings.clientId;
+    await runAsSystemInTransaction(tx, "fence the native external account binding", async () => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext('native-external-binding'),hashtext(${`${config.appId}:${namespace}`}))`,
+      );
+      const peers = await tx.nativeOAuthGrant.findMany({
+        where: {
+          revokedAt: null,
+          secretId: { not: null },
+          subject: identity.subject,
+          authority: identity.authority,
+          config: { appId: config.appId },
+        },
+        include: { config: true },
       });
-      const connections = await tx.connection.findMany({
-        where: { oauthGrantId: { in: replaced.map((peer) => peer.id) } },
-        select: { id: true, userId: true, spaceId: true },
-        orderBy: { id: "asc" },
-      });
-      // Match disconnect's connection-before-grant order when replacing old tokens.
-      for (const connection of connections)
-        await this.lockConnections(tx, [connection.id], connection);
-    }
-    for (const peer of peers) {
-      if (!peer.config.enabled || peer.configRevision !== peer.config.revision) continue;
-      const peerSettings = NativeConfigSettingsSchema.parse(peer.config.config);
       if (config.appId === "figma") {
-        if (peer.config.credentialKind !== "oauth" || peerSettings.clientId !== settings.clientId)
-          continue;
-        // Figma issues one live access token per app/user. A new authorization
-        // invalidates the previous token; never copy credentials between Spaces.
-        await tx.nativeOAuthGrant.updateMany({
-          where: { id: peer.id, revokedAt: null },
-          data: {
-            revokedAt: new Date(),
-            secretId: null,
-            authGeneration: { increment: 1 },
-            refreshLeaseId: null,
-            refreshLeaseUntil: null,
-            refreshRecoveryUntil: null,
-          },
-        });
-        await tx.connection.updateMany({
-          where: { oauthGrantId: peer.id, status: "connected" },
-          data: { status: "error" },
-        });
-        if (peer.secretId)
-          await tx.secret.deleteMany({
-            where: { id: peer.secretId, userId: peer.userId, spaceId: peer.spaceId },
-          });
-      } else if (peer.spaceId !== context.spaceId) {
-        const principal = asRecord(peer.principal);
-        const sameTarget =
-          config.appId === "discord"
-            ? peer.tenant === identity.tenant &&
-              principal?.applicationId === identity.context.applicationId
-            : (peerSettings.targetIds ?? []).some((id) => settings.targetIds?.includes(id));
-        if (sameTarget)
-          throw new NativeActionError(
-            "authorization_required",
-            "This bot target is already assigned to another space.",
+        const replaced = peers.filter((peer) => {
+          if (
+            !peer.config.enabled ||
+            peer.configRevision !== peer.config.revision ||
+            peer.config.credentialKind !== "oauth"
+          )
+            return false;
+          return (
+            NativeConfigSettingsSchema.parse(peer.config.config).clientId === settings.clientId
           );
+        });
+        const connections = await tx.connection.findMany({
+          where: { oauthGrantId: { in: replaced.map((peer) => peer.id) } },
+          select: { id: true, userId: true, spaceId: true },
+          orderBy: { id: "asc" },
+        });
+        // Match disconnect's connection-before-grant order when replacing old tokens.
+        for (const connection of connections)
+          await this.lockConnections(tx, [connection.id], connection);
       }
-    }
+      for (const peer of peers) {
+        if (!peer.config.enabled || peer.configRevision !== peer.config.revision) continue;
+        const peerSettings = NativeConfigSettingsSchema.parse(peer.config.config);
+        if (config.appId === "figma") {
+          if (peer.config.credentialKind !== "oauth" || peerSettings.clientId !== settings.clientId)
+            continue;
+          // Figma issues one live access token per app/user. A new authorization
+          // invalidates the previous token; never copy credentials between Spaces.
+          await tx.nativeOAuthGrant.updateMany({
+            where: { id: peer.id, revokedAt: null },
+            data: {
+              revokedAt: new Date(),
+              secretId: null,
+              authGeneration: { increment: 1 },
+              refreshLeaseId: null,
+              refreshLeaseUntil: null,
+              refreshRecoveryUntil: null,
+            },
+          });
+          await tx.connection.updateMany({
+            where: { oauthGrantId: peer.id, status: "connected" },
+            data: { status: "error" },
+          });
+          if (peer.secretId)
+            await tx.secret.deleteMany({
+              where: { id: peer.secretId, userId: peer.userId, spaceId: peer.spaceId },
+            });
+        } else if (peer.spaceId !== context.spaceId) {
+          const principal = asRecord(peer.principal);
+          const sameTarget =
+            config.appId === "discord"
+              ? peer.tenant === identity.tenant &&
+                principal?.applicationId === identity.context.applicationId
+              : (peerSettings.targetIds ?? []).some((id) => settings.targetIds?.includes(id));
+          if (sameTarget)
+            throw new NativeActionError(
+              "authorization_required",
+              "This bot target is already assigned to another space.",
+            );
+        }
+      }
+    });
   }
   /** Figma has one live token per app/user, whose user is unknown before exchange. */
   private async withFigmaTokenLock<T>(
@@ -1310,28 +1315,31 @@ export class NativeOAuthStore {
     while (true) {
       signal.throwIfAborted();
       const result = await deferSecretNotifications(() =>
-        this.prisma.$transaction(
-          async (tx) => {
-            const rows = await tx.$queryRaw<Array<{ locked: boolean }>>(
-              Prisma.sql`SELECT pg_try_advisory_xact_lock(hashtext('native-figma-token'),hashtext(${clientId})) AS locked`,
-            );
-            if (!rows[0]?.locked) return { acquired: false as const };
-            const scoped = new NativeOAuthStore(
-              this.figmaTransactionClient(tx),
-              this.secrets,
-              this.configs,
-              this.authorities,
-              this.allowPrivateEndpoint,
-            );
-            try {
-              return { acquired: true as const, ok: true as const, value: await work(scoped) };
-            } catch (error) {
-              // Existing inner boundaries roll back to savepoints. Commit deliberate
-              // expiry/lease cleanup before propagating an upstream failure.
-              return { acquired: true as const, ok: false as const, error };
-            }
-          },
-          { maxWait: 5_000, timeout: 90_000 },
+        deferPreparedSecretCleanup(this.prisma, () =>
+          this.prisma.$transaction(
+            async (tx) => {
+              const rows = await tx.$queryRaw<Array<{ locked: boolean }>>(
+                Prisma.sql`SELECT pg_try_advisory_xact_lock(hashtext('native-figma-token'),hashtext(${clientId})) AS locked`,
+              );
+              if (!rows[0]?.locked) return { acquired: false as const };
+              const scoped = new NativeOAuthStore(
+                this.figmaTransactionClient(tx),
+                this.secrets,
+                this.configs,
+                this.authorities,
+                this.allowPrivateEndpoint,
+                (reason, work) => runAsSystemInTransaction(tx, reason, work),
+              );
+              try {
+                return { acquired: true as const, ok: true as const, value: await work(scoped) };
+              } catch (error) {
+                // Existing inner boundaries roll back to savepoints. Commit deliberate
+                // expiry/lease cleanup before propagating an upstream failure.
+                return { acquired: true as const, ok: false as const, error };
+              }
+            },
+            { maxWait: 5_000, timeout: 90_000 },
+          ),
         ),
       );
       if (result.acquired) {
@@ -1403,15 +1411,21 @@ export class NativeOAuthStore {
       await tx.$queryRaw`SELECT id FROM connections WHERE id = ${id} AND "userId" = ${context.userId} AND "spaceId" = ${context.spaceId} FOR UPDATE`;
   }
   private async fenceConfig(tx: Prisma.TransactionClient, config: NativeAppConfig): Promise<void> {
-    await tx.$queryRaw`SELECT id FROM native_app_configs WHERE id = ${config.id} FOR UPDATE`;
-    const current = await tx.nativeAppConfig.findFirst({
-      where: {
-        id: config.id,
-        enabled: true,
-        revision: config.revision,
-        callbackUri: this.configs.callbackUri,
+    await runAsSystemInTransaction(
+      tx,
+      "verify native application configuration before writing",
+      async () => {
+        await tx.$queryRaw`SELECT id FROM native_app_configs WHERE id = ${config.id} FOR UPDATE`;
+        const current = await tx.nativeAppConfig.findFirst({
+          where: {
+            id: config.id,
+            enabled: true,
+            revision: config.revision,
+            callbackUri: this.configs.callbackUri,
+          },
+        });
+        if (!current) throw unavailable();
       },
-    });
-    if (!current) throw unavailable();
+    );
   }
 }

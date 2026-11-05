@@ -18,7 +18,7 @@ import {
 } from "@rakazo/contracts";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { Prisma, runAsSystemInTransaction } from "@rakazo/db";
 import { routineRunModelPin } from "../../model-selection.js";
 
 type Tx = Prisma.TransactionClient;
@@ -131,9 +131,11 @@ export async function nativeEventConnectionSnapshot(
   scope: NativeEventScope,
   connectionId: string,
 ): Promise<NativeEventConnectionSnapshot> {
-  const rows = await db.$queryRaw<
-    NativeEventConnectionSnapshot[]
-  >(Prisma.sql`/*native-event:connection*/
+  const rows = await runAsSystemInTransaction(
+    db,
+    "read exact native event connection authorization",
+    () =>
+      db.$queryRaw<NativeEventConnectionSnapshot[]>(Prisma.sql`/*native-event:connection*/
     SELECT c.id AS "connectionId",c."userId",c."spaceId",c."connectorId",c.provider,c.status,
       c.metadata->>'authRevision' AS "authorizationRevision",g.id AS "grantId",g."authGeneration",
       c."nativeConfigId" AS "configId",c."nativeConfigRevision" AS "configRevision",a.revision AS "currentConfigRevision",
@@ -142,7 +144,8 @@ export async function nativeEventConnectionSnapshot(
     FROM connections c JOIN native_oauth_grants g ON g.id=c."oauthGrantId" JOIN native_app_configs a ON a.id=c."nativeConfigId"
     WHERE c.id=${connectionId} AND c."userId"=${scope.userId} AND c."spaceId"=${scope.spaceId}
       AND jsonb_typeof(c.metadata->'authRevision')='string'
-      AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=${scope.userId} AND m."spaceId"=${scope.spaceId})`);
+      AND EXISTS(SELECT 1 FROM space_members m WHERE m."userId"=${scope.userId} AND m."spaceId"=${scope.spaceId})`),
+  );
   const snapshot = rows[0];
   if (!snapshot || !nativeConnectionMatches(snapshot, scope)) throw unavailable();
   return snapshot;
@@ -180,8 +183,10 @@ async function lockAuthorization(
   snapshot: NativeEventConnectionSnapshot,
 ): Promise<void> {
   // Native OAuth itself uses config -> member -> sorted connection. The native Routine row is locked first only by this module.
-  await tx.$queryRaw(
-    Prisma.sql`SELECT id FROM native_app_configs WHERE id=${snapshot.configId} FOR UPDATE`,
+  await runAsSystemInTransaction(tx, "lock native event application configuration", () =>
+    tx.$queryRaw(
+      Prisma.sql`SELECT id FROM native_app_configs WHERE id=${snapshot.configId} FOR UPDATE`,
+    ),
   );
   await tx.$queryRaw(
     Prisma.sql`SELECT id FROM space_members WHERE "userId"=${scope.userId} AND "spaceId"=${scope.spaceId} FOR UPDATE`,
@@ -396,8 +401,11 @@ export async function replaceNativeRoutineTriggersTx(
   for (const input of inputs)
     snapshots.push(await nativeEventConnectionSnapshot(tx, scope, input.connectionId));
   for (const configId of [...new Set(snapshots.map((item) => item.configId))].sort())
-    await tx.$queryRaw(
-      Prisma.sql`SELECT id FROM native_app_configs WHERE id=${configId} FOR UPDATE`,
+    await runAsSystemInTransaction(
+      tx,
+      "lock native event application configuration for trigger replacement",
+      () =>
+        tx.$queryRaw(Prisma.sql`SELECT id FROM native_app_configs WHERE id=${configId} FOR UPDATE`),
     );
   await tx.$queryRaw(
     Prisma.sql`SELECT id FROM space_members WHERE "userId"=${scope.userId} AND "spaceId"=${scope.spaceId} FOR UPDATE`,
@@ -757,14 +765,18 @@ export async function claimNativeRoutineEvent(
             : !initial.kind.startsWith("notion.")
         )
           return undefined;
-        const trusted =
-          hook.provider === "slack"
-            ? await tx.$queryRaw<Array<{ id: string }>>(
-                Prisma.sql`/*native-event:trusted-slack-hook*/ SELECT h.id FROM native_slack_hooks h JOIN native_slack_event_inbox i ON i."hookId"=h.id WHERE h.id=${hook.id} AND h."deliveryRevision"=${hook.revision} AND h."configId"=${initial.configId} AND h."configRevision"=${initial.configRevision} AND h.enabled=true AND h."ownerConfirmedAt" IS NOT NULL AND h."secretRecordId" IS NOT NULL AND h.ciphertext IS NOT NULL AND h."disabledAt" IS NULL AND i.id=${hook.inboxId} AND i."hookRevision"=h."deliveryRevision" AND i."configRevision"=h."configRevision" AND i."eventId"=${hook.eventId}`,
-              )
-            : await tx.$queryRaw<Array<{ id: string }>>(
-                Prisma.sql`/*native-event:trusted-hook*/ SELECT id FROM native_notion_hooks WHERE id=${hook.id} AND revision=${hook.revision} AND "configId"=${initial.configId} AND "configRevision"=${initial.configRevision} AND enabled=true AND "ownerConfirmedAt" IS NOT NULL AND "integrationId" IS NOT NULL AND "subscriptionId" IS NOT NULL AND "secretRecordId" IS NOT NULL AND ciphertext IS NOT NULL AND "disabledAt" IS NULL`,
-              );
+        const trusted = await runAsSystemInTransaction(
+          tx,
+          "verify the accepted native event hook receipt",
+          () =>
+            hook.provider === "slack"
+              ? tx.$queryRaw<Array<{ id: string }>>(
+                  Prisma.sql`/*native-event:trusted-slack-hook*/ SELECT h.id FROM native_slack_hooks h JOIN native_slack_event_inbox i ON i."hookId"=h.id WHERE h.id=${hook.id} AND h."deliveryRevision"=${hook.revision} AND h."configId"=${initial.configId} AND h."configRevision"=${initial.configRevision} AND h.enabled=true AND h."ownerConfirmedAt" IS NOT NULL AND h."secretRecordId" IS NOT NULL AND h.ciphertext IS NOT NULL AND h."disabledAt" IS NULL AND i.id=${hook.inboxId} AND i."hookRevision"=h."deliveryRevision" AND i."configRevision"=h."configRevision" AND i."eventId"=${hook.eventId}`,
+                )
+              : tx.$queryRaw<Array<{ id: string }>>(
+                  Prisma.sql`/*native-event:trusted-hook*/ SELECT id FROM native_notion_hooks WHERE id=${hook.id} AND revision=${hook.revision} AND "configId"=${initial.configId} AND "configRevision"=${initial.configRevision} AND enabled=true AND "ownerConfirmedAt" IS NOT NULL AND "integrationId" IS NOT NULL AND "subscriptionId" IS NOT NULL AND "secretRecordId" IS NOT NULL AND ciphertext IS NOT NULL AND "disabledAt" IS NULL`,
+                ),
+        );
         if (trusted.length !== 1) return undefined;
       }
       const row = await triggerRow(tx, scope, event.triggerId, true);
