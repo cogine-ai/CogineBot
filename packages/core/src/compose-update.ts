@@ -470,30 +470,32 @@ export function composeUpArgv(
 /** Operations on the canonical administrator service, independent of long-lived runtime services. */
 export function composeMigrationArgv(
   target: ComposeTarget,
-  operation: "status" | "stop" | "stop-writers" | "verify",
+  operation: "status" | "stop" | "stop-writers" | "verify" | "configuration",
 ): ComposeInvocation {
   const args =
-    operation === "status"
-      ? ["ps", "--all", "--quiet", "migrate"]
-      : operation === "stop"
-        ? ["stop", "--timeout", "120", "migrate"]
-        : operation === "stop-writers"
-          ? ["stop", "--timeout", "120", ...targetServices(target)]
-          : [
-              "run",
-              "--rm",
-              "--no-deps",
-              "--pull",
-              "never",
-              "-T",
-              "migrate",
-              "pnpm",
-              "--filter",
-              "@rakazo/api",
-              "run",
-              "db:restore",
-              "verify",
-            ];
+    operation === "configuration"
+      ? ["config", "--format", "json"]
+      : operation === "status"
+        ? ["ps", "--all", "--quiet", "migrate"]
+        : operation === "stop"
+          ? ["stop", "--timeout", "120", "migrate"]
+          : operation === "stop-writers"
+            ? ["stop", "--timeout", "120", ...targetServices(target)]
+            : [
+                "run",
+                "--rm",
+                "--no-deps",
+                "--pull",
+                "never",
+                "-T",
+                "migrate",
+                "pnpm",
+                "--filter",
+                "@rakazo/api",
+                "run",
+                "db:restore",
+                "verify",
+              ];
   return { command: "docker", args: [...composeBase(target), ...args] };
 }
 
@@ -680,6 +682,11 @@ export function composeUpdatePlan(input: ComposeUpdatePlanInput): ComposeUpdateS
         "migrate",
         "migrate",
       ],
+    },
+    {
+      id: "verify-forward",
+      label: "Verify database readiness before starting services",
+      ...composeMigrationArgv(input.target, "verify"),
     },
     { id: "recreate", label: "Recreate the services", command: up.command, args: up.args },
   );

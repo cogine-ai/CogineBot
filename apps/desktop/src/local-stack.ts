@@ -1,7 +1,6 @@
 import { copyFile, lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
-import { parseEnv } from "node:util";
 import type { DesktopLocalStackState } from "@rakazo/contracts";
 import type { DockerFailureKind, RunDocker, RunDockerResult } from "./docker-cli.js";
 import {
@@ -134,12 +133,9 @@ export async function ensureStackEnv(
     if (!info.isSymbolicLink()) {
       if (template.split("\n").includes("POSTGRES_APP_PASSWORD=")) {
         const existing = await readFile(destination, "utf8");
-        if (
-          !parseEnv(existing).POSTGRES_APP_PASSWORD &&
-          (!hasConfiguredRuntimePassword || !(await hasConfiguredRuntimePassword()))
-        ) {
-          if (!hasConfiguredRuntimePassword)
-            throw new Error("The existing runtime password must be verified with Docker Compose");
+        if (!hasConfiguredRuntimePassword)
+          throw new Error("The existing runtime password must be verified with Docker Compose");
+        if (!(await hasConfiguredRuntimePassword())) {
           const password = randomHex(GENERATED_SECRETS.POSTGRES_APP_PASSWORD!);
           const next = `${existing}${existing.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${password}\n`;
           await writePrivateFile(destination, next);

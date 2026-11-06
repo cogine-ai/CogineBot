@@ -6,13 +6,13 @@ import {
   createDb,
   JOB_QUEUE_POLICY,
   provisionRuntimeRole,
+  ROW_SECURITY_POLICIES,
   rlsBypassKey,
   verifyRealtimeDatabase,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { Client, escapeIdentifier } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ROW_SECURITY_POLICIES } from "../../db/src/row-security-policies.js";
 import { GraphileJobPublisher, GraphileJobWorkerHost, migrateJobQueue } from "./wakeup.js";
 
 const databaseUrl = process.env.DATABASE_URL;

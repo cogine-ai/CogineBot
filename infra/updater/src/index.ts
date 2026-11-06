@@ -5,7 +5,6 @@ import { access, lstat, open, readFile, rename, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEnv } from "node:util";
 import { serve } from "@hono/node-server";
 import type { ServerUpdateRun } from "@rakazo/contracts";
 import type { ComposeUpdateStep } from "@rakazo/core";
@@ -74,7 +73,12 @@ export interface CommandResult {
 export type UpdaterCommandRunner = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs: number; env?: Record<string, string> },
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    env?: Record<string, string>;
+    configurationRead?: boolean;
+  },
 ) => Promise<CommandResult>;
 
 const PASSTHROUGH_ENV = [
@@ -167,7 +171,8 @@ export const runHostCommand: UpdaterCommandRunner = (command, args, options) => 
       stdout: string | Buffer,
       stderr: string | Buffer,
     ) => {
-      const output = truncateOutput(`${stdout}${stderr}`);
+      const output =
+        options.configurationRead && !error ? String(stdout) : truncateOutput(`${stdout}${stderr}`);
       if (!error) {
         resolve({ ok: true, exitCode: 0, output });
         return;
@@ -378,15 +383,79 @@ export function createUpdaterApp(
     }
   }
 
+  async function runtimeConfiguration(target: typeof composeTarget, env?: Record<string, string>) {
+    const invocation = composeMigrationArgv(target, "configuration");
+    const result = await run("docker", invocation.args, {
+      cwd: config.deployDir,
+      timeoutMs: 30_000,
+      env: { COMPOSE_PROJECT_NAME: config.projectName, ...env },
+      configurationRead: true,
+    });
+    if (!result.ok) throw new Error("The runtime database configuration could not be verified");
+    const value = JSON.parse(result.output) as {
+      services?: Record<
+        string,
+        { environment?: Record<string, unknown>; command?: unknown; entrypoint?: unknown }
+      >;
+    };
+    const services = value.services;
+    if (!services?.api || !services.worker)
+      throw new Error("The runtime database configuration could not be verified");
+    const urls = new Set<string>();
+    const names = config.updateServices.filter(
+      (name) => !["migrate", "postgres", "updater"].includes(name),
+    );
+    for (const name of names) {
+      const service = services[name];
+      if (!service) throw new Error("The runtime database configuration could not be verified");
+      const environment = service.environment ?? {};
+      if (
+        [
+          "DATABASE_MIGRATION_URL",
+          "POSTGRES_PASSWORD",
+          "PGPASSWORD",
+          "PGPASSFILE",
+          "PGSERVICE",
+          "PGSERVICEFILE",
+        ].some(
+          (key) =>
+            environment[key] !== undefined && environment[key] !== null && environment[key] !== "",
+        )
+      )
+        throw new Error("The runtime configuration contains administrator credential channels");
+      const command = [service.command, service.entrypoint]
+        .map((value) => (Array.isArray(value) ? value.join(" ") : String(value ?? "")))
+        .join(" ");
+      if (/\bprisma\s+migrate\b|\bdb:(?:migrate|deploy)\b/.test(command))
+        throw new Error("The runtime configuration contains administrator migration commands");
+      const primary =
+        typeof environment.DATABASE_URL === "string" ? environment.DATABASE_URL.trim() : "";
+      if (!primary && ["api", "worker"].includes(name))
+        throw new Error("The runtime database configuration could not be verified");
+      const realtime =
+        typeof environment.REALTIME_DATABASE_URL === "string"
+          ? environment.REALTIME_DATABASE_URL.trim()
+          : "";
+      if (primary) urls.add(primary);
+      if (realtime || primary) urls.add(realtime || primary);
+    }
+    const migration = services.migrate?.environment ?? {};
+    const selected = new Set(
+      [migration.DATABASE_URL, migration.REALTIME_DATABASE_URL]
+        .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+        .map((url) => url.trim()),
+    );
+    return { urls, selected };
+  }
+
   async function writeEnvAssignments(assignments: Record<string, string>) {
     const [current, metadata] = await Promise.all([readEnvFile(), lstat(config.envFile)]);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
       throw new UpdateRefused("The deployment environment must be a regular, non-symlink file.");
     }
-    const prepared =
-      !parseEnv(current).POSTGRES_APP_PASSWORD && (await runtimePasswordMissing())
-        ? `${current}${current.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${randomBytes(16).toString("hex")}\n`
-        : current;
+    const prepared = (await runtimePasswordMissing())
+      ? `${current}${current.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${randomBytes(16).toString("hex")}\n`
+      : current;
     const contents = upsertEnvAssignments(prepared, assignments);
     const temporary = `${config.envFile}.rakazo-update-${randomUUID()}`;
     let temporaryFile: Awaited<ReturnType<typeof open>> | null = null;
@@ -690,6 +759,8 @@ export function createUpdaterApp(
     let migrationImage: string | undefined;
     let migrationOverride: string | undefined;
     let migrationTarget = composeTarget;
+    let runtimeInventory: Set<string> | undefined;
+    let runtimeInventoryVerified = false;
     async function pinMigration(tag: string): Promise<boolean> {
       if (
         !(await runStep(record, {
@@ -720,6 +791,18 @@ export function createUpdaterApp(
       }
       migrationImage = id;
       migrationTarget = { ...composeTarget, composeFiles: [...composeTarget.composeFiles, file] };
+      try {
+        const current = await runtimeConfiguration(migrationTarget, { [IMAGE_TAG_ENV]: tag });
+        if (
+          current.selected.size === 0 ||
+          [...current.urls].some((url) => !current.selected.has(url))
+        )
+          throw new Error("unverified runtime credential inventory");
+        runtimeInventory = current.urls;
+      } catch {
+        record.error = "The runtime configuration is outside the verified credential inventory.";
+        return false;
+      }
       return true;
     }
     function pinnedStep(step: ComposeUpdateStep): ComposeUpdateStep {
@@ -802,6 +885,22 @@ export function createUpdaterApp(
               : composeEnv,
           ));
         if (stepOk && ["pull", "build"].includes(step.id)) stepOk = await pinMigration(toTag);
+        if (stepOk && ["verify-forward", "verify-rollback"].includes(step.id)) {
+          runtimeInventoryVerified = true;
+          if (step.id === "verify-rollback") {
+            try {
+              const previous = await runtimeConfiguration(composeTarget, composeEnv);
+              stepOk =
+                Boolean(runtimeInventory) &&
+                [...previous.urls].every((url) => runtimeInventory!.has(url));
+            } catch {
+              stepOk = false;
+            }
+            if (!stepOk)
+              record.error =
+                "The previous runtime configuration is outside the verified credential inventory.";
+          }
+        }
         if (stepOk && step.id === "migrate")
           stepOk = await inspectMigration(record, migrationImage!, migrationTarget, true);
         if (!stepOk) {
@@ -850,7 +949,24 @@ export function createUpdaterApp(
                 false,
               ));
           }
+          if (databaseReady) runtimeInventoryVerified = true;
           const checkoutRestored = await restoreCheckout();
+          let recoveryCompatible = !writersMayBeStopped;
+          if (
+            writersMayBeStopped &&
+            checkoutRestored &&
+            runtimeInventoryVerified &&
+            runtimeInventory
+          ) {
+            try {
+              const previous = await runtimeConfiguration(composeTarget, {
+                [IMAGE_TAG_ENV]: input.fromTag,
+              });
+              recoveryCompatible = [...previous.urls].every((url) => runtimeInventory!.has(url));
+            } catch {
+              recoveryCompatible = false;
+            }
+          }
           const envRestored = await writeEnvAssignments(revertAssignments).then(
             () => true,
             () => false,
@@ -859,6 +975,7 @@ export function createUpdaterApp(
             const previous = composeUpArgv(composeTarget, { noDeps: true });
             const recovered =
               databaseReady &&
+              recoveryCompatible &&
               checkoutRestored &&
               (await runStep(
                 record,
@@ -874,7 +991,7 @@ export function createUpdaterApp(
             record.restart = recovered ? "not-required" : "manual";
             record.restartAdvice = recovered
               ? `${primaryError} The updater restored the previously running ${input.fromTag} image${envRestored ? " and its environment pin" : ", but could not restore the environment pin"}. Read the failed step output before retrying.`
-              : `${primaryError} Automatic recovery to ${input.fromTag} ${!databaseReady ? "was skipped because database readiness or migration termination could not be verified" : checkoutRestored ? "also failed" : "was skipped because the previous checkout could not be restored"}${envRestored ? "" : ", and the environment pin could not be restored"}. The runtime may contain a mix of versions; use the recorded commands to recover it manually.`;
+              : `${primaryError} Automatic recovery to ${input.fromTag} ${!databaseReady ? "was skipped because database readiness or migration termination could not be verified" : !checkoutRestored ? "was skipped because the previous checkout could not be restored" : !recoveryCompatible ? "was skipped because the previous runtime configuration is outside the verified credential inventory" : "also failed"}${envRestored ? "" : ", and the environment pin could not be restored"}. The runtime may contain a mix of versions; use the recorded commands to recover it manually.`;
           } else {
             record.restartAdvice = `${primaryError} No service was recreated${envRestored ? ", and the prior environment pin was restored" : ", but the prior environment pin could not be restored"}. Read the failed step output before retrying.`;
           }

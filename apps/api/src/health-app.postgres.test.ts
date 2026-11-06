@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as adapters from "@rakazo/adapters";
 import * as database from "@rakazo/db";
+import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 import { createApp } from "./app.js";
 
 const describePostgres =

@@ -139,6 +139,30 @@ read_config() {
         else {service:.key,image:.value.image,build:(.value.build != null)} end) | sort_by(.service))}
     end'
 }
+
+# Keep resolved credentials only in this process; the deployment image ledger contains none.
+runtime_configuration() {
+  docker_command 1m compose --project-name "${project}" "${compose_args[@]}" config --format json 2>/dev/null | jq -ce '
+    .services as $services |
+    if ($services.api == null or $services.worker == null) then error("missing runtime services") else
+      {urls:([$services | to_entries[] |
+        select(.key != "migrate" and .key != "postgres" and .key != "updater") |
+        . as $service | (.value.environment // {}) as $env |
+        if any(["DATABASE_MIGRATION_URL","POSTGRES_PASSWORD","PGPASSWORD","PGPASSFILE","PGSERVICE","PGSERVICEFILE"][];
+          . as $key | $env[$key] != null and $env[$key] != "") then error("administrator credential channel") else
+          ([.value.command,.value.entrypoint] | map(if type == "array" then join(" ") else (. // "" | tostring) end) | join(" ")) as $command |
+          if ($command | test("\\bprisma\\s+migrate\\b|\\bdb:(migrate|deploy)\\b")) then error("administrator migration command") else
+            ($env.DATABASE_URL // "") as $primary |
+            if ($primary | type) != "string" or ($primary == "" and ($service.key == "api" or $service.key == "worker")) then error("missing runtime database")
+            else [$primary, (if ($env.REALTIME_DATABASE_URL // "") == "" then $primary else $env.REALTIME_DATABASE_URL end)][] | select(type == "string" and length > 0)
+            end
+          end
+        end] | unique),
+       selected:([($services.migrate.environment // {}) | .DATABASE_URL,.REALTIME_DATABASE_URL] |
+         map(select(type == "string" and length > 0)) | unique)}
+    end' 2>/dev/null
+}
+verified_runtime_urls='[]'
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 prepare_env="${script_dir}/prepare-runtime-env.sh"
 if [[ ! -f "${prepare_env}" ]]; then prepare_env="${script_dir}/rakazo-prepare-runtime-env"; fi
@@ -505,7 +529,7 @@ rollback() {
     echo "The prior deployment revision record could not be restored; the healthy image receipt remains authoritative." >&2
   fi
   if [[ "${writers_may_be_stopped}" != 1 ]]; then
-    echo "The prior runtime was not stopped; its images were left running." >&2
+    echo "No runtime stop was attempted; no recovery restart was started." >&2
     exit 1
   fi
   if [[ "${rollback_complete}" != 1 ]]; then
@@ -521,6 +545,12 @@ rollback() {
   if ! jq -e --arg project "${project}" --argjson previous "${before_services}" \
     '.project == $project and (.services|map(select(.service != "migrate")|.service)|sort) == ($previous|map(.service)|sort)' <<<"${rollback_config}" >/dev/null; then
     echo "The previous Compose project or active services changed; exact-image rollback was not started." >&2
+    exit 1
+  fi
+  local previous_runtime
+  if ! previous_runtime="$(runtime_configuration)" || ! printf '%s\n%s\n' "${previous_runtime}" "${verified_runtime_urls}" | jq -es \
+    '.[0] as $previous | .[1] as $verified | all($previous.urls[]; . as $url | $verified | index($url) != null)' >/dev/null; then
+    echo "The previous runtime configuration is outside the verified credential inventory; exact-image rollback was not started. Recover it manually with runtime-only credentials." >&2
     exit 1
   fi
   config="${rollback_config}"
@@ -553,6 +583,10 @@ git reset --hard "${target_revision}"
 target_config="$(read_config)"
 [[ "$(jq -r .project <<<"${target_config}")" == "${project}" ]] || fail "Target Compose project differs from the protected deployment"
 config="${target_config}"
+runtime_inventory="$(runtime_configuration)" || fail "The runtime database configuration could not be verified"
+jq -e '. as $config | ($config.selected | length > 0) and all($config.urls[]; . as $url | $config.selected | index($url) != null)' \
+  <<<"${runtime_inventory}" >/dev/null || fail "The runtime configuration is outside the selected credential inventory"
+verified_runtime_urls="$(jq -c .urls <<<"${runtime_inventory}")"
 require_space
 compose 1m config --quiet
 check_engine

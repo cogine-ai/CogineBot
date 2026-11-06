@@ -52,6 +52,7 @@ export type {
 export {
   applyRowSecurityPolicies,
   describeRowSecurityPolicies,
+  ROW_SECURITY_POLICIES,
 } from "./row-security-policies.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";
