@@ -256,6 +256,7 @@ it("drops an old next-batch reply when a new search takes over, then starts its 
 });
 
 async function mutationView(pageId?: string) {
+  let visible = true;
   let binding!: ReturnType<typeof usePagesForChat>;
   let mutation!: ReturnType<typeof usePrivatePageMutation<{ pageId: string; title: string }>>;
   function Probe() {
@@ -267,11 +268,7 @@ async function mutationView(pageId?: string) {
   }
   function Owner() {
     binding = usePagesForChat("owner-1:space-1:bot-1", "space-1");
-    return (
-      <PagesProvider value={binding}>
-        <Probe />
-      </PagesProvider>
-    );
+    return <PagesProvider value={binding}>{visible ? <Probe /> : null}</PagesProvider>;
   }
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
@@ -283,7 +280,18 @@ async function mutationView(pageId?: string) {
       </MemoryRouter>,
     ),
   );
-  return { binding: () => binding, mutation: () => mutation };
+  return {
+    binding: () => binding,
+    mutation: () => mutation,
+    hide: () => {
+      visible = false;
+      root.render(
+        <MemoryRouter>
+          <Owner />
+        </MemoryRouter>,
+      );
+    },
+  };
 }
 
 it.each(["page-1", undefined])(
@@ -350,5 +358,154 @@ it("does not reconcile a lost reply or issue another mutation after its account 
   expect(store.revision()).toBe(revision);
   expect(view.mutation().isError).toBe(false);
   await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Stale" }));
+  expect(reads.rename).toHaveBeenCalledTimes(1);
+});
+
+function renameReply() {
+  let resolve!: (value: unknown) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+it("keeps the latest rename feedback when the list starts another rename before the first reply", async () => {
+  const first = renameReply();
+  const second = renameReply();
+  reads.list.mockResolvedValue({ items: [page(1)], nextCursor: null });
+  reads.rename.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const container = await show();
+  const rename = async (next: string) => {
+    await act(async () => button(container, "Rename").click());
+    const title = container.querySelector<HTMLInputElement>('input[aria-label="Page title"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(title, next);
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+    );
+  };
+  await rename("First name");
+  await rename("Second name");
+  expect(reads.rename.mock.calls.map(([input]) => input.title)).toEqual([
+    "First name",
+    "Second name",
+  ]);
+  await act(async () => first.reject(new Error("first reply lost")));
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => second.resolve({ ok: true }));
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(reads.list).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  { firstFails: false, firstSettlesFirst: true },
+  { firstFails: false, firstSettlesFirst: false },
+  { firstFails: true, firstSettlesFirst: true },
+  { firstFails: true, firstSettlesFirst: false },
+])(
+  "keeps overlapping calls pending and latest feedback: %j",
+  async ({ firstFails, firstSettlesFirst }) => {
+    const replies = [renameReply(), renameReply()];
+    reads.rename.mockReturnValueOnce(replies[0]!.promise).mockReturnValueOnce(replies[1]!.promise);
+    const view = await mutationView("page-1");
+    const store = view.binding().store;
+    const results: Promise<unknown>[] = [];
+    await act(async () => {
+      for (const title of ["First", "Second"])
+        results.push(
+          view
+            .mutation()
+            .mutateAsync({ pageId: "page-1", title })
+            .catch((error: unknown) => error),
+        );
+    });
+    const revision = store.revision();
+    let previousRead = store.get("page-1");
+    await previousRead;
+    const failures = [firstFails, !firstFails];
+    const order = firstSettlesFirst ? [0, 1] : [1, 0];
+    for (const [settled, index] of order.entries()) {
+      const error = new Error(`call ${index + 1} reply lost`);
+      await act(async () => {
+        if (failures[index]) replies[index]!.reject(error);
+        else replies[index]!.resolve({ ok: true });
+      });
+      if (failures[index]) expect(await results[index]).toBe(error);
+      else expect(await results[index]).toEqual({ ok: true });
+      expect(view.mutation().isPending).toBe(settled === 0);
+      expect(view.mutation().isError).toBe(order.slice(0, settled + 1).includes(1) && !firstFails);
+      expect(store.revision()).toBe(revision + settled + 1);
+      const refreshed = store.get("page-1");
+      expect(refreshed).not.toBe(previousRead);
+      await refreshed;
+      previousRead = refreshed;
+    }
+    expect(reads.rename).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("reset clears feedback while active calls still reconcile and remain pending", async () => {
+  const reply = renameReply();
+  reads.rename.mockReturnValueOnce(reply.promise);
+  const view = await mutationView("page-1");
+  const store = view.binding().store;
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Rename" }));
+  const revision = store.revision();
+  await act(async () => view.mutation().reset());
+  expect(view.mutation().isPending).toBe(true);
+  expect(view.mutation().isError).toBe(false);
+  await act(async () => reply.reject(new Error("reset attempt reply lost")));
+  expect(view.mutation().isPending).toBe(false);
+  expect(view.mutation().isError).toBe(false);
+  expect(store.revision()).toBe(revision + 1);
+});
+
+it("reconciles each settled call after its reader unmounts while the owning scope remains live", async () => {
+  const first = renameReply();
+  const second = renameReply();
+  reads.rename.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  const view = await mutationView("page-1");
+  const store = view.binding().store;
+  let rejected!: Promise<unknown>;
+  await act(async () => {
+    view.mutation().mutate({ pageId: "page-1", title: "First" });
+    rejected = view
+      .mutation()
+      .mutateAsync({ pageId: "page-1", title: "Second" })
+      .catch((e: unknown) => e);
+  });
+  const revision = store.revision();
+  await act(async () => view.hide());
+  expect(store.isCurrent()).toBe(true);
+  await act(async () => first.resolve({ ok: true }));
+  const error = new Error("second reply lost");
+  await act(async () => second.reject(error));
+  expect(await rejected).toBe(error);
+  expect(store.revision()).toBe(revision + 2);
+});
+
+it("does not revive old mutation callbacks after the same account and session return", async () => {
+  const reply = renameReply();
+  reads.rename.mockReturnValueOnce(reply.promise);
+  const view = await mutationView("page-1");
+  const store = view.binding().store;
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Rename" }));
+  const revision = store.revision();
+  synchronizeRpcSession("authenticated", "owner-2", "session-2");
+  synchronizeRpcSession("authenticated", "owner-1", "session-1");
+  await act(async () => reply.reject(new Error("old reply lost")));
+  expect(store.isCurrent()).toBe(false);
+  expect(store.revision()).toBe(revision);
+  expect(view.mutation().isError).toBe(false);
+  await expect(
+    view.mutation().mutateAsync({ pageId: "page-1", title: "Stale" }),
+  ).rejects.toMatchObject({
+    name: "AbortError",
+  });
   expect(reads.rename).toHaveBeenCalledTimes(1);
 });

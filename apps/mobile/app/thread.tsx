@@ -110,7 +110,13 @@ import { MessageCaption } from "../components/message-caption";
 import { MessageContextMenu } from "../components/message-context-menu";
 import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
-import { NewestPageCards, PageCard } from "../components/pages/page-card";
+import {
+  NewestPageCards,
+  PageCard,
+  PagePreviewRowBounds,
+  PagePreviewViewport,
+  usePagePreviewViewport,
+} from "../components/pages/page-card";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
 import { ThreadErrorNotices } from "../components/run-error-notice";
@@ -198,7 +204,7 @@ import {
   threadSpaceSwitchResult,
 } from "../lib/notification-open";
 import { useChatOnScreen } from "../lib/page-card-detail";
-import { takePageReply } from "../lib/pages";
+import { pageScopeKey, takePageReply } from "../lib/pages";
 import type { PickedAttachment } from "../lib/pick-attachments";
 import { pickDocuments, pickFromLibrary, takePhoto } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
@@ -843,6 +849,10 @@ function Thread({
   // A failed newer page waits for the next drag instead of retrying on every scroll event.
   const newerLoadFailed = useRef(false);
   const pinnedScrollMetrics = useRef({ offset: 0, viewport: 0, content: 0 });
+  const previewScope = JSON.stringify([pageScopeKey(), threadKey]);
+  const previewWindowKey =
+    jumpScrollTarget.current ?? pinnedAroundRef.current?.messageId ?? threadKey;
+  const previewViewport = usePagePreviewViewport(previewScope, previewWindowKey);
   const joinPinnedAfterLayout = useRef<number | null>(null);
   const [markdownPreview, setMarkdownPreview] = useState<MarkdownArtifactPreviewTarget | null>(
     null,
@@ -2468,6 +2478,7 @@ function Thread({
   function scrollPinnedTo(offset: number) {
     pinnedScroll.current?.scrollTo({ y: offset, animated: false });
     pinnedScrollMetrics.current.offset = offset;
+    previewViewport.update({ offset });
   }
 
   function loadNewerNearEnd() {
@@ -2815,70 +2826,74 @@ function Thread({
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}
       <View style={{ flex: 1, minHeight: headerHeight, position: "relative" }}>
         {showPinnedPage ? (
-          <ScrollView
-            key={jumpScrollTarget.current ?? pinnedTarget?.messageId ?? threadKey}
-            ref={pinnedScroll}
-            style={{ flex: 1 }}
-            contentContainerStyle={{ paddingTop: headerHeight + 8, paddingBottom: 16 }}
-            maintainVisibleContentPosition={messageListPosition}
-            scrollEventThrottle={16}
-            onLayout={(event) => {
-              pinnedScrollMetrics.current.viewport = event.nativeEvent.layout.height;
-              loadNewerNearEnd();
-            }}
-            onContentSizeChange={(_, height) => {
-              pinnedScrollMetrics.current.content = height;
-              const jumpOffset = jumpAnchor.current.align(headerHeight + 24);
-              if (jumpOffset != null) scrollPinnedTo(jumpOffset);
-              const armedAt = joinPinnedAfterLayout.current;
-              if (armedAt != null && height !== armedAt) {
-                joinPinnedAfterLayout.current = null;
-                if (
-                  !jumpAnchor.current.holds() &&
-                  pinnedAroundRef.current?.newerCursor == null &&
-                  pinnedNearEnd()
-                ) {
-                  showLatest();
-                  return;
+          <PagePreviewViewport.Provider key={previewScope} value={previewViewport}>
+            <ScrollView
+              key={previewWindowKey}
+              ref={pinnedScroll}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingTop: headerHeight + 8, paddingBottom: 16 }}
+              maintainVisibleContentPosition={messageListPosition}
+              scrollEventThrottle={16}
+              onLayout={(event) => {
+                pinnedScrollMetrics.current.viewport = event.nativeEvent.layout.height;
+                previewViewport.update({ viewport: event.nativeEvent.layout.height });
+                loadNewerNearEnd();
+              }}
+              onContentSizeChange={(_, height) => {
+                pinnedScrollMetrics.current.content = height;
+                const jumpOffset = jumpAnchor.current.align(headerHeight + 24);
+                if (jumpOffset != null) scrollPinnedTo(jumpOffset);
+                const armedAt = joinPinnedAfterLayout.current;
+                if (armedAt != null && height !== armedAt) {
+                  joinPinnedAfterLayout.current = null;
+                  if (
+                    !jumpAnchor.current.holds() &&
+                    pinnedAroundRef.current?.newerCursor == null &&
+                    pinnedNearEnd()
+                  ) {
+                    showLatest();
+                    return;
+                  }
                 }
-              }
-              loadNewerNearEnd();
-            }}
-            onScroll={(event) => {
-              if (pinnedScrollBack.current.onScroll(event.nativeEvent) && Platform.OS === "ios")
-                Keyboard.dismiss();
-              const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-              pinnedScrollMetrics.current = {
-                offset: contentOffset.y,
-                viewport: layoutMeasurement.height,
-                content: contentSize.height,
-              };
-              loadNewerNearEnd();
-            }}
-            onScrollBeginDrag={(event) => {
-              pinnedScrollBack.current.onDragStart(event.nativeEvent);
-              newerLoadFailed.current = false;
-              if (!jumpAnchor.current.holds()) return;
-              jumpAnchor.current.release();
-              jumpScrollTarget.current = null;
-            }}
-            onScrollEndDrag={(event) => {
-              pinnedScrollBack.current.onDragEnd();
-              updatePinnedScroll(event);
-            }}
-            onMomentumScrollEnd={updatePinnedScroll}
-          >
-            {loadEarlierControl}
-            {threadWindowMessages(visibleMessages, pinnedNewerCursor).map((message, index) =>
-              renderMessageRow(message, { enableJump: true, index }),
-            )}
-            {pinnedNewerCursor === null ? failedSendBubbles : null}
-            {pinnedNewerCursor === null ? (
-              workingFooter
-            ) : loadingNewer ? (
-              <ActivityIndicator color={tokens.mutedForeground} style={{ marginVertical: 12 }} />
-            ) : null}
-          </ScrollView>
+                loadNewerNearEnd();
+              }}
+              onScroll={(event) => {
+                if (pinnedScrollBack.current.onScroll(event.nativeEvent) && Platform.OS === "ios")
+                  Keyboard.dismiss();
+                const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                pinnedScrollMetrics.current = {
+                  offset: contentOffset.y,
+                  viewport: layoutMeasurement.height,
+                  content: contentSize.height,
+                };
+                previewViewport.update(pinnedScrollMetrics.current);
+                loadNewerNearEnd();
+              }}
+              onScrollBeginDrag={(event) => {
+                pinnedScrollBack.current.onDragStart(event.nativeEvent);
+                newerLoadFailed.current = false;
+                if (!jumpAnchor.current.holds()) return;
+                jumpAnchor.current.release();
+                jumpScrollTarget.current = null;
+              }}
+              onScrollEndDrag={(event) => {
+                pinnedScrollBack.current.onDragEnd();
+                updatePinnedScroll(event);
+              }}
+              onMomentumScrollEnd={updatePinnedScroll}
+            >
+              {loadEarlierControl}
+              {threadWindowMessages(visibleMessages, pinnedNewerCursor).map((message, index) =>
+                renderMessageRow(message, { enableJump: true, index }),
+              )}
+              {pinnedNewerCursor === null ? failedSendBubbles : null}
+              {pinnedNewerCursor === null ? (
+                workingFooter
+              ) : loadingNewer ? (
+                <ActivityIndicator color={tokens.mutedForeground} style={{ marginVertical: 12 }} />
+              ) : null}
+            </ScrollView>
+          </PagePreviewViewport.Provider>
         ) : (
           <FlatList
             key={threadKey}
@@ -3472,11 +3487,17 @@ const MessageRow = memo(function MessageRow({
     (question: string) => actions.dismissChoice(message.id, question),
     [actions, message.id],
   );
+  const [previewBounds, setPreviewBounds] = useState<{ top: number; height: number } | null>(null);
   const onLayout = useMemo(
     () =>
       enableJump
-        ? (event: LayoutChangeEvent) =>
-            actions.layout(message.id, event.nativeEvent.layout.y, index)
+        ? (event: LayoutChangeEvent) => {
+            const { y, height } = event.nativeEvent.layout;
+            actions.layout(message.id, y, index);
+            setPreviewBounds((previous) =>
+              previous?.top === y && previous.height === height ? previous : { top: y, height },
+            );
+          }
         : undefined,
     [actions, message.id, enableJump, index],
   );
@@ -3724,23 +3745,25 @@ const MessageRow = memo(function MessageRow({
           >
             <ThreadReadOnlyContext.Provider value={readOnly}>
               <NewestPageCards.Provider value={pageCards}>
-                <MessageBubble
-                  artifactDescriptions={artifactDescriptions}
-                  botId={bubbleBotId}
-                  groupId={groupId}
-                  message={message}
-                  botName={botName}
-                  bots={bots}
-                  members={members}
-                  canAnswer={canAnswer}
-                  onAnswer={actions.answer}
-                  onOpenBot={actions.openBot}
-                  onOpenComputer={actions.openComputer}
-                  onChoiceDismissed={onChoiceDismissed}
-                  onPreviewMarkdown={actions.previewMarkdown}
-                  onPreviewImage={actions.previewImage}
-                  actionProps={actionProps}
-                />
+                <PagePreviewRowBounds.Provider value={previewBounds}>
+                  <MessageBubble
+                    artifactDescriptions={artifactDescriptions}
+                    botId={bubbleBotId}
+                    groupId={groupId}
+                    message={message}
+                    botName={botName}
+                    bots={bots}
+                    members={members}
+                    canAnswer={canAnswer}
+                    onAnswer={actions.answer}
+                    onOpenBot={actions.openBot}
+                    onOpenComputer={actions.openComputer}
+                    onChoiceDismissed={onChoiceDismissed}
+                    onPreviewMarkdown={actions.previewMarkdown}
+                    onPreviewImage={actions.previewImage}
+                    actionProps={actionProps}
+                  />
+                </PagePreviewRowBounds.Provider>
               </NewestPageCards.Provider>
             </ThreadReadOnlyContext.Provider>
           </MessageContextMenu>

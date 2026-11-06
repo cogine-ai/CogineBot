@@ -780,6 +780,7 @@ export async function sendThreadMessage(
               answeredByUserId: actor.userId,
               answer: composedText ?? "",
               taskPrompt,
+              choiceAnswer: pageContext ? (input.text ?? "") : undefined,
               beforeMessageSeq: message.seq,
             })
           ) {
@@ -967,6 +968,7 @@ export async function sendThreadMessage(
             answeredByUserId: actor.userId,
             answer: composedText ?? "",
             taskPrompt,
+            choiceAnswer: pageContext ? (input.text ?? "") : undefined,
             beforeMessageSeq: message.seq,
           });
           if (answered) {

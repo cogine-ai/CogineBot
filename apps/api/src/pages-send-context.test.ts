@@ -17,6 +17,7 @@ function fixture(
     waiting?: boolean;
     group?: boolean;
     trigger?: string;
+    choices?: boolean;
   } = {},
 ) {
   const run = {
@@ -29,7 +30,21 @@ function fixture(
   const ask = {
     id: "ask-a",
     role: "bot",
-    blocks: [{ kind: "ask", text: "Which report?", status: "pending" }],
+    blocks: [
+      {
+        kind: "ask",
+        text: "Which report?",
+        status: "pending",
+        ...(options.choices
+          ? {
+              actions: [
+                { id: "choice-a", label: "A" },
+                { id: "choice-b", label: "B" },
+              ],
+            }
+          : {}),
+      },
+    ],
   };
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "group-a" }]),
@@ -112,6 +127,124 @@ function fixture(
 }
 
 describe("authenticated fallback Page context", () => {
+  it.each(
+    [false, true].flatMap((group) =>
+      [
+        { answer: "A", owner: "A", displayed: "A" },
+        { answer: "choice-a", owner: "choice-a", displayed: "choice-a" },
+        { answer: " \n a \t", owner: "a", displayed: " \n a" },
+      ].map((value) => ({ group, ...value })),
+    ),
+  )(
+    "matches a Page answer to a choice while retaining its resume prompt and context (group=$group, answer=$answer)",
+    async ({ group, answer, owner, displayed }) => {
+      const f = fixture({ waiting: true, group, trigger: "routine", choices: true });
+      const resumeLabel = "Open https://choice-owner.example/result";
+      f.tx.run.findFirst.mockResolvedValue({
+        botId: "bot-a",
+        userId: actor.userId,
+        checkpoint: JSON.stringify({
+          kind: "choice_ask_v1",
+          actions: [{ id: "choice-a", label: resumeLabel }],
+        }),
+      } as never);
+      await sendThreadMessage(f.deps, actor, f.target, {
+        text: answer,
+        pageContext: { pageId: "page-a" },
+        clientNonce: "page-choice-nonce",
+      });
+      expect(f.tx.task.updateMany).toHaveBeenCalledWith({
+        where: { runs: { some: { id: "run-a" } } },
+        data: {
+          prompt: `Selected choice choice-a: ${resumeLabel}\n\n${owner}${PAGE_REPLY_TASK_CONTEXT}${prefix}`,
+        },
+      });
+      expect(f.tx.message.update).toHaveBeenCalledWith({
+        where: { id: "ask-a" },
+        data: {
+          blocks: [
+            {
+              kind: "ask",
+              text: "Which report?",
+              status: "answered",
+              actions: [
+                { id: "choice-a", label: "A" },
+                { id: "choice-b", label: "B" },
+              ],
+              answer: "choice-a",
+            },
+          ],
+        },
+      });
+      expect(f.tx.message.create.mock.calls[0]![0].data.blocks).toEqual([
+        {
+          kind: "text",
+          text: `${prefix}\n${displayed}`,
+          pageContext: { pageId: "page-a", title },
+        },
+      ]);
+      expect(f.tx.task.create).not.toHaveBeenCalled();
+      expect(f.tx.run.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a nonmatching Page answer as free text with its full context", async () => {
+    const f = fixture({ waiting: true, choices: true, trigger: "routine" });
+    await sendThreadMessage(f.deps, actor, f.target, {
+      text: "A different report",
+      pageContext: { pageId: "page-a" },
+    });
+    expect(f.tx.task.updateMany).toHaveBeenCalledWith({
+      where: { runs: { some: { id: "run-a" } } },
+      data: { prompt: `A different report${PAGE_REPLY_TASK_CONTEXT}${prefix}` },
+    });
+    expect(f.tx.message.update).toHaveBeenCalledWith({
+      where: { id: "ask-a" },
+      data: {
+        blocks: [
+          {
+            kind: "ask",
+            text: "Which report?",
+            status: "answered",
+            actions: [
+              { id: "choice-a", label: "A" },
+              { id: "choice-b", label: "B" },
+            ],
+            answer: `${prefix}\nA different report`,
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps ordinary choice matching and its exact selected-choice prompt unchanged", async () => {
+    const f = fixture({ waiting: true, choices: true });
+    await sendThreadMessage(f.deps, actor, f.target, { text: " a " });
+    expect(f.tx.task.updateMany).toHaveBeenCalledWith({
+      where: { runs: { some: { id: "run-a" } } },
+      data: { prompt: "Selected choice choice-a: A" },
+    });
+    expect(f.tx.page.findFirst).not.toHaveBeenCalled();
+    expect(f.tx.message.update.mock.calls[0]![0].data.blocks[0].answer).toBe("choice-a");
+  });
+
+  it("replays a Page choice's durable nonce without answering or resuming it twice", async () => {
+    const f = fixture({ waiting: true, choices: true });
+    const input = { text: "A", pageContext: { pageId: "page-a" }, clientNonce: "page-choice" };
+    const first = await sendThreadMessage(f.deps, actor, f.target, input);
+    f.external.message.findUnique.mockResolvedValue({
+      id: "message-a",
+      seq: 0,
+      sourceRuns: [{ ...f.run, status: "completed" }],
+    } as never);
+    expect(await sendThreadMessage(f.deps, actor, f.target, input)).toEqual(first);
+    expect(f.tx.message.create).toHaveBeenCalledOnce();
+    expect(f.tx.task.updateMany).toHaveBeenCalledOnce();
+    expect(f.tx.run.updateMany).toHaveBeenCalledOnce();
+    expect(f.tx.page.findFirst).toHaveBeenCalledOnce();
+    expect(f.deps.jobs.enqueue).toHaveBeenCalledOnce();
+  });
+
   it("stores canonical metadata and the composed text in message, event and task", async () => {
     const f = fixture();
     const raw = "Read https://owner.example/report";

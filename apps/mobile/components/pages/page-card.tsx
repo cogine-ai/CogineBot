@@ -1,7 +1,14 @@
 import { PageIcon } from "@rakazo/chat-ui/native";
 import type { MessageBlock, PageDetail } from "@rakazo/contracts";
 import { pageCardSuperseded } from "@rakazo/core";
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { currentApiBase } from "../../lib/api";
@@ -16,6 +23,50 @@ type PageBlock = Extract<MessageBlock, { kind: "page" }>;
 
 /** The thread's newest card for each page, from `newestPageCards`, as web reads it. */
 export const NewestPageCards = createContext<ReadonlyMap<string, string>>(new Map());
+
+type PageRowBounds = { top: number; height: number };
+
+/** The jump window already owns these content coordinates; do not rerender its history on scroll. */
+export function createPagePreviewViewport() {
+  let offset = 0;
+  let height = 0;
+  const listeners = new Set<() => void>();
+  return {
+    update(next: { offset?: number; viewport?: number }) {
+      const measuredOffset = next.offset ?? offset;
+      const measuredHeight = next.viewport ?? height;
+      if (offset === measuredOffset && height === measuredHeight) return;
+      offset = measuredOffset;
+      height = measuredHeight;
+      for (const listener of listeners) listener();
+    },
+    near(row: PageRowBounds | null) {
+      return (
+        row !== null &&
+        row.height > 0 &&
+        height > 0 &&
+        row.top + row.height >= offset - 400 &&
+        row.top <= offset + height + 400
+      );
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+export function usePagePreviewViewport(scopeKey: string, windowKey: string | undefined) {
+  return useMemo(createPagePreviewViewport, [scopeKey, windowKey]);
+}
+
+export const PagePreviewViewport = createContext<ReturnType<
+  typeof createPagePreviewViewport
+> | null>(null);
+export const PagePreviewRowBounds = createContext<PageRowBounds | null>(null);
+const noViewportSubscription = () => () => {};
 
 /**
  * The page's top, drawn live at desktop width and scaled into the card. A page or viewer that
@@ -105,6 +156,14 @@ export function PageCard({ block, messageId }: { block: PageBlock; messageId: st
   const tokens = useMobileTokens();
   const [width, setWidth] = useState(0);
   const newest = useContext(NewestPageCards);
+  const viewport = useContext(PagePreviewViewport);
+  const rowBounds = useContext(PagePreviewRowBounds);
+  const near = () => !viewport || viewport.near(rowBounds);
+  const previewNear = useSyncExternalStore(
+    viewport?.subscribe ?? noViewportSubscription,
+    near,
+    near,
+  );
   const updated = pageCardSuperseded(newest, messageId, block);
   const detail = usePageCardDetail(block, updated);
   const state = pageCardState(block, detail.current);
@@ -127,7 +186,9 @@ export function PageCard({ block, messageId }: { block: PageBlock; messageId: st
         },
       ]}
     >
-      {deleted ? null : (
+      {deleted ? null : !previewNear ? (
+        <View style={{ height: pagePreviewLayout(width).height, backgroundColor: tokens.card }} />
+      ) : (
         <PagePreview
           key={JSON.stringify([pageScopeKey(), block.pageId, updated ? block.version : null])}
           detail={

@@ -112,19 +112,29 @@ export function usePrivatePageList(input: {
 export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>, pageId?: string) {
   const pages = usePages()!;
   const [state, setState] = useState({ pending: false, error: false });
+  const latest = useRef(0);
+  const active = useRef(0);
   const handler = useRef(call);
   handler.current = call;
   const mutateAsync = async (input: T) => {
     if (!pages.store.isCurrent()) throw new DOMException("Page scope changed", "AbortError");
+    const started = ++latest.current;
+    active.current += 1;
     setState({ pending: true, error: false });
+    let failed = false;
     try {
       return await handler.current(input);
     } catch (error) {
-      if (pages.store.isCurrent()) setState({ pending: false, error: true });
+      failed = true;
       throw error;
     } finally {
+      const pending = --active.current > 0;
       if (pages.store.isCurrent()) {
-        setState((previous) => ({ ...previous, pending: false }));
+        // Every call settles its cache; only the latest attempt owns the visible error.
+        setState((previous) => ({
+          pending,
+          error: started === latest.current ? failed : previous.error,
+        }));
         pages.store.invalidate(pageId);
       }
     }
@@ -136,6 +146,9 @@ export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>, 
     mutate: (input: T) => {
       void mutateAsync(input).catch(() => {});
     },
-    reset: () => setState({ pending: false, error: false }),
+    reset: () => {
+      latest.current += 1;
+      setState({ pending: active.current > 0, error: false });
+    },
   };
 }

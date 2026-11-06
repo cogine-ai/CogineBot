@@ -218,6 +218,8 @@ export interface AnswerRunInput {
   answer: string;
   /** Internal model prompt with generated context separated from owner instructions. */
   taskPrompt?: string;
+  /** Raw owner answer for choice matching when `answer` includes generated context. */
+  choiceAnswer?: string;
   /** Identifies a spoken answer as part of a live voice call. */
   clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
@@ -728,7 +730,9 @@ async function commitAnswerRunInput(
   const approvalAsk = isApprovalAskBlock(pendingAsk);
   const secretAsk = isSecretAskBlock(pendingAsk);
   const choiceAsk = !approvalAsk && !secretAsk && Boolean(pendingAsk.actions?.length);
-  const selectedChoice = choiceAsk ? resolveAskChoice(input.answer, pendingAsk.actions) : undefined;
+  const selectedChoice = choiceAsk
+    ? resolveAskChoice(input.choiceAnswer ?? input.answer, pendingAsk.actions)
+    : undefined;
   if (secretAsk && !runSecretWriter) return null;
   if (secretAsk && pendingAsk.credential && run.userId !== input.answeredByUserId) return null;
   const loginAsk = secretAsk && pendingAsk.credential?.auth.type === "login";
@@ -858,16 +862,15 @@ async function commitAnswerRunInput(
     if (pendingSecretEffectId !== undefined && approved.count !== 1)
       throw new Error("Protected input request changed; retry");
   } else {
-    const resumeLabel = selectedChoice
-      ? resumeChoiceLabel(selectedChoice, run.checkpoint)
-      : undefined;
+    let prompt = input.taskPrompt ?? input.answer;
+    if (selectedChoice) {
+      prompt = `Selected choice ${selectedChoice.id}: ${resumeChoiceLabel(selectedChoice, run.checkpoint)}`;
+      if (input.choiceAnswer !== undefined && input.taskPrompt !== undefined)
+        prompt += `\n\n${input.taskPrompt}`;
+    }
     const task = await tx.task.updateMany({
       where: { runs: { some: { id: input.runId } } },
-      data: {
-        prompt: selectedChoice
-          ? `Selected choice ${selectedChoice.id}: ${resumeLabel}`
-          : (input.taskPrompt ?? input.answer),
-      },
+      data: { prompt },
     });
     if (task.count !== 1) throw new Error("Run task was not available to answer");
   }
@@ -1009,6 +1012,7 @@ export async function eligibleWaitingTextAnswer(
     answeredByUserId: string;
     answer: string;
     taskPrompt?: string;
+    choiceAnswer?: string;
     beforeMessageSeq?: number;
   },
 ): Promise<string | null> {

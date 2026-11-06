@@ -14,6 +14,7 @@ const host = vi.hoisted(() => ({
   scopeListeners: new Set<() => void>(),
   resetCaches: new Set<() => void>(),
   compile: vi.fn(),
+  t: (text: string, values?: { title: string }) => text.replace("{title}", values?.title ?? ""),
 }));
 
 vi.mock("react-native", () => ({
@@ -38,7 +39,8 @@ vi.mock("react-native", () => ({
       children,
     );
   },
-  View: ({ children }: { children?: ReactNode }) => createElement("div", {}, children),
+  View: ({ children, style }: { children?: ReactNode; style?: { height?: number } }) =>
+    createElement("div", { "data-height": style?.height }, children),
   Text: ({ children }: { children?: ReactNode }) => createElement("span", {}, children),
   StyleSheet: { create: (styles: unknown) => styles },
 }));
@@ -80,7 +82,7 @@ vi.mock("./i18n", () => ({
   getActiveUiLocale: () => "en",
   useI18n: () => ({
     locale: "en",
-    t: (text: string, values?: { title: string }) => text.replace("{title}", values?.title ?? ""),
+    t: host.t,
   }),
 }));
 vi.mock("./pages", async (original) => ({
@@ -91,7 +93,14 @@ vi.mock("../components/sandboxed-html-preview", () => ({
   SandboxedHtmlPreview: ({ html }: { html: string }) => createElement("pre", {}, html),
 }));
 
-const { PageCard, NewestPageCards } = await import("../components/pages/page-card");
+const {
+  PageCard,
+  NewestPageCards,
+  PagePreviewViewport,
+  PagePreviewRowBounds,
+  createPagePreviewViewport,
+  usePagePreviewViewport,
+} = await import("../components/pages/page-card");
 const { chatOnScreen } = await import("./pages");
 type PageBlock = Extract<MessageBlock, { kind: "page" }>;
 const block = (version: number): PageBlock => ({
@@ -168,6 +177,150 @@ async function show(
   await render();
   return { container, render, newest, cards };
 }
+
+async function showWindow() {
+  const viewport = createPagePreviewViewport();
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  roots.push(root);
+  const render = async (
+    current = viewport,
+    bounds: { top: number; height: number } | null = {
+      top: 5000,
+      height: 400,
+    },
+  ) =>
+    act(async () =>
+      root.render(
+        createElement(
+          PagePreviewViewport.Provider,
+          { value: current },
+          createElement(
+            PagePreviewRowBounds.Provider,
+            { value: bounds },
+            createElement(
+              NewestPageCards.Provider,
+              { value: new Map([["page-1", "message-2:2"]]) },
+              createElement(PageCard, { block: block(2), messageId: "message-2" }),
+            ),
+          ),
+        ),
+      ),
+    );
+  await render();
+  return { container, viewport, render };
+}
+
+it("keeps distant jump cards clickable with equal-height placeholders and mounts only nearby previews", async () => {
+  host.rpc.mockResolvedValue(page(2));
+  const view = await showWindow();
+  await act(async () => view.viewport.update({ offset: 0, viewport: 600 }));
+  expect(host.compile).not.toHaveBeenCalled();
+  const height = view.container.querySelector("[data-height]")?.getAttribute("data-height");
+  expect(Number(height)).toBeGreaterThan(0);
+  await act(async () => view.container.querySelector("button")!.click());
+  expect(host.push).toHaveBeenCalledOnce();
+  await act(async () => view.viewport.update({ offset: 4500, viewport: 600 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  expect(view.container.querySelector("[data-height]")?.getAttribute("data-height")).toBe(height);
+  await act(async () => view.viewport.update({ offset: 0, viewport: 600 }));
+  expect(view.container.querySelector("pre")).toBeNull();
+  expect(view.container.querySelector("[data-height]")?.getAttribute("data-height")).toBe(height);
+});
+
+it("does not mount late HTML after a jump card leaves the viewport and rebuilds on return", async () => {
+  host.rpc.mockResolvedValue(page(2));
+  const pending = deferred<string>();
+  host.compile.mockReturnValueOnce(pending.promise);
+  const view = await showWindow();
+  await act(async () => view.viewport.update({ offset: 4500, viewport: 600 }));
+  await act(async () => view.viewport.update({ offset: 0, viewport: 600 }));
+  await act(async () => pending.resolve("late old document"));
+  expect(view.container.querySelector("pre")).toBeNull();
+  await act(async () => view.viewport.update({ offset: 4500, viewport: 600 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  expect(host.compile).toHaveBeenCalledTimes(2);
+});
+
+it("retains measured viewport height for programmatic offsets without another layout event", async () => {
+  host.rpc.mockResolvedValue(page(2));
+  const view = await showWindow();
+  await act(async () => view.viewport.update({ offset: 4500, viewport: 600 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  await act(async () => view.viewport.update({ offset: 4550 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  await act(async () => view.viewport.update({ viewport: 300 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  await act(async () => view.viewport.update({ offset: 0 }));
+  expect(view.container.querySelector("pre")).toBeNull();
+  await act(async () => view.viewport.update({ offset: 4550 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  // A real zero-height native layout is different from a paging-state reset.
+  await act(async () => view.viewport.update({ offset: 4550, viewport: 0 }));
+  expect(view.container.querySelector("pre")).toBeNull();
+  await act(async () => view.viewport.update({ offset: 4550, viewport: 600 }));
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+});
+
+it("waits for current window geometry and ignores updates from a replaced viewport", async () => {
+  host.rpc.mockResolvedValue(page(2));
+  const view = await showWindow();
+  await act(async () => view.viewport.update({ offset: 4500, viewport: 600 }));
+  const next = createPagePreviewViewport();
+  await view.render(next, null);
+  expect(view.container.querySelector("pre")).toBeNull();
+  await act(async () => view.viewport.update({ offset: 0, viewport: 600 }));
+  await act(async () => next.update({ offset: 4500, viewport: 600 }));
+  expect(view.container.querySelector("pre")).toBeNull();
+  await view.render(next);
+  expect(view.container.querySelector("pre")?.textContent).toBe("preview:code-2");
+});
+
+it("owns preview measurements by the actual scroll window, including a filtered jump target", async () => {
+  host.rpc.mockResolvedValue(page(2));
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  roots.push(root);
+  let viewport!: ReturnType<typeof createPagePreviewViewport>;
+  function Window({ target, top }: { target: string; top: number }) {
+    viewport = usePagePreviewViewport("owner-space-thread", target);
+    return createElement(
+      PagePreviewViewport.Provider,
+      { value: viewport },
+      createElement(
+        PagePreviewRowBounds.Provider,
+        { value: { top, height: 400 } },
+        createElement(
+          NewestPageCards.Provider,
+          { value: new Map([["page-1", "message-2:2"]]) },
+          createElement(PageCard, { block: block(2), messageId: "message-2" }),
+        ),
+      ),
+    );
+  }
+  const render = (target: string, top: number) =>
+    act(async () => root.render(createElement(Window, { target, top })));
+  await render("target-a", 5000);
+  const first = viewport;
+  await act(async () => viewport.update({ offset: 4500, viewport: 600 }));
+  expect(container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  await render("target-a", 5000);
+  expect(viewport).toBe(first);
+  await act(async () => viewport.update({ viewport: 300 }));
+  expect(container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  // The new native ScrollView starts at zero. A filtered target supplies no anchor scroll.
+  await render("target-b", 0);
+  await act(async () => viewport.update({ viewport: 300 }));
+  expect(container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  expect(viewport).not.toBe(first);
+  await act(async () => first.update({ offset: 9000 }));
+  expect(container.querySelector("pre")?.textContent).toBe("preview:code-2");
+  await render("target-a", 0);
+  expect(viewport).not.toBe(first);
+  expect(container.querySelector("pre")).toBeNull();
+  await act(async () => viewport.update({ viewport: 300 }));
+  expect(container.querySelector("pre")?.textContent).toBe("preview:code-2");
+});
 
 it("keeps the old card's saved preview while the newest card and both opens use the current Page", async () => {
   host.rpc.mockImplementation(async (_proc, input: { version?: number }) =>
