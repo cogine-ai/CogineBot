@@ -560,8 +560,22 @@ describe("development restore failures", () => {
       expect(f.commands().findLast((args) => args.includes("supervisor"))).toEqual(
         expect.arrayContaining(["stop", "api", "worker", "supervisor"]),
       );
-      if (failure === "FAIL_READINESS")
+      if (failure === "FAIL_READINESS") {
+        const commands = f.commands();
+        const verification = commands.findIndex(
+          (args) => args.includes("run") && args.at(-1) === "verify",
+        );
+        const cleanupStop = commands.findIndex(
+          (args, index) =>
+            index > verification && args.includes("stop") && args.includes("supervisor"),
+        );
+        expect(verification).toBeGreaterThanOrEqual(0);
+        expect(cleanupStop).toBeGreaterThan(verification);
+        expect(commands[cleanupStop]).toEqual(
+          expect.arrayContaining(["stop", "api", "worker", "supervisor"]),
+        );
         expect(f.commands().at(-1)).toEqual(expect.arrayContaining(["stop", "migrate"]));
+      }
       if (failure === "FAIL_PREPARE")
         expect(f.commands().some((args) => args.some((arg) => arg.includes("exec psql ")))).toBe(
           false,
