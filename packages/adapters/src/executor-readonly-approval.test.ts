@@ -1453,6 +1453,89 @@ describe("connector read-only metadata and approval enforcement", () => {
     reviewMock.mockReset();
   });
 
+  it.each(["site", "tool"] as const)(
+    "requires an effect for a trusted web read with an explicit %s approval rule",
+    async (matchKind) => {
+      const url = "https://trusted.example.org/report";
+      const fetch = vi.fn(async () => ({ url, title: "Report", text: "Report", truncated: false }));
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        trigger: "routine",
+        prompt: `Read ${url}`,
+        autoReview: true,
+        rules: [
+          {
+            effect: "require_approval",
+            matchKind,
+            matchValue: matchKind === "site" ? "example.org" : "web_fetch",
+          },
+        ],
+        webProvider: {
+          describe: () => ({
+            id: "trusted-rule-test",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { search: true, fetch: true, readability: true },
+          }),
+          fetch,
+          search: vi.fn(async () => []),
+        },
+      });
+      f.setCalls([{ args: { url }, executionId: "trusted-first" }]);
+      await f.run();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]).toMatchObject({ kind: "web_fetch", status: "intended" });
+      f.effects[0]!.status = "approved";
+      f.setCalls([{ args: { url }, executionId: "trusted-approved" }]);
+      await f.run();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(f.effects[0]!.status).toBe("completed");
+      f.setCalls([{ args: { url }, executionId: "trusted-replay" }]);
+      await f.run();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(f.effects).toHaveLength(1);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    "keeps trusted web reads free with explicit allow=%s",
+    async (allowRule) => {
+      const url = "https://trusted.example.org/report";
+      const fetch = vi.fn(async () => ({ url, title: "Report", text: "Report", truncated: false }));
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        trigger: "routine",
+        prompt: `Read ${url}`,
+        autoReview: true,
+        rules: allowRule
+          ? [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }]
+          : [],
+        webProvider: {
+          describe: () => ({
+            id: "trusted-allow-test",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { search: true, fetch: true, readability: true },
+          }),
+          fetch,
+          search: vi.fn(async () => []),
+        },
+      });
+      f.setCalls([{ args: { url }, executionId: "trusted-allow" }]);
+      await f.run();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(f.effects).toHaveLength(0);
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(reviewMock).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([true, false])(
     "uses stored Page provenance rather than link-shaped user text, serverTagged=%s",
     async (serverTagged) => {

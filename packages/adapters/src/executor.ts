@@ -5471,6 +5471,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // Connector read-only hints must not bypass approval, review, or replay decisions.
           const applied =
             READ_ONLY_AGENT_TOOLS.has(name) &&
+            !(name === "web_fetch" && needsApprovalEarly) &&
             siteGate !== "new" &&
             nextApprovedTool !== name &&
             !nextApprovedKey
