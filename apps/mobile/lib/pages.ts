@@ -86,11 +86,22 @@ export function pageActionAllowed(tappedAt: number | null, now: number): boolean
   return tappedAt !== null && now >= tappedAt && now - tappedAt <= PAGE_ACTION_WINDOW_MS;
 }
 
-/** The chat a page was made in, where its reply buttons write; null once that chat is gone. */
+/** The chat recorded on a Page; reply availability is checked against active chats separately. */
 export function pageChat(page: Pick<PageDetail, "botId" | "groupId">) {
   if (page.groupId) return { pathname: "/group-thread", key: "groupId", threadKey: page.groupId };
   if (page.botId) return { pathname: "/thread", key: "botId", threadKey: page.botId };
   return null;
+}
+
+/** Archived or missing chats leave their Pages readable, with no reply destination. */
+export async function getPageReplyChat(page: Pick<PageDetail, "botId" | "groupId">) {
+  const chat = pageChat(page);
+  if (!chat) return null;
+  const active = await pageRpc<Array<{ id: string }>>(
+    page.groupId ? "groups/list" : "bots/list",
+    {},
+  );
+  return active.some((candidate) => candidate.id === chat.threadKey) ? chat : null;
 }
 
 type PageReply = { text: string; page: { id: string; title: string } };

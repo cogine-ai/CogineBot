@@ -8,6 +8,10 @@ import type * as Pages from "./pages";
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  host.activeBots = [{ id: "bot-1" }];
+  host.activeGroups = [{ id: "group-1" }];
+  host.originError = null;
+  host.originRead = undefined;
 });
 
 const host = vi.hoisted(() => ({
@@ -24,6 +28,10 @@ const host = vi.hoisted(() => ({
   theme: "light",
   spaceGeneration: 1,
   readError: null as unknown,
+  activeBots: [{ id: "bot-1" }],
+  activeGroups: [{ id: "group-1" }],
+  originError: null as unknown,
+  originRead: undefined as undefined | ((proc: string) => Promise<Array<{ id: string }>>),
   page: {
     id: "page-1",
     title: "Plan",
@@ -108,7 +116,11 @@ vi.mock("./api", () => ({
   subscribeApiBase: () => () => {},
   subscribeSelectedSpace: () => () => {},
   captureApiRequestContext: async () => ({ apiBase: "https://app.example", headers: {} }),
-  rpc: vi.fn(),
+  rpc: vi.fn(async (proc: string) => {
+    if (host.originRead) return host.originRead(proc);
+    if (host.originError) throw host.originError;
+    return proc === "bots/list" ? host.activeBots : host.activeGroups;
+  }),
 }));
 vi.mock("./session", () => ({
   registerSessionDiskCache: () => undefined,
@@ -386,6 +398,165 @@ it("puts a tapped reply in the page's own chat unsent, closing the page or openi
   await tapThenReply("Orphan");
   expect(host.went).toEqual([]);
   host.page = { ...host.page, botId: "bot-1" };
+  await act(async () => root.unmount());
+});
+
+it.each(["archived or missing bot", "inactive group", "origin lookup failed"])(
+  "keeps a Page readable without replies when its chat is unavailable: %s",
+  async (scenario) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const original = host.page;
+    host.page = {
+      ...original,
+      botId: "bot-1",
+      groupId: scenario === "inactive group" ? "group-1" : null,
+    };
+    host.activeBots = [];
+    host.activeGroups = [];
+    host.originError = scenario === "origin lookup failed" ? new TypeError("Offline") : null;
+    host.routes = [{ name: "thread", params: { botId: "bot-1", readOnly: "1" } }];
+    host.went = [];
+    host.documentOptions = {};
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(createElement(PageScreen)));
+      expect(host.html).toContain("<p>page</p>");
+      expect(host.documentOptions.reply).toBe(false);
+      host.touch.onTouchStart?.(at(10, 10));
+      host.touch.onTouchEnd?.(at(10, 10));
+      await act(async () =>
+        host.message?.(
+          JSON.stringify({ type: "rakazo-page:reply", text: "Cannot send" }),
+          () => {},
+        ),
+      );
+      expect(host.went).toEqual([]);
+      expect(takePageReply(host.page.groupId ?? "bot-1")).toBeNull();
+      await act(async () =>
+        host.message?.(
+          JSON.stringify({ type: "rakazo-page:copy", id: "read-only", text: "Still readable" }),
+          () => {},
+        ),
+      );
+      expect(host.copied.at(-1)).toBe("Still readable");
+      host.touch.onTouchStart?.(at(10, 10));
+      host.touch.onTouchEnd?.(at(10, 10));
+      await act(async () =>
+        host.message?.(
+          JSON.stringify({ type: "rakazo-page:open-link", url: "https://example.com/read-only" }),
+          () => {},
+        ),
+      );
+      expect(host.opened.at(-1)).toBe("https://example.com/read-only");
+    } finally {
+      host.page = original;
+      await act(async () => root.unmount());
+    }
+  },
+);
+
+it("replies to an active group even when the Page's creating bot is archived", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const original = host.page;
+  host.page = { ...original, botId: "archived-bot", groupId: "group-1" };
+  host.activeBots = [];
+  host.went = [];
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(createElement(PageScreen)));
+    expect(host.documentOptions.reply).toBe(true);
+    host.touch.onTouchStart?.(at(10, 10));
+    host.touch.onTouchEnd?.(at(10, 10));
+    await act(async () =>
+      host.message?.(
+        JSON.stringify({ type: "rakazo-page:reply", text: "For the group" }),
+        () => {},
+      ),
+    );
+    expect(takePageReply("group-1")?.text).toBe("For the group");
+  } finally {
+    host.page = original;
+    await act(async () => root.unmount());
+  }
+});
+
+it.each(["page", "Space ABA"])(
+  "does not enable a new document from a late origin lookup after %s changes",
+  async (change) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const original = host.page;
+    let release!: (value: Array<{ id: string }>) => void;
+    const pending = new Promise<Array<{ id: string }>>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    host.originRead = async () => (++calls === 1 ? pending : []);
+    host.documentOptions = {};
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(createElement(PageScreen)));
+      expect(calls).toBe(1);
+      if (change === "page") host.page = { ...original, id: "page-2", botId: "bot-2" };
+      else host.spaceGeneration += 2;
+      await act(async () => root.render(createElement(PageScreen)));
+      expect(host.documentOptions.reply).toBe(false);
+      await act(async () => release([{ id: original.botId! }]));
+      expect(host.documentOptions.reply).toBe(false);
+    } finally {
+      host.page = original;
+      await act(async () => root.unmount());
+    }
+  },
+);
+
+it("shows a Page while its origin check is pending and revokes its old callback when replies become available", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  let release!: (value: Array<{ id: string }>) => void;
+  host.originRead = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  host.documentOptions = {};
+  host.copied = [];
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(createElement(PageScreen)));
+    expect(host.html).toContain("<p>page</p>");
+    expect(host.documentOptions.reply).toBe(false);
+    const oldMessage = host.message!;
+    await act(async () => release([{ id: "bot-1" }]));
+    expect(host.documentOptions.reply).toBe(true);
+    host.touch.onTouchStart?.(at(10, 10));
+    host.touch.onTouchEnd?.(at(10, 10));
+    await act(async () =>
+      oldMessage(JSON.stringify({ type: "rakazo-page:copy", id: "old", text: "stale" }), () => {}),
+    );
+    expect(host.copied).toEqual([]);
+    await act(async () =>
+      host.message?.(
+        JSON.stringify({ type: "rakazo-page:copy", id: "new", text: "current" }),
+        () => {},
+      ),
+    );
+    expect(host.copied).toEqual(["current"]);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("replaces an active bot's old read-only route rather than leaving its reply there", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  host.routes = [{ name: "thread", params: { botId: "bot-1", readOnly: "1" } }];
+  host.went = [];
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(createElement(PageScreen)));
+  host.touch.onTouchStart?.(at(10, 10));
+  host.touch.onTouchEnd?.(at(10, 10));
+  await act(async () =>
+    host.message?.(JSON.stringify({ type: "rakazo-page:reply", text: "Restored bot" }), () => {}),
+  );
+  expect(host.went).toEqual([{ pathname: "/thread", params: { botId: "bot-1" } }]);
+  expect(takePageReply("bot-1")?.text).toBe("Restored bot");
   await act(async () => root.unmount());
 });
 

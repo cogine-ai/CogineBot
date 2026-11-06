@@ -209,12 +209,13 @@ describe("resolveActionApproval", () => {
     expect(resolveActionApproval({ toolName: "web_fetch", site, rules: [requireRule] })).toBe(
       "ask",
     );
-    const oldAllow = { ...requireRule, effect: "always_allow" } as const;
-    expect(siteAlwaysAllowed([oldAllow], site)).toBe(false);
+    const allowRule = { ...requireRule, effect: "always_allow" } as const;
+    expect(siteAlwaysAllowed([allowRule], site)).toBe(true);
     expect(
-      resolveActionApprovalDetail({ toolName: "web_fetch", site, rules: [oldAllow] }).source,
-    ).toBe("default");
-    const canonicalAllow = { ...oldAllow, matchValue: site };
+      resolveActionApprovalDetail({ toolName: "web_fetch", site, rules: [allowRule] }).source,
+    ).toBe("always_allow");
+    const canonicalAllow = { ...allowRule, matchValue: site };
+    expect(canonicalApprovalSite(site)).toBe(site);
     expect(siteAlwaysAllowed([canonicalAllow], site)).toBe(true);
     expect(
       resolveActionApproval({ toolName: "web_fetch", site, rules: [canonicalAllow, requireRule] }),

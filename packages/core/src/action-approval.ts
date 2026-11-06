@@ -213,18 +213,12 @@ export function canonicalApprovalSite(value: string): string | undefined {
   }
 }
 
-function siteRuleValue(rule: ActionApprovalRule): string | undefined {
-  const site = canonicalApprovalSite(rule.matchValue);
-  // Do not activate a previously ineffective URL/subdomain allowance as a broader site grant.
-  return rule.effect === "always_allow" && rule.matchValue.toLowerCase() !== site
-    ? undefined
-    : site;
-}
-
 export function siteAlwaysAllowed(rules: ActionApprovalRule[], site: string): boolean {
   return rules.some(
     (rule) =>
-      rule.effect === "always_allow" && rule.matchKind === "site" && siteRuleValue(rule) === site,
+      rule.effect === "always_allow" &&
+      rule.matchKind === "site" &&
+      canonicalApprovalSite(rule.matchValue) === site,
   );
 }
 
@@ -257,7 +251,7 @@ function ruleMatches(
   const value = rule.matchValue.toLowerCase();
   switch (rule.matchKind) {
     case "site":
-      return site !== undefined && site === siteRuleValue(rule);
+      return site !== undefined && site === canonicalApprovalSite(rule.matchValue);
     case "tool":
       return toolName.toLowerCase() === value;
     case "connector":

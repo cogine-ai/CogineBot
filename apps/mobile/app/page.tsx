@@ -24,9 +24,9 @@ import { useMobileTokens, useResolvedAppearance } from "../lib/native";
 import { HEADER_CONTROL_SIZE } from "../lib/native-controls";
 import {
   getLatestPage,
+  getPageReplyChat,
   offerPageReply,
   pageActionAllowed,
-  pageChat,
   pageDocument,
   pageMessage,
   pageScopeKey,
@@ -37,7 +37,13 @@ import {
 type Loaded =
   | { status: "loading"; scope: string }
   | { status: "error"; error: unknown; scope: string }
-  | { status: "ready"; page: PageDetail; document: string; scope: string };
+  | {
+      status: "ready";
+      page: PageDetail;
+      document: string;
+      chat: Awaited<ReturnType<typeof getPageReplyChat>>;
+      scope: string;
+    };
 
 /** A private page full screen, with a native close button. */
 export default function PageScreen() {
@@ -56,8 +62,9 @@ export default function PageScreen() {
   const [state, setLoaded] = useState<Loaded>({ status: "loading", scope: documentKey });
   const loaded: Loaded =
     state.scope === documentKey ? state : { status: "loading", scope: documentKey };
+  const renderKey = JSON.stringify([documentKey, loaded.status === "ready" ? loaded.chat : null]);
   // A previous view's callback stays revoked even when navigation returns to the same page.
-  const documentIdentity = useMemo(() => ({ key: documentKey }), [documentKey]);
+  const documentIdentity = useMemo(() => ({ key: renderKey }), [renderKey]);
   const committedDocument = useRef<typeof documentIdentity | null>(null);
   useLayoutEffect(() => {
     committedDocument.current = documentIdentity;
@@ -77,15 +84,28 @@ export default function PageScreen() {
     setLoaded({ status: "loading", scope: documentKey });
     void getLatestPage(pageId, { refresh: true })
       .then(async (page) => {
+        if (!active || scope !== pageScopeKey()) return;
+        const chatRead = getPageReplyChat(page).catch(() => null);
         const document = await pageDocument(
           currentApiBase(),
           page.code,
           theme,
           t("This page couldn't be shown."),
-          { reply: pageChat(page) !== null, lang: locale },
+          { reply: false, lang: locale },
         );
-        if (!active) return;
-        setLoaded({ status: "ready", page, document, scope: documentKey });
+        if (!active || scope !== pageScopeKey()) return;
+        setLoaded({ status: "ready", page, document, chat: null, scope: documentKey });
+        const chat = await chatRead;
+        if (!chat || !active || scope !== pageScopeKey()) return;
+        const interactive = await pageDocument(
+          currentApiBase(),
+          page.code,
+          theme,
+          t("This page couldn't be shown."),
+          { reply: true, lang: locale },
+        ).catch(() => null);
+        if (!interactive || !active || scope !== pageScopeKey()) return;
+        setLoaded({ status: "ready", page, document: interactive, chat, scope: documentKey });
       })
       .catch((error: unknown) => {
         if (active) setLoaded({ status: "error", error, scope: documentKey });
@@ -111,7 +131,7 @@ export default function PageScreen() {
       const message = pageMessage(data) as { type?: unknown; text?: unknown } | null;
       const reply = message?.type === "rakazo-page:reply" ? pageReplyText(message.text) : null;
       const page = loaded.status === "ready" ? loaded.page : null;
-      const chat = reply && page ? pageChat(page) : null;
+      const chat = reply && loaded.status === "ready" ? loaded.chat : null;
       const url = pageLinkRequest(message);
       const copy = pageCopyRequest(message);
       if (!(reply && page && chat) && !url && !copy) return;
@@ -123,7 +143,11 @@ export default function PageScreen() {
         const state = navigation.getState();
         const below = state?.routes[state.index - 1];
         const params = below?.params as Record<string, unknown> | undefined;
-        if (`/${below?.name}` === chat.pathname && params?.[chat.key] === chat.threadKey) {
+        if (
+          `/${below?.name}` === chat.pathname &&
+          params?.[chat.key] === chat.threadKey &&
+          params.readOnly !== "1"
+        ) {
           router.back();
         } else {
           router.replace({ pathname: chat.pathname, params: { [chat.key]: chat.threadKey } });
@@ -165,7 +189,7 @@ export default function PageScreen() {
           }}
         >
           <SandboxedHtmlPreview
-            key={documentKey}
+            key={renderKey}
             html={loaded.document}
             background={pageBackground}
             onMessage={receive}

@@ -27,7 +27,8 @@ vi.mock("./session", () => ({
 }));
 vi.mock("./i18n", () => ({ getActiveUiLocale: () => "en" }));
 
-const { getLatestPage, getPageVersion, renamePage, removePage, pinPage } = await import("./pages");
+const { getLatestPage, getPageVersion, getPageReplyChat, renamePage, removePage, pinPage } =
+  await import("./pages");
 const page = (id: string, version: number): PageDetail => ({
   id,
   title: `Title ${id}`,
@@ -61,6 +62,33 @@ beforeEach(() => {
     .mockImplementation(async (proc, input: { pageId: string; version?: number }) =>
       proc === "pages/get" ? page(input.pageId, input.version ?? 3) : { ok: true },
     );
+});
+
+it("uses the active origin list, with a group taking priority over its creating bot", async () => {
+  host.rpc.mockResolvedValue([{ id: "group-1" }]);
+  await expect(getPageReplyChat({ groupId: "group-1", botId: "archived-bot" })).resolves.toEqual({
+    pathname: "/group-thread",
+    key: "groupId",
+    threadKey: "group-1",
+  });
+  expect(host.rpc.mock.calls[0]?.slice(0, 2)).toEqual(["groups/list", {}]);
+  host.rpc.mockResolvedValue([]);
+  await expect(getPageReplyChat({ groupId: null, botId: "bot-1" })).resolves.toBeNull();
+  expect(host.rpc.mock.calls.at(-1)?.slice(0, 2)).toEqual(["bots/list", {}]);
+  host.rpc.mockClear();
+  await expect(getPageReplyChat({ groupId: null, botId: null })).resolves.toBeNull();
+  expect(host.rpc).not.toHaveBeenCalled();
+});
+
+it("rejects a late origin-availability result across a Space generation change", async () => {
+  const pending = deferred<Array<{ id: string }>>();
+  host.rpc.mockReturnValueOnce(pending.promise);
+  const result = getPageReplyChat({ botId: "bot-1", groupId: null });
+  await Promise.resolve();
+  expect(host.rpc).toHaveBeenCalledOnce();
+  host.generation += 2;
+  pending.resolve([{ id: "bot-1" }]);
+  await expect(result).rejects.toThrow("Page scope changed");
 });
 
 it("shares reads for one saved version without letting different versions replace the latest Page", async () => {
