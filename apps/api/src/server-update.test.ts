@@ -66,7 +66,7 @@ describe("server update install kind", () => {
     expect(status.manualCommands[1]).toMatch(/docker compose .*pull api worker web migrate$/);
     expect(status.manualCommands[2]).toMatch(/stop --timeout 120 api worker web$/);
     expect(status.manualCommands[3]).toMatch(/--no-deps .*--exit-code-from migrate migrate$/);
-    expect(status.manualCommands[4]).toMatch(/--no-deps .*db:restore verify$/);
+    expect(status.manualCommands[4]).toMatch(/--no-deps .*db:row-security verify$/);
     expect(status.manualCommands[5]).toMatch(
       /up -d --wait --no-deps --no-build --pull never api worker web$/,
     );
@@ -91,7 +91,7 @@ describe("server update install kind", () => {
     expect(status.manualCommands[2]).toMatch(/build --with-dependencies api worker web migrate$/);
     expect(status.manualCommands[3]).toMatch(/stop --timeout 120 api worker web$/);
     expect(status.manualCommands[4]).toMatch(/--no-deps .*--exit-code-from migrate migrate$/);
-    expect(status.manualCommands[5]).toMatch(/--no-deps .*db:restore verify$/);
+    expect(status.manualCommands[5]).toMatch(/--no-deps .*db:row-security verify$/);
     expect(status.manualCommands[6]).toMatch(
       /up -d --wait --no-deps --no-build --pull never api worker web$/,
     );

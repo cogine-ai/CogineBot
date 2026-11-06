@@ -520,7 +520,7 @@ rollback() {
         echo "The administrator migration termination could not be verified; runtime recovery was not started." >&2; exit 1
       fi
     fi
-    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify; then
+    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify; then
       echo "Database readiness failed; runtime recovery was not started." >&2; exit 1
     fi
   fi
@@ -628,7 +628,7 @@ docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_ar
 read_containers
 migration_receipt true || fail "The administrator migration did not complete on the protected target image"
 docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
-  -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify
+  -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
 runtime_services=()
 while IFS= read -r service; do runtime_services+=("${service}"); done < <(jq -r '.services[] | select(.service != "migrate") | .service' <<<"${config}")
 docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \

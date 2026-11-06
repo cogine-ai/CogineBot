@@ -5,6 +5,8 @@ import {
   createDb,
   databaseUrls,
   describeRowSecurityPolicies,
+  verifyRealtimeDatabase,
+  verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { formatDatabasePreparationFailure } from "./migrate-database-error.js";
 
@@ -26,8 +28,8 @@ function print(status: RowSecurityPolicyStatus): void {
 async function main(): Promise<void> {
   loadRootEnv();
   const [command = "status", ...extra] = process.argv.slice(2);
-  if ((command !== "status" && command !== "apply") || extra.length > 0)
-    throw new Error("Use db:row-security status or db:row-security apply");
+  if ((command !== "status" && command !== "verify" && command !== "apply") || extra.length > 0)
+    throw new Error("Use db:row-security status, db:row-security verify or db:row-security apply");
   const urls = databaseUrls(process.env);
   if (command === "apply") {
     print(await applyRowSecurityPolicies(urls.migrationUrl, urls.url));
@@ -35,6 +37,20 @@ async function main(): Promise<void> {
   }
   const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
   try {
+    if (command === "verify") {
+      const status = await verifyRuntimeDatabase(prisma);
+      if (status.problems.includes("runtime-not-prepared"))
+        throw new Error("Runtime role preparation failed");
+      const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim();
+      if (realtimeUrl && realtimeUrl !== urls.url)
+        await verifyRealtimeDatabase(realtimeUrl, status.connectionEnforced, true);
+      process.stdout.write(
+        status.connectionEnforced
+          ? "Runtime database validation: row-level isolation verified.\n"
+          : "Runtime database validation: role and system key ready; row-level isolation is not enabled.\n",
+      );
+      return;
+    }
     print(await describeRowSecurityPolicies(prisma));
   } finally {
     try {
@@ -59,8 +75,8 @@ const commandHints = new Map([
     "Database policies were committed, but the administrator connection did not close cleanly. The policy installation was not rolled back.",
   ],
   [
-    "Use db:row-security status or db:row-security apply",
-    "Use db:row-security status or db:row-security apply.",
+    "Use db:row-security status, db:row-security verify or db:row-security apply",
+    "Use db:row-security status, db:row-security verify or db:row-security apply.",
   ],
 ]);
 

@@ -22,7 +22,7 @@ import { makeWorkerUtils } from "graphile-worker";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemoryRealtimeFanout } from "./realtime.js";
 import { RunJobPublisher, RunStarter, RunWorkerHost } from "./run-wakeup.js";
-import { GraphileJobPublisher } from "./wakeup.js";
+import { GraphileJobPublisher, migrateJobQueue } from "./wakeup.js";
 
 const url = process.env.DATABASE_URL;
 const describePostgres =
@@ -36,6 +36,7 @@ describePostgres("direct run dispatch (PostgreSQL)", () => {
   const userId = randomUUID();
   const spaceId = randomUUID();
   beforeAll(async () => {
+    await migrateJobQueue(url!);
     db = createDb(url!);
     system = db.prisma;
     await system.user.create({

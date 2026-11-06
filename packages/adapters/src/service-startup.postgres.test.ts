@@ -1,4 +1,7 @@
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import path from "node:path";
+import { promisify } from "node:util";
 import type { BackgroundJobHandlers } from "@rakazo/adapter-kit";
 import { messagingDeliverJob } from "@rakazo/adapter-kit";
 import {
@@ -8,6 +11,7 @@ import {
   provisionRuntimeRole,
   ROW_SECURITY_POLICIES,
   rlsBypassKey,
+  verifyDatabaseRestore,
   verifyRealtimeDatabase,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
@@ -456,5 +460,145 @@ postgres("restricted service startup against the prepared queue schema", () => {
         listenerNotReady,
       );
     }, 20_000);
+
+    describe.sequential("normal readiness CLI", () => {
+      async function verifyCli(realtime = listenerUrl) {
+        try {
+          const result = await promisify(execFile)("pnpm", ["db:row-security", "verify"], {
+            cwd: path.resolve(import.meta.dirname, "../../.."),
+            env: {
+              ...process.env,
+              DATABASE_URL: runtimeUrl,
+              DATABASE_MIGRATION_URL: databaseUrl,
+              REALTIME_DATABASE_URL: realtime,
+            },
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+          return { code: 0, stdout: result.stdout, stderr: result.stderr };
+        } catch (error) {
+          const result = error as { code?: unknown; stdout?: string; stderr?: string };
+          if (typeof result.code !== "number") throw error;
+          return { code: result.code, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+        }
+      }
+
+      function redacted(result: { stdout: string; stderr: string }) {
+        const output = result.stdout + result.stderr;
+        for (const url of [runtimeUrl, listenerUrl, databaseUrl!]) {
+          expect(output).not.toContain(url);
+          const password = new URL(url).password;
+          if (password) expect(output).not.toContain(password);
+        }
+      }
+
+      beforeAll(async () => {
+        policiesOwned = true;
+        expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
+          expectedTables: 84,
+          connectionEnforced: true,
+        });
+      }, 120_000);
+
+      it.each([true, false])(
+        "accepts retained credentials without adopting strict restore inventory (RLS=%s)",
+        async (enforced) => {
+          if (!enforced) await removeManagedPolicies();
+          const previous = new URL(runtimeUrl);
+          previous.password = randomBytes(24).toString("hex");
+          const retainedKey = rlsBypassKey(previous.toString());
+          await owner!.pool.query(
+            "INSERT INTO cogine_private.rls_bypass_keys(digest) VALUES(sha256(convert_to($1,'UTF8')))",
+            [retainedKey],
+          );
+          try {
+            const result = await verifyCli();
+            expect(result.code, result.stderr).toBe(0);
+            expect(result.stdout).toContain(
+              enforced
+                ? "Runtime database validation: row-level isolation verified"
+                : "Runtime database validation: role and system key ready; row-level isolation is not enabled",
+            );
+            redacted(result);
+            const heldOwner = owner!;
+            const heldRuntime = runtime;
+            owner = undefined;
+            runtime = undefined;
+            try {
+              try {
+                if (heldRuntime)
+                  try {
+                    await heldRuntime.prisma.$disconnect();
+                  } finally {
+                    await heldRuntime.pool.end();
+                  }
+              } finally {
+                try {
+                  await heldOwner.prisma.$disconnect();
+                } finally {
+                  await heldOwner.pool.end();
+                }
+              }
+              await expect(
+                verifyDatabaseRestore(databaseUrl!, [runtimeUrl, listenerUrl]),
+              ).rejects.toThrow(
+                "The restored database contains system keys outside the selected credential inventory",
+              );
+            } finally {
+              owner = createDb(databaseUrl!);
+            }
+            expect(
+              (
+                await owner.pool.query(
+                  "SELECT count(*)::int AS count FROM cogine_private.rls_bypass_keys WHERE digest=sha256(convert_to($1,'UTF8'))",
+                  [retainedKey],
+                )
+              ).rows,
+            ).toEqual([{ count: 1 }]);
+          } finally {
+            await owner!.pool.query(
+              "DELETE FROM cogine_private.rls_bypass_keys WHERE digest=sha256(convert_to($1,'UTF8'))",
+              [retainedKey],
+            );
+          }
+        },
+        45_000,
+      );
+
+      it("rejects a missing selected system key even before row-security enforcement", async () => {
+        await removeManagedPolicies();
+        const removed = await owner!.pool.query<{ digest: Buffer }>(
+          "DELETE FROM cogine_private.rls_bypass_keys WHERE digest=sha256(convert_to($1,'UTF8')) RETURNING digest",
+          [rlsBypassKey(runtimeUrl)],
+        );
+        expect(removed.rows).toHaveLength(1);
+        try {
+          const result = await verifyCli();
+          expect(result.code).toBe(1);
+          expect(result.stderr).toContain("Runtime role preparation failed");
+          redacted(result);
+          expect(
+            (
+              await owner!.pool.query(
+                "SELECT 1 FROM cogine_private.rls_bypass_keys WHERE digest=$1",
+                [removed.rows[0]!.digest],
+              )
+            ).rows,
+          ).toEqual([]);
+        } finally {
+          await owner!.pool.query("INSERT INTO cogine_private.rls_bypass_keys(digest) VALUES($1)", [
+            removed.rows[0]!.digest,
+          ]);
+        }
+      }, 40_000);
+
+      it("rejects an unprepared owner listener independently of the prepared main connection", async () => {
+        await removeManagedPolicies();
+        const result = await verifyCli(databaseUrl!);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("Database preparation failed");
+        redacted(result);
+      }, 40_000);
+    });
   });
 });

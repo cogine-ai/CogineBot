@@ -116,11 +116,15 @@ passwords when the same login must work across clients.
 
 Success reports role and key readiness, not complete row-level isolation. Full
 table policies and trusted API, worker and CLI contexts must be connected before
-activation. This command does not switch the current Compose services to a new
-login. Keep owner credentials out of their shared environment files; separating
-long-running service environments remains part of that activation rollout. With
-a single login, the command retains migration compatibility and reports that
-row-level security is not enforced.
+activation. The shipped Compose stacks run API and worker with the runtime
+login; only the `migrate` one-shot receives the administrator URL. With a single
+login, the command retains migration compatibility and reports that row-level
+security is not enforced.
+
+`db:row-security verify` checks the selected runtime and realtime connections
+without changing roles, keys, or policies. Normal updates and rollback use this
+check, which permits retained keys during credential rotation. Database restores
+also require an exact role and key inventory before services restart.
 
 ### Inspect and install row policies
 
@@ -1087,7 +1091,7 @@ bash infra/compose/prepare-runtime-env.sh .env
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml pull api worker web migrate
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate
-docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web
 ```
 
@@ -1099,7 +1103,7 @@ bash infra/compose/prepare-runtime-env.sh .env
 GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml build --with-dependencies api worker web migrate
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate
-docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web
 ```
 

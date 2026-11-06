@@ -3,11 +3,12 @@ import { messagingDeliverJob, routineWakeupJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { Pool } from "pg";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createReservedGraphileJobWorkerHost,
   GraphileJobPublisher,
   GraphileJobWorkerHost,
+  migrateJobQueue,
 } from "./wakeup.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -57,6 +58,10 @@ async function waitFor(assertion: () => void, timeoutMs = 10_000): Promise<void>
 }
 
 describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
+  beforeAll(async () => {
+    await migrateJobQueue(databaseUrl!);
+  });
+
   it("starts a fifth agent while four agents wait on model work", async () => {
     const publisher = new GraphileJobPublisher(testPool());
     const host = new GraphileJobWorkerHost(testPool(), { concurrency: 4, pollInterval: 25 });

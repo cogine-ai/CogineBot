@@ -321,7 +321,7 @@ if (args[0] === 'compose') {
   out('');
  }
  if (op==='run') {
-  if (!tail.includes('db:restore') || tail.at(-1)!=='verify') fail('unexpected maintenance command');
+  if (!tail.includes('db:row-security') || tail.at(-1)!=='verify') fail('unexpected maintenance command');
   if (process.env.FAIL_DATABASE_VERIFY) fail('database verification failed');
   out('');
  }
@@ -2410,7 +2410,7 @@ describe("production deploy previous credential configuration", () => {
     expect(
       deploy
         .composeArguments("run")
-        .some((args) => args.includes("db:restore") && args.at(-1) === "verify"),
+        .some((args) => args.includes("db:row-security") && args.at(-1) === "verify"),
     ).toBe(true);
     expect(deploy.record().healthy).toEqual(before.healthy);
     expect(deploy.state().containers["1".repeat(64)]?.State.Status).toBe("exited");
@@ -2652,7 +2652,7 @@ describe("administrator migration lifecycle", () => {
     const operations = deploy.dockerArguments().map(composeOperation);
     const stopped = operations.findIndex((op) => op[0] === "stop" && op.includes("api"));
     const migrated = operations.findIndex((op) => op.includes("--exit-code-from"));
-    const verified = operations.findIndex((op) => op.includes("db:restore"));
+    const verified = operations.findIndex((op) => op.includes("db:row-security"));
     const started = operations.findIndex((op) => op[0] === "up" && op.includes("api"));
     expect(stopped).toBeGreaterThanOrEqual(0);
     expect(migrated).toBeGreaterThan(stopped);
@@ -2698,7 +2698,7 @@ describe("administrator migration lifecycle", () => {
     expect(result.status).not.toBe(0);
     const operations = deploy.dockerArguments().map(composeOperation);
     const stopped = operations.findIndex((op) => op[0] === "stop" && op.at(-1) === "migrate");
-    const verified = operations.findIndex((op) => op.includes("db:restore"));
+    const verified = operations.findIndex((op) => op.includes("db:row-security"));
     const recovered = operations.findIndex((op) => op[0] === "up" && op.includes("api"));
     expect(stopped).toBeGreaterThanOrEqual(0);
     expect(verified).toBeGreaterThan(stopped);
