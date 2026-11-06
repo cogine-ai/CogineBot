@@ -5926,7 +5926,7 @@ export function ShellPage() {
         ) : null}
       </main>
 
-      <PageViewHost />
+      <PageViewHost bots={bots} groups={groups} />
       <CallCard onSettings={() => openSettings("voice")} />
 
       <ResizableSidePanel

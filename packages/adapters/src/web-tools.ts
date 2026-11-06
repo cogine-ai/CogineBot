@@ -1,4 +1,9 @@
-import type { AdapterContext, WebFetchProvider, WebSearchProvider } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  WebFetchProvider,
+  WebFetchRequest,
+  WebSearchProvider,
+} from "@rakazo/adapter-kit";
 import { clampMaxChars, clampMaxResults } from "./web-limits.js";
 
 export async function webSearchFromTool(
@@ -27,6 +32,7 @@ export async function webFetchFromTool(
   fetchProvider: WebFetchProvider,
   context: AdapterContext,
   args: Record<string, unknown>,
+  assertRedirectAllowed?: WebFetchRequest["assertRedirectAllowed"],
 ) {
   const url = String(args.url ?? "").trim();
   if (!url) return { error: "url is required" };
@@ -36,6 +42,7 @@ export async function webFetchFromTool(
         url,
         maxChars: clampMaxChars(args.maxChars),
         signal: context.signal,
+        assertRedirectAllowed,
       },
       context,
     );

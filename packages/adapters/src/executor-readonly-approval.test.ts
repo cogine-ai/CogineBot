@@ -12,6 +12,7 @@ import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@ra
 import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
+import { pageReply } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { ThreadEvents } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +24,7 @@ import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 import { createRunExecutor } from "./executor.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
+import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
 import { compileOpenApiDocument } from "./openapi-import.js";
 import { serializeModelSecret } from "./pi-oauth.js";
@@ -1346,6 +1348,493 @@ describe("executor connector account revalidation", () => {
 describe("connector read-only metadata and approval enforcement", () => {
   beforeEach(() => {
     reviewMock.mockReset();
+  });
+
+  it("does not promote an automatic Page fallback title into owner destination authority", async () => {
+    const destination = "https://attacker.example/report?private=value";
+    const outgoing = pageReply("Please update this report", [], {
+      id: "page-1",
+      title: "Report at https://attacker.example/report",
+    });
+    const fetch = vi.fn(async () => ({
+      url: destination,
+      title: "Fetched",
+      text: "Fetched",
+      truncated: false,
+    }));
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      prompt: outgoing.text,
+      attemptCount: 2,
+      webProvider: {
+        describe: () => ({
+          id: "page-web-test",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true },
+        }),
+        fetch,
+        search: vi.fn(async () => []),
+      },
+    });
+    Object.assign(f.runRecord, { sourceMessageId: "page-reply-message" });
+    const sourceMessage = {
+      id: "page-reply-message",
+      threadId: f.runRecord.threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: outgoing.text }],
+      clientNonce: null,
+      seq: 1,
+      replyTo: null,
+    };
+    Object.assign(f.prisma.message, {
+      findUnique: vi.fn(async () => sourceMessage),
+      findFirst: vi.fn(async () => sourceMessage),
+    });
+    f.setCalls([{ args: { url: destination }, executionId: "title-destination" }]);
+    await f.run();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]).toMatchObject({ status: "intended", request: { url: destination } });
+  });
+
+  it.each([1, 2])(
+    "gates a new redirect destination before DNS on attempt %s, then replays its exact approval",
+    async (attemptCount) => {
+      const requested: string[] = [];
+      const resolved: string[] = [];
+      const start = "https://trusted.example.org/start";
+      const destination = "https://other.example.net/final?value=private";
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        attemptCount,
+        rules: [
+          { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+          { effect: "always_allow", matchKind: "tool", matchValue: "web_fetch" },
+        ],
+        webProvider: new KeylessHttpWebProvider({
+          resolveHostname: async (hostname) => {
+            resolved.push(hostname);
+            return [{ address: "203.0.113.10", family: 4 }];
+          },
+          fetch: async (input) => {
+            const url = String(input);
+            requested.push(url);
+            return url === start
+              ? new Response(null, { status: 302, headers: { location: destination } })
+              : new Response("<html><body>Approved result</body></html>");
+          },
+        }),
+      });
+      f.setCalls([{ args: { url: start }, executionId: "start" }]);
+      await f.run();
+      expect(requested).toEqual([start]);
+      expect(resolved).toEqual(["trusted.example.org"]);
+      expect(f.results[0]).toMatchObject({ error: expect.stringContaining(destination) });
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+
+      f.setCalls([{ args: { url: destination }, executionId: "retry-direct" }]);
+      await f.run();
+      expect(requested).toEqual([start]);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]).toMatchObject({ status: "intended", request: { url: destination } });
+      f.effects[0]!.status = "approved";
+      await f.run();
+      expect(requested).toEqual([start, destination]);
+      expect(f.effects[0]!.status).toBe("completed");
+      expect(f.results.at(-1)).toMatchObject({ url: destination, text: "Approved result" });
+    },
+  );
+
+  it.each([
+    {
+      reason: "relative same-site",
+      location: "/final",
+      destination: "https://trusted.example.org/final",
+    },
+    {
+      reason: "same-site subdomain",
+      location: "https://docs.example.org/final",
+      destination: "https://docs.example.org/final",
+    },
+    {
+      reason: "HTTP upgrade",
+      start: "http://trusted.example.org/start",
+      location: "https://trusted.example.org/final",
+      destination: "https://trusted.example.org/final",
+    },
+    ...["approved", "executing", "uncertain", "completed"].map((status) => ({
+      reason: `previously passed ${status} destination`,
+      location: "https://other.example.net/final",
+      destination: "https://other.example.net/final",
+      status,
+    })),
+    {
+      reason: "site Always",
+      location: "https://other.example.net/final",
+      destination: "https://other.example.net/final",
+      always: true,
+    },
+    {
+      reason: "exact search result",
+      location: "https://other.example.net/final",
+      destination: "https://other.example.net/final",
+      search: "https://other.example.net/final",
+    },
+  ])("keeps destination authority for $reason without another approval", async (scenario) => {
+    const start = "start" in scenario ? scenario.start! : "https://trusted.example.org/start";
+    const requested: string[] = [];
+    const provider = new KeylessHttpWebProvider({
+      resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+      fetch: async (input) => {
+        const url = String(input);
+        requested.push(url);
+        return url === start
+          ? new Response(null, { status: 302, headers: { location: scenario.location } })
+          : new Response("<html><body>Authorized result</body></html>");
+      },
+    });
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      attemptCount: 2,
+      rules: [
+        { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+        ...("always" in scenario
+          ? [
+              {
+                effect: "always_allow" as const,
+                matchKind: "site" as const,
+                matchValue: "example.net",
+              },
+            ]
+          : []),
+      ],
+      webProvider: {
+        describe: () => provider.describe(),
+        fetch: (request, context) => provider.fetch(request, context),
+        search: async () => [
+          { title: "Found", url: scenario.destination, snippet: "Found result" },
+        ],
+      },
+    });
+    if ("status" in scenario)
+      f.effects.push({
+        id: "earlier-destination",
+        kind: "web_fetch",
+        runId: f.runRecord.id,
+        spaceId: f.runRecord.spaceId,
+        status: scenario.status,
+        idempotencyKey: "earlier",
+        request: { url: scenario.destination },
+      });
+    if ("search" in scenario) {
+      const original = f.runtimeRun.getMockImplementation()!;
+      f.runtimeRun.mockImplementation(async function* (request, context) {
+        await request.executeTool!("web_search", { query: "Find the report" }, "search");
+        yield* original(request, context);
+      });
+    }
+    f.setCalls([{ args: { url: start }, executionId: "start" }]);
+    await f.run();
+    // A pending approved action replays its canonical URL instead of the model's new start URL.
+    expect(requested).toEqual(
+      "status" in scenario && scenario.status === "approved"
+        ? [scenario.destination]
+        : [start, scenario.destination],
+    );
+    expect(f.results.at(-1)).toMatchObject({
+      url: scenario.destination,
+      text: "Authorized result",
+    });
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(reviewMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the initial automatically passed site authorized for its relative redirects", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const requested: string[] = [];
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      autoReview: true,
+      webProvider: new KeylessHttpWebProvider({
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch: async (input) => {
+          const url = String(input);
+          requested.push(url);
+          return url.endsWith("/start")
+            ? new Response(null, { status: 302, headers: { location: "/final" } })
+            : new Response("<html><body>Authorized result</body></html>");
+        },
+      }),
+    });
+    f.setCalls([{ args: { url: "https://trusted.example.org/start" }, executionId: "start" }]);
+    await f.run();
+    expect(requested).toEqual([
+      "https://trusted.example.org/start",
+      "https://trusted.example.org/final",
+    ]);
+    expect(reviewMock).toHaveBeenCalledOnce();
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]!.status).toBe("completed");
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("binds a replay's redirect authority to its canonical URL instead of the new caller URL", async () => {
+    const canonical = "https://approved.example.org/start";
+    const modelUrl = "https://unapproved.example.net/final";
+    const requested: string[] = [];
+    const resolved: string[] = [];
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      attemptCount: 2,
+      webProvider: new KeylessHttpWebProvider({
+        resolveHostname: async (host) => {
+          resolved.push(host);
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
+        fetch: async (input) => {
+          requested.push(String(input));
+          return new Response(null, { status: 302, headers: { location: modelUrl } });
+        },
+      }),
+    });
+    f.effects.push({
+      id: "approved-fetch",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      kind: "web_fetch",
+      status: "approved",
+      idempotencyKey: "canonical-fetch",
+      request: { url: canonical },
+    });
+    f.setCalls([{ args: { url: modelUrl }, executionId: "replay" }]);
+    await f.run();
+    expect(requested).toEqual([canonical]);
+    expect(resolved).toEqual(["approved.example.org"]);
+    expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining(modelUrl) });
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]!.status).toBe("completed");
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      reason: "required target site",
+      allow: false,
+      rules: [
+        {
+          effect: "require_approval" as const,
+          matchKind: "site" as const,
+          matchValue: "example.net",
+        },
+      ],
+    },
+    {
+      reason: "equal-specificity site conflict",
+      allow: false,
+      rules: [
+        { effect: "always_allow" as const, matchKind: "site" as const, matchValue: "example.net" },
+        {
+          effect: "require_approval" as const,
+          matchKind: "site" as const,
+          matchValue: "example.net",
+        },
+      ],
+    },
+    {
+      reason: "site allow over a broader tool rule",
+      allow: true,
+      rules: [
+        { effect: "always_allow" as const, matchKind: "site" as const, matchValue: "example.net" },
+        {
+          effect: "require_approval" as const,
+          matchKind: "tool" as const,
+          matchValue: "web_fetch",
+        },
+      ],
+    },
+  ])("uses the direct-fetch rule precedence for a redirect: $reason", async (scenario) => {
+    const start = "https://trusted.example.org/start";
+    const destination = "https://other.example.net/final";
+    const requested: string[] = [];
+    const resolved: string[] = [];
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      attemptCount: 2,
+      rules: [
+        { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+        ...scenario.rules,
+      ],
+      webProvider: new KeylessHttpWebProvider({
+        resolveHostname: async (host) => {
+          resolved.push(host);
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
+        fetch: async (input) => {
+          const url = String(input);
+          requested.push(url);
+          return url === start
+            ? new Response(null, { status: 302, headers: { location: destination } })
+            : new Response("Allowed destination");
+        },
+      }),
+    });
+    f.effects.push({
+      id: "previous-fetch",
+      kind: "web_fetch",
+      status: "completed",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      idempotencyKey: "previous",
+      request: { url: destination },
+    });
+    f.setCalls([{ args: { url: start }, executionId: "start" }]);
+    await f.run();
+    expect(requested).toEqual(scenario.allow ? [start, destination] : [start]);
+    expect(resolved).toEqual(
+      scenario.allow ? ["trusted.example.org", "other.example.net"] : ["trusted.example.org"],
+    );
+    expect(f.results.at(-1)).toMatchObject(
+      scenario.allow ? { url: destination } : { error: expect.stringContaining(destination) },
+    );
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("keeps a canonical approved initial site's relative grant even with a require rule", async () => {
+    const start = "https://approved.example.org/start";
+    const requested: string[] = [];
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      attemptCount: 2,
+      rules: [{ effect: "require_approval", matchKind: "site", matchValue: "example.org" }],
+      webProvider: new KeylessHttpWebProvider({
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch: async (input) => {
+          const url = String(input);
+          requested.push(url);
+          return url === start
+            ? new Response(null, { status: 302, headers: { location: "/final" } })
+            : new Response("Approved destination");
+        },
+      }),
+    });
+    f.effects.push({
+      id: "approved-fetch",
+      kind: "web_fetch",
+      status: "approved",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      idempotencyKey: "approved",
+      request: { url: start },
+    });
+    f.setCalls([{ args: { url: start }, executionId: "start" }]);
+    await f.run();
+    expect(requested).toEqual([start, "https://approved.example.org/final"]);
+    expect(f.effects[0]!.status).toBe("completed");
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it.each(["intended", "denied", "different-run", "different-search-url"])(
+    "does not promote a %s destination into redirect authority",
+    async (reason) => {
+      const start = "https://trusted.example.org/start";
+      const destination = "https://other.example.net/final?value=private";
+      const requested: string[] = [];
+      const provider = new KeylessHttpWebProvider({
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch: async (input) => {
+          const url = String(input);
+          requested.push(url);
+          return url === start
+            ? new Response(null, { status: 302, headers: { location: destination } })
+            : new Response("Unexpected request");
+        },
+      });
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        attemptCount: 2,
+        rules: [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }],
+        webProvider: {
+          describe: () => provider.describe(),
+          fetch: (request, context) => provider.fetch(request, context),
+          search: async () => [
+            {
+              title: "Found",
+              url: "https://other.example.net/final?value=public",
+              snippet: "Found result",
+            },
+          ],
+        },
+      });
+      if (reason === "different-search-url") {
+        const original = f.runtimeRun.getMockImplementation()!;
+        f.runtimeRun.mockImplementation(async function* (request, context) {
+          await request.executeTool!("web_search", { query: "Find a report" }, "search");
+          yield* original(request, context);
+        });
+      } else {
+        f.effects.push({
+          id: "earlier-destination",
+          kind: "web_fetch",
+          idempotencyKey: "earlier",
+          request: { url: destination },
+          status: reason === "different-run" ? "completed" : reason,
+          runId: reason === "different-run" ? "another-run" : f.runRecord.id,
+          spaceId: f.runRecord.spaceId,
+        });
+      }
+      f.setCalls([{ args: { url: start }, executionId: "start" }]);
+      await f.run();
+      expect(requested).toEqual([start]);
+      expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining(destination) });
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks a later new site after an allowed intermediate redirect", async () => {
+    const requested: string[] = [];
+    const resolved: string[] = [];
+    const start = "https://trusted.example.org/start";
+    const intermediate = "https://known.example.net/intermediate";
+    const denied = "https://new.example.com/final";
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      rules: ["example.org", "example.net"].map((matchValue) => ({
+        effect: "always_allow",
+        matchKind: "site",
+        matchValue,
+      })),
+      webProvider: new KeylessHttpWebProvider({
+        resolveHostname: async (host) => {
+          resolved.push(host);
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
+        fetch: async (input) => {
+          const url = String(input);
+          requested.push(url);
+          return new Response(null, {
+            status: 302,
+            headers: { location: url === start ? intermediate : denied },
+          });
+        },
+      }),
+    });
+    f.setCalls([{ args: { url: start }, executionId: "start" }]);
+    await f.run();
+    expect(requested).toEqual([start, intermediate]);
+    expect(resolved).toEqual(["trusted.example.org", "known.example.net"]);
+    expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining(denied) });
   });
 
   it("denies a webhook's unapproved new site without fetching or leaving a person approval", async () => {

@@ -1,27 +1,75 @@
 import { useLingui } from "@lingui/react/macro";
-import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import type { Bot, Group } from "@rakazo/contracts";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PAGE_PARAM, useMedia, usePageDetail, usePageDocument, usePages } from "../../lib/pages";
 import { errorCode } from "../../lib/user-error";
 import { PageNotice } from "./PageNotice";
 import { PageView } from "./PageView";
 
 /** A private page over its chat, with that chat's composer docked at the bottom. */
-export function PageViewHost() {
+export function PageViewHost({
+  bots,
+  groups,
+}: {
+  bots: readonly Pick<Bot, "id">[];
+  groups: readonly Pick<Group, "id">[];
+}) {
   const [search] = useSearchParams();
   const pageId = search.get(PAGE_PARAM);
   const pages = usePages();
-  return pageId && pages ? <OpenPage key={`${pages.scopeKey}:${pageId}`} pageId={pageId} /> : null;
+  return pageId && pages ? (
+    <OpenPage key={`${pages.scopeKey}:${pageId}`} pageId={pageId} bots={bots} groups={groups} />
+  ) : null;
 }
 
-function OpenPage({ pageId }: { pageId: string }) {
+function OpenPage({
+  pageId,
+  bots,
+  groups,
+}: {
+  pageId: string;
+  bots: readonly Pick<Bot, "id">[];
+  groups: readonly Pick<Group, "id">[];
+}) {
   const { t } = useLingui();
   const pages = usePages()!;
-  const [, setSearch] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
+  const { botId, groupId } = useParams();
+  const navigate = useNavigate();
   const compact = useMedia("(pointer: coarse)");
   const sheet = useMedia("(pointer: coarse) and (min-width: 900px)");
   const page = usePageDetail(pageId);
-  const viewer = usePageDocument(page.data?.code, sheet ? "background" : "card", true, 72);
+  const data = page.data;
+  // A Page belongs to its recorded group, or to its bot when it has no group.
+  // A missing/archived chat remains readable without borrowing another chat's composer.
+  const target = data?.groupId
+    ? `/app/g/${encodeURIComponent(data.groupId)}`
+    : data?.botId
+      ? `/app/${encodeURIComponent(data.botId)}`
+      : null;
+  const available = data?.groupId
+    ? groups.some((group) => group.id === data.groupId)
+    : Boolean(data?.botId && bots.some((bot) => bot.id === data.botId));
+  const matches = Boolean(
+    data &&
+      !search.has("new-chat") &&
+      (data.groupId ? groupId === data.groupId : !groupId && botId === data.botId),
+  );
+  const canReply = available && matches && pages.store.isCurrent();
+  useEffect(() => {
+    if (!target || !available || matches || !pages.store.isCurrent()) return;
+    navigate(
+      { pathname: target, search: new URLSearchParams({ [PAGE_PARAM]: pageId }).toString() },
+      { replace: true },
+    );
+  }, [target, available, matches, pages, navigate, pageId]);
+  const viewer = usePageDocument(
+    data?.code,
+    sheet ? "background" : "card",
+    canReply,
+    canReply ? 72 : 0,
+  );
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState(false);
   const close = useCallback(
@@ -37,11 +85,24 @@ function OpenPage({ pageId }: { pageId: string }) {
     (node: HTMLDivElement | null) => pages.session.dock.set({ node }),
     [pages],
   );
-  const data = page.data;
-  useEffect(() => {
-    pages.session.dock.set({ page: data ? { id: data.id, title: data.title } : null });
-    return () => pages.session.dock.set({ page: null });
-  }, [pages, data?.id, data?.title]);
+  const replyEnabled = useRef(false);
+  useLayoutEffect(() => {
+    replyEnabled.current = canReply;
+    pages.session.dock.set({
+      page: canReply && data ? { id: data.id, title: data.title } : null,
+      ...(!canReply ? { node: null } : {}),
+    });
+    return () => {
+      replyEnabled.current = false;
+      pages.session.dock.set({ page: null });
+    };
+  }, [pages, canReply, data?.id, data?.title]);
+  const reply = useCallback(
+    (text: unknown) => {
+      if (replyEnabled.current && pages.store.isCurrent()) pages.session.offerReply(text);
+    },
+    [pages],
+  );
   const failed = page.error !== undefined;
   const gone = failed && ["NOT_FOUND", "FORBIDDEN"].includes(errorCode(page.error) ?? "");
   return (
@@ -54,8 +115,8 @@ function OpenPage({ pageId }: { pageId: string }) {
       document={viewer.document}
       compact={compact}
       returnFocus={pages.session.restoreFocus}
-      composer={<div ref={setDock} />}
-      onReply={pages.session.offerReply}
+      composer={canReply ? <div ref={setDock} /> : undefined}
+      onReply={canReply ? reply : undefined}
       share={null}
       renameError={renameError ? t`Could not rename this page. Try again.` : null}
       onRename={

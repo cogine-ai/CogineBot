@@ -1,6 +1,11 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
-import { connectorKindFromToolName, inboundRoutinePrompts, siteAlwaysAllowed } from "@rakazo/core";
+import {
+  connectorKindFromToolName,
+  inboundRoutinePrompts,
+  pageReplyOwnerText,
+  siteAlwaysAllowed,
+} from "@rakazo/core";
 import { sitesInText, urlSite } from "@rakazo/core/egress";
 import type { PrismaClient } from "@rakazo/db";
 import {
@@ -108,9 +113,11 @@ export function createRunTrust(
         !input.messagingChannelRun &&
         input.sourceMessage?.role === "user"
       )
-        return ((input.sourceMessage.blocks ?? []) as MessageBlock[])
-          .flatMap((block) => (block.kind === "text" ? [block.text] : []))
-          .join("\n");
+        return pageReplyOwnerText(
+          ((input.sourceMessage.blocks ?? []) as MessageBlock[])
+            .flatMap((block) => (block.kind === "text" ? [block.text] : []))
+            .join("\n"),
+        );
       if (run.trigger === "routine") {
         // Native event runs append untrusted evidence to the saved owner instructions.
         const note = input.taskPrompt.indexOf(NATIVE_EVENT_DATA);

@@ -47,6 +47,19 @@ vi.mock("../lib/rpc", () => {
     selectedSpaceId: () => boundary.space,
     currentSpaceSelectionGeneration: () => boundary.generation,
     currentRpcSessionGeneration: () => 0,
+    captureRpcRecoveryScope: (spaceId = boundary.space) => ({
+      spaceId,
+      sessionGeneration: 0,
+      selectionGeneration: boundary.generation,
+    }),
+    isRpcRecoveryScopeCurrent: (scope: {
+      spaceId: string | null;
+      sessionGeneration: number;
+      selectionGeneration: number;
+    }) =>
+      scope.spaceId === boundary.space &&
+      scope.sessionGeneration === 0 &&
+      scope.selectionGeneration === boundary.generation,
     rememberImplicitRpcSpace: vi.fn(),
     selectSpace: (id: string) => {
       boundary.space = id;

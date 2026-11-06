@@ -191,3 +191,8 @@ export function pageReply(
   const title = page.title.replace(/[\\[\]]/g, "\\$&");
   return { text: `[${title}](page:${page.id})\n${text}` };
 }
+
+/** The fallback link names a bot-authored page; only the text after it is the owner's request. */
+export function pageReplyOwnerText(text: string): string {
+  return text.replace(/^\[(?:\\[\\[\]]|[^\\[\]])*\]\(page:[A-Za-z0-9_-]{1,64}\)(?:\n|$)/, "");
+}

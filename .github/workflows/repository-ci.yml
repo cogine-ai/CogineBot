@@ -213,7 +213,7 @@ jobs:
           retention-days: 7
       - name: Require private Page acceptance views
         run: |
-          for view in page-chat-card page-full-screen page-print page-updated-below page-library-menu page-library-pinned page-delete-confirm page-library-empty page-link-confirm; do
+          for view in page-chat-card page-full-screen page-print page-updated-below page-library-menu page-library-pinned page-delete-confirm page-library-empty page-link-confirm page-origin-group; do
             match="$(find apps/web/test-results -type f -path '*/pages-*/*' -name "${view}.png" -print -quit)"
             if [ -z "$match" ]; then
               echo "Missing private Page screenshot: $view" >&2

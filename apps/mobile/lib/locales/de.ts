@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "{site} immer erlauben",
+  Pinned: "Angeheftet",
+  "This cannot be undone.": "Dies kann nicht rückgängig gemacht werden.",
   "Could not delete the page.": "Die Seite konnte nicht gelöscht werden.",
   "Could not load pages.": "Seiten konnten nicht geladen werden.",
   "Could not load this page.": "Diese Seite konnte nicht geladen werden.",

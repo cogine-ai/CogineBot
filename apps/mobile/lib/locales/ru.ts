@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "Всегда разрешать {site}",
+  Pinned: "Закреплённые",
+  "This cannot be undone.": "Это невозможно отменить.",
   "Could not delete the page.": "Не удалось удалить страницу.",
   "Could not load pages.": "Не удалось загрузить страницы.",
   "Could not load this page.": "Не удалось загрузить эту страницу.",

@@ -93,6 +93,7 @@ it("keeps the nested preview opaque and blocks remote images, media and fonts", 
     shell.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] ?? "";
   expect(shellPolicy).toContain("img-src data:;");
   expect(shellPolicy).toContain("media-src data: blob:;");
+  expect(shellPolicy).toContain("font-src data:;");
   expect(shellPolicy).not.toMatch(/https?:/);
   expect(shell).not.toContain("allow-same-origin");
 });

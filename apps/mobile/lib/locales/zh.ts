@@ -1,4 +1,7 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "始终允许 {site}",
+  Pinned: "置顶",
+  "This cannot be undone.": "此操作无法撤销。",
   "Could not delete the page.": "无法删除页面。",
   "Could not load pages.": "无法加载页面。",
   "Could not load this page.": "无法加载此页面。",

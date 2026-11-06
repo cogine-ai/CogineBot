@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  createNamedBot,
+  rpc,
+  signup,
+} from "./helpers";
 
 function dashboard(churn: string) {
   return `const data = { signups: [42, 51, 47, 63, 58, 71, 66], labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] };
@@ -48,6 +56,11 @@ test("a private page opens from its card, replies in chat and updates", async ({
   page,
 }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem("rakazo.uiAppearance", "dark"));
+  await page
+    .context()
+    .route("https://example.com/metrics", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<p>Example metrics</p>" }),
+    );
   await page.setViewportSize({ width: 1280, height: 860 });
   await signup(page, `pages-${Date.now()}@rakazo.test`, "password12", "Page Owner");
   await completeOnboarding(page);
@@ -341,4 +354,144 @@ test("a page acts for its reader only after a click in it, never on load or from
   await page.keyboard.up("a");
   await page.waitForTimeout(500);
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("key 1");
+});
+
+test("a deep-linked page replies in its originating bot or group, leaving the other chat unchanged", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await signup(page, `pages-origin-${Date.now()}@rakazo.test`, "password12", "Page Reader");
+  await completeOnboarding(page);
+  const originBotId = activeBotId(page);
+  const save = async (title: string, reply: string) => {
+    const source = `export default function Plan() { return <Page title="Origin plan"><ReplyButton label="Ask origin" reply=${JSON.stringify(reply)} /></Page>; }`;
+    await send(page, `call save_page with ${JSON.stringify({ title, source })}\nthen say Done.`);
+    await expect(page.getByTestId("page-card").filter({ hasText: title }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+  };
+  const history = (target: { botId: string } | { groupId: string }) =>
+    rpc<{ messages: Array<{ blocks: Array<{ kind: string; text?: string }> }> }>(
+      page,
+      "threads/messages",
+      target,
+    );
+  const includes = async (target: { botId: string } | { groupId: string }, text: string) =>
+    (await history(target)).messages.some((message) =>
+      message.blocks.some((block) => block.kind === "text" && block.text === text),
+    );
+
+  await save("Bot origin plan", "Clarify the bot page.");
+  const botPages = await rpc<{ items: Array<{ id: string }> }>(page, "pages/list", {
+    botId: originBotId,
+  });
+  expect(botPages.items).toHaveLength(1);
+  const botPageId = botPages.items[0]!.id;
+  const otherBotId = await createNamedBot(page, "Other Page Bot");
+  await page.goto(`/app/${otherBotId}?page=${botPageId}`);
+  await expect(page).toHaveURL(new RegExp(`/app/${originBotId}\\?page=${botPageId}$`));
+  await expect(page.getByTestId("page-view")).toBeVisible();
+  const composer = page.getByRole("combobox", { name: /^Message/ });
+  await pageFrame(page, "Bot origin plan").getByRole("button", { name: "Ask origin" }).click();
+  await expect(composer).toHaveValue("Clarify the bot page.");
+  expect(await includes({ botId: originBotId }, "Clarify the bot page.")).toBe(false);
+  await composer.press("Enter");
+  await expect.poll(() => includes({ botId: originBotId }, "Clarify the bot page.")).toBe(true);
+  expect(await includes({ botId: otherBotId }, "Clarify the bot page.")).toBe(false);
+  await page.keyboard.press("Escape");
+
+  const group = await rpc<{ id: string }>(page, "groups/create", {
+    name: "Page Planning Team",
+    botIds: [originBotId, otherBotId],
+  });
+  await page.goto(`/app/g/${group.id}`);
+  await expect(composer).toBeVisible();
+  await save("Group origin plan", "Clarify the group page.");
+  const groupPages = await rpc<{ items: Array<{ id: string }> }>(page, "pages/list", {
+    groupId: group.id,
+  });
+  expect(groupPages.items.length).toBeGreaterThan(0);
+  const groupPageId = groupPages.items[0]!.id;
+  await page.goto(`/app/${otherBotId}?page=${groupPageId}`);
+  await expect(page).toHaveURL(new RegExp(`/app/g/${group.id}\\?page=${groupPageId}$`));
+  await expect(
+    pageFrame(page, "Group origin plan").getByRole("heading", { name: "Origin plan" }),
+  ).toBeVisible();
+  await captureScreenshot(page, testInfo, "page-origin-group");
+  await pageFrame(page, "Group origin plan").getByRole("button", { name: "Ask origin" }).click();
+  await expect(composer).toHaveValue("Clarify the group page.");
+  expect(await includes({ groupId: group.id }, "Clarify the group page.")).toBe(false);
+  await composer.press("Enter");
+  await expect.poll(() => includes({ groupId: group.id }, "Clarify the group page.")).toBe(true);
+  expect(await includes({ botId: otherBotId }, "Clarify the group page.")).toBe(false);
+});
+
+test("the network viewer shell loads an embedded font and blocks remote font requests", async ({
+  page,
+}) => {
+  const font = readFileSync(
+    new URL(
+      "../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2",
+      import.meta.url,
+    ),
+  );
+  expect(font.subarray(0, 4).toString()).toBe("wOF2");
+  const remoteFontUrl = "https://page-font.invalid/probe.woff2";
+  const remoteRequests: string[] = [];
+  await page.route(remoteFontUrl, async (route) => {
+    remoteRequests.push(route.request().url());
+    await route.abort();
+  });
+  const document = `<!doctype html>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; base-uri 'none'">
+    <style>
+      @font-face {
+        font-family: "EmbeddedPageFontProbe";
+        font-weight: 100 900;
+        src: url("data:font/woff2;base64,${font.toString("base64")}") format("woff2");
+      }
+      @font-face {
+        font-family: "RemotePageFontProbe";
+        src: url("${remoteFontUrl}") format("woff2");
+      }
+    </style>
+    <p>Embedded Page font probe</p>`;
+  // A real application document embeds the network shell, which owns the opaque nested frame.
+  await page.goto("/sign-in");
+  await page.evaluate((html) => {
+    const shell = window.document.createElement("iframe");
+    shell.title = "Page font shell";
+    shell.setAttribute("sandbox", "allow-scripts");
+    shell.addEventListener("load", () => shell.contentWindow!.postMessage(html, "*"));
+    shell.src = "/html-viewer.html";
+    window.document.body.replaceChildren(shell);
+  }, document);
+  const preview = page
+    .frameLocator('iframe[title="Page font shell"]')
+    .frameLocator("iframe#preview");
+  await expect(preview.getByText("Embedded Page font probe", { exact: true })).toBeVisible();
+  const result = await preview.locator("body").evaluate(async () => {
+    const load = async (family: string) => {
+      try {
+        const faces = await window.document.fonts.load(`400 16px "${family}"`, "Hello Pages");
+        return {
+          faces: faces.map((face) => ({ family: face.family, status: face.status })),
+          error: null,
+        };
+      } catch (error) {
+        return { faces: [], error: error instanceof Error ? error.name : String(error) };
+      }
+    };
+    return {
+      embedded: await load("EmbeddedPageFontProbe"),
+      remote: await load("RemotePageFontProbe"),
+    };
+  });
+  expect(result.embedded.error).toBeNull();
+  expect(result.embedded.faces).toHaveLength(1);
+  expect(result.embedded.faces[0]!.family.replaceAll('"', "")).toBe("EmbeddedPageFontProbe");
+  expect(result.embedded.faces[0]!.status).toBe("loaded");
+  expect(result.remote.error).not.toBeNull();
+  expect(result.remote.faces).toEqual([]);
+  expect(remoteRequests).toEqual([]);
 });

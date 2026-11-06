@@ -5,9 +5,62 @@ import {
   pageCardSuperseded,
   pageLinksAsTitles,
   pageReply,
+  pageReplyOwnerText,
   pageReplyTargetId,
   uniquePages,
 } from "./page-links.js";
+
+describe("Page reply owner text", () => {
+  it.each(["", " \n "])(
+    "excludes a reference-only reply after persisted-caption trimming: %j",
+    (body) => {
+      const storedCaption = pageReply(body, [], {
+        id: "page-1",
+        title: "https://attacker.example/report",
+      }).text.trim();
+      expect(pageReplyOwnerText(storedCaption)).toBe("");
+    },
+  );
+  it.each([
+    "Report https://attacker.example/report",
+    "Report\nhttps://attacker.example/report\r\nother text",
+    "[Nested] https://attacker.example/report",
+    "\\](page:pretend)\nhttps://attacker.example/report",
+    "](https://attacker.example/report) [another link",
+  ])("excludes the generated title %j while keeping the stored message unchanged", (title) => {
+    const body = "Please compare with https://owner.example/report";
+    const outgoing = pageReply(body, [], { id: "page-1", title });
+    const persisted = JSON.parse(JSON.stringify(outgoing));
+    expect(pageReplyOwnerText(persisted.text)).toBe(body);
+    expect(outgoing.text).toBe(`[${title.replace(/[\\[\]]/g, "\\$&")}](page:page-1)\n${body}`);
+  });
+
+  it("leaves the owner's chosen reply, loaded-card reply and explicit body URLs intact", () => {
+    const body = "Read https://owner.example/report";
+    const page = { id: "page-1", title: "https://attacker.example" };
+    const card = {
+      id: "message-1",
+      blocks: [{ kind: "page" as const, pageId: page.id, title: page.title, version: 1 }],
+    };
+    expect(pageReplyOwnerText(pageReply(body, [card], page).text)).toBe(body);
+    expect(pageReplyOwnerText(pageReply(body, [], page, "chosen-message").text)).toBe(body);
+    const manualLink = "[https://owner.example/report](page:manual)\nMy explicit link";
+    expect(pageReplyOwnerText(pageReply(manualLink, [], page).text)).toBe(manualLink);
+  });
+
+  it("does not remove ordinary text or malformed links that the fallback cannot produce", () => {
+    for (const body of [
+      "Read https://owner.example/report",
+      "Read [https://owner.example](page:page-1)\nnow",
+      "[https://owner.example](https://owner.example)\nnow",
+      "[https://owner.example](page:bad id)\nnow",
+      "[unescaped[nested]](page:page-1)\nnow",
+      "[https://owner.example](page:page-1) without a newline",
+      `[${"\\[".repeat(50_000)}`,
+    ])
+      expect(pageReplyOwnerText(body)).toBe(body);
+  });
+});
 
 describe("pageLinksAsTitles", () => {
   it("reads page links as their titles, leaving other, escaped and code links as written", () => {

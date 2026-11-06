@@ -6415,7 +6415,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(result);
           }
           if (name === "web_fetch") {
-            return finish(await webFetchFromTool(web, context, args));
+            const trustedSites = await trust.loadTrustedSites();
+            const rules = await loadApprovalRules();
+            return finish(
+              await webFetchFromTool(web, context, args, (url) => {
+                if (url.length > MAX_FETCH_URL_LENGTH)
+                  throw new Error(
+                    `Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`,
+                  );
+                const site = urlSite(url);
+                // The initial request already passed its gate, including an exact approved replay.
+                if (site === fetchSite) return;
+                const resolved = resolveActionApprovalDetail({
+                  toolName: name,
+                  connectorKind,
+                  readOnly: declaredReadOnly,
+                  site,
+                  rules,
+                });
+                if (
+                  site &&
+                  resolved.decision === "allow" &&
+                  (searchResultUrls.has(url) ||
+                    outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow")
+                )
+                  return;
+                throw new Error(
+                  `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
+                );
+              }),
+            );
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {

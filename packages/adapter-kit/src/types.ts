@@ -979,6 +979,8 @@ export interface WebFetchRequest {
   url: string;
   maxChars?: number;
   signal?: AbortSignal;
+  /** Synchronous Run authority check before a redirect target is resolved or contacted. */
+  assertRedirectAllowed?: (url: string) => void;
 }
 
 export interface WebFetchResult {
