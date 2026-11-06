@@ -784,8 +784,12 @@ describePages("private Pages with production row-security policies", () => {
             where: { id: effect.id },
           });
           expect(committed).toMatchObject({
+            id: effect.id,
+            runId: run.id,
+            spaceId: actor.spaceId,
+            kind: "save_page",
             status,
-            result: { kind: "page_save", effectId: effect.id },
+            result: { kind: "page_save" },
           });
           if (status === "executing") {
             for (const changed of [
@@ -1298,10 +1302,11 @@ describePages("private Pages with production row-security policies", () => {
       });
     });
 
-    it("keeps a page to the bot that made it, in any of its chats, and to its group", async () => {
+    it("keeps personal Pages reusable by their bot while group Pages stay in the current group", async () => {
       const cookie = await signup(app, `pages-scope-${stamp}@rakazo.test`, "Scope Owner");
       const maker = await createBot(app, cookie, "Maker");
       const other = await createBot(app, cookie, "Other");
+      const actor = await rpc<Actor>(app, cookie, "me");
       const save = (botId: string, args: unknown) =>
         sendAndWait(app, cookie, botId, { text: `call save_page with ${JSON.stringify(args)}` });
       await save(maker.id, { title: "Private plan", source: page("Mine") });
@@ -1310,10 +1315,16 @@ describePages("private Pages with production row-security policies", () => {
         name: "Desk",
         botIds: [maker.id, other.id],
       });
-      const inGroup = async (bot: { id: string }, name: string, args: unknown) => {
-        const before = await db().run.count({ where: { threadId: group.threadId, botId: bot.id } });
+      const otherGroup = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
+        name: "Other desk",
+        botIds: [maker.id, other.id],
+      });
+      const inGroup = async (bot: { id: string }, name: string, args: unknown, target = group) => {
+        const before = await db().run.count({
+          where: { threadId: target.threadId, botId: bot.id },
+        });
         await rpc(app, cookie, "threads/send", {
-          groupId: group.id,
+          groupId: target.id,
           text: `@${name} call save_page with ${JSON.stringify(args)}`,
           mentions: [{ kind: "bot", id: bot.id }],
         });
@@ -1322,7 +1333,7 @@ describePages("private Pages with production row-security policies", () => {
             () =>
               db().run.count({
                 where: {
-                  threadId: group.threadId,
+                  threadId: target.threadId,
                   botId: bot.id,
                   status: { in: ["completed", "failed", "cancelled"] },
                 },
@@ -1331,7 +1342,7 @@ describePages("private Pages with production row-security policies", () => {
           )
           .toBe(before + 1);
         const terminal = await db().run.findFirstOrThrow({
-          where: { threadId: group.threadId, botId: bot.id },
+          where: { threadId: target.threadId, botId: bot.id },
           orderBy: { createdAt: "desc" },
           select: { id: true },
         });
@@ -1368,6 +1379,91 @@ describePages("private Pages with production row-security policies", () => {
       });
       await save(other.id, { pageId: groupPageId });
       expect(await lastResult(other.id)).toEqual(notFound);
+      const makerThread = await db().thread.findFirstOrThrow({
+        where: { botId: maker.id, groupId: null, userId: actor.userId },
+      });
+      const pageDeliveries = async () => {
+        const [messages, events] = await Promise.all([
+          db().message.findMany({
+            where: { threadId: { in: [makerThread.id, otherGroup.threadId] } },
+            select: { blocks: true },
+          }),
+          db().event.findMany({
+            where: {
+              threadId: { in: [makerThread.id, otherGroup.threadId] },
+              type: "thread.message.created",
+            },
+            select: { payload: true },
+          }),
+        ]);
+        const cards = (value: unknown) =>
+          Array.isArray(value)
+            ? value.filter(
+                (block) =>
+                  block &&
+                  typeof block === "object" &&
+                  block.kind === "page" &&
+                  block.pageId === groupPageId,
+              ).length
+            : 0;
+        return {
+          messages: messages.reduce((total, message) => total + cards(message.blocks), 0),
+          events: events.reduce(
+            (total, event) => total + cards((event.payload as { blocks?: unknown }).blocks),
+            0,
+          ),
+        };
+      };
+      const before = await pageDeliveries();
+      const denied = [
+        { pageId: groupPageId },
+        { pageId: groupPageId, source: page("Wrong group") },
+        { pageId: groupPageId, edits: [{ find: "Desk", replace: "Wrong group" }] },
+        { pageId: groupPageId, title: "Wrong group" },
+      ];
+      // The creator is a valid member of both groups. Its ID does not grant another chat
+      // the source or write authority of a group-owned Page.
+      for (const args of denied) {
+        await save(maker.id, args);
+        expect(await lastResult(maker.id)).toEqual(notFound);
+        expect(await inGroup(maker, "Maker", args, otherGroup)).toEqual(notFound);
+        expect(await db().page.findUniqueOrThrow({ where: { id: groupPageId } })).toMatchObject({
+          title: "Group plan",
+          currentVersion: 1,
+        });
+        expect(await db().pageVersion.count({ where: { pageId: groupPageId } })).toBe(1);
+        expect(await pageDeliveries()).toEqual(before);
+      }
+      expect(
+        await inGroup(other, "Other", { pageId: groupPageId, source: page("Desk v2") }),
+      ).toMatchObject({ pageId: groupPageId, version: 2 });
+      expect(
+        await inGroup(other, "Other", {
+          pageId: groupPageId,
+          edits: [{ find: "Desk v2", replace: "Desk v3" }],
+        }),
+      ).toMatchObject({ pageId: groupPageId, version: 3 });
+      expect(
+        await inGroup(other, "Other", { pageId: groupPageId, title: "Team plan" }),
+      ).toMatchObject({ pageId: groupPageId, version: 4 });
+      expect(await db().pageVersion.count({ where: { pageId: groupPageId } })).toBe(4);
+      expect(
+        await rpc<PageDetail>(app, cookie, "pages/get", { pageId: groupPageId }),
+      ).toMatchObject({ id: groupPageId, version: 4 });
+      // Group ownership survives the creator field being cleared; it does not become personal.
+      await db().page.update({ where: { id: groupPageId }, data: { botId: null } });
+      expect(await inGroup(maker, "Maker", { pageId: groupPageId })).toMatchObject({
+        pageId: groupPageId,
+        version: 4,
+        source: page("Desk v3"),
+      });
+      expect(await inGroup(maker, "Maker", { pageId: groupPageId }, otherGroup)).toEqual(notFound);
+      // The same maker still reuses its private Page across other valid chats.
+      expect(await inGroup(maker, "Maker", { pageId }, otherGroup)).toMatchObject({
+        pageId,
+        version: 2,
+        source: page("Ours"),
+      });
       expect(await db().pageVersion.count({ where: { pageId } })).toBe(2);
     });
 
@@ -1645,7 +1741,7 @@ describePages("private Pages with production row-security policies", () => {
         text: `call save_page with ${JSON.stringify({ title: "Race", source: page("One") })}`,
       });
       const pageId = (await lastResult(first.id))!.pageId as string;
-      // A page of both bots' group: its maker saves from its own chat, the other in the group.
+      // Both bots save the group's Page from that group, under independent Run leases.
       const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
         name: "Racers",
         botIds: [first.id, second.id],
@@ -1656,7 +1752,11 @@ describePages("private Pages with production row-security policies", () => {
       // Hold the page row until both saves have read version 1 and wait to write.
       await holdingPageRow(pageId, async (waitFor) => {
         await Promise.all([
-          rpc(app, cookie, "threads/send", { botId: first.id, text: saveText("Two") }),
+          rpc(app, cookie, "threads/send", {
+            groupId: group.id,
+            text: `@First ${saveText("Two")}`,
+            mentions: [{ kind: "bot", id: first.id }],
+          }),
           rpc(app, cookie, "threads/send", {
             groupId: group.id,
             text: `@Second ${saveText("Three")}`,
@@ -1665,7 +1765,6 @@ describePages("private Pages with production row-security policies", () => {
         ]);
         await waitFor(2);
       });
-      await sendAndWait(app, cookie, first.id, { text: "hello" });
       await expect
         .poll(
           () =>
@@ -1677,7 +1776,13 @@ describePages("private Pages with production row-security policies", () => {
             }),
           { timeout: 20_000, interval: 100 },
         )
-        .toBe(1);
+        .toBe(2);
+      for (const run of await db().run.findMany({
+        where: { threadId: group.threadId },
+        select: { id: true },
+      })) {
+        await settleExecution(run.id);
+      }
       const results = await db().externalEffect.findMany({
         where: { kind: "save_page", run: { botId: { in: [first.id, second.id] } } },
         orderBy: { createdAt: "asc" },

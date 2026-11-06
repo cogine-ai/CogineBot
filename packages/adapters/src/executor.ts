@@ -5668,7 +5668,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             thread,
             state: trust.state,
             secrets: runSecrets,
-            effect: applied ? { id: applied.effect.id } : undefined,
+            effect: { id: applied!.effect.id },
             publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
           });
           const recoverPageSave = async (effect: { status: string }) => {

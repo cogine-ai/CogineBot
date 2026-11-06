@@ -10,16 +10,6 @@ export function pageSourceBytes(source: string): number {
   return new TextEncoder().encode(source).byteLength;
 }
 
-/** Page source as stored: bounded before anything parses or compiles it. */
-export const PageSourceSchema = z
-  .string()
-  // A string longer in UTF-16 than the limit is over it in UTF-8 too; skip encoding it.
-  .max(PAGE_SOURCE_MAX_BYTES, { abort: true })
-  .refine(
-    (source) => pageSourceBytes(source) <= PAGE_SOURCE_MAX_BYTES,
-    `Page source must fit within ${PAGE_SOURCE_MAX_BYTES} UTF-8 bytes`,
-  );
-
 export const PageVisibilitySchema = z.enum(["private", "link"]);
 export type PageVisibility = z.infer<typeof PageVisibilitySchema>;
 

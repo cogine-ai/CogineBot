@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { MessageBlock } from "@rakazo/contracts";
 import { PAGE_TITLE_MAX_LENGTH, PageTitleSchema } from "@rakazo/contracts";
 import { containsSecret, redactSecrets } from "@rakazo/core";
@@ -14,14 +13,12 @@ export interface PageToolContext {
   thread: { groupId: string | null };
   state: { tainted: boolean };
   secrets: string[];
-  effect?: { id: string };
+  effect: { id: string };
   publish: (blocks: MessageBlock[], clientNonce?: string) => Promise<unknown>;
 }
 
 const PageSaveReceiptSchema = z.object({
   kind: z.literal("page_save"),
-  effectId: z.string(),
-  requestDigest: z.string(),
   saved: z.object({
     pageId: z.string().min(1),
     version: z.number().int().positive(),
@@ -83,7 +80,7 @@ function parseEdits(value: unknown): PageEdit[] | string {
 
 function pageEffectScope(ctx: PageToolContext) {
   return {
-    id: ctx.effect?.id,
+    id: ctx.effect.id,
     spaceId: ctx.run.spaceId,
     runId: ctx.run.id,
     kind: "save_page",
@@ -109,11 +106,7 @@ async function readPageSaveReceipt(
   }
   if (effect.result === null) return undefined;
   const receipt = PageSaveReceiptSchema.safeParse(effect.result);
-  if (
-    !receipt.success ||
-    receipt.data.effectId !== ctx.effect?.id ||
-    receipt.data.requestDigest !== createHash("sha256").update(request).digest("hex")
-  ) {
+  if (!receipt.success) {
     throw new InvalidPageSaveReceipt("Stored page execution has no valid save receipt.");
   }
   return receipt.data;
@@ -124,7 +117,6 @@ export async function recoverSavedPageFromTool(
   ctx: PageToolContext,
   args: Record<string, unknown>,
 ) {
-  if (!ctx.effect) return undefined;
   let receipt: PageSaveReceipt | undefined;
   try {
     receipt = await readPageSaveReceipt(ctx, args, ctx.deps.prisma, "executing");
@@ -140,8 +132,6 @@ export async function recoverSavedPageFromTool(
 export async function savePageFromTool(ctx: PageToolContext, args: Record<string, unknown>) {
   const { deps, run, bot, thread } = ctx;
   if (args.help === true) return { guide: PAGE_KIT_GUIDE };
-  const request = ctx.effect ? stableJsonValue(args) : "";
-  const requestDigest = createHash("sha256").update(request).digest("hex");
   const effectScope = pageEffectScope(ctx);
   const pageId = argumentGiven(args.pageId) ? String(args.pageId) : undefined;
   const hasSource = argumentGiven(args.source);
@@ -157,15 +147,14 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
   // Reads retain their source/taint contract. Recover writes before reading the page or
   // applying edits: a later change or deletion must not turn this execution into another save.
   const reading = pageId && !hasSource && !hasEdits && !title;
-  const previous =
-    ctx.effect && !reading ? await readPageSaveReceipt(ctx, args, deps.prisma) : undefined;
+  const previous = !reading ? await readPageSaveReceipt(ctx, args, deps.prisma) : undefined;
   if (previous) return publishSavedPage(ctx, previous);
 
-  // A bot reaches its own pages and its group's pages, from any of its chats or routines; another
-  // bot's page answers as if it did not exist, since its source may hold that chat's text.
+  // A bot reuses its personal pages across chats and routines. A group Page belongs to
+  // the current group, even when this bot made it; other contexts answer as for a missing page.
   const reachable = thread.groupId
-    ? [{ botId: bot.id }, { groupId: thread.groupId }]
-    : [{ botId: bot.id }];
+    ? [{ botId: bot.id, groupId: null }, { groupId: thread.groupId }]
+    : [{ botId: bot.id, groupId: null }];
   const page = pageId
     ? await deps.prisma.page.findFirst({
         where: { id: pageId, spaceId: run.spaceId, userId: run.userId, OR: reachable },
@@ -213,17 +202,15 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
   let receipt: PageSaveReceipt;
   try {
     receipt = await deps.prisma.$transaction(async (tx) => {
-      if (ctx.effect) {
-        // This existing effect row serializes only retries of this save. Its receipt and
-        // the Page write commit together, including when a worker loses the commit reply.
-        const held = await tx.externalEffect.updateMany({
-          where: { ...effectScope, status: { in: ["intended", "executing"] } },
-          data: { updatedAt: new Date() },
-        });
-        if (held.count !== 1) throw new Error("Page execution is no longer writable.");
-        const previous = await readPageSaveReceipt(ctx, args, tx);
-        if (previous) return previous;
-      }
+      // This existing effect row serializes only retries of this save. Its receipt and
+      // the Page write commit together, including when a worker loses the commit reply.
+      const held = await tx.externalEffect.updateMany({
+        where: { ...effectScope, status: { in: ["intended", "executing"] } },
+        data: { updatedAt: new Date() },
+      });
+      if (held.count !== 1) throw new Error("Page execution is no longer writable.");
+      const previous = await readPageSaveReceipt(ctx, args, tx);
+      if (previous) return previous;
       let saved: PageSaveReceipt["saved"];
       if (!page) {
         const created = await tx.page.create({
@@ -263,18 +250,14 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
       }
       const receipt: PageSaveReceipt = {
         kind: "page_save",
-        effectId: ctx.effect?.id ?? "",
-        requestDigest,
         saved,
         publish: !page || run.trigger !== "routine",
         ...(check.warnings?.length ? { warnings: check.warnings } : {}),
       };
-      if (ctx.effect) {
-        await tx.externalEffect.update({
-          where: { id: ctx.effect.id },
-          data: { result: receipt },
-        });
-      }
+      await tx.externalEffect.update({
+        where: { id: ctx.effect.id },
+        data: { result: receipt },
+      });
       return receipt;
     });
   } catch (error) {
@@ -294,19 +277,19 @@ async function publishSavedPage(ctx: PageToolContext, receipt: PageSaveReceipt) 
     // A routine speaks only through its final reply, which may be silence, so refreshing a
     // page it already showed posts no card; its first save still does.
     if (receipt.publish) {
-      const nonce = ctx.effect ? `page-save:${ctx.effect.id}` : undefined;
+      const nonce = `page-save:${ctx.effect.id}`;
       const findCard = () =>
         ctx.deps.prisma.message.findUnique({
-          where: { threadId_clientNonce: { threadId: ctx.run.threadId, clientNonce: nonce! } },
+          where: { threadId_clientNonce: { threadId: ctx.run.threadId, clientNonce: nonce } },
           select: { id: true },
         });
-      if (!nonce || !(await findCard())) {
+      if (!(await findCard())) {
         try {
           await ctx.publish([block], nonce);
         } catch (error) {
           // Message and event are committed by the existing publisher in one transaction;
           // a concurrent delivery's unique-key loser rolls both back.
-          if (!nonce || !isUniqueViolation(error) || !(await findCard())) throw error;
+          if (!isUniqueViolation(error) || !(await findCard())) throw error;
         }
       }
     }

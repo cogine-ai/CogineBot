@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { appContract } from "./index.js";
 import {
-  PAGE_SOURCE_MAX_BYTES,
   PAGE_TITLE_MAX_LENGTH,
-  PageSourceSchema,
   PageSummarySchema,
   PageTextContextSchema,
   PageTitleSchema,
@@ -49,18 +47,6 @@ it("bounds the titles pages send out by the cap a saved title has", () => {
   const longest = "x".repeat(PAGE_TITLE_MAX_LENGTH);
   expect(summary(longest)).toBe(true);
   expect(summary(`${longest}x`)).toBe(false);
-});
-
-describe("PageSourceSchema", () => {
-  it("measures source in UTF-8 bytes, as the save check does", () => {
-    expect(PageSourceSchema.safeParse("x".repeat(PAGE_SOURCE_MAX_BYTES)).success).toBe(true);
-    expect(PageSourceSchema.safeParse("x".repeat(PAGE_SOURCE_MAX_BYTES + 1)).success).toBe(false);
-    // Fewer characters than the limit, more bytes.
-    expect(PageSourceSchema.safeParse("é".repeat(PAGE_SOURCE_MAX_BYTES / 2)).success).toBe(true);
-    expect(PageSourceSchema.safeParse(`${"é".repeat(PAGE_SOURCE_MAX_BYTES / 2)}x`).success).toBe(
-      false,
-    );
-  });
 });
 
 it("lets a newer client's reply from a page reach an older server, which drops what it does not know", () => {

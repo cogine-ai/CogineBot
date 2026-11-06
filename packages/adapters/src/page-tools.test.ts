@@ -7,12 +7,45 @@ const { recoverSavedPageFromTool, savePageFromTool } = await import("./page-tool
 const source = (heading: string) =>
   `const App = () => (\n  <Page title="${heading}">\n    <Text>Hi</Text>\n  </Page>\n);\nexport default App;\n`;
 
+const newPageCalls = new WeakMap<PageToolContext, (args: Record<string, unknown>) => void>();
+
+function pendingPageEffect() {
+  let request: Record<string, unknown> = {};
+  let result: unknown = null;
+  let call = 0;
+  const effect = { id: "not-recorded" };
+  return {
+    effect,
+    externalEffect: {
+      findFirst: vi.fn(async () => ({ request, result })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      update: vi.fn(async ({ data }: { data: { result: unknown } }) => {
+        result = data.result;
+      }),
+    },
+    message: { findUnique: vi.fn(async () => null) },
+    record: (args: Record<string, unknown>) => {
+      effect.id = `effect-${++call}`;
+      request = args;
+      result = null;
+    },
+  };
+}
+
+async function saveNewPageCall(ctx: PageToolContext, args: Record<string, unknown>) {
+  newPageCalls.get(ctx)!(args);
+  return savePageFromTool(ctx, args);
+}
+
 function context(
   tx: Record<string, unknown>,
   existing?: { currentVersion: number },
   secrets: string[] = [],
 ) {
+  const pending = pendingPageEffect();
   const prisma = {
+    externalEffect: pending.externalEffect,
+    message: pending.message,
     page: {
       findFirst: vi.fn(async () =>
         existing
@@ -25,26 +58,245 @@ function context(
           : null,
       ),
     },
-    $transaction: vi.fn(async (work: (client: unknown) => unknown) => work(tx)),
+    $transaction: vi.fn(async (work: (client: unknown) => unknown) =>
+      work({ ...tx, externalEffect: pending.externalEffect }),
+    ),
   };
-  return {
+  const ctx = {
     deps: { prisma },
+    effect: pending.effect,
     run: { id: "run-1", spaceId: "space-1", userId: "user-1", threadId: "t-1", botId: "bot-1" },
     bot: { id: "bot-1" },
     thread: { groupId: null },
     secrets,
     state: { tainted: false },
     publish: publishMessage,
-  } as never;
+  } as unknown as PageToolContext;
+  newPageCalls.set(ctx, pending.record);
+  return ctx;
 }
 
 describe("save_page", () => {
   beforeEach(() => publishMessage.mockReset());
 
+  it.each(
+    [
+      {
+        name: "group maker in personal chat",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: null,
+        allow: false,
+      },
+      {
+        name: "group maker in personal routine",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: null,
+        trigger: "routine",
+        allow: false,
+      },
+      {
+        name: "group maker in another valid group",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: "group-b",
+        allow: false,
+      },
+      {
+        name: "group maker in origin group",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: "group-a",
+        allow: true,
+      },
+      {
+        name: "peer in origin group",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-2",
+        group: "group-a",
+        allow: true,
+      },
+      {
+        name: "orphaned maker in origin group",
+        ownerBot: null,
+        ownerGroup: "group-a",
+        bot: "bot-2",
+        group: "group-a",
+        allow: true,
+      },
+      {
+        name: "peer outside origin group",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-2",
+        group: "group-b",
+        allow: false,
+      },
+      {
+        name: "personal maker in origin chat",
+        ownerBot: "bot-1",
+        ownerGroup: null,
+        bot: "bot-1",
+        group: null,
+        allow: true,
+      },
+      {
+        name: "personal maker in group",
+        ownerBot: "bot-1",
+        ownerGroup: null,
+        bot: "bot-1",
+        group: "group-a",
+        allow: true,
+      },
+      {
+        name: "personal maker in another group",
+        ownerBot: "bot-1",
+        ownerGroup: null,
+        bot: "bot-1",
+        group: "group-b",
+        allow: true,
+      },
+      {
+        name: "personal maker in routine",
+        ownerBot: "bot-1",
+        ownerGroup: null,
+        bot: "bot-1",
+        group: null,
+        trigger: "routine",
+        allow: true,
+      },
+      {
+        name: "other bot in shared group",
+        ownerBot: "bot-1",
+        ownerGroup: null,
+        bot: "bot-2",
+        group: "group-a",
+        allow: false,
+      },
+      {
+        name: "wrong user",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: "group-a",
+        user: "other-user",
+        allow: false,
+      },
+      {
+        name: "wrong Space",
+        ownerBot: "bot-1",
+        ownerGroup: "group-a",
+        bot: "bot-1",
+        group: "group-a",
+        space: "other-space",
+        allow: false,
+      },
+      {
+        name: "no remaining owner",
+        ownerBot: null,
+        ownerGroup: null,
+        bot: "bot-1",
+        group: null,
+        allow: false,
+      },
+    ].flatMap((scope) => ["read", "source", "edits", "title"].map((mode) => ({ ...scope, mode }))),
+  )("keeps Page $mode authority for $name", async (scope) => {
+    const stored = {
+      id: "page-1",
+      spaceId: "space-1",
+      userId: "user-1",
+      botId: scope.ownerBot,
+      groupId: scope.ownerGroup,
+      title: "Plan",
+      currentVersion: 1,
+      versions: [{ source: source("Plan") }],
+    };
+    const update = vi.fn(async () => ({ count: 1 }));
+    const version = vi.fn();
+    const page = {
+      findFirst: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { id: string; spaceId: string; userId: string; OR: Record<string, unknown>[] };
+        }) =>
+          where.id === stored.id &&
+          where.spaceId === stored.spaceId &&
+          where.userId === stored.userId &&
+          where.OR.some((branch) =>
+            Object.entries(branch).every(
+              ([key, value]) => stored[key as keyof typeof stored] === value,
+            ),
+          )
+            ? stored
+            : null,
+      ),
+      updateMany: update,
+      findUniqueOrThrow: vi.fn(async () => ({ title: "Plan" })),
+    };
+    const pending = pendingPageEffect();
+    const prisma = {
+      page,
+      externalEffect: pending.externalEffect,
+      message: pending.message,
+      $transaction: async <T>(work: (tx: unknown) => Promise<T>) =>
+        work({ page, pageVersion: { create: version }, externalEffect: pending.externalEffect }),
+    };
+    const ctx = {
+      deps: { prisma },
+      effect: pending.effect,
+      run: {
+        id: "run-1",
+        spaceId: scope.space ?? "space-1",
+        userId: scope.user ?? "user-1",
+        threadId: "thread-1",
+        trigger: scope.trigger ?? "user",
+      },
+      bot: { id: scope.bot },
+      thread: { groupId: scope.group },
+      state: { tainted: false },
+      secrets: [],
+      publish: publishMessage,
+    } as unknown as PageToolContext;
+    newPageCalls.set(ctx, pending.record);
+    const args = {
+      pageId: "page-1",
+      ...(scope.mode === "source"
+        ? { source: source("New") }
+        : scope.mode === "edits"
+          ? { edits: [{ find: "Hi", replace: "Hello" }] }
+          : scope.mode === "title"
+            ? { title: "Renamed" }
+            : {}),
+    };
+    const result = await saveNewPageCall(ctx, args);
+    if (!scope.allow) {
+      expect(result).toEqual({ error: "No page with that pageId belongs to this bot or chat." });
+      expect(ctx.state.tainted).toBe(false);
+      expect(update).not.toHaveBeenCalled();
+      expect(version).not.toHaveBeenCalled();
+      expect(publishMessage).not.toHaveBeenCalled();
+    } else if (scope.mode === "read") {
+      expect(result).toMatchObject({ pageId: "page-1", version: 1, source: source("Plan") });
+      expect(ctx.state.tainted).toBe(true);
+    } else {
+      expect(result).toMatchObject({ pageId: "page-1", version: 2 });
+      expect(update).toHaveBeenCalledOnce();
+      expect(version).toHaveBeenCalledOnce();
+      expect(publishMessage).toHaveBeenCalledTimes(scope.trigger === "routine" ? 0 : 1);
+    }
+  });
+
   it("keeps a saved page when its chat card cannot be posted, and says how to link it", async () => {
     publishMessage.mockRejectedValueOnce(new Error("run was cancelled"));
     const tx = { page: { create: vi.fn(async () => ({ id: "page-1", title: "Plan" })) } };
-    const result = (await savePageFromTool(context(tx), {
+    const result = (await saveNewPageCall(context(tx), {
       title: "Plan",
       source: source("Plan"),
     })) as Record<string, unknown>;
@@ -56,20 +308,20 @@ describe("save_page", () => {
 
   it("taints the run when it reads a page's stored source, but not when it saves one", async () => {
     const read = context({}, { currentVersion: 2 });
-    const result = (await savePageFromTool(read, { pageId: "page-1" })) as Record<string, unknown>;
+    const result = (await saveNewPageCall(read, { pageId: "page-1" })) as Record<string, unknown>;
     expect(result.source).toBe(source("Plan"));
     expect((read as { state: { tainted: boolean } }).state.tainted).toBe(true);
 
     const tx = { page: { create: vi.fn(async () => ({ id: "page-2", title: "New" })) } };
     const save = context(tx);
-    await savePageFromTool(save, { title: "New", source: source("New") });
+    await saveNewPageCall(save, { title: "New", source: source("New") });
     expect(tx.page.create).toHaveBeenCalledTimes(1);
     expect((save as { state: { tainted: boolean } }).state.tainted).toBe(false);
   });
 
   it("treats an empty edits list as not sent, as it does a blank title or source", async () => {
     const tx = { page: { create: vi.fn(async () => ({ id: "page-1", title: "Plan" })) } };
-    const created = (await savePageFromTool(context(tx), {
+    const created = (await saveNewPageCall(context(tx), {
       title: "Plan",
       source: source("Plan"),
       edits: [],
@@ -81,7 +333,7 @@ describe("save_page", () => {
       }),
     });
     // Reading a page back with an empty list returns its source rather than an error.
-    const read = (await savePageFromTool(context({}, { currentVersion: 3 }), {
+    const read = (await saveNewPageCall(context({}, { currentVersion: 3 }), {
       pageId: "page-1",
       edits: [],
       source: "",
@@ -108,7 +360,7 @@ describe("save_page", () => {
     ];
     for (const [index, args] of refused.entries()) {
       const existing = index === 0 ? undefined : { currentVersion: 1 };
-      const result = (await savePageFromTool(context(tx, existing, [secret]), args)) as Record<
+      const result = (await saveNewPageCall(context(tx, existing, [secret]), args)) as Record<
         string,
         unknown
       >;
@@ -119,7 +371,7 @@ describe("save_page", () => {
     expect(tx.pageVersion.create).not.toHaveBeenCalled();
     expect(publishMessage).not.toHaveBeenCalled();
 
-    const titled = (await savePageFromTool(context(tx, undefined, [secret]), {
+    const titled = (await saveNewPageCall(context(tx, undefined, [secret]), {
       title: `Keys ${secret}`,
       source: source("Plan"),
     })) as Record<string, unknown>;
@@ -138,7 +390,7 @@ describe("save_page", () => {
       },
       pageVersion: { create: vi.fn() },
     };
-    const result = (await savePageFromTool(context(tx, { currentVersion: 1 }, [secret]), {
+    const result = (await saveNewPageCall(context(tx, { currentVersion: 1 }, [secret]), {
       pageId: "page-1",
       source: source("Plan"),
     })) as Record<string, unknown>;
@@ -155,9 +407,9 @@ describe("save_page", () => {
     const tx = { page: { create: vi.fn(async () => ({ id: "page-1", title: "Plan" })) } };
     const ctx = context(tx) as { state: { tainted: boolean } };
     ctx.state.tainted = true;
-    await savePageFromTool(ctx as never, { title: "Plan", source: source("Plan") });
+    await saveNewPageCall(ctx as never, { title: "Plan", source: source("Plan") });
     expect(ctx.state.tainted).toBe(true);
-    await savePageFromTool(ctx as never, { help: true });
+    await saveNewPageCall(ctx as never, { help: true });
     expect(ctx.state.tainted).toBe(true);
   });
 
@@ -166,7 +418,7 @@ describe("save_page", () => {
       page: { updateMany: vi.fn(async () => ({ count: 0 })) },
       pageVersion: { create: vi.fn() },
     };
-    const result = await savePageFromTool(context(tx, { currentVersion: 1 }), {
+    const result = await saveNewPageCall(context(tx, { currentVersion: 1 }), {
       pageId: "page-1",
       source: source("Updated"),
     });
@@ -186,7 +438,7 @@ describe("save_page", () => {
     const ctx = context(tx, { currentVersion: 1 }) as { run: { trigger: string } };
     ctx.run.trigger = "routine";
     expect(
-      await savePageFromTool(ctx as never, { pageId: "page-1", source: source("Updated") }),
+      await saveNewPageCall(ctx as never, { pageId: "page-1", source: source("Updated") }),
     ).toMatchObject({ pageId: "page-1", version: 2 });
     expect(tx.pageVersion.create).toHaveBeenCalledOnce();
     expect(publishMessage).not.toHaveBeenCalled();
@@ -261,8 +513,7 @@ describe("save_page", () => {
     for (const result of [
       null,
       {},
-      { ...receipt, effectId: "another-effect" },
-      { ...receipt, requestDigest: "another-request" },
+      { ...receipt, kind: "other_save" },
       { ...receipt, saved: { pageId: "page-1", version: 0, title: "Plan" } },
     ]) {
       f.setResult(result);
@@ -275,7 +526,6 @@ describe("save_page", () => {
     // An absent row also covers a scope/kind/run/status mismatch in the scoped query.
     f.externalEffect.findFirst.mockResolvedValueOnce(null as never);
     expect(await recoverSavedPageFromTool(f.ctx, args)).toBeUndefined();
-    expect(await recoverSavedPageFromTool({ ...f.ctx, effect: undefined }, args)).toBeUndefined();
     expect(f.writes).toHaveLength(1);
     expect(f.deliveries).toHaveLength(1);
   });
