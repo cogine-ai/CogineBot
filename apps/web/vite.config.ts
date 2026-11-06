@@ -422,6 +422,29 @@ export default defineConfig(({ mode }) => {
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
   return {
     plugins: [
+      {
+        name: "private-html-viewer-headers",
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.split("?", 1)[0] === "/html-viewer.html") {
+              res.setHeader("content-security-policy", "frame-ancestors 'self'");
+              res.setHeader("referrer-policy", "no-referrer");
+              res.setHeader("x-content-type-options", "nosniff");
+            }
+            next();
+          });
+        },
+        configurePreviewServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.split("?", 1)[0] === "/html-viewer.html") {
+              res.setHeader("content-security-policy", "frame-ancestors 'self'");
+              res.setHeader("referrer-policy", "no-referrer");
+              res.setHeader("x-content-type-options", "nosniff");
+            }
+            next();
+          });
+        },
+      },
       react(),
       babel({ plugins: ["@lingui/babel-plugin-lingui-macro"] }),
       lingui(),

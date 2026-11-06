@@ -389,6 +389,14 @@ describe("destroyBot", () => {
             deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
           },
           artifact: { findMany: findArtifacts, deleteMany: deleteArtifacts },
+          page: {
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
+          secret: {
+            findMany: vi.fn().mockResolvedValue([]),
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           computerExecutionLease: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computer: { updateMany: releaseComputers },
           $executeRaw: executeRaw,
@@ -530,6 +538,14 @@ describe("destroyBot", () => {
           attempt: { updateMany: cancelAttempts },
           task: { updateMany: cancelTasks },
           externalEffect: { deleteMany: clearCheckpoints },
+          page: {
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
+          secret: {
+            findMany: vi.fn().mockResolvedValue([]),
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
           chatGroupMember: { deleteMany: deleteMemberships },
           artifact: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -2110,6 +2126,14 @@ function deletionPrisma(team: { id: string }) {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       artifact: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      page: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      secret: {
         findMany: vi.fn().mockResolvedValue([]),
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },

@@ -45,9 +45,16 @@ describe("appearance preference", () => {
   it("returns distinct light and dark token sets", () => {
     expect(tokensForAppearance("dark")).toBe(darkTokens);
     expect(tokensForAppearance("light")).toBe(lightTokens);
+    const shared = new Set<keyof ColorTokens>([
+      "destructiveForeground",
+      "destructiveFill",
+      "faviconPlate",
+      "unread",
+      "workingDot",
+    ]);
     for (const key of Object.keys(darkTokens) as (keyof ColorTokens)[]) {
-      if (key === "destructiveForeground" || key === "faviconPlate") continue;
-      expect(darkTokens[key], key).not.toBe(lightTokens[key]);
+      if (shared.has(key)) expect(darkTokens[key], key).toBe(lightTokens[key]);
+      else expect(darkTokens[key], key).not.toBe(lightTokens[key]);
     }
   });
 

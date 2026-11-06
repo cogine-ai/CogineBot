@@ -29,7 +29,7 @@ describe("row-security maintenance command", () => {
   let stderr: ReturnType<typeof vi.spyOn>;
 
   const state = (verified = false) => ({
-    expectedTables: 84,
+    expectedTables: 86,
     policyInstalled: verified,
     policyEnabled: verified,
     connectionEnforced: verified,

@@ -20,9 +20,11 @@ import {
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
   runSecretKind,
+  SITE_SENDING_TOOLS,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
+import { urlSite } from "@rakazo/core/egress";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
@@ -734,7 +736,7 @@ async function commitAnswerRunInput(
     ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
     : undefined;
   if (login && !login.success) return null;
-  let approvalEffect: { id: string; kind: string } | null = null;
+  let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
   let approvalUserId: string | null = null;
 
   if (approvalAsk) {
@@ -801,23 +803,25 @@ async function commitAnswerRunInput(
       where: { id: approvalEffect!.id },
       data: { status: allowed ? "approved" : "denied" },
     });
-    if (input.answer === "always") {
+    // A site's approval permits that destination, not every destination the tool can reach.
+    const site = alwaysAllowedSite(approvalEffect!);
+    if (input.answer === "always" && (site || approvalEffect!.kind !== "web_fetch")) {
       await tx.actionApprovalRule.upsert({
         where: {
           spaceId_createdByUserId_effect_matchKind_matchValue: {
             spaceId: input.spaceId,
             createdByUserId: approvalUserId!,
             effect: "always_allow",
-            matchKind: "tool",
-            matchValue: approvalEffect!.kind,
+            matchKind: site ? "site" : "tool",
+            matchValue: site ?? approvalEffect!.kind,
           },
         },
         create: {
           spaceId: input.spaceId,
           createdByUserId: approvalUserId!,
           effect: "always_allow",
-          matchKind: "tool",
-          matchValue: approvalEffect!.kind,
+          matchKind: site ? "site" : "tool",
+          matchValue: site ?? approvalEffect!.kind,
         },
         update: {},
       });
@@ -2086,4 +2090,13 @@ class ChangeLatch {
       if (this.generation !== expected || signal?.aborted) finish();
     });
   }
+}
+
+function alwaysAllowedSite(effect: {
+  kind: string;
+  request: Prisma.JsonValue;
+}): string | undefined {
+  if (!SITE_SENDING_TOOLS.has(effect.kind)) return undefined;
+  const request = effect.request as { url?: unknown } | null;
+  return typeof request?.url === "string" ? urlSite(request.url) : undefined;
 }

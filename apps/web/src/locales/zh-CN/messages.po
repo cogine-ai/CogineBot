@@ -7075,3 +7075,115 @@ msgstr "请先重新加载此连接再保存。"
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Maximum output tokens must be smaller than the context limit."
 msgstr "输出 token 上限必须小于上下文上限。"
+
+#: src/components/pages/PageNotice.tsx
+msgid "Back to chat"
+msgstr "返回聊天"
+
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Check your connection and try again."
+msgstr "请检查网络连接后重试。"
+
+#: src/components/pages/PageView.tsx
+msgid "Close page"
+msgstr "关闭页面"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not change who can view this page. Try again."
+msgstr "无法更改谁可以查看此页面。请重试。"
+
+#: src/components/pages/PagesList.tsx
+msgid "Could not pin this page. Try again."
+msgstr "无法置顶此页面。请重试。"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not rename this page. Try again."
+msgstr "无法重命名此页面。请重试。"
+
+#: src/components/pages/PagesList.tsx
+msgid "Couldn't load pages."
+msgstr "无法加载页面。"
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Download PDF"
+msgstr "下载 PDF"
+
+#: src/components/pages/PagesList.tsx
+msgid "Find a page"
+msgstr "查找页面"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "It may have been deleted, or it belongs to someone else."
+msgstr "它可能已被删除，或属于其他人。"
+
+#: src/components/pages/PagesList.tsx
+msgid "Its shared link stops working and its cards in chat show it as deleted. This can't be undone."
+msgstr "其共享链接将失效，聊天中的卡片会显示为已删除。此操作无法撤销。"
+
+#: src/components/pages/PagesList.tsx
+msgid "No pages match “{query}”."
+msgstr "没有与“{query}”匹配的页面。"
+
+#: src/components/pages/PageCard.tsx
+msgid "Open {title}"
+msgstr "打开 {title}"
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Opens your browser's print dialog. Choose Save as PDF as the destination."
+msgstr "打开浏览器的打印对话框。目标请选择“另存为 PDF”。"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · {when}"
+msgstr "页面 · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Deleted"
+msgstr "页面 · 已删除"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · {when}"
+msgstr "页面 · 已共享 · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Updated below"
+msgstr "页面 · 已在下方更新"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageView.tsx
+msgid "Page title"
+msgstr "页面标题"
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this bot builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "此机器人为你创建的页面会显示在这里。请它做一个仪表板、跟踪表或计划即可创建。"
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this group builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "此群组为你创建的页面会显示在这里。请它做一个仪表板、跟踪表或计划即可创建。"
+
+#: src/components/pages/PagesList.tsx
+#: src/pages/Shell.tsx
+msgid "Pinned"
+msgstr "置顶"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/SharePopover.tsx
+msgid "Share"
+msgstr "共享"
+
+#: src/lib/pages.ts
+msgid "This page couldn't be shown."
+msgstr "无法显示此页面。"
+
+#: src/components/pages/PageCard.tsx
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "This page couldn't load"
+msgstr "无法加载此页面"
+
+#: src/components/pages/PageViewHost.tsx
+#: src/pages/SharedPage.tsx
+msgid "This page isn't available"
+msgstr "此页面不可用"

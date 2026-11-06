@@ -202,6 +202,35 @@ describe("scoped mobile outbox", () => {
     clearFailedSends();
     vi.unstubAllGlobals();
   });
+  it("retains the page-card reply identity through delivery and removes it on group rerouting", async () => {
+    const fromPage = { ...payload("Follow this page"), replyQuote: null, fromPage: true as const };
+    const attempt = feedback.sendAttempt(fromPage);
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    expect(request.mock.calls.find(([proc]) => proc === "threads/send")?.[1]).toMatchObject({
+      replyToMessageId: "reply-1",
+      fromPage: true,
+      replyQuote: undefined,
+    });
+    request.mockClear();
+    const rerouted = feedback.sendAttempt({
+      ...fromPage,
+      displayText: "Other group",
+      groupTarget: "group-2",
+      botTarget: undefined,
+      reroutedToGroup: true,
+    });
+    await act(async () => {
+      await feedback.send(rerouted);
+    });
+    expect(request.mock.calls.find(([proc]) => proc === "threads/send")?.[1]).toMatchObject({
+      groupId: "group-2",
+      replyToMessageId: undefined,
+      fromPage: undefined,
+    });
+  });
+
   it("shows the optimistic payload before confirmation, then replaces it with the echo", async () => {
     let finish!: (value: { seq: number }) => void;
     request.mockImplementation(async (proc) =>

@@ -1,4 +1,19 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Could not delete the page.": "无法删除页面。",
+  "Could not load pages.": "无法加载页面。",
+  "Could not load this page.": "无法加载此页面。",
+  "Could not pin the page.": "无法置顶页面。",
+  "Could not rename the page.": "无法重命名页面。",
+  "Open {title}": "打开 {title}",
+  "Pages this bot builds for you appear here.": "此机器人为你创建的页面会显示在这里。",
+  "Pages this group builds for you appear here.": "此群组为你创建的页面会显示在这里。",
+  "This page couldn't be shown.": "无法显示此页面。",
+  "This page couldn't load": "无法加载此页面",
+  "This page isn't available": "此页面不可用",
+  "Updated below": "已在下方更新",
+  Deleted: "已删除",
+  Page: "页面",
+  Pages: "页面",
   "This model's context window is too small. Choose another model.":
     "此模型的上下文容量太小。请选择其他模型。",
   "This server's tool result does not fit the model. Choose another model.":

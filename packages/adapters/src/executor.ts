@@ -94,6 +94,8 @@ import {
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
+  connectorReadRequiresApproval,
+  connectorToolRequiresApproval,
   containsSecret,
   createStreamingRedactor,
   endsSentence,
@@ -106,13 +108,16 @@ import {
   isCallClientNonce,
   isMessagingChannelRun,
   isOneShotRoutineCrons,
+  isOwnerStartedRun,
   isTerminal,
   messagingChannelId,
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
+  newSiteOutcome,
   nextCronDateAcross,
   nextFence,
   normalizeRunError,
+  outboundSiteGate,
   PlatformModelForbiddenError,
   planActionGate,
   promptInvokesSkill,
@@ -123,10 +128,12 @@ import {
   sanitizeJsonValue,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
+  toolResultTaintsRun,
   truncatedPlainText,
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
 } from "@rakazo/core";
+import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
   approvalEffectKey,
   isToolEffectIdempotencyKey,
@@ -168,6 +175,7 @@ import { parse as parseShellCommand } from "shell-quote";
 import {
   connectAgent,
   messageConnectedAgent,
+  prepareAgentConnectionResponse,
   respondAgentConnection,
 } from "./agent-connections.js";
 import {
@@ -175,7 +183,7 @@ import {
   formatAgentEnvironmentInstruction,
   redactShellStreams,
 } from "./agent-environment.js";
-import { buildApprovalAskBlock } from "./approval-ask.js";
+import { buildApprovalAskBlock, MAX_FETCH_URL_LENGTH } from "./approval-ask.js";
 import {
   approvalPausedToolResult,
   approvalReplayPathError,
@@ -358,6 +366,7 @@ import {
   modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
+import { savePageFromTool } from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
@@ -400,6 +409,7 @@ import {
   secretPausedToolResult,
   tryCompleteConnectionWithCode,
 } from "./run-secret.js";
+import { connectorBatchActions, connectorTrustKeys, createRunTrust } from "./run-trust.js";
 import type { RunTurnCheckpointState } from "./run-turn-state.js";
 import {
   claimTurnEffectOccurrence,
@@ -4425,15 +4435,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // The user can hand back control while this attempt is setting up.
         registerRetainedScreen();
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
-        const sourceClientNonce =
-          (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
-            ? ((
-                await deps.prisma.message.findUnique({
-                  where: { id: run.sourceMessageId },
-                  select: { clientNonce: true },
-                })
-              )?.clientNonce ?? null)
-            : null;
+        const sourceMessage = run.sourceMessageId
+          ? await deps.prisma.message.findUnique({
+              where: { id: run.sourceMessageId },
+              select: { clientNonce: true, role: true, blocks: true },
+            })
+          : null;
+        const sourceClientNonce = sourceMessage?.clientNonce ?? null;
+        const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
         // A hang-up run has no source message: its own nonce carries the call it closes.
         const callEndRun = run.trigger === "call_end";
         const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
@@ -4775,6 +4784,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel("Saved turn checkpoint could not be restored");
           return;
         }
+        const trust = createRunTrust(deps.prisma, {
+          run,
+          botId: bot.id,
+          taskPrompt: task.prompt,
+          sourceMessage,
+          ownerStartedRun,
+          messagingChannelRun,
+          restored: turnState.blob !== undefined || scriptedResume.stored !== undefined,
+          connectedProviders: connectedPlugins.map((plugin) => plugin.provider),
+        });
+        const searchResultUrls = new Set<string>();
         const verbatimMcpServers =
           !scripted &&
           (turnState.blob !== undefined || tools.some((tool) => tool.route?.connectorId === "mcp"))
@@ -5055,7 +5075,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           approvedKey?: string,
         ) => claimTurnEffectOccurrence(turnState, runId, toolName, args, executionId, approvedKey);
 
-        const applyTool = async (
+        const dispatchTool = async (
           name: string,
           args: Record<string, unknown>,
           executionId: string,
@@ -5292,6 +5312,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             }
           }
+          if (name === "respond_agent_connection") {
+            if (nextApprovedTool !== name) {
+              const pending = await prepareAgentConnectionResponse(
+                deps.prisma,
+                bot.id,
+                Boolean(args.accept),
+              );
+              if (!pending) return { error: "no pending connection request" };
+              args = pending;
+            } else if (
+              typeof args.requester_name !== "string" ||
+              typeof args.requester_address !== "string" ||
+              typeof args.requester_provider !== "string"
+            ) {
+              return { error: "connection request is no longer pending" };
+            }
+            effectRequest = args;
+          }
           const viaConnector = !BUILTIN_AGENT_TOOL_NAMES.has(name);
           // Declared effect of the operation this call dispatches (installed API method and
           // flag). Install config is immutable per route resource, so it cannot drift before
@@ -5299,6 +5337,51 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const declaredReadOnly = viaConnector
             ? (resolvedTool ?? connectorTools.get(name))?.readOnly
             : undefined;
+          const fetchUrl =
+            name === "web_fetch" ? normalizedHttpUrl(String(args.url ?? "")) : undefined;
+          const fetchSite = fetchUrl ? urlSite(fetchUrl) : undefined;
+          if (name === "web_fetch" && !fetchSite) return { error: "url must be an http(s) URL" };
+          if (fetchUrl && fetchUrl.length > MAX_FETCH_URL_LENGTH)
+            return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
+          if (fetchUrl) {
+            args = { ...args, url: fetchUrl };
+            effectRequest = args;
+          }
+          const siteGate =
+            fetchUrl && fetchSite
+              ? outboundSiteGate({
+                  site: fetchSite,
+                  trusted:
+                    searchResultUrls.has(fetchUrl) ||
+                    (await trust.loadTrustedSites()).has(fetchSite),
+                  rules: await loadApprovalRules(),
+                })
+              : "allow";
+          const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
+          const connectorKind = connectorKindFromToolName(name, connectorProviders);
+          const batch = connectorBatchActions(liveRoute?.toolName ?? name, args);
+          const connectorTrusts = connectorTrustKeys(
+            batch?.actions,
+            liveRoute,
+            connectorKind,
+            connectorProviders,
+          );
+          const connectorReadGated =
+            viaConnector &&
+            !(batch && !batch.complete) &&
+            (batch?.actions ?? [name]).every(
+              (tool) => !connectorToolRequiresApproval(tool, declaredReadOnly),
+            ) &&
+            connectorReadRequiresApproval({
+              tainted: await trust.isTainted(),
+              connectorTrusted: await trust
+                .loadTrustedConnectors()
+                .then((trusted) => connectorTrusts.every((key) => trusted.has(key))),
+            });
+          const scheduleNamesNewSite =
+            name === "schedule_create" &&
+            (await trust.isTainted()) &&
+            (await trust.routineNamesNewSite(String(args.prompt ?? ""), await loadApprovalRules()));
           const requiresUnattendedApproval = unattendedTriggerToolRequiresApproval(
             run.trigger,
             name,
@@ -5307,13 +5390,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           );
           const requiresApprovalByDefault =
             requiresUnattendedApproval ||
+            siteGate === "new" ||
             toolRequiresApproval(name, viaConnector, declaredReadOnly);
+          const gated = requiresApprovalByDefault || connectorReadGated;
           const requiresMandatoryApproval =
-            requiresUnattendedApproval || toolRequiresExplicitApproval(name);
-          const connectorKind = connectorKindFromToolName(
-            name,
-            connectedPlugins.map((plugin) => plugin.provider),
-          );
+            requiresUnattendedApproval ||
+            scheduleNamesNewSite ||
+            toolRequiresExplicitApproval(name);
           const approvalResolved = requiresMandatoryApproval
             ? {
                 decision: "ask" as const,
@@ -5324,6 +5407,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 toolName: name,
                 connectorKind,
                 readOnly: declaredReadOnly,
+                site: fetchSite,
                 rules: await loadApprovalRules(),
               });
           const autoReviewPref = requiresMandatoryApproval
@@ -5355,6 +5439,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : planActionGate({
                 resolved: approvalResolved,
                 consequential: requiresApprovalByDefault,
+                reviewOnly: connectorReadGated,
+                newDestination: siteGate === "new",
                 autoReviewEnabled: autoReviewPref,
                 checkerConfigured,
               });
@@ -5363,10 +5449,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const needsApprovalEarly = plan === "ask" || plan === "judge";
           // A resumed approval keeps its key even if "Always allow" changed the policy.
           const usesApprovalKey =
-            nextApprovedTool ||
-            name === "request_secret" ||
-            needsApprovalEarly ||
-            requiresApprovalByDefault;
+            nextApprovedTool || name === "request_secret" || needsApprovalEarly || gated;
           // Count before choosing a key so an approved replay (occurrence 0 / base
           // key) cannot collide with a later identical-args call in this attempt.
           // request_secret stays single-use: retries must reuse the same card.
@@ -5385,17 +5468,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? approvalEffectKey(runId, replayEffectToolName, args)
               : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence));
           // Connector read-only hints must not bypass approval, review, or replay decisions.
-          const applied = READ_ONLY_AGENT_TOOLS.has(name)
-            ? undefined
-            : await recordEffect(
-                deps,
-                run,
-                replayEffectToolName,
-                effectKey,
-                effectRequest,
-                executionId,
-                consumedEffectIds,
-              );
+          const applied =
+            READ_ONLY_AGENT_TOOLS.has(name) &&
+            siteGate !== "new" &&
+            nextApprovedTool !== name &&
+            !nextApprovedKey
+              ? undefined
+              : await recordEffect(
+                  deps,
+                  run,
+                  replayEffectToolName,
+                  effectKey,
+                  effectRequest,
+                  executionId,
+                  consumedEffectIds,
+                );
           if (applied) await bindScriptedEffect(applied.effect, executionId);
 
           const runAutoReview = async () => {
@@ -5494,7 +5581,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               reviewReason = judge.reason;
               gateDecision = applyJudgeDecision({
                 decision: judge.decision,
-                consequential: requiresApprovalByDefault,
+                consequential: gated,
               });
               if (applied) {
                 await deps.prisma.externalEffect.update({
@@ -5513,7 +5600,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               reviewReason = "Checker could not authenticate.";
               gateDecision = applyJudgeDecision({
                 decision: "error",
-                consequential: requiresApprovalByDefault,
+                consequential: gated,
               });
               if (applied) {
                 await deps.prisma.externalEffect.update({
@@ -5556,8 +5643,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (context.signal.aborted) return pauseForApproval();
 
+          if (
+            siteGate === "new" &&
+            newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
+          ) {
+            if (applied) {
+              await deps.prisma.externalEffect.updateMany({
+                where: { id: applied.effect.id, status: "intended" },
+                data: { status: "denied" },
+              });
+            }
+            return { error: `Fetching ${fetchSite} needs approval, and a webhook run cannot ask.` };
+          }
+
           const needsApproval = gateDecision === "ask";
-          const bypassApproval = gateDecision === "allow" && requiresApprovalByDefault;
+          const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
 
           const claimOrReturn = async (
@@ -5701,6 +5801,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           } else if (bypassApproval && applied) {
             const early = await claimOrReturn("intended");
             if (early !== undefined) return early;
+          }
+          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
+          if (viaConnector && !(batch && !batch.complete)) {
+            const trusted = await trust.loadTrustedConnectors();
+            for (const key of connectorTrusts) trusted.add(key);
           }
           const persistEffectResult = (result: unknown) =>
             applied
@@ -5873,6 +5978,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
             return finish({ ok: true, path: filePath });
+          }
+          if (name === "save_page") {
+            return finish(
+              await savePageFromTool(
+                {
+                  deps,
+                  run,
+                  bot,
+                  thread,
+                  state: trust.state,
+                  secrets: runSecrets,
+                  publish: (blocks) => publishMessage(deps, run, "bot", blocks),
+                },
+                args,
+              ),
+            );
           }
           if (name === "render_plot") {
             if (args.charts !== undefined) {
@@ -6286,7 +6407,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
           if (name === "web_search") {
-            return finish(await webSearchFromTool(web, context, args));
+            const result = await webSearchFromTool(web, context, args);
+            for (const row of ("results" in result ? result.results : []) ?? []) {
+              const url = normalizedHttpUrl(row.url);
+              if (url) searchResultUrls.add(url);
+            }
+            return finish(result);
           }
           if (name === "web_fetch") {
             return finish(await webFetchFromTool(web, context, args));
@@ -7399,7 +7525,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               deps,
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
-              { accept: Boolean(args.accept) },
+              {
+                accept: Boolean(args.accept),
+                connectionId: String(args.connection_id ?? ""),
+                connectionVersion: Number(args.connection_version ?? 0),
+              },
             );
             if (!result.ok) return finish({ error: result.error });
             return finish(result);
@@ -7539,6 +7669,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(result);
           }
           return finish({ error: `unknown tool ${name}` });
+        };
+
+        const applyTool = async (
+          name: string,
+          args: Record<string, unknown>,
+          executionId: string,
+          route?: unknown,
+          observer?: AgentToolExecutionObserver,
+        ) => {
+          try {
+            return await dispatchTool(name, args, executionId, route, observer);
+          } finally {
+            // Only this bot's own profile is a confirmation of its own write.
+            const ownProfile =
+              name === "update_bot" &&
+              (args.bot_id === undefined ||
+                args.bot_id === null ||
+                String(args.bot_id).trim() === "");
+            if (toolResultTaintsRun(name) && !ownProfile) trust.state.tainted = true;
+          }
         };
 
         const pluginLine =
@@ -9375,6 +9525,11 @@ export function userTurnInstructions(parts: {
     ),
     offeredBuiltinClause(
       parts.disabledBuiltinTools,
+      "save_page",
+      'For a dashboard, report, tracker or comparison, build a page with save_page (call it with {"help": true} first for the kit guide). To change a page, pass its pageId with edits or new source instead of making a new page. In your reply, mention the page by its title; never paste its source.',
+    ),
+    offeredBuiltinClause(
+      parts.disabledBuiltinTools,
       "add_mcp_server",
       "When the user asks you to add or connect an MCP server (and gives you its details), use add_mcp_server. If it uses browser sign-in, an approval card appears in the chat — tell the user to click Authorize on it.",
     ),
@@ -9585,6 +9740,7 @@ export function subagentMarksUnread(trigger: string, status: "running" | "comple
 
 function redactScriptedDeliveryBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {
   return blocks.map((block) => {
+    if (block.kind === "page") return { ...block, title: redactSecrets(block.title, secrets) };
     if (block.kind === "text") return { ...block, text: redactSecrets(block.text, secrets) };
     if (block.kind === "steps")
       return {
@@ -9624,6 +9780,7 @@ function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[]
         text: redactSecrets(block.text, secrets),
       };
     }
+    if (block.kind === "page") return { ...block, title: redactSecrets(block.title, secrets) };
     if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
       return { ...block, text: redactSecrets(block.text, secrets) };
     }

@@ -6,6 +6,7 @@ import type {
   ConnectorProvider,
   ConnectorRoute,
   ConnectorTool,
+  WebProvider,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
@@ -100,6 +101,9 @@ function fixture({
   catalogToolName = "demo_execute_tool",
   runtimeProvider,
   groupId = null,
+  attemptCount = 1,
+  outsideSteering = false,
+  webProvider,
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -125,6 +129,9 @@ function fixture({
   catalogToolName?: string;
   runtimeProvider?: AgentRuntime;
   groupId?: string | null;
+  attemptCount?: number;
+  outsideSteering?: boolean;
+  webProvider?: WebProvider;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -178,10 +185,16 @@ function fixture({
       async ({
         where,
       }: {
-        where?: { id?: string; runId?: string; status?: string; kind?: string };
+        where?: { id?: string; runId?: string; status?: string | { in: string[] }; kind?: string };
       } = {}) =>
         effects.filter((effect) => {
-          if (where?.status && effect.status !== where.status) return false;
+          if (typeof where?.status === "string" && effect.status !== where.status) return false;
+          if (
+            where?.status &&
+            typeof where.status === "object" &&
+            !where.status.in.includes(effect.status)
+          )
+            return false;
           if (where?.kind && effect.kind !== where.kind) return false;
           if (where?.runId && effect.runId && effect.runId !== where.runId) return false;
           if (where?.id && effect.id !== where.id) return false;
@@ -288,12 +301,16 @@ function fixture({
       findMany: vi.fn(async () => []),
     },
     attempt: {
+      count: vi.fn(async () => attemptCount),
       create: vi.fn(async () => ({ id: "attempt-1" })),
       update: vi.fn(),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId })) },
     message: { findMany: vi.fn(async () => []) },
+    steeringMessage: {
+      findFirst: vi.fn(async () => (outsideSteering ? { id: "outside-steering" } : null)),
+    },
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt, connectionIds })) },
     connection: {
       findMany: vi.fn(async () => {
@@ -422,6 +439,7 @@ function fixture({
     secretStore: { load: async (ciphertext: string) => ciphertext },
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
+    web: webProvider,
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
@@ -1330,6 +1348,35 @@ describe("connector read-only metadata and approval enforcement", () => {
     reviewMock.mockReset();
   });
 
+  it("denies a webhook's unapproved new site without fetching or leaving a person approval", async () => {
+    const fetch = vi.fn();
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      trigger: "webhook",
+      webProvider: {
+        describe: () => ({
+          id: "test-web",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true, keyless: true },
+        }),
+        fetch,
+        search: vi.fn(async () => []),
+      },
+    });
+    Object.assign(f.prisma, { routine: { findMany: vi.fn(async () => []) } });
+    f.setCalls([{ args: { url: "https://new.example.org/report" }, executionId: "new-site" }]);
+    await f.run();
+    expect(f.results).toEqual([
+      { error: "Fetching example.org needs approval, and a webhook run cannot ask." },
+    ]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]).toMatchObject({ kind: "web_fetch", status: "denied" });
+  });
+
   it.each(["shell", "write_file"])(
     "forces owner approval for webhook-triggered %s despite an allow rule",
     async (name) => {
@@ -1425,6 +1472,51 @@ describe("connector read-only metadata and approval enforcement", () => {
     await f.run();
     expect(f.commit).not.toHaveBeenCalled();
     expect(f.results.at(-1)).toEqual({ error: "path is required" });
+  });
+
+  it("reviews the first new connector after reading a saved page's source", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const results: unknown[] = [];
+    const f = fixture({
+      autoReview: true,
+      runtimeProvider: {
+        abort: async () => {},
+        describe: () => ({
+          id: "page-read-test",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { scripted: false, streaming: true, compaction: false, tools: true },
+        }),
+        run: async function* (request: AgentRunRequest) {
+          results.push(await request.executeTool!("save_page", { pageId: "page-1" }, "read-page"));
+          results.push(await request.executeTool!("demo_get_item", { id: "item-1" }, "read-item"));
+          results.push(
+            await request.executeTool!("demo_get_item", { id: "item-2" }, "read-item-2"),
+          );
+          yield { type: "done" as const, text: "Done" };
+        },
+      },
+    });
+    Object.assign(f.prisma, {
+      page: {
+        findFirst: vi.fn(async () => ({
+          id: "page-1",
+          title: "Saved report",
+          currentVersion: 2,
+          versions: [{ source: "External report text" }],
+        })),
+      },
+    });
+    await f.executor.continueRun(f.runRecord.id, "worker-1");
+    expect(results).toEqual([
+      { pageId: "page-1", title: "Saved report", version: 2, source: "External report text" },
+      { item: "item-1" },
+      { item: "item-2" },
+    ]);
+    expect(reviewMock).toHaveBeenCalledOnce();
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   });
 
   describe.each([false, true])("catalog = %s", (catalog) => {
@@ -1551,6 +1643,38 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.results).toEqual([{ item: "item-1" }, { item: "item-1" }]);
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
       expect(reviewMock).not.toHaveBeenCalled();
+    });
+
+    it("reviews a new read after recovery or outside steering, without asking twice for that connector", async () => {
+      for (const provenance of [{ attemptCount: 2 }, { outsideSteering: true }]) {
+        reviewMock.mockClear();
+        reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+        const f = fixture({ catalog, autoReview: true, ...provenance });
+        f.setCalls([
+          { args: { id: "item-1" }, executionId: "call-1" },
+          { args: { id: "item-2" }, executionId: "call-2" },
+        ]);
+        await f.run();
+        expect(reviewMock).toHaveBeenCalledOnce();
+        expect(f.execute).toHaveBeenCalledTimes(2);
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      }
+    });
+
+    it("fails closed when the checker cannot judge an externally steered read", async () => {
+      reviewMock.mockResolvedValueOnce({ decision: "error", reason: "Unavailable", model: "test" });
+      const f = fixture({ catalog, autoReview: true, attemptCount: 2 });
+      await f.run();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a read free when Auto Review is disabled even after outside content", async () => {
+      const f = fixture({ catalog, attemptCount: 2, autoReview: false });
+      await f.run();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
 
     it("replays a non-approval connector effect when the tool-call id changes", async () => {

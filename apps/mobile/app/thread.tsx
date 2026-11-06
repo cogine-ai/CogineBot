@@ -27,7 +27,9 @@ import {
   latestAnswerableAskMessageId,
   leaveThreadWindow,
   messageAttachmentLabels,
+  newestPageCards,
   openThreadWindow,
+  pageReply,
   plainTextFromMarkdown,
   projectMessageReactions,
   reconcileThreadScrollState,
@@ -108,6 +110,7 @@ import { MessageCaption } from "../components/message-caption";
 import { MessageContextMenu } from "../components/message-context-menu";
 import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
+import { NewestPageCards, PageCard } from "../components/pages/page-card";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
 import { ThreadErrorNotices } from "../components/run-error-notice";
@@ -194,6 +197,8 @@ import {
   threadSpaceRequest,
   threadSpaceSwitchResult,
 } from "../lib/notification-open";
+import { useChatOnScreen } from "../lib/page-card-detail";
+import { takePageReply } from "../lib/pages";
 import type { PickedAttachment } from "../lib/pick-attachments";
 import { pickDocuments, pickFromLibrary, takePhoto } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
@@ -863,6 +868,24 @@ function Thread({
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
   const composerRef = useRef<ThreadComposerHandle>(null);
+  useChatOnScreen();
+  const replyPage = useRef<{ id: string; title: string } | null>(null);
+  const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
+  const composerEmptied = useCallback(() => {
+    replyPage.current = null;
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      if (readOnly) return;
+      const handle = composerRef.current;
+      const reply = handle ? takePageReply(threadKey) : null;
+      if (!handle || !reply) return;
+      handle.addReply(reply.text);
+      setReplyTarget(null);
+      setReplyQuote(null);
+      replyPage.current = reply.page;
+    }, [threadKey, readOnly]),
+  );
   const [, updateExample] = useState(0);
   const exampleTarget = useRef<{
     botId?: string;
@@ -1974,26 +1997,42 @@ function Thread({
     );
     const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
     const botTarget = reroutedToGroup ? undefined : initialBotTarget;
+    const fromPage =
+      plan.shouldSend && !reroutedToGroup
+        ? pageReply(
+            plan.trimmed,
+            snapRef.current?.messages ?? [],
+            replyPage.current,
+            replyTarget?.id,
+          )
+        : { text: plan.trimmed };
+    const pageCard = snapRef.current?.messages.find(
+      (message) => message.id === fromPage.replyToMessageId,
+    );
     let attempt: SendAttempt;
     try {
       attempt = feedback.sendAttempt({
         originThreadKey: originThreadKey!,
-        displayText: submitted.promptText,
-        replyPreview: replyQuote ?? (replyTarget ? previewMessageText(replyTarget) : null),
+        displayText: fromPage.text === plan.trimmed ? submitted.promptText : fromPage.text,
+        replyPreview: pageCard
+          ? previewMessageText(pageCard)
+          : (replyQuote ?? (replyTarget ? previewMessageText(replyTarget) : null)),
         initialBotTarget,
         botTarget,
         groupTarget,
         reroutedToGroup,
-        plan,
+        plan: { ...plan, trimmed: fromPage.text },
         attachments,
-        replyTargetId: replyTarget?.id,
-        replyQuote,
+        replyTargetId: pageCard?.id ?? replyTarget?.id,
+        replyQuote: pageCard ? null : replyQuote,
+        fromPage: pageCard ? true : undefined,
       });
     } catch (error) {
       Alert.alert(t("Failed to send message"), errorText(error));
       return;
     }
     composerRef.current?.reset();
+    replyPage.current = null;
     setPendingAttachments((current) =>
       current.filter((attachment) => !submitted.attachmentIds.includes(attachment.id)),
     );
@@ -2591,6 +2630,7 @@ function Thread({
         : undefined;
       return (
         <MessageRow
+          pageCards={pageCards}
           key={message.id}
           message={message}
           artifactDescriptions={storedArtifactDescriptions}
@@ -2621,6 +2661,7 @@ function Thread({
       );
     },
     [
+      pageCards,
       messagesById,
       snap?.members,
       snap?.activeRuns,
@@ -3090,6 +3131,7 @@ function Thread({
           </View>
         ) : null}
         <ThreadComposer
+          onEmptied={composerEmptied}
           key={threadKey}
           ref={composerRef}
           agentSkills={agentSkills}
@@ -3344,6 +3386,7 @@ type MessageRowActions = {
 };
 
 type MessageRowProps = {
+  pageCards: ReadonlyMap<string, string>;
   artifactDescriptions: ReadonlyMap<string, string>;
   message: MobileMessage;
   actions: MessageRowActions;
@@ -3372,6 +3415,7 @@ type MessageRowProps = {
 };
 
 const MessageRow = memo(function MessageRow({
+  pageCards,
   artifactDescriptions,
   message,
   actions,
@@ -3682,23 +3726,25 @@ const MessageRow = memo(function MessageRow({
             onLongPress={actionProps.onLongPress}
           >
             <ThreadReadOnlyContext.Provider value={readOnly}>
-              <MessageBubble
-                artifactDescriptions={artifactDescriptions}
-                botId={bubbleBotId}
-                groupId={groupId}
-                message={message}
-                botName={botName}
-                bots={bots}
-                members={members}
-                canAnswer={canAnswer}
-                onAnswer={actions.answer}
-                onOpenBot={actions.openBot}
-                onOpenComputer={actions.openComputer}
-                onChoiceDismissed={onChoiceDismissed}
-                onPreviewMarkdown={actions.previewMarkdown}
-                onPreviewImage={actions.previewImage}
-                actionProps={actionProps}
-              />
+              <NewestPageCards.Provider value={pageCards}>
+                <MessageBubble
+                  artifactDescriptions={artifactDescriptions}
+                  botId={bubbleBotId}
+                  groupId={groupId}
+                  message={message}
+                  botName={botName}
+                  bots={bots}
+                  members={members}
+                  canAnswer={canAnswer}
+                  onAnswer={actions.answer}
+                  onOpenBot={actions.openBot}
+                  onOpenComputer={actions.openComputer}
+                  onChoiceDismissed={onChoiceDismissed}
+                  onPreviewMarkdown={actions.previewMarkdown}
+                  onPreviewImage={actions.previewImage}
+                  actionProps={actionProps}
+                />
+              </NewestPageCards.Provider>
             </ThreadReadOnlyContext.Provider>
           </MessageContextMenu>
           {messageReactions ? (
@@ -4156,6 +4202,7 @@ const MessageBubble = memo(function MessageBubble({
             </Text>
           ) : canAnswer && onAnswer ? (
             <AskActions
+              site={askBlock.site}
               actions={askBlock.actions}
               accessibilityActions={actionProps.accessibilityActions}
               onAccessibilityAction={actionProps.onAccessibilityAction}
@@ -4192,6 +4239,9 @@ const MessageBubble = memo(function MessageBubble({
       </View>
     );
   }
+  const pageBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "page" }> => block.kind === "page",
+  );
   const attachments = message.blocks.filter(
     (block) => block.kind === "image" || block.kind === "file",
   );
@@ -4243,6 +4293,9 @@ const MessageBubble = memo(function MessageBubble({
             streaming={message.id.startsWith("progress:")}
           />
         ) : null}
+        {pageBlocks.map((block) => (
+          <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
+        ))}
         {attachments.map((attachment, index) =>
           attachment.kind === "image" ? (
             attachment.artifactId && isInlineImageMimeType(attachment.mimeType) ? (
@@ -4387,6 +4440,9 @@ const MessageBubble = memo(function MessageBubble({
           speakerColor={index === firstContent ? speakerColor : undefined}
           actionProps={actionProps}
         />
+      ))}
+      {pageBlocks.map((block) => (
+        <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
       ))}
       {choiceBlocks.map((block, index) => (
         <ChoiceCard

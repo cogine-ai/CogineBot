@@ -107,6 +107,9 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
       if (block.kind === "text") return block.text;
       if (block.kind === "chart") return `[chart: ${block.name}]`;
       if (block.kind === "image") return `[image: ${block.name}]`;
+      // Keep the stable identity so a later turn updates the same page.
+      if (block.kind === "page")
+        return `[page: ${block.title} (pageId ${block.pageId}, version ${block.version})]`;
       if (block.kind === "file") {
         return `[file: ${block.name} (${block.mimeType}, ${block.size} bytes)]`;
       }

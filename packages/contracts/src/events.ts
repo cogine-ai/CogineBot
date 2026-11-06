@@ -2,6 +2,7 @@ import * as z from "zod";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
+import { PAGE_TITLE_MAX_LENGTH } from "./pages.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -116,6 +117,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     // an ask persisted before an owner toggles the private-HTTP flag still
     // validates on replay.
     credential: botSecretDestinationSchema({ allowPrivateHttpOrigin: true }).optional(),
+    /** On a fetch approval, the site an "always" answer allows. */
+    site: z.string().optional(),
     status: z.enum(["pending", "answered"]).optional(),
     answer: z.string().optional(),
     actions: z
@@ -251,6 +254,13 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     size: z.number().int().nonnegative(),
   }),
   z.object({
+    /** A page the bot saved. Title and version are as sent; read the page for its latest. */
+    kind: z.literal("page"),
+    pageId: Id,
+    version: z.number().int().positive(),
+    title: z.string().max(PAGE_TITLE_MAX_LENGTH),
+  }),
+  z.object({
     kind: z.literal("handoff"),
     deliveryStatus: BotCollaborationDeliveryStatus.optional(),
     fromBotId: Id,
@@ -350,6 +360,8 @@ export type ProductEvent = z.infer<typeof ProductEventSchema>;
 
 export const ReplyPreviewSchema = z.object({
   role: MessageRole,
+  /** The parent is a page card. */
+  page: z.literal(true).optional(),
   botId: Id.optional(),
   text: z.string(),
   attachment: z

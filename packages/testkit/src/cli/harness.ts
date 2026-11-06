@@ -98,6 +98,7 @@ async function main() {
     "apps/api/src/artifacts.postgres.test.ts",
     "apps/api/src/board-app.postgres.test.ts",
     "apps/api/src/health-app.postgres.test.ts",
+    "packages/testkit/src/pages.postgres.test.ts",
     "apps/api/src/model-connections.postgres.test.ts",
     "apps/api/src/tenant-database-context.postgres.test.ts",
     "apps/api/src/model-bindings.postgres.test.ts",
@@ -248,7 +249,8 @@ async function main() {
           suite === "apps/api/src/control-plane-metadata.postgres.test.ts" ||
           suite === databaseRestoreSuite ||
           suite === serviceStartupSuite ||
-          suite === "apps/api/src/health-app.postgres.test.ts";
+          suite === "apps/api/src/health-app.postgres.test.ts" ||
+          suite === "packages/testkit/src/pages.postgres.test.ts";
         if (dualDeployment)
           await databaseCommand(`CREATE DATABASE "${peerDatabase}" TEMPLATE "${template}"`);
         try {

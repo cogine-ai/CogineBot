@@ -6,6 +6,7 @@ import {
   createPool,
   databaseUrls,
   describeRowSecurity,
+  migratePageRowSecurityPolicies,
   provisionRuntimeRole,
   SINGLE_DATABASE_URL_WARNING,
   verifyRealtimeDatabase,
@@ -36,9 +37,11 @@ async function main() {
   });
   await migrateJobQueue(urls.migrationUrl);
   if (!urls.separate) {
+    await migratePageRowSecurityPolicies(urls.migrationUrl, urls.url);
     process.stderr.write(`WARNING: ${SINGLE_DATABASE_URL_WARNING}\n`);
   } else {
     await provisionRuntimeRole(urls.migrationUrl, urls.url);
+    await migratePageRowSecurityPolicies(urls.migrationUrl, urls.url);
     const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
     try {
       const status = await describeRowSecurity(prisma);
@@ -48,7 +51,7 @@ async function main() {
       if (realtimeUrl && realtimeUrl !== urls.url)
         await verifyRealtimeDatabase(realtimeUrl, policyStatus.connectionEnforced, true);
       process.stdout.write(
-        "Runtime role and system key are ready. This command does not activate table policies or service contexts.\n",
+        "Runtime role and system key are ready. This command preserves the database protection phase and does not activate service contexts.\n",
       );
     } finally {
       try {

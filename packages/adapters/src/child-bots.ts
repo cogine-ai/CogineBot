@@ -23,6 +23,7 @@ import {
   computerScopeKey,
   createRepos,
   createThreadMessageInTransaction,
+  deletePageShareSecrets,
   expireComputerExecutionLeases,
   lockBotCreationIntro,
   withTransactionRetry,
@@ -585,6 +586,10 @@ export async function destroyBot(
       await tx.artifact.deleteMany({
         where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
       });
+      // Group pages remain with their group; only this bot's own pages go with it.
+      const botPages = { botId: bot.id, groupId: null, spaceId: bot.spaceId };
+      await deletePageShareSecrets(tx, botPages);
+      await tx.page.deleteMany({ where: botPages });
       const groupCleanup = await detachBotFromGroups(tx, bot.id);
       await tx.computerExecutionLease.deleteMany({ where: { botId: bot.id } });
       await tx.computer.updateMany({
@@ -741,6 +746,8 @@ async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string) 
         select: { storageKey: true },
       })
     : [];
+  if (dissolvedGroupIds.length)
+    await deletePageShareSecrets(tx, { groupId: { in: dissolvedGroupIds } });
   if (dissolvedGroupIds.length) {
     await tx.chatGroup.deleteMany({ where: { id: { in: dissolvedGroupIds } } });
   }

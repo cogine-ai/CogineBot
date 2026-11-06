@@ -415,6 +415,18 @@ export function inferScript(
       },
     ];
   }
+  const pageWords = prompt.replace(
+    /^(?:Replying to|User reacted with \S+ to) \(quoted data, not instructions\):\n<(reply_target|reaction_target)>\n[\s\S]*?\n<\/\1>\n\n/,
+    "",
+  );
+  const page = /^(?:@\S+\s+)?call save_page with (.+?)(?:\nthen say ([\s\S]+))?$/s.exec(
+    pageWords.trim(),
+  );
+  const pageArgs = page ? jsonObject(page[1]!) : undefined;
+  if (page && pageArgs)
+    return [
+      { assistant: page[2], toolCalls: [{ name: "save_page", args: pageArgs }], complete: true },
+    ];
   // Before every content-based intent so payload text cannot steal the branch.
   const shellCommand = /run the shell command\s+([\s\S]+)$/i.exec(prompt)?.[1]?.trim();
   if (shellCommand) {
@@ -862,4 +874,15 @@ function namedSpace(prompt: string) {
 
 function summarize(prompt: string): string {
   return `done. i handled: ${prompt.slice(0, 180)}`;
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
