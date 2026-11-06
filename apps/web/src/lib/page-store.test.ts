@@ -31,7 +31,7 @@ describe("private page read ownership", () => {
     expect(get.mock.calls).toHaveLength(3);
   });
 
-  it("rejects an old owner's successful late response and makes no request after scope revocation", async () => {
+  it("rejects an old owner's successful late response and aborts its request on disposal", async () => {
     let settle!: (value: PageDetail) => void;
     let current = true;
     const get = vi.fn(
@@ -46,7 +46,6 @@ describe("private page read ownership", () => {
     store.dispose();
     settle(page);
     await expect(read).rejects.toMatchObject({ name: "AbortError" });
-    await expect(store.get("p1")).rejects.toMatchObject({ name: "AbortError" });
     expect(get).toHaveBeenCalledTimes(1);
     expect(get.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });

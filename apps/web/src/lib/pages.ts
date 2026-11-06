@@ -226,7 +226,6 @@ export function createPageStore(client: RpcClient, isCurrent: () => boolean) {
     },
     revision: () => revision,
     get(pageId: string, version?: number) {
-      if (!isCurrent()) return Promise.reject(new DOMException("Page scope changed", "AbortError"));
       const key = JSON.stringify([pageId, version ?? null]);
       let read = reads.get(key);
       if (!read) {

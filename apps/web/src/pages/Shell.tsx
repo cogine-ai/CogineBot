@@ -3482,7 +3482,7 @@ export function ShellPage() {
           ? newChat.botIds[0]
           : initialBotTarget;
       let target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
-      const fromPage: ReturnType<PageSession["send"]> =
+      const pageReply: ReturnType<PageSession["send"]> =
         !reroutedToGroup && plan.shouldSend
           ? pages.session.send(
               plan.trimmed,
@@ -3490,10 +3490,6 @@ export function ShellPage() {
               submitted.replyTarget?.id,
             )
           : { text: plan.trimmed };
-      const replyToMessageId = reroutedToGroup
-        ? undefined
-        : (fromPage.replyToMessageId ?? submitted.replyTarget?.id);
-      const isPageReply = Boolean(fromPage.replyToMessageId && !submitted.replyTarget?.id);
       const replyQuote = reroutedToGroup ? undefined : submitted.replyQuote;
       const attempt = composerSendAttempts.acquire(
         originThreadKey,
@@ -3506,13 +3502,19 @@ export function ShellPage() {
           mentions: plan.mentionPayload,
           routineIds: plan.routineIds,
           attachments,
-          replyToMessageId,
+          replyToMessageId: reroutedToGroup ? undefined : submitted.replyTarget?.id,
           replyQuote,
-          fromPage: isPageReply ? true : undefined,
-          pageContext: fromPage.pageContext,
         }),
+        {
+          replyToMessageId: reroutedToGroup
+            ? undefined
+            : (pageReply.replyToMessageId ?? submitted.replyTarget?.id),
+          fromPage: pageReply.replyToMessageId && !submitted.replyTarget?.id ? true : undefined,
+          pageContext: pageReply.pageContext,
+        },
       );
       if (!attempt) return false;
+      const { replyToMessageId, fromPage: isPageReply, pageContext } = attempt.pageReply;
       const context = { context: { spaceId: bootstrapMe?.spaceId } };
       const isCurrentAttempt = () => composerSendAttempts.isCurrent(originThreadKey, attempt);
       const stillHere = () =>
@@ -3598,7 +3600,7 @@ export function ShellPage() {
               artifactIds: artifactIds.length ? artifactIds : undefined,
               replyToMessageId,
               ...(isPageReply ? { fromPage: true } : {}),
-              pageContext: fromPage.pageContext,
+              pageContext,
               replyQuote: replyQuote ?? undefined,
             },
             context,
@@ -5634,6 +5636,7 @@ export function ShellPage() {
                 <div className="flex items-center gap-1">
                   {active || activeGroup ? (
                     <Button
+                      className="app-no-drag"
                       variant="ghost"
                       size="sm"
                       aria-label={t`Pages`}

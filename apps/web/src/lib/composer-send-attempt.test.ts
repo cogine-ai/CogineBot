@@ -102,38 +102,41 @@ describe("composer send payload identity", () => {
       { ...payload, mentions: [{ kind: "bot", botId: "bot-b" }] },
       { ...payload, routineIds: ["routine-a"] },
       { ...payload, replyToMessageId: "message-a", replyQuote: "quote" },
-      { ...payload, fromPage: true as const },
     ];
     for (const value of changed) expect(composerSendSignature(value)).not.toBe(signature);
   });
 
-  it("retains a Page retry's receipts and changes its nonce when Page context changes", () => {
+  it.each([
+    { pageContext: { pageId: "page-a" } },
+    { replyToMessageId: "page-card-a", fromPage: true as const },
+    {},
+  ])("freezes the Page payload across reader changes and a missing receipt: %j", (pageReply) => {
     const attempts = store();
-    const raw = "[https://owner.example/report](page:manual)\nPlease read this.";
-    const pageA = { ...payload, text: raw, pageContext: { pageId: "page-a" } };
-    const first = attempts.acquire("thread-a", composerSendSignature(pageA))!;
+    const signature = composerSendSignature(payload);
+    const first = attempts.acquire("thread-a", signature, pageReply)!;
     first.uploadedArtifactIds.set("file-a", "artifact-a");
     first.completedRoutineIds.add("routine-a");
     attempts.finish("thread-a", first, false);
-    const retry = attempts.acquire("thread-a", composerSendSignature(pageA))!;
+    const retry = attempts.acquire("thread-a", signature, { pageContext: { pageId: "page-b" } })!;
     expect(retry).toBe(first);
+    expect(retry.pageReply).toEqual(pageReply);
+    expect(retry.clientNonce).toBe(first.clientNonce);
     expect(retry.uploadedArtifactIds.get("file-a")).toBe("artifact-a");
     expect(retry.completedRoutineIds.has("routine-a")).toBe(true);
     attempts.finish("thread-a", retry, false);
-    const second = attempts.acquire(
+    const closedReader = attempts.acquire("thread-a", signature)!;
+    expect(closedReader.pageReply).toEqual(pageReply);
+    expect(closedReader.clientNonce).toBe(first.clientNonce);
+    attempts.finish("thread-a", closedReader, false);
+    const edited = attempts.acquire(
       "thread-a",
-      composerSendSignature({
-        ...pageA,
-        pageContext: { pageId: "page-b" },
-      }),
+      composerSendSignature({ ...payload, text: "Changed request" }),
+      { pageContext: { pageId: "page-b" } },
     )!;
-    expect(second.clientNonce).not.toBe(first.clientNonce);
-    expect(second.uploadedArtifactIds.size).toBe(0);
-    expect(second.completedRoutineIds.size).toBe(0);
-    attempts.finish("thread-a", second, false);
-    const plain = attempts.acquire("thread-a", composerSendSignature({ ...payload, text: raw }))!;
-    expect(plain.clientNonce).not.toBe(second.clientNonce);
-    expect(plain.uploadedArtifactIds.size).toBe(0);
+    expect(edited.clientNonce).not.toBe(first.clientNonce);
+    expect(edited.pageReply).toEqual({ pageContext: { pageId: "page-b" } });
+    expect(edited.uploadedArtifactIds.size).toBe(0);
+    expect(edited.completedRoutineIds.size).toBe(0);
   });
 
   it("does not conflate different File payloads with identical names, sizes and timestamps", () => {
@@ -147,18 +150,18 @@ describe("composer send payload identity", () => {
     ).not.toBe(composerSendSignature(payload));
   });
 
-  it("distinguishes a fallback Page context from the same owner text and from another Page", () => {
+  it("starts a new intent when the owner explicitly changes a reply target", () => {
     const ownerText = "[https://owner.example/report](page:manual)\nPlease read this.";
     const plain = { ...payload, text: ownerText };
-    const pageA = { ...plain, pageContext: { pageId: "page-a" } };
-    const pageB = { ...plain, pageContext: { pageId: "page-b" } };
+    const pageA = { ...plain, replyToMessageId: "page-card-a" };
+    const pageB = { ...plain, replyToMessageId: "page-card-b" };
     const signature = composerSendSignature(pageA);
-    expect(composerSendSignature({ ...pageA, pageContext: { pageId: "page-a" } })).toBe(signature);
+    expect(composerSendSignature({ ...pageA })).toBe(signature);
     expect(composerSendSignature(plain)).not.toBe(signature);
     expect(composerSendSignature(pageB)).not.toBe(signature);
     expect(JSON.parse(signature)).toMatchObject({
       text: ownerText,
-      pageContext: { pageId: "page-a" },
+      replyToMessageId: "page-card-a",
     });
   });
 });

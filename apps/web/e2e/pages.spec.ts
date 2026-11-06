@@ -169,11 +169,33 @@ test("a private page opens from its card, replies in chat and updates", async ({
   await view.getByRole("textbox", { name: "Page title" }).fill("Signups dashboard");
   await view.getByRole("textbox", { name: "Page title" }).press("Enter");
   await expect(view.getByRole("button", { name: "Signups dashboard" })).toBeVisible();
-  // The docked composer talks to the same chat, naming the page.
-  await send(page, "make the churn tile red");
-  await page.keyboard.press("Escape");
+  // A lost receipt keeps the Page-derived payload even if the reader closes before retry.
+  const pageSends: Record<string, unknown>[] = [];
+  const pageReceipts: unknown[] = [];
+  await page.route("**/rpc/threads/send", async (route) => {
+    pageSends.push(route.request().postDataJSON().json);
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    pageReceipts.push((await response.json()).json);
+    if (pageSends.length === 1) await route.abort("internetdisconnected");
+    else await route.fulfill({ response });
+  });
+  await composer.fill("make the churn tile red");
+  await composer.press("Enter");
+  await expect(page.getByTestId("composer-error")).toBeVisible();
+  await view.getByRole("button", { name: "Close page" }).click();
   await expect(view).toBeHidden();
   await expect(page).not.toHaveURL(/[?&]page=/);
+  const retryResponse = page.waitForResponse(
+    (response) => response.url().includes("/rpc/threads/send") && response.ok(),
+  );
+  await send(page, "make the churn tile red");
+  await retryResponse;
+  await expect(page.getByTestId("composer-error")).toBeHidden();
+  expect(pageSends).toHaveLength(2);
+  expect(pageSends[1]).toEqual(pageSends[0]);
+  expect(pageReceipts[1]).toEqual(pageReceipts[0]);
+  await page.unroute("**/rpc/threads/send");
 
   await expect(
     page.getByTestId("message-user-bubble").filter({ hasText: "make the churn tile red" }),
@@ -182,12 +204,14 @@ test("a private page opens from its card, replies in chat and updates", async ({
   const history = await rpc<{
     messages: Array<{ id: string; replyToMessageId?: string; blocks: Array<{ kind: string }> }>;
   }>(page, "threads/messages", { botId: activeBotId(page) });
-  const asked = history.messages.find((message) =>
+  const askedMessages = history.messages.filter((message) =>
     message.blocks.some(
       (block) =>
         block.kind === "text" && "text" in block && block.text === "make the churn tile red",
     ),
   );
+  expect(askedMessages).toHaveLength(1);
+  const asked = askedMessages[0];
   const target = history.messages.find((message) => message.id === asked?.replyToMessageId);
   expect(target?.blocks).toContainEqual({ kind: "page", pageId, version: 1, title });
 

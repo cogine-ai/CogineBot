@@ -12,11 +12,11 @@ import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@ra
 import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
-import { pageReply } from "@rakazo/core";
+import { pageReply, pageReplyTaskPrompt } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { ThreadEvents } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isApprovalPausedResult } from "./approval-effect.js";
+import { boundDirectApprovalRequest, isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -1270,6 +1270,61 @@ describe("executor connector account revalidation", () => {
     };
   };
 
+  it.each([false, true])(
+    "keeps passed read trust scoped to its authorized account (catalog %s)",
+    async (catalog) => {
+      for (const sameAccount of [true, false]) {
+        reviewMock.mockClear();
+        reviewMock.mockResolvedValue({
+          decision: "ask",
+          model: "mock",
+          reason: "Review this account",
+        });
+        const first = { ...account(), provider: "resource-1" };
+        const second = { ...first, id: "sibling", providerRef: "sibling-reference" };
+        const f = fixture({
+          catalog,
+          trigger: "routine",
+          autoReview: true,
+          connections: [first, second],
+          connectionIds: [first.id, second.id],
+        });
+        bind(f, first);
+        f.effects.push({
+          id: "previous-read",
+          kind: f.tool.name,
+          runId: f.runRecord.id,
+          spaceId: f.runRecord.spaceId,
+          status: "completed",
+          idempotencyKey: "previous-read",
+          request: boundDirectApprovalRequest(
+            {
+              connectorId: first.connectorId,
+              resourceId: first.provider,
+              toolName: f.tool.name,
+              connectionId: first.id,
+              resourceRevision: f.tool.route!.resourceRevision,
+            },
+            { id: "previous" },
+            "__rakazoCatalogTool",
+          ),
+        });
+        bind(f, sameAccount ? first : second);
+        await f.run();
+        if (sameAccount) {
+          expect(f.execute).toHaveBeenCalledOnce();
+          expect(f.pauseRunForInput).not.toHaveBeenCalled();
+          expect(reviewMock).not.toHaveBeenCalled();
+        } else {
+          expect(f.execute).not.toHaveBeenCalled();
+          expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+          expect(reviewMock).toHaveBeenCalledOnce();
+          expect(f.effects.at(-1)).toMatchObject({ status: "intended" });
+        }
+      }
+    },
+  );
+
   it("executes a still-authorized account with the freshly scoped context", async () => {
     const row = account();
     const f = fixture({ connections: [row], connectionIds: [row.id] });
@@ -1346,6 +1401,54 @@ describe("executor connector account revalidation", () => {
 });
 
 describe("connector read-only metadata and approval enforcement", () => {
+  it.each([1, 2])(
+    "preserves a routine's Page prompt without trusting its title URL (attempt %s)",
+    async (attemptCount) => {
+      const prompt = pageReplyTaskPrompt("Read https://owner.example/report", {
+        pageId: "page-a",
+        title: "Report https://title.example/private",
+      });
+      for (const destination of ["https://owner.example/report", "https://title.example/private"]) {
+        const fetch = vi.fn(async () => ({
+          url: destination,
+          title: "Report",
+          text: "Report",
+          truncated: false,
+        }));
+        const f = fixture({
+          name: "web_fetch",
+          builtin: true,
+          trigger: "routine",
+          prompt,
+          attemptCount,
+          webProvider: {
+            describe: () => ({
+              id: "routine-page-test",
+              contractVersion: "1",
+              adapterVersion: "1",
+              capabilities: { search: true, fetch: true, readability: true },
+            }),
+            fetch,
+            search: vi.fn(async () => []),
+          },
+        });
+        f.setCalls([{ args: { url: destination }, executionId: "routine-page-fetch" }]);
+        await f.run();
+        expect(f.runtimeRun.mock.calls[0]?.[0]).toMatchObject({
+          prompt: expect.stringContaining(prompt),
+          history: [],
+        });
+        if (destination.includes("title.example")) {
+          expect(fetch).not.toHaveBeenCalled();
+          expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        } else {
+          expect(fetch).toHaveBeenCalledOnce();
+          expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
   beforeEach(() => {
     reviewMock.mockReset();
   });
@@ -1493,7 +1596,10 @@ describe("connector read-only metadata and approval enforcement", () => {
       destination: "https://trusted.example.org/final",
     },
     ...["approved", "executing", "uncertain", "completed"].map((status) => ({
-      reason: `previously passed ${status} destination`,
+      reason:
+        status === "approved"
+          ? "canonical approved destination replay"
+          : `redirect to a previously passed ${status} destination`,
       location: "https://other.example.net/final",
       destination: "https://other.example.net/final",
       status,

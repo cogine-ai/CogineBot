@@ -1,5 +1,6 @@
 import type { Actor, MessageBlock } from "@rakazo/contracts";
 import { appContract, MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { blocksToAgentHistoryText, PAGE_REPLY_TASK_CONTEXT } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { ThreadTarget } from "./thread-target.js";
@@ -10,9 +11,21 @@ const title = "Report https://title.example/private [draft]";
 const prefix = "[Report https://title.example/private \\[draft\\]](page:page-a)";
 
 function fixture(
-  options: { missing?: boolean; active?: boolean; waiting?: boolean; group?: boolean } = {},
+  options: {
+    missing?: boolean;
+    active?: boolean;
+    waiting?: boolean;
+    group?: boolean;
+    trigger?: string;
+  } = {},
 ) {
-  const run = { id: "run-a", taskId: "task-a", botId: "bot-a", status: "queued", trigger: "user" };
+  const run = {
+    id: "run-a",
+    taskId: "task-a",
+    botId: "bot-a",
+    status: "queued",
+    trigger: options.trigger ?? "user",
+  };
   const ask = {
     id: "ask-a",
     role: "bot",
@@ -181,16 +194,17 @@ describe("authenticated fallback Page context", () => {
   });
 
   it.each([false, true])(
-    "uses composed Page context to answer a waiting question (group=%s)",
+    "keeps full Page context outside routine owner instructions (group=%s)",
     async (group) => {
-      const f = fixture({ waiting: true, group });
+      const f = fixture({ waiting: true, group, trigger: "routine" });
+      const raw = "Read https://owner.example/report";
       await sendThreadMessage(f.deps, actor, f.target, {
-        text: "This report",
+        text: raw,
         pageContext: { pageId: "page-a" },
       });
       expect(f.tx.task.updateMany).toHaveBeenCalledWith({
         where: { runs: { some: { id: "run-a" } } },
-        data: { prompt: `${prefix}\nThis report` },
+        data: { prompt: `${raw}${PAGE_REPLY_TASK_CONTEXT}${prefix}` },
       });
       expect(f.tx.message.update).toHaveBeenCalledWith({
         where: { id: "ask-a" },
@@ -200,15 +214,56 @@ describe("authenticated fallback Page context", () => {
               kind: "ask",
               text: "Which report?",
               status: "answered",
-              answer: `${prefix}\nThis report`,
+              answer: `${prefix}\n${raw}`,
             },
           ],
         },
       });
+      const blocks = f.tx.message.create.mock.calls[0]![0].data.blocks as MessageBlock[];
+      expect(blocks).toEqual([
+        { kind: "text", text: `${prefix}\n${raw}`, pageContext: { pageId: "page-a", title } },
+      ]);
+      expect(blocksToAgentHistoryText(blocks)).toBe(`${prefix}\n${raw}`);
       expect(f.tx.task.create).not.toHaveBeenCalled();
       expect(f.tx.steeringMessage.create).not.toHaveBeenCalled();
     },
   );
+
+  it("does not trust a generated Page title when an attachment is the entire routine answer", async () => {
+    const f = fixture({ waiting: true, trigger: "routine" });
+    await sendThreadMessage(f.deps, actor, f.target, {
+      artifactIds: ["image-a"],
+      pageContext: { pageId: "page-a" },
+    });
+    expect(f.tx.task.updateMany).toHaveBeenCalledWith({
+      where: { runs: { some: { id: "run-a" } } },
+      data: { prompt: `${PAGE_REPLY_TASK_CONTEXT}${prefix}` },
+    });
+    const blocks = f.tx.message.create.mock.calls[0]![0].data.blocks as MessageBlock[];
+    expect(blocks[0]).toEqual({
+      kind: "text",
+      text: prefix,
+      pageContext: { pageId: "page-a", title },
+    });
+    expect(blocksToAgentHistoryText(blocks)).toContain(prefix);
+    expect(f.tx.message.update).toHaveBeenCalledWith({
+      where: { id: "ask-a" },
+      data: {
+        blocks: [{ kind: "ask", text: "Which report?", status: "answered", answer: prefix }],
+      },
+    });
+  });
+
+  it("preserves a hand-written Page link as owner instructions in a routine answer", async () => {
+    const f = fixture({ waiting: true, trigger: "routine" });
+    const raw = "[https://owner.example/report](page:manual)\nRead this.";
+    await sendThreadMessage(f.deps, actor, f.target, { text: raw, fromPage: true });
+    expect(f.tx.task.updateMany).toHaveBeenCalledWith({
+      where: { runs: { some: { id: "run-a" } } },
+      data: { prompt: raw },
+    });
+    expect(f.tx.page.findFirst).not.toHaveBeenCalled();
+  });
 
   it("keeps attachment ownership checks when a valid Page is supplied", async () => {
     const f = fixture();

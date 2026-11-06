@@ -1418,6 +1418,7 @@ describe("answerRunInput", () => {
           messageId: "message-1",
           answeredByUserId: "user-1",
           answer: "choice-2",
+          taskPrompt: "This must not replace the selected choice",
         },
         fanout,
       ),
@@ -1823,56 +1824,66 @@ describe("answerRunInput", () => {
 });
 
 describe("answerWaitingRunWithTextInTransaction", () => {
-  it("answers a pending question ask with composer text", async () => {
-    const tx = {
-      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
-      message: {
-        findMany: vi.fn().mockResolvedValue([
-          {
+  it.each([undefined, "", "Read https://owner.example/report"])(
+    "keeps the full answer while using an optional internal task prompt (%s)",
+    async (taskPrompt) => {
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+        message: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              id: "message-1",
+              blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+            },
+          ]),
+          findFirst: vi.fn().mockResolvedValue({
             id: "message-1",
             blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
-          },
-        ]),
-        findFirst: vi.fn().mockResolvedValue({
-          id: "message-1",
-          blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
-        }),
-        update: vi.fn().mockResolvedValue({ id: "message-1" }),
-      },
-      run: {
-        findFirst: vi.fn().mockResolvedValue({ botId: "bot-2", userId: "user-1" }),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
-      },
-      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 4 }) },
-      event: {
-        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
-          ...event(data.seq),
-          type: data.type,
-        })),
-      },
-    };
+          }),
+          update: vi.fn().mockResolvedValue({ id: "message-1" }),
+        },
+        run: {
+          findFirst: vi.fn().mockResolvedValue({ botId: "bot-2", userId: "user-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        },
+        task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 4 }) },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+          })),
+        },
+      };
 
-    await expect(
-      answerWaitingRunWithTextInTransaction(tx as never, {
-        spaceId: "workspace-1",
-        threadId: "thread-1",
-        runId: "run-1",
-        answeredByUserId: "user-1",
-        answer: "Paris",
-      }),
-    ).resolves.toMatchObject({ threadId: "thread-1" });
-    expect(tx.task.updateMany).toHaveBeenCalledWith({
-      where: { runs: { some: { id: "run-1" } } },
-      data: { prompt: "Paris" },
-    });
-    expect(tx.run.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { status: "queued", wakeAt: expect.any(Date) },
-      }),
-    );
-  });
+      await expect(
+        answerWaitingRunWithTextInTransaction(tx as never, {
+          spaceId: "workspace-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          answeredByUserId: "user-1",
+          answer: "Paris",
+          taskPrompt,
+        }),
+      ).resolves.toMatchObject({ threadId: "thread-1" });
+      expect(tx.task.updateMany).toHaveBeenCalledWith({
+        where: { runs: { some: { id: "run-1" } } },
+        data: { prompt: taskPrompt ?? "Paris" },
+      });
+      expect(tx.message.update).toHaveBeenCalledWith({
+        where: { id: "message-1" },
+        data: {
+          blocks: [{ kind: "ask", text: "Which city?", status: "answered", answer: "Paris" }],
+        },
+      });
+      expect(tx.run.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { status: "queued", wakeAt: expect.any(Date) },
+        }),
+      );
+    },
+  );
 
   it("leaves approval and secret cards on the dedicated answer path", async () => {
     const tx = {

@@ -25,6 +25,7 @@ import {
   isActive,
   isConversationalRun,
   messageBypassesTakeoverWait,
+  pageReplyTaskPrompt,
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
@@ -686,6 +687,9 @@ export async function sendThreadMessage(
       const composedText = pageContext
         ? withPageReplyContext(input.text ?? "", pageContext).trim()
         : input.text;
+      const taskPrompt = pageContext
+        ? pageReplyTaskPrompt(input.text ?? "", pageContext)
+        : undefined;
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
       let replyPreview: ReplyPreview | null | undefined;
@@ -775,6 +779,7 @@ export async function sendThreadMessage(
               runId: run.id,
               answeredByUserId: actor.userId,
               answer: composedText ?? "",
+              taskPrompt,
               beforeMessageSeq: message.seq,
             })
           ) {
@@ -961,6 +966,7 @@ export async function sendThreadMessage(
             runId: run.id,
             answeredByUserId: actor.userId,
             answer: composedText ?? "",
+            taskPrompt,
             beforeMessageSeq: message.seq,
           });
           if (answered) {

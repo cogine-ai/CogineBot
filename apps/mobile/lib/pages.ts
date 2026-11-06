@@ -163,7 +163,6 @@ async function pageRpc<T>(proc: string, body: unknown): Promise<T> {
   const scope = pageScopeKey();
   const context = await captureApiRequestContext();
   const current = () => scope === pageScopeKey();
-  if (!current()) throw new Error("Page scope changed");
   const result = await rpc<T>(proc, body, { requestContext: { ...context, isCurrent: current } });
   if (!current()) throw new Error("Page scope changed");
   return result;

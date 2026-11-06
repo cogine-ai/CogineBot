@@ -216,6 +216,8 @@ export interface AnswerRunInput {
   messageId: string;
   answeredByUserId: string;
   answer: string;
+  /** Internal model prompt with generated context separated from owner instructions. */
+  taskPrompt?: string;
   /** Identifies a spoken answer as part of a live voice call. */
   clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
@@ -864,7 +866,7 @@ async function commitAnswerRunInput(
       data: {
         prompt: selectedChoice
           ? `Selected choice ${selectedChoice.id}: ${resumeLabel}`
-          : input.answer,
+          : (input.taskPrompt ?? input.answer),
       },
     });
     if (task.count !== 1) throw new Error("Run task was not available to answer");
@@ -1006,6 +1008,7 @@ export async function eligibleWaitingTextAnswer(
     runId: string;
     answeredByUserId: string;
     answer: string;
+    taskPrompt?: string;
     beforeMessageSeq?: number;
   },
 ): Promise<string | null> {

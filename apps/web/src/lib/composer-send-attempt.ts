@@ -2,12 +2,19 @@ import type { PageReplyContext } from "@rakazo/contracts";
 import { newClientId } from "./client-id";
 import type { PendingComposerAttachment } from "./composer-draft";
 
+type ComposerPageReply = {
+  replyToMessageId?: string;
+  fromPage?: true;
+  pageContext?: PageReplyContext;
+};
+
 export type ComposerSendAttempt = {
   clientNonce: string;
   signature: string;
   inFlight: boolean;
   uploadedArtifactIds: Map<string, string>;
   completedRoutineIds: Set<string>;
+  pageReply: ComposerPageReply;
 };
 
 const fileIdentities = new WeakMap<File, number>();
@@ -25,7 +32,7 @@ export function composerAttachmentUploadKey(attachment: PendingComposerAttachmen
   return JSON.stringify([attachment.id, fileIdentity(attachment.file)]);
 }
 
-/** Mirrors the actual send payload; file identity avoids treating different same-named files as retries. */
+/** Owner-controlled intent; Page-derived fields stay with the attempt across reader changes. */
 export function composerSendSignature(input: {
   text: string;
   target: { botId?: string; groupId?: string };
@@ -34,8 +41,6 @@ export function composerSendSignature(input: {
   attachments: readonly PendingComposerAttachment[];
   replyToMessageId?: string;
   replyQuote?: string | null;
-  fromPage?: true;
-  pageContext?: PageReplyContext;
 }): string {
   return JSON.stringify({
     text: input.text,
@@ -45,15 +50,17 @@ export function composerSendSignature(input: {
     attachments: input.attachments.map(composerAttachmentUploadKey),
     replyToMessageId: input.replyToMessageId ?? null,
     replyQuote: input.replyQuote ?? null,
-    fromPage: input.fromPage ?? false,
-    pageContext: input.pageContext ?? null,
   });
 }
 
 export function createComposerSendAttemptStore(makeNonce: () => string = newClientId) {
   const attempts = new Map<string, ComposerSendAttempt>();
   return {
-    acquire(key: string, signature: string): ComposerSendAttempt | null {
+    acquire(
+      key: string,
+      signature: string,
+      pageReply: ComposerPageReply = {},
+    ): ComposerSendAttempt | null {
       const previous = attempts.get(key);
       // Synchronous lock: React has not necessarily rendered `sending` after the first click.
       if (previous?.inFlight) return null;
@@ -66,6 +73,7 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
               inFlight: false,
               uploadedArtifactIds: new Map<string, string>(),
               completedRoutineIds: new Set<string>(),
+              pageReply,
             };
       attempt.inFlight = true;
       attempts.set(key, attempt);

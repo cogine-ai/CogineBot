@@ -1,5 +1,6 @@
-import { withPageReplyContext } from "@rakazo/core";
+import { pageReplyTaskPrompt, withPageReplyContext } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
+import { boundDirectApprovalRequest } from "./approval-effect.js";
 import { connectorTrustKeys, createRunTrust } from "./run-trust.js";
 
 describe("run destination trust", () => {
@@ -71,14 +72,66 @@ describe("run destination trust", () => {
   it("keeps installed resources and each batch app separate", () => {
     const route = { connectorId: "installed", resourceId: "server-a" };
     expect(connectorTrustKeys(undefined, route, "api", [])).toEqual([
-      "resource:installed:server-a",
+      "resource:installed:server-a:null",
     ]);
     expect(connectorTrustKeys(undefined, { ...route, resourceId: "server-b" }, "api", [])).toEqual([
-      "resource:installed:server-b",
+      "resource:installed:server-b:null",
     ]);
     expect(
       connectorTrustKeys(["GMAIL_LIST", "SLACK_GET"], undefined, "composio", ["gmail", "slack"]),
-    ).toEqual(["kind:composio:gmail", "kind:composio:slack"]);
+    ).toEqual(["kind:composio:null:gmail", "kind:composio:null:slack"]);
+  });
+
+  it.each([undefined, "account-a"])(
+    "does not transfer persisted connector trust from %s to a different authorized account",
+    async (connectionId) => {
+      const route = {
+        connectorId: "installed",
+        resourceId: "mail",
+        toolName: "search",
+        connectionId,
+      };
+      const trust = createRunTrust(
+        {
+          externalEffect: {
+            findMany: async () => [
+              {
+                kind: "mail_search",
+                request: boundDirectApprovalRequest(route, {}, "__rakazoCatalogTool"),
+              },
+            ],
+          },
+        } as never,
+        {
+          run: { id: "run", userId: "owner", spaceId: "space", trigger: "routine" },
+          botId: "bot",
+          taskPrompt: "Read mail",
+          sourceMessage: null,
+          ownerStartedRun: false,
+          messagingChannelRun: false,
+          restored: true,
+          connectedProviders: ["mail"],
+        },
+      );
+      const passed = await trust.loadTrustedConnectors();
+      expect(passed.has(connectorTrustKeys(undefined, route, "mail", ["mail"])[0]!)).toBe(true);
+      expect(
+        passed.has(
+          connectorTrustKeys(undefined, { ...route, connectionId: "account-b" }, "mail", [
+            "mail",
+          ])[0]!,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("separates bound accounts in kind and batch keys, including an unbound-looking identifier", () => {
+    for (const actions of [undefined, ["GMAIL_LIST", "SLACK_GET"]]) {
+      const keys = [undefined, "null", "account-a", "account-b"].map((connectionId) =>
+        connectorTrustKeys(actions, { connectionId }, "composio", ["gmail", "slack"]),
+      );
+      expect(new Set(keys.flat()).size).toBe(keys.flat().length);
+    }
   });
 
   function fixture(input: {
@@ -136,4 +189,21 @@ describe("run destination trust", () => {
       true,
     );
   });
+
+  it.each(["Read https://owner.example/report", ""])(
+    "keeps a resumed routine's Page context outside owner trust: %s",
+    async (ownerText) => {
+      const context = { pageId: "page-a", title: "Report https://title.example/private" };
+      const prompt = pageReplyTaskPrompt(ownerText, context);
+      const current = fixture({ trigger: "routine", prompt });
+      expect(await current.trust.loadOwnerWords()).toBe(ownerText);
+      expect(
+        await current.trust.routineNamesNewSite("Read https://title.example/private", []),
+      ).toBe(true);
+      expect(await current.trust.routineNamesNewSite("Read https://owner.example/report", [])).toBe(
+        !ownerText,
+      );
+      expect(prompt).toContain("[Report https://title.example/private](page:page-a)");
+    },
+  );
 });
