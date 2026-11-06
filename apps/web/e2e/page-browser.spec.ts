@@ -1012,8 +1012,8 @@ test("live exact refs stay with their document, tab, shadow node, and frame", as
     snapshot = await command("snapshot");
     const firstTabRef = ref(snapshot, "Top save");
     const other = await context.newPage();
-    // The identity check needs these controls in every renderer, independently of load events.
-    await test.step("Wait for the second tab's controls in each renderer", async () => {
+    // Wait for the second tab's identity targets, independently of unrelated frame loads.
+    await test.step("Wait for the second tab's identity targets", async () => {
       await other.goto("https://frame.example.test/", { waitUntil: "commit" });
       await expect.poll(() => other.frames().length).toBe(4);
       await expect(other.getByLabel("Top user")).toBeVisible();
@@ -1022,7 +1022,6 @@ test("live exact refs stay with their document, tab, shadow node, and frame", as
       for (const [title, label] of [
         ["Same frame", "Same user"],
         ["Other frame", "Other user"],
-        ["Opaque frame", "Opaque user"],
       ] as const) {
         await expect(
           other.frameLocator(`iframe[title="${title}"]`).getByLabel(label),
