@@ -2440,10 +2440,33 @@ describe("production deploy Compose selectors through sudo", () => {
   function profileArguments(args: string[]) {
     return args.flatMap((arg, index) => (arg === "--profile" ? [args[index + 1]!] : []));
   }
+  function environmentPreparation(deploy: ReturnType<typeof fixture>, args: string[]) {
+    const expected = [
+      "compose",
+      "--project-name",
+      "coginebot-env-preparation",
+      "--env-file",
+      path.join(deploy.checkout, ".env"),
+      "-f",
+      "-",
+      "config",
+      "--quiet",
+    ];
+    return args.length === expected.length && args.every((arg, index) => arg === expected[index]);
+  }
+  function executionSelectors(deploy: ReturnType<typeof fixture>) {
+    const commands = deploy.dockerArguments();
+    const selectors = deploy.cliSelectors();
+    expect(selectors).toHaveLength(commands.length);
+    expect(commands.filter((args) => environmentPreparation(deploy, args))).toHaveLength(2);
+    return selectors.filter(
+      (_selector, index) => !environmentPreparation(deploy, commands[index]!),
+    );
+  }
   function executionArguments(deploy: ReturnType<typeof fixture>) {
     return deploy.dockerArguments().filter((args) => {
       const op = composeOperation(args)[0];
-      return op && !args.includes("--help") && !args.includes("coginebot-env-preparation");
+      return op && !args.includes("--help") && !environmentPreparation(deploy, args);
     });
   }
 
@@ -2487,9 +2510,9 @@ describe("production deploy Compose selectors through sudo", () => {
         expect(profileArguments(command)).toEqual(expectedProfiles);
       }
       expect(
-        deploy
-          .cliSelectors()
-          .every((selectors) => selectors.project === null && selectors.profiles === null),
+        executionSelectors(deploy).every(
+          (selectors) => selectors.project === null && selectors.profiles === null,
+        ),
       ).toBe(true);
       assertNoUnsafeCleanup(deploy);
     },
@@ -2512,7 +2535,7 @@ describe("production deploy Compose selectors through sudo", () => {
     ]);
     for (const command of executionArguments(deploy))
       expect(profileArguments(command)).toEqual([""]);
-    expect(deploy.cliSelectors().every((selectors) => selectors.profiles === null)).toBe(true);
+    expect(executionSelectors(deploy).every((selectors) => selectors.profiles === null)).toBe(true);
   });
 
   it("uses dotenv project and profiles when caller selectors are unset", () => {
