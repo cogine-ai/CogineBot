@@ -1,7 +1,9 @@
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
+import type { runAsSystem as RunAsSystem } from "@rakazo/db";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import type { createApp } from "../../../../apps/api/src/app.ts";
 import { runProcess } from "./process.js";
@@ -163,13 +165,20 @@ async function main() {
   await mkdir(reportDir, { recursive: true });
   const container = await new PostgreSqlContainer("postgres:16-alpine").start();
   try {
-    const databaseUrl = container.getConnectionUri();
+    const migrationUrl = container.getConnectionUri();
+    let databaseUrl = migrationUrl;
+    if (e2e) {
+      const runtimeUrl = new URL(migrationUrl);
+      runtimeUrl.username = "coginebot_test_runtime";
+      runtimeUrl.password = randomBytes(24).toString("hex");
+      databaseUrl = runtimeUrl.toString();
+    }
     const apiPort = Number(process.env.API_PORT ?? 3110);
     const webPort = Number(process.env.WEB_PORT ?? 5180);
     const webOrigin = `http://127.0.0.1:${webPort}`;
 
     process.env.DATABASE_URL = databaseUrl;
-    process.env.DATABASE_MIGRATION_URL = databaseUrl;
+    process.env.DATABASE_MIGRATION_URL = migrationUrl;
     process.env.REALTIME_DATABASE_URL = databaseUrl;
     process.env.VERIFY_DATABASE = "1";
     process.env.WAKEUP_DRIVER = "memory";
@@ -196,11 +205,14 @@ async function main() {
     process.env.CI = "1";
 
     execSync("pnpm --filter @rakazo/db generate", { stdio: "inherit", env: process.env });
-    execSync("pnpm --filter @rakazo/db exec prisma migrate deploy", {
-      stdio: "inherit",
-      env: process.env,
-      cwd: path.resolve("packages/db"),
-    });
+    execSync(
+      integration ? "pnpm --filter @rakazo/db exec prisma migrate deploy" : "pnpm db:migrate",
+      {
+        stdio: "inherit",
+        env: process.env,
+        cwd: integration ? path.resolve("packages/db") : undefined,
+      },
+    );
 
     if (integration) {
       // Each app reconciles all durable work in its database, including intentionally
@@ -275,6 +287,10 @@ async function main() {
       return;
     }
 
+    const { applyRowSecurityPolicies, drainUnscopedDatabaseAccess, runAsSystem } = await import(
+      "@rakazo/db"
+    );
+    const rowSecurity = await applyRowSecurityPolicies(migrationUrl, databaseUrl);
     const [
       { ComposioEmulator, EmailEmulator, PipedreamConnector, ThirdPartyConnectorEmulator },
       { createApp },
@@ -325,9 +341,8 @@ async function main() {
       port: apiPort,
       hostname: "127.0.0.1",
     });
-    await waitForHealth(`http://127.0.0.1:${apiPort}/health`, 15_000);
-
     try {
+      await waitForHealth(`http://127.0.0.1:${apiPort}/health`, 15_000);
       try {
         await runProcess(
           "pnpm",
@@ -344,29 +359,25 @@ async function main() {
           {
             ...process.env,
             CI: "1",
+            // Browser fixtures seed and inspect rows as the owner; the API keeps its runtime pool.
+            DATABASE_URL: migrationUrl,
             // Pin English so e2e selectors match source messages regardless of runner locale.
             VITE_DEFAULT_UI_LOCALE: "en",
           },
         );
       } catch (error) {
-        const failedRuns = await handles.prisma.run.findMany({
-          where: { status: "failed" },
-          select: { id: true, error: true },
-        });
+        const failedRuns = await runAsSystem("inspect failed end-to-end test runs", () =>
+          handles.prisma.run.findMany({
+            where: { status: "failed" },
+            select: { id: true, error: true },
+          }),
+        );
         if (failedRuns.length) console.error("Failed agent runs:", failedRuns);
         throw error;
       }
-      await writeSummary(reportDir, {
-        ok: true,
-        mode,
-        sandbox: process.env.SANDBOX_PROVIDER,
-        runtime: process.env.AGENT_RUNTIME,
-        apiPort,
-        webPort,
-      });
     } finally {
       const cleanupErrors: unknown[] = [];
-      const computers = await managedComputers(handles).catch((error) => {
+      const computers = await managedComputers(handles, runAsSystem).catch((error) => {
         cleanupErrors.push(error);
         return [];
       });
@@ -374,7 +385,7 @@ async function main() {
       if (activeRequests > 0) {
         await new Promise<void>((resolve) => requestWaiters.add(resolve));
       }
-      await handles.stop().catch(() => undefined);
+      await handles.stop().catch((error) => cleanupErrors.push(error));
       for (let index = 0; index < computers.length; index += 4) {
         const results = await Promise.allSettled(
           computers.slice(index, index + 4).map((computer) =>
@@ -399,13 +410,32 @@ async function main() {
           if (result.status === "rejected") cleanupErrors.push(result.reason);
         }
       }
+      const unscoped = drainUnscopedDatabaseAccess();
+      if (unscoped.length) {
+        cleanupErrors.push(
+          new Error(
+            `Database access without a tenant or system context:\n\n${unscoped.join("\n\n")}`,
+          ),
+        );
+      }
       if (cleanupErrors.length) {
         console.error(
-          new AggregateError(cleanupErrors, "Could not destroy every managed test sandbox"),
+          new AggregateError(cleanupErrors, "End-to-end test cleanup or database context failed"),
         );
         process.exitCode = 1;
       }
     }
+    if (process.exitCode) throw new Error("End-to-end test cleanup or database context failed");
+    await writeSummary(reportDir, {
+      ok: true,
+      mode,
+      sandbox: process.env.SANDBOX_PROVIDER,
+      runtime: process.env.AGENT_RUNTIME,
+      databaseRole: "runtime",
+      connectionEnforced: rowSecurity.connectionEnforced,
+      apiPort,
+      webPort,
+    });
   } finally {
     await container.stop().catch(() => undefined);
   }
@@ -413,12 +443,14 @@ async function main() {
 
 type AppHandles = Awaited<ReturnType<typeof createApp>>;
 
-async function managedComputers(handles: AppHandles) {
+async function managedComputers(handles: AppHandles, runAsSystem: typeof RunAsSystem) {
   if (!["e2b", "daytona", "box"].includes(sandboxProvider)) return [];
-  return handles.prisma.computer.findMany({
-    where: { providerRef: { not: null } },
-    select: { homeKey: true, kind: true, providerRef: true, userId: true, spaceId: true },
-  });
+  return runAsSystem("clean up managed end-to-end test sandboxes", () =>
+    handles.prisma.computer.findMany({
+      where: { providerRef: { not: null } },
+      select: { homeKey: true, kind: true, providerRef: true, userId: true, spaceId: true },
+    }),
+  );
 }
 
 async function writeSummary(reportDir: string, summary: Record<string, unknown>) {
