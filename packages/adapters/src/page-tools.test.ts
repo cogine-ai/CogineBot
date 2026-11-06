@@ -319,6 +319,45 @@ describe("save_page", () => {
     expect((save as { state: { tainted: boolean } }).state.tainted).toBe(false);
   });
 
+  it.each(["before", "during"])(
+    "redacts newly learned secrets %s a stored Page read",
+    async (when) => {
+      const secret = "FAKE_PAGE_READ_SECRET_1764";
+      const stored = {
+        id: "page-1",
+        title: `Keys ${secret}`,
+        currentVersion: 2,
+        versions: [{ source: source(secret) }],
+      };
+      const original = JSON.stringify(stored);
+      const ctx = context({}, { currentVersion: 2 });
+      let release!: (value: typeof stored) => void;
+      const pending = new Promise<typeof stored>((resolve) => {
+        release = resolve;
+      });
+      const readPage = vi
+        .spyOn(ctx.deps.prisma.page, "findFirst")
+        .mockReturnValue(pending as never);
+      if (when === "before") ctx.secrets.push(secret);
+      const read = saveNewPageCall(ctx, { pageId: "page-1" });
+      expect(readPage).toHaveBeenCalledOnce();
+      if (when === "during") ctx.secrets.push(secret);
+      release(stored);
+      const result = await read;
+      expect(result).toEqual({
+        pageId: "page-1",
+        version: 2,
+        title: "Keys [redacted]",
+        source: source("[redacted]"),
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(stored)).toBe(original);
+      expect(ctx.state.tainted).toBe(true);
+      expect(ctx.deps.prisma.$transaction).not.toHaveBeenCalled();
+      expect(publishMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("treats an empty edits list as not sent, as it does a blank title or source", async () => {
     const tx = { page: { create: vi.fn(async () => ({ id: "page-1", title: "Plan" })) } };
     const created = (await saveNewPageCall(context(tx), {

@@ -173,7 +173,12 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     // The stored source may hold outside text an earlier run put in the page, so reading it
     // taints this run like any other outside content; saves only confirm this run's own write.
     ctx.state.tainted = true;
-    return { pageId: page.id, version: page.currentVersion, title: page.title, source: current };
+    return {
+      pageId: page.id,
+      version: page.currentVersion,
+      title: redactSecrets(page.title, ctx.secrets),
+      source: redactSecrets(current, ctx.secrets),
+    };
   }
   if (!page && hasEdits) return { error: "edits need the pageId of the page to change." };
   if (!page && !hasSource) return { error: "A new page needs source." };
