@@ -21,7 +21,7 @@ interface ComposeService {
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const composeFile = path.resolve(repoRoot, "infra/compose/docker-compose.images.yml");
 const publishWorkflowFile = path.resolve(repoRoot, ".github/workflows/publish-server-image.yml");
-const compose = parse(readFileSync(composeFile, "utf8")) as {
+const compose = parse(readFileSync(composeFile, "utf8"), { merge: true }) as {
   services: Record<string, ComposeService>;
 };
 const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
@@ -55,6 +55,7 @@ describe("the images compose file", () => {
       "api",
       "computer",
       "data-init",
+      "migrate",
       "postgres",
       "supervisor",
       "web",
@@ -134,9 +135,23 @@ describe("the images compose file", () => {
     }
   });
 
-  it("loads secrets from a colocated .env", () => {
-    expect(compose.services.api?.env_file).toEqual([".env"]);
-    expect(compose.services.worker?.env_file).toEqual([".env"]);
+  it("limits runtime settings while the migration service alone receives the administrator URL", () => {
+    for (const name of ["api", "worker"]) {
+      expect(compose.services[name]?.env_file).toBeUndefined();
+      expect(compose.services[name]?.environment).not.toHaveProperty("DATABASE_MIGRATION_URL");
+      expect(compose.services[name]?.environment).not.toHaveProperty("POSTGRES_PASSWORD");
+      expect(compose.services[name]?.environment?.DATABASE_URL).toContain("POSTGRES_APP_PASSWORD");
+    }
+    expect(compose.services.migrate?.environment?.DATABASE_MIGRATION_URL).toContain(
+      "POSTGRES_PASSWORD",
+    );
+    expect(compose.services.migrate?.command).toEqual([
+      "pnpm",
+      "--filter",
+      "@rakazo/api",
+      "run",
+      "db:migrate",
+    ]);
   });
 
   it("defaults API and worker to Docker computers via the supervisor", () => {

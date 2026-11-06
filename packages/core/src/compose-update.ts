@@ -346,14 +346,23 @@ export function resolveInstallKind(input: {
 
 /** Exact host commands from docs/self-host.md for Compose on a published release tag. */
 export const COMPOSE_PULL_UPGRADE_COMMANDS = [
-  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml pull api worker web",
-  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --pull never api worker web",
+  "bash infra/compose/prepare-runtime-env.sh .env",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml pull api worker web migrate",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web",
 ] as const;
 
 /** Exact host commands from docs/self-host.md for Compose on the default `local` tag. */
 export const COMPOSE_LOCAL_BUILD_UPGRADE_COMMANDS = [
   "git pull",
-  "GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --pull never --build api worker web",
+  "bash infra/compose/prepare-runtime-env.sh .env",
+  "GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml build --with-dependencies api worker web migrate",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:restore verify",
+  "docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web",
 ] as const;
 
 /** @deprecated Prefer {@link COMPOSE_PULL_UPGRADE_COMMANDS}; kept for call-site clarity in tests. */
@@ -362,7 +371,8 @@ export const COMPOSE_MANUAL_UPGRADE_COMMANDS = COMPOSE_PULL_UPGRADE_COMMANDS;
 /** Exact host commands from docs/self-host.md for source / `pnpm dev` installs. */
 export const SOURCE_MANUAL_UPGRADE_COMMANDS = [
   "git pull",
-  "pnpm --filter @rakazo/db migrate",
+  "# Stop the API and worker processes",
+  "pnpm run db:migrate",
   "# Restart the API and worker processes",
 ] as const;
 
@@ -426,8 +436,8 @@ function composeBase(target: ComposeTarget): string[] {
 }
 
 function targetServices(target: ComposeTarget): readonly string[] {
-  const services = target.services ?? [];
-  return services.length > 0 ? services : RECREATED_SERVICES;
+  const services = target.services?.length ? target.services : RECREATED_SERVICES;
+  return services.filter((service) => !["migrate", "updater", "postgres"].includes(service));
 }
 
 export function composePullArgv(
@@ -439,7 +449,7 @@ export function composePullArgv(
 
 export function composeUpArgv(
   target: ComposeTarget,
-  options: { build?: boolean; services?: readonly string[] } = {},
+  options: { build?: boolean; services?: readonly string[]; noDeps?: boolean } = {},
 ): ComposeInvocation {
   const args = [
     ...composeBase(target),
@@ -451,9 +461,40 @@ export function composeUpArgv(
     "--pull",
     "never",
   ];
+  if (options.noDeps) args.push("--no-deps");
   args.push(options.build === true ? "--build" : "--no-build");
   args.push(...(options.services ?? targetServices(target)));
   return { command: "docker", args };
+}
+
+/** Operations on the canonical administrator service, independent of long-lived runtime services. */
+export function composeMigrationArgv(
+  target: ComposeTarget,
+  operation: "status" | "stop" | "stop-writers" | "verify",
+): ComposeInvocation {
+  const args =
+    operation === "status"
+      ? ["ps", "--all", "--quiet", "migrate"]
+      : operation === "stop"
+        ? ["stop", "--timeout", "120", "migrate"]
+        : operation === "stop-writers"
+          ? ["stop", "--timeout", "120", ...targetServices(target)]
+          : [
+              "run",
+              "--rm",
+              "--no-deps",
+              "--pull",
+              "never",
+              "-T",
+              "migrate",
+              "pnpm",
+              "--filter",
+              "@rakazo/api",
+              "run",
+              "db:restore",
+              "verify",
+            ];
+  return { command: "docker", args: [...composeBase(target), ...args] };
 }
 
 export function composePsArgv(target: ComposeTarget): ComposeInvocation {
@@ -570,17 +611,10 @@ export interface ComposeUpdatePlanInput {
   remote?: string;
 }
 
-/**
- * Ordered work for one Compose update.
- *
- * Migrations are absent on purpose. The `api` service runs `prisma migrate deploy` as the first
- * thing in its own start command, so a recreate already orders them correctly: Compose stops the
- * old container, the new one migrates with the new code, then serves. Running migrations from here
- * would instead apply the new schema while the old process is still answering requests, which is
- * the window this ordering exists to close.
- */
+/** Download/build before stopping writers; migrate once with the owner, then start runtime-only services. */
 export function composeUpdatePlan(input: ComposeUpdatePlanInput): ComposeUpdateStep[] {
   const steps: ComposeUpdateStep[] = [];
+  const services = [...new Set([...targetServices(input.target), "migrate"])];
   if (input.strategy === "build") {
     const remote = input.remote ?? DEFAULT_UPDATE_REMOTE;
     const branch = input.branch ?? "main";
@@ -599,33 +633,54 @@ export function composeUpdatePlan(input: ComposeUpdatePlanInput): ComposeUpdateS
         command: "git",
         args: ["fetch", remote, branch],
       },
-      {
-        id: "checkout",
-        label: `Check out ${branch}`,
-        command: "git",
-        args: ["checkout", branch],
-      },
+      { id: "checkout", label: `Check out ${branch}`, command: "git", args: ["checkout", branch] },
       {
         id: "merge",
         label: "Fast-forward to the fetched commit",
         command: "git",
         args: ["merge", "--ff-only", `${remote}/${branch}`],
       },
+      {
+        id: "build",
+        label: "Build the new images",
+        command: "docker",
+        args: [...composeBase(input.target), "build", "--with-dependencies", ...services],
+      },
     );
-    const up = composeUpArgv(input.target, { build: true });
+  } else {
+    const pull = composePullArgv(input.target, services);
     steps.push({
-      id: "recreate",
-      label: "Build the new images and recreate the services",
-      command: up.command,
-      args: up.args,
+      id: "pull",
+      label: "Download the new images",
+      command: pull.command,
+      args: pull.args,
     });
-    return steps;
   }
-
-  const pull = composePullArgv(input.target);
-  const up = composeUpArgv(input.target);
+  const up = composeUpArgv(input.target, { noDeps: true });
   steps.push(
-    { id: "pull", label: "Download the new images", command: pull.command, args: pull.args },
+    {
+      id: "stop",
+      label: "Stop the old database writers",
+      command: "docker",
+      args: composeMigrationArgv(input.target, "stop-writers").args,
+    },
+    {
+      id: "migrate",
+      label: "Prepare the database with administrator credentials",
+      command: "docker",
+      args: [
+        ...composeBase(input.target),
+        "up",
+        "--no-deps",
+        "--no-build",
+        "--pull",
+        "never",
+        "--abort-on-container-exit",
+        "--exit-code-from",
+        "migrate",
+        "migrate",
+      ],
+    },
     { id: "recreate", label: "Recreate the services", command: up.command, args: up.args },
   );
   return steps;
@@ -670,15 +725,19 @@ export function upsertEnvAssignments(
     if (!ENV_VALUE.test(value)) throw new Error(`Refusing to write the value of ${key}.`);
   }
   const newline = contents.includes("\r\n") ? "\r\n" : "\n";
-  const lines = contents.split(/\r?\n/);
   const pending = new Map(Object.entries(assignments));
-  const next = lines.map((line) => {
-    const key = line.match(/^([A-Z][A-Z0-9_]*)=/)?.[1];
-    if (key === undefined || !Object.hasOwn(assignments, key)) return line;
-    const value = assignments[key] as string;
-    pending.delete(key);
-    return `${key}=${value}`;
-  });
+  // Match whole assignments so quoted multiline values cannot expose apparent managed keys.
+  const next = contents
+    .replace(
+      /^(\uFEFF?)[^\S\r\n]*(?:export[^\S\r\n]+)?([\w.-]+)[^\S\r\n]*(?:=[^\S\r\n]*|:[^\S\r\n]+)(?:'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*"|`(?:\\[\s\S]|[^`\\])*`|[^\r\n]*)[^\r\n]*/gm,
+      (line, bom: string, key: string) => {
+        if (!Object.hasOwn(assignments, key)) return line;
+        const value = assignments[key] as string;
+        pending.delete(key);
+        return `${bom}${key}=${value}`;
+      },
+    )
+    .split(/\r?\n/);
   if (pending.size > 0) {
     while (next.length > 0 && next[next.length - 1] === "") next.pop();
     if (next.length > 0) next.push("");

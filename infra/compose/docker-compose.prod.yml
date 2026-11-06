@@ -8,6 +8,173 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# API and worker receive only their declared runtime settings. Administrator
+# credentials belong to the one-shot migration service. Optional keys stay unset
+# unless supplied by Compose interpolation.
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgres://${POSTGRES_APP_USER:-rakazo_app}:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+  REALTIME_DATABASE_URL:
+  DB_POOL_MAX:
+  DATA_DIR: /data
+  API_URL:
+  ENCRYPTION_KEY:
+  SECRET_STORE: ${SECRET_STORE:-encrypted}
+  INFISICAL_URL:
+  INFISICAL_ALLOW_INSECURE_HTTP: ${INFISICAL_ALLOW_INSECURE_HTTP:-false}
+  INFISICAL_CLIENT_ID:
+  INFISICAL_CLIENT_SECRET:
+  INFISICAL_PROJECT_ID:
+  INFISICAL_ENVIRONMENT:
+  INFISICAL_FOLDER:
+  AGENT_RUNTIME: pi
+  WAKEUP_DRIVER: graphile
+  TICKET_BOARD_ENABLED:
+  PI_SESSION_RECORDING:
+  PLATFORM_MODEL_ALLOWLIST:
+  PI_DEFAULT_PROVIDER:
+  PI_DEFAULT_MODEL:
+  PI_DEFAULT_CREDENTIALS:
+  OPENROUTER_API_KEY:
+  ANTHROPIC_API_KEY:
+  MAX_TOOL_CALLS_PER_TURN:
+  MODEL_STREAM_MAX_RETRIES:
+  RELEASE_WATCH_EVAL_MODEL:
+  RAKAZO_LOCAL_MODELS:
+  RAKAZO_LOCAL_MODELS_URL:
+  RAKAZO_LOCAL_CONTEXT_WINDOW:
+  RAKAZO_LOCAL_MAX_TOKENS:
+  RAKAZO_LOCAL_VISION_MODELS:
+  RAKAZO_OPENAI_COMPATIBLE_VISION_MODELS:
+  RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC:
+  RAKAZO_SECRETS_ALLOW_PRIVATE_HTTP:
+  RAKAZO_AUTO_REVIEW:
+  RAKAZO_AUTO_REVIEW_PROVIDER:
+  RAKAZO_AUTO_REVIEW_MODEL:
+  RAKAZO_AUTO_REVIEW_MIN_CONFIDENCE:
+  RAKAZO_AUTO_REVIEW_TIMEOUT_MS:
+  TYPESAFE_API_KEY:
+  SANDBOX_PROVIDER:
+  SANDBOX_SUPERVISOR_URL:
+  SANDBOX_SUPERVISOR_TOKEN:
+  SANDBOX_COMMAND_TIMEOUT_MS:
+  SANDBOX_IDLE_MS:
+  SANDBOX_MAX_COMPUTERS_PER_USER:
+  COMPUTER_TAKEOVER_TTL_MS:
+  E2B_API_KEY:
+  DAYTONA_API_KEY:
+  DAYTONA_API_URL:
+  DAYTONA_TARGET:
+  DAYTONA_SNAPSHOT:
+  CREATEOS_SANDBOX_API_KEY:
+  CREATEOS_SANDBOX_BASE_URL:
+  CREATEOS_SANDBOX_ROOTFS:
+  CREATEOS_SANDBOX_SHAPE:
+  BOX_API_KEY:
+  BOX_API_URL:
+  BOX_BASE_URL:
+  CLOUD_AGENT_PROVIDER:
+  CLOUD_AGENT_SPACE_ID:
+  CURSOR_API_KEY:
+  BROWSER_PROVIDER:
+  WEB_PROVIDER:
+  COMPOSIO_API_KEY:
+  PIPEDREAM_CLIENT_ID:
+  PIPEDREAM_CLIENT_SECRET:
+  PIPEDREAM_PROJECT_ID:
+  PIPEDREAM_ENVIRONMENT:
+  MCP_STDIO_ENABLED:
+  MCP_STDIO_ALLOWED_COMMANDS:
+  MCP_ALLOW_PRIVATE_ENDPOINT:
+  MESSAGING_OPEN_SIGNUP:
+  SENDBLUE_API_KEY_ID:
+  SENDBLUE_API_SECRET:
+  SENDBLUE_SIGNING_SECRET:
+  SENDBLUE_PHONE_NUMBER:
+  SLACK_BOT_TOKEN:
+  SLACK_SIGNING_SECRET:
+  WHATSAPP_ACCESS_TOKEN:
+  WHATSAPP_PHONE_NUMBER_ID:
+  WHATSAPP_APP_SECRET:
+  WHATSAPP_VERIFY_TOKEN:
+  TELEGRAM_BOT_TOKEN:
+  TELEGRAM_WEBHOOK_SECRET_TOKEN:
+  LARK_APP_ID:
+  LARK_APP_SECRET:
+  LARK_VERIFICATION_TOKEN:
+  LARK_ENCRYPT_KEY:
+  LARK_DOMAIN:
+  LOG_LEVEL:
+  LOG_FORMAT:
+  AXIOM_TOKEN:
+  AXIOM_DATASET:
+  AXIOM_EDGE:
+  AXIOM_EDGE_URL:
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
+  AI_GATEWAY_API_KEY:
+  ANTHROPIC_AUTH_TOKEN:
+  ANTHROPIC_FEDERATION_RULE_ID:
+  ANTHROPIC_IDENTITY_TOKEN_FILE:
+  ANTHROPIC_OAUTH_TOKEN:
+  ANTHROPIC_ORGANIZATION_ID:
+  ANTHROPIC_SERVICE_ACCOUNT_ID:
+  ANTHROPIC_WORKSPACE_ID:
+  ANT_LING_API_KEY:
+  AZURE_OPENAI_API_KEY:
+  BASETEN_API_KEY:
+  CEREBRAS_API_KEY:
+  CLOUDFLARE_API_KEY:
+  COPILOT_GITHUB_TOKEN:
+  DEEPSEEK_API_KEY:
+  FIREWORKS_API_KEY:
+  GEMINI_API_KEY:
+  GOOGLE_CLOUD_API_KEY:
+  GROQ_API_KEY:
+  HF_TOKEN:
+  KIMI_API_KEY:
+  META_API_KEY:
+  MINIMAX_API_KEY:
+  MINIMAX_CN_API_KEY:
+  MISTRAL_API_KEY:
+  MOONSHOT_API_KEY:
+  NVIDIA_API_KEY:
+  OPENAI_API_KEY:
+  OPENCODE_API_KEY:
+  QWEN_TOKEN_PLAN_API_KEY:
+  QWEN_TOKEN_PLAN_CN_API_KEY:
+  RADIUS_API_KEY:
+  TOGETHER_API_KEY:
+  XAI_API_KEY:
+  XIAOMI_API_KEY:
+  XIAOMI_TOKEN_PLAN_AMS_API_KEY:
+  XIAOMI_TOKEN_PLAN_CN_API_KEY:
+  XIAOMI_TOKEN_PLAN_SGP_API_KEY:
+  ZAI_API_KEY:
+  ZAI_CODING_CN_API_KEY:
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  AWS_SESSION_TOKEN:
+  AWS_REGION:
+  AWS_DEFAULT_REGION:
+  AWS_PROFILE:
+  AWS_BEARER_TOKEN_BEDROCK:
+  AWS_CONTAINER_CREDENTIALS_FULL_URI:
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI:
+  AWS_WEB_IDENTITY_TOKEN_FILE:
+  AWS_ROLE_ARN:
+  AWS_ROLE_SESSION_NAME:
+  AWS_CONTAINER_AUTHORIZATION_TOKEN:
+  AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:
+  GOOGLE_APPLICATION_CREDENTIALS:
+  GOOGLE_CLOUD_PROJECT:
+  GCLOUD_PROJECT:
+  GOOGLE_CLOUD_LOCATION:
+
 services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5}
@@ -31,6 +198,31 @@ services:
       timeout: 5s
       retries: 20
 
+  migrate:
+    image: ${RAKAZO_IMAGE:-ghcr.io/cogine-ai/coginebot/app}:${RAKAZO_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    command: ["pnpm", "--filter", "@rakazo/api", "run", "db:migrate"]
+    restart: "no"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      DATABASE_MIGRATION_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+      DATABASE_URL: postgres://${POSTGRES_APP_USER:-rakazo_app}:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+      REALTIME_DATABASE_URL:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+
   api:
     # The tag is what the updater moves. `docker compose pull` fetches it, `up -d` recreates onto
     # it, and the previous tag stays in .env so a rollback is one redeploy rather than a rebuild.
@@ -45,10 +237,7 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
-    command:
-      - bash
-      - -lc
-      - pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start
+    command: ["pnpm", "--filter", "@rakazo/api", "run", "start"]
     init: true
     logging: *logging
     security_opt:
@@ -57,42 +246,57 @@ services:
       - ALL
     pids_limit: 256
     mem_limit: 1536m
-    env_file:
-      - ../../.env
     environment:
-      SECRET_STORE: ${SECRET_STORE:-encrypted}
-      INFISICAL_URL: ${INFISICAL_URL:-}
-      INFISICAL_ALLOW_INSECURE_HTTP: ${INFISICAL_ALLOW_INSECURE_HTTP:-false}
-      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
-      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}
-      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
-      INFISICAL_ENVIRONMENT: ${INFISICAL_ENVIRONMENT:-}
-      INFISICAL_FOLDER: ${INFISICAL_FOLDER:-}
-      NODE_ENV: production
+      <<: *app-environment
       API_HOST: "0.0.0.0"
+      API_PORT:
+      BETTER_AUTH_SECRET:
+      BETTER_AUTH_URL:
+      WEB_ORIGIN:
+      AUTH_PASSWORD_ENABLED: ${AUTH_PASSWORD_ENABLED:-true}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_NAME: ${OIDC_NAME:-SSO}
       OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
       OIDC_ALLOW_SIGNUP_BYPASS: ${OIDC_ALLOW_SIGNUP_BYPASS:-false}
-      AUTH_PASSWORD_ENABLED: ${AUTH_PASSWORD_ENABLED:-true}
-      DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
-      DATA_DIR: /data
+      SIGNUPS_ENABLED:
+      SIGNUP_ALLOWLIST:
+      SCREEN_PROXY_SECRET:
+      RAKAZO_DESKTOP_STACK_TOKEN:
+      PRIVACY_POLICY_URL:
+      INTEGRATIONS_CATALOG_URL:
+      SMTP_URL:
+      EMAIL_FROM:
+      EMAIL_EMULATOR:
+      STRIPE_SECRET_KEY:
+      STRIPE_WEBHOOK_SECRET:
+      STRIPE_PRICE_ID:
+      TEAM_CHAT_BOT_ID:
+      SLACK_RAKAZO_BOT_ID:
+      TEAM_CHAT_JUDGE_PROVIDER:
+      TEAM_CHAT_JUDGE_MODEL:
+      SPACE_TEARDOWN_TIMEOUT_MS:
+      GIT_SHA:
+      RAKAZO_GIT_SHA:
+      RAKAZO_IMAGE_TAG:
+      RAKAZO_UPDATER_URL: http://updater:7092
+      RAKAZO_UPDATER_TOKEN:
+      TEACH_RECORDING_TTL_MS:
+      FISH_TTS_MODEL:
+      FISH_ASR_MODEL:
+      RAKAZO_UPDATE_RESTART_SUPERVISOR:
+      INFISICAL_URL: ${INFISICAL_URL:-}
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
+      INFISICAL_ENVIRONMENT: ${INFISICAL_ENVIRONMENT:-}
+      INFISICAL_FOLDER: ${INFISICAL_FOLDER:-}
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-e2b}
       CLOUD_AGENT_PROVIDER: ${CLOUD_AGENT_PROVIDER:-none}
       CLOUD_AGENT_SPACE_ID: ${CLOUD_AGENT_SPACE_ID:-}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
-      WAKEUP_DRIVER: graphile
-      AGENT_RUNTIME: pi
-      # Optional egress proxy (Mainland / corporate). Empty = unset; either case works.
-      HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
-      HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
-      NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
-      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
-      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
-      no_proxy: ${no_proxy:-${NO_PROXY:-}}
-      RAKAZO_UPDATER_URL: http://updater:7092
+      DB_POOL_MAX: ${DB_POOL_MAX:-4}
     expose:
       - "3100"
     volumes:
@@ -102,6 +306,8 @@ services:
       - data
       - control
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -131,45 +337,28 @@ services:
       - ALL
     pids_limit: 512
     mem_limit: 2g
-    env_file:
-      - ../../.env
     environment:
-      SECRET_STORE: ${SECRET_STORE:-encrypted}
+      <<: *app-environment
+      GRAPHILE_WORKER_CONCURRENCY:
       INFISICAL_URL: ${INFISICAL_URL:-}
-      INFISICAL_ALLOW_INSECURE_HTTP: ${INFISICAL_ALLOW_INSECURE_HTTP:-false}
       INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
       INFISICAL_ENVIRONMENT: ${INFISICAL_ENVIRONMENT:-}
       INFISICAL_FOLDER: ${INFISICAL_FOLDER:-}
-      BETTER_AUTH_SECRET: ""
-      OIDC_ISSUER: ""
-      OIDC_CLIENT_ID: ""
-      OIDC_CLIENT_SECRET: ""
-      AUTH_PASSWORD_ENABLED: "true"
-      NODE_ENV: production
-      DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
-      DATA_DIR: /data
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-e2b}
       CLOUD_AGENT_PROVIDER: ${CLOUD_AGENT_PROVIDER:-none}
       CLOUD_AGENT_SPACE_ID: ${CLOUD_AGENT_SPACE_ID:-}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
-      SCREEN_PROXY_SECRET: ""
-      WAKEUP_DRIVER: graphile
-      AGENT_RUNTIME: pi
-      # Optional egress proxy (Mainland / corporate). Empty = unset; either case works.
-      HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
-      HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
-      NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
-      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
-      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
-      no_proxy: ${no_proxy:-${NO_PROXY:-}}
+      DB_POOL_MAX: ${DB_POOL_MAX:-8}
     volumes:
       - appdata:/data
     networks:
       - app
       - data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       api:

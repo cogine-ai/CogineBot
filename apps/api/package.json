@@ -10,6 +10,7 @@
     "test": "vitest run --root ../.. apps/api/src",
     "secrets:infisical": "tsx src/cli/secrets-infisical.ts",
     "db:migrate": "tsx src/cli/migrate-database.ts",
+    "db:restore": "tsx src/cli/restore-database.ts",
     "db:row-security": "tsx src/cli/row-security.ts"
   },
   "dependencies": {

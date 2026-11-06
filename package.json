@@ -16,6 +16,7 @@
     "format": "biome check --write .",
     "db:generate": "pnpm --filter @rakazo/db generate",
     "db:migrate": "pnpm --filter @rakazo/api db:migrate",
+    "db:restore": "pnpm --filter @rakazo/api db:restore",
     "db:row-security": "pnpm --filter @rakazo/api db:row-security",
     "sandbox:build": "docker build -t rakazo/computer:local infra/sandboxes/computer",
     "test": "vitest run",

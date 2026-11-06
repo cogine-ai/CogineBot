@@ -10,6 +10,12 @@ export * from "./computers.js";
 export * from "./connection-selection.js";
 export * from "./credential-secrets.js";
 export * from "./database-access.js";
+export {
+  databaseRestoreFence,
+  prepareDatabaseRestore,
+  verifyDatabaseRestore,
+} from "./database-restore.js";
+export { verifyRealtimeDatabase, verifyRuntimeDatabase } from "./database-runtime.js";
 export * from "./events.js";
 export * from "./expire-stuck-run.js";
 export * from "./external-conversations.js";

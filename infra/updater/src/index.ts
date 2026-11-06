@@ -1,15 +1,18 @@
 import type { ExecFileException } from "node:child_process";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { access, lstat, open, readFile, rename, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 import { serve } from "@hono/node-server";
 import type { ServerUpdateRun } from "@rakazo/contracts";
 import type { ComposeUpdateStep } from "@rakazo/core";
 import {
   chooseUpdateStrategy,
   commitImageTag,
+  composeMigrationArgv,
   composeUpArgv,
   composeUpdatePlan,
   DEFAULT_UPDATE_REMOTE,
@@ -54,6 +57,9 @@ const STEP_TIMEOUT_MS: Record<string, number> = {
   checkout: 60_000,
   merge: 60_000,
   pull: 600_000,
+  build: 1_800_000,
+  stop: 180_000,
+  migrate: 600_000,
   recreate: 1_800_000,
   recover: 1_800_000,
 };
@@ -331,12 +337,57 @@ export function createUpdaterApp(
     }
   }
 
+  async function runtimePasswordMissing(): Promise<boolean> {
+    const file = path.join(tmpdir(), `coginebot-env-${randomUUID()}.json`);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    const service: { image: string; environment?: Record<string, string> } = { image: "scratch" };
+    const args = [
+      "compose",
+      "--project-name",
+      config.projectName,
+      "--env-file",
+      config.envFile,
+      "--file",
+      file,
+      "config",
+      "--quiet",
+    ];
+    try {
+      handle = await open(file, "wx", 0o600);
+      await handle.writeFile(JSON.stringify({ services: { runtimeEnv: service } }));
+      const valid = await run("docker", args, { cwd: config.deployDir, timeoutMs: 30_000 });
+      if (!valid.ok)
+        throw new UpdateRefused(
+          "The deployment environment could not be parsed; no credentials were changed.",
+        );
+      service.environment = {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose evaluates this expression.
+        PROVIDED: "${POSTGRES_APP_PASSWORD:?COGINEBOT_RUNTIME_PASSWORD_REQUIRED}",
+      };
+      await handle.truncate(0);
+      await handle.write(JSON.stringify({ services: { runtimeEnv: service } }), 0, "utf8");
+      const required = await run("docker", args, { cwd: config.deployDir, timeoutMs: 30_000 });
+      if (required.ok) return false;
+      if (required.output.includes("COGINEBOT_RUNTIME_PASSWORD_REQUIRED")) return true;
+      throw new UpdateRefused(
+        "The runtime password could not be verified; no credentials were changed.",
+      );
+    } finally {
+      await handle?.close();
+      await unlink(file).catch(() => undefined);
+    }
+  }
+
   async function writeEnvAssignments(assignments: Record<string, string>) {
     const [current, metadata] = await Promise.all([readEnvFile(), lstat(config.envFile)]);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
       throw new UpdateRefused("The deployment environment must be a regular, non-symlink file.");
     }
-    const contents = upsertEnvAssignments(current, assignments);
+    const prepared =
+      !parseEnv(current).POSTGRES_APP_PASSWORD && (await runtimePasswordMissing())
+        ? `${current}${current.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${randomBytes(16).toString("hex")}\n`
+        : current;
+    const contents = upsertEnvAssignments(prepared, assignments);
     const temporary = `${config.envFile}.rakazo-update-${randomUUID()}`;
     let temporaryFile: Awaited<ReturnType<typeof open>> | null = null;
     try {
@@ -552,8 +603,8 @@ export function createUpdaterApp(
         steps,
         restartAdvice:
           decision.strategy === "pull"
-            ? `The updater deployed ${releaseTag ?? targetTag} from its full source-commit image tag and recreated the API, worker, and web containers. Migrations ran inside the new API container before it became healthy.`
-            : "The updater built the fork and recreated the API, worker, and web containers. Migrations ran inside the new API container before it started serving.",
+            ? `The updater deployed ${releaseTag ?? targetTag} from its full source-commit image tag and recreated the API, worker, and web containers. The administrator migration step ran after the old database writers stopped.`
+            : "The updater built the fork and recreated the API, worker, and web containers. The administrator migration step ran after the old database writers stopped.",
       }),
     );
   }
@@ -565,8 +616,13 @@ export function createUpdaterApp(
     const checkout = await readCheckout();
     // Never re-pull a rollback tag: registry tags can move. Reuse the exact image cached when it ran.
     const steps = composeUpdatePlan({ strategy: "pull", target: composeTarget }).filter(
-      (step) => step.id !== "pull",
+      (step) => step.id === "stop" || step.id === "recreate",
     );
+    steps.splice(1, 0, {
+      id: "verify-rollback",
+      label: "Verify database readiness before rollback",
+      ...composeMigrationArgv(composeTarget, "verify"),
+    });
     return rememberRun(
       await execute({
         request: { repoUrl: "", branch: "" },
@@ -629,6 +685,52 @@ export function createUpdaterApp(
     // A failed Git command can still change files. Restore once before Compose recovery, or in
     // finally for failures that never reached Compose.
     let checkoutNeedsRestore = false;
+    let writersMayBeStopped = false;
+    let migrationAttempted = false;
+    let migrationImage: string | undefined;
+    let migrationOverride: string | undefined;
+    let migrationTarget = composeTarget;
+    async function pinMigration(tag: string): Promise<boolean> {
+      if (
+        !(await runStep(record, {
+          id: "pin-migration",
+          label: "Pin the administrator image identity",
+          command: "docker",
+          args: ["image", "inspect", imageRef(config.image, tag), "--format", "{{.Id}}"],
+        }))
+      )
+        return false;
+      const id = record.steps.at(-1)?.output.trim() ?? "";
+      if (!/^sha256:[0-9a-f]{64}$/.test(id)) {
+        record.error = "The administrator image identity could not be verified.";
+        return false;
+      }
+      const file = path.join(tmpdir(), `coginebot-migration-${randomUUID()}.json`);
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        handle = await open(file, "wx", 0o600);
+        migrationOverride = file;
+        await handle.writeFile(JSON.stringify({ services: { migrate: { image: id } } }));
+        await handle.sync();
+      } catch {
+        record.error = "The administrator image could not be pinned.";
+        return false;
+      } finally {
+        await handle?.close();
+      }
+      migrationImage = id;
+      migrationTarget = { ...composeTarget, composeFiles: [...composeTarget.composeFiles, file] };
+      return true;
+    }
+    function pinnedStep(step: ComposeUpdateStep): ComposeUpdateStep {
+      if (!migrationOverride || step.command !== "docker" || step.args[0] !== "compose")
+        return step;
+      const at = step.args.lastIndexOf("--file") + 2;
+      return {
+        ...step,
+        args: [...step.args.slice(0, at), "--file", migrationOverride, ...step.args.slice(at)],
+      };
+    }
     async function restoreCheckout() {
       if (!checkoutNeedsRestore) return true;
       checkoutNeedsRestore = false;
@@ -686,18 +788,77 @@ export function createUpdaterApp(
       if (record.toCommit !== null) composeEnv.GIT_SHA = record.toCommit;
 
       for (const step of composeSteps) {
-        if (!(await runStep(record, step, composeEnv))) {
+        const pinReady =
+          step.id !== "stop" || Boolean(migrationImage) || (await pinMigration(input.fromTag));
+        if (pinReady && (step.id === "stop" || step.id === "recreate")) writersMayBeStopped = true;
+        if (pinReady && step.id === "migrate") migrationAttempted = true;
+        let stepOk =
+          pinReady &&
+          (await runStep(
+            record,
+            pinnedStep(step),
+            step.id === "verify-rollback"
+              ? { ...composeEnv, [IMAGE_TAG_ENV]: input.fromTag }
+              : composeEnv,
+          ));
+        if (stepOk && ["pull", "build"].includes(step.id)) stepOk = await pinMigration(toTag);
+        if (stepOk && step.id === "migrate")
+          stepOk = await inspectMigration(record, migrationImage!, migrationTarget, true);
+        if (!stepOk) {
           const primaryError = record.error ?? `${step.label} failed.`;
           // The failed revision may have changed Compose or files it references. The old image
           // must be recreated from the old checkout, using the same configured Compose target.
+          let databaseReady = !writersMayBeStopped;
+          if (writersMayBeStopped) {
+            const writersStopped = await runStep(
+              record,
+              {
+                id: "stop-writers",
+                label: "Stop database writers before recovery",
+                ...composeMigrationArgv(migrationTarget, "stop-writers"),
+              },
+              composeEnv,
+              false,
+            );
+            const migrationStopped =
+              !migrationAttempted ||
+              ((await runStep(
+                record,
+                {
+                  id: "stop-migration",
+                  label: "Stop the administrator migration service",
+                  ...composeMigrationArgv(migrationTarget, "stop"),
+                },
+                composeEnv,
+                false,
+              )) &&
+                (await inspectMigration(record, migrationImage!, migrationTarget, false)));
+            databaseReady =
+              writersStopped &&
+              migrationStopped &&
+              (await runStep(
+                record,
+                {
+                  id: "verify-recovery",
+                  label: "Verify database readiness before recovery",
+                  ...composeMigrationArgv(migrationTarget, "verify"),
+                },
+                {
+                  ...composeEnv,
+                  [IMAGE_TAG_ENV]: step.id === "verify-rollback" ? input.fromTag : toTag,
+                },
+                false,
+              ));
+          }
           const checkoutRestored = await restoreCheckout();
           const envRestored = await writeEnvAssignments(revertAssignments).then(
             () => true,
             () => false,
           );
-          if (step.id === "recreate") {
-            const previous = composeUpArgv(composeTarget);
+          if (writersMayBeStopped) {
+            const previous = composeUpArgv(composeTarget, { noDeps: true });
             const recovered =
+              databaseReady &&
               checkoutRestored &&
               (await runStep(
                 record,
@@ -713,7 +874,7 @@ export function createUpdaterApp(
             record.restart = recovered ? "not-required" : "manual";
             record.restartAdvice = recovered
               ? `${primaryError} The updater restored the previously running ${input.fromTag} image${envRestored ? " and its environment pin" : ", but could not restore the environment pin"}. Read the failed step output before retrying.`
-              : `${primaryError} Automatic recovery to ${input.fromTag} ${checkoutRestored ? "also failed" : "was skipped because the previous checkout could not be restored"}${envRestored ? "" : ", and the environment pin could not be restored"}. The runtime may contain a mix of versions; use the recorded commands to recover it manually.`;
+              : `${primaryError} Automatic recovery to ${input.fromTag} ${!databaseReady ? "was skipped because database readiness or migration termination could not be verified" : checkoutRestored ? "also failed" : "was skipped because the previous checkout could not be restored"}${envRestored ? "" : ", and the environment pin could not be restored"}. The runtime may contain a mix of versions; use the recorded commands to recover it manually.`;
           } else {
             record.restartAdvice = `${primaryError} No service was recreated${envRestored ? ", and the prior environment pin was restored" : ", but the prior environment pin could not be restored"}. Read the failed step output before retrying.`;
           }
@@ -744,8 +905,62 @@ export function createUpdaterApp(
           record.restartAdvice = `${record.restartAdvice} The previous Git remote also could not be restored; fix it before retrying.`;
         }
       }
+      if (migrationOverride) await unlink(migrationOverride).catch(() => undefined);
       record.finishedAt = new Date().toISOString();
     }
+  }
+
+  async function inspectMigration(
+    record: ServerUpdateRun,
+    expected: string,
+    target: typeof composeTarget,
+    requireSuccess: boolean,
+  ): Promise<boolean> {
+    const container = {
+      id: "migration-container",
+      label: "Read the canonical migration container",
+      ...composeMigrationArgv(target, "status"),
+    };
+    if (!(await runStep(record, container, undefined, false))) return false;
+    const id = record.steps.at(-1)?.output.trim() ?? "";
+    if (!/^sha256:[0-9a-f]{64}$/.test(expected) || !/^[0-9a-f]{64}$/.test(id)) {
+      record.error ??= "The administrator migration identity could not be verified.";
+      return false;
+    }
+    const format =
+      '{"image":{{json .Image}},"running":{{json .State.Running}},"status":{{json .State.Status}},"exitCode":{{json .State.ExitCode}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}}}';
+    if (
+      !(await runStep(
+        record,
+        {
+          id: "migration-state",
+          label: "Verify the administrator migration outcome",
+          command: "docker",
+          args: ["inspect", id, "--format", format],
+        },
+        undefined,
+        false,
+      ))
+    )
+      return false;
+    try {
+      const state = JSON.parse(record.steps.at(-1)?.output ?? "");
+      if (
+        state.image === expected &&
+        state.project === config.projectName &&
+        state.service === "migrate" &&
+        String(state.oneoff).toLowerCase() === "false" &&
+        state.running === false &&
+        (requireSuccess
+          ? state.status === "exited" && state.exitCode === 0
+          : ["exited", "created"].includes(state.status))
+      )
+        return true;
+    } catch {
+      /* An incomplete Docker receipt cannot authorize starting runtime services. */
+    }
+    record.error ??= "The administrator migration outcome could not be verified.";
+    return false;
   }
 
   async function runStep(

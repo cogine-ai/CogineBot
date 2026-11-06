@@ -216,8 +216,8 @@ create_env() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
-      "POSTGRES_PASSWORD=")
-        printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)"
+      "POSTGRES_APP_PASSWORD="|"POSTGRES_PASSWORD=")
+        printf '%s=%s\n' "${line%=}" "$(openssl rand -hex 16)"
         ;;
       "BETTER_AUTH_SECRET=")
         printf 'BETTER_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)"
@@ -243,10 +243,41 @@ create_env() {
   echo "Created .env with random secrets."
 }
 
+# Add only a missing runtime secret when updating an existing installation.
+# Existing administrator and runtime credentials must survive upgrades/rollback.
+ensure_runtime_secret() {
+  [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || fail ".env must be a regular file"
+  if ! (unset POSTGRES_APP_PASSWORD; docker compose --project-name coginebot-env-preparation --env-file "$ENV_FILE" -f - config --quiet >/dev/null 2>&1 <<'YAML'
+services:
+  runtime-env:
+    image: scratch
+YAML
+  ); then fail ".env cannot be parsed; set POSTGRES_APP_PASSWORD manually before retrying"; fi
+  local output
+  if output="$(unset POSTGRES_APP_PASSWORD; docker compose --project-name coginebot-env-preparation --env-file "$ENV_FILE" -f - config --quiet 2>&1 <<'YAML'
+services:
+  runtime-env:
+    image: scratch
+    environment:
+      PROVIDED: ${POSTGRES_APP_PASSWORD:?COGINEBOT_RUNTIME_PASSWORD_REQUIRED}
+YAML
+  )"; then return; fi
+  [[ "$output" == *COGINEBOT_RUNTIME_PASSWORD_REQUIRED* ]] || fail "cannot verify the runtime password; no environment changes were made"
+  local password
+  password="$(openssl rand -hex 16)"
+  temporary_file=$(mktemp "./${ENV_FILE}.tmp.XXXXXX")
+  cp -p -- "$ENV_FILE" "$temporary_file"
+  chmod 600 "$temporary_file"
+  printf '\nPOSTGRES_APP_PASSWORD=%s\n' "$password" >> "$temporary_file"
+  mv -- "$temporary_file" "$ENV_FILE"
+  temporary_file=""
+}
+
 validate_required_secrets() {
   if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f - config --environment <<'YAML' | awk '
     BEGIN {
       required["POSTGRES_PASSWORD"] = 1
+      required["POSTGRES_APP_PASSWORD"] = 1
       required["BETTER_AUTH_SECRET"] = 1
       required["ENCRYPTION_KEY"] = 1
       required["SCREEN_PROXY_SECRET"] = 1
@@ -273,6 +304,7 @@ services:
   api:
     environment:
       _RAKAZO_VALIDATE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      _RAKAZO_VALIDATE_POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
       _RAKAZO_VALIDATE_BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in .env}
       _RAKAZO_VALIDATE_ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
       _RAKAZO_VALIDATE_SCREEN_PROXY_SECRET: ${SCREEN_PROXY_SECRET:?Set SCREEN_PROXY_SECRET in .env}
@@ -292,6 +324,7 @@ else
   create_env
 fi
 
+ensure_runtime_secret
 validate_required_secrets
 
 if [[ "$prepare_only" == true ]]; then
@@ -318,6 +351,8 @@ if [[ "$pull_never" == true ]]; then
     echo "cannot enforce pull-never on this Compose version; startup fails if an image is missing locally" >&2
   fi
 fi
+# Stop old database writers before Compose starts its administrator one-shot.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop --timeout 120 api worker
 # bash 3.2 + set -u: "${arr[@]}" aborts when arr is empty.
 if grep -q -- '--wait-timeout' <<<"$compose_up_help"; then
   echo "Waiting for healthy services."

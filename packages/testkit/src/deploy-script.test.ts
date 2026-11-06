@@ -83,7 +83,7 @@ type ContainerRecord = {
   Name: string;
   Image: string;
   Config: { Image: string; Labels: Record<string, string> };
-  State: { Status: string };
+  State: { Status: string; Running?: boolean; ExitCode?: number };
   Mounts: { Type: string; Name: string; Destination: string; Source: string; RW: boolean }[];
 };
 type DockerState = {
@@ -244,6 +244,11 @@ if (args[0] === 'compose') {
   } else break;
  }
  const op=args[i++], tail=args.slice(i);
+ if (files[0] === '-' && project === 'coginebot-env-preparation' && op === 'config') {
+  const text=fs.readFileSync(0,'utf8'); const dotenv=fs.readFileSync(args[args.indexOf('--env-file')+1],'utf8');
+  if(text.includes('COGINEBOT_RUNTIME_PASSWORD_REQUIRED') && !require('node:util').parseEnv(dotenv).POSTGRES_APP_PASSWORD?.trim()) fail('COGINEBOT_RUNTIME_PASSWORD_REQUIRED');
+  out('');
+ }
  if (op==='build' && tail.length===1 && tail[0]==='--help' && files.length===0) out(process.env.COMPOSE_BUILD_HELP || 'Usage: docker compose build\n --builder string Set builder');
  if (op==='pull' && tail.length===1 && tail[0]==='--help' && files.length===0) out(process.env.COMPOSE_PULL_HELP || 'Usage: docker compose pull\n --ignore-buildable Skip buildable images\n --policy string Pull policy');
  if (files[0] !== 'infra/compose/docker-compose.prod.yml') fail('unexpected Compose file',2);
@@ -296,9 +301,23 @@ if (args[0] === 'compose') {
   state.images[imageId]={Id:imageId,RepoTags:[...new Set([...(existing?.RepoTags || []),...refs])],RepoDigests:existing?.RepoDigests || [],Config:{Labels:{}}};
   state.builds++;state.lastBuiltId=imageId;out('');
  }
+ if (op==='stop') {
+  if (process.env.FAIL_WRITER_STOP && tail.at(-1)!=='migrate') fail('writer stop failed');
+  if (process.env.FAIL_MIGRATION_STOP && tail.at(-1)==='migrate') fail('migration stop failed');
+  for (const c of Object.values(state.containers)) if(c.Config.Labels['com.docker.compose.project']===config.name && tail.includes(c.Config.Labels['com.docker.compose.service'])) c.State={Status:'exited',Running:false,ExitCode:c.State.ExitCode ?? 0};
+  out('');
+ }
+ if (op==='run') {
+  if (!tail.includes('db:restore') || tail.at(-1)!=='verify') fail('unexpected maintenance command');
+  if (process.env.FAIL_DATABASE_VERIFY) fail('database verification failed');
+  out('');
+ }
  if (op==='up') {
+  const canonical=tail.includes('--exit-code-from');
+  const requested=tail.filter(x=>Object.hasOwn(config.services,x));
   const rollback=files.at(-1)?.endsWith('/rollback.json') || tail.includes('--build');
-  if (process.env.FAIL_UP && !rollback) fail('up failed');
+  if (process.env.FAIL_UP && !rollback && !canonical && requested.includes('api')) fail('up failed');
+  if(canonical && process.env.FAIL_MIGRATION) fail('migration failed');
   if (process.env.FAIL_ROLLBACK_UP && rollback) fail('rollback up failed');
   if (process.env.RETAG_BEFORE_UP && !rollback) {
    for(const value of Object.values(config.services)) {
@@ -312,6 +331,7 @@ if (args[0] === 'compose') {
    services=Object.fromEntries(Object.entries(config.services).map(([name,value])=>[name,{...value,...override.services[name]}]));
   }
   for (const [name,value] of Object.entries(services)) {
+   if(requested.length && !requested.includes(name)) continue;
    if (value.profiles && !activeProfiles.some(p=>p==='*' || value.profiles.includes(p))) continue;
    const image=Object.values(state.images).find(im=>im.Id===value.image || im.RepoTags.includes(value.image));
    if (!image) fail('up image missing for '+name);
@@ -322,8 +342,10 @@ if (args[0] === 'compose') {
     state.containers[cid]=container;
    }
    container.Image=(process.env.UP_IMAGE_MISMATCH && !rollback && name==='api') ? 'sha256:'+'a'.repeat(64) : (process.env.ROLLBACK_IMAGE_MISMATCH && rollback && name==='api') ? 'sha256:'+'c'.repeat(64) : image.Id;container.Config.Image=value.image;
+   container.State=canonical ? {Status:process.env.MIGRATION_STAYS_RUNNING ? 'running' : 'exited',Running:Boolean(process.env.MIGRATION_STAYS_RUNNING),ExitCode:Number(process.env.MIGRATION_EXIT_CODE || 0)} : {Status:'running',Running:true,ExitCode:0};
+   if(canonical && process.env.MIGRATION_WRONG_IMAGE) container.Image='sha256:'+'a'.repeat(64);
   }
-  state.ups++;out('');
+  if (!canonical && (!requested.length || requested.includes('api'))) state.ups++;out('');
  }
  fail('unsupported Compose shape: '+key,2);
 }
@@ -355,6 +377,7 @@ function fixture() {
     api: firstImage,
     web: firstImage,
     postgres: databaseImage,
+    worker: firstImage,
   };
   const images: Record<string, ImageRecord> = {
     [firstImage]: {
@@ -404,6 +427,8 @@ function fixture() {
         api: { image: "example/app:local", build: { context: "../.." } },
         web: { image: "example/app:local", build: { context: "../.." } },
         postgres: { image: "postgres:16" },
+        worker: { image: "example/app:local", build: { context: "../.." } },
+        migrate: { image: "example/app:local", build: { context: "../.." } },
       },
     },
     images,
@@ -1040,9 +1065,14 @@ describe("production deploy owned resources and generation state", () => {
       "api",
       "postgres",
       "web",
+      "worker",
     ]);
     for (const args of deploy.dockerArguments()) {
-      if (dockerOperation(args)[0] !== "context")
+      const localEnvironmentCheck =
+        args.includes("coginebot-env-preparation") &&
+        args.includes("config") &&
+        args.includes("--quiet");
+      if (dockerOperation(args)[0] !== "context" && !localEnvironmentCheck)
         expect(args.slice(0, 2)).toEqual(["--host", state.endpoint]);
       const op = dockerOperation(args);
       if (op[0] === "buildx" && op[1] === "prune")
@@ -2405,6 +2435,7 @@ describe("production deploy Compose selectors through sudo", () => {
       "api",
       "postgres",
       "web",
+      "worker",
     ]);
     for (const command of executionArguments(deploy))
       expect(profileArguments(command)).toEqual([""]);

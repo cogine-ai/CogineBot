@@ -8,6 +8,8 @@ import {
   describeRowSecurity,
   provisionRuntimeRole,
   SINGLE_DATABASE_URL_WARNING,
+  verifyRealtimeDatabase,
+  verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { formatDatabasePreparationFailure } from "./migrate-database-error.js";
 
@@ -41,8 +43,12 @@ async function main() {
     try {
       const status = await describeRowSecurity(prisma);
       if (!status.prepared) throw new Error(status.reason ?? "Runtime role preparation failed");
+      const policyStatus = await verifyRuntimeDatabase(prisma);
+      const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim();
+      if (realtimeUrl && realtimeUrl !== urls.url)
+        await verifyRealtimeDatabase(realtimeUrl, policyStatus.connectionEnforced, true);
       process.stdout.write(
-        "Runtime role and system key are ready; full table policies and application contexts are not activated.\n",
+        "Runtime role and system key are ready. This command does not activate table policies or service contexts.\n",
       );
     } finally {
       try {

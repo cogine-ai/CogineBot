@@ -17,7 +17,7 @@ interface ComposeService {
 }
 
 const composeFile = path.resolve(import.meta.dirname, "../../compose/docker-compose.prod.yml");
-const compose = parse(readFileSync(composeFile, "utf8")) as {
+const compose = parse(readFileSync(composeFile, "utf8"), { merge: true }) as {
   services: Record<string, ComposeService>;
   networks: Record<string, unknown>;
 };
@@ -25,7 +25,10 @@ const updater = compose.services.updater as ComposeService;
 
 describe("the production computer provider", () => {
   it.each(["api", "worker"])("lets .env select the %s provider with an E2B default", (name) => {
-    expect(compose.services[name]?.env_file).toEqual(["../../.env"]);
+    expect(compose.services[name]?.env_file).toBeUndefined();
+    expect(compose.services[name]?.environment).not.toHaveProperty("DATABASE_MIGRATION_URL");
+    expect(compose.services[name]?.environment).not.toHaveProperty("POSTGRES_PASSWORD");
+    expect(compose.services[name]?.environment?.DATABASE_URL).toContain("POSTGRES_APP_PASSWORD");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
     expect(compose.services[name]?.environment?.SANDBOX_PROVIDER).toBe("${SANDBOX_PROVIDER:-e2b}");
   });
