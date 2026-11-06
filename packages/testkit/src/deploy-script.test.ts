@@ -154,6 +154,9 @@ while (args[0] === '--host' || args[0] === '-H' || args[0] === '--context') {
 const key = args.join(' ');
 if (process.env.HOLD_COMMAND_MATCH && key.includes(process.env.HOLD_COMMAND_MATCH)) { fs.writeFileSync(process.env.HOLD_READY, 'ready'); while (!fs.existsSync(process.env.HOLD_RELEASE)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); }
 if (process.env.FAIL_DOCKER_MATCH && key.includes(process.env.FAIL_DOCKER_MATCH)) fail('injected Docker failure');
+if (state.writerStopAttempted && process.env.FAIL_DRAIN_INVENTORY && args[0]==='container' && args[1]==='ls') fail('writer inventory failed');
+if (state.writerStopAttempted && process.env.BAD_DRAIN_INSPECT && args[0]==='container' && args[1]==='inspect') out([]);
+if (state.writerStopAttempted && process.env.INVALID_DRAIN_WRITER_STATE && state.containers['9'.repeat(64)]) state.containers['9'.repeat(64)].State.Status='unknown';
 if (key === 'context show') out(process.env.CONTEXT_SHOW || state.context);
 if (args[0] === 'context' && args[1] === 'inspect' && args.length === 3) {
  if (process.env.BAD_CONTEXT_JSON) out(process.env.BAD_CONTEXT_JSON);
@@ -227,6 +230,16 @@ if (args[0] === 'image' && args[1] === 'inspect' && args.length>=3) {
  if (found.some(x=>!x)) fail('image not found');
  out(found);
 }
+if (args[0] === 'container' && args[1] === 'stop') {
+ if(args[2]!=='--time' || args[3]!=='120' || args.length<5 || args.slice(4).some(id=>!state.containers[id])) fail('invalid writer stop shape');
+ if(process.env.FAIL_OLD_WRITER_STOP) fail('old writer stop failed');
+ if(!process.env.OLD_WRITER_STOP_NOOP) for(const id of args.slice(4)) state.containers[id].State={Status:'exited',Running:false,ExitCode:0};
+ if(process.env.REPLACE_DRAIN_WRITER) {
+  const old=state.containers['9'.repeat(64)], id='b'.repeat(64);
+  state.containers[id]={...old,Id:id,Name:'/example-prod-replacement-1',State:{Status:'running',Running:true}};
+ }
+ out('');
+}
 if (args[0] === 'image' && args[1] === 'tag' && args.length===4) {
  const image=state.images[args[2]];
  if (!image) fail('image not found');
@@ -266,6 +279,8 @@ if (args[0] === 'compose') {
  const activeProfiles=profiles !== null ? profiles.filter(Boolean) : (process.env.COMPOSE_PROFILES ?? envFile.COMPOSE_PROFILES)?.split(',').map(s=>s.trim()).filter(Boolean) ?? state.activeProfiles;
  const config=JSON.parse(JSON.stringify(state.config));
  for (const [service,value] of Object.entries(config.services)) if (value.profiles && !activeProfiles.some(p=>p==='*' || value.profiles.includes(p))) delete config.services[service];
+ if (process.env.TARGET_REMOVE_SCHEDULER && revision !== state.initialRevision) delete config.services.scheduler;
+ if (process.env.TARGET_RENAME_SCHEDULER && revision !== state.initialRevision) { config.services.archiver=config.services.scheduler; delete config.services.scheduler; }
  if (process.env.TARGET_PROJECT && revision !== state.initialRevision) config.name=process.env.TARGET_PROJECT;
  if (process.env.TARGET_IMAGE_REF && revision !== state.initialRevision) config.services.api.image=process.env.TARGET_IMAGE_REF;
  if ((state.failedBuild || state.failedRollout) && revision === state.initialRevision) {
@@ -318,6 +333,7 @@ if (args[0] === 'compose') {
   if (process.env.FAIL_WRITER_STOP && tail.at(-1)!=='migrate') fail('writer stop failed');
   if (process.env.FAIL_MIGRATION_STOP && tail.at(-1)==='migrate') fail('migration stop failed');
   for (const c of Object.values(state.containers)) if(c.Config.Labels['com.docker.compose.project']===config.name && tail.includes(c.Config.Labels['com.docker.compose.service'])) c.State={Status:'exited',Running:false,ExitCode:c.State.ExitCode ?? 0};
+  state.writerStopAttempted=true;
   out('');
  }
  if (op==='run') {
@@ -328,6 +344,7 @@ if (args[0] === 'compose') {
  if (op==='up') {
   const canonical=tail.includes('--exit-code-from');
   const requested=tail.filter(x=>Object.hasOwn(config.services,x));
+  if(canonical && process.env.REQUIRE_RETIRED_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.project']===config.name && c.Config.Labels['com.docker.compose.service']==='scheduler' && !['created','exited','dead'].includes(c.State.Status))) fail('retired writer is active');
   if(canonical && process.env.REQUIRE_EXTRA_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.service']==='scheduler' && c.State.Status==='running')) fail('old extra writer is running');
   if(canonical && process.env.MIGRATION_MISSING_CONTAINER) out('');
   const rollback=files.at(-1)?.endsWith('/rollback.json') || tail.includes('--build');
@@ -2711,8 +2728,8 @@ describe("administrator migration lifecycle", () => {
     const deploy = fixture();
     deploy.update((state) => {
       state.config.services.scheduler = { image: "example/app:local", build: { context: "../.." } };
-      state.containers["e".repeat(64)] = {
-        Id: "e".repeat(64),
+      state.containers["9".repeat(64)] = {
+        Id: "9".repeat(64),
         Name: "/example-prod-scheduler-1",
         Image: deploy.firstImage,
         Config: {
@@ -2736,5 +2753,107 @@ describe("administrator migration lifecycle", () => {
     expect(stop).toContain("scheduler");
     expect(stop).not.toContain("postgres");
     expect(stop).not.toContain("migrate");
+  });
+});
+
+describe("retired deployment writers", () => {
+  function priorWriter(deploy: ReturnType<typeof fixture>, inactive = false) {
+    deploy.update((state) => {
+      state.config.services.scheduler = {
+        image: "example/app:local",
+        build: { context: "../.." },
+        ...(inactive ? { profiles: ["disabled"] } : {}),
+      };
+      for (const [id, status] of [
+        ["9".repeat(64), "running"],
+        ["a".repeat(64), "paused"],
+      ])
+        state.containers[id!] = {
+          Id: id!,
+          Name: `/example-prod-scheduler-${id![0]}`,
+          Image: deploy.firstImage,
+          Config: {
+            Image: "example/app:local",
+            Labels: {
+              "com.docker.compose.project": "example-prod",
+              "com.docker.compose.service": "scheduler",
+            },
+          },
+          State: { Status: status!, Running: true },
+          Mounts: [],
+        };
+      for (const [id, project, service, oneoff] of [
+        ["5".repeat(64), "another-project", "scheduler", "false"],
+        ["6".repeat(64), "example-prod", "updater", "false"],
+        ["7".repeat(64), "example-prod", "manual-task", "True"],
+      ])
+        state.containers[id!] = {
+          Id: id!,
+          Name: `/preserved-${id![0]}`,
+          Image: deploy.firstImage,
+          Config: {
+            Image: "example/app:local",
+            Labels: {
+              "com.docker.compose.project": project!,
+              "com.docker.compose.service": service!,
+              "com.docker.compose.oneoff": oneoff!,
+            },
+          },
+          State: { Status: "running", Running: true },
+          Mounts: [],
+        };
+    });
+  }
+
+  it.each(["removed", "renamed", "inactive"])(
+    "stops all %s writer replicas before migration",
+    (kind) => {
+      const deploy = fixture();
+      priorWriter(deploy, kind === "inactive");
+      deploy.next();
+      const result = deploy.run({
+        REQUIRE_RETIRED_STOP: "1",
+        ...(kind === "removed"
+          ? { TARGET_REMOVE_SCHEDULER: "1" }
+          : kind === "renamed"
+            ? { TARGET_RENAME_SCHEDULER: "1" }
+            : {}),
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const operations = deploy.dockerArguments().map(dockerOperation);
+      const stopped = operations.findIndex((op) => op[0] === "container" && op[1] === "stop");
+      const migrated = operations.findIndex((op) => op.includes("--exit-code-from"));
+      expect(stopped).toBeGreaterThanOrEqual(0);
+      expect(migrated).toBeGreaterThan(stopped);
+      expect(operations[stopped]!.slice(4).sort()).toEqual(["9".repeat(64), "a".repeat(64)].sort());
+      for (const id of ["9", "a"])
+        expect(deploy.state().containers[id.repeat(64)]!.State.Status).toBe("exited");
+      for (const id of ["5", "6", "7"])
+        expect(deploy.state().containers[id.repeat(64)]!.State.Status).toBe("running");
+      expect(deploy.state().containers["3".repeat(64)]!.State.Status).toBe("running");
+      expect(
+        deploy.record().healthy!.services.some((service) => service.service === "scheduler"),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    { FAIL_OLD_WRITER_STOP: "1" },
+    { OLD_WRITER_STOP_NOOP: "1" },
+    { FAIL_DRAIN_INVENTORY: "1" },
+    { BAD_DRAIN_INSPECT: "1" },
+    { INVALID_DRAIN_WRITER_STATE: "1" },
+    { REPLACE_DRAIN_WRITER: "1" },
+  ])("refuses migration and recovery without proof that retired writers stopped: %j", (fault) => {
+    const deploy = fixture();
+    priorWriter(deploy);
+    deploy.next();
+    const result = deploy.run({ TARGET_REMOVE_SCHEDULER: "1", ...fault });
+    expect(result.status).not.toBe(0);
+    const operations = deploy.dockerArguments().map(composeOperation);
+    expect(operations.some((op) => op.includes("--exit-code-from"))).toBe(false);
+    expect(operations.some((op) => op.includes("db:row-security"))).toBe(false);
+    expect(operations.some((op) => op[0] === "up" && op.includes("api"))).toBe(false);
+    expect(deploy.record().healthy).toBeNull();
   });
 });

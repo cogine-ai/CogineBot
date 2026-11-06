@@ -108,6 +108,9 @@ describe("renderStackEnv", () => {
 
 describe("ensureStackEnv", () => {
   let dir: string;
+  const unexpectedRuntimeProbe = async () => {
+    throw new Error("This env fixture must not require a runtime credential probe");
+  };
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), "rakazo-stack-env-"));
   });
@@ -116,7 +119,9 @@ describe("ensureStackEnv", () => {
   });
 
   it("creates a private .env from the template", async () => {
-    await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("created");
+    await expect(
+      ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+    ).resolves.toBe("created");
     const file = path.join(dir, STACK_ENV_FILE);
     await expect(readFile(file, "utf8")).resolves.toBe(`POSTGRES_PASSWORD=${"ab".repeat(16)}\n`);
     if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
@@ -201,7 +206,9 @@ describe("ensureStackEnv", () => {
 
   it("never touches an existing .env", async () => {
     await writeFile(path.join(dir, STACK_ENV_FILE), "sentinel\n", "utf8");
-    await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("kept");
+    await expect(
+      ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+    ).resolves.toBe("kept");
     await expect(readFile(path.join(dir, STACK_ENV_FILE), "utf8")).resolves.toBe("sentinel\n");
   });
 
@@ -212,7 +219,9 @@ describe("ensureStackEnv", () => {
       await writeFile(target, "sentinel\n", "utf8");
       await symlink(target, path.join(dir, STACK_ENV_FILE));
 
-      await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("created");
+      await expect(
+        ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+      ).resolves.toBe("created");
       await expect(readFile(path.join(dir, STACK_ENV_FILE), "utf8")).resolves.toBe(
         `POSTGRES_PASSWORD=${"ab".repeat(16)}\n`,
       );

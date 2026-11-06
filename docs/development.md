@@ -83,6 +83,11 @@ Open <http://127.0.0.1:5173>. The API defaults to port 3100. Register a developm
 
 For a full source runtime, `corepack pnpm dev` starts API, worker, web, and supervisor. Configure its database, queue, computer provider, and secrets first; the root command is not the minimal fake-provider UI setup above. Use the current [self-hosting guide](self-host.md) and [computer runtime guide](computer-runtime.md) for stack configuration. [CogineBot releases](https://github.com/cogine-ai/CogineBot/releases), including version 0.2.1, use the project's own distribution destinations. `README.upstream.md` retains the original baseline instructions and upstream distribution references for provenance.
 
+For backup restoration, follow the [restore procedure](self-host.md#restore).
+Use one administrator for the complete SQL-to-files-to-restart transition, with
+automated updates and other maintenance stopped. The restore helpers do not
+serialize the whole operation against deployments, updates, or another restore.
+
 ### Model connections
 
 When moving to real-model validation, use the application's shared model connection settings. Compatible endpoints use the same saved connection mechanism for endpoint, model, capabilities, and credentials. Do not add a new provider-specific environment variable to bypass it.

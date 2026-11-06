@@ -99,11 +99,12 @@ async function main() {
   let { prisma } = created;
   const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim() || databaseUrl;
   const status = await verifyRuntimeDatabase(prisma);
-  await verifyRealtimeDatabase(
-    realtimeUrl,
-    status.connectionEnforced,
-    !status.problems.includes("runtime-not-prepared"),
-  );
+  if (realtimeUrl !== databaseUrl)
+    await verifyRealtimeDatabase(
+      realtimeUrl,
+      status.connectionEnforced,
+      !status.problems.includes("runtime-not-prepared"),
+    );
   const realtime = new PostgresRealtimeFanout({
     connectionString: realtimeUrl,
     publisher: pool,

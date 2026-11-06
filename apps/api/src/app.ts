@@ -232,7 +232,7 @@ async function buildApp(
   if (created.pool) {
     try {
       const status = await verifyRuntimeDatabase(created.prisma);
-      if (!realtimeOverride)
+      if (!realtimeOverride && env.realtimeDatabaseUrl !== env.databaseUrl)
         await verifyRealtimeDatabase(
           env.realtimeDatabaseUrl,
           status.connectionEnforced,

@@ -283,8 +283,8 @@ publish_state() { state="$(check_state <<<"$1")"; write_json "${state_file}" "${
 read_containers() {
   local rows ids id
   rows="$(docker_command 1m container ls --all --no-trunc --format '{{json .}}' | jq -cs \
-    'if all(.[]; (.ID|type == "string" and test("^[0-9a-f]{64}$")) and (.Names|type == "string")) then . else error("invalid container inventory") end')"
-  ids="$(jq -r '.[].ID' <<<"${rows}")"
+    'if all(.[]; (.ID|type == "string" and test("^[0-9a-f]{64}$")) and (.Names|type == "string")) then . else error("invalid container inventory") end')" || return 1
+  ids="$(jq -r '.[].ID' <<<"${rows}")" || return 1
   containers='[]'
   if [[ -n "${ids}" ]]; then
     local list=(); while IFS= read -r id; do list+=("${id}"); done <<<"${ids}"
@@ -294,9 +294,51 @@ read_containers() {
         all(.[]; (.Id|type == "string" and test("^[0-9a-f]{64}$")) and (.Image|type == "string" and test("^sha256:[0-9a-f]{64}$")) and
           (.Config.Labels == null or (.Config.Labels|type == "object")) and (.Name|type == "string" and startswith("/")) and
           (.State.Status|type == "string" and length > 0))
-      then . else error("invalid container inspection") end')"
+      then map({Id,Name,Image,
+        Config:{Labels:(.Config.Labels | {"com.docker.compose.project":.["com.docker.compose.project"],
+          "com.docker.compose.service":.["com.docker.compose.service"],"com.docker.compose.oneoff":.["com.docker.compose.oneoff"]})},
+        State:{Status:.State.Status,Running:.State.Running,ExitCode:.State.ExitCode}})
+      else error("invalid container inspection") end')" || return 1
   fi
 }
+# Retired services are no longer addressable through the target Compose file.
+# Inspect the complete project inventory and pass only container IDs to Docker.
+runtime_writer_ids() {
+  jq -ce --arg project "${project}" '
+    [.[] | select(.Config.Labels["com.docker.compose.project"] == $project) |
+      (.Config.Labels["com.docker.compose.oneoff"] // "false") as $oneoff |
+      if ($oneoff | type) != "string" or ($oneoff | ascii_downcase | IN("true","false") | not)
+      then error("invalid runtime container classification")
+      elif ($oneoff | ascii_downcase) == "true" then empty
+      else .Config.Labels["com.docker.compose.service"] as $service |
+        if ($service | IN("postgres","migrate","updater")) then empty
+        elif ($service | type) != "string" or ($service | test("^[A-Za-z0-9][A-Za-z0-9_.-]*$") | not)
+        then error("invalid runtime service identity")
+        elif (.State.Status | IN("created","running","paused","restarting","removing","exited","dead") | not)
+          or (.State.Running != null and (.State.Running | type) != "boolean")
+        then error("invalid runtime container state")
+        elif (.State.Status | IN("created","exited","dead")) and (.State.Running // false) == false
+        then empty else .Id end
+      end]'
+}
+stop_runtime_writers() {
+  local timeout="$1" writers id
+  local -a ids=()
+  check_engine || return 1
+  docker_command "${timeout}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 "${writer_services[@]}" || return 1
+  read_containers || return 1
+  writers="$(runtime_writer_ids <<<"${containers}")" || return 1
+  while IFS= read -r id; do ids+=("${id}"); done < <(jq -r '.[]' <<<"${writers}")
+  if ((${#ids[@]} > 0)); then
+    check_engine || return 1
+    docker_command "${timeout}" container stop --time 120 "${ids[@]}" || return 1
+  fi
+  check_engine || return 1
+  read_containers || return 1
+  writers="$(runtime_writer_ids <<<"${containers}")" || return 1
+  [[ "${writers}" == '[]' ]] || { echo "Application database writers remain active; the deployment cannot continue." >&2; return 1; }
+}
+
 read_images() {
   images="$(docker_command 1m image ls --all --no-trunc --format '{{json .}}' | jq -cs \
     'if all(.[]; (.ID|type == "string" and test("^sha256:[0-9a-f]{64}$")) and (.Repository|type == "string") and (.Tag|type == "string")) then . else error("invalid image inventory") end')"
@@ -508,7 +550,7 @@ rollback() {
   fi
   echo "Deployment failed; restoring the previous revision ${previous_revision}." >&2
   if [[ "${writers_may_be_stopped}" == 1 ]]; then
-    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 "${writer_services[@]}"; then
+    if ! stop_runtime_writers "${ROLLBACK_TIMEOUT}"; then
       echo "Database writers could not be stopped; runtime recovery was not started." >&2; exit 1
     fi
     if [[ "${migration_started}" == 1 ]]; then
@@ -614,8 +656,7 @@ check_engine
 jq -e 'any(.services[];.service == "migrate")' <<<"${config}" >/dev/null || fail "The target Compose stack has no administrator migration service"
 while IFS= read -r service; do writer_services+=("${service}"); done < <(jq -r '.services[] | select(.service != "migrate" and .service != "postgres" and .service != "updater") | .service' <<<"${config}")
 writers_may_be_stopped=1
-docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
-  -f "${state_dir}/forward.json" stop --timeout 120 "${writer_services[@]}"
+stop_runtime_writers "${UP_TIMEOUT}"
 check_engine
 docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
   -f "${state_dir}/forward.json" up -d --wait --no-deps --no-build --pull never postgres

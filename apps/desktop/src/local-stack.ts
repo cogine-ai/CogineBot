@@ -125,7 +125,7 @@ export async function ensureStackEnv(
   dir: string,
   template: string,
   randomHex: (bytes: number) => string,
-  hasConfiguredRuntimePassword?: () => Promise<boolean>,
+  hasConfiguredRuntimePassword: () => Promise<boolean>,
 ): Promise<"kept" | "created"> {
   const destination = path.join(dir, STACK_ENV_FILE);
   try {
@@ -133,8 +133,6 @@ export async function ensureStackEnv(
     if (!info.isSymbolicLink()) {
       if (template.split("\n").includes("POSTGRES_APP_PASSWORD=")) {
         const existing = await readFile(destination, "utf8");
-        if (!hasConfiguredRuntimePassword)
-          throw new Error("The existing runtime password must be verified with Docker Compose");
         if (!(await hasConfiguredRuntimePassword())) {
           const password = randomHex(GENERATED_SECRETS.POSTGRES_APP_PASSWORD!);
           const next = `${existing}${existing.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${password}\n`;

@@ -362,23 +362,29 @@ describePostgres("protected database app composition", () => {
     if (failures.length) throw new AggregateError(failures, "Protected app fixture cleanup failed");
   }, 60_000);
 
-  it("starts the default app with protected main and listener connections and stops both", async () => {
-    const dataDir = await mkdtemp(join(tmpdir(), "protected-app-"));
-    let handles: Awaited<ReturnType<typeof createApp>> | undefined;
-    try {
-      handles = await createApp(options(dataDir, runtimeUrl, listenerUrl));
-      expect((await handles.app.request("/health")).status).toBe(200);
-      const ready = await handles.app.request("/ready");
-      expect(ready.status).toBe(200);
-      await expect(ready.json()).resolves.toEqual({ ok: true, degraded: false });
-      await handles.stop();
-      handles = undefined;
-      await noAppConnections();
-    } finally {
-      await handles?.stop();
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  }, 30_000);
+  it.each(["shared", "separate"] as const)(
+    "starts the default app with protected main and %s listener credentials and stops both",
+    async (connection) => {
+      const dataDir = await mkdtemp(join(tmpdir(), "protected-app-"));
+      let handles: Awaited<ReturnType<typeof createApp>> | undefined;
+      try {
+        handles = await createApp(
+          options(dataDir, runtimeUrl, connection === "shared" ? runtimeUrl : listenerUrl),
+        );
+        expect((await handles.app.request("/health")).status).toBe(200);
+        const ready = await handles.app.request("/ready");
+        expect(ready.status).toBe(200);
+        await expect(ready.json()).resolves.toEqual({ ok: true, degraded: false });
+        await handles.stop();
+        handles = undefined;
+        await noAppConnections();
+      } finally {
+        await handles?.stop();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 
   async function refusesBeforeSecrets(mainUrl: string, realtimeUrl: string) {
     const dataDir = await mkdtemp(join(tmpdir(), "protected-app-refusal-"));

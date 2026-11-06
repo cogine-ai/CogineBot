@@ -1017,6 +1017,15 @@ or reconcile an already prepared target. A target with existing managed role
 memberships or authority needs an explicit administrator inventory and a fresh
 restore target. Keep the old database and data directory as rollback evidence.
 
+Use one coordinated administrator for the entire restore window. Stop automated
+updaters and scheduled maintenance before starting. Do not run another restore,
+deployment, update, rollback, or role/policy change against the same deployment
+from any host until SQL import, migration, verification, file publication, and
+service restart have finished. The scripts do not provide operation-wide or
+cross-entrypoint exclusion: database advisory locks cover individual helper
+sessions, and writer/readiness checks describe the state at that point in time.
+Concurrent authorized maintenance can invalidate those checks.
+
 For `scripts/backup.sh` backups, use the development Compose stack:
 
 ```bash
