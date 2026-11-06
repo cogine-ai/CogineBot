@@ -119,7 +119,17 @@ export function pageMessage(data: string): unknown {
   }
 }
 
-const pageReads = new Map<string, { read: Promise<PageDetail>; at: number }>();
+type PageRead = { read: Promise<PageDetail>; at: number; refresh?: Promise<PageDetail> };
+const pageReads = new Map<string, PageRead>();
+const pageReadKey = (pageId: string, version?: number) =>
+  JSON.stringify([pageScopeKey(), pageId, version ?? null]);
+
+function clearPageReads(scope: string, pageId: string) {
+  for (const key of pageReads.keys()) {
+    const [owner, id] = JSON.parse(key) as [string, string];
+    if (owner === scope && id === pageId) pageReads.delete(key);
+  }
+}
 // Another account or server never sees this one's pages.
 const clearPages = () => {
   pageReads.clear();
@@ -181,15 +191,49 @@ export function getLatestPage(
   pageId: string,
   options: { refresh?: boolean; atLeastVersion?: number; since?: number } = {},
 ): Promise<PageDetail> {
-  const key = JSON.stringify([pageScopeKey(), pageId]);
+  const scope = pageScopeKey();
+  const key = pageReadKey(pageId);
   const cached = options.refresh ? undefined : pageReads.get(key);
   if (cached && cached.at >= (options.since ?? lastOnScreen)) {
     const wanted = options.atLeastVersion ?? 0;
-    return cached.read.then((page) =>
-      page.currentVersion >= wanted ? page : getLatestPage(pageId, { refresh: true }),
-    );
+    return cached.read.then((page) => {
+      if (scope !== pageScopeKey()) throw new Error("Page scope changed");
+      if (page.currentVersion >= wanted) return page;
+      const refreshed = pageReads.get(key);
+      return refreshed && refreshed !== cached
+        ? refreshed.read.then((page) => {
+            if (scope !== pageScopeKey()) throw new Error("Page scope changed");
+            return page.currentVersion >= wanted ? page : refreshLatestPage(pageId, refreshed);
+          })
+        : refreshLatestPage(pageId, cached);
+    });
   }
-  const read = pageRpc<PageDetail>("pages/get", { pageId });
+  return readPage(pageId);
+}
+
+/** Share one fresh attempt after an insufficient read, without repeatedly chasing a version. */
+function refreshLatestPage(pageId: string, previous: PageRead): Promise<PageDetail> {
+  if (previous.refresh) return previous.refresh;
+  const refresh = getLatestPage(pageId, { refresh: true });
+  previous.refresh = refresh;
+  const clear = () => {
+    if (previous.refresh === refresh) delete previous.refresh;
+  };
+  void refresh.then(clear, clear);
+  return refresh;
+}
+
+/** Saved card previews share immutable version reads without replacing the live Page. */
+export function getPageVersion(pageId: string, version: number): Promise<PageDetail> {
+  return pageReads.get(pageReadKey(pageId, version))?.read ?? readPage(pageId, version);
+}
+
+function readPage(pageId: string, version?: number): Promise<PageDetail> {
+  const key = pageReadKey(pageId, version);
+  const read = pageRpc<PageDetail>("pages/get", {
+    pageId,
+    ...(version === undefined ? {} : { version }),
+  });
   const entry = { read, at: Date.now() };
   pageReads.set(key, entry);
   read.catch(() => {
@@ -199,19 +243,19 @@ export function getLatestPage(
 }
 
 export function renamePage(pageId: string, title: string) {
-  const key = JSON.stringify([pageScopeKey(), pageId]);
-  return pageRpc("pages/rename", { pageId, title }).finally(() => pageReads.delete(key));
+  const scope = pageScopeKey();
+  return pageRpc("pages/rename", { pageId, title }).finally(() => clearPageReads(scope, pageId));
 }
 
 export function removePage(pageId: string) {
-  const key = JSON.stringify([pageScopeKey(), pageId]);
+  const scope = pageScopeKey();
   return pageRpc<{ ok: true }>("pages/remove", { pageId })
     .catch((error: unknown) => {
       // NOT_FOUND: another device deleted it first, which is the outcome asked for.
       if (pageReadFailure(error) === "deleted") return { ok: true as const };
       throw error;
     })
-    .finally(() => pageReads.delete(key));
+    .finally(() => clearPageReads(scope, pageId));
 }
 
 export async function pageDocument(
@@ -234,7 +278,7 @@ export async function pageDocument(
 }
 
 export function pinPage(pageId: string, pinned: boolean) {
-  const key = JSON.stringify([pageScopeKey(), pageId]);
-  return pageRpc("pages/pin", { pageId, pinned }).finally(() => pageReads.delete(key));
+  const scope = pageScopeKey();
+  return pageRpc("pages/pin", { pageId, pinned }).finally(() => clearPageReads(scope, pageId));
 }
 export const privatePageRpc = pageRpc;

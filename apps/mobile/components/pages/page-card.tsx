@@ -98,16 +98,17 @@ function PagePreview({
   );
 }
 
-/** A page in the chat: its live top half and a footer naming it. Opens the latest version. */
+/** An older card retains its saved preview; every card opens the latest Page. */
 export function PageCard({ block, messageId }: { block: PageBlock; messageId: string }) {
   const openPage = useOpenPrivatePage();
   const { t } = useI18n();
   const tokens = useMobileTokens();
   const [width, setWidth] = useState(0);
-  const detail = usePageCardDetail(block);
   const newest = useContext(NewestPageCards);
-  const state = pageCardState(block, detail);
-  const updatedBelow = state.status === "ready" && pageCardSuperseded(newest, messageId, block);
+  const updated = pageCardSuperseded(newest, messageId, block);
+  const detail = usePageCardDetail(block, updated);
+  const state = pageCardState(block, detail.current);
+  const updatedBelow = state.status === "ready" && updated;
   const deleted = state.status === "deleted";
   return (
     <Pressable
@@ -128,9 +129,11 @@ export function PageCard({ block, messageId }: { block: PageBlock; messageId: st
     >
       {deleted ? null : (
         <PagePreview
-          key={pageScopeKey()}
-          detail={state.status === "ready" ? state.detail : null}
-          failed={state.status === "failed"}
+          key={JSON.stringify([pageScopeKey(), block.pageId, updated ? block.version : null])}
+          detail={
+            state.status === "ready" && typeof detail.preview === "object" ? detail.preview : null
+          }
+          failed={state.status === "failed" || detail.preview === "failed"}
           width={width}
         />
       )}
