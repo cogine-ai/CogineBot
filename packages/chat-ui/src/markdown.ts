@@ -10,7 +10,8 @@ export type ChatMarkdownProps = {
   onOpenPage?: (pageId: string) => void;
 };
 
-const PAGE_URL_PATTERN = /^page:([A-Za-z0-9_-]{1,64})$/;
+const PAGE_REFERENCE_PATTERN = "page:([A-Za-z0-9_-]{1,64})";
+const PAGE_URL_PATTERN = new RegExp(`^${PAGE_REFERENCE_PATTERN}$`);
 
 export function markdownPageId(href: string | undefined): string | undefined {
   return href ? PAGE_URL_PATTERN.exec(href)?.[1] : undefined;
@@ -65,7 +66,10 @@ export type PlainTextPart =
   | { type: "link"; value: string; href: string }
   | { type: "page"; value: string; pageId: string };
 
-const PLAIN_PAGE_LINK = /\[((?:\\[\\[\]]|[^\\[\]\n])*)\]\(page:([A-Za-z0-9_-]{1,64})\)/g;
+const PLAIN_PAGE_LINK = new RegExp(
+  String.raw`\[((?:\\[\\[\]]|[^\\[\]\n])*)\]\(${PAGE_REFERENCE_PATTERN}\)`,
+  "g",
+);
 
 function appendPlainText(parts: PlainTextPart[], value: string) {
   if (!value) return;

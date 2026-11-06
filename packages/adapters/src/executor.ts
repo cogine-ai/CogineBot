@@ -8218,7 +8218,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? {}
                 : {
                     turnCheckpoint: turnState.blob,
-                    ...(!takeoverResume && turnState.pendingToolName === "request_takeover"
+                    ...(!heldForTakeover &&
+                    !takeoverResume &&
+                    turnState.pendingToolName === "request_takeover"
                       ? { resumeUnreleasedTakeoverExecutionId: turnState.pendingExecutionId }
                       : {}),
                     onCheckpoint: (capture: () => string, executionId: string) => {

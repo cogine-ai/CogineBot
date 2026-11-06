@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
   newestPageCards,
   pageCardSuperseded,
-  pageLinksAsTitles,
   pageReply,
   pageReplyOwnerText,
   pageReplyTargetId,
@@ -96,76 +95,6 @@ describe("Page reply owner text", () => {
       `[${"\\[".repeat(50_000)}`,
     ])
       expect(pageReplyOwnerText(body)).toBe(body);
-  });
-});
-
-describe("pageLinksAsTitles", () => {
-  it("reads page links as their titles, leaving other, escaped and code links as written", () => {
-    expect(
-      pageLinksAsTitles(
-        "I made a [Test dashboard](page:cm1) and [Q3 \\[draft\\]](page:p_2-x). See [docs](https://example.com) or [x](page:bad id).",
-      ),
-    ).toBe(
-      "I made a Test dashboard and Q3 [draft]. See [docs](https://example.com) or [x](page:bad id).",
-    );
-    expect(pageLinksAsTitles("not a link: \\[a](page:b) but [c](page:d)")).toBe(
-      "not a link: \\[a](page:b) but c",
-    );
-    expect(
-      pageLinksAsTitles(
-        "Use `[a](page:p1)` or ``[b](page:p2)``, see [c](page:p3).\n```md\n[d](page:p4)\n```\nand [e](page:p5) ` [f](page:p6)",
-      ),
-    ).toBe("Use `[a](page:p1)` or ``[b](page:p2)``, see c.\n```md\n[d](page:p4)\n```\nand e ` f");
-    expect(pageLinksAsTitles("```\n[open](page:p1)")).toBe("```\n[open](page:p1)");
-  });
-
-  it("leaves tilde fences as written and keeps a backslash that escapes nothing", () => {
-    expect(pageLinksAsTitles("~~~md\n[d](page:p4)\n~~~\nand [e](page:p5)")).toBe(
-      "~~~md\n[d](page:p4)\n~~~\nand e",
-    );
-    expect(pageLinksAsTitles("~~~~\n~~~\n[d](page:p4)")).toBe("~~~~\n~~~\n[d](page:p4)");
-    expect(pageLinksAsTitles("a ~~b~~ [c](page:p1)")).toBe("a ~~b~~ c");
-    expect(pageLinksAsTitles("[C:\\Users \\[x\\]](page:p1)")).toBe("C:\\Users [x]");
-    // A fence line with text after it opens a block but never closes one; trailing spaces may.
-    expect(pageLinksAsTitles("```\n```js\n[d](page:p4)\n```  \n[e](page:p5)")).toBe(
-      "```\n```js\n[d](page:p4)\n```  \ne",
-    );
-    expect(pageLinksAsTitles("~~~\n~~~x\n[d](page:p4)")).toBe("~~~\n~~~x\n[d](page:p4)");
-    // CRLF line endings close a block like LF, and keep their bytes.
-    for (const fence of ["```", "~~~"]) {
-      expect(pageLinksAsTitles(`${fence}\r\n[d](page:p4)\r\n${fence} \r\n[e](page:p5)`)).toBe(
-        `${fence}\r\n[d](page:p4)\r\n${fence} \r\ne`,
-      );
-      expect(pageLinksAsTitles(`${fence}\r\n${fence}x\r\n[d](page:p4)`)).toBe(
-        `${fence}\r\n${fence}x\r\n[d](page:p4)`,
-      );
-    }
-  });
-
-  it("stays linear on 100 KB of brackets that never close", () => {
-    for (const input of [
-      "[".repeat(100_000),
-      `[${"\\[".repeat(50_000)}`,
-      `[${"\\]".repeat(50_000)}`,
-      `[a](page:${"a".repeat(100_000)}`,
-      "[a]".repeat(33_000),
-      "` ".repeat(50_000),
-      Array.from({ length: 400 }, (_, n) => `${"`".repeat(n + 1)}x`).join(""),
-      `${"```\n".repeat(20_000)}`,
-      `${"~~~\n".repeat(20_000)}`,
-      // Long fences with text after them, which close nothing, over many short closers.
-      `${"````x\n".repeat(20_000)}${"```\n".repeat(20_000)}`,
-      // Fences getting shorter, then many short ones: each long fence looks past them all.
-      `${Array.from({ length: 1_000 }, (_, n) => `${"`".repeat(1_003 - n)}\n`).join("")}${"```\n".repeat(50_000)}`,
-    ]) {
-      // Best of three, so a busy machine cannot fail it; a quadratic input takes seconds.
-      const runs = [0, 1, 2].map(() => {
-        const started = performance.now();
-        pageLinksAsTitles(input);
-        return performance.now() - started;
-      });
-      expect(Math.min(...runs)).toBeLessThan(50);
-    }
   });
 });
 

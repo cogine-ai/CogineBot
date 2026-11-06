@@ -360,7 +360,10 @@ describe("real Pi against an offline model HTTP endpoint", () => {
                 },
               },
             ],
-            executeTool: async () => ({ original: "😀".repeat(30_000) }),
+            executeTool: async (name, args, _executionId, _route, observer) =>
+              name === "run_subagent"
+                ? observer!.runSubagent!(args)
+                : { original: "😀".repeat(30_000) },
           },
         ),
       ),

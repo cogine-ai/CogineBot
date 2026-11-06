@@ -407,6 +407,47 @@ it.each(["NOT_FOUND", "NETWORK_ERROR"])(
   },
 );
 
+it.each(["ready", "deleted"])(
+  "keeps the settled %s card while a same-Page focus refresh is pending",
+  async (state) => {
+    const started = state === "ready" ? 25_000 : 27_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(started);
+    const refresh = deferred<PageDetail>();
+    try {
+      host.rpc.mockImplementation(async (_proc, input: { version?: number }) => {
+        if (!input.version && state === "deleted")
+          throw Object.assign(new Error("Page not found"), { code: "NOT_FOUND" });
+        return page(input.version ?? 2, "Settled title");
+      });
+      const { container } = await show();
+      const settled = container.textContent;
+      const labels = [...container.querySelectorAll("button")].map((button) =>
+        button.getAttribute("aria-label"),
+      );
+      host.rpc.mockImplementation((_proc, input: { version?: number }) =>
+        input.version ? Promise.resolve(page(input.version)) : refresh.promise,
+      );
+      now.mockReturnValue(started + 1_000);
+      await act(async () => chatOnScreen.mark());
+      expect(container.textContent).toBe(settled);
+      const buttons = [...container.querySelectorAll("button")];
+      expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(labels);
+      expect(buttons.map((button) => button.disabled)).toEqual([
+        state === "deleted",
+        state === "deleted",
+      ]);
+      if (state === "deleted") {
+        await act(async () => buttons[0]!.click());
+        expect(host.push).not.toHaveBeenCalled();
+      }
+      await act(async () => refresh.resolve(page(3, "Refreshed title")));
+      expect(container.textContent).toContain("Refreshed title");
+    } finally {
+      now.mockRestore();
+    }
+  },
+);
+
 it("keeps a newest card live when a routine saves another version without posting a newer card", async () => {
   const now = vi.spyOn(Date, "now").mockReturnValue(30_000);
   try {

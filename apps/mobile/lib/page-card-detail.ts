@@ -36,7 +36,7 @@ type CardDetail = PageDetail | null | "failed" | "deleted";
 export function usePageCardDetail(block: { pageId: string; version: number }, updated = false) {
   const onScreen = useSyncExternalStore(chatOnScreen.subscribe, chatOnScreen.get);
   const scope = useSyncExternalStore(subscribePageScope, pageScopeKey, pageScopeKey);
-  const key = JSON.stringify([scope, block.pageId, block.version, updated, onScreen]);
+  const key = JSON.stringify([scope, block.pageId, block.version, updated]);
   const [loaded, setLoaded] = useState<{
     key: string;
     current: CardDetail;
@@ -44,7 +44,9 @@ export function usePageCardDetail(block: { pageId: string; version: number }, up
   }>({ key, current: null, preview: null });
   useEffect(() => {
     let active = true;
-    setLoaded({ key, current: null, preview: null });
+    setLoaded((previous) =>
+      previous.key === key ? previous : { key, current: null, preview: null },
+    );
     void getLatestPage(block.pageId, { atLeastVersion: block.version, since: onScreen }).then(
       (detail) => {
         if (active && scope === pageScopeKey())

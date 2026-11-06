@@ -30,6 +30,10 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.js";
+import {
+  composerSendSignature,
+  createComposerSendAttemptStore,
+} from "../../../apps/web/src/lib/composer-send-attempt";
 import type { ExecutorDeps } from "../../adapters/src/executor.js";
 import type { PageToolContext } from "../../adapters/src/page-tools.js";
 import { recoverSavedPageFromTool, savePageFromTool } from "../../adapters/src/page-tools.js";
@@ -426,6 +430,110 @@ describePages("private Pages with production row-security policies", () => {
       }
       return sent;
     };
+    it("keeps one owner-intent nonce when a late Page send commits after a typed deletion rejection", async () => {
+      const cookie = await signup(app, `pages-nonce-race-${stamp}@example.test`, "Nonce Owner");
+      const actor = await rpc<Actor>(app, cookie, "me");
+      const bot = await createBot(app, cookie, "Nonce Reporter");
+      const thread = await db().thread.findFirstOrThrow({
+        where: { botId: bot.id, groupId: null },
+      });
+      const created = await db().page.create({
+        data: {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          botId: bot.id,
+          title: "Nonce report",
+        },
+      });
+      const originalMessages = await db().message.count({
+        where: { threadId: thread.id, role: "user" },
+      });
+      const originalRuns = await db().run.count({ where: { threadId: thread.id } });
+      const nonce = `page-delete-race-${stamp}`;
+      let nonceSequence = 0;
+      const makeNonce = vi.fn(() => (++nonceSequence === 1 ? nonce : `${nonce}-${nonceSequence}`));
+      const store = createComposerSendAttemptStore(makeNonce);
+      const text = "Only acknowledge this one owner request.";
+      const signature = composerSendSignature({ text, target: { botId: bot.id }, attachments: [] });
+      const key = `bot:${bot.id}`;
+      const attempt = store.acquire(key, signature, { pageContext: { pageId: created.id } })!;
+      const lock = await owner.pool.connect();
+      let pending: ReturnType<typeof sendFallback> | undefined;
+      try {
+        await lock.query("BEGIN");
+        await lock.query("SELECT id FROM threads WHERE id=$1 FOR UPDATE", [thread.id]);
+        const held = (await lock.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!;
+        pending = sendFallback(cookie, {
+          botId: bot.id,
+          text,
+          clientNonce: attempt.clientNonce,
+          ...attempt.pageReply,
+        });
+        // This exact UPDATE follows the Page read; waiting on this holder proves A passed it.
+        await vi.waitFor(
+          async () => {
+            const waiting = await owner.pool.query<{ query: string }>(
+              `SELECT query FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid))
+             AND usename=$2 AND wait_event_type='Lock'
+             AND query ILIKE '%UPDATE%' AND query ILIKE '%threads%' AND query ILIKE '%nextMessageSeq%'`,
+              [held.pid, login],
+            );
+            expect(waiting.rows).toHaveLength(1);
+          },
+          { timeout: 3000, interval: 10 },
+        );
+        // A's server transaction is still running after its client lost the response.
+        store.finish(key, attempt, false);
+        await rpc(app, cookie, "pages/remove", { pageId: created.id });
+        const retry = store.acquire(key, signature, { pageContext: { pageId: created.id } })!;
+        const rejected = await raw(app, cookie, "threads/send", {
+          botId: bot.id,
+          text,
+          clientNonce: retry.clientNonce,
+          ...retry.pageReply,
+        });
+        expect(rejected.status).toBe(404);
+        const body = (await rejected.json()) as {
+          json: { code: string; data: { reason: string } };
+        };
+        expect(body.json).toMatchObject({
+          code: "NOT_FOUND",
+          data: { reason: "page_context_unavailable" },
+        });
+        store.rejectPageContext(key, retry, body.json);
+        store.finish(key, retry, false);
+        expect(retry.clientNonce).toBe(nonce);
+        expect(retry.pageReply).toEqual({});
+      } finally {
+        await lock.query("ROLLBACK");
+        lock.release();
+        await pending?.catch(() => undefined);
+      }
+      const first = await pending!;
+      const plain = store.acquire(key, signature, {})!;
+      expect(plain.clientNonce).toBe(nonce);
+      expect(plain.pageReply).toEqual({});
+      const replay = await sendFallback(cookie, {
+        botId: bot.id,
+        text,
+        clientNonce: plain.clientNonce,
+        ...plain.pageReply,
+      });
+      expect(replay).toEqual(first);
+      expect(makeNonce).toHaveBeenCalledOnce();
+      expect(await db().message.count({ where: { threadId: thread.id, role: "user" } })).toBe(
+        originalMessages + 1,
+      );
+      expect(await db().run.count({ where: { threadId: thread.id } })).toBe(originalRuns + 1);
+      const message = await db().message.findUniqueOrThrow({
+        where: { threadId_clientNonce: { threadId: thread.id, clientNonce: nonce } },
+      });
+      expect(MessageBlockSchema.array().parse(message.blocks)[0]).toMatchObject({
+        kind: "text",
+        pageContext: { pageId: created.id, title: created.title },
+      });
+    });
+
     it("restores canonical fallback Page provenance while retaining hand-written owner text and nonce receipts", async () => {
       const cookie = await signup(app, `pages-context-${stamp}@example.test`, "Context Owner");
       const identity = await rpc<Actor>(app, cookie, "me");

@@ -84,6 +84,18 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
       if (succeeded) attempts.delete(key);
       else attempt.inFlight = false;
     },
+    /** Drop rejected auto context; the same intent nonce still deduplicates an earlier uncertain send. */
+    rejectPageContext(key: string, attempt: ComposerSendAttempt, error: unknown): void {
+      const rejection = error as { code?: unknown; data?: { reason?: unknown } } | null;
+      if (
+        attempts.get(key) !== attempt ||
+        !attempt.pageReply.pageContext ||
+        rejection?.code !== "NOT_FOUND" ||
+        rejection.data?.reason !== "page_context_unavailable"
+      )
+        return;
+      attempt.pageReply = {};
+    },
     isCurrent(key: string, attempt: ComposerSendAttempt): boolean {
       return attempts.get(key) === attempt;
     },

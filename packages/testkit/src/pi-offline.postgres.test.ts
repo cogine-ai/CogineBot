@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator } from "@rakazo/adapters";
+import { ComposioEmulator, ExpoPushProvider } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
-import { describe, expect, it } from "vitest";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import { startModelEmulator } from "./model-emulator.js";
@@ -250,6 +251,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       });
       const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-offline-takeover-"));
       let stop: (() => Promise<void>) | undefined;
+      const notifications = vi.spyOn(ExpoPushProvider.prototype, "send");
       try {
         const { createApp } = await import("../../../apps/api/src/app.ts");
         const handles = await createApp({
@@ -296,7 +298,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           title: "",
           description: "",
           instructions: "Continue only from observed state.",
-          notifyOnFinish: false,
+          notifyOnFinish: reason === "steering",
           computerMode: "dedicated",
         });
         await discardBotIntroRun(handles, cookie, bot.id);
@@ -362,6 +364,34 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await handles.awaitIdle?.();
           expect(await snapshot()).toEqual(held);
         }
+        const takeoverFootprint = async () => ({
+          cards: (
+            await handles.prisma.message.findMany({
+              where: { runId: sent.runId, role: "bot" },
+              select: { id: true, blocks: true },
+              orderBy: { seq: "asc" },
+            })
+          ).flatMap((message) =>
+            MessageBlockSchema.array()
+              .parse(message.blocks)
+              .filter((block) => block.kind === "computer" && block.state === "Needs you")
+              .map((block) => ({ id: message.id, block })),
+          ),
+          events: await handles.prisma.event.findMany({
+            where: { runId: sent.runId, type: "computer.takeover.requested" },
+            select: { id: true },
+            orderBy: { seq: "asc" },
+          }),
+          notifications: notifications.mock.calls.filter(
+            ([message]) => message.kind === "takeover" && message.botId === bot.id,
+          ).length,
+        });
+        const originalTakeover = reason === "steering" ? await takeoverFootprint() : undefined;
+        if (originalTakeover) {
+          expect(originalTakeover.cards).toHaveLength(1);
+          expect(originalTakeover.events).toHaveLength(1);
+          expect(originalTakeover.notifications).toBe(1);
+        }
         if (reason === "steering") {
           await rpc(handles.app, cookie, "threads/send", { botId: bot.id, text: note });
         } else {
@@ -395,6 +425,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         expect(resumedContent).toContain(note);
         if (reason !== "steering") expect(resumedContent.split(note)).toHaveLength(2);
         if (reason === "steering") {
+          expect(await takeoverFootprint()).toEqual(originalTakeover);
           expect(
             await handles.prisma.computer.findFirstOrThrow({
               where: { bots: { some: { id: bot.id } } },
@@ -429,6 +460,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         try {
           await stop?.();
         } finally {
+          notifications.mockRestore();
           await model.close();
           await rm(dataDir, { recursive: true, force: true });
         }

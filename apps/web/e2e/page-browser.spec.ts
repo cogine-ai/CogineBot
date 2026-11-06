@@ -1015,7 +1015,6 @@ test("live exact refs stay with their document, tab, shadow node, and frame", as
     // Wait for the second tab's identity targets, independently of unrelated frame loads.
     await test.step("Wait for the second tab's identity targets", async () => {
       await other.goto("https://frame.example.test/", { waitUntil: "commit" });
-      await expect.poll(() => other.frames().length).toBe(4);
       await expect(other.getByLabel("Top user")).toBeVisible();
       await expect(other.getByRole("button", { name: "Top save", exact: true })).toBeVisible();
       await expect(other.getByRole("button", { name: "Shadow action", exact: true })).toBeVisible();

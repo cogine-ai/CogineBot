@@ -1178,6 +1178,7 @@ describe("real Pi runtime control approval", () => {
   it.each([
     { name: "request_takeover" as const, decision: "approved" as const },
     { name: "run_subagent" as const, decision: "approved" as const },
+    { name: "request_takeover" as const, decision: "pending" as const },
     { name: "request_takeover" as const, decision: "denied" as const },
     { name: "run_subagent" as const, decision: "denied" as const },
     { name: "request_takeover" as const, decision: "default" as const },
@@ -1269,6 +1270,15 @@ describe("real Pi runtime control approval", () => {
         const checkpoint = f.effects.find((effect) => effect.kind === "runtime_checkpoint")!;
         const originalBlob = String(checkpoint.result);
         expect(originalBlob).toContain("control-call");
+        if (decision === "pending") {
+          await f.run();
+          expect(f.pauseRunForInput).toHaveBeenCalledTimes(2);
+          expect(f.pauseRunForTakeover).not.toHaveBeenCalled();
+          expect(childRequests).toHaveLength(0);
+          expect(effect.status).toBe("intended");
+          expect(f.effects.filter((row) => row.kind === name)).toHaveLength(1);
+          return;
+        }
         effect.status = decision;
         if (decision === "denied") {
           await f.run();

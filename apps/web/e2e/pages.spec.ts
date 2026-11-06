@@ -522,7 +522,7 @@ test("the network viewer shell loads an embedded font and blocks remote font req
 
 test("a page without a loaded card preserves owner text and stores generated context separately", async ({
   page,
-}) => {
+}, testInfo) => {
   await signup(page, `pages-context-${Date.now()}@rakazo.test`, "password12", "Context Owner");
   await completeOnboarding(page);
   const botId = activeBotId(page);
@@ -558,6 +558,7 @@ test("a page without a loaded card preserves owner text and stores generated con
   const text = `[${title}](page:${pageId})\n${body}`;
   type History = {
     messages: Array<{
+      role: string;
       blocks: Array<{
         kind: string;
         text?: string;
@@ -593,4 +594,44 @@ test("a page without a loaded card preserves owner text and stores generated con
         .find((block) => block.kind === "text" && block.text === manual),
     )
     .toEqual({ kind: "text", text: manual });
+
+  // A definitive Page rejection must not trap an unchanged draft in the old context.
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+  await rpc(page, "threads/clear", { botId });
+  await page.goto(`/app/${botId}?page=${pageId}`);
+  await expect(page.getByTestId("page-view")).toBeVisible();
+  await pageFrame(page, title).getByRole("button", { name: "Ask result" }).click();
+  await expect(composer).toHaveValue(body);
+  await rpc(page, "pages/remove", { pageId });
+  const rejectedRequest = page.waitForRequest(
+    (request) => request.url().includes("/rpc/threads/send") && request.method() === "POST",
+  );
+  const rejectedResponse = page.waitForResponse(
+    (response) => response.url().includes("/rpc/threads/send") && response.status() === 404,
+  );
+  await composer.press("Enter");
+  const rejectedWire = (await rejectedRequest).postDataJSON().json;
+  await rejectedResponse;
+  expect(rejectedWire.pageContext).toEqual({ pageId });
+  expect((await history()).messages.filter((message) => message.role === "user")).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("page-view")).toBeHidden();
+  await expect(composer).toHaveValue(body);
+  await expect(page.getByText("This page isn't available", { exact: true })).toBeVisible();
+  const retriedRequest = page.waitForRequest(
+    (request) => request.url().includes("/rpc/threads/send") && request.method() === "POST",
+  );
+  await captureScreenshot(page, testInfo, "page-rejected-context");
+  await composer.press("Enter");
+  const retriedWire = (await retriedRequest).postDataJSON().json;
+  expect(retriedWire.text).toBe(body);
+  expect(retriedWire.pageContext).toBeUndefined();
+  expect(retriedWire.clientNonce).toBe(rejectedWire.clientNonce);
+  await expect
+    .poll(async () =>
+      (await history()).messages
+        .filter((message) => message.role === "user")
+        .flatMap((message) => message.blocks),
+    )
+    .toEqual([{ kind: "text", text: body }]);
 });

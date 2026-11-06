@@ -3591,20 +3591,25 @@ export function ShellPage() {
             artifactIds.push(artifactId);
           }
           if (!isCurrentAttempt()) return false;
-          const sent = await rpc.threads.send(
-            {
-              ...target,
-              clientNonce: attempt.clientNonce,
-              text: plan.trimmed || undefined,
-              mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-              artifactIds: artifactIds.length ? artifactIds : undefined,
-              replyToMessageId,
-              ...(isPageReply ? { fromPage: true } : {}),
-              pageContext,
-              replyQuote: replyQuote ?? undefined,
-            },
-            context,
-          );
+          const sent = await rpc.threads
+            .send(
+              {
+                ...target,
+                clientNonce: attempt.clientNonce,
+                text: plan.trimmed || undefined,
+                mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+                artifactIds: artifactIds.length ? artifactIds : undefined,
+                replyToMessageId,
+                ...(isPageReply ? { fromPage: true } : {}),
+                pageContext,
+                replyQuote: replyQuote ?? undefined,
+              },
+              context,
+            )
+            .catch((error: unknown) => {
+              composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
+              throw error;
+            });
           if (!isCurrentAttempt()) return false;
           if (!sent?.runId || !sent?.taskId) throw new Error(t`Failed to send message`);
           if (botTarget && stillHere()) {

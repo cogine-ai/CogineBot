@@ -245,6 +245,33 @@ describe("authenticated fallback Page context", () => {
     expect(f.deps.jobs.enqueue).toHaveBeenCalledOnce();
   });
 
+  it("replays a late same-intent receipt after the Page was rejected, without creating another message", async () => {
+    const f = fixture({ missing: true });
+    const input = {
+      text: "Owner request",
+      pageContext: { pageId: "page-a" },
+      clientNonce: "uncertain-page-send",
+    };
+    await expect(sendThreadMessage(f.deps, actor, f.target, input)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      data: { reason: "page_context_unavailable" },
+    });
+    f.external.message.findUnique.mockResolvedValue({
+      id: "late-message-a",
+      seq: 0,
+      sourceRuns: [{ ...f.run, status: "completed" }],
+    } as never);
+    expect(
+      await sendThreadMessage(f.deps, actor, f.target, {
+        text: input.text,
+        clientNonce: input.clientNonce,
+      }),
+    ).toMatchObject({ runId: "run-a", taskId: "task-a" });
+    expect(f.tx.page.findFirst).toHaveBeenCalledOnce();
+    expect(f.tx.message.create).not.toHaveBeenCalled();
+    expect(f.deps.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
   it("stores canonical metadata and the composed text in message, event and task", async () => {
     const f = fixture();
     const raw = "Read https://owner.example/report";
@@ -280,7 +307,10 @@ describe("authenticated fallback Page context", () => {
         text: "Owner request",
         pageContext: { pageId: "foreign" },
       }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      data: { reason: "page_context_unavailable" },
+    });
     expect(f.tx.message.create).not.toHaveBeenCalled();
     expect(f.tx.task.create).not.toHaveBeenCalled();
     expect(f.deps.jobs.enqueue).not.toHaveBeenCalled();

@@ -681,7 +681,11 @@ export async function sendThreadMessage(
           },
           select: { id: true, title: true },
         });
-        if (!page) throw new IsolationError();
+        if (!page)
+          throw new ORPCError("NOT_FOUND", {
+            message: "This page isn't available",
+            data: { reason: "page_context_unavailable" },
+          });
         pageContext = { pageId: page.id, title: PageTitleSchema.parse(page.title) };
       }
       const composedText = pageContext
