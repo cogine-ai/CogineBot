@@ -91,6 +91,60 @@ it("rejects a late origin-availability result across a Space generation change",
   await expect(result).rejects.toThrow("Page scope changed");
 });
 
+it("releases older successful Page snapshots while retaining recent saved versions", async () => {
+  const oldest = await getPageVersion("page-older", 1);
+  let recent: Promise<PageDetail> | undefined;
+  for (let version = 1; version <= 40; version++) {
+    recent = getPageVersion("page-versioned", version);
+    await recent;
+  }
+  expect(getPageVersion("page-versioned", 40)).toBe(recent);
+  const reread = await getPageVersion("page-older", 1);
+  expect(reread).not.toBe(oldest);
+  expect(host.rpc).toHaveBeenCalledTimes(42);
+});
+
+it("keeps one pending Page read shared while other successful snapshots are evicted", async () => {
+  const pending = deferred<PageDetail>();
+  host.rpc.mockReturnValueOnce(pending.promise);
+  const first = getPageVersion("page-pending", 1);
+  await Promise.resolve();
+  for (let index = 0; index < 45; index++) await getLatestPage(`page-recent-${index}`);
+  expect(getPageVersion("page-pending", 1)).toBe(first);
+  expect(host.rpc).toHaveBeenCalledTimes(46);
+  pending.resolve({ ...page("page-pending", 1), code: "The waiting caller still receives this" });
+  await expect(first).resolves.toMatchObject({ code: "The waiting caller still receives this" });
+});
+
+it.each(["rename", "Space ABA"])(
+  "does not retain an invalidated read's late success or evict its replacement after %s",
+  async (change) => {
+    const pending = deferred<PageDetail>();
+    host.rpc.mockReturnValueOnce(pending.promise);
+    const old = getPageVersion("page-target", 1);
+    await Promise.resolve();
+    if (change === "rename") await renamePage("page-target", "Renamed");
+    else {
+      host.generation += 2;
+      for (const clear of host.clear) clear();
+    }
+    const replacement = getPageVersion("page-target", 1);
+    await replacement;
+    let oldestRetained: Promise<PageDetail> | undefined;
+    for (let index = 0; index < 39; index++) {
+      const read = getPageVersion(`page-other-${index}`, 1);
+      if (index === 0) oldestRetained = read;
+      await read;
+    }
+    pending.resolve({ ...page("page-target", 1), code: "Invalidated snapshot" });
+    if (change === "rename")
+      await expect(old).resolves.toMatchObject({ code: "Invalidated snapshot" });
+    else await expect(old).rejects.toThrow("Page scope changed");
+    expect(getPageVersion("page-target", 1)).toBe(replacement);
+    expect(getPageVersion("page-other-0", 1)).toBe(oldestRetained);
+  },
+);
+
 it("shares reads for one saved version without letting different versions replace the latest Page", async () => {
   const first = getPageVersion("page-1", 1);
   expect(getPageVersion("page-1", 1)).toBe(first);

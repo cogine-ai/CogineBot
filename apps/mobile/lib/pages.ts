@@ -130,10 +130,30 @@ export function pageMessage(data: string): unknown {
   }
 }
 
-type PageRead = { read: Promise<PageDetail>; at: number; refresh?: Promise<PageDetail> };
+type PageRead = {
+  read: Promise<PageDetail>;
+  at: number;
+  settled: boolean;
+  refresh?: Promise<PageDetail>;
+};
+// Retain a small set of successful snapshots, like the mobile saved-chat cache.
+// Pending reads keep their shared promise until they settle.
+const PAGE_READ_CACHE_LIMIT = 40;
 const pageReads = new Map<string, PageRead>();
 const pageReadKey = (pageId: string, version?: number) =>
   JSON.stringify([pageScopeKey(), pageId, version ?? null]);
+
+function trimPageReads() {
+  let retained = 0;
+  for (const entry of pageReads.values()) if (entry.settled) retained++;
+  for (const [key, entry] of pageReads) {
+    if (retained <= PAGE_READ_CACHE_LIMIT) break;
+    if (entry.settled) {
+      pageReads.delete(key);
+      retained--;
+    }
+  }
+}
 
 function clearPageReads(scope: string, pageId: string) {
   for (const key of pageReads.keys()) {
@@ -244,11 +264,19 @@ function readPage(pageId: string, version?: number): Promise<PageDetail> {
     pageId,
     ...(version === undefined ? {} : { version }),
   });
-  const entry = { read, at: Date.now() };
+  const entry: PageRead = { read, at: Date.now(), settled: false };
+  pageReads.delete(key);
   pageReads.set(key, entry);
-  read.catch(() => {
-    if (pageReads.get(key) === entry) pageReads.delete(key);
-  });
+  void read.then(
+    () => {
+      if (pageReads.get(key) !== entry) return;
+      entry.settled = true;
+      trimPageReads();
+    },
+    () => {
+      if (pageReads.get(key) === entry) pageReads.delete(key);
+    },
+  );
   return read;
 }
 
