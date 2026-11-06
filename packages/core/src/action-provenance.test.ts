@@ -14,15 +14,17 @@ describe("run result provenance", () => {
     for (const name of SITE_SENDING_TOOLS) expect(isBuiltinToolName(name)).toBe(true);
   });
   it("keeps confirmations and saved conversation state separate from outside results", () => {
+    for (const name of ["save_page", "remember", "request_secret"])
+      expect(toolResultTaintsRun(name)).toBe(false);
     for (const name of [
-      "save_page",
-      "remember",
+      "web_fetch",
+      "read_file",
       "read_history",
       "search_history",
-      "request_secret",
+      "browser_snapshot",
+      "gmail_get",
+      "new_tool",
     ])
-      expect(toolResultTaintsRun(name)).toBe(false);
-    for (const name of ["web_fetch", "read_file", "browser_snapshot", "gmail_get", "new_tool"])
       expect(toolResultTaintsRun(name)).toBe(true);
   });
 

@@ -1,4 +1,5 @@
 import type { ActionApprovalRule as StoredActionApprovalRule } from "@rakazo/contracts";
+import { urlSite } from "./egress.js";
 
 const APPROVAL_EXEMPT_TOOLS = new Set([
   "computer_observe",
@@ -132,10 +133,10 @@ export function unattendedTriggerToolRequiresApproval(
 
 /**
  * Tools whose results bring in nothing from outside during the run: confirmations of the bot's own
- * writes, the owner's answers, and the product's own saved state (memory, skills, history), which
+ * writes, the owner's answers, and the product's own saved state (memory, skills), which
  * is treated like the conversation already in context. save_page confirms the bot's own write; its
  * read mode returns a page's stored source and taints the run in its handler. Every other result
- * (pages, search hits, files, connector data, the screen, shell output, other bots) can carry text
+ * (history, pages, search hits, files, connector data, the screen, shell output, other bots) can carry text
  * an attacker wrote, and taints the run. New tools taint by default.
  */
 const OWN_STATE_RESULT_TOOLS = new Set([
@@ -144,7 +145,6 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "end_call",
   "list_secrets",
   "message_user",
-  "read_history",
   "recall_memory",
   "remember",
   "render_plot",
@@ -160,7 +160,6 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "scratchpad_list",
   "scratchpad_remove",
   "scratchpad_update",
-  "search_history",
   "skill_read",
   "task_catalog",
   "write_file",
@@ -203,12 +202,29 @@ export function newSiteOutcome(input: {
 
 export const SITE_SENDING_TOOLS: ReadonlySet<string> = new Set(["web_fetch"]);
 
+/** Site rules use the same private-suffix-aware identity as outbound requests. */
+export function canonicalApprovalSite(value: string): string | undefined {
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    if (url.username || url.password) return undefined;
+    return urlSite(url.href);
+  } catch {
+    return undefined;
+  }
+}
+
+function siteRuleValue(rule: ActionApprovalRule): string | undefined {
+  const site = canonicalApprovalSite(rule.matchValue);
+  // Do not activate a previously ineffective URL/subdomain allowance as a broader site grant.
+  return rule.effect === "always_allow" && rule.matchValue.toLowerCase() !== site
+    ? undefined
+    : site;
+}
+
 export function siteAlwaysAllowed(rules: ActionApprovalRule[], site: string): boolean {
   return rules.some(
     (rule) =>
-      rule.effect === "always_allow" &&
-      rule.matchKind === "site" &&
-      rule.matchValue.toLowerCase() === site,
+      rule.effect === "always_allow" && rule.matchKind === "site" && siteRuleValue(rule) === site,
   );
 }
 
@@ -241,7 +257,7 @@ function ruleMatches(
   const value = rule.matchValue.toLowerCase();
   switch (rule.matchKind) {
     case "site":
-      return site === value;
+      return site !== undefined && site === siteRuleValue(rule);
     case "tool":
       return toolName.toLowerCase() === value;
     case "connector":

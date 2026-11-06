@@ -81,6 +81,68 @@ describe("account preferences", () => {
     return { update, deps, actor, handler: new RPCHandler(createRouter(deps)) };
   }
 
+  it.each(["always_allow", "require_approval"] as const)(
+    "persists and returns a canonical site rule with the actor's scope (%s)",
+    async (effect) => {
+      const { deps, actor } = preferencesDeps("robot");
+      const upsert = vi.fn(
+        async ({
+          create,
+        }: {
+          create: {
+            effect: typeof effect;
+            matchKind: "site";
+            matchValue: string;
+            spaceId: string;
+            createdByUserId: string;
+          };
+        }) => ({ id: "rule-1", ...create, createdAt: new Date("2026-11-01T00:00:00Z") }),
+      );
+      Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+      const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+      const saved = await client.approvalRules.set({
+        effect,
+        matchKind: "site",
+        matchValue: "https://Docs.Example.com/report",
+      });
+      expect(saved.matchValue).toBe("example.com");
+      expect(upsert).toHaveBeenCalledWith({
+        where: {
+          spaceId_createdByUserId_effect_matchKind_matchValue: {
+            spaceId: actor.spaceId,
+            createdByUserId: actor.userId,
+            effect,
+            matchKind: "site",
+            matchValue: "example.com",
+          },
+        },
+        create: {
+          spaceId: actor.spaceId,
+          createdByUserId: actor.userId,
+          effect,
+          matchKind: "site",
+          matchValue: "example.com",
+        },
+        update: {},
+      });
+    },
+  );
+
+  it("rejects an invalid site before writing any rule", async () => {
+    const { deps, actor } = preferencesDeps("robot");
+    const upsert = vi.fn();
+    Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    await expect(
+      client.approvalRules.set({
+        effect: "always_allow",
+        matchKind: "site",
+        matchValue: "ftp://example.com/file",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("reports model credential store outages as service unavailable", async () => {
     const { deps, actor } = preferencesDeps("robot");
     Object.assign(deps.prisma, {

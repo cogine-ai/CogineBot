@@ -171,6 +171,7 @@ import {
   AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
   callClientNonce,
+  canonicalApprovalSite,
   clampCatalogThinkingLevel,
   containsSecret,
   expandSkillReferencesInPrompt,
@@ -7020,6 +7021,10 @@ export function createRouter(deps: RouterDeps) {
         }));
       }),
       set: authed.approvalRules.set.handler(async ({ context, input }) => {
+        const matchValue =
+          input.matchKind === "site" ? canonicalApprovalSite(input.matchValue) : input.matchValue;
+        if (!matchValue)
+          throw new ORPCError("BAD_REQUEST", { message: "Enter an HTTP(S) site or hostname." });
         const row = await deps.prisma.actionApprovalRule.upsert({
           where: {
             spaceId_createdByUserId_effect_matchKind_matchValue: {
@@ -7027,7 +7032,7 @@ export function createRouter(deps: RouterDeps) {
               createdByUserId: context.actor.userId,
               effect: input.effect,
               matchKind: input.matchKind,
-              matchValue: input.matchValue,
+              matchValue,
             },
           },
           create: {
@@ -7035,7 +7040,7 @@ export function createRouter(deps: RouterDeps) {
             createdByUserId: context.actor.userId,
             effect: input.effect,
             matchKind: input.matchKind,
-            matchValue: input.matchValue,
+            matchValue,
           },
           update: {},
         });

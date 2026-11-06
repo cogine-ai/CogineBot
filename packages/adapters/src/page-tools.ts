@@ -194,7 +194,10 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
   }
   const check = checkPageSource(source);
   if (!check.ok) {
-    return { error: "The page has problems; nothing was saved.", problems: check.errors };
+    return {
+      error: "The page has problems; nothing was saved.",
+      problems: check.errors.map((problem) => redactSecrets(problem, ctx.secrets)),
+    };
   }
   // A page can be shared by link, so it never stores a value this run keeps secret.
   if (containsSecret([source, check.code], ctx.secrets)) {
@@ -277,7 +280,6 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
 async function publishSavedPage(ctx: PageToolContext, receipt: PageSaveReceipt) {
   const { saved } = receipt;
   const block: MessageBlock = { kind: "page", ...saved };
-  const linkText = saved.title.replace(/[\\[\]]/g, "\\$&");
   try {
     // A routine speaks only through its final reply, which may be silence, so refreshing a
     // page it already showed posts no card; its first save still does.
@@ -300,18 +302,35 @@ async function publishSavedPage(ctx: PageToolContext, receipt: PageSaveReceipt) 
     }
   } catch (error) {
     // The page is saved; only its card in the chat is missing, so the bot can still link it.
+    const title = redactSecrets(saved.title, ctx.secrets);
+    const linkText = title.replace(/[\\[\]]/g, "\\$&");
     return {
       ...saved,
-      error: `The page was saved, but its card could not be posted in the chat (${
-        error instanceof Error ? error.message : "unknown error"
-      }). Link it in your reply as [${linkText}](page:${saved.pageId}).`,
+      title,
+      error: redactSecrets(
+        `The page was saved, but its card could not be posted in the chat (${
+          error instanceof Error ? error.message : "unknown error"
+        }). Link it in your reply as [${linkText}](page:${saved.pageId}).`,
+        ctx.secrets,
+      ),
     };
   }
+  const title = redactSecrets(saved.title, ctx.secrets);
+  const linkText = title.replace(/[\\[\]]/g, "\\$&");
   const result = {
     ...saved,
-    mention: `Mention it in your reply as [${linkText}](page:${saved.pageId})`,
+    title,
+    mention: redactSecrets(
+      `Mention it in your reply as [${linkText}](page:${saved.pageId})`,
+      ctx.secrets,
+    ),
   };
-  return receipt.warnings?.length ? { ...result, warnings: receipt.warnings } : result;
+  return receipt.warnings?.length
+    ? {
+        ...result,
+        warnings: receipt.warnings.map((warning) => redactSecrets(warning, ctx.secrets)),
+      }
+    : result;
 }
 
 class PageChangedError extends Error {}

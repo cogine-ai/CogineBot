@@ -616,6 +616,64 @@ describe("save_page", () => {
     expect(failed.writes).toHaveLength(1);
   });
 
+  it.each(["retry", "recover", "publish failure"])(
+    "redacts current secrets in a committed receipt's %s result",
+    async (mode) => {
+      const secret = "FAKE[RECEIPT]\\SECRET_7251";
+      const f = receiptContext(false);
+      const args = { title: `Keys ${secret}`, source: source("Plan") };
+      const receipt = {
+        kind: "page_save",
+        saved: { pageId: "page-1", version: 1, title: `Keys ${secret}` },
+        publish: mode === "publish failure",
+        warnings: [`Unknown label ${secret}`],
+      };
+      const original = JSON.stringify(receipt);
+      f.setRequest(args);
+      f.setResult(receipt);
+      if (mode === "publish failure")
+        f.ctx.publish = async () => {
+          f.ctx.secrets.push(secret);
+          throw new Error(`Cannot publish ${secret}`);
+        };
+      else f.ctx.secrets.push(secret);
+      const result =
+        mode === "retry"
+          ? await savePageFromTool(f.ctx, args)
+          : await recoverSavedPageFromTool(f.ctx, args);
+      expect(result).toMatchObject({ pageId: "page-1", version: 1, title: "Keys [redacted]" });
+      const text = result as { mention?: string; error?: string };
+      expect(text.mention ?? text.error).toContain("[Keys \\[redacted\\]](page:page-1)");
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(receipt)).toBe(original);
+      expect(f.writes).toHaveLength(0);
+      expect(f.page.findFirst).not.toHaveBeenCalled();
+    },
+  );
+
+  it("redacts a stored secret echoed by a failed edit's validation", async () => {
+    const secret = "FAKE_STORED_COMPONENT_7251";
+    const ctx = context({}, { currentVersion: 1 }, [secret]);
+    const original = `const ${secret} = () => null; export default function App() { return <${secret}/>; }`;
+    vi.spyOn(ctx.deps.prisma.page, "findFirst").mockResolvedValue({
+      id: "page-1",
+      title: "Plan",
+      currentVersion: 1,
+      versions: [{ source: original }],
+    } as never);
+    const result = await saveNewPageCall(ctx, {
+      pageId: "page-1",
+      edits: [{ find: "const ", replace: "" }],
+    });
+    expect(result).toMatchObject({
+      error: "The page has problems; nothing was saved.",
+      problems: expect.arrayContaining([expect.stringContaining("[redacted]")]),
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(ctx.deps.prisma.$transaction).not.toHaveBeenCalled();
+    expect(publishMessage).not.toHaveBeenCalled();
+  });
+
   it("validates the exact stored request and scoped Page receipt before replaying", async () => {
     const args = { pageId: "page-1", source: source("Updated") };
     const f = receiptContext(true);
