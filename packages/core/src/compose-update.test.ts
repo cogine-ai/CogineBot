@@ -473,7 +473,13 @@ describe("dirty-tree argv and CRLF filtering", () => {
 describe("update plans", () => {
   it("downloads first, stops old writers, migrates with the administrator, then recreates", () => {
     const steps = composeUpdatePlan({ strategy: "pull", target });
-    expect(steps.map((step) => step.id)).toEqual(["pull", "stop", "migrate", "recreate"]);
+    expect(steps.map((step) => step.id)).toEqual([
+      "pull",
+      "stop",
+      "migrate",
+      "verify-forward",
+      "recreate",
+    ]);
     expect(steps.find((step) => step.id === "migrate")?.args).toEqual(
       expect.arrayContaining([
         "up",
@@ -526,6 +532,7 @@ describe("update plans", () => {
       "build",
       "stop",
       "migrate",
+      "verify-forward",
       "recreate",
     ]);
     const merge = steps.find((step) => step.id === "merge");
@@ -549,6 +556,7 @@ describe("update plans", () => {
       "build",
       "stop",
       "migrate",
+      "verify-forward",
       "recreate",
     ]);
   });

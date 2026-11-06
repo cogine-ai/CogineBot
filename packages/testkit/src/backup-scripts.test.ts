@@ -557,9 +557,11 @@ describe("development restore failures", () => {
       expect(result.status).not.toBe(0);
       expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe("current home");
       expect(f.commands().some((args) => args.slice(-2).join(" ") === "up -d")).toBe(false);
-      expect(f.commands().at(-1)).toEqual(
+      expect(f.commands().findLast((args) => args.includes("supervisor"))).toEqual(
         expect.arrayContaining(["stop", "api", "worker", "supervisor"]),
       );
+      if (failure === "FAIL_READINESS")
+        expect(f.commands().at(-1)).toEqual(expect.arrayContaining(["stop", "migrate"]));
       if (failure === "FAIL_PREPARE")
         expect(f.commands().some((args) => args.some((arg) => arg.includes("exec psql ")))).toBe(
           false,

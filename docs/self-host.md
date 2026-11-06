@@ -328,7 +328,7 @@ so the mode does not apply there.
 
 ## Docker Compose (single machine)
 
-1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD` (`openssl rand -hex 16`), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` to independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing `ENCRYPTION_KEY` values so stored credentials stay decryptable.
+1. Copy `.env.example` to `.env` and generate separate `POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` values (`openssl rand -hex 16` for each), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` as independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing passwords and `ENCRYPTION_KEY` values so current connections and stored credentials remain valid.
 2. Set `OPENROUTER_API_KEY` if using OpenRouter. `COMPOSIO_API_KEY` is optional and enables the Composio managed app catalog; [native app connections](native-connectors.md) do not require it.
 3. Build the computer image: `pnpm sandbox:build` (Compose also builds it via the `computer` service).
 4. `docker compose --env-file .env -f infra/compose/docker-compose.yml up --build`
@@ -339,7 +339,9 @@ On Windows, if an older clone with `core.autocrlf=true` leaves the computer pane
 Compose runs Postgres, the sandbox supervisor (Docker socket), API, worker, and a Vite preview of the web app. Bot computers are sibling containers (`rakazo/computer:local`) on separate per-bot networks; only the supervisor and screen proxy join each one. The API process does not get an unrestricted Docker socket; the supervisor owns the lifecycle.
 
 Postgres stays on the Compose network only (not published on the host), matching the images
-compose. Credentials come from `.env` (`POSTGRES_PASSWORD` is required). Prefer a URI-safe value
+compose. Credentials come from `.env`: `POSTGRES_PASSWORD` is for PostgreSQL and the one-shot
+administrator migration, while the distinct `POSTGRES_APP_PASSWORD` is for API/worker runtime.
+Prefer URI-safe values
 (`openssl rand -hex 16`); characters such as `@ : / ? # %` break the interpolated `DATABASE_URL`
 inside Compose. Official Postgres images set user, password, and database only on first volume
 init, so an existing `pgdata` volume keeps its original identity: keep those values in `.env`, or
@@ -742,7 +744,7 @@ container logs, default no-new-privileges, and the kernel NAT path instead of Do
    from Cloudflare's [published IP ranges](https://www.cloudflare.com/ips/); reconcile those ranges
    whenever Cloudflare publishes a change. A Cloudflare Tunnel can replace the public web listeners.
 2. Clone the repository on the VM and create a root `.env` with production-only values. At minimum set
-   `POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `SCREEN_PROXY_SECRET`,
+   distinct `POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` values, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `SCREEN_PROXY_SECRET`,
    `OPENROUTER_API_KEY`, the API key for your selected sandbox provider,
    `RAKAZO_HOST`, and the three public origins. Set `RAKAZO_DEPLOY_DIR` when the checkout is not at
    the supported Linux default, `/srv/rakazo`. Use URL-safe random values for database credentials.
@@ -1116,10 +1118,17 @@ Sidecar `/apply` and `/rollback` stop database writers before administrator work
 Before cached runtime recovery, they verify that the canonical migration has
 terminated and run a read-only database check using the pinned current maintenance
 image. Unverified termination or readiness keeps runtime services stopped and
-requires operator recovery; no old migration command is replayed.
+requires operator recovery; no old migration command is replayed. Automatic
+recovery also resolves the previous Compose configuration and requires its actual
+API/worker/listener URLs to match the verified runtime credential inventory.
+Administrator credential channels or inline migration commands in the old runtime
+configuration require manual recovery. This deliberately refuses older stacks
+that ran application services with administrator credentials.
 
 Source checkouts (not Compose) still upgrade the old way: pull, rebuild with
-`GIT_SHA=$(git rev-parse HEAD)`, run `pnpm --filter @rakazo/db migrate`, then restart API and worker.
+`GIT_SHA=$(git rev-parse HEAD)`, stop API and worker, run `pnpm run db:migrate`
+with `DATABASE_MIGRATION_URL` for the administrator and `DATABASE_URL` for runtime,
+then restart API and worker only after the command succeeds.
 Product contracts stay compatible across cloud and self-hosted.
 
 ### Space privacy-boundary migration

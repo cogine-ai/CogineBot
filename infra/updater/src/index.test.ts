@@ -37,9 +37,22 @@ function createUpdaterApp(...[config, dependencies]: Parameters<typeof createAct
                         service: "migrate",
                         oneoff: "False",
                       })
-                    : args.includes("ps") && args.includes("--quiet")
-                      ? "b".repeat(64)
-                      : undefined;
+                    : options.configurationRead
+                      ? JSON.stringify({
+                          services: Object.fromEntries(
+                            [...config.updateServices, "migrate"].map((name) => [
+                              name,
+                              {
+                                environment: {
+                                  DATABASE_URL: "postgres://runtime:fake@database/app",
+                                },
+                              },
+                            ]),
+                          ),
+                        })
+                      : args.includes("ps") && args.includes("--quiet")
+                        ? "b".repeat(64)
+                        : undefined;
             return output === undefined
               ? runner(command, args, options)
               : { ok: true, exitCode: 0, output };
@@ -281,6 +294,7 @@ describe("updater orchestration", () => {
       "migrate",
       "migration-container",
       "migration-state",
+      "verify-forward",
       "recreate",
       "stop-writers",
       "stop-migration",
@@ -350,6 +364,7 @@ describe("updater orchestration", () => {
       "migrate",
       "migration-container",
       "migration-state",
+      "verify-forward",
       "recreate",
       "stop-writers",
       "stop-migration",

@@ -94,7 +94,16 @@ type DockerState = {
   initialRevision: string;
   config: {
     name: string;
-    services: Record<string, { image: string; build?: { context: string }; profiles?: string[] }>;
+    services: Record<
+      string,
+      {
+        image: string;
+        build?: { context: string };
+        profiles?: string[];
+        environment?: Record<string, string>;
+        command?: string[];
+      }
+    >;
   };
   images: Record<string, ImageRecord>;
   containers: Record<string, ContainerRecord>;
@@ -259,11 +268,15 @@ if (args[0] === 'compose') {
  for (const [service,value] of Object.entries(config.services)) if (value.profiles && !activeProfiles.some(p=>p==='*' || value.profiles.includes(p))) delete config.services[service];
  if (process.env.TARGET_PROJECT && revision !== state.initialRevision) config.name=process.env.TARGET_PROJECT;
  if (process.env.TARGET_IMAGE_REF && revision !== state.initialRevision) config.services.api.image=process.env.TARGET_IMAGE_REF;
- if (state.failedBuild && revision === state.initialRevision) {
+ if ((state.failedBuild || state.failedRollout) && revision === state.initialRevision) {
   if (process.env.ROLLBACK_PROJECT) config.name=process.env.ROLLBACK_PROJECT;
   if (process.env.ROLLBACK_ADD_SERVICE) config.services.extra={image:'postgres:16'};
   if (process.env.ROLLBACK_REMOVE_SERVICE) delete config.services.web;
   if (process.env.ROLLBACK_RENAME_SERVICE) { config.services.worker=config.services.web; delete config.services.web; }
+  if (process.env.ROLLBACK_OWNER_CREDENTIAL) config.services.api.environment.DATABASE_MIGRATION_URL='postgres://owner:owner-secret@database/app';
+  if (process.env.ROLLBACK_DIFFERENT_URL) config.services.api.environment.DATABASE_URL='postgres://other:other-secret@database/app';
+  if (process.env.ROLLBACK_INLINE_MIGRATION) config.services.api.command=['sh','-c','pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm start'];
+  if (process.env.ROLLBACK_LISTENER_ONLY) config.services.web.environment={REALTIME_DATABASE_URL:'postgres://listener:other-secret@database/app'};
  }
  if (envFile.COMPOSE_PROJECT_NAME) config.name=envFile.COMPOSE_PROJECT_NAME;
  if (process.env.COMPOSE_PROJECT_NAME) config.name=process.env.COMPOSE_PROJECT_NAME;
@@ -315,8 +328,10 @@ if (args[0] === 'compose') {
  if (op==='up') {
   const canonical=tail.includes('--exit-code-from');
   const requested=tail.filter(x=>Object.hasOwn(config.services,x));
+  if(canonical && process.env.REQUIRE_EXTRA_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.service']==='scheduler' && c.State.Status==='running')) fail('old extra writer is running');
+  if(canonical && process.env.MIGRATION_MISSING_CONTAINER) out('');
   const rollback=files.at(-1)?.endsWith('/rollback.json') || tail.includes('--build');
-  if (process.env.FAIL_UP && !rollback && !canonical && requested.includes('api')) fail('up failed');
+  if (process.env.FAIL_UP && !rollback && !canonical && requested.includes('api')) { state.failedRollout=true; fail('up failed'); }
   if(canonical && process.env.FAIL_MIGRATION) fail('migration failed');
   if (process.env.FAIL_ROLLBACK_UP && rollback) fail('rollback up failed');
   if (process.env.RETAG_BEFORE_UP && !rollback) {
@@ -424,11 +439,23 @@ function fixture() {
     config: {
       name: project,
       services: {
-        api: { image: "example/app:local", build: { context: "../.." } },
+        api: {
+          image: "example/app:local",
+          build: { context: "../.." },
+          environment: { DATABASE_URL: "postgres://runtime:fixture-secret@database/app" },
+        },
         web: { image: "example/app:local", build: { context: "../.." } },
         postgres: { image: "postgres:16" },
-        worker: { image: "example/app:local", build: { context: "../.." } },
-        migrate: { image: "example/app:local", build: { context: "../.." } },
+        worker: {
+          image: "example/app:local",
+          build: { context: "../.." },
+          environment: { DATABASE_URL: "postgres://runtime:fixture-secret@database/app" },
+        },
+        migrate: {
+          image: "example/app:local",
+          build: { context: "../.." },
+          environment: { DATABASE_URL: "postgres://runtime:fixture-secret@database/app" },
+        },
       },
     },
     images,
@@ -666,7 +693,7 @@ function assertNoUnsafeCleanup(deploy: ReturnType<typeof fixture>) {
     }
     if (compose[0] === "up") {
       expect(compose).toContain("--no-build");
-      expect(compose.slice(-2)).toEqual(["--pull", "never"]);
+      expect(compose[compose.indexOf("--pull") + 1]).toBe("never");
       expect(
         raw.some((arg) => arg.endsWith("/forward.json") || arg.endsWith("/rollback.json")),
       ).toBe(true);
@@ -796,7 +823,7 @@ describe("production deploy script", () => {
     expect(deploy.timeouts()).toContain("--kill-after=30s 15m");
     expect(deploy.timeouts()).toContain("--kill-after=30s 5m");
   });
-  it("rolls back to the previous revision when the build fails", () => {
+  it("restores the checkout without restarting untouched runtime when the build fails", () => {
     const deploy = fixture();
     deploy.next("broken");
     const result = deploy.run({ FAIL_BUILD: "1" });
@@ -806,8 +833,10 @@ describe("production deploy script", () => {
       .dockerArguments()
       .map(composeOperation)
       .filter((args) => args[0] === "up");
-    expect(rollback).toHaveLength(1);
-    expect(rollback[0]).toEqual(["up", "-d", "--remove-orphans", "--no-build", "--pull", "never"]);
+    expect(rollback).toHaveLength(0);
+    expect(result.stderr).toContain(
+      "No runtime stop was attempted; no recovery restart was started.",
+    );
     expect(deploy.state().containers["1".repeat(64)]?.Image).toBe(deploy.firstImage);
     expect(deploy.deployed()).toBeUndefined();
   });
@@ -1311,10 +1340,10 @@ describe("production deploy exact rollback and owned image history", () => {
     expect(state.containers["2".repeat(64)]?.Image).toBe(deploy.firstImage);
     expect(state.containers["3".repeat(64)]?.Image).toBe(deploy.databaseImage);
     const rollback = deploy.dockerArguments().filter((args) => composeOperation(args)[0] === "up");
-    expect(rollback).toHaveLength(1);
-    const op = composeOperation(rollback[0]!);
-    expect(op).toContain("--no-build");
-    expect(op.slice(-2)).toEqual(["--pull", "never"]);
+    expect(rollback).toHaveLength(0);
+    expect(result.stderr).toContain(
+      "No runtime stop was attempted; no recovery restart was started.",
+    );
     expect(deploy.record().images.some((x) => x.id === deploy.firstImage)).toBe(true);
     assertNoUnsafeCleanup(deploy);
   });
@@ -1326,8 +1355,8 @@ describe("production deploy exact rollback and owned image history", () => {
     deploy.next();
     const result = deploy.run({ FAIL_BUILD: "1" });
     expect(result.status).not.toBe(0);
-    expect(result.stderr.toLowerCase()).toMatch(
-      /rollback.*(unavailable|incomplete|no previous)|no.*previous.*deployment/,
+    expect(result.stderr).toContain(
+      "No runtime stop was attempted; no recovery restart was started.",
     );
     expect(deploy.state().ups).toBe(0);
     expect(deploy.record().healthy).toBeNull();
@@ -1336,7 +1365,7 @@ describe("production deploy exact rollback and owned image history", () => {
   it("reports a failed exact rollback without claiming restoration", () => {
     const deploy = fixture();
     deploy.next();
-    const result = deploy.run({ FAIL_BUILD: "1", FAIL_ROLLBACK_UP: "1" });
+    const result = deploy.run({ FAIL_UP: "1", FAIL_ROLLBACK_UP: "1" });
     expect(result.status).not.toBe(0);
     expect(result.stderr.toLowerCase()).toMatch(/rollback.*fail|restor.*fail/);
     expect(deploy.deployed()).toBeUndefined();
@@ -1593,8 +1622,13 @@ describe("production deploy authenticated image generations", () => {
     expect(deploy.deployed()).toBe(healthy.revision);
     for (const container of Object.values(deploy.state().containers)) {
       const service = container.Config.Labels["com.docker.compose.service"];
-      if (service && Object.hasOwn(observed, service))
+      if (service && service !== "migrate" && Object.hasOwn(observed, service))
         expect(container.Image).toBe(observed[service]);
+      if (service === "migrate") {
+        expect(container.Image).toBe(deploy.state().lastBuiltId);
+        expect(container.State.Status).toBe("exited");
+        expect(container.State.ExitCode).toBe(0);
+      }
     }
     expectHealthyImagesPresent(deploy, [...healthy.services, ...healthy.previous]);
     expect(
@@ -2325,11 +2359,15 @@ describe("production deploy reserved image references and verified rollback", ()
       const deploy = fixture();
       const before = prime(deploy);
       deploy.next();
-      const result = deploy.run({ FAIL_BUILD: "1", ...fault });
+      const result = deploy.run({ FAIL_UP: "1", ...fault });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("previous Compose project or active services changed");
       expect(result.stderr).not.toContain("passed health and readiness");
-      expect(deploy.composeArguments("up")).toHaveLength(0);
+      expect(
+        deploy
+          .composeArguments("up")
+          .filter((args) => args.some((arg) => arg.endsWith("/rollback.json"))),
+      ).toHaveLength(0);
       expect(deploy.record().healthy).toEqual(before.healthy);
       expect(deploy.deployed()).toBe(deploy.first);
       expect(deploy.head()).toBe(deploy.first);
@@ -2340,7 +2378,7 @@ describe("production deploy reserved image references and verified rollback", ()
     const deploy = fixture();
     const before = prime(deploy);
     deploy.next();
-    const result = deploy.run({ FAIL_BUILD: "1", ROLLBACK_IMAGE_MISMATCH: "1" });
+    const result = deploy.run({ FAIL_UP: "1", ROLLBACK_IMAGE_MISMATCH: "1" });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Exact-image rollback service images differ");
     expect(result.stderr).not.toContain("passed health and readiness");
@@ -2348,6 +2386,40 @@ describe("production deploy reserved image references and verified rollback", ()
     expect(deploy.state().containers["1".repeat(64)]!.Image).toBe(deploy.databaseImage);
     expect(deploy.record().healthy).toEqual(before.healthy);
     expect(deploy.deployed()).toBe(deploy.first);
+  });
+});
+
+describe("production deploy previous credential configuration", () => {
+  it.each([
+    "ROLLBACK_OWNER_CREDENTIAL",
+    "ROLLBACK_DIFFERENT_URL",
+    "ROLLBACK_INLINE_MIGRATION",
+    "ROLLBACK_LISTENER_ONLY",
+  ])("keeps writers stopped when the previous runtime has %s", (fault) => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    deploy.next();
+    const result = deploy.run({ FAIL_UP: "1", [fault]: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("outside the verified credential inventory");
+    expect(
+      deploy
+        .composeArguments("up")
+        .filter((args) => args.some((arg) => arg.endsWith("/rollback.json"))),
+    ).toHaveLength(0);
+    expect(
+      deploy
+        .composeArguments("run")
+        .some((args) => args.includes("db:restore") && args.at(-1) === "verify"),
+    ).toBe(true);
+    expect(deploy.record().healthy).toEqual(before.healthy);
+    expect(deploy.state().containers["1".repeat(64)]?.State.Status).toBe("exited");
+    expect(deploy.dockerArguments().flat().join(" ")).not.toMatch(
+      /fixture-secret|owner-secret|other-secret/,
+    );
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+      /fixture-secret|owner-secret|other-secret/,
+    );
   });
 });
 
@@ -2371,7 +2443,7 @@ describe("production deploy Compose selectors through sudo", () => {
   function executionArguments(deploy: ReturnType<typeof fixture>) {
     return deploy.dockerArguments().filter((args) => {
       const op = composeOperation(args)[0];
-      return op && !args.includes("--help");
+      return op && !args.includes("--help") && !args.includes("coginebot-env-preparation");
     });
   }
 
@@ -2406,6 +2478,7 @@ describe("production deploy Compose selectors through sudo", () => {
         "optional",
         "postgres",
         "web",
+        "worker",
       ]);
       const args = executionArguments(deploy);
       expect(args.length).toBeGreaterThan(4);
@@ -2461,6 +2534,7 @@ describe("production deploy Compose selectors through sudo", () => {
       "optional",
       "postgres",
       "web",
+      "worker",
     ]);
     for (const command of executionArguments(deploy)) expect(profileArguments(command)).toEqual([]);
     const readConfig = executionArguments(deploy).find((command) =>
@@ -2481,11 +2555,13 @@ describe("production deploy Compose selectors through sudo", () => {
     const before = deploy.record();
     deploy.clearLogs();
     deploy.next();
-    const result = deploy.run({ ...selectors, FAIL_BUILD: "1" });
+    const result = deploy.run({ ...selectors, FAIL_UP: "1" });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("passed health and readiness");
     expect(deploy.record().healthy).toEqual(before.healthy);
-    const rollback = deploy.composeArguments("up");
+    const rollback = deploy
+      .composeArguments("up")
+      .filter((args) => args.some((arg) => arg.endsWith("/rollback.json")));
     expect(rollback).toHaveLength(1);
     for (const command of [...rollback, ...deploy.composeArguments("exec")]) {
       expect(command[command.indexOf("--project-name") + 1]).toBe("caller-stack");
@@ -2543,3 +2619,99 @@ describe.skipIf(process.platform !== "linux")(
     });
   },
 );
+
+describe("administrator migration lifecycle", () => {
+  it("stops selected runtime processes, verifies a canonical completed migration, and starts without dependencies", () => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run();
+    expect(result.status, result.stderr).toBe(0);
+    const operations = deploy.dockerArguments().map(composeOperation);
+    const stopped = operations.findIndex((op) => op[0] === "stop" && op.includes("api"));
+    const migrated = operations.findIndex((op) => op.includes("--exit-code-from"));
+    const verified = operations.findIndex((op) => op.includes("db:restore"));
+    const started = operations.findIndex((op) => op[0] === "up" && op.includes("api"));
+    expect(stopped).toBeGreaterThanOrEqual(0);
+    expect(migrated).toBeGreaterThan(stopped);
+    expect(verified).toBeGreaterThan(migrated);
+    expect(started).toBeGreaterThan(verified);
+    expect(operations[started]).toContain("--no-deps");
+    const migration = Object.values(deploy.state().containers).find(
+      (c) => c.Config.Labels["com.docker.compose.service"] === "migrate",
+    );
+    expect(migration?.State).toMatchObject({ Status: "exited", Running: false, ExitCode: 0 });
+    expect(deploy.record().healthy?.services.some((s) => s.service === "migrate")).toBe(false);
+    const forward = JSON.parse(
+      readFileSync(path.join(deploy.stateDirectory, "forward.json"), "utf8"),
+    );
+    expect(forward.services.migrate.image).toMatch(/coginebot-deploy-/);
+  });
+
+  it.each([
+    { MIGRATION_WRONG_IMAGE: "1" },
+    { MIGRATION_MISSING_CONTAINER: "1" },
+    { MIGRATION_STAYS_RUNNING: "1", FAIL_MIGRATION_STOP: "1" },
+    { FAIL_DATABASE_VERIFY: "1" },
+    { FAIL_WRITER_STOP: "1" },
+  ])("never starts runtime from an unverified administrator outcome %j", (fault) => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run(fault);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain("Deployed ");
+    expect(
+      deploy
+        .dockerArguments()
+        .map(composeOperation)
+        .some((op) => op[0] === "up" && op.includes("api")),
+    ).toBe(false);
+    expect(deploy.record().healthy).toBeNull();
+  });
+
+  it("terminates a still-running migration before readonly verification and cached runtime recovery", () => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run({ MIGRATION_STAYS_RUNNING: "1" });
+    expect(result.status).not.toBe(0);
+    const operations = deploy.dockerArguments().map(composeOperation);
+    const stopped = operations.findIndex((op) => op[0] === "stop" && op.at(-1) === "migrate");
+    const verified = operations.findIndex((op) => op.includes("db:restore"));
+    const recovered = operations.findIndex((op) => op[0] === "up" && op.includes("api"));
+    expect(stopped).toBeGreaterThanOrEqual(0);
+    expect(verified).toBeGreaterThan(stopped);
+    expect(recovered).toBeGreaterThan(verified);
+    expect(operations[recovered]).toContain("--no-deps");
+    expect(operations.filter((op) => op.includes("--exit-code-from"))).toHaveLength(1);
+  });
+
+  it("drains a selected extra app-image writer before administrator execution", () => {
+    const deploy = fixture();
+    deploy.update((state) => {
+      state.config.services.scheduler = { image: "example/app:local", build: { context: "../.." } };
+      state.containers["e".repeat(64)] = {
+        Id: "e".repeat(64),
+        Name: "/example-prod-scheduler-1",
+        Image: deploy.firstImage,
+        Config: {
+          Image: "example/app:local",
+          Labels: {
+            "com.docker.compose.project": "example-prod",
+            "com.docker.compose.service": "scheduler",
+          },
+        },
+        State: { Status: "running", Running: true },
+        Mounts: [],
+      };
+    });
+    deploy.next();
+    const result = deploy.run({ REQUIRE_EXTRA_STOP: "1" });
+    expect(result.status, result.stderr).toBe(0);
+    const stop = deploy
+      .dockerArguments()
+      .map(composeOperation)
+      .find((op) => op[0] === "stop" && op.includes("api"));
+    expect(stop).toContain("scheduler");
+    expect(stop).not.toContain("postgres");
+    expect(stop).not.toContain("migrate");
+  });
+});

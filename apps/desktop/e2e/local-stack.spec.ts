@@ -115,6 +115,9 @@ async function writeFakeDocker(mode: FakeDockerMode) {
       ? '    echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;'
       : '    echo "27.1.1"; exit 0 ;;',
     "esac",
+    'if [ "$8" = "config" ] && grep -q COGINEBOT_RUNTIME_PASSWORD_REQUIRED "$7"; then',
+    '  if ! grep -Eq "^POSTGRES_APP_PASSWORD=.+$" "$5"; then echo COGINEBOT_RUNTIME_PASSWORD_REQUIRED >&2; exit 1; fi',
+    "fi",
     "# compose --env-file .env -f docker-compose.images.yml --project-name coginebot-desktop <command> ...",
     'case "$8" in',
     "  pull)",

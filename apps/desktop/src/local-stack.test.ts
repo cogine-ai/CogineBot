@@ -131,7 +131,12 @@ describe("ensureStackEnv", () => {
     ).resolves.toBe("kept");
     const upgraded = `${original}POSTGRES_APP_PASSWORD=${"ab".repeat(16)}\n`;
     await expect(readFile(file, "utf8")).resolves.toBe(upgraded);
-    await ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", () => "new-value-must-not-be-used");
+    await ensureStackEnv(
+      dir,
+      "POSTGRES_APP_PASSWORD=\n",
+      () => "new-value-must-not-be-used",
+      async () => true,
+    );
     await expect(readFile(file, "utf8")).resolves.toBe(upgraded);
   });
 
@@ -153,9 +158,14 @@ describe("ensureStackEnv", () => {
       const original = `POSTGRES_PASSWORD=owner\nPOSTGRES_APP_PASSWORD=${value}\n`;
       const file = path.join(dir, STACK_ENV_FILE);
       await writeFile(file, original, "utf8");
-      await ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", () => {
-        throw new Error("must not rotate");
-      });
+      await ensureStackEnv(
+        dir,
+        "POSTGRES_APP_PASSWORD=\n",
+        () => {
+          throw new Error("must not rotate");
+        },
+        async () => true,
+      );
       await expect(readFile(file, "utf8")).resolves.toBe(original);
     },
   );
@@ -174,6 +184,20 @@ describe("ensureStackEnv", () => {
     );
     await expect(readFile(file, "utf8")).resolves.toBe(original);
   });
+
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation is the test input.
+  it.each(["${UNSET}", "${EMPTY:-}"])(
+    "fills a runtime password that Compose expands to empty (%s)",
+    async (value) => {
+      const file = path.join(dir, STACK_ENV_FILE);
+      const original = `POSTGRES_APP_PASSWORD=${value}\n`;
+      await writeFile(file, original, "utf8");
+      await ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", fakeHex, async () => false);
+      expect(await readFile(file, "utf8")).toBe(
+        `${original}POSTGRES_APP_PASSWORD=${"ab".repeat(16)}\n`,
+      );
+    },
+  );
 
   it("never touches an existing .env", async () => {
     await writeFile(path.join(dir, STACK_ENV_FILE), "sentinel\n", "utf8");

@@ -46,7 +46,7 @@ Copy the existing configuration template:
 cp .env.example .env
 ```
 
-Use a fresh local PostgreSQL database dedicated to development. Edit `DATABASE_URL` and, if set, `REALTIME_DATABASE_URL` to point to it. Set unique local values for `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET`; a Docker supervisor additionally needs its own `SANDBOX_SUPERVISOR_TOKEN`. Random hex values can be generated with `openssl rand -hex 32`; generate a separate value for each secret. Keep `.env` untracked.
+Use a fresh local PostgreSQL database dedicated to development. Set `DATABASE_MIGRATION_URL` to its administrator login and `DATABASE_URL` to its separate runtime login with a distinct password. If set, `REALTIME_DATABASE_URL` selects a separately verified runtime listener. Set unique local values for `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET`; a Docker supervisor additionally needs its own `SANDBOX_SUPERVISOR_TOKEN`. Random hex values can be generated with `openssl rand -hex 32`; generate a separate value for each secret. Keep `.env` untracked.
 
 For UI/API exploration with fixtures, use these existing settings in `.env`:
 

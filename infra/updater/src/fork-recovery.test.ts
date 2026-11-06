@@ -73,7 +73,22 @@ if (command === "docker") {
     log();
     const definition = JSON.parse(fs.readFileSync(args[args.indexOf("--file") + 1], "utf8"));
     const contents = fs.readFileSync(args[args.indexOf("--env-file") + 1], "utf8");
-    if (definition.services.runtimeEnv.environment && !fixture.nativePasswordPresent && !require("node:util").parseEnv(contents).POSTGRES_APP_PASSWORD) fail("COGINEBOT_RUNTIME_PASSWORD_REQUIRED");
+    const present = fixture.nativePasswordPresent ?? Boolean(require("node:util").parseEnv(contents).POSTGRES_APP_PASSWORD);
+    if (definition.services.runtimeEnv.environment && !present) fail("COGINEBOT_RUNTIME_PASSWORD_REQUIRED");
+  } else if (args.includes("config") && args.includes("--format")) {
+    log();
+    const selected = "postgres://runtime:fixture-secret@database/app";
+    const old = state.commit === fixture.currentCommit;
+    const environment = { DATABASE_URL: old && fixture.oldConfiguration === "different" ? "postgres://unverified:other-secret@database/app" : selected };
+    if (old && fixture.oldConfiguration === "owner") environment.DATABASE_MIGRATION_URL = "postgres://owner:owner-secret@database/app";
+    const services = {
+      api: { environment, command: old && fixture.oldConfiguration === "admin-command" ? "pnpm --filter @rakazo/db prisma migrate deploy && pnpm start" : "pnpm start" },
+      worker: { environment },
+      web: old && fixture.oldConfiguration === "listener" ? { environment: { REALTIME_DATABASE_URL: "postgres://listener:other-secret@database/app" } } : {},
+      ...(fixture.extraService ? { [fixture.extraService]: { environment } } : {}),
+      migrate: { environment: { DATABASE_URL: selected } },
+    };
+    process.stdout.write(JSON.stringify({ services }));
   } else {
     call.compose = fs.readFileSync(args[args.indexOf("--file") + 1], "utf8");
     call.serviceEnv = fs.readFileSync(fixture.serviceEnv, "utf8");
@@ -150,6 +165,7 @@ async function deployment(options: {
   env?: string;
   nativePasswordPresent?: boolean;
   extraService?: string;
+  oldConfiguration?: "owner" | "different" | "admin-command" | "listener";
 }) {
   const deployDir = await mkdtemp(path.join(os.tmpdir(), "rakazo-fork-recovery-"));
   directories.push(deployDir);
@@ -180,6 +196,8 @@ async function deployment(options: {
         failures: options.failures,
         nativePasswordPresent: options.nativePasswordPresent,
         extraService: options.extraService,
+        oldConfiguration: options.oldConfiguration,
+        currentCommit,
         targetCommit,
         composeFile,
         serviceEnv,
@@ -259,6 +277,7 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
       "migrate",
       "migration-container",
       "migration-state",
+      "verify-forward",
       "recreate",
       "stop-writers",
       "stop-migration",
@@ -447,6 +466,45 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
     });
     expect(await readFile(fixture.config.envFile, "utf8")).toBe(once);
   });
+
+  it.each(["owner", "different", "admin-command", "listener"] as const)(
+    "keeps writers stopped when the old configuration contains %s authority",
+    async (oldConfiguration) => {
+      const fixture = await deployment({ failures: ["recreate"], oldConfiguration });
+      expect(fixture.record).toMatchObject({ ok: false, restart: "manual" });
+      expect(fixture.record.restartAdvice).toContain("outside the verified credential inventory");
+      expect(fixture.record.steps.some((step) => step.id === "recover")).toBe(false);
+      expect(
+        fixture.calls.filter(
+          (call) => call.args.includes("up") && !call.args.includes("--exit-code-from"),
+        ),
+      ).toHaveLength(1);
+      expect(fixture.record.steps.find((step) => step.id === "verify-recovery")?.ok).toBe(true);
+      expect(JSON.stringify(fixture.record)).not.toMatch(
+        /fixture-secret|owner-secret|other-secret/,
+      );
+    },
+  );
+
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation is the test input.
+  it.each(["${UNSET}", "${EMPTY:-}"])(
+    "fills a runtime password that Compose expands to empty (%s)",
+    async (value) => {
+      const original = originalEnv.replace(
+        "POSTGRES_APP_PASSWORD=selected-runtime",
+        `POSTGRES_APP_PASSWORD=${value}`,
+      );
+      const fixture = await deployment({
+        failures: [],
+        env: original,
+        nativePasswordPresent: false,
+      });
+      expect(fixture.record.ok).toBe(true);
+      expect(await readFile(fixture.config.envFile, "utf8")).toMatch(
+        /^POSTGRES_APP_PASSWORD=[a-f0-9]{32}$/m,
+      );
+    },
+  );
 
   it("preserves Compose's nonempty password when Node's dotenv parser reports it empty", async () => {
     const original = originalEnv.replace(
