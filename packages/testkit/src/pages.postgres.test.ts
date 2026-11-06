@@ -32,7 +32,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.js";
 import type { ExecutorDeps } from "../../adapters/src/executor.js";
 import type { PageToolContext } from "../../adapters/src/page-tools.js";
-import { savePageFromTool } from "../../adapters/src/page-tools.js";
+import { recoverSavedPageFromTool, savePageFromTool } from "../../adapters/src/page-tools.js";
 import { publishMessage } from "../../adapters/src/run-messages.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
@@ -665,10 +665,18 @@ describePages("private Pages with production row-security policies", () => {
         await db().message.count({ where: { threadId: snapshot.threadId, role: "user" } }),
       ).toBe(before);
     });
-    it.each(["create", "source", "edits"] as const)(
-      "recovers the committed %s save and published card without repeating either",
-      async (mode) => {
-        const cookie = await signup(app, `pages-receipt-${mode}-${stamp}@example.test`, "Receipt");
+    it.each(
+      (["intended", "executing"] as const).flatMap((status) =>
+        (["create", "source", "edits"] as const).map((mode) => ({ status, mode })),
+      ),
+    )(
+      "recovers the committed $mode save and published card from $status without repeating either",
+      async ({ mode, status }) => {
+        const cookie = await signup(
+          app,
+          `pages-receipt-${mode}-${status}-${stamp}@example.test`,
+          "Receipt",
+        );
         const actor = await rpc<Actor>(app, cookie, "me");
         const bot = await createBot(app, cookie, "Receipt Bot");
         const thread = await db().thread.findFirstOrThrow({
@@ -691,7 +699,7 @@ describePages("private Pages with production row-security policies", () => {
             botId: bot.id,
             threadId: thread.id,
             status: "running",
-            trigger: "user",
+            trigger: status === "executing" ? "webhook" : "user",
             leaseOwner: "receipt-worker",
             leaseFence: 1,
             leaseExpiresAt: new Date(Date.now() + 60_000),
@@ -735,7 +743,7 @@ describePages("private Pages with production row-security policies", () => {
             runId: run.id,
             kind: "save_page",
             idempotencyKey: `synthetic-page-receipt:${run.id}`,
-            status: "intended",
+            status,
             request: args as Prisma.InputJsonValue,
           },
         });
@@ -764,6 +772,11 @@ describePages("private Pages with production row-security policies", () => {
           publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
         };
         await runAsTenant({ userId: actor.userId, spaceId: actor.spaceId }, async () => {
+          const resume = () =>
+            status === "executing"
+              ? recoverSavedPageFromTool(ctx, args)
+              : savePageFromTool(ctx, args);
+          if (status === "executing") expect(await resume()).toBeUndefined();
           await expect(savePageFromTool(ctx, args)).rejects.toThrow(
             "worker interrupted after commit",
           );
@@ -771,16 +784,36 @@ describePages("private Pages with production row-security policies", () => {
             where: { id: effect.id },
           });
           expect(committed).toMatchObject({
-            status: "intended",
+            status,
             result: { kind: "page_save", effectId: effect.id },
           });
-          const result = (await savePageFromTool(ctx, args)) as { pageId: string; version: number };
+          if (status === "executing") {
+            for (const changed of [
+              { ...ctx, effect: { id: "another-effect" } },
+              { ...ctx, run: { ...run, id: "another-run" } },
+              { ...ctx, run: { ...run, userId: "another-user" } },
+              { ...ctx, run: { ...run, spaceId: "another-space" } },
+              { ...ctx, run: { ...run, threadId: "another-thread" } },
+              { ...ctx, bot: { id: "another-bot" } },
+            ]) {
+              expect(await recoverSavedPageFromTool(changed, args)).toBeUndefined();
+            }
+            expect(
+              await recoverSavedPageFromTool(ctx, { ...args, title: "Changed request" }),
+            ).toBeUndefined();
+            expect(
+              await prisma.message.count({
+                where: { threadId: thread.id, clientNonce: `page-save:${effect.id}` },
+              }),
+            ).toBe(0);
+          }
+          const result = (await resume()) as { pageId: string; version: number };
           expect(result).toMatchObject({
             pageId: seed?.id ?? expect.any(String),
             version: mode === "create" ? 1 : 2,
           });
           // The handler returned but executor finish has not happened: this is the second crash window.
-          expect(await savePageFromTool(ctx, args)).toEqual(result);
+          expect(await resume()).toEqual(result);
           const pageId = result.pageId!;
           expect(await prisma.page.count({ where: { botId: bot.id } })).toBe(1);
           expect(await prisma.pageVersion.count({ where: { pageId } })).toBe(

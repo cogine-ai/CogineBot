@@ -6,6 +6,7 @@ import type {
   MemoryReadRequest,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
+import type { ActionApprovalRule } from "@rakazo/core";
 import {
   legacyScopedToolEffectIdempotencyKey,
   toolEffectIdempotencyKey,
@@ -15,11 +16,15 @@ import type * as AutoReviewModule from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 import type * as PageToolsModule from "./page-tools.js";
-import { savePageFromTool } from "./page-tools.js";
+import { recoverSavedPageFromTool, savePageFromTool } from "./page-tools.js";
 
 vi.mock("./page-tools.js", async (importOriginal) => {
   const original = await importOriginal<typeof PageToolsModule>();
-  return { ...original, savePageFromTool: vi.fn(original.savePageFromTool) };
+  return {
+    ...original,
+    savePageFromTool: vi.fn(original.savePageFromTool),
+    recoverSavedPageFromTool: vi.fn(async () => undefined),
+  };
 });
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
@@ -61,6 +66,8 @@ function fixture(
     contextStrategy?: AgentContextStrategy;
     toolResultHistory?: boolean;
     ticketBoard?: boolean;
+    trigger?: "user" | "webhook";
+    rules?: ActionApprovalRule[];
   } = {},
 ) {
   const effects: Effect[] = [];
@@ -84,7 +91,7 @@ function fixture(
     spaceId: "space-1",
     userId: "user-1",
     status: "queued",
-    trigger: "user",
+    trigger: options.trigger ?? "user",
     leaseFence: 0,
   };
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -267,7 +274,7 @@ function fixture(
         },
       ),
     },
-    actionApprovalRule: { findMany: vi.fn(async () => []) },
+    actionApprovalRule: { findMany: vi.fn(async () => options.rules ?? []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: false })) },
     externalEffect,
     board: {
@@ -500,6 +507,111 @@ describe("history context capabilities", () => {
 });
 
 describe("mutating tool effect idempotency keys", () => {
+  it.each(["rule", "webhook"] as const)(
+    "recovers an approved Page save after commit before finish under %s approval",
+    async (policy) => {
+      const f = fixture(`run-page-approved-${policy}`, {
+        catchToolErrors: true,
+        trigger: policy === "webhook" ? "webhook" : "user",
+        rules:
+          policy === "rule"
+            ? [{ effect: "require_approval", matchKind: "tool", matchValue: "save_page" }]
+            : [],
+      });
+      const args = { title: "Plan", source: "synthetic page input" };
+      const saved = { pageId: "page-approved", version: 1, title: "Plan" };
+      const save = vi.mocked(savePageFromTool);
+      const recover = vi.mocked(recoverSavedPageFromTool);
+      save.mockClear();
+      recover.mockClear();
+      f.setCalls([{ name: "save_page", args, executionId: "page-call" }]);
+      await f.run();
+      expect(f.effects).toHaveLength(1);
+      expect(save).not.toHaveBeenCalled();
+      f.effects[0]!.status = "approved";
+      save.mockImplementationOnce(async () => {
+        f.effects[0]!.result = { kind: "page_save", effectId: f.effects[0]!.id };
+        throw new Error("worker interrupted after commit");
+      });
+      await f.run();
+      expect(f.effects[0]!.status).toBe("executing");
+      expect(save).toHaveBeenCalledOnce();
+      recover.mockResolvedValueOnce(saved as never);
+      await f.run();
+      expect(f.results.at(-1)).toEqual(saved);
+      expect(recover).toHaveBeenCalledWith(
+        expect.objectContaining({ effect: { id: f.effects[0]!.id } }),
+        args,
+      );
+      expect(f.effects[0]!.status).toBe("completed");
+      expect(save).toHaveBeenCalledOnce();
+      expect(
+        f.externalEffect.updateMany.mock.calls.filter(([{ data }]) => data.status === "executing"),
+      ).toHaveLength(1);
+      save.mockReset();
+      recover.mockReset();
+    },
+  );
+
+  it("recovers a committed Page result when the approved-effect claim loses a race", async () => {
+    const f = fixture("run-page-claim-race");
+    const args = { title: "Plan", source: "synthetic page input" };
+    const saved = { pageId: "page-race", version: 1, title: "Plan" };
+    const save = vi.mocked(savePageFromTool);
+    const recover = vi.mocked(recoverSavedPageFromTool);
+    save.mockClear();
+    recover.mockClear();
+    f.effects.push({
+      id: "page-race-effect",
+      runId: "run-page-claim-race",
+      spaceId: "space-1",
+      kind: "save_page",
+      idempotencyKey: toolEffectIdempotencyKey("run-page-claim-race", "save_page", args),
+      status: "approved",
+      request: args,
+      result: null,
+    });
+    f.externalEffect.updateMany.mockImplementationOnce(async () => {
+      f.effects[0]!.status = "executing";
+      f.effects[0]!.result = { kind: "page_save" };
+      return { count: 0 };
+    });
+    recover.mockResolvedValueOnce(saved as never);
+    f.setCalls([{ name: "save_page", args, executionId: "page-call" }]);
+    await f.run();
+    expect(f.results).toEqual([saved]);
+    expect(f.effects[0]!.status).toBe("completed");
+    expect(save).not.toHaveBeenCalled();
+    expect(recover).toHaveBeenCalledOnce();
+    recover.mockReset();
+  });
+
+  it("keeps a Page save uncertain when the committed recovery cannot complete its effect", async () => {
+    const f = fixture("run-page-complete-race");
+    const args = { title: "Plan", source: "synthetic page input" };
+    const recover = vi.mocked(recoverSavedPageFromTool);
+    f.effects.push({
+      id: "page-race-effect",
+      runId: "run-page-complete-race",
+      spaceId: "space-1",
+      kind: "save_page",
+      idempotencyKey: toolEffectIdempotencyKey("run-page-complete-race", "save_page", args),
+      status: "executing",
+      request: args,
+      result: { kind: "page_save" },
+    });
+    recover.mockResolvedValueOnce({ pageId: "page-race", version: 1, title: "Plan" } as never);
+    const update = f.externalEffect.updateMany.getMockImplementation()!;
+    f.externalEffect.updateMany.mockImplementation(async (input) =>
+      input.data.status === "completed" ? { count: 0 } : update(input),
+    );
+    f.setCalls([{ name: "save_page", args, executionId: "page-call" }]);
+    await f.run();
+    expect(f.results).toEqual([expect.objectContaining({ uncertain: true })]);
+    expect(f.effects[0]!.status).toBe("executing");
+    recover.mockReset();
+  });
+
   it.each(["intended", "approved", "executing", "uncertain", "completed", "denied"])(
     "preserves the %s Page effect gate while passing its identity to the save handler",
     async (status) => {

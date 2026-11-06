@@ -366,7 +366,8 @@ import {
   modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
-import { savePageFromTool } from "./page-tools.js";
+import type { PageToolContext } from "./page-tools.js";
+import { recoverSavedPageFromTool, savePageFromTool } from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
@@ -5660,6 +5661,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
 
+          const pageToolContext = (): PageToolContext => ({
+            deps,
+            run,
+            bot,
+            thread,
+            state: trust.state,
+            secrets: runSecrets,
+            effect: applied ? { id: applied.effect.id } : undefined,
+            publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
+          });
+          const recoverPageSave = async (effect: { status: string }) => {
+            if (name !== "save_page" || effect.status !== "executing") return undefined;
+            const result = await recoverSavedPageFromTool(pageToolContext(), args);
+            if (result === undefined) return undefined;
+            return (await completeEffect(deps, applied!.effect.id, "executing", result))
+              ? result
+              : uncertainEffectResult(name);
+          };
+
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
@@ -5675,6 +5695,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const retryGate = resolveDuplicateEffectGate(current, name);
               if (retryGate.action === "return") return retryGate.result;
               if (retryGate.action === "uncertain") {
+                const recovered = await recoverPageSave(current);
+                if (recovered !== undefined) return recovered;
                 return settleUncertainEffect(
                   deps.prisma,
                   applied!.effect.id,
@@ -5795,6 +5817,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return requestApproval();
               }
             } else if (gate.action === "uncertain") {
+              const recovered = await recoverPageSave(applied.effect);
+              if (recovered !== undefined) return recovered;
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
@@ -5985,22 +6009,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish({ ok: true, path: filePath });
           }
           if (name === "save_page") {
-            return finish(
-              await savePageFromTool(
-                {
-                  deps,
-                  run,
-                  bot,
-                  thread,
-                  state: trust.state,
-                  secrets: runSecrets,
-                  effect: applied ? { id: applied.effect.id } : undefined,
-                  publish: (blocks, nonce) =>
-                    publishMessage(deps, run, "bot", blocks, undefined, nonce),
-                },
-                args,
-              ),
-            );
+            return finish(await savePageFromTool(pageToolContext(), args));
           }
           if (name === "render_plot") {
             if (args.charts !== undefined) {

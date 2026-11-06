@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
-import { act, createElement } from "react";
+import { act, createElement, Suspense, startTransition } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type * as Pages from "./pages";
@@ -45,7 +45,7 @@ vi.mock("expo-clipboard", () => ({
   },
 }));
 vi.mock("expo-router", () => ({
-  useLocalSearchParams: () => ({ pageId: "page-1" }),
+  useLocalSearchParams: () => ({ pageId: host.page.id }),
   useRouter: () => ({
     back: () => host.went.push("back"),
     canGoBack: () => true,
@@ -227,6 +227,99 @@ it("does not carry a tap into a document rebuilt for a theme change", async () =
   expect(host.copied).toEqual(["x"]);
   host.theme = "light";
   await act(async () => root.unmount());
+});
+
+it("does not let an older document callback borrow a new document's tap, including A to B to A", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(Date, "now").mockReturnValue(3_100_000);
+  const originalPage = host.page;
+  const root = createRoot(document.createElement("div"));
+  host.copied = [];
+  host.opened = [];
+  host.went = [];
+  takePageReply("bot-1");
+  try {
+    await act(async () => root.render(createElement(PageScreen)));
+    const oldMessage = host.message!;
+    for (const pageId of ["page-2", originalPage.id]) {
+      host.page = { ...originalPage, id: pageId };
+      await act(async () => root.render(createElement(PageScreen)));
+      for (const message of [
+        { type: "rakazo-page:copy", id: "old", text: "old document" },
+        { type: "rakazo-page:open-link", url: "https://example.com/old" },
+        { type: "rakazo-page:reply", text: "Old reply" },
+      ]) {
+        host.touch.onTouchStart?.(at(10, 10));
+        host.touch.onTouchEnd?.(at(10, 10));
+        // A callback saved by a previous native view has no authority over this tap.
+        await act(async () => oldMessage(JSON.stringify(message), () => {}));
+        expect([host.copied, host.opened, host.went, takePageReply("bot-1")]).toEqual([
+          [],
+          [],
+          [],
+          null,
+        ]);
+        // Rejecting the old callback does not spend the new document's one action.
+        await act(async () =>
+          host.message?.(
+            JSON.stringify({ type: "rakazo-page:copy", id: "new", text: pageId }),
+            () => {},
+          ),
+        );
+        expect(host.copied).toEqual([pageId]);
+        host.copied = [];
+      }
+    }
+  } finally {
+    await act(async () => root.unmount());
+    host.page = originalPage;
+  }
+});
+
+it("keeps the committed document's callback valid when a different document render is suspended", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(Date, "now").mockReturnValue(3_200_000);
+  const originalPage = host.page;
+  const pending = new Promise<never>(() => {});
+  let suspend = false;
+  let reachedPendingRender = false;
+  function PendingDocument() {
+    if (suspend) {
+      reachedPendingRender = true;
+      throw pending;
+    }
+    return null;
+  }
+  const tree = () =>
+    createElement(Suspense, { fallback: "Loading" }, [
+      createElement(PageScreen, { key: "page" }),
+      createElement(PendingDocument, { key: "pending" }),
+    ]);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  host.copied = [];
+  try {
+    await act(async () => root.render(tree()));
+    const committedMessage = host.message!;
+    host.page = { ...originalPage, id: "page-uncommitted" };
+    suspend = true;
+    await act(async () => startTransition(() => root.render(tree())));
+    expect(reachedPendingRender).toBe(true);
+    expect(container.textContent).not.toContain("Loading");
+    host.touch.onTouchStart?.(at(10, 10));
+    host.touch.onTouchEnd?.(at(10, 10));
+    await act(async () =>
+      committedMessage(
+        JSON.stringify({ type: "rakazo-page:copy", id: "committed", text: "still current" }),
+        () => {},
+      ),
+    );
+    expect(host.copied).toEqual(["still current"]);
+  } finally {
+    host.page = originalPage;
+    suspend = false;
+    await act(async () => root.unmount());
+  }
 });
 
 it("puts a tapped reply in the page's own chat unsent, closing the page or opening that chat", async () => {

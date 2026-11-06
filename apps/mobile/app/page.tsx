@@ -4,7 +4,15 @@ import { pageCopyRequest, pageCopyResult, pageLinkRequest, pageReplyText } from 
 import { webTokensForAppearance } from "@rakazo/ui-tokens";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NativeActionButton } from "../components/native-action-button";
@@ -48,6 +56,15 @@ export default function PageScreen() {
   const [state, setLoaded] = useState<Loaded>({ status: "loading", scope: documentKey });
   const loaded: Loaded =
     state.scope === documentKey ? state : { status: "loading", scope: documentKey };
+  // A previous view's callback stays revoked even when navigation returns to the same page.
+  const documentIdentity = useMemo(() => ({ key: documentKey }), [documentKey]);
+  const committedDocument = useRef<typeof documentIdentity | null>(null);
+  useLayoutEffect(() => {
+    committedDocument.current = documentIdentity;
+    return () => {
+      committedDocument.current = null;
+    };
+  }, [documentIdentity]);
   // iOS keeps the native glass button as it is; Android's bordered button becomes a card circle.
   const round =
     Platform.OS === "ios" ? undefined : [styles.round, { backgroundColor: tokens.card }];
@@ -87,7 +104,7 @@ export default function PageScreen() {
     (data: string, answer: (message: object) => void) => {
       if (
         scope !== pageScopeKey() ||
-        loaded.scope !== documentKey ||
+        committedDocument.current !== documentIdentity ||
         !pageActionAllowed(tappedAt.current, Date.now())
       )
         return;
@@ -119,7 +136,7 @@ export default function PageScreen() {
           .then((ok) => answer(pageCopyResult(copy.id, ok !== false)));
       }
     },
-    [openLink, loaded, navigation, router, scope, documentKey],
+    [openLink, loaded, navigation, router, scope, documentIdentity],
   );
 
   return (

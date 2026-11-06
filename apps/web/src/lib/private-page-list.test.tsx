@@ -6,8 +6,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type * as Rpc from "./rpc";
 
-const reads = vi.hoisted(() => ({ list: vi.fn(), rename: vi.fn(), pin: vi.fn() }));
+const reads = vi.hoisted(() => ({ list: vi.fn(), rename: vi.fn(), pin: vi.fn(), get: vi.fn() }));
 vi.mock("@lingui/react/macro", () => ({
   useLingui: () => ({ t: String.raw }),
   Trans: ({ children }: { children: ReactNode }) => children,
@@ -41,11 +42,12 @@ vi.mock("@rakazo/ui-web", () => {
 vi.mock("../pages/shell/dialogs", () => ({ DeleteItemDialog: () => null }));
 vi.mock("./relative-time", () => ({ formatRelativeTime: () => "now" }));
 vi.mock("./rpc", async (original) => ({
-  ...(await original<typeof import("./rpc")>()),
+  ...(await original<typeof Rpc>()),
   createSpaceRpc: () => ({ pages: reads }),
 }));
 const { PagesList } = await import("../components/pages/PagesList");
 const { PagesProvider, usePagesForChat } = await import("./pages");
+const { usePrivatePageMutation } = await import("./private-page-list");
 const { selectSpace, synchronizeRpcSession } = await import("./rpc");
 
 const page = (index: number): PageSummary => ({
@@ -69,6 +71,14 @@ beforeEach(() => {
   reads.list.mockReset();
   reads.rename.mockReset();
   reads.pin.mockReset();
+  reads.get.mockReset().mockImplementation(async ({ pageId }: { pageId: string }) => ({
+    ...page(1),
+    id: pageId,
+    version: 1,
+    code: "compiled",
+    owner: { name: "Owner", image: null },
+    shareUrl: null,
+  }));
   reads.rename.mockResolvedValue({ ok: true });
   reads.pin.mockResolvedValue({ ok: true });
   selectSpace("space-1");
@@ -243,4 +253,102 @@ it("drops an old next-batch reply when a new search takes over, then starts its 
   expect(titles(container)).toHaveLength(20);
   expect(container.textContent).toContain("Plan 101");
   expect(container.textContent).not.toContain("Plan 1now");
+});
+
+async function mutationView(pageId?: string) {
+  let binding!: ReturnType<typeof usePagesForChat>;
+  let mutation!: ReturnType<typeof usePrivatePageMutation<{ pageId: string; title: string }>>;
+  function Probe() {
+    mutation = usePrivatePageMutation(
+      (input: { pageId: string; title: string }) => reads.rename(input),
+      pageId,
+    );
+    return null;
+  }
+  function Owner() {
+    binding = usePagesForChat("owner-1:space-1:bot-1", "space-1");
+    return (
+      <PagesProvider value={binding}>
+        <Probe />
+      </PagesProvider>
+    );
+  }
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  mounted.push({ root, container });
+  await act(async () =>
+    root.render(
+      <MemoryRouter>
+        <Owner />
+      </MemoryRouter>,
+    ),
+  );
+  return { binding: () => binding, mutation: () => mutation };
+}
+
+it.each(["page-1", undefined])(
+  "reconciles a lost mutation reply with %s detail invalidation and resets the next attempt",
+  async (pageId) => {
+    let reject!: (reason: Error) => void;
+    reads.rename.mockImplementationOnce(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    const view = await mutationView(pageId);
+    const store = view.binding().store;
+    const first = store.get("page-1");
+    const second = store.get("page-2");
+    await Promise.all([first, second]);
+    await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Rename" }));
+    expect(view.mutation().isPending).toBe(true);
+    expect(view.mutation().isError).toBe(false);
+    await act(async () => reject(new Error("reply lost")));
+    expect(view.mutation().isPending).toBe(false);
+    expect(view.mutation().isError).toBe(true);
+    const refreshed = store.get("page-1");
+    expect(refreshed).not.toBe(first);
+    const retained = store.get("page-2");
+    if (pageId) expect(retained).toBe(second);
+    else expect(retained).not.toBe(second);
+    await retained;
+    expect(reads.get).toHaveBeenCalledTimes(pageId ? 3 : 4);
+    let finish!: () => void;
+    reads.rename.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Retry" }));
+    expect(view.mutation().isPending).toBe(true);
+    expect(view.mutation().isError).toBe(false);
+    await act(async () => finish());
+    expect(view.mutation().isPending).toBe(false);
+    expect(view.mutation().isError).toBe(false);
+    expect(store.get("page-1")).not.toBe(refreshed);
+    if (pageId) expect(store.get("page-2")).toBe(retained);
+    else expect(store.get("page-2")).not.toBe(retained);
+  },
+);
+
+it("does not reconcile a lost reply or issue another mutation after its account scope dies", async () => {
+  let reject!: (reason: Error) => void;
+  reads.rename.mockImplementationOnce(
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const view = await mutationView("page-1");
+  const store = view.binding().store;
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Rename" }));
+  const revision = store.revision();
+  synchronizeRpcSession("authenticated", "owner-2", "session-2");
+  await act(async () => reject(new Error("reply lost")));
+  expect(store.revision()).toBe(revision);
+  expect(view.mutation().isError).toBe(false);
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Stale" }));
+  expect(reads.rename).toHaveBeenCalledTimes(1);
 });

@@ -4,7 +4,9 @@ import { act, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type * as Pages from "../../lib/pages";
 import { PagesProvider, usePagesForChat } from "../../lib/pages";
+import type * as Rpc from "../../lib/rpc";
 import { selectSpace, synchronizeRpcSession } from "../../lib/rpc";
 import { PageViewHost } from "./PageViewHost";
 
@@ -25,23 +27,36 @@ const fixture = vi.hoisted(() => ({
     shareUrl: null,
   },
   get: vi.fn(),
+  rename: vi.fn(),
+  renameAction: undefined as ((title: string) => void) | undefined,
   reply: undefined as ((text: string) => void) | undefined,
   views: [] as { route: string; canReply: boolean; hasComposer: boolean }[],
 }));
 vi.mock("@lingui/react/macro", () => ({ useLingui: () => ({ t: String.raw }) }));
 vi.mock("../../lib/rpc", async (original) => ({
-  ...(await original<typeof import("../../lib/rpc")>()),
-  createSpaceRpc: () => ({ pages: { get: fixture.get } }),
+  ...(await original<typeof Rpc>()),
+  createSpaceRpc: () => ({ pages: { get: fixture.get, rename: fixture.rename } }),
 }));
 vi.mock("../../lib/pages", async (original) => ({
-  ...(await original<typeof import("../../lib/pages")>()),
+  ...(await original<typeof Pages>()),
   useMedia: () => false,
   usePageDocument: () => ({ document: "<p>Plan</p>", failed: false, retry: vi.fn() }),
 }));
 vi.mock("./PageView", () => ({
-  PageView: ({ composer, onReply }: { composer?: ReactNode; onReply?: (text: string) => void }) => {
+  PageView: ({
+    composer,
+    onReply,
+    onRename,
+    renameError,
+  }: {
+    composer?: ReactNode;
+    onReply?: (text: string) => void;
+    onRename?: (title: string) => void;
+    renameError?: string | null;
+  }) => {
     const location = useLocation();
     fixture.reply = onReply;
+    fixture.renameAction = onRename;
     fixture.views.push({
       route: location.pathname + location.search,
       canReply: Boolean(onReply),
@@ -57,6 +72,15 @@ vi.mock("./PageView", () => ({
         >
           Reply from page
         </button>
+        <button
+          type="button"
+          data-testid="page-rename"
+          disabled={!onRename}
+          onClick={() => onRename?.("Renamed plan")}
+        >
+          Rename page
+        </button>
+        {renameError ? <p role="alert">{renameError}</p> : null}
         {composer}
       </section>
     );
@@ -69,7 +93,12 @@ let unmount: (() => Promise<void>) | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  fixture.get.mockReset().mockImplementation(async () => ({ ...fixture.detail }));
+  fixture.get.mockReset().mockImplementation(async ({ pageId }: { pageId: string }) => ({
+    ...fixture.detail,
+    id: pageId,
+  }));
+  fixture.rename.mockReset().mockResolvedValue({ ok: true });
+  fixture.renameAction = undefined;
   fixture.detail.botId = "origin-bot";
   fixture.detail.groupId = null;
   fixture.reply = undefined;
@@ -112,6 +141,13 @@ async function mount(initial: string, available = { bots, groups }) {
         <input aria-label="Chat draft" readOnly value={drafts.get(location.pathname) ?? ""} />
         <button type="button" data-testid="close-page" onClick={() => navigate(location.pathname)}>
           Close reader
+        </button>
+        <button
+          type="button"
+          data-testid="other-page"
+          onClick={() => navigate(`${location.pathname}?page=page-other`)}
+        >
+          Other page
         </button>
         <PageViewHost bots={available.bots} groups={available.groups} />
       </PagesProvider>
@@ -273,4 +309,61 @@ it("rejects the old callback immediately when the authenticated account changes"
   synchronizeRpcSession("authenticated", "owner-2", "session-2");
   await act(async () => reply("Late page reply"));
   expect(view.drafts.get("/app/origin-bot")).toBe("Existing draft");
+});
+
+it("disables an in-flight title rename, reconciles a lost reply and clears its error on retry", async () => {
+  let reject!: (error: Error) => void;
+  fixture.rename.mockImplementationOnce(
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const view = await mount("/app/origin-bot?page=page-plan");
+  const button = () =>
+    view.container.querySelector<HTMLButtonElement>('[data-testid="page-rename"]')!;
+  await act(async () => button().click());
+  expect(fixture.rename).toHaveBeenCalledWith({ pageId: "page-plan", title: "Renamed plan" });
+  expect(button().disabled).toBe(true);
+  const reads = fixture.get.mock.calls.length;
+  await act(async () => reject(new Error("reply lost")));
+  expect(button().disabled).toBe(false);
+  expect(view.container.querySelector('[role="alert"]')?.textContent).toBe(
+    "Could not rename this page. Try again.",
+  );
+  expect(fixture.get.mock.calls.length).toBe(reads + 1);
+  await act(async () => button().click());
+  expect(view.container.querySelector('[role="alert"]')).toBeNull();
+  expect(button().disabled).toBe(false);
+});
+
+it("gives the next page independent rename state while the previous page's rename settles", async () => {
+  let reject!: (error: Error) => void;
+  fixture.rename.mockImplementationOnce(
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const view = await mount("/app/origin-bot?page=page-plan");
+  await act(async () => fixture.renameAction!("Old title"));
+  await act(async () =>
+    view.container.querySelector<HTMLButtonElement>('[data-testid="other-page"]')!.click(),
+  );
+  const button = view.container.querySelector<HTMLButtonElement>('[data-testid="page-rename"]')!;
+  expect(button.disabled).toBe(false);
+  await act(async () => reject(new Error("old reply lost")));
+  expect(view.container.querySelector('[role="alert"]')).toBeNull();
+  expect(button.disabled).toBe(false);
+  await act(async () => button.click());
+  expect(fixture.rename).toHaveBeenLastCalledWith({ pageId: "page-other", title: "Renamed plan" });
+});
+
+it("rejects a retained rename action after the authenticated account changes", async () => {
+  const view = await mount("/app/origin-bot?page=page-plan");
+  const rename = fixture.renameAction!;
+  synchronizeRpcSession("authenticated", "owner-2", "session-2");
+  await act(async () => rename("Late rename"));
+  expect(fixture.rename).not.toHaveBeenCalled();
+  expect(view.container.querySelector('[role="alert"]')).toBeNull();
 });

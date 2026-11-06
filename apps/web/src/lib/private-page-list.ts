@@ -109,7 +109,7 @@ export function usePrivatePageList(input: {
 }
 
 /** Both successful and lost mutation replies reconcile cards and their owner's list. */
-export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>) {
+export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>, pageId?: string) {
   const pages = usePages()!;
   const [state, setState] = useState({ pending: false, error: false });
   const handler = useRef(call);
@@ -125,7 +125,7 @@ export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>) 
     } finally {
       if (pages.store.isCurrent()) {
         setState((previous) => ({ ...previous, pending: false }));
-        pages.store.invalidate();
+        pages.store.invalidate(pageId);
       }
     }
   };

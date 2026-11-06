@@ -1,8 +1,9 @@
 import { useLingui } from "@lingui/react/macro";
 import type { Bot, Group } from "@rakazo/contracts";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PAGE_PARAM, useMedia, usePageDetail, usePageDocument, usePages } from "../../lib/pages";
+import { usePrivatePageMutation } from "../../lib/private-page-list";
 import { errorCode } from "../../lib/user-error";
 import { PageNotice } from "./PageNotice";
 import { PageView } from "./PageView";
@@ -70,8 +71,10 @@ function OpenPage({
     canReply,
     canReply ? 72 : 0,
   );
-  const [renaming, setRenaming] = useState(false);
-  const [renameError, setRenameError] = useState(false);
+  const rename = usePrivatePageMutation(
+    (input: { pageId: string; title: string }) => pages.store.client.pages.rename(input),
+    pageId,
+  );
   const close = useCallback(
     () =>
       setSearch((current) => {
@@ -118,31 +121,8 @@ function OpenPage({
       composer={canReply ? <div ref={setDock} /> : undefined}
       onReply={canReply ? reply : undefined}
       share={null}
-      renameError={renameError ? t`Could not rename this page. Try again.` : null}
-      onRename={
-        !data || renaming
-          ? undefined
-          : (title) => {
-              setRenaming(true);
-              setRenameError(false);
-              void pages.store.client.pages
-                .rename({ pageId, title })
-                .then(
-                  () => {
-                    if (pages.store.isCurrent()) pages.store.invalidate(pageId);
-                  },
-                  () => {
-                    if (pages.store.isCurrent()) {
-                      setRenameError(true);
-                      pages.store.invalidate(pageId);
-                    }
-                  },
-                )
-                .finally(() => {
-                  if (pages.store.isCurrent()) setRenaming(false);
-                });
-            }
-      }
+      renameError={rename.isError ? t`Could not rename this page. Try again.` : null}
+      onRename={!data || rename.isPending ? undefined : (title) => rename.mutate({ pageId, title })}
       notice={
         gone ? (
           <PageNotice

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PageToolContext } from "./page-tools.js";
 
 const publishMessage = vi.fn();
-const { savePageFromTool } = await import("./page-tools.js");
+const { recoverSavedPageFromTool, savePageFromTool } = await import("./page-tools.js");
 
 const source = (heading: string) =>
   `const App = () => (\n  <Page title="${heading}">\n    <Text>Hi</Text>\n  </Page>\n);\nexport default App;\n`;
@@ -212,6 +212,83 @@ describe("save_page", () => {
       expect(f.deliveries[0]?.nonce).toBe("page-save:effect-1");
     },
   );
+
+  it.each(["create", "source", "edits"])(
+    "recovers only the durable executing %s receipt before and after publication",
+    async (mode) => {
+      const f = receiptContext(mode !== "create");
+      const args =
+        mode === "create"
+          ? { title: "Plan", source: source("Plan") }
+          : mode === "source"
+            ? { pageId: "page-1", source: source("Updated") }
+            : { pageId: "page-1", edits: [{ find: "Hi", replace: "Hi again" }] };
+      f.setRequest(args);
+      expect(await recoverSavedPageFromTool(f.ctx, args)).toBeUndefined();
+      expect(f.writes).toHaveLength(0);
+      f.interruptAfterCommit();
+      await expect(savePageFromTool(f.ctx, args)).rejects.toThrow("worker interrupted");
+      const pageReads = f.page.findFirst.mock.calls.length;
+      const result = await recoverSavedPageFromTool(f.ctx, args);
+      expect(result).toMatchObject({ pageId: "page-1", version: mode === "create" ? 1 : 2 });
+      expect(await recoverSavedPageFromTool(f.ctx, args)).toEqual(result);
+      expect(f.writes).toHaveLength(1);
+      expect(f.deliveries).toEqual([{ nonce: "page-save:effect-1" }]);
+      expect(f.page.findFirst).toHaveBeenCalledTimes(pageReads);
+      expect(f.externalEffect.findFirst).toHaveBeenLastCalledWith({
+        where: {
+          id: "effect-1",
+          spaceId: "space-1",
+          runId: "run-1",
+          kind: "save_page",
+          run: { userId: "user-1", botId: "bot-1", threadId: "t-1" },
+          status: "executing",
+        },
+        select: { request: true, result: true },
+      });
+    },
+  );
+
+  it("does not write or publish for missing, mismatched or malformed executing receipts", async () => {
+    const f = receiptContext(false);
+    const args = { title: "Plan", source: source("Plan") };
+    f.setRequest(args);
+    await savePageFromTool(f.ctx, args);
+    const receipt = f.externalEffect.update.mock.calls[0]![0].data.result as Record<
+      string,
+      unknown
+    >;
+    for (const result of [
+      null,
+      {},
+      { ...receipt, effectId: "another-effect" },
+      { ...receipt, requestDigest: "another-request" },
+      { ...receipt, saved: { pageId: "page-1", version: 0, title: "Plan" } },
+    ]) {
+      f.setResult(result);
+      expect(await recoverSavedPageFromTool(f.ctx, args)).toBeUndefined();
+    }
+    f.setResult(receipt);
+    f.setRequest({ ...args, title: "Different request" });
+    expect(await recoverSavedPageFromTool(f.ctx, args)).toBeUndefined();
+    f.setRequest(args);
+    // An absent row also covers a scope/kind/run/status mismatch in the scoped query.
+    f.externalEffect.findFirst.mockResolvedValueOnce(null as never);
+    expect(await recoverSavedPageFromTool(f.ctx, args)).toBeUndefined();
+    expect(await recoverSavedPageFromTool({ ...f.ctx, effect: undefined }, args)).toBeUndefined();
+    expect(f.writes).toHaveLength(1);
+    expect(f.deliveries).toHaveLength(1);
+  });
+
+  it("propagates a failed executing-receipt read without attempting a new save", async () => {
+    const f = receiptContext(false);
+    const args = { title: "Plan", source: source("Plan") };
+    f.externalEffect.findFirst.mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(recoverSavedPageFromTool(f.ctx, args)).rejects.toThrow("database unavailable");
+    expect(f.page.findFirst).not.toHaveBeenCalled();
+    expect(f.writes).toHaveLength(0);
+    expect(f.deliveries).toHaveLength(0);
+  });
 
   it("reuses a published card and allows a different effect to save the same input", async () => {
     const f = receiptContext(false);

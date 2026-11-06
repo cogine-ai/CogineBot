@@ -81,37 +81,68 @@ function parseEdits(value: unknown): PageEdit[] | string {
   return edits;
 }
 
+function pageEffectScope(ctx: PageToolContext) {
+  return {
+    id: ctx.effect?.id,
+    spaceId: ctx.run.spaceId,
+    runId: ctx.run.id,
+    kind: "save_page",
+    run: { userId: ctx.run.userId, botId: ctx.bot.id, threadId: ctx.run.threadId },
+  };
+}
+
+class InvalidPageSaveReceipt extends Error {}
+
+async function readPageSaveReceipt(
+  ctx: PageToolContext,
+  args: Record<string, unknown>,
+  prisma: Pick<PrismaClient, "externalEffect">,
+  status?: "executing",
+) {
+  const effect = await prisma.externalEffect.findFirst({
+    where: { ...pageEffectScope(ctx), ...(status ? { status } : {}) },
+    select: { request: true, result: true },
+  });
+  const request = stableJsonValue(args);
+  if (!effect || stableJsonValue(effect.request) !== request) {
+    throw new InvalidPageSaveReceipt("Stored page execution does not match this run and request.");
+  }
+  if (effect.result === null) return undefined;
+  const receipt = PageSaveReceiptSchema.safeParse(effect.result);
+  if (
+    !receipt.success ||
+    receipt.data.effectId !== ctx.effect?.id ||
+    receipt.data.requestDigest !== createHash("sha256").update(request).digest("hex")
+  ) {
+    throw new InvalidPageSaveReceipt("Stored page execution has no valid save receipt.");
+  }
+  return receipt.data;
+}
+
+/** Recover only a committed save; an interrupted approved call must never execute a new write. */
+export async function recoverSavedPageFromTool(
+  ctx: PageToolContext,
+  args: Record<string, unknown>,
+) {
+  if (!ctx.effect) return undefined;
+  let receipt: PageSaveReceipt | undefined;
+  try {
+    receipt = await readPageSaveReceipt(ctx, args, ctx.deps.prisma, "executing");
+  } catch (error) {
+    // Missing, mismatched and malformed receipts retain the ordinary uncertain-effect gate.
+    // A database read failure propagates: it cannot establish that replay is safe.
+    if (error instanceof InvalidPageSaveReceipt) return undefined;
+    throw error;
+  }
+  return receipt ? publishSavedPage(ctx, receipt) : undefined;
+}
+
 export async function savePageFromTool(ctx: PageToolContext, args: Record<string, unknown>) {
   const { deps, run, bot, thread } = ctx;
   if (args.help === true) return { guide: PAGE_KIT_GUIDE };
   const request = ctx.effect ? stableJsonValue(args) : "";
   const requestDigest = createHash("sha256").update(request).digest("hex");
-  const effectScope = {
-    id: ctx.effect?.id,
-    spaceId: run.spaceId,
-    runId: run.id,
-    kind: "save_page",
-    run: { userId: run.userId, botId: bot.id, threadId: run.threadId },
-  };
-  const readReceipt = async (prisma: Pick<PrismaClient, "externalEffect">) => {
-    const effect = await prisma.externalEffect.findFirst({
-      where: effectScope,
-      select: { request: true, result: true },
-    });
-    if (!effect || stableJsonValue(effect.request) !== request) {
-      throw new Error("Stored page execution does not match this run and request.");
-    }
-    if (effect.result === null) return undefined;
-    const receipt = PageSaveReceiptSchema.safeParse(effect.result);
-    if (
-      !receipt.success ||
-      receipt.data.effectId !== ctx.effect!.id ||
-      receipt.data.requestDigest !== requestDigest
-    ) {
-      throw new Error("Stored page execution has no valid save receipt.");
-    }
-    return receipt.data;
-  };
+  const effectScope = pageEffectScope(ctx);
   const pageId = argumentGiven(args.pageId) ? String(args.pageId) : undefined;
   const hasSource = argumentGiven(args.source);
   // Serializers send unused optional fields blank, an empty list included.
@@ -126,7 +157,8 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
   // Reads retain their source/taint contract. Recover writes before reading the page or
   // applying edits: a later change or deletion must not turn this execution into another save.
   const reading = pageId && !hasSource && !hasEdits && !title;
-  const previous = ctx.effect && !reading ? await readReceipt(deps.prisma) : undefined;
+  const previous =
+    ctx.effect && !reading ? await readPageSaveReceipt(ctx, args, deps.prisma) : undefined;
   if (previous) return publishSavedPage(ctx, previous);
 
   // A bot reaches its own pages and its group's pages, from any of its chats or routines; another
@@ -189,7 +221,7 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
           data: { updatedAt: new Date() },
         });
         if (held.count !== 1) throw new Error("Page execution is no longer writable.");
-        const previous = await readReceipt(tx);
+        const previous = await readPageSaveReceipt(ctx, args, tx);
         if (previous) return previous;
       }
       let saved: PageSaveReceipt["saved"];
