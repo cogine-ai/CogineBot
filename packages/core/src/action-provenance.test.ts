@@ -1,13 +1,18 @@
+import { isBuiltinToolName } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   connectorReadRequiresApproval,
   isOwnerStartedRun,
   newSiteOutcome,
   planActionGate,
+  SITE_SENDING_TOOLS,
   toolResultTaintsRun,
 } from "./action-approval.js";
 
 describe("run result provenance", () => {
+  it("assigns site-scoped allowances only to registered local builtin tools", () => {
+    for (const name of SITE_SENDING_TOOLS) expect(isBuiltinToolName(name)).toBe(true);
+  });
   it("keeps confirmations and saved conversation state separate from outside results", () => {
     for (const name of [
       "save_page",

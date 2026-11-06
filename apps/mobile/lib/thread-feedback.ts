@@ -1,4 +1,4 @@
-import type { AgentSkillCatalogEntry } from "@rakazo/contracts";
+import type { AgentSkillCatalogEntry, PageReplyContext } from "@rakazo/contracts";
 import type { ComposerMention, resolveComposerSendPlan } from "@rakazo/core";
 import { isServerUnreachable } from "@rakazo/core";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -34,6 +34,7 @@ export type SendPayload = {
   replyTargetId?: string;
   replyQuote: string | null;
   fromPage?: true;
+  pageContext?: PageReplyContext;
 };
 
 export type SendAttempt = {
@@ -99,6 +100,7 @@ export async function deliverSend(
     replyToMessageId: reroutedToGroup ? undefined : payload.replyTargetId,
     replyQuote: reroutedToGroup ? undefined : (payload.replyQuote ?? undefined),
     fromPage: reroutedToGroup ? undefined : payload.fromPage,
+    pageContext: reroutedToGroup ? undefined : payload.pageContext,
   });
   return sent.seq;
 }

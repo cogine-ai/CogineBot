@@ -1,3 +1,4 @@
+import { PageReplyContextSchema } from "@rakazo/contracts";
 import { Directory, File, Paths } from "expo-file-system";
 import type { SendAttempt, UnsentDisk } from "./thread-feedback";
 import { OUTBOX_MAX_ENTRIES } from "./thread-feedback";
@@ -100,9 +101,14 @@ export const outboxDisk: UnsentDisk = {
           typeof entry.payload?.originThreadKey !== "string" ||
           typeof entry.payload.displayText !== "string" ||
           !entry.payload.plan ||
+          typeof entry.payload.plan.trimmed !== "string" ||
+          typeof entry.payload.plan.shouldSend !== "boolean" ||
+          typeof entry.payload.plan.shouldRunRoutines !== "boolean" ||
           !Array.isArray(entry.payload.plan.routineIds) ||
           !Array.isArray(entry.payload.plan.mentionPayload) ||
           !Array.isArray(entry.payload.attachments) ||
+          (entry.payload.pageContext !== undefined &&
+            !PageReplyContextSchema.safeParse(entry.payload.pageContext).success) ||
           !Array.isArray(entry.artifactIds) ||
           !entry.artifactIds.every(
             (pair: unknown) =>

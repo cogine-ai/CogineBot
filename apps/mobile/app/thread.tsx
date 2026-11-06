@@ -1963,6 +1963,7 @@ function Thread({
     const originThreadKey = initialGroupTarget ?? initialBotTarget;
     const submitted = composerRef.current?.snapshot();
     if (!submitted) return;
+    const submittedPage = replyPage.current;
     const attachments = attachmentsForThread(pendingAttachments, originThreadKey);
     const plan = resolveComposerSendPlan({
       text: submitted.promptText,
@@ -1997,14 +1998,9 @@ function Thread({
     );
     const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
     const botTarget = reroutedToGroup ? undefined : initialBotTarget;
-    const fromPage =
+    const fromPage: ReturnType<typeof pageReply> =
       plan.shouldSend && !reroutedToGroup
-        ? pageReply(
-            plan.trimmed,
-            snapRef.current?.messages ?? [],
-            replyPage.current,
-            replyTarget?.id,
-          )
+        ? pageReply(plan.trimmed, snapRef.current?.messages ?? [], submittedPage, replyTarget?.id)
         : { text: plan.trimmed };
     const pageCard = snapRef.current?.messages.find(
       (message) => message.id === fromPage.replyToMessageId,
@@ -2021,11 +2017,12 @@ function Thread({
         botTarget,
         groupTarget,
         reroutedToGroup,
-        plan: { ...plan, trimmed: fromPage.text },
+        plan,
         attachments,
         replyTargetId: pageCard?.id ?? replyTarget?.id,
         replyQuote: pageCard ? null : replyQuote,
         fromPage: pageCard ? true : undefined,
+        pageContext: fromPage.pageContext,
       });
     } catch (error) {
       Alert.alert(t("Failed to send message"), errorText(error));

@@ -805,7 +805,7 @@ async function commitAnswerRunInput(
     });
     // A site's approval permits that destination, not every destination the tool can reach.
     const site = alwaysAllowedSite(approvalEffect!);
-    if (input.answer === "always" && (site || approvalEffect!.kind !== "web_fetch")) {
+    if (input.answer === "always" && (site || !SITE_SENDING_TOOLS.has(approvalEffect!.kind))) {
       await tx.actionApprovalRule.upsert({
         where: {
           spaceId_createdByUserId_effect_matchKind_matchValue: {

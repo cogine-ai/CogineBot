@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import type * as Pages from "./pages";
 
 const host = vi.hoisted(() => ({
   touch: {} as Record<string, ((event: object) => void) | undefined>,
@@ -115,7 +116,7 @@ vi.mock("./native", () => ({
   useResolvedAppearance: () => host.theme,
 }));
 vi.mock("./pages", async (original) => ({
-  ...(await original<typeof import("./pages")>()),
+  ...(await original<typeof Pages>()),
   getLatestPage: async () => {
     if (host.readError) throw host.readError;
     return host.page;

@@ -3482,7 +3482,7 @@ export function ShellPage() {
           ? newChat.botIds[0]
           : initialBotTarget;
       let target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
-      const fromPage =
+      const fromPage: ReturnType<PageSession["send"]> =
         !reroutedToGroup && plan.shouldSend
           ? pages.session.send(
               plan.trimmed,
@@ -3498,7 +3498,7 @@ export function ShellPage() {
       const attempt = composerSendAttempts.acquire(
         originThreadKey,
         composerSendSignature({
-          text: fromPage.text,
+          text: plan.trimmed,
           target:
             newChat && newChat.botIds.length > 1 && !reroutedToGroup
               ? { groupId: `new-chat:${newChat.id}:${newChat.botIds.join(",")}` }
@@ -3508,6 +3508,8 @@ export function ShellPage() {
           attachments,
           replyToMessageId,
           replyQuote,
+          fromPage: isPageReply ? true : undefined,
+          pageContext: fromPage.pageContext,
         }),
       );
       if (!attempt) return false;
@@ -3591,11 +3593,12 @@ export function ShellPage() {
             {
               ...target,
               clientNonce: attempt.clientNonce,
-              text: fromPage.text || undefined,
+              text: plan.trimmed || undefined,
               mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
               artifactIds: artifactIds.length ? artifactIds : undefined,
               replyToMessageId,
               ...(isPageReply ? { fromPage: true } : {}),
+              pageContext: fromPage.pageContext,
               replyQuote: replyQuote ?? undefined,
             },
             context,

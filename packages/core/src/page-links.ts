@@ -1,4 +1,5 @@
-import type { MessageBlock } from "@rakazo/contracts";
+import type { MessageBlock, PageReplyContext, PageTextContext } from "@rakazo/contracts";
+import { PageTextContextSchema } from "@rakazo/contracts";
 
 const PAGE_ID = /^\(page:([A-Za-z0-9_-]{1,64})\)/;
 // Markdown escapes only ASCII punctuation; any other backslash is part of the title.
@@ -184,15 +185,33 @@ export function pageReply(
   messages: readonly { id: string; blocks: readonly MessageBlock[] }[],
   page: { id: string; title: string } | null,
   chosenReplyId?: string,
-): { text: string; replyToMessageId?: string } {
+): { text: string; replyToMessageId?: string; pageContext?: PageReplyContext } {
   if (!page || chosenReplyId) return { text };
   const target = pageReplyTargetId(messages, page.id);
   if (target) return { text, replyToMessageId: target };
-  const title = page.title.replace(/[\\[\]]/g, "\\$&");
-  return { text: `[${title}](page:${page.id})\n${text}` };
+  return {
+    text: withPageReplyContext(text, { pageId: page.id, title: page.title }),
+    pageContext: { pageId: page.id },
+  };
 }
 
-/** The fallback link names a bot-authored page; only the text after it is the owner's request. */
-export function pageReplyOwnerText(text: string): string {
-  return text.replace(/^\[(?:\\[\\[\]]|[^\\[\]])*\]\(page:[A-Za-z0-9_-]{1,64}\)(?:\n|$)/, "");
+function pageReplyReference(context: PageTextContext): string {
+  const title = context.title.replace(/[\\[\]]/g, "\\$&");
+  return `[${title}](page:${context.pageId})`;
+}
+
+/** Compose the visible reference from canonical Page metadata, separately from the owner's text. */
+export function withPageReplyContext(text: string, context: PageTextContext): string {
+  return `${pageReplyReference(context)}\n${text}`;
+}
+
+/** Only server-tagged Page references are outside the owner's request; ordinary text stays intact. */
+export function pageReplyOwnerText(text: string, context?: unknown): string {
+  if (context === undefined) return text;
+  const parsed = PageTextContextSchema.safeParse(context);
+  if (!parsed.success) return "";
+  const reference = pageReplyReference(parsed.data);
+  if (text === reference) return "";
+  const prefix = `${reference}\n`;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : "";
 }

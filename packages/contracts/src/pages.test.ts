@@ -5,6 +5,7 @@ import {
   PAGE_TITLE_MAX_LENGTH,
   PageSourceSchema,
   PageSummarySchema,
+  PageTextContextSchema,
   PageTitleSchema,
 } from "./pages.js";
 
@@ -20,6 +21,15 @@ describe("PageTitleSchema", () => {
     expect(PageTitleSchema.safeParse("x".repeat(PAGE_TITLE_MAX_LENGTH)).success).toBe(true);
     expect(PageTitleSchema.safeParse("x".repeat(PAGE_TITLE_MAX_LENGTH + 1)).success).toBe(false);
   });
+});
+
+it("accepts only canonical server Page text metadata after JSON restoration", () => {
+  const context = { pageId: "page-1", title: "Report https://title.example/private [draft]" };
+  expect(PageTextContextSchema.parse(JSON.parse(JSON.stringify(context)))).toEqual(context);
+  for (const title of ["", " Q3 plan", "Q3\nplan", "Q3\u0000plan", "x".repeat(201)]) {
+    expect(PageTextContextSchema.safeParse({ ...context, title }).success).toBe(false);
+  }
+  expect(PageTextContextSchema.safeParse({ ...context, extra: true }).success).toBe(false);
 });
 
 it("bounds the titles pages send out by the cap a saved title has", () => {

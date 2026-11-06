@@ -2,7 +2,7 @@ import * as z from "zod";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
-import { PAGE_TITLE_MAX_LENGTH } from "./pages.js";
+import { PAGE_TITLE_MAX_LENGTH, PageTextContextSchema } from "./pages.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -100,7 +100,12 @@ export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
 export const MessageBlock = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), text: z.string() }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string(),
+    /** Only the authenticated send transaction adds the resolved Page title. */
+    pageContext: PageTextContextSchema.optional(),
+  }),
   z.object({
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),

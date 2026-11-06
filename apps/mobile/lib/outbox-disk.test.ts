@@ -2,7 +2,7 @@ import { resolveComposerSendPlan } from "@rakazo/core";
 import { beforeEach, expect, it, vi } from "vitest";
 import { OUTBOX_MAX_BYTES, outboxDisk } from "./outbox-disk";
 import type { SendAttempt } from "./thread-feedback";
-import { OUTBOX_MAX_ENTRIES } from "./thread-feedback";
+import { deliverSend, OUTBOX_MAX_ENTRIES } from "./thread-feedback";
 
 const files = vi.hoisted(() => new Map<string, string>());
 vi.mock("expo-file-system", () => {
@@ -136,3 +136,102 @@ it("does not reuse leftover bytes for a repeated nonce in another session", () =
   expect(outboxDisk.admit(next)).toBe(false);
   expect(next.payload.attachments[0]?.contentBase64).toBe("aGVsbG8=");
 });
+
+it("rehydrates a failed fallback Page send with raw owner text, context, uploaded ids and the same retry nonce", async () => {
+  const raw = "[https://owner.example/report](page:manual)\nPlease read this.";
+  const original = attempt();
+  original.artifactIds.clear();
+  original.payload.displayText = `[Plan](page:page-a)\n${raw}`;
+  original.payload.plan = resolveComposerSendPlan({
+    text: raw,
+    mentions: [],
+    hasAttachments: true,
+  });
+  original.payload.pageContext = { pageId: "page-a" };
+  expect(outboxDisk.admit(original)).toBe(true);
+  await outboxDisk.hydrate(original);
+  let sends = 0;
+  const calls: Array<{ proc: string; body: unknown }> = [];
+  const request = async <T>(proc: string, body: unknown): Promise<T> => {
+    calls.push({ proc, body });
+    if (proc === "artifacts/create") return { id: "uploaded-a" } as T;
+    sends += 1;
+    if (sends === 1) throw new Error("Connection lost before receipt");
+    return { seq: 42 } as T;
+  };
+  await expect(deliverSend(original.payload, original, request)).rejects.toThrow("Connection lost");
+  original.state = "failed";
+  outboxDisk.save([original]);
+  const stored = JSON.parse(files.get("cache/outbox/sends-v4.json")!);
+  expect(stored[0].payload).toMatchObject({
+    displayText: `[Plan](page:page-a)\n${raw}`,
+    plan: { trimmed: raw },
+    pageContext: { pageId: "page-a" },
+  });
+  const [restored] = outboxDisk.load(2, scope);
+  expect(restored?.clientNonce).toBe(original.clientNonce);
+  expect(restored?.state).toBe("failed");
+  await outboxDisk.hydrate(restored!);
+  expect(await deliverSend(restored!.payload, restored!, request)).toBe(42);
+  expect(calls.filter(({ proc }) => proc === "artifacts/create")).toHaveLength(1);
+  const requests = calls.filter(({ proc }) => proc === "threads/send");
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toEqual(requests[1]);
+  expect(requests[1]!.body).toMatchObject({
+    clientNonce: original.clientNonce,
+    text: raw,
+    pageContext: { pageId: "page-a" },
+    artifactIds: ["uploaded-a"],
+  });
+});
+
+it.each([null, { pageId: "" }, { pageId: "page-a", title: "forged" }])(
+  "does not restore malformed or client-supplied Page metadata %j",
+  (pageContext) => {
+    const original = attempt();
+    expect(outboxDisk.admit(original)).toBe(true);
+    outboxDisk.save([original]);
+    const stored = JSON.parse(files.get("cache/outbox/sends-v4.json")!);
+    stored[0].payload.pageContext = pageContext;
+    files.set("cache/outbox/sends-v4.json", JSON.stringify(stored));
+    expect(outboxDisk.load(2, scope)).toEqual([]);
+  },
+);
+
+it("restores an ordinary hand-written leading Page link without inventing context", async () => {
+  const original = attempt();
+  const raw = "[https://owner.example/report](page:manual)\nPlease read this.";
+  original.payload.displayText = raw;
+  original.payload.plan = resolveComposerSendPlan({
+    text: raw,
+    mentions: [],
+    hasAttachments: true,
+  });
+  expect(outboxDisk.admit(original)).toBe(true);
+  original.state = "failed";
+  outboxDisk.save([original]);
+  const [restored] = outboxDisk.load(2, scope);
+  expect(restored!.payload.pageContext).toBeUndefined();
+  const sent: unknown[] = [];
+  const request = async <T>(proc: string, body: unknown): Promise<T> => {
+    if (proc === "threads/send") sent.push(body);
+    return { seq: 43 } as T;
+  };
+  await deliverSend(restored!.payload, restored!, request);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ text: raw, pageContext: undefined });
+});
+
+it.each([{ trimmed: null }, { trimmed: 3 }, { shouldSend: "yes" }, { shouldRunRoutines: null }])(
+  "rejects a malformed wire plan rather than replaying partial Page context %j",
+  (plan) => {
+    const original = attempt();
+    original.payload.pageContext = { pageId: "page-a" };
+    expect(outboxDisk.admit(original)).toBe(true);
+    outboxDisk.save([original]);
+    const stored = JSON.parse(files.get("cache/outbox/sends-v4.json")!);
+    Object.assign(stored[0].payload.plan, plan);
+    files.set("cache/outbox/sends-v4.json", JSON.stringify(stored));
+    expect(outboxDisk.load(2, scope)).toEqual([]);
+  },
+);

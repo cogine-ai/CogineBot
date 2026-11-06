@@ -117,7 +117,7 @@ export function createPageSession() {
       text: string,
       messages: readonly { id: string; blocks: readonly MessageBlock[] }[],
       chosenReplyId?: string,
-    ): { text: string; replyToMessageId?: string } {
+    ): ReturnType<typeof pageReply> {
       return pageReply(text, messages, dock.page, chosenReplyId);
     },
   };

@@ -5777,8 +5777,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 // An intended secret request resumes protected entry below, including
                 // recovery after action approval but before the card was committed.
               } else if (!needsApproval) {
-                const early = await claimOrReturn("intended");
-                if (early !== undefined) return early;
+                // Page writes keep a save receipt atomically with their existing effect.
+                // Their transaction serializes intended retries without changing an
+                // interrupted local save into an uncertain external operation.
+                if (name !== "save_page") {
+                  const early = await claimOrReturn("intended");
+                  if (early !== undefined) return early;
+                }
               } else {
                 const current = await deps.prisma.run.findUnique({
                   where: { id: runId },
@@ -5989,7 +5994,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   thread,
                   state: trust.state,
                   secrets: runSecrets,
-                  publish: (blocks) => publishMessage(deps, run, "bot", blocks),
+                  effect: applied ? { id: applied.effect.id } : undefined,
+                  publish: (blocks, nonce) =>
+                    publishMessage(deps, run, "bot", blocks, undefined, nonce),
                 },
                 args,
               ),

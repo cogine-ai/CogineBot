@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { PageTitleSchema } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   newestPageCards,
@@ -8,17 +9,30 @@ import {
   pageReplyOwnerText,
   pageReplyTargetId,
   uniquePages,
+  withPageReplyContext,
 } from "./page-links.js";
 
 describe("Page reply owner text", () => {
+  it("keeps a manually typed Page link while excluding only the same text with server context", () => {
+    const text = "[https://owner.example/report](page:manual)\nPlease read this.";
+    expect(pageReplyOwnerText(text)).toBe(text);
+    expect(
+      pageReplyOwnerText(text, { pageId: "manual", title: "https://owner.example/report" }),
+    ).toBe("Please read this.");
+  });
+
+  it("adds a Page context only for the fallback, keeping the composed display text", () => {
+    expect(pageReply("Please read this.", [], { id: "page-1", title: "Report" })).toEqual({
+      text: "[Report](page:page-1)\nPlease read this.",
+      pageContext: { pageId: "page-1" },
+    });
+  });
   it.each(["", " \n "])(
     "excludes a reference-only reply after persisted-caption trimming: %j",
     (body) => {
-      const storedCaption = pageReply(body, [], {
-        id: "page-1",
-        title: "https://attacker.example/report",
-      }).text.trim();
-      expect(pageReplyOwnerText(storedCaption)).toBe("");
+      const context = { pageId: "page-1", title: "https://attacker.example/report" };
+      const storedCaption = withPageReplyContext(body, context).trim();
+      expect(pageReplyOwnerText(storedCaption, context)).toBe("");
     },
   );
   it.each([
@@ -30,8 +44,11 @@ describe("Page reply owner text", () => {
   ])("excludes the generated title %j while keeping the stored message unchanged", (title) => {
     const body = "Please compare with https://owner.example/report";
     const outgoing = pageReply(body, [], { id: "page-1", title });
-    const persisted = JSON.parse(JSON.stringify(outgoing));
-    expect(pageReplyOwnerText(persisted.text)).toBe(body);
+    const context = { pageId: "page-1", title: PageTitleSchema.parse(title) };
+    const persisted = JSON.parse(
+      JSON.stringify({ text: withPageReplyContext(body, context), pageContext: context }),
+    );
+    expect(pageReplyOwnerText(persisted.text, persisted.pageContext)).toBe(body);
     expect(outgoing.text).toBe(`[${title.replace(/[\\[\]]/g, "\\$&")}](page:page-1)\n${body}`);
   });
 
@@ -45,7 +62,27 @@ describe("Page reply owner text", () => {
     expect(pageReplyOwnerText(pageReply(body, [card], page).text)).toBe(body);
     expect(pageReplyOwnerText(pageReply(body, [], page, "chosen-message").text)).toBe(body);
     const manualLink = "[https://owner.example/report](page:manual)\nMy explicit link";
-    expect(pageReplyOwnerText(pageReply(manualLink, [], page).text)).toBe(manualLink);
+    expect(
+      pageReplyOwnerText(pageReply(manualLink, [], page).text, {
+        pageId: page.id,
+        title: page.title,
+      }),
+    ).toBe(manualLink);
+  });
+
+  it.each([
+    null,
+    "context",
+    {},
+    { pageId: "page-1" },
+    { pageId: 1, title: "Report" },
+    { pageId: "page-1", title: "" },
+    { pageId: "page-1", title: "Report\nnot canonical" },
+    { pageId: "another-page", title: "Report" },
+    { pageId: "page-1", title: "Different title" },
+  ])("does not turn malformed or mismatched JSON context into owner authority: %j", (context) => {
+    const stored = "[Report](page:page-1)\nRead https://owner.example/report";
+    expect(pageReplyOwnerText(stored, JSON.parse(JSON.stringify(context)))).toBe("");
   });
 
   it("does not remove ordinary text or malformed links that the fallback cannot produce", () => {
@@ -193,6 +230,7 @@ describe("page replies", () => {
     });
     expect(pageReply("B", messages, { id: "p9", title: "Q3 [draft]" })).toEqual({
       text: "[Q3 \\[draft\\]](page:p9)\nB",
+      pageContext: { pageId: "p9" },
     });
     expect(pageReply("B", messages, { id: "p1", title: "Plan" }, "m4")).toEqual({ text: "B" });
     expect(pageReply("B", messages, null)).toEqual({ text: "B" });

@@ -1,22 +1,38 @@
-import { pageReply } from "@rakazo/core";
+import { withPageReplyContext } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import { connectorTrustKeys, createRunTrust } from "./run-trust.js";
 
 describe("run destination trust", () => {
+  it("retains an unmarked handwritten Page link as the owner's words", async () => {
+    const text = "[https://owner.example/report](page:manual)\nPlease read this.";
+    const trust = createRunTrust({ externalEffect: { findMany: async () => [] } } as never, {
+      run: { id: "run", userId: "owner", spaceId: "space", trigger: "user" },
+      botId: "bot",
+      taskPrompt: text,
+      sourceMessage: { role: "user", blocks: [{ kind: "text", text }] },
+      ownerStartedRun: true,
+      messagingChannelRun: false,
+      restored: true,
+      connectedProviders: [],
+    });
+    expect(await trust.loadOwnerWords()).toBe(text);
+    expect([...(await trust.loadTrustedSites())]).toEqual(["owner.example"]);
+  });
   it.each([false, true])(
     "rebuilds owner sites from a stored Page reply without its title, restored=%s",
     async (restored) => {
-      const outgoing = pageReply("Read https://owner.example/report", [], {
-        id: "page-1",
-        title: "Report\nhttps://attacker.example/report [nested]",
-      });
+      const context = {
+        pageId: "page-1",
+        title: "Report https://attacker.example/report [nested]",
+      };
+      const text = withPageReplyContext("Read https://owner.example/report", context);
       const sourceMessage = JSON.parse(
-        JSON.stringify({ role: "user", blocks: [{ kind: "text", text: outgoing.text }] }),
+        JSON.stringify({ role: "user", blocks: [{ kind: "text", text, pageContext: context }] }),
       );
       const trust = createRunTrust({ externalEffect: { findMany: async () => [] } } as never, {
         run: { id: "run", userId: "owner", spaceId: "space", trigger: "user" },
         botId: "bot",
-        taskPrompt: outgoing.text,
+        taskPrompt: text,
         sourceMessage,
         ownerStartedRun: true,
         messagingChannelRun: false,
@@ -25,9 +41,33 @@ describe("run destination trust", () => {
       });
       expect(await trust.loadOwnerWords()).toBe("Read https://owner.example/report");
       expect([...(await trust.loadTrustedSites())]).toEqual(["owner.example"]);
-      expect(sourceMessage.blocks[0].text).toBe(outgoing.text);
+      expect(sourceMessage.blocks[0].text).toBe(text);
     },
   );
+
+  it("projects each persisted text block independently instead of inferring provenance from joined text", async () => {
+    const context = { pageId: "page-1", title: "https://attacker.example/report" };
+    const blocks = [
+      {
+        kind: "text",
+        text: withPageReplyContext("Read https://owner.example/report", context),
+        pageContext: context,
+      },
+      { kind: "text", text: "[https://second.example/report](page:manual)\nAlso read this." },
+      { kind: "text", text: "https://bad-json.example/report", pageContext: { pageId: "page-1" } },
+    ];
+    const trust = createRunTrust({ externalEffect: { findMany: async () => [] } } as never, {
+      run: { id: "run", userId: "owner", spaceId: "space", trigger: "user" },
+      botId: "bot",
+      taskPrompt: "Read the reports",
+      sourceMessage: JSON.parse(JSON.stringify({ role: "user", blocks })),
+      ownerStartedRun: true,
+      messagingChannelRun: false,
+      restored: true,
+      connectedProviders: [],
+    });
+    expect([...(await trust.loadTrustedSites())]).toEqual(["owner.example", "second.example"]);
+  });
   it("keeps installed resources and each batch app separate", () => {
     const route = { connectorId: "installed", resourceId: "server-a" };
     expect(connectorTrustKeys(undefined, route, "api", [])).toEqual([

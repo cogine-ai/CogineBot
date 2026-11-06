@@ -1012,7 +1012,23 @@ test("live exact refs stay with their document, tab, shadow node, and frame", as
     snapshot = await command("snapshot");
     const firstTabRef = ref(snapshot, "Top save");
     const other = await context.newPage();
-    await other.goto("https://frame.example.test/");
+    // The identity check needs these controls in every renderer, independently of load events.
+    await test.step("Wait for the second tab's controls in each renderer", async () => {
+      await other.goto("https://frame.example.test/", { waitUntil: "commit" });
+      await expect.poll(() => other.frames().length).toBe(4);
+      await expect(other.getByLabel("Top user")).toBeVisible();
+      await expect(other.getByRole("button", { name: "Top save", exact: true })).toBeVisible();
+      await expect(other.getByRole("button", { name: "Shadow action", exact: true })).toBeVisible();
+      for (const [title, label] of [
+        ["Same frame", "Same user"],
+        ["Other frame", "Other user"],
+        ["Opaque frame", "Opaque user"],
+      ] as const) {
+        await expect(
+          other.frameLocator(`iframe[title="${title}"]`).getByLabel(label),
+        ).toBeVisible();
+      }
+    });
     await other.bringToFront();
     expect(await command("act", { actions: [{ kind: "click", ref: firstTabRef }] })).toMatchObject({
       ok: false,

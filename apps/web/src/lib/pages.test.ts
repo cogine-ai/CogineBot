@@ -28,6 +28,20 @@ describe("page session", () => {
     // Back to the same page in history does not ask again.
     expect(session.takeShare("A")).toBe(false);
   });
+
+  it("marks only automatic missing-card context while retaining a hand-written leading Page link", () => {
+    const session = createPageSession();
+    const raw = "[https://owner.example/report](page:manual)\nPlease read this.";
+    session.dock.set({ page: { id: "p1", title: "Plan" } });
+    expect(session.send(raw, [])).toEqual({
+      text: `[Plan](page:p1)\n${raw}`,
+      pageContext: { pageId: "p1" },
+    });
+    expect(session.send(raw, [card])).toEqual({ text: raw, replyToMessageId: "m1" });
+    expect(session.send(raw, [], "chosen-message")).toEqual({ text: raw });
+    session.dock.set({ page: null });
+    expect(session.send(raw, [])).toEqual({ text: raw });
+  });
 });
 
 describe("page replies", () => {

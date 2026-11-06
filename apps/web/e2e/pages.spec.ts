@@ -495,3 +495,78 @@ test("the network viewer shell loads an embedded font and blocks remote font req
   expect(result.remote.faces).toEqual([]);
   expect(remoteRequests).toEqual([]);
 });
+
+test("a page without a loaded card preserves owner text and stores generated context separately", async ({
+  page,
+}) => {
+  await signup(page, `pages-context-${Date.now()}@rakazo.test`, "password12", "Context Owner");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const title = "https://automatic.example/report";
+  const body = "Read the page result.";
+  const source = `export default function Result() { return <Page title="Fallback context"><ReplyButton label="Ask result" reply="${body}" /></Page>; }`;
+  await send(
+    page,
+    `call save_page with ${JSON.stringify({ title, source })}\nthen say Saved fallback page.`,
+  );
+  await expect(page.getByTestId("page-card")).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.getByTestId("message-bot-bubble").last()).toContainText("Saved fallback page.");
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+  const listed = await rpc<{ items: Array<{ id: string }> }>(page, "pages/list", { botId });
+  expect(listed.items).toHaveLength(1);
+  const pageId = listed.items[0]!.id;
+  // Clearing the conversation leaves the saved Page in the library, with no card to reply to.
+  await rpc(page, "threads/clear", { botId });
+  await page.goto(`/app/${botId}?page=${pageId}`);
+  await expect(page.getByTestId("page-card")).toHaveCount(0);
+  await expect(page.getByTestId("page-view")).toBeVisible();
+  await pageFrame(page, title).getByRole("button", { name: "Ask result" }).click();
+  const composer = page.getByRole("combobox", { name: /^Message/ });
+  await expect(composer).toHaveValue(body);
+  const first = page.waitForRequest(
+    (request) => request.url().includes("/rpc/threads/send") && request.method() === "POST",
+  );
+  await composer.press("Enter");
+  const firstWire = (await first).postDataJSON().json;
+  expect(firstWire.text).toBe(body);
+  expect(firstWire.pageContext).toEqual({ pageId });
+  expect(firstWire.replyToMessageId).toBeUndefined();
+  const text = `[${title}](page:${pageId})\n${body}`;
+  type History = {
+    messages: Array<{
+      blocks: Array<{
+        kind: string;
+        text?: string;
+        pageContext?: { pageId: string; title: string };
+      }>;
+    }>;
+  };
+  const history = () => rpc<History>(page, "threads/messages", { botId });
+  await expect
+    .poll(
+      async () =>
+        (await history()).messages
+          .flatMap((message) => message.blocks)
+          .find((block) => block.kind === "text" && block.text === text)?.pageContext,
+    )
+    .toEqual({ pageId, title });
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("page-view")).toBeHidden();
+  const manual = "[https://owner.example/report](page:manual)\nPlease read this.";
+  await composer.fill(manual);
+  const second = page.waitForRequest(
+    (request) => request.url().includes("/rpc/threads/send") && request.method() === "POST",
+  );
+  await composer.press("Enter");
+  const secondWire = (await second).postDataJSON().json;
+  expect(secondWire.text).toBe(manual);
+  expect(secondWire.pageContext).toBeUndefined();
+  await expect
+    .poll(async () =>
+      (await history()).messages
+        .flatMap((message) => message.blocks)
+        .find((block) => block.kind === "text" && block.text === manual),
+    )
+    .toEqual({ kind: "text", text: manual });
+});

@@ -1,18 +1,36 @@
+import { createHash } from "node:crypto";
 import type { MessageBlock } from "@rakazo/contracts";
 import { PAGE_TITLE_MAX_LENGTH, PageTitleSchema } from "@rakazo/contracts";
 import { containsSecret, redactSecrets } from "@rakazo/core";
+import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { checkPageSource, PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
+import { z } from "zod";
 
 export interface PageToolContext {
   deps: { prisma: PrismaClient };
-  run: { id: string; spaceId: string; userId: string; trigger: string };
+  run: { id: string; spaceId: string; userId: string; threadId: string; trigger: string };
   bot: { id: string };
   thread: { groupId: string | null };
   state: { tainted: boolean };
   secrets: string[];
-  publish: (blocks: MessageBlock[]) => Promise<unknown>;
+  effect?: { id: string };
+  publish: (blocks: MessageBlock[], clientNonce?: string) => Promise<unknown>;
 }
+
+const PageSaveReceiptSchema = z.object({
+  kind: z.literal("page_save"),
+  effectId: z.string(),
+  requestDigest: z.string(),
+  saved: z.object({
+    pageId: z.string().min(1),
+    version: z.number().int().positive(),
+    title: z.string(),
+  }),
+  publish: z.boolean(),
+  warnings: z.array(z.string()).optional(),
+});
+type PageSaveReceipt = z.infer<typeof PageSaveReceiptSchema>;
 
 function argumentGiven(value: unknown): boolean {
   if (value === undefined || value === null) return false;
@@ -66,6 +84,34 @@ function parseEdits(value: unknown): PageEdit[] | string {
 export async function savePageFromTool(ctx: PageToolContext, args: Record<string, unknown>) {
   const { deps, run, bot, thread } = ctx;
   if (args.help === true) return { guide: PAGE_KIT_GUIDE };
+  const request = ctx.effect ? stableJsonValue(args) : "";
+  const requestDigest = createHash("sha256").update(request).digest("hex");
+  const effectScope = {
+    id: ctx.effect?.id,
+    spaceId: run.spaceId,
+    runId: run.id,
+    kind: "save_page",
+    run: { userId: run.userId, botId: bot.id, threadId: run.threadId },
+  };
+  const readReceipt = async (prisma: Pick<PrismaClient, "externalEffect">) => {
+    const effect = await prisma.externalEffect.findFirst({
+      where: effectScope,
+      select: { request: true, result: true },
+    });
+    if (!effect || stableJsonValue(effect.request) !== request) {
+      throw new Error("Stored page execution does not match this run and request.");
+    }
+    if (effect.result === null) return undefined;
+    const receipt = PageSaveReceiptSchema.safeParse(effect.result);
+    if (
+      !receipt.success ||
+      receipt.data.effectId !== ctx.effect!.id ||
+      receipt.data.requestDigest !== requestDigest
+    ) {
+      throw new Error("Stored page execution has no valid save receipt.");
+    }
+    return receipt.data;
+  };
   const pageId = argumentGiven(args.pageId) ? String(args.pageId) : undefined;
   const hasSource = argumentGiven(args.source);
   // Serializers send unused optional fields blank, an empty list included.
@@ -77,6 +123,11 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     if (!parsed.success) return { error: "title must be 1 to 200 characters." };
     title = redactSecrets(parsed.data, ctx.secrets).slice(0, PAGE_TITLE_MAX_LENGTH);
   }
+  // Reads retain their source/taint contract. Recover writes before reading the page or
+  // applying edits: a later change or deletion must not turn this execution into another save.
+  const reading = pageId && !hasSource && !hasEdits && !title;
+  const previous = ctx.effect && !reading ? await readReceipt(deps.prisma) : undefined;
+  if (previous) return publishSavedPage(ctx, previous);
 
   // A bot reaches its own pages and its group's pages, from any of its chats or routines; another
   // bot's page answers as if it did not exist, since its source may hold that chat's text.
@@ -127,9 +178,21 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     };
   }
 
-  let saved: { pageId: string; version: number; title: string };
+  let receipt: PageSaveReceipt;
   try {
-    saved = await deps.prisma.$transaction(async (tx) => {
+    receipt = await deps.prisma.$transaction(async (tx) => {
+      if (ctx.effect) {
+        // This existing effect row serializes only retries of this save. Its receipt and
+        // the Page write commit together, including when a worker loses the commit reply.
+        const held = await tx.externalEffect.updateMany({
+          where: { ...effectScope, status: { in: ["intended", "executing"] } },
+          data: { updatedAt: new Date() },
+        });
+        if (held.count !== 1) throw new Error("Page execution is no longer writable.");
+        const previous = await readReceipt(tx);
+        if (previous) return previous;
+      }
+      let saved: PageSaveReceipt["saved"];
       if (!page) {
         const created = await tx.page.create({
           data: {
@@ -141,30 +204,46 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
             versions: { create: { version: 1, title: title!, source, code: check.code } },
           },
         });
-        return { pageId: created.id, version: 1, title: created.title };
+        saved = { pageId: created.id, version: 1, title: created.title };
+      } else {
+        const version = page.currentVersion + 1;
+        // Conditional on the version this change was built from, so two saves never interleave.
+        // With no new title the page keeps its current one, even a rename made after the read.
+        const moved = await tx.page.updateMany({
+          where: { id: page.id, currentVersion: page.currentVersion },
+          data: { currentVersion: version, title, updatedAt: new Date() },
+        });
+        if (moved.count === 0) throw new PageChangedError();
+        let nextTitle =
+          title ??
+          (await tx.page.findUniqueOrThrow({ where: { id: page.id }, select: { title: true } }))
+            .title;
+        // A title saved before this run learned a secret is redacted before it is shown again.
+        const kept = redactSecrets(nextTitle, ctx.secrets).slice(0, PAGE_TITLE_MAX_LENGTH);
+        if (kept !== nextTitle) {
+          nextTitle = kept;
+          await tx.page.update({ where: { id: page.id }, data: { title: kept } });
+        }
+        await tx.pageVersion.create({
+          data: { pageId: page.id, version, title: nextTitle, source, code: check.code },
+        });
+        saved = { pageId: page.id, version, title: nextTitle };
       }
-      const version = page.currentVersion + 1;
-      // Conditional on the version this change was built from, so two saves never interleave.
-      // With no new title the page keeps its current one, even a rename made after the read.
-      const moved = await tx.page.updateMany({
-        where: { id: page.id, currentVersion: page.currentVersion },
-        data: { currentVersion: version, title, updatedAt: new Date() },
-      });
-      if (moved.count === 0) throw new PageChangedError();
-      let nextTitle =
-        title ??
-        (await tx.page.findUniqueOrThrow({ where: { id: page.id }, select: { title: true } }))
-          .title;
-      // A title saved before this run learned a secret is redacted before it is shown again.
-      const kept = redactSecrets(nextTitle, ctx.secrets).slice(0, PAGE_TITLE_MAX_LENGTH);
-      if (kept !== nextTitle) {
-        nextTitle = kept;
-        await tx.page.update({ where: { id: page.id }, data: { title: kept } });
+      const receipt: PageSaveReceipt = {
+        kind: "page_save",
+        effectId: ctx.effect?.id ?? "",
+        requestDigest,
+        saved,
+        publish: !page || run.trigger !== "routine",
+        ...(check.warnings?.length ? { warnings: check.warnings } : {}),
+      };
+      if (ctx.effect) {
+        await tx.externalEffect.update({
+          where: { id: ctx.effect.id },
+          data: { result: receipt },
+        });
       }
-      await tx.pageVersion.create({
-        data: { pageId: page.id, version, title: nextTitle, source, code: check.code },
-      });
-      return { pageId: page.id, version, title: nextTitle };
+      return receipt;
     });
   } catch (error) {
     if (error instanceof PageChangedError || isUniqueViolation(error)) {
@@ -172,12 +251,33 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     }
     throw error;
   }
+  return publishSavedPage(ctx, receipt);
+}
+
+async function publishSavedPage(ctx: PageToolContext, receipt: PageSaveReceipt) {
+  const { saved } = receipt;
   const block: MessageBlock = { kind: "page", ...saved };
   const linkText = saved.title.replace(/[\\[\]]/g, "\\$&");
   try {
     // A routine speaks only through its final reply, which may be silence, so refreshing a
     // page it already showed posts no card; its first save still does.
-    if (!page || run.trigger !== "routine") await ctx.publish([block]);
+    if (receipt.publish) {
+      const nonce = ctx.effect ? `page-save:${ctx.effect.id}` : undefined;
+      const findCard = () =>
+        ctx.deps.prisma.message.findUnique({
+          where: { threadId_clientNonce: { threadId: ctx.run.threadId, clientNonce: nonce! } },
+          select: { id: true },
+        });
+      if (!nonce || !(await findCard())) {
+        try {
+          await ctx.publish([block], nonce);
+        } catch (error) {
+          // Message and event are committed by the existing publisher in one transaction;
+          // a concurrent delivery's unique-key loser rolls both back.
+          if (!nonce || !isUniqueViolation(error) || !(await findCard())) throw error;
+        }
+      }
+    }
   } catch (error) {
     // The page is saved; only its card in the chat is missing, so the bot can still link it.
     return {
@@ -191,7 +291,7 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     ...saved,
     mention: `Mention it in your reply as [${linkText}](page:${saved.pageId})`,
   };
-  return check.warnings?.length ? { ...result, warnings: check.warnings } : result;
+  return receipt.warnings?.length ? { ...result, warnings: receipt.warnings } : result;
 }
 
 class PageChangedError extends Error {}

@@ -174,6 +174,7 @@ import {
 import {
   PAGE_LIST_MAX_LIMIT,
   PageDetailSchema,
+  PageReplyContextSchema,
   PageSummarySchema,
   PageTitleSchema,
 } from "./pages.js";
@@ -231,6 +232,7 @@ const threadSendInput = threadTarget
     replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
     /** Sent from the open page: a reply to its card that quotes nothing. */
     fromPage: z.literal(true).optional(),
+    pageContext: PageReplyContextSchema.optional(),
     clientNonce: z.string().min(1).max(200).optional(),
   })
   .superRefine((input, ctx) => {
@@ -241,6 +243,13 @@ const threadSendInput = threadTarget
         code: "custom",
         message: "Provide text or at least one attachment",
         path: ["text"],
+      });
+    }
+    if (input.pageContext && input.replyToMessageId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Page context is only valid without a reply target",
+        path: ["pageContext"],
       });
     }
     if (input.replyQuote && !input.replyToMessageId) {

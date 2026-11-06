@@ -1,3 +1,4 @@
+import type { PageReplyContext } from "@rakazo/contracts";
 import { newClientId } from "./client-id";
 import type { PendingComposerAttachment } from "./composer-draft";
 
@@ -33,6 +34,8 @@ export function composerSendSignature(input: {
   attachments: readonly PendingComposerAttachment[];
   replyToMessageId?: string;
   replyQuote?: string | null;
+  fromPage?: true;
+  pageContext?: PageReplyContext;
 }): string {
   return JSON.stringify({
     text: input.text,
@@ -42,6 +45,8 @@ export function composerSendSignature(input: {
     attachments: input.attachments.map(composerAttachmentUploadKey),
     replyToMessageId: input.replyToMessageId ?? null,
     replyQuote: input.replyQuote ?? null,
+    fromPage: input.fromPage ?? false,
+    pageContext: input.pageContext ?? null,
   });
 }
 

@@ -2,7 +2,14 @@ import type { PageSummary } from "@rakazo/contracts";
 import { PAGE_LIST_MAX_LIMIT } from "@rakazo/contracts";
 import { uniquePages } from "@rakazo/core";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { pageScopeKey, privatePageRpc, subscribePageScope } from "./pages";
 
 const PAGE_SIZE = 5;
@@ -21,14 +28,40 @@ type PagedPages =
 export function usePagedPages(owner: { botId?: string; groupId?: string }) {
   const { botId, groupId } = owner;
   const scope = useSyncExternalStore(subscribePageScope, pageScopeKey, pageScopeKey);
-  const [listed, setListed] = useState<PagedPages>({ status: "loading" });
+  const identity = `${scope}:${botId ? `bot:${botId}` : `group:${groupId}`}`;
+  const [stored, setStored] = useState<{ identity: string; listed: PagedPages }>({
+    identity,
+    listed: { status: "loading" },
+  });
+  const listed: PagedPages = stored.identity === identity ? stored.listed : { status: "loading" };
+  const committed = useRef<string | null>(null);
   const generation = useRef(0);
   const loadingMore = useRef(false);
+  // Bind before the focus effect starts its load. Rendering only gates identity;
+  // a discarded render must not invalidate the committed screen's requests.
+  useLayoutEffect(() => {
+    committed.current = identity;
+    generation.current += 1;
+    loadingMore.current = false;
+    setStored({ identity, listed: { status: "loading" } });
+    return () => {
+      committed.current = null;
+      generation.current += 1;
+    };
+  }, [identity]);
+  const isCurrent = useCallback(
+    (started?: number) =>
+      committed.current === identity &&
+      pageScopeKey() === scope &&
+      (started === undefined || started === generation.current),
+    [identity, scope],
+  );
   // How many of whose pages are shown: another bot or group starts again from five.
   const shown = useRef({ owner: "", count: 0 });
   useEffect(() => {
-    if (listed.status === "ready") shown.current.count = listed.items.length;
-  }, [listed]);
+    if (listed.status === "ready" && isCurrent())
+      shown.current = { owner: identity, count: listed.items.length };
+  }, [listed, identity, isCurrent]);
   const input = useCallback(
     (cursor?: string, limit = PAGE_SIZE) => ({
       ...(botId ? { botId } : { groupId }),
@@ -38,34 +71,35 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
     [botId, groupId],
   );
   const load = useCallback(() => {
+    if (!isCurrent()) return;
     const started = ++generation.current;
     loadingMore.current = false;
-    const owner = `${scope}:${botId ? `bot:${botId}` : `group:${groupId}`}`;
-    if (shown.current.owner !== owner) shown.current = { owner, count: 0 };
+    if (shown.current.owner !== identity) shown.current = { owner: identity, count: 0 };
     const limit = Math.min(Math.max(shown.current.count, PAGE_SIZE), PAGE_LIST_MAX_LIMIT);
     void privatePageRpc<{ items: PageSummary[]; nextCursor: string | null }>(
       "pages/list",
       input(undefined, limit),
     ).then(
       (result) => {
-        if (started === generation.current) setListed({ status: "ready", ...result });
+        if (isCurrent(started)) setStored({ identity, listed: { status: "ready", ...result } });
       },
       (error: unknown) => {
-        if (started === generation.current) setListed({ status: "error", error });
+        if (isCurrent(started)) setStored({ identity, listed: { status: "error", error } });
       },
     );
-  }, [input, botId, groupId, scope]);
+  }, [input, identity, isCurrent]);
   useFocusEffect(
     useCallback(() => {
-      setListed({ status: "loading" });
+      setStored({ identity, listed: { status: "loading" } });
       load();
       return () => {
         generation.current += 1;
       };
-    }, [load]),
+    }, [load, identity]),
   );
   const showMore = useCallback(async () => {
-    if (listed.status !== "ready" || !listed.nextCursor || loadingMore.current) return;
+    if (!isCurrent() || listed.status !== "ready" || !listed.nextCursor || loadingMore.current)
+      return;
     loadingMore.current = true;
     const started = generation.current;
     try {
@@ -74,28 +108,25 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
         input(listed.nextCursor),
       ).catch((error: unknown) => {
         // A failure from before a reload is as stale as a success would be.
-        if (started === generation.current) throw error;
+        if (isCurrent(started)) throw error;
         return null;
       });
-      if (!result || started !== generation.current) return;
-      setListed((current) =>
-        current.status === "ready"
+      if (!result || !isCurrent(started)) return;
+      setStored((current) =>
+        current.identity === identity && current.listed.status === "ready"
           ? {
-              status: "ready",
-              items: uniquePages([...current.items, ...result.items]),
-              nextCursor: result.nextCursor,
+              identity,
+              listed: {
+                status: "ready",
+                items: uniquePages([...current.listed.items, ...result.items]),
+                nextCursor: result.nextCursor,
+              },
             }
           : current,
       );
     } finally {
-      if (started === generation.current) loadingMore.current = false;
+      if (isCurrent(started)) loadingMore.current = false;
     }
-  }, [listed, input]);
-  const bound = useRef(scope);
-  if (bound.current !== scope) {
-    bound.current = scope;
-    generation.current += 1;
-    setListed({ status: "loading" });
-  }
+  }, [listed, input, identity, isCurrent]);
   return { listed, showMore, refresh: load };
 }

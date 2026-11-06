@@ -113,11 +113,11 @@ export function createRunTrust(
         !input.messagingChannelRun &&
         input.sourceMessage?.role === "user"
       )
-        return pageReplyOwnerText(
-          ((input.sourceMessage.blocks ?? []) as MessageBlock[])
-            .flatMap((block) => (block.kind === "text" ? [block.text] : []))
-            .join("\n"),
-        );
+        return ((input.sourceMessage.blocks ?? []) as MessageBlock[])
+          .flatMap((block) =>
+            block.kind === "text" ? [pageReplyOwnerText(block.text, block.pageContext)] : [],
+          )
+          .join("\n");
       if (run.trigger === "routine") {
         // Native event runs append untrusted evidence to the saved owner instructions.
         const note = input.taskPrompt.indexOf(NATIVE_EVENT_DATA);

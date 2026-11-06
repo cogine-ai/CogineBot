@@ -231,6 +231,79 @@ describe("scoped mobile outbox", () => {
     });
   });
 
+  it("sends raw fallback owner text with explicit Page context and clears it on group rerouting", async () => {
+    const raw = "[https://owner.example/report](page:manual)\nPlease read this.";
+    const fallback = {
+      ...payload(raw),
+      displayText: `[Plan](page:page-a)\n${raw}`,
+      replyTargetId: undefined,
+      replyQuote: null,
+      pageContext: { pageId: "page-a" },
+    };
+    const attempt = feedback.sendAttempt(fallback);
+    await act(async () => feedback.send(attempt));
+    const requestBody = request.mock.calls.find(([proc]) => proc === "threads/send")?.[1];
+    expect(requestBody).toMatchObject({
+      text: raw,
+      pageContext: { pageId: "page-a" },
+      replyToMessageId: undefined,
+    });
+    expect(attempt.payload.displayText).toBe(`[Plan](page:page-a)\n${raw}`);
+    request.mockClear();
+    const redirected = feedback.sendAttempt({
+      ...fallback,
+      botTarget: undefined,
+      groupTarget: "group-2",
+      reroutedToGroup: true,
+    });
+    await act(async () => feedback.send(redirected));
+    expect(request.mock.calls.find(([proc]) => proc === "threads/send")?.[1]).toMatchObject({
+      groupId: "group-2",
+      text: raw,
+      pageContext: undefined,
+      replyToMessageId: undefined,
+      fromPage: undefined,
+    });
+  });
+
+  it("keeps a failed Page attempt's nonce and context when another Page is submitted", async () => {
+    const raw = "Please revise";
+    const base = { ...payload(raw), replyTargetId: undefined, replyQuote: null };
+    const first = feedback.sendAttempt({
+      ...base,
+      displayText: `[A](page:page-a)\n${raw}`,
+      pageContext: { pageId: "page-a" },
+    });
+    request.mockImplementation(async (proc) => {
+      if (proc === "artifacts/create") return { id: "artifact-a" };
+      throw new Error("Missing receipt");
+    });
+    await act(async () => feedback.send(first));
+    expect(first.state).toBe("failed");
+    const second = feedback.sendAttempt({
+      ...base,
+      displayText: `[B](page:page-b)\n${raw}`,
+      pageContext: { pageId: "page-b" },
+    });
+    expect(second.clientNonce).not.toBe(first.clientNonce);
+    expect(second.artifactIds.size).toBe(0);
+    request.mockImplementation(async (proc) =>
+      proc === "artifacts/create" ? { id: "artifact-b" } : { seq: 43 },
+    );
+    await act(async () => feedback.send(second));
+    await act(async () => feedback.send(first, true));
+    const sends = request.mock.calls
+      .filter(([proc]) => proc === "threads/send")
+      .map(([, body]) => body);
+    expect(sends.map(({ clientNonce, pageContext }) => ({ clientNonce, pageContext }))).toEqual([
+      { clientNonce: first.clientNonce, pageContext: { pageId: "page-a" } },
+      { clientNonce: second.clientNonce, pageContext: { pageId: "page-b" } },
+      { clientNonce: first.clientNonce, pageContext: { pageId: "page-a" } },
+    ]);
+    expect(request.mock.calls.filter(([proc]) => proc === "artifacts/create")).toHaveLength(2);
+    expect(first.payload.displayText).toBe(`[A](page:page-a)\n${raw}`);
+  });
+
   it("shows the optimistic payload before confirmation, then replaces it with the echo", async () => {
     let finish!: (value: { seq: number }) => void;
     request.mockImplementation(async (proc) =>

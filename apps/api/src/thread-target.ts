@@ -7,11 +7,17 @@ import type {
   GroupMember,
   MessageBlock,
   MessageReaction,
+  PageReplyContext,
+  PageTextContext,
   ReplyPreview,
   RunStatus,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { GROUP_MEMBER_MIN, MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import {
+  GROUP_MEMBER_MIN,
+  MessageBlock as MessageBlockSchema,
+  PageTitleSchema,
+} from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
   BACKGROUND_RUN_TRIGGERS,
@@ -23,6 +29,7 @@ import {
   resolveGroupTargetBotIds,
   runFailureError,
   sanitizeRunErrorDetails,
+  withPageReplyContext,
 } from "@rakazo/core";
 import { deriveMessageQuote, messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -643,6 +650,7 @@ export async function sendThreadMessage(
     replyToMessageId?: string;
     replyQuote?: string;
     fromPage?: true;
+    pageContext?: PageReplyContext;
     clientNonce?: string;
   },
 ) {
@@ -659,6 +667,29 @@ export async function sendThreadMessage(
 
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
+      let pageContext: PageTextContext | undefined;
+      if (input.pageContext) {
+        if (input.replyToMessageId)
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Page context is only valid without a reply target",
+          });
+        const page = await tx.page.findFirst({
+          where: {
+            id: input.pageContext.pageId,
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+            ...(target.kind === "group"
+              ? { groupId: target.groupId }
+              : { botId: target.botId, groupId: null }),
+          },
+          select: { id: true, title: true },
+        });
+        if (!page) throw new IsolationError();
+        pageContext = { pageId: page.id, title: PageTitleSchema.parse(page.title) };
+      }
+      const composedText = pageContext
+        ? withPageReplyContext(input.text ?? "", pageContext).trim()
+        : input.text;
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
       let replyPreview: ReplyPreview | null | undefined;
@@ -722,7 +753,7 @@ export async function sendThreadMessage(
           actor,
           mentionTargets.connectorMentionIds,
         );
-        const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+        const blocks = buildUserMessageBlocks(composedText, attachmentBlocks, pageContext);
         const message = await createThreadMessageInTransaction(tx, {
           threadId: target.threadId,
           role: "user",
@@ -747,7 +778,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               runId: run.id,
               answeredByUserId: actor.userId,
-              answer: input.text ?? "",
+              answer: composedText ?? "",
               beforeMessageSeq: message.seq,
             })
           ) {
@@ -761,7 +792,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               botId: target.botId,
               runId: run.id,
-              answer: input.text ?? "",
+              answer: composedText ?? "",
             });
           }
         }
@@ -840,7 +871,7 @@ export async function sendThreadMessage(
             botId: target.botId,
             threadId: target.threadId,
             userId: actor.userId,
-            prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            prompt: buildSendPrompt(composedText, artifacts, connectorNames),
             ...(mentionTargets.connectorMentionIds.length
               ? { connectionIds: mentionTargets.connectorMentionIds }
               : {}),
@@ -907,7 +938,7 @@ export async function sendThreadMessage(
         actor,
         mentionTargets.connectorMentionIds,
       );
-      const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+      const blocks = buildUserMessageBlocks(composedText, attachmentBlocks, pageContext);
       const message = await createThreadMessageInTransaction(tx, {
         threadId: target.threadId,
         role: "user",
@@ -933,7 +964,7 @@ export async function sendThreadMessage(
             threadId: target.threadId,
             runId: run.id,
             answeredByUserId: actor.userId,
-            answer: input.text ?? "",
+            answer: composedText ?? "",
             beforeMessageSeq: message.seq,
           });
           if (answered) {
@@ -949,7 +980,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               botId: run.botId,
               runId: run.id,
-              answer: input.text ?? "",
+              answer: composedText ?? "",
             });
           }
           continue;
@@ -997,7 +1028,7 @@ export async function sendThreadMessage(
             botId,
             threadId: target.threadId,
             userId: actor.userId,
-            prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            prompt: buildSendPrompt(composedText, artifacts, connectorNames),
             ...(mentionTargets.connectorMentionIds.length
               ? { connectionIds: mentionTargets.connectorMentionIds }
               : {}),

@@ -4,8 +4,16 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EncryptedSecretStore, LocalArtifactStore, migrateJobQueue } from "@rakazo/adapters";
-import type { Actor, PageDetail, PageSummary, ThreadSnapshot } from "@rakazo/contracts";
-import type { Prisma } from "@rakazo/db";
+import type {
+  Actor,
+  MessageBlock,
+  PageDetail,
+  PageSummary,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { pageReplyOwnerText, withPageReplyContext } from "@rakazo/core";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
@@ -22,6 +30,10 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.js";
+import type { ExecutorDeps } from "../../adapters/src/executor.js";
+import type { PageToolContext } from "../../adapters/src/page-tools.js";
+import { savePageFromTool } from "../../adapters/src/page-tools.js";
+import { publishMessage } from "../../adapters/src/run-messages.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -395,6 +407,530 @@ describePages("private Pages with production row-security policies", () => {
       });
       return effect?.result as Record<string, unknown> | undefined;
     };
+    const sendFallback = async (cookie: string, input: Record<string, unknown>) => {
+      const sent = await rpc<{ taskId: string; runId: string; seq: number; runIds: string[] }>(
+        app,
+        cookie,
+        "threads/send",
+        input,
+      );
+      for (const runId of sent.runIds) {
+        await vi.waitFor(
+          async () => {
+            const run = await db().run.findUniqueOrThrow({ where: { id: runId } });
+            expect(["completed", "failed", "cancelled"]).toContain(run.status);
+          },
+          { timeout: 20_000, interval: 25 },
+        );
+        await settleExecution(runId);
+      }
+      return sent;
+    };
+    it("restores canonical fallback Page provenance while retaining hand-written owner text and nonce receipts", async () => {
+      const cookie = await signup(app, `pages-context-${stamp}@example.test`, "Context Owner");
+      const identity = await rpc<Actor>(app, cookie, "me");
+      const bot = await createBot(app, cookie, "Reporter");
+      const created = await db().page.create({
+        data: {
+          userId: identity.userId,
+          spaceId: identity.spaceId,
+          botId: bot.id,
+          title: "Old title",
+        },
+      });
+      const title = "Report https://title.example/private [draft]";
+      await rpc(app, cookie, "pages/rename", { pageId: created.id, title });
+      const context = { pageId: created.id, title };
+      const ownerText = "Read https://owner.example/report";
+      const composed = withPageReplyContext(ownerText, context);
+      const manual = await sendFallback(cookie, {
+        botId: bot.id,
+        text: composed,
+        fromPage: true,
+        clientNonce: "manual-page-context",
+      });
+      const automatic = await sendFallback(cookie, {
+        botId: bot.id,
+        text: ownerText,
+        pageContext: { pageId: created.id },
+        clientNonce: "automatic-page-context",
+      });
+      const snapshot = await rpc<ThreadSnapshot>(app, cookie, "threads/get", { botId: bot.id });
+      const manualMessage = snapshot.messages.find((message) => message.seq === manual.seq)!;
+      const autoMessage = snapshot.messages.find((message) => message.seq === automatic.seq)!;
+      expect(manualMessage.blocks).toEqual([{ kind: "text", text: composed }]);
+      expect(autoMessage.blocks).toEqual([{ kind: "text", text: composed, pageContext: context }]);
+      const manualBlock = manualMessage.blocks[0]!;
+      const autoBlock = autoMessage.blocks[0]!;
+      expect(manualBlock.kind).toBe("text");
+      expect(autoBlock.kind).toBe("text");
+      if (manualBlock.kind !== "text" || autoBlock.kind !== "text") throw new Error("Missing text");
+      expect(pageReplyOwnerText(manualBlock.text, manualBlock.pageContext)).toBe(composed);
+      expect(pageReplyOwnerText(autoBlock.text, autoBlock.pageContext)).toBe(ownerText);
+      for (const sent of [manual, automatic]) {
+        expect((await db().task.findUniqueOrThrow({ where: { id: sent.taskId } })).prompt).toBe(
+          composed,
+        );
+      }
+      const persisted = await db().message.findUniqueOrThrow({ where: { id: autoMessage.id } });
+      expect(
+        MessageBlockSchema.array().parse(JSON.parse(JSON.stringify(persisted.blocks))),
+      ).toEqual(autoMessage.blocks);
+      const event = await db().event.findFirstOrThrow({
+        where: {
+          type: "thread.message.created",
+          payload: { path: ["messageId"], equals: autoMessage.id },
+        },
+      });
+      expect((event.payload as { blocks: unknown }).blocks).toEqual(autoMessage.blocks);
+      await rpc(app, cookie, "pages/remove", { pageId: created.id });
+      const before = await db().message.count({
+        where: { threadId: persisted.threadId, role: "user" },
+      });
+      const replay = await sendFallback(cookie, {
+        botId: bot.id,
+        text: "Changed payload",
+        pageContext: { pageId: created.id },
+        clientNonce: "automatic-page-context",
+      });
+      expect(replay).toEqual(automatic);
+      expect(
+        await db().message.count({ where: { threadId: persisted.threadId, role: "user" } }),
+      ).toBe(before);
+      expect(
+        (await rpc<ThreadSnapshot>(app, cookie, "threads/get", { botId: bot.id })).messages.find(
+          (message) => message.id === autoMessage.id,
+        )?.blocks,
+      ).toEqual(autoMessage.blocks);
+    });
+
+    it("requires the fallback Page's current user, Space and exact origin chat, with group scope taking priority", async () => {
+      const cookie = await signup(
+        app,
+        `pages-context-scope-${stamp}@example.test`,
+        "Context Scope",
+      );
+      const identity = await rpc<Actor>(app, cookie, "me");
+      const otherCookie = await signup(
+        app,
+        `pages-context-foreign-${stamp}@example.test`,
+        "Foreign",
+      );
+      const foreign = await rpc<Actor>(app, otherCookie, "me");
+      const alpha = await createBot(app, cookie, "Alpha");
+      const beta = await createBot(app, cookie, "Beta");
+      const group = await rpc<{ id: string }>(app, cookie, "groups/create", {
+        name: "Context",
+        botIds: [alpha.id, beta.id],
+      });
+      const otherGroup = await rpc<{ id: string }>(app, cookie, "groups/create", {
+        name: "Other context",
+        botIds: [alpha.id, beta.id],
+      });
+      const otherSpace = await rpc<{ id: string }>(app, cookie, "spaces/create", {
+        name: "Context elsewhere",
+      });
+      const make = (scope: {
+        userId?: string;
+        spaceId?: string;
+        botId?: string;
+        groupId?: string;
+      }) =>
+        db().page.create({
+          data: {
+            userId: identity.userId,
+            spaceId: identity.spaceId,
+            title: "@Beta scope",
+            ...scope,
+          },
+        });
+      const personal = await make({ botId: alpha.id });
+      const grouped = await make({ botId: alpha.id, groupId: group.id });
+      const groupOnly = await make({ groupId: group.id });
+      const wrongUser = await make({ userId: foreign.userId, botId: alpha.id });
+      const wrongSpace = await make({ spaceId: otherSpace.id, botId: alpha.id });
+      const orphan = await make({});
+      const rejected = [
+        { botId: beta.id, pageId: personal.id },
+        { botId: alpha.id, pageId: grouped.id },
+        { botId: alpha.id, pageId: groupOnly.id },
+        { botId: alpha.id, pageId: wrongUser.id },
+        { botId: alpha.id, pageId: wrongSpace.id },
+        { botId: alpha.id, pageId: orphan.id },
+        { botId: alpha.id, pageId: "missing-page-context" },
+        { groupId: group.id, pageId: personal.id },
+        { groupId: otherGroup.id, pageId: grouped.id },
+      ];
+      const beforeTasks = await db().task.count({ where: { spaceId: identity.spaceId } });
+      const beforeMessages = await db().message.count({
+        where: { thread: { spaceId: identity.spaceId }, role: "user" },
+      });
+      for (const { pageId, ...target } of rejected) {
+        expect(
+          (
+            await raw(app, cookie, "threads/send", {
+              ...target,
+              text: "Read",
+              fromPage: true,
+              pageContext: { pageId },
+            })
+          ).status,
+        ).toBeGreaterThanOrEqual(400);
+      }
+      expect(await db().task.count({ where: { spaceId: identity.spaceId } })).toBe(beforeTasks);
+      expect(
+        await db().message.count({
+          where: { thread: { spaceId: identity.spaceId }, role: "user" },
+        }),
+      ).toBe(beforeMessages);
+      for (const selected of [grouped, groupOnly]) {
+        const sent = await sendFallback(cookie, {
+          groupId: group.id,
+          text: "@Alpha read this",
+          mentions: [{ kind: "bot", id: alpha.id }],
+          pageContext: { pageId: selected.id },
+        });
+        expect(sent.runIds).toHaveLength(1);
+        expect((await db().run.findUniqueOrThrow({ where: { id: sent.runId } })).botId).toBe(
+          alpha.id,
+        );
+        expect((await db().task.findUniqueOrThrow({ where: { id: sent.taskId } })).prompt).toBe(
+          withPageReplyContext("@Alpha read this", { pageId: selected.id, title: selected.title }),
+        );
+      }
+    });
+
+    it("keeps attachment-only fallback references and refuses foreign attachments before writing a message", async () => {
+      const cookie = await signup(
+        app,
+        `pages-context-files-${stamp}@example.test`,
+        "Context Files",
+      );
+      const identity = await rpc<Actor>(app, cookie, "me");
+      const alpha = await createBot(app, cookie, "Files");
+      const beta = await createBot(app, cookie, "Other files");
+      const created = await db().page.create({
+        data: {
+          userId: identity.userId,
+          spaceId: identity.spaceId,
+          botId: alpha.id,
+          title: "Attachment report",
+        },
+      });
+      const upload = (botId: string) =>
+        rpc<{ id: string }>(app, cookie, "artifacts/create", {
+          botId,
+          name: "notes.txt",
+          mimeType: "text/plain",
+          contentBase64: Buffer.from("Synthetic notes").toString("base64"),
+        });
+      const own = await upload(alpha.id);
+      const foreign = await upload(beta.id);
+      const sent = await sendFallback(cookie, {
+        botId: alpha.id,
+        artifactIds: [own.id],
+        pageContext: { pageId: created.id },
+      });
+      const snapshot = await rpc<ThreadSnapshot>(app, cookie, "threads/get", { botId: alpha.id });
+      const message = snapshot.messages.find((message) => message.seq === sent.seq)!;
+      expect(message.blocks).toEqual([
+        {
+          kind: "text",
+          text: `[Attachment report](page:${created.id})`,
+          pageContext: { pageId: created.id, title: created.title },
+        },
+        expect.objectContaining({ kind: "file", artifactId: own.id }),
+      ]);
+      const restored = MessageBlockSchema.array().parse(
+        (await db().message.findUniqueOrThrow({ where: { id: message.id } })).blocks,
+      ) as MessageBlock[];
+      const reference = restored[0]!;
+      if (reference.kind !== "text") throw new Error("Missing fallback reference");
+      expect(pageReplyOwnerText(reference.text, reference.pageContext)).toBe("");
+      const before = await db().message.count({
+        where: { threadId: snapshot.threadId, role: "user" },
+      });
+      for (const artifactIds of [[foreign.id], ["missing-attachment"]]) {
+        expect(
+          (
+            await raw(app, cookie, "threads/send", {
+              botId: alpha.id,
+              artifactIds,
+              pageContext: { pageId: created.id },
+            })
+          ).status,
+        ).toBeGreaterThanOrEqual(400);
+      }
+      expect(
+        await db().message.count({ where: { threadId: snapshot.threadId, role: "user" } }),
+      ).toBe(before);
+    });
+    it.each(["create", "source", "edits"] as const)(
+      "recovers the committed %s save and published card without repeating either",
+      async (mode) => {
+        const cookie = await signup(app, `pages-receipt-${mode}-${stamp}@example.test`, "Receipt");
+        const actor = await rpc<Actor>(app, cookie, "me");
+        const bot = await createBot(app, cookie, "Receipt Bot");
+        const thread = await db().thread.findFirstOrThrow({
+          where: { botId: bot.id, userId: actor.userId },
+        });
+        const task = await db().task.create({
+          data: {
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            botId: bot.id,
+            threadId: thread.id,
+            status: "running",
+            prompt: "Synthetic receipt recovery",
+          },
+        });
+        const run = await db().run.create({
+          data: {
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            botId: bot.id,
+            threadId: thread.id,
+            status: "running",
+            trigger: "user",
+            leaseOwner: "receipt-worker",
+            leaseFence: 1,
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+            taskId: task.id,
+          },
+        });
+        const prisma = handles!.prisma;
+        const deps = {
+          prisma,
+          runLease: { runId: run.id, owner: "receipt-worker", fence: 1 },
+          events: { notify: vi.fn(async () => undefined) },
+        } as unknown as ExecutorDeps;
+        const seed =
+          mode === "create"
+            ? undefined
+            : await db().page.create({
+                data: {
+                  spaceId: actor.spaceId,
+                  userId: actor.userId,
+                  botId: bot.id,
+                  title: "Receipt",
+                  versions: {
+                    create: {
+                      version: 1,
+                      title: "Receipt",
+                      source: page("Original"),
+                      code: "synthetic",
+                    },
+                  },
+                },
+              });
+        const args: Record<string, unknown> =
+          mode === "create"
+            ? { title: "Receipt", source: page("Original") }
+            : mode === "source"
+              ? { pageId: seed!.id, source: page("Updated") }
+              : { pageId: seed!.id, edits: [{ find: "Original", replace: "Original updated" }] };
+        const effect = await db().externalEffect.create({
+          data: {
+            spaceId: actor.spaceId,
+            runId: run.id,
+            kind: "save_page",
+            idempotencyKey: `synthetic-page-receipt:${run.id}`,
+            status: "intended",
+            request: args as Prisma.InputJsonValue,
+          },
+        });
+        let crash = true;
+        const interruptedPrisma = new Proxy(prisma, {
+          get(target, key) {
+            if (key !== "$transaction") return Reflect.get(target, key, target);
+            return async (work: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+              const value = await prisma.$transaction(work);
+              if (crash) {
+                crash = false;
+                throw new Error("worker interrupted after commit");
+              }
+              return value;
+            };
+          },
+        }) as PrismaClient;
+        const ctx: PageToolContext = {
+          deps: { prisma: interruptedPrisma },
+          run,
+          bot,
+          thread: { groupId: null },
+          effect,
+          state: { tainted: false },
+          secrets: [],
+          publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
+        };
+        await runAsTenant({ userId: actor.userId, spaceId: actor.spaceId }, async () => {
+          await expect(savePageFromTool(ctx, args)).rejects.toThrow(
+            "worker interrupted after commit",
+          );
+          const committed = await prisma.externalEffect.findUniqueOrThrow({
+            where: { id: effect.id },
+          });
+          expect(committed).toMatchObject({
+            status: "intended",
+            result: { kind: "page_save", effectId: effect.id },
+          });
+          const result = (await savePageFromTool(ctx, args)) as { pageId: string; version: number };
+          expect(result).toMatchObject({
+            pageId: seed?.id ?? expect.any(String),
+            version: mode === "create" ? 1 : 2,
+          });
+          // The handler returned but executor finish has not happened: this is the second crash window.
+          expect(await savePageFromTool(ctx, args)).toEqual(result);
+          const pageId = result.pageId!;
+          expect(await prisma.page.count({ where: { botId: bot.id } })).toBe(1);
+          expect(await prisma.pageVersion.count({ where: { pageId } })).toBe(
+            mode === "create" ? 1 : 2,
+          );
+          expect(
+            await prisma.message.count({
+              where: { threadId: thread.id, clientNonce: `page-save:${effect.id}` },
+            }),
+          ).toBe(1);
+          const events = await prisma.event.findMany({
+            where: { runId: run.id, type: "thread.message.created" },
+          });
+          expect(events).toHaveLength(1);
+          expect(events[0]!.payload).toMatchObject({
+            blocks: [expect.objectContaining({ kind: "page", pageId })],
+          });
+          // Identical legitimate input under a new effect remains a new save.
+          const next = await prisma.externalEffect.create({
+            data: {
+              spaceId: actor.spaceId,
+              runId: run.id,
+              kind: "save_page",
+              idempotencyKey: `synthetic-page-receipt-next:${run.id}`,
+              status: "intended",
+              request: args as Prisma.InputJsonValue,
+            },
+          });
+          const again = await savePageFromTool({ ...ctx, effect: next }, args);
+          expect(again).toMatchObject({ version: mode === "create" ? 1 : 3 });
+          expect(await prisma.page.count({ where: { botId: bot.id } })).toBe(
+            mode === "create" ? 2 : 1,
+          );
+          expect(
+            await prisma.message.count({
+              where: { threadId: thread.id, clientNonce: { startsWith: "page-save:" } },
+            }),
+          ).toBe(2);
+          expect(
+            await prisma.event.count({ where: { runId: run.id, type: "thread.message.created" } }),
+          ).toBe(2);
+        });
+        await db().run.update({
+          where: { id: run.id },
+          data: { status: "completed", leaseOwner: null },
+        });
+      },
+    );
+
+    it("leaves no save receipt when a concurrent Page version makes the write fail", async () => {
+      const cookie = await signup(app, `pages-receipt-cas-${stamp}@example.test`, "Receipt CAS");
+      const actor = await rpc<Actor>(app, cookie, "me");
+      const bot = await createBot(app, cookie, "Receipt CAS");
+      const thread = await db().thread.findFirstOrThrow({
+        where: { botId: bot.id, userId: actor.userId },
+      });
+      const task = await db().task.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId: bot.id,
+          threadId: thread.id,
+          status: "running",
+          prompt: "Synthetic receipt CAS",
+        },
+      });
+      const run = await db().run.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId: bot.id,
+          threadId: thread.id,
+          status: "running",
+          trigger: "user",
+          leaseOwner: "receipt-worker",
+          leaseFence: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+          taskId: task.id,
+        },
+      });
+      const stored = await db().page.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId: bot.id,
+          title: "CAS",
+          versions: {
+            create: { version: 1, title: "CAS", source: page("Original"), code: "synthetic" },
+          },
+        },
+      });
+      const args = { pageId: stored.id, source: page("Losing update") };
+      const effect = await db().externalEffect.create({
+        data: {
+          spaceId: actor.spaceId,
+          runId: run.id,
+          kind: "save_page",
+          idempotencyKey: `synthetic-page-receipt-cas:${run.id}`,
+          status: "intended",
+          request: args,
+        },
+      });
+      const publish = vi.fn().mockResolvedValue(undefined);
+      const ctx: PageToolContext = {
+        deps: { prisma: handles!.prisma },
+        run,
+        bot,
+        thread: { groupId: null },
+        effect,
+        state: { tainted: false },
+        secrets: [],
+        publish,
+      };
+      const blocked = await holdingPageRow(stored.id, async (waitFor, tx) => {
+        const pending = runAsTenant(actor, () => savePageFromTool(ctx, args));
+        await waitFor(1);
+        await tx.page.update({
+          where: { id: stored.id },
+          data: {
+            currentVersion: 2,
+            versions: {
+              create: {
+                version: 2,
+                title: "CAS",
+                source: page("Winning update"),
+                code: "synthetic winner",
+              },
+            },
+          },
+        });
+        return { pending };
+      });
+      await expect(blocked.pending).resolves.toEqual({
+        error: "The page changed while saving; read it again and retry.",
+        unchanged: true,
+      });
+      expect(
+        (await db().externalEffect.findUniqueOrThrow({ where: { id: effect.id } })).result,
+      ).toBeNull();
+      expect((await db().page.findUniqueOrThrow({ where: { id: stored.id } })).currentVersion).toBe(
+        2,
+      );
+      expect(await db().pageVersion.count({ where: { pageId: stored.id } })).toBe(2);
+      expect(publish).not.toHaveBeenCalled();
+      await db().run.update({
+        where: { id: run.id },
+        data: { status: "completed", leaseOwner: null, leaseExpiresAt: null },
+      });
+    });
+
     it("requires both the PageVersion parent's user and Space, including writes and forged bypass flags", async () => {
       const cookie = await signup(app, `pages-parent-${stamp}@example.test`, "Page parent");
       const own = await rpc<Actor>(app, cookie, "me");

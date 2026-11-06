@@ -14,6 +14,13 @@ import { describe, expect, it, vi } from "vitest";
 import type * as AutoReviewModule from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
+import type * as PageToolsModule from "./page-tools.js";
+import { savePageFromTool } from "./page-tools.js";
+
+vi.mock("./page-tools.js", async (importOriginal) => {
+  const original = await importOriginal<typeof PageToolsModule>();
+  return { ...original, savePageFromTool: vi.fn(original.savePageFromTool) };
+});
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -493,6 +500,47 @@ describe("history context capabilities", () => {
 });
 
 describe("mutating tool effect idempotency keys", () => {
+  it.each(["intended", "approved", "executing", "uncertain", "completed", "denied"])(
+    "preserves the %s Page effect gate while passing its identity to the save handler",
+    async (status) => {
+      const f = fixture(`run-page-${status}`);
+      const args = { title: "Plan", source: "synthetic page input" };
+      const saved = { pageId: "page-1", version: 1, title: "Plan" };
+      const save = vi.mocked(savePageFromTool);
+      save.mockClear();
+      save.mockResolvedValueOnce(saved as Awaited<ReturnType<typeof savePageFromTool>>);
+      f.effects.push({
+        id: "page-effect",
+        runId: `run-page-${status}`,
+        spaceId: "space-1",
+        kind: "save_page",
+        idempotencyKey: toolEffectIdempotencyKey(`run-page-${status}`, "save_page", args),
+        status,
+        request: args,
+        result: saved,
+      });
+      f.setCalls([{ name: "save_page", args, executionId: "page-call" }]);
+      await f.run();
+      if (status === "intended" || status === "approved") {
+        expect(save).toHaveBeenCalledWith(
+          expect.objectContaining({ effect: { id: "page-effect" } }),
+          args,
+        );
+        expect(f.results).toEqual([saved]);
+        expect(f.effects[0]?.status).toBe("completed");
+      } else {
+        expect(save).not.toHaveBeenCalled();
+        if (status === "completed" || status === "uncertain") expect(f.results).toEqual([saved]);
+        else expect(f.results[0]).toMatchObject({ error: expect.any(String) });
+      }
+      const claims = f.externalEffect.updateMany.mock.calls.filter(
+        ([{ data }]) => data.status === "executing",
+      );
+      expect(claims).toHaveLength(status === "approved" ? 1 : 0);
+      save.mockReset();
+    },
+  );
+
   it("appends facts with normalized paths, revisions and run provenance", async () => {
     const f = fixture("run-append");
     f.setCalls([

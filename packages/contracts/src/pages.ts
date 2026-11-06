@@ -32,6 +32,24 @@ export const PageTitleSchema = z
   .transform((title) => title.replace(/[\p{Cc}\u2028\u2029\s]+/gu, " ").trim())
   .pipe(z.string().min(1).max(PAGE_TITLE_MAX_LENGTH));
 
+/** The reader may identify a fallback Page; its title is resolved by the server. */
+export const PageReplyContextSchema = z.strictObject({ pageId: Id });
+export type PageReplyContext = z.infer<typeof PageReplyContextSchema>;
+
+/** Server-generated provenance for exactly one automatic Page reference in a text block. */
+export const PageTextContextSchema = z.strictObject({
+  pageId: Id,
+  title: z
+    .string()
+    .min(1)
+    .max(PAGE_TITLE_MAX_LENGTH)
+    .refine((title) => {
+      const parsed = PageTitleSchema.safeParse(title);
+      return parsed.success && parsed.data === title;
+    }),
+});
+export type PageTextContext = z.infer<typeof PageTextContextSchema>;
+
 export const PageSummarySchema = z.strictObject({
   id: Id,
   title: z.string().max(PAGE_TITLE_MAX_LENGTH),
