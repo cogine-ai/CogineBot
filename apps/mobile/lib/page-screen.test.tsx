@@ -2,8 +2,13 @@
 import type { ReactNode } from "react";
 import { act, createElement, Suspense, startTransition } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type * as Pages from "./pages";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 const host = vi.hoisted(() => ({
   touch: {} as Record<string, ((event: object) => void) | undefined>,
