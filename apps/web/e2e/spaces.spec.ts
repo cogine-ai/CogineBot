@@ -63,6 +63,12 @@ test("Space menu and chat creation keep the existing approval and switching flow
   await expect(sidebar.getByText("Personal", { exact: true }).first()).toBeVisible();
   await expect(sidebar.getByText("Customer support", { exact: true }).first()).toBeVisible();
   await expect(sidebar.getByRole("button", { name: /^Chief/ })).toHaveCount(2);
+  await page.getByRole("combobox", { name: "Message Chief" }).fill("Reply with support-ready.");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("done. i handled: Reply with support-ready.")).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "spaces-sidebar");
 
   const personalSpace = sidebar

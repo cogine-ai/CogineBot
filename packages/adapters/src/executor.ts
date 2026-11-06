@@ -7167,11 +7167,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "create_space") {
             try {
-              const space = await createSpaceForMember(deps.prisma, {
-                currentSpaceId: run.spaceId,
-                userId: run.userId,
-                name: String(args.name ?? ""),
-              });
+              // The new Space's rows are outside the run's tenant until it exists.
+              const space = await runAsSystem("create a Space for its member", () =>
+                createSpaceForMember(deps.prisma, {
+                  currentSpaceId: run.spaceId,
+                  userId: run.userId,
+                  name: String(args.name ?? ""),
+                }),
+              );
               return finish({ ok: true, spaceId: space.id, name: space.name });
             } catch (error) {
               if (error instanceof SpaceLimitError || error instanceof InvalidSpaceNameError) {

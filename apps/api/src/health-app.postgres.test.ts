@@ -1,12 +1,28 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type {
+  AdapterContext,
+  AgentRunRequest,
+  AgentRuntime,
+  AgentRuntimeEvent,
+} from "@rakazo/adapter-kit";
+import { routineJobKey, routineWakeupJob, runContinueJob, runJobKey } from "@rakazo/adapter-kit";
 import * as adapters from "@rakazo/adapters";
+import type {
+  Actor,
+  Bot,
+  Routine,
+  RoutineHistory,
+  SpaceNavigation,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
 
 const describePostgres =
@@ -249,6 +265,7 @@ describePostgres("protected database app composition", () => {
       throw new Error("Protected app tests require the explicitly isolated policy harness");
     owner = database.createDb(ownerUrl);
     await legacyCatalog();
+    await adapters.migrateJobQueue(ownerUrl);
     expect(ROW_SECURITY_POLICIES).toHaveLength(84);
     grantRole = (
       await owner.pool.query<{ role: string }>(
@@ -384,6 +401,581 @@ describePostgres("protected database app composition", () => {
       }
     },
     30_000,
+  );
+
+  class JourneyRuntime implements AgentRuntime {
+    failing = false;
+    writeScratchpad = false;
+    createSpaceName?: string;
+    readonly spaceContextsAfterTool: Array<ReturnType<typeof database.currentDbContext>> = [];
+    readonly calls: Array<{
+      runId: string;
+      context: Partial<AdapterContext> | undefined;
+      databaseContext: ReturnType<typeof database.currentDbContext>;
+    }> = [];
+
+    describe() {
+      return {
+        id: "protected-journey-runtime",
+        contractVersion: "1",
+        adapterVersion: "1",
+        capabilities: { streaming: true, compaction: false, tools: true, scripted: true },
+      };
+    }
+
+    async abort(): Promise<void> {}
+
+    async *run(
+      request: AgentRunRequest,
+      context?: Partial<AdapterContext>,
+    ): AsyncIterable<AgentRuntimeEvent> {
+      this.calls.push({
+        runId: request.runId,
+        context,
+        databaseContext: database.currentDbContext(),
+      });
+      if (this.failing) throw new Error("Offline protected journey failure");
+      if (this.createSpaceName) {
+        yield {
+          type: "tool",
+          name: "create_space",
+          args: { name: this.createSpaceName },
+          executionId: `protected-create-space:${request.runId}`,
+        };
+        this.spaceContextsAfterTool.push(database.currentDbContext());
+      }
+      if (this.writeScratchpad) {
+        yield {
+          type: "tool",
+          name: "scratchpad_add",
+          args: { title: `Protected item ${request.runId}` },
+          executionId: `protected-scratchpad:${request.runId}`,
+        };
+      }
+      yield { type: "text", text: `Protected result ${request.runId}.` };
+      yield { type: "done" };
+    }
+  }
+
+  async function openJourney() {
+    expect(database.drainUnscopedDatabaseAccess()).toEqual([]);
+    const dataDir = await mkdtemp(join(tmpdir(), "protected-journey-"));
+    const runtime = new JourneyRuntime();
+    const jobsDatabase = database.createDb(runtimeUrl, {
+      poolMax: 8,
+      rowSecurity: true,
+      applicationName: "protected-journey-jobs",
+    });
+    const realtime = new adapters.PostgresRealtimeFanout({
+      connectionString: listenerUrl,
+      publisher: jobsDatabase.pool,
+    });
+    const secrets = new adapters.EncryptedSecretStore("synthetic-protected-journey-key");
+    const publisher = new adapters.GraphileJobPublisher(jobsDatabase.pool);
+    const host = new adapters.GraphileJobWorkerHost(jobsDatabase.pool, {
+      concurrency: 2,
+      pollInterval: 25,
+    });
+    let handles: Awaited<ReturnType<typeof createApp>> | undefined;
+    const close = async () => {
+      const failures: unknown[] = [];
+      for (const work of [
+        () => host.stop(),
+        () => publisher.close(),
+        () => handles?.stop(),
+        () => realtime.close(),
+        () => jobsDatabase.prisma.$disconnect(),
+        () => jobsDatabase.pool.end(),
+        () => rm(dataDir, { recursive: true, force: true }),
+      ]) {
+        try {
+          await work();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, "Protected journey cleanup failed");
+      await noAppConnections();
+      expect(database.drainUnscopedDatabaseAccess()).toEqual([]);
+    };
+    try {
+      expect(await database.verifyRuntimeDatabase(jobsDatabase.prisma)).toMatchObject({
+        expectedTables: 84,
+        connectionEnforced: true,
+      });
+      await owner!.prisma.deploymentSettings.upsert({
+        where: { id: "default" },
+        create: {
+          id: "default",
+          signupsEnabled: true,
+          signupAllowlist: "",
+          signupPolicyInitialized: true,
+        },
+        update: { signupsEnabled: true, signupAllowlist: "", signupPolicyInitialized: true },
+      });
+      handles = await createApp({
+        ...options(dataDir, runtimeUrl, listenerUrl),
+        signupsEnabled: "true",
+        wakeupDriver: "graphile",
+        runtime,
+        sandbox: new adapters.FakeSandboxProvider(),
+        secretStore: secrets,
+      });
+      const app = handles;
+      await database.runAsSystem("start the protected journey worker", () =>
+        host.start(
+          adapters.createBackgroundJobHandlers({
+            prisma: jobsDatabase.prisma,
+            executor: app.executor,
+            sandbox: app.sandbox,
+            home: new adapters.LocalAgentHomeStore(dataDir),
+            jobs: app.jobs,
+            events: database.createThreadEvents(jobsDatabase.prisma, realtime),
+            workerId: "protected-journey-worker",
+            runtime,
+            secretStore: secrets,
+            memoryProviders: { resolve: async () => null },
+          }),
+        ),
+      );
+      const raw = (cookie: string, procedure: string, input: unknown = {}, spaceId?: string) =>
+        app.app.request(`/rpc/${procedure}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "http://127.0.0.1:5173",
+            cookie,
+            ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
+          },
+          body: JSON.stringify({ json: input }),
+        });
+      const rpc = async <T>(cookie: string, procedure: string, input: unknown = {}) => {
+        const response = await raw(cookie, procedure, input);
+        expect(response.status).toBe(200);
+        return ((await response.json()) as { json: T }).json;
+      };
+      const account = async () => {
+        const response = await app.app.request("/api/auth/sign-up/email", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "http://127.0.0.1:5173",
+          },
+          body: JSON.stringify({
+            email: `protected-journey-${randomUUID()}@example.test`,
+            password: "password12",
+            name: "Protected journey",
+          }),
+        });
+        expect(response.status).toBeLessThan(400);
+        const cookie = sessionCookieHeader(response);
+        const actor = await rpc<Actor>(cookie, "me");
+        const bot = await rpc<Bot>(cookie, "bots/create", { name: "Protected journey" });
+        await vi.waitFor(
+          async () => {
+            expect(
+              await owner!.prisma.run.count({
+                where: { botId: bot.id, status: { notIn: ["completed", "cancelled", "failed"] } },
+              }),
+            ).toBe(0);
+          },
+          { timeout: 15_000, interval: 25 },
+        );
+        const thread = await owner!.prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+        return { cookie, actor, bot, thread };
+      };
+      const drained = (key: string, allowFuture = false) =>
+        vi.waitFor(
+          async () => {
+            const pending = await owner!.pool.query<{ count: number }>(
+              `SELECT count(*)::int AS count FROM graphile_worker._private_jobs
+               WHERE key=$1 AND (NOT $2::boolean OR locked_at IS NOT NULL OR run_at <= now())`,
+              [key, allowFuture],
+            );
+            expect(pending.rows).toEqual([{ count: 0 }]);
+          },
+          { timeout: 15_000, interval: 25 },
+        );
+      const state = async (runId: string) => ({
+        run: await owner!.prisma.run.findUniqueOrThrow({
+          where: { id: runId },
+          select: {
+            id: true,
+            userId: true,
+            spaceId: true,
+            botId: true,
+            threadId: true,
+            taskId: true,
+            routineId: true,
+            status: true,
+          },
+        }),
+        messages: await owner!.prisma.message.findMany({
+          where: { runId },
+          orderBy: { id: "asc" },
+        }),
+        events: await owner!.prisma.event.findMany({
+          where: { runId },
+          orderBy: { seq: "asc" },
+        }),
+        effects: await owner!.prisma.externalEffect.findMany({
+          where: { runId },
+          orderBy: { id: "asc" },
+        }),
+      });
+      return { app, runtime, jobsDatabase, publisher, raw, rpc, account, drained, state, close };
+    } catch (error) {
+      try {
+        await close();
+      } catch (cleanup) {
+        throw new AggregateError([error, cleanup], "Protected journey setup failed");
+      }
+      throw error;
+    }
+  }
+
+  it("completes a Graphile run as its stored owner and ignores conflicting delivery metadata", async () => {
+    const journey = await openJourney();
+    try {
+      const first = await journey.account();
+      const second = await journey.account();
+      const runId = randomUUID();
+      const taskId = randomUUID();
+      const identity = {
+        userId: second.actor.userId,
+        spaceId: second.actor.spaceId,
+        botId: second.bot.id,
+        threadId: second.thread.id,
+      };
+      await owner!.prisma.task.create({
+        data: {
+          id: taskId,
+          ...identity,
+          prompt: "Complete the protected queue work.",
+          status: "queued",
+        },
+      });
+      await owner!.prisma.run.create({
+        data: { id: runId, ...identity, taskId, trigger: "user", status: "queued" },
+      });
+      const beforeForeign = await owner!.prisma.run.count({ where: { botId: second.bot.id } });
+      const rejected = await journey.raw(first.cookie, "threads/send", {
+        botId: second.bot.id,
+        text: "Foreign work must not run.",
+        clientNonce: randomUUID(),
+      });
+      expect(rejected.status).toBeGreaterThanOrEqual(400);
+      expect(await owner!.prisma.run.count({ where: { botId: second.bot.id } })).toBe(
+        beforeForeign,
+      );
+      expect((await journey.raw("", "threads/get", { botId: second.bot.id })).status).toBe(401);
+      expect((await journey.raw(first.cookie, "me", {}, second.actor.spaceId)).status).toBe(403);
+
+      journey.runtime.writeScratchpad = true;
+      const delivery = runContinueJob(runId);
+      Object.assign(delivery.payload, {
+        userId: first.actor.userId,
+        spaceId: first.actor.spaceId,
+        botId: first.bot.id,
+      });
+      await database.runAsTenant(first.actor, () => journey.publisher.enqueue(delivery));
+      expect(database.currentDbContext()).toBeUndefined();
+      await vi.waitFor(
+        async () => {
+          expect((await journey.state(runId)).run.status).toBe("completed");
+        },
+        { timeout: 15_000, interval: 25 },
+      );
+      await journey.drained(runJobKey(runId));
+      const completed = await journey.state(runId);
+      expect(completed.run).toMatchObject(identity);
+      expect(completed.messages).toHaveLength(1);
+      expect(completed.messages[0]).toMatchObject({ threadId: second.thread.id, role: "bot" });
+      expect(JSON.stringify(completed.messages[0]!.blocks)).toContain(`Protected result ${runId}.`);
+      expect(completed.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+      expect(completed.effects).toEqual([
+        expect.objectContaining({ kind: "scratchpad_add", status: "completed" }),
+      ]);
+      const items = await owner!.prisma.scratchpadItem.findMany({
+        where: { botId: second.bot.id, title: `Protected item ${runId}` },
+      });
+      expect(items).toEqual([
+        expect.objectContaining({
+          userId: second.actor.userId,
+          spaceId: second.actor.spaceId,
+          botId: second.bot.id,
+        }),
+      ]);
+      expect(await owner!.prisma.task.findUniqueOrThrow({ where: { id: taskId } })).toMatchObject({
+        ...identity,
+        status: "completed",
+      });
+      expect(journey.runtime.calls.filter((call) => call.runId === runId)).toEqual([
+        expect.objectContaining({
+          context: expect.objectContaining({
+            userId: identity.userId,
+            spaceId: identity.spaceId,
+            botId: identity.botId,
+            runId,
+          }),
+          databaseContext: { kind: "tenant", userId: identity.userId, spaceId: identity.spaceId },
+        }),
+      ]);
+      const snapshot = await journey.rpc<ThreadSnapshot>(second.cookie, "threads/get", {
+        botId: second.bot.id,
+      });
+      expect(snapshot.messages.find((message) => message.runId === runId)?.id).toBe(
+        completed.messages[0]!.id,
+      );
+      expect(
+        await owner!.prisma.message.count({ where: { runId, threadId: first.thread.id } }),
+      ).toBe(0);
+
+      await journey.publisher.enqueue(runContinueJob(runId));
+      await journey.drained(runJobKey(runId));
+      expect(journey.runtime.calls.filter((call) => call.runId === runId)).toHaveLength(1);
+      expect(await journey.state(runId)).toEqual(completed);
+      expect(
+        await owner!.prisma.scratchpadItem.findMany({
+          where: { botId: second.bot.id, title: `Protected item ${runId}` },
+        }),
+      ).toEqual(items);
+    } finally {
+      await journey.close();
+    }
+  }, 60_000);
+
+  it("creates a sibling Space only after approval and keeps its completed delivery idempotent", async () => {
+    const journey = await openJourney();
+    try {
+      const first = await journey.account();
+      const second = await journey.account();
+      const name = `Protected sibling ${randomUUID()}`;
+      const before = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      const originalSpace = await owner!.prisma.space.findUniqueOrThrow({
+        where: { id: first.actor.spaceId },
+      });
+      journey.runtime.createSpaceName = name;
+      const { runId } = await journey.rpc<{ runId: string }>(first.cookie, "threads/send", {
+        botId: first.bot.id,
+        text: `Create a space named ${name}`,
+        clientNonce: randomUUID(),
+      });
+      await vi.waitFor(
+        async () => {
+          expect((await journey.state(runId)).run.status).toBe("waiting_input");
+        },
+        { timeout: 15_000, interval: 25 },
+      );
+      await journey.drained(runJobKey(runId));
+      const paused = await journey.state(runId);
+      expect(paused.effects).toEqual([
+        expect.objectContaining({ kind: "create_space", status: "intended", request: { name } }),
+      ]);
+      const snapshot = await journey.rpc<ThreadSnapshot>(first.cookie, "threads/get", {
+        botId: first.bot.id,
+      });
+      const approval = snapshot.messages.find((message) =>
+        message.blocks.some(
+          (block) => block.kind === "ask" && block.approvalEffectId === paused.effects[0]!.id,
+        ),
+      );
+      expect(approval).toBeDefined();
+      expect(approval!.blocks).toContainEqual(
+        expect.objectContaining({
+          kind: "ask",
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Create space", outcome: "created" },
+            { id: "deny", label: "Cancel", outcome: "cancelled" },
+          ],
+        }),
+      );
+      const answer = {
+        botId: first.bot.id,
+        runId,
+        messageId: approval!.id,
+        answer: "allow",
+      };
+      const denied = await journey.raw(second.cookie, "threads/answer", answer);
+      expect(denied.status).toBeGreaterThanOrEqual(400);
+      expect((await journey.state(runId)).run.status).toBe("waiting_input");
+      expect(await owner!.prisma.space.count({ where: { name } })).toBe(0);
+      const awaitingApproval = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      expect(awaitingApproval.spaces.map((space) => space.id)).toEqual(
+        before.spaces.map((space) => space.id),
+      );
+
+      await journey.rpc(first.cookie, "threads/answer", answer);
+      await vi.waitFor(
+        async () => {
+          expect((await journey.state(runId)).run.status).toBe("completed");
+        },
+        { timeout: 15_000, interval: 25 },
+      );
+      await journey.drained(runJobKey(runId));
+      const completed = await journey.state(runId);
+      const spaces = await owner!.prisma.space.findMany({ where: { name } });
+      expect(spaces).toEqual([
+        expect.objectContaining({
+          createdByUserId: first.actor.userId,
+          organizationId: originalSpace.organizationId,
+        }),
+      ]);
+      const space = spaces[0]!;
+      expect(completed.effects).toEqual([
+        expect.objectContaining({
+          id: paused.effects[0]!.id,
+          kind: "create_space",
+          status: "completed",
+          result: { ok: true, spaceId: space.id, name },
+        }),
+      ]);
+      expect(completed.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+      expect(await owner!.prisma.spaceMember.findMany({ where: { spaceId: space.id } })).toEqual([
+        expect.objectContaining({ userId: first.actor.userId, role: "owner" }),
+      ]);
+      expect(await owner!.prisma.memoryDocument.findMany({ where: { spaceId: space.id } })).toEqual(
+        [
+          expect.objectContaining({
+            userId: first.actor.userId,
+            scope: "user",
+            path: "MEMORY.md",
+            content: "# Space memory\n\n",
+          }),
+        ],
+      );
+      expect(
+        await owner!.prisma.notificationPreference.findMany({ where: { spaceId: space.id } }),
+      ).toEqual([expect.objectContaining({ userId: first.actor.userId })]);
+      const navigation = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      expect(navigation.current.id).toBe(first.actor.spaceId);
+      expect(navigation.spaces).toHaveLength(before.spaces.length + 1);
+      expect(navigation.spaces).toContainEqual(expect.objectContaining({ id: space.id, name }));
+      const selected = await journey.raw(first.cookie, "me", {}, space.id);
+      expect(selected.status).toBe(200);
+      expect(((await selected.json()) as { json: Actor }).json.spaceId).toBe(space.id);
+      expect((await journey.raw(second.cookie, "me", {}, space.id)).status).toBe(403);
+      expect(
+        await journey.rpc<ThreadSnapshot>(first.cookie, "threads/get", { botId: first.bot.id }),
+      ).toMatchObject({ threadId: first.thread.id });
+      const calls = journey.runtime.calls.filter((call) => call.runId === runId);
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call.databaseContext).toEqual({
+          kind: "tenant",
+          userId: first.actor.userId,
+          spaceId: first.actor.spaceId,
+        });
+      }
+      expect(journey.runtime.spaceContextsAfterTool).toEqual([
+        { kind: "tenant", userId: first.actor.userId, spaceId: first.actor.spaceId },
+      ]);
+      expect(database.currentDbContext()).toBeUndefined();
+
+      await journey.publisher.enqueue(runContinueJob(runId));
+      await journey.drained(runJobKey(runId));
+      expect(await journey.state(runId)).toEqual(completed);
+      expect(journey.runtime.calls.filter((call) => call.runId === runId)).toEqual(calls);
+      expect(await owner!.prisma.space.findMany({ where: { name } })).toEqual(spaces);
+    } finally {
+      await journey.close();
+    }
+  }, 60_000);
+
+  it.each(["result", "failure"] as const)(
+    "settles a Graphile Routine %s once without leaking its tenant",
+    async (mode) => {
+      const journey = await openJourney();
+      try {
+        const first = await journey.account();
+        const second = await journey.account();
+        const anchor = Date.now();
+        const nextDailyTime = new Date(anchor + 6 * 60 * 60 * 1_000);
+        const routine = await journey.rpc<Routine>(second.cookie, "routines/create", {
+          botId: second.bot.id,
+          name: "Protected scheduled work",
+          prompt: "Complete a protected scheduled result.",
+          crons: [`${nextDailyTime.getUTCMinutes()} ${nextDailyTime.getUTCHours()} * * *`],
+          timezone: "UTC",
+          active: false,
+        });
+        const scheduledAt = new Date(anchor - 1_000);
+        await owner!.prisma.routine.update({
+          where: { id: routine.id },
+          data: { active: true, nextRunAt: scheduledAt },
+        });
+        journey.runtime.failing = mode === "failure";
+        await database.runAsTenant(first.actor, () =>
+          journey.publisher.enqueue(routineWakeupJob(routine.id, scheduledAt)),
+        );
+        expect(database.currentDbContext()).toBeUndefined();
+        await vi.waitFor(
+          async () => {
+            const rows = await owner!.prisma.run.findMany({ where: { routineId: routine.id } });
+            expect(rows).toHaveLength(1);
+            expect(rows[0]!.status).toBe(mode === "result" ? "completed" : "failed");
+          },
+          { timeout: 15_000, interval: 25 },
+        );
+        await journey.drained(routineJobKey(routine.id), true);
+        const run = await owner!.prisma.run.findFirstOrThrow({ where: { routineId: routine.id } });
+        const settled = await journey.state(run.id);
+        expect(run).toMatchObject({
+          userId: second.actor.userId,
+          spaceId: second.actor.spaceId,
+          botId: second.bot.id,
+          threadId: second.thread.id,
+          trigger: "routine",
+        });
+        expect(settled.events.some((event) => event.type === "routine.fired")).toBe(true);
+        expect(
+          settled.events.filter(
+            (event) => event.type === (mode === "result" ? "run.completed" : "run.failed"),
+          ),
+        ).toHaveLength(1);
+        expect(settled.messages).toHaveLength(mode === "result" ? 1 : 0);
+        expect(journey.runtime.calls.filter((call) => call.runId === run.id)).toEqual([
+          expect.objectContaining({
+            context: expect.objectContaining({
+              userId: second.actor.userId,
+              spaceId: second.actor.spaceId,
+              botId: second.bot.id,
+              runId: run.id,
+            }),
+            databaseContext: {
+              kind: "tenant",
+              userId: second.actor.userId,
+              spaceId: second.actor.spaceId,
+            },
+          }),
+        ]);
+        const history = await journey.rpc<RoutineHistory>(second.cookie, "routines/history", {
+          routineId: routine.id,
+        });
+        expect(history.runs).toEqual([expect.objectContaining({ id: run.id, status: run.status })]);
+        const snapshot = await journey.rpc<ThreadSnapshot>(second.cookie, "threads/get", {
+          botId: second.bot.id,
+        });
+        expect(snapshot.messages.filter((message) => message.runId === run.id)).toHaveLength(
+          mode === "result" ? 1 : 0,
+        );
+
+        // A repeated old delivery must not replace the next scheduled queue entry.
+        const repeated = {
+          ...routineWakeupJob(routine.id, scheduledAt),
+          replaceKey: `protected-routine-repeat:${randomUUID()}`,
+        };
+        await journey.publisher.enqueue(repeated);
+        await journey.drained(repeated.replaceKey);
+        expect(await owner!.prisma.run.count({ where: { routineId: routine.id } })).toBe(1);
+        expect(journey.runtime.calls.filter((call) => call.runId === run.id)).toHaveLength(1);
+        expect(await journey.state(run.id)).toEqual(settled);
+      } finally {
+        await journey.close();
+      }
+    },
+    60_000,
   );
 
   async function refusesBeforeSecrets(mainUrl: string, realtimeUrl: string) {
