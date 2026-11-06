@@ -242,7 +242,7 @@ describe("database URLs", () => {
     vi.stubEnv("PGPORT", "6543");
     vi.stubEnv("PGDATABASE", "shared");
     const env = {
-      DATABASE_MIGRATION_URL: "postgres://migration:pw@/",
+      DATABASE_MIGRATION_URL: "postgres://migration:owner-password@/",
       DATABASE_URL: "postgres://runtime:pw@db:6543/shared",
     };
     await expect(
@@ -410,7 +410,7 @@ describe("runtime role preparation", () => {
     expect(state.sent.map((entry) => entry.sql).join("\n")).not.toContain("PASSWORD 'secret'");
     expect(state.ownerClosed).toBe(1);
     expect(state.poolClosed).toBe(1);
-    expect(state.released).toBe(2);
+    expect(state.released).toBe(3);
   });
   it("preserves an existing login's password when a different supplied credential fails authentication", async () => {
     state.existing = true;
@@ -426,6 +426,32 @@ describe("runtime role preparation", () => {
     );
     expect(state.ownerClosed).toBe(1);
     expect(state.poolClosed).toBe(1);
+  });
+
+  it.each([false, true])(
+    "rejects reuse of the administrator password before grants (existing=%s)",
+    async (existing) => {
+      state.existing = existing;
+      await expect(
+        provisionRuntimeRole(owner, "postgres://runtime:owner-password@db/coginebot"),
+      ).rejects.toThrow("distinct passwords");
+      expect(state.sent.some((entry) => /^(?:CREATE|ALTER|GRANT)\s/.test(entry.sql.trim()))).toBe(
+        false,
+      );
+      expect(state.sent.some((entry) => entry.sql.includes("INSERT INTO cogine_private"))).toBe(
+        false,
+      );
+      expect(state.ownerClosed).toBe(1);
+    },
+  );
+  it("rejects an administrator password with an equivalent supported-client mapping", async () => {
+    const equivalent = encodeURIComponent("\uff4fwner-password");
+    await expect(
+      provisionRuntimeRole(owner, `postgres://runtime:${equivalent}@db/coginebot`),
+    ).rejects.toThrow("distinct passwords");
+    expect(state.sent.some((entry) => /^(?:CREATE|ALTER|GRANT)\s/.test(entry.sql.trim()))).toBe(
+      false,
+    );
   });
 
   it("initializes the password when this invocation creates its grant role as the runtime login", async () => {

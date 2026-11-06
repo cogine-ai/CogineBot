@@ -1,15 +1,17 @@
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parseEnv } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunDocker, RunDockerResult } from "./docker-cli.js";
+import type { LocalStackDeps } from "./local-stack.js";
 import {
   COMPOSE_WAIT_TIMEOUT_S,
   ensureStackEnv,
   ensureStackToken,
   initialStackState,
   LocalStackController,
-  type LocalStackDeps,
   readStackToken,
   reduceStackState,
   renderStackEnv,
@@ -62,7 +64,7 @@ describe("resolveImageTag", () => {
 });
 
 describe("renderStackEnv", () => {
-  it("fills the five secrets and drops the image tag lines of the shipped template", async () => {
+  it("fills the six secrets and drops the image tag lines of the shipped template", async () => {
     const template = await readFile(path.join(COMPOSE_DIR, STACK_ENV_TEMPLATE), "utf8");
     const rendered = renderStackEnv(template, fakeHex);
     const lines = rendered.split("\n");
@@ -86,6 +88,17 @@ describe("renderStackEnv", () => {
     expect(rendered.endsWith("\n")).toBe(template.endsWith("\n"));
   });
 
+  it("generates independent administrator and runtime secrets from the shipped fields", () => {
+    const values = ["a".repeat(32), "b".repeat(32)];
+    const rendered = renderStackEnv(
+      "POSTGRES_PASSWORD=\nPOSTGRES_APP_PASSWORD=\n",
+      () => values.shift()!,
+    );
+    expect(rendered).toBe(
+      `POSTGRES_PASSWORD=${"a".repeat(32)}\nPOSTGRES_APP_PASSWORD=${"b".repeat(32)}\n`,
+    );
+  });
+
   it("leaves a secret that already has a value alone", () => {
     expect(renderStackEnv("POSTGRES_PASSWORD=keep\n# note=\n", fakeHex)).toBe(
       "POSTGRES_PASSWORD=keep\n# note=\n",
@@ -95,6 +108,9 @@ describe("renderStackEnv", () => {
 
 describe("ensureStackEnv", () => {
   let dir: string;
+  const unexpectedRuntimeProbe = async () => {
+    throw new Error("This env fixture must not require a runtime credential probe");
+  };
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), "rakazo-stack-env-"));
   });
@@ -103,15 +119,96 @@ describe("ensureStackEnv", () => {
   });
 
   it("creates a private .env from the template", async () => {
-    await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("created");
+    await expect(
+      ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+    ).resolves.toBe("created");
     const file = path.join(dir, STACK_ENV_FILE);
     await expect(readFile(file, "utf8")).resolves.toBe(`POSTGRES_PASSWORD=${"ab".repeat(16)}\n`);
     if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
   });
 
+  it("adds a missing runtime password for the new template while preserving selected credentials", async () => {
+    const file = path.join(dir, STACK_ENV_FILE);
+    const original = "POSTGRES_PASSWORD=selected-admin\nENCRYPTION_KEY=selected-key\n";
+    await writeFile(file, original, "utf8");
+    await expect(
+      ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", fakeHex, async () => false),
+    ).resolves.toBe("kept");
+    const upgraded = `${original}POSTGRES_APP_PASSWORD=${"ab".repeat(16)}\n`;
+    await expect(readFile(file, "utf8")).resolves.toBe(upgraded);
+    await ensureStackEnv(
+      dir,
+      "POSTGRES_APP_PASSWORD=\n",
+      () => "new-value-must-not-be-used",
+      async () => true,
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe(upgraded);
+  });
+
+  it.each(['"" # empty', "''", "# empty", 'first\nPOSTGRES_APP_PASSWORD=""'])(
+    "fills only the effective empty runtime value (%s)",
+    async (value) => {
+      const file = path.join(dir, STACK_ENV_FILE);
+      const original = `OTHER_SECRET="first line\nPOSTGRES_APP_PASSWORD=inside-another-secret\nlast line"\nPOSTGRES_APP_PASSWORD=${value}\n`;
+      await writeFile(file, original, "utf8");
+      await ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", fakeHex, async () => false);
+      const updated = await readFile(file, "utf8");
+      expect(updated.startsWith(original)).toBe(true);
+      expect(updated.endsWith(`POSTGRES_APP_PASSWORD=${"ab".repeat(16)}\n`)).toBe(true);
+    },
+  );
+  it.each(['"existing # value"', '"   "'])(
+    "preserves a nonempty quoted runtime password (%s)",
+    async (value) => {
+      const original = `POSTGRES_PASSWORD=owner\nPOSTGRES_APP_PASSWORD=${value}\n`;
+      const file = path.join(dir, STACK_ENV_FILE);
+      await writeFile(file, original, "utf8");
+      await ensureStackEnv(
+        dir,
+        "POSTGRES_APP_PASSWORD=\n",
+        () => {
+          throw new Error("must not rotate");
+        },
+        async () => true,
+      );
+      await expect(readFile(file, "utf8")).resolves.toBe(original);
+    },
+  );
+
+  it("defers to Compose when its nonempty runtime value differs from Node dotenv parsing", async () => {
+    const file = path.join(dir, STACK_ENV_FILE);
+    const original = "POSTGRES_APP_PASSWORD= # empty\n";
+    await writeFile(file, original, "utf8");
+    await ensureStackEnv(
+      dir,
+      "POSTGRES_APP_PASSWORD=\n",
+      () => {
+        throw new Error("must not rotate");
+      },
+      async () => true,
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe(original);
+  });
+
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation is the test input.
+  it.each(["${UNSET}", "${EMPTY:-}"])(
+    "fills a runtime password that Compose expands to empty (%s)",
+    async (value) => {
+      const file = path.join(dir, STACK_ENV_FILE);
+      const original = `POSTGRES_APP_PASSWORD=${value}\n`;
+      await writeFile(file, original, "utf8");
+      await ensureStackEnv(dir, "POSTGRES_APP_PASSWORD=\n", fakeHex, async () => false);
+      expect(await readFile(file, "utf8")).toBe(
+        `${original}POSTGRES_APP_PASSWORD=${"ab".repeat(16)}\n`,
+      );
+    },
+  );
+
   it("never touches an existing .env", async () => {
     await writeFile(path.join(dir, STACK_ENV_FILE), "sentinel\n", "utf8");
-    await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("kept");
+    await expect(
+      ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+    ).resolves.toBe("kept");
     await expect(readFile(path.join(dir, STACK_ENV_FILE), "utf8")).resolves.toBe("sentinel\n");
   });
 
@@ -122,7 +219,9 @@ describe("ensureStackEnv", () => {
       await writeFile(target, "sentinel\n", "utf8");
       await symlink(target, path.join(dir, STACK_ENV_FILE));
 
-      await expect(ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex)).resolves.toBe("created");
+      await expect(
+        ensureStackEnv(dir, "POSTGRES_PASSWORD=\n", fakeHex, unexpectedRuntimeProbe),
+      ).resolves.toBe("created");
       await expect(readFile(path.join(dir, STACK_ENV_FILE), "utf8")).resolves.toBe(
         `POSTGRES_PASSWORD=${"ab".repeat(16)}\n`,
       );
@@ -297,6 +396,16 @@ const ok: Script = (args) => {
   if (args[0] === "compose" && args[1] === "version") return { stdout: "2.29.0\n" };
   if (args[0] === "info") return { stdout: "27.1.1\n" };
   const subcommand = args[7];
+  if (subcommand === "config") {
+    const definition = JSON.parse(readFileSync(args[6]!, "utf8"));
+    const existing = readFileSync(
+      path.join(path.dirname(path.dirname(args[6]!)), STACK_ENV_FILE),
+      "utf8",
+    );
+    if (definition.services.runtimeEnv.environment && !parseEnv(existing).POSTGRES_APP_PASSWORD)
+      return { code: 1, stderr: "COGINEBOT_RUNTIME_PASSWORD_REQUIRED" };
+    return {};
+  }
   if (subcommand === "pull") return { lines: ["app Pulled", "computer Pulled"] };
   if (subcommand === "up") return { lines: ["Container rakazo-web-1 Started"] };
   return {};
@@ -364,6 +473,27 @@ describe("LocalStackController", () => {
     ]);
   });
 
+  it.each([false, true])(
+    "stops old database writers before administrator startup, stop failure=%s",
+    async (stopFails) => {
+      const stack = controller({}, (args) =>
+        args[7] === "stop" && stopFails ? { code: 1, stderr: "stop failed" } : ok(args),
+      );
+      const result = await stack.start();
+      const stop = calls.findIndex((call) => call.args[7] === "stop");
+      expect(stop).toBeGreaterThan(calls.findIndex((call) => call.args[7] === "pull"));
+      expect(calls[stop]?.args.slice(-4)).toEqual(["--timeout", "120", "api", "worker"]);
+      const up = calls.findIndex((call) => call.args[7] === "up");
+      if (stopFails) {
+        expect(up).toBe(-1);
+        expect(result.phase).toBe("failed");
+      } else {
+        expect(up).toBeGreaterThan(stop);
+        expect(result.phase).toBe("ready");
+      }
+    },
+  );
+
   it("installs the compose project and walks every phase to ready", async () => {
     const stack = controller();
     expect(stack.state()).toEqual(initialStackState("v1.2.3"));
@@ -379,6 +509,7 @@ describe("LocalStackController", () => {
       "checking-docker",
       "checking-docker",
       "pulling",
+      "starting",
       "starting",
       "waiting-healthy",
     ]);
@@ -397,6 +528,7 @@ describe("LocalStackController", () => {
       ["compose", "version", "--short"],
       ["info", "--format", "{{.ServerVersion}}"],
       [...compose, "pull"],
+      [...compose, "stop", "--timeout", "120", "api", "worker"],
       [...compose, "up", "-d", "--wait", "--wait-timeout", String(COMPOSE_WAIT_TIMEOUT_S)],
     ]);
     for (const call of calls) {
@@ -435,10 +567,12 @@ describe("LocalStackController", () => {
     // A fresh process must stop the same desktop project without discovering or adopting rakazo.
     expect((await controller().stop()).phase).toBe("idle");
     const commands = calls.filter(
-      (call) => call.args[0] === "compose" && call.args[1] !== "version",
+      (call) =>
+        call.args[0] === "compose" && call.args[1] !== "version" && call.args[7] !== "config",
     );
     expect(commands.map((call) => call.args[7])).toEqual([
       "pull",
+      "stop",
       "up",
       "up",
       "up",
@@ -731,7 +865,7 @@ describe("LocalStackController", () => {
 
   it("reports a stop that docker refused instead of pretending the stack is down", async () => {
     const stack = controller({}, (args) =>
-      args[7] === "stop"
+      args[7] === "stop" && args.length === 8
         ? { code: 1, stderr: "/Users/me/secret-path: Cannot connect to the Docker daemon" }
         : ok(args),
     );
@@ -754,7 +888,7 @@ describe("LocalStackController", () => {
       releaseStop = resolve;
     });
     const stack = controller({}, (args) => {
-      if (args[7] === "stop") return { wait: stopGate };
+      if (args[7] === "stop" && args.length === 8) return { wait: stopGate };
       return ok(args);
     });
     await stack.start();
@@ -765,7 +899,9 @@ describe("LocalStackController", () => {
     releaseStop();
     await stopping;
     expect((await restarted).phase).toBe("ready");
-    const order = calls.map((call) => call.args[7] ?? call.args[0]);
+    const order = calls.map((call) =>
+      call.args[7] === "stop" && call.args.length > 8 ? "drain" : (call.args[7] ?? call.args[0]),
+    );
     expect(order.indexOf("stop")).toBeLessThan(order.lastIndexOf("compose"));
   });
 
@@ -789,7 +925,7 @@ describe("LocalStackController", () => {
           return new Promise((resolve) => signal.addEventListener("abort", () => resolve(null)));
         },
       },
-      (args) => (args[7] === "stop" ? { wait: stopGate } : ok(args)),
+      (args) => (args[7] === "stop" && args.length === 8 ? { wait: stopGate } : ok(args)),
     );
     const first = stack.start();
     await probeStarted;
@@ -801,7 +937,9 @@ describe("LocalStackController", () => {
     await stopping;
     expect((await first).message).toBe("The start was interrupted. Retry to continue.");
     expect((await second).phase).toBe("ready");
-    const order = calls.map((call) => call.args[7] ?? call.args[0]);
+    const order = calls.map((call) =>
+      call.args[7] === "stop" && call.args.length > 8 ? "drain" : (call.args[7] ?? call.args[0]),
+    );
     expect(order.indexOf("stop")).toBeLessThan(order.lastIndexOf("up"));
   });
 
@@ -812,7 +950,7 @@ describe("LocalStackController", () => {
     });
     let stops = 0;
     const stack = controller({}, (args) => {
-      if (args[7] !== "stop") return ok(args);
+      if (args[7] !== "stop" || args.length !== 8) return ok(args);
       stops += 1;
       return stops === 1 ? { wait: stopGate } : {};
     });
@@ -824,7 +962,9 @@ describe("LocalStackController", () => {
     releaseStop();
     await Promise.all([firstStop, queuedStart, secondStop]);
     expect(stack.state()).toEqual(initialStackState("v1.2.3"));
-    const order = calls.map((call) => call.args[7] ?? call.args[0]);
+    const order = calls.map((call) =>
+      call.args[7] === "stop" && call.args.length > 8 ? "drain" : (call.args[7] ?? call.args[0]),
+    );
     expect(order.lastIndexOf("up")).toBeLessThan(order.indexOf("stop"));
   });
 

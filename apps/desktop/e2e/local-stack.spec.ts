@@ -115,6 +115,9 @@ async function writeFakeDocker(mode: FakeDockerMode) {
       ? '    echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;'
       : '    echo "27.1.1"; exit 0 ;;',
     "esac",
+    'if [ "$8" = "config" ] && grep -q COGINEBOT_RUNTIME_PASSWORD_REQUIRED "$7"; then',
+    '  if ! grep -Eq "^POSTGRES_APP_PASSWORD=.+$" "$5"; then echo COGINEBOT_RUNTIME_PASSWORD_REQUIRED >&2; exit 1; fi',
+    "fi",
     "# compose --env-file .env -f docker-compose.images.yml --project-name coginebot-desktop <command> ...",
     'case "$8" in',
     "  pull)",
@@ -203,6 +206,7 @@ test("This computer installs and starts the stack, then opens the app", async ()
   expect(await readFile(tokenFile, "utf8")).toMatch(/^[0-9a-f]{64}\n$/);
   const env = await readFile(envFile, "utf8");
   expect(env).toMatch(/^POSTGRES_PASSWORD=[0-9a-f]{32}$/m);
+  expect(env).toMatch(/^POSTGRES_APP_PASSWORD=[0-9a-f]{32}$/m);
   expect(env).toMatch(/^BETTER_AUTH_SECRET=[0-9a-f]{64}$/m);
   expect(env).not.toContain("RAKAZO_IMAGE_TAG=");
   expect(env).not.toContain("RAKAZO_COMPUTER_IMAGE_TAG=");
@@ -396,7 +400,7 @@ test("a saved local target is the exact origin authenticated before reuse", asyn
   }
 });
 
-test("an existing stack .env is never rewritten", async () => {
+test("an existing stack .env preserves selected secrets while adding its runtime password", async () => {
   const stackDir = path.join(userData, "stack");
   await mkdir(stackDir, { recursive: true });
   const sentinel = "POSTGRES_PASSWORD=keep-me\nSENTINEL=1\n";
@@ -409,7 +413,9 @@ test("an existing stack .env is never rewritten", async () => {
   const appWindow = await appWindowPromise;
   await expect(appWindow.getByText(APP_MARKER)).toBeVisible();
 
-  await expect(readFile(path.join(stackDir, ".env"), "utf8")).resolves.toBe(sentinel);
+  const upgraded = await readFile(path.join(stackDir, ".env"), "utf8");
+  expect(upgraded.startsWith(sentinel)).toBe(true);
+  expect(upgraded).toMatch(/^POSTGRES_APP_PASSWORD=[0-9a-f]{32}$/m);
 });
 
 test("exhausted address pools explain recovery", async () => {

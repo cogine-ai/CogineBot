@@ -25,6 +25,7 @@ import {
   InMemoryRealtimeFanout,
   LocalAgentHomeStore,
   MessagingTeamChatEmulator,
+  migrateJobQueue,
   RunJobPublisher,
   RunStarter,
   RunWorkerHost,
@@ -33,7 +34,7 @@ import {
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadEvents } from "@rakazo/db";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
 import { formatCurrentTimeInstruction } from "../../adapters/src/current-time.js";
 import { createJobReconciler } from "../../adapters/src/job-reconciler.js";
@@ -176,6 +177,10 @@ async function seed(handles: AppHandles, label: string, computerMode?: "dedicate
 }
 
 describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
+  beforeAll(async () => {
+    await migrateJobQueue(process.env.DATABASE_URL!);
+  });
+
   it("starts new work behind a protected wait before the old executor finally returns", async () => {
     const realtime = new InMemoryRealtimeFanout();
     const runtime = new ScriptedAgentRuntime();

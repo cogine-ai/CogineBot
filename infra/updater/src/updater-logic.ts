@@ -77,6 +77,10 @@ export function resolveUpdaterConfig(env: NodeJS.ProcessEnv): UpdaterConfig {
     if (!SERVICE_NAME.test(service)) {
       throw new Error(`RAKAZO_UPDATE_SERVICES contains an unusable service name: ${service}`);
     }
+    if (service === "migrate" || service === "postgres")
+      throw new Error(
+        "RAKAZO_UPDATE_SERVICES must contain runtime services, not migration or database services.",
+      );
     // The sidecar is the process running the update. Recreating it would kill the request
     // mid-flight, so there would be nothing left to finish the run, report it, or recover from a
     // failed step. RECREATED_SERVICES already excludes it on purpose; this keeps that true.

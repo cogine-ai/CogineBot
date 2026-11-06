@@ -2,6 +2,7 @@ const advice =
   "Check the administrator connection, runtime role grants, and credential configuration.";
 const fallback = `Database preparation failed. ${advice}\n`;
 const safeCommandErrors = new Set([
+  "Administrator and runtime database credentials must use distinct passwords",
   "DATABASE_URL is required",
   "Database preparation requires migration and runtime URLs to use the same host, port, and database",
   "The migration URL target must match both database clients; use an explicit database path and matching host and port",
@@ -17,6 +18,13 @@ const safeCommandErrors = new Set([
   "The runtime grant role is not restricted",
   "A new runtime login requires an explicit password; precreate it when using external credential resolution",
   "Runtime role preparation failed",
+  "Use db:restore prepare or db:restore verify",
+  "Stop database writers before verifying the restored database",
+  "The restore runtime grant role must be an unused restricted NOLOGIN role",
+  "A selected runtime credential is required",
+  "The restored database role, policies, or system guard are not ready",
+  "The restored database has authority outside the selected owner and runtime roles",
+  "The restored database contains system keys outside the selected credential inventory",
   "Protected system database access requires an authenticated password",
   "Protected database access requires an authenticated password",
   "Database authentication changed; create a new pool and register its key",

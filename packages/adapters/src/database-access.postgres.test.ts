@@ -70,13 +70,13 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     apply(values);
     return () => apply(previous);
   }
-  async function createLogin(name: string, attributes = "") {
+  async function createLogin(name: string, attributes = "", secret = password) {
     allocated.add(name);
     await owner.pool.query(
       "CREATE ROLE " +
         escapeIdentifier(name) +
         " LOGIN PASSWORD " +
-        escapeLiteral(password) +
+        escapeLiteral(secret) +
         " " +
         attributes,
     );
@@ -1231,7 +1231,12 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
 
   it("supports a pregranted login when the migration session cannot create roles", async () => {
     const limited = `${login}_migrator`;
-    await createLogin(limited, "NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS");
+    const administratorPassword = randomBytes(24).toString("hex");
+    await createLogin(
+      limited,
+      "NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS",
+      administratorPassword,
+    );
     const administrator = (await owner.pool.query("SELECT current_user AS name")).rows[0]
       .name as string;
     await owner.pool.query(
@@ -1242,12 +1247,14 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
         .rows,
     ).toEqual([{ rolcreaterole: false }]);
     await expect(
-      provisionRuntimeRole(urlFor(limited, password), runtimeUrl),
+      provisionRuntimeRole(urlFor(limited, administratorPassword), runtimeUrl),
     ).resolves.toBeUndefined();
     const bad = new URL(runtimeUrl);
     bad.password = "invalid-precreated-fixture-password";
     const before = await digestCount();
-    await expect(provisionRuntimeRole(urlFor(limited, password), bad.toString())).rejects.toThrow();
+    await expect(
+      provisionRuntimeRole(urlFor(limited, administratorPassword), bad.toString()),
+    ).rejects.toThrow();
     expect(await digestCount()).toBe(before);
   });
 
@@ -1780,13 +1787,22 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
   });
 
   it("runs the administrative CLI without printing database credentials", async () => {
+    // The earlier grant probes are not part of the application policy inventory.
+    await owner.pool.query(`DROP TABLE public.${escapeIdentifier(probeTable)}`);
     const result = await promisify(execFile)("pnpm", ["db:migrate"], {
       cwd: path.resolve(import.meta.dirname, "../../.."),
-      env: { ...process.env, DATABASE_URL: runtimeUrl, DATABASE_MIGRATION_URL: databaseUrl },
+      env: {
+        ...process.env,
+        DATABASE_URL: runtimeUrl,
+        DATABASE_MIGRATION_URL: databaseUrl,
+        REALTIME_DATABASE_URL: runtimeUrl,
+      },
       timeout: 30_000,
     });
     expect(result.stdout).toContain("Runtime role and system key are ready");
-    expect(result.stdout).toContain("not activated");
+    expect(result.stdout).toContain(
+      "This command does not activate table policies or service contexts.",
+    );
     expect(result.stdout + result.stderr).not.toContain(password);
     expect(result.stdout + result.stderr).not.toContain(runtimeUrl);
   });
@@ -1964,6 +1980,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
             ...process.env,
             DATABASE_URL: application.toString(),
             DATABASE_MIGRATION_URL: migration.toString(),
+            REALTIME_DATABASE_URL: application.toString(),
             PGOPTIONS: source === "environment" ? `-csearch_path=${shadow},public` : "",
           },
           timeout: 30_000,

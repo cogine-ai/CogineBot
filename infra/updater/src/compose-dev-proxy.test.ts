@@ -11,7 +11,7 @@ interface ComposeService {
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 
 function loadCompose(rel: string) {
-  return parse(readFileSync(path.resolve(repoRoot, rel), "utf8")) as {
+  return parse(readFileSync(path.resolve(repoRoot, rel), "utf8"), { merge: true }) as {
     services: Record<string, ComposeService>;
   };
 }
@@ -53,7 +53,7 @@ describe("source-checkout compose postgres hardening", () => {
     expect(postgres?.environment?.POSTGRES_DB).toBe("${POSTGRES_DB:-rakazo}");
     for (const name of ["api", "worker"] as const) {
       expect(compose.services[name]?.environment?.DATABASE_URL).toBe(
-        "postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}",
+        "postgres://${POSTGRES_APP_USER:-rakazo_app}:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}",
       );
     }
   });

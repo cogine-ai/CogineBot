@@ -251,7 +251,16 @@ export async function provisionRuntimeRole(
   const owner = new Client({ connectionString: migrationUrl });
   let runtime: ReturnType<typeof createPool> | undefined;
   const runtimePool = () => (runtime ??= createPool(runtimeUrl, { poolMax: 1, rowSecurity: true }));
-  const authenticate = () => installDbContext(runtimePool())();
+  const authenticate = async () => {
+    const key = await installDbContext(runtimePool())();
+    const connected = await runtimePool().connect();
+    try {
+      assertDistinctPasswords(owner.password, connected.password);
+    } finally {
+      connected.release();
+    }
+    return key;
+  };
   let failed = false;
   let failure: unknown;
   try {
@@ -331,6 +340,7 @@ async function provisionWith(
       "The configured runtime role is privileged or owns application data; it was not changed",
     );
   if (loginExisted) await authenticate();
+  else assertDistinctPasswords(owner.password, parsed.password || configured.password);
   const targetStatement = Prisma.sql`SELECT ${runtimeGrantRole} AS "grantRole", ${databaseOid} AS "databaseOid"`;
   const {
     rows: [target],
@@ -455,18 +465,32 @@ async function provisionWith(
  */
 export function scramSha256Verifier(password: string, salt = randomBytes(16), iterations = 4096) {
   // Byte mappings used by the supported pg client (RFC 4013).
-  const prepared = password
+  const prepared = prepareSupportedClientPassword(password);
+  const salted = pbkdf2Sync(prepared, salt, iterations, 32, "sha256");
+  const hmac = (text: string) => createHmac("sha256", salted).update(text).digest();
+  const storedKey = createHash("sha256").update(hmac("Client Key")).digest("base64");
+  const serverKey = hmac("Server Key").toString("base64");
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey}:${serverKey}`;
+}
+
+function prepareSupportedClientPassword(password: string): string {
+  return password
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, " ")
     .replace(
       /\u00AD|\u034F|\u1806|[\u180B-\u180D]|\u200C|\u200D|\u2060|[\uFE00-\uFE0F]|\uFEFF/g,
       "",
     )
     .normalize("NFKC");
-  const salted = pbkdf2Sync(prepared, salt, iterations, 32, "sha256");
-  const hmac = (text: string) => createHmac("sha256", salted).update(text).digest();
-  const storedKey = createHash("sha256").update(hmac("Client Key")).digest("base64");
-  const serverKey = hmac("Server Key").toString("base64");
-  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey}:${serverKey}`;
+}
+
+function assertDistinctPasswords(owner: unknown, runtime: unknown): void {
+  if (
+    typeof owner === "string" &&
+    owner.length > 0 &&
+    typeof runtime === "string" &&
+    prepareSupportedClientPassword(owner) === prepareSupportedClientPassword(runtime)
+  )
+    throw new Error("Administrator and runtime database credentials must use distinct passwords");
 }
 
 /** Policy on each graphile-worker table that lets the runtime role use the job queue. */

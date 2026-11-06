@@ -1,3 +1,24 @@
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgres://rakazo_app:topology-only-runtime-password@postgres:5432/rakazo
+  DATA_DIR: /data
+  ENCRYPTION_KEY: topology-only-encryption-key-at-least-32-characters
+  SANDBOX_SUPERVISOR_URL: http://supervisor:7091
+  SANDBOX_SUPERVISOR_TOKEN: topology-only-supervisor-token-at-least-32-characters
+  WAKEUP_DRIVER: graphile
+  SANDBOX_PROVIDER: docker
+  CLOUD_AGENT_PROVIDER: ${CLOUD_AGENT_PROVIDER:-none}
+  CLOUD_AGENT_SPACE_ID: ${CLOUD_AGENT_SPACE_ID:-}
+  CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+  AGENT_RUNTIME: scripted
+  # Optional egress proxy (Mainland / corporate). Empty = unset; either case works.
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -65,37 +86,25 @@ services:
       timeout: 5s
       retries: 30
 
+  migrate:
+    image: ${TOPOLOGY_APP_IMAGE:-rakazo/app:topology}
+    command: ["pnpm", "--filter", "@rakazo/api", "run", "db:migrate"]
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://rakazo_app:topology-only-runtime-password@postgres:5432/rakazo
+      DATABASE_MIGRATION_URL: postgres://rakazo:topology-only-password@postgres:5432/rakazo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app-image:
+        condition: service_completed_successfully
+
   api:
     image: ${TOPOLOGY_APP_IMAGE:-rakazo/app:topology}
-    command:
-      - bash
-      - -lc
-      - pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start
-    environment: &app-environment
-      NODE_ENV: production
-      DATABASE_URL: postgres://rakazo:topology-only-password@postgres:5432/rakazo
-      DATA_DIR: /data
-      BETTER_AUTH_SECRET: topology-only-auth-secret-at-least-32-characters
-      SCREEN_PROXY_SECRET: topology-only-screen-proxy-secret-at-least-32-characters
-      BETTER_AUTH_URL: http://127.0.0.1:${TOPOLOGY_API_PORT:-3199}
-      WEB_ORIGIN: http://127.0.0.1:${TOPOLOGY_API_PORT:-3199}
-      ENCRYPTION_KEY: topology-only-encryption-key-at-least-32-characters
-      SANDBOX_SUPERVISOR_URL: http://supervisor:7091
-      SANDBOX_SUPERVISOR_TOKEN: topology-only-supervisor-token-at-least-32-characters
-      SIGNUPS_ENABLED: "true"
-      WAKEUP_DRIVER: graphile
-      SANDBOX_PROVIDER: docker
-      CLOUD_AGENT_PROVIDER: ${CLOUD_AGENT_PROVIDER:-none}
-      CLOUD_AGENT_SPACE_ID: ${CLOUD_AGENT_SPACE_ID:-}
-      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
-      AGENT_RUNTIME: scripted
-      # Optional egress proxy (Mainland / corporate). Empty = unset; either case works.
-      HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
-      HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
-      NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
-      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
-      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
-      no_proxy: ${no_proxy:-${NO_PROXY:-}}
+    command: ["pnpm", "--filter", "@rakazo/api", "run", "start"]
+    environment:
+      <<: *app-environment
       API_PORT: "3100"
       API_HOST: "0.0.0.0"
       OIDC_ISSUER: ${OIDC_ISSUER:-}
@@ -105,11 +114,18 @@ services:
       OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
       OIDC_ALLOW_SIGNUP_BYPASS: ${OIDC_ALLOW_SIGNUP_BYPASS:-false}
       AUTH_PASSWORD_ENABLED: ${AUTH_PASSWORD_ENABLED:-true}
+      BETTER_AUTH_SECRET: topology-only-auth-secret-at-least-32-characters
+      SCREEN_PROXY_SECRET: topology-only-screen-proxy-secret-at-least-32-characters
+      BETTER_AUTH_URL: http://127.0.0.1:${TOPOLOGY_API_PORT:-3199}
+      WEB_ORIGIN: http://127.0.0.1:${TOPOLOGY_API_PORT:-3199}
+      SIGNUPS_ENABLED: "true"
     ports:
       - "127.0.0.1:${TOPOLOGY_API_PORT:-3199}:3100"
     volumes:
       - appdata:/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       app-image:
         condition: service_completed_successfully
       postgres:

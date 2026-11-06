@@ -54,7 +54,7 @@ for a in "$@"; do
   case "$a" in
     --help|-h) help=true ;;
     --short) short=true ;;
-    version|up|pull|config)
+    version|up|pull|stop|config)
       if [[ -z "$verb" ]]; then
         verb="$a"
       fi
@@ -90,13 +90,14 @@ case "$verb" in
   config)
     cat <<'EOF'
 POSTGRES_PASSWORD=test-postgres
+POSTGRES_APP_PASSWORD=test-runtime
 BETTER_AUTH_SECRET=test-auth-secret
 ENCRYPTION_KEY=test-encryption-key
 SCREEN_PROXY_SECRET=test-screen-secret
 SANDBOX_SUPERVISOR_TOKEN=test-supervisor-token
 EOF
     ;;
-  pull|up)
+  pull|up|stop)
     ;;
   *)
     echo "STUB: unexpected compose verb ${verb:-none} $*" >&2
@@ -144,6 +145,7 @@ setup_work() {
   : > "$work/cwd/.env.images.example"
   cat > "$work/cwd/.env" <<'EOF'
 POSTGRES_PASSWORD=test-postgres
+POSTGRES_APP_PASSWORD=test-runtime
 BETTER_AUTH_SECRET=test-auth-secret
 ENCRYPTION_KEY=test-encryption-key
 SCREEN_PROXY_SECRET=test-screen-secret

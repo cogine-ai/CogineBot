@@ -3,14 +3,64 @@ import os from "node:os";
 import path from "node:path";
 import type { ServerUpdateRun } from "@rakazo/contracts";
 import { afterEach, describe, expect, it } from "vitest";
+import type { UpdaterCommandRunner } from "./index.js";
 import {
   commandEnvironment,
-  createUpdaterApp,
+  createUpdaterApp as createActualUpdaterApp,
   restoreCheckoutArgv,
   runHostCommand,
-  type UpdaterCommandRunner,
 } from "./index.js";
 import { resolveUpdaterConfig } from "./updater-logic.js";
+
+// The orchestration unit boundary supplies valid Docker identity receipts;
+// the executable fixtures separately exercise live/failed receipt outcomes.
+function createUpdaterApp(...[config, dependencies]: Parameters<typeof createActualUpdaterApp>) {
+  const runner = dependencies?.run;
+  return createActualUpdaterApp(
+    config,
+    runner
+      ? {
+          ...dependencies,
+          run: async (command, args, options) => {
+            const output =
+              command !== "docker"
+                ? undefined
+                : args[0] === "image" && args[1] === "inspect"
+                  ? `sha256:${"a".repeat(64)}`
+                  : args[0] === "inspect"
+                    ? JSON.stringify({
+                        image: `sha256:${"a".repeat(64)}`,
+                        running: false,
+                        status: "exited",
+                        exitCode: 0,
+                        project: config.projectName,
+                        service: "migrate",
+                        oneoff: "False",
+                      })
+                    : options.configurationRead
+                      ? JSON.stringify({
+                          services: Object.fromEntries(
+                            [...config.updateServices, "migrate"].map((name) => [
+                              name,
+                              {
+                                environment: {
+                                  DATABASE_URL: "postgres://runtime:fake@database/app",
+                                },
+                              },
+                            ]),
+                          ),
+                        })
+                      : args.includes("ps") && args.includes("--quiet")
+                        ? "b".repeat(64)
+                        : undefined;
+            return output === undefined
+              ? runner(command, args, options)
+              : { ok: true, exitCode: 0, output };
+          },
+        }
+      : dependencies,
+  );
+}
 
 const token = "fake-review-updater-token-000000000000";
 const app = createUpdaterApp(
@@ -226,7 +276,7 @@ describe("updater orchestration", () => {
     const run: UpdaterCommandRunner = async (command, args, options) => {
       calls.push({ command, args, env: options.env });
       if (command === "git") return ok(`${targetCommit}\trefs/tags/v1.1.0\n`);
-      if (args.includes("pull")) return ok("pulled");
+      if (!args.includes("up") || args.includes("--exit-code-from")) return ok("prepared");
       upCalls += 1;
       return upCalls === 1 ? failed("api did not become healthy") : ok("restored");
     };
@@ -237,9 +287,26 @@ describe("updater orchestration", () => {
     });
     const record = (await response.json()) as ServerUpdateRun;
     expect(record).toMatchObject({ ok: false, restart: "not-required" });
-    expect(record.steps.map((step) => step.id)).toEqual(["pull", "recreate", "recover"]);
+    expect(record.steps.map((step) => step.id)).toEqual([
+      "pull",
+      "pin-migration",
+      "stop",
+      "migrate",
+      "migration-container",
+      "migration-state",
+      "verify-forward",
+      "recreate",
+      "stop-writers",
+      "stop-migration",
+      "migration-container",
+      "migration-state",
+      "verify-recovery",
+      "recover",
+    ]);
     expect(record.restartAdvice).toMatch(/restored the previously running v1\.0\.0 image/);
-    const composeUp = calls.filter(({ args }) => args.includes("up"));
+    const composeUp = calls.filter(
+      ({ args }) => args.includes("up") && !args.includes("--exit-code-from"),
+    );
     expect(composeUp).toHaveLength(2);
     expect(composeUp[0]?.args).toEqual(expect.arrayContaining(["--wait", "--pull", "never"]));
     expect(composeUp[0]?.args).toContain("--no-build");
@@ -275,7 +342,7 @@ describe("updater orchestration", () => {
       if (joined === "remote get-url origin") return ok("https://github.com/example/fork");
       if (args.includes("status") || joined === "ls-files --others --exclude-standard") return ok();
       if (args.includes("ls-remote")) return ok(`${targetCommit}\trefs/heads/main\n`);
-      if (command === "docker" && args.includes("up")) {
+      if (command === "docker" && args.includes("up") && !args.includes("--exit-code-from")) {
         upCalls += 1;
         return upCalls === 1 ? failed("api did not become healthy") : ok("restored");
       }
@@ -291,7 +358,19 @@ describe("updater orchestration", () => {
       "fetch",
       "checkout",
       "merge",
+      "build",
+      "pin-migration",
+      "stop",
+      "migrate",
+      "migration-container",
+      "migration-state",
+      "verify-forward",
       "recreate",
+      "stop-writers",
+      "stop-migration",
+      "migration-container",
+      "migration-state",
+      "verify-recovery",
       "restore-checkout",
       "recover",
     ]);

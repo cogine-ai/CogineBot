@@ -109,6 +109,12 @@ describe("resolveUpdaterConfig", () => {
     ).toEqual(["api", "worker", "web", "supervisor", "caddy"]);
   });
 
+  it.each(["migrate", "postgres"])("does not treat %s as an extra runtime service", (service) => {
+    expect(() => resolveUpdaterConfig({ ...base, RAKAZO_UPDATE_SERVICES: service })).toThrow(
+      "runtime services",
+    );
+  });
+
   it("cannot drop a built-in service, however RAKAZO_UPDATE_SERVICES is written", () => {
     const services = resolveUpdaterConfig({
       ...base,

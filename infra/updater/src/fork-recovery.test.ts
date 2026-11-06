@@ -12,7 +12,7 @@ const targetCommit = "2".repeat(40);
 const oldTag = `local-${currentCommit}`;
 const originalRemote = "https://github.com/example/previous-fork";
 const nextRemote = "https://github.com/example/next-fork";
-const originalEnv = `RAKAZO_IMAGE_TAG=${oldTag}\nRAKAZO_IMAGE_TAG_PREVIOUS=v0.9.0\n`;
+const originalEnv = `RAKAZO_IMAGE_TAG=${oldTag}\nRAKAZO_IMAGE_TAG_PREVIOUS=v0.9.0\nPOSTGRES_APP_PASSWORD=selected-runtime\n`;
 const directories: string[] = [];
 
 afterEach(async () => {
@@ -20,7 +20,19 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true })));
 });
 
-type Failure = "checkout" | "merge" | "recreate" | "restore-checkout" | "recover" | "read-head";
+type Failure =
+  | "checkout"
+  | "merge"
+  | "recreate"
+  | "restore-checkout"
+  | "recover"
+  | "read-head"
+  | "stop"
+  | "migrate"
+  | "missing-script"
+  | "migration-timeout"
+  | "stop-migration"
+  | "readiness";
 interface Invocation {
   command: string;
   args: string[];
@@ -29,6 +41,7 @@ interface Invocation {
   serviceEnv?: string;
   imageTag?: string;
   envFile?: string;
+  migrationImage?: string;
 }
 
 // These executables use only fixture files. PATH contains no real git or Docker, and the
@@ -52,14 +65,66 @@ const moveCheckout = (commit, branch, revision) => {
   fs.writeFileSync(fixture.serviceEnv, "REVISION=" + revision + "\n");
 };
 if (command === "docker") {
-  call.compose = fs.readFileSync(args[args.indexOf("--file") + 1], "utf8");
-  call.serviceEnv = fs.readFileSync(fixture.serviceEnv, "utf8");
-  call.envFile = fs.readFileSync(args[args.indexOf("--env-file") + 1], "utf8");
-  call.imageTag = process.env.RAKAZO_IMAGE_TAG;
-  log();
-  if (!args.includes("up")) fail("Unexpected Docker command");
-  if (args.includes("--build") && fixture.failures.length > 0) fail("new API unhealthy");
-  if (args.includes("--no-build") && hasFailure("recover")) fail("cached image unavailable");
+  if (args[0] === "image" && args[1] === "inspect") {
+    log(); process.stdout.write("sha256:" + "a".repeat(64));
+  } else if (args[0] === "inspect") {
+    log(); process.stdout.write(JSON.stringify({ image: "sha256:" + "a".repeat(64), running: state.migrationRunning === true, status: state.migrationRunning ? "running" : "exited", exitCode: fixture.failures.some(f => ["migrate", "missing-script", "migration-timeout"].includes(f)) ? 1 : 0, project: "fixture-stack", service: "migrate", oneoff: "False" }));
+  } else if (args.includes("config") && args.includes("--quiet")) {
+    log();
+    const definition = JSON.parse(fs.readFileSync(args[args.indexOf("--file") + 1], "utf8"));
+    const contents = fs.readFileSync(args[args.indexOf("--env-file") + 1], "utf8");
+    const present = fixture.nativePasswordPresent ?? Boolean(require("node:util").parseEnv(contents).POSTGRES_APP_PASSWORD);
+    if (definition.services.runtimeEnv.environment && !present) fail("COGINEBOT_RUNTIME_PASSWORD_REQUIRED");
+  } else if (args.includes("config") && args.includes("--format")) {
+    log();
+    const selected = "postgres://runtime:fixture-secret@database/app";
+    const old = state.commit === fixture.currentCommit;
+    const environment = { DATABASE_URL: old && fixture.oldConfiguration === "different" ? "postgres://unverified:other-secret@database/app" : selected };
+    if (old && fixture.oldConfiguration === "owner") environment.DATABASE_MIGRATION_URL = "postgres://owner:owner-secret@database/app";
+    const services = {
+      api: { environment, command: old && fixture.oldConfiguration === "admin-command" ? "pnpm --filter @rakazo/db prisma migrate deploy && pnpm start" : "pnpm start" },
+      worker: { environment },
+      web: old && fixture.oldConfiguration === "listener" ? { environment: { REALTIME_DATABASE_URL: "postgres://listener:other-secret@database/app" } } : {},
+      ...(fixture.extraService ? { [fixture.extraService]: { environment } } : {}),
+      migrate: { environment: { DATABASE_URL: selected } },
+    };
+    process.stdout.write(JSON.stringify({ services }));
+  } else {
+    call.compose = fs.readFileSync(args[args.indexOf("--file") + 1], "utf8");
+    call.serviceEnv = fs.readFileSync(fixture.serviceEnv, "utf8");
+    call.envFile = fs.readFileSync(args[args.indexOf("--env-file") + 1], "utf8");
+    call.imageTag = process.env.RAKAZO_IMAGE_TAG;
+    const overrideIndex = args.lastIndexOf("--file");
+    if (overrideIndex !== args.indexOf("--file")) {
+      call.migrationImage = JSON.parse(fs.readFileSync(args[overrideIndex + 1], "utf8")).services.migrate.image;
+    }
+    log();
+    if (args.includes("build")) {
+    } else if (args.includes("ps")) {
+      process.stdout.write("b".repeat(64));
+    } else if (args.includes("stop")) {
+      if (fixture.extraService && args.includes(fixture.extraService)) {
+        state.extraRunning = false; fs.writeFileSync(stateFile, JSON.stringify(state));
+      }
+      if (args.at(-1) === "migrate") {
+        if (hasFailure("stop-migration")) fail("migration did not stop");
+        state.migrationRunning = false; fs.writeFileSync(stateFile, JSON.stringify(state));
+      } else if (hasFailure("stop") && !state.stopFailed) {
+        state.stopFailed = true; fs.writeFileSync(stateFile, JSON.stringify(state)); fail("one old writer stopped before stop failed");
+      }
+    } else if (args.includes("run")) {
+      if (args.slice(-7).join(" ") !== "migrate pnpm --filter @rakazo/api run db:row-security verify") fail("Unexpected verification command");
+      if (hasFailure("readiness")) fail("database roles or policies are not ready");
+    } else if (args.includes("--exit-code-from")) {
+      if (fixture.extraService && state.extraRunning !== false) fail("old extra writer still running");
+      if (hasFailure("migration-timeout")) { state.migrationRunning = true; fs.writeFileSync(stateFile, JSON.stringify(state)); fail("migration client timed out with a live service"); }
+      if (hasFailure("missing-script")) fail("ERR_PNPM_NO_SCRIPT Missing script: db:migrate");
+      if (hasFailure("migrate")) fail("migration failed");
+    } else if (args.includes("up")) {
+      if (state.commit === fixture.targetCommit && fixture.failures.length > 0) fail("new API unhealthy");
+      if (state.commit !== fixture.targetCommit && hasFailure("recover")) fail("cached image unavailable");
+    } else fail("Unexpected Docker command");
+  }
 } else if (command === "git") {
   log();
   const joined = args.join(" ");
@@ -93,7 +158,15 @@ if (command === "docker") {
 }
 `;
 
-async function deployment(options: { failures: Failure[]; branch?: string; composePath?: string }) {
+async function deployment(options: {
+  failures: Failure[];
+  branch?: string;
+  composePath?: string;
+  env?: string;
+  nativePasswordPresent?: boolean;
+  extraService?: string;
+  oldConfiguration?: "owner" | "different" | "admin-command" | "listener";
+}) {
   const deployDir = await mkdtemp(path.join(os.tmpdir(), "rakazo-fork-recovery-"));
   directories.push(deployDir);
   const bin = path.join(deployDir, "fake-bin");
@@ -103,6 +176,7 @@ async function deployment(options: { failures: Failure[]; branch?: string; compo
     RAKAZO_UPDATER_TOKEN: token,
     RAKAZO_COMPOSE_FILE: options.composePath,
     COMPOSE_PROJECT_NAME: "fixture-stack",
+    RAKAZO_UPDATE_SERVICES: options.extraService,
   });
   const serviceEnv = path.join(path.dirname(composeFile), "service.env");
   const compose = (revision: string) =>
@@ -113,13 +187,17 @@ async function deployment(options: { failures: Failure[]; branch?: string; compo
     mkdir(path.dirname(composeFile), { recursive: true }),
   ]);
   await Promise.all([
-    writeFile(config.envFile, originalEnv),
+    writeFile(config.envFile, options.env ?? originalEnv),
     writeFile(composeFile, compose("old")),
     writeFile(serviceEnv, "REVISION=old\n"),
     writeFile(
       path.join(bin, "fixture.json"),
       JSON.stringify({
         failures: options.failures,
+        nativePasswordPresent: options.nativePasswordPresent,
+        extraService: options.extraService,
+        oldConfiguration: options.oldConfiguration,
+        currentCommit,
         targetCommit,
         composeFile,
         serviceEnv,
@@ -152,6 +230,7 @@ async function deployment(options: { failures: Failure[]; branch?: string; compo
     .map((line) => JSON.parse(line) as Invocation);
   return {
     response,
+    subject,
     record: (await response.json()) as ServerUpdateRun,
     calls,
     config,
@@ -168,14 +247,19 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
     const fixture = await deployment({ ...options, failures: ["recreate"] });
     expect(fixture.response.status).toBe(200);
     expect(fixture.record).toMatchObject({ ok: false, restart: "not-required" });
-    const docker = fixture.calls.filter((call) => call.command === "docker");
+    const docker = fixture.calls.filter(
+      (call) =>
+        call.command === "docker" &&
+        call.args.includes("up") &&
+        !call.args.includes("--exit-code-from"),
+    );
     expect(docker).toHaveLength(2);
     expect(docker[0]).toMatchObject({
       commit: targetCommit,
       compose: expect.stringContaining("command: new"),
       serviceEnv: "REVISION=new\n",
     });
-    expect(docker[1]).toMatchObject({
+    expect(docker.at(-1)).toMatchObject({
       commit: currentCommit,
       compose: expect.stringContaining("command: old"),
       serviceEnv: "REVISION=old\n",
@@ -187,12 +271,24 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
       "fetch",
       "checkout",
       "merge",
+      "build",
+      "pin-migration",
+      "stop",
+      "migrate",
+      "migration-container",
+      "migration-state",
+      "verify-forward",
       "recreate",
+      "stop-writers",
+      "stop-migration",
+      "migration-container",
+      "migration-state",
+      "verify-recovery",
       "restore-checkout",
       "recover",
       "restore-remote",
     ]);
-    expect(docker[1]?.args).toEqual(
+    expect(docker.at(-1)?.args).toEqual(
       expect.arrayContaining([
         "-p",
         "fixture-stack",
@@ -203,7 +299,7 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
         "--no-build",
       ]),
     );
-    expect(fixture.state).toEqual({
+    expect(fixture.state).toMatchObject({
       commit: currentCommit,
       branch: options.branch,
       remote: originalRemote,
@@ -216,10 +312,17 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
     expect(fixture.record).toMatchObject({
       ok: false,
       restart: "manual",
-      error: "Build the new images and recreate the services failed.",
+      error: "Recreate the services failed.",
     });
     expect(fixture.record.restartAdvice).toMatch(/skipped.*checkout could not be restored/);
-    expect(fixture.calls.filter((call) => call.command === "docker")).toHaveLength(1);
+    expect(
+      fixture.calls.filter(
+        (call) =>
+          call.command === "docker" &&
+          call.args.includes("up") &&
+          !call.args.includes("--exit-code-from"),
+      ),
+    ).toHaveLength(1);
     expect(fixture.record.steps.filter((step) => step.id === "restore-checkout")).toEqual([
       expect.objectContaining({ ok: false }),
     ]);
@@ -233,10 +336,19 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
     expect(fixture.record).toMatchObject({
       ok: false,
       restart: "manual",
-      error: "Build the new images and recreate the services failed.",
+      error: "Recreate the services failed.",
     });
     expect(fixture.record.steps.find((step) => step.id === "recover")).toMatchObject({ ok: false });
-    expect(fixture.calls.filter((call) => call.command === "docker")[1]).toMatchObject({
+    expect(
+      fixture.calls
+        .filter(
+          (call) =>
+            call.command === "docker" &&
+            call.args.includes("up") &&
+            !call.args.includes("--exit-code-from"),
+        )
+        .at(-1),
+    ).toMatchObject({
       commit: currentCommit,
       serviceEnv: "REVISION=old\n",
       imageTag: oldTag,
@@ -282,13 +394,157 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
     expect(await readFile(fixture.config.envFile, "utf8")).toBe(originalEnv);
   });
 
+  it.each(["stop", "migrate", "missing-script", "migration-timeout"] as const)(
+    "restores cached runtime after %s fails without rerunning migrations",
+    async (failure) => {
+      const fixture = await deployment({ failures: [failure] });
+      expect(fixture.record).toMatchObject({ ok: false, restart: "not-required" });
+      expect(fixture.record.steps.find((step) => step.id === "recover")).toMatchObject({
+        ok: true,
+      });
+      const docker = fixture.calls.filter(
+        (call) =>
+          call.command === "docker" &&
+          call.args.includes("up") &&
+          !call.args.includes("--exit-code-from"),
+      );
+      expect(docker.at(-1)?.args).toEqual(
+        expect.arrayContaining(["up", "--no-deps", "--no-build", "never"]),
+      );
+      expect(
+        fixture.calls.filter(
+          (call) => call.command === "docker" && call.args.includes("--exit-code-from"),
+        ),
+      ).toHaveLength(failure === "stop" ? 0 : 1);
+      expect(fixture.record.steps.find((step) => step.id === "verify-recovery")).toMatchObject({
+        ok: true,
+      });
+      const verification = fixture.calls.find(
+        (call) => call.command === "docker" && call.args.includes("db:row-security"),
+      );
+      expect(verification?.migrationImage).toBe(`sha256:${"a".repeat(64)}`);
+      expect(fixture.calls.at(-1)?.args).not.toContain("db:migrate");
+      expect(docker.at(-1)?.commit).toBe(currentCommit);
+      expect(await readFile(fixture.config.envFile, "utf8")).toBe(originalEnv);
+    },
+  );
+
+  it.each(["stop-migration", "readiness"] as const)(
+    "does not restart runtime when %s fails after migration timeout",
+    async (failure) => {
+      const fixture = await deployment({ failures: ["migration-timeout", failure] });
+      expect(fixture.record).toMatchObject({ ok: false, restart: "manual" });
+      expect(
+        fixture.calls.some(
+          (call) =>
+            call.command === "docker" &&
+            call.args.includes("up") &&
+            !call.args.includes("--exit-code-from"),
+        ),
+      ).toBe(false);
+      expect(fixture.record.steps.some((step) => step.id === "recover")).toBe(false);
+      expect(fixture.record.restartAdvice).toContain("could not be verified");
+    },
+  );
+
+  it("keeps a newly generated runtime password through failure and retry without changing other multiline secrets", async () => {
+    const legacy =
+      originalEnv.replace("POSTGRES_APP_PASSWORD=selected-runtime\n", "") +
+      'POSTGRES_PASSWORD=selected-owner\nOTHER_SECRET="first line\nPOSTGRES_APP_PASSWORD=inside-another-secret\nlast line"\nPOSTGRES_APP_PASSWORD="" # empty\n';
+    const fixture = await deployment({ failures: ["recreate"], env: legacy });
+    const once = await readFile(fixture.config.envFile, "utf8");
+    expect(once).toContain(
+      'OTHER_SECRET="first line\nPOSTGRES_APP_PASSWORD=inside-another-secret\nlast line"',
+    );
+    expect(once).toContain("POSTGRES_PASSWORD=selected-owner");
+    const password = once.match(/^POSTGRES_APP_PASSWORD=([a-f0-9]{32})$/m)?.[1];
+    expect(password).toHaveLength(32);
+    await fixture.subject.request("/apply", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ repoUrl: nextRemote, branch: "main" }),
+    });
+    expect(await readFile(fixture.config.envFile, "utf8")).toBe(once);
+  });
+
+  it.each(["owner", "different", "admin-command", "listener"] as const)(
+    "keeps writers stopped when the old configuration contains %s authority",
+    async (oldConfiguration) => {
+      const fixture = await deployment({ failures: ["recreate"], oldConfiguration });
+      expect(fixture.record).toMatchObject({ ok: false, restart: "manual" });
+      expect(fixture.record.restartAdvice).toContain("outside the verified credential inventory");
+      expect(fixture.record.steps.some((step) => step.id === "recover")).toBe(false);
+      expect(
+        fixture.calls.filter(
+          (call) => call.args.includes("up") && !call.args.includes("--exit-code-from"),
+        ),
+      ).toHaveLength(1);
+      expect(fixture.record.steps.find((step) => step.id === "verify-recovery")?.ok).toBe(true);
+      expect(JSON.stringify(fixture.record)).not.toMatch(
+        /fixture-secret|owner-secret|other-secret/,
+      );
+    },
+  );
+
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation is the test input.
+  it.each(["${UNSET}", "${EMPTY:-}"])(
+    "fills a runtime password that Compose expands to empty (%s)",
+    async (value) => {
+      const original = originalEnv.replace(
+        "POSTGRES_APP_PASSWORD=selected-runtime",
+        `POSTGRES_APP_PASSWORD=${value}`,
+      );
+      const fixture = await deployment({
+        failures: [],
+        env: original,
+        nativePasswordPresent: false,
+      });
+      expect(fixture.record.ok).toBe(true);
+      expect(await readFile(fixture.config.envFile, "utf8")).toMatch(
+        /^POSTGRES_APP_PASSWORD=[a-f0-9]{32}$/m,
+      );
+    },
+  );
+
+  it("preserves Compose's nonempty password when Node's dotenv parser reports it empty", async () => {
+    const original = originalEnv.replace(
+      "POSTGRES_APP_PASSWORD=selected-runtime",
+      "POSTGRES_APP_PASSWORD= # empty",
+    );
+    const fixture = await deployment({ failures: [], env: original, nativePasswordPresent: true });
+    const final = await readFile(fixture.config.envFile, "utf8");
+    expect(final).toContain("POSTGRES_APP_PASSWORD= # empty");
+    expect(final.match(/^POSTGRES_APP_PASSWORD=/gm)).toHaveLength(1);
+    expect(fixture.record.ok).toBe(true);
+  });
+
+  it("stops a selected extra writer before administrator execution", async () => {
+    const fixture = await deployment({ failures: [], extraService: "scheduler" });
+    expect(fixture.record.ok).toBe(true);
+    const calls = fixture.calls.filter((call) => call.command === "docker");
+    const stop = calls.findIndex(
+      (call) => call.args.includes("stop") && call.args.includes("scheduler"),
+    );
+    const admin = calls.findIndex((call) => call.args.includes("--exit-code-from"));
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(admin).toBeGreaterThan(stop);
+    expect(fixture.state.extraRunning).toBe(false);
+  });
+
   it("keeps the new checkout and image pin after a successful update", async () => {
     const fixture = await deployment({ failures: [] });
     expect(fixture.record).toMatchObject({ ok: true, restart: "recreated" });
     expect(
       fixture.record.steps.some((step) => step.id.startsWith("restore") || step.id === "recover"),
     ).toBe(false);
-    expect(fixture.calls.filter((call) => call.command === "docker")).toHaveLength(1);
+    expect(
+      fixture.calls.filter(
+        (call) =>
+          call.command === "docker" &&
+          call.args.includes("up") &&
+          !call.args.includes("--exit-code-from"),
+      ),
+    ).toHaveLength(1);
     expect(fixture.state).toEqual({ commit: targetCommit, branch: "main", remote: nextRemote });
     expect(await readFile(fixture.config.envFile, "utf8")).toContain(
       `RAKAZO_IMAGE_TAG=local-${targetCommit}\n`,

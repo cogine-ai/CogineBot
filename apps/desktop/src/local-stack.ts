@@ -1,14 +1,12 @@
-import { copyFile, lstat, mkdir, readFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import type { DesktopLocalStackState } from "@rakazo/contracts";
+import type { DockerFailureKind, RunDocker, RunDockerResult } from "./docker-cli.js";
 import {
   classifyDockerFailure,
   composeSupportsWaitTimeout,
-  type DockerFailureKind,
   dockerSpawnEnv,
-  type RunDocker,
-  type RunDockerResult,
   resolveDockerBinary,
 } from "./docker-cli.js";
 import { readPrivateFile, writePrivateFile } from "./setup-store.js";
@@ -56,6 +54,7 @@ const PULL_TIMEOUT_MS = 30 * 60_000;
 const UP_TIMEOUT_MS = (COMPOSE_WAIT_TIMEOUT_S + 60) * 1_000;
 const LOGS_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 90_000;
+const WRITER_STOP_TIMEOUT_MS = 150_000;
 const MAX_STACK_TOKEN_BYTES = 1024;
 
 /** The compose project lives under the app's user data, next to the `.env` it generates. */
@@ -92,6 +91,7 @@ export function resolveImageTag(input: {
 
 const GENERATED_SECRETS: Record<string, number> = {
   POSTGRES_PASSWORD: 16,
+  POSTGRES_APP_PASSWORD: 16,
   BETTER_AUTH_SECRET: 32,
   ENCRYPTION_KEY: 32,
   SCREEN_PROXY_SECRET: 32,
@@ -120,18 +120,29 @@ export function renderStackEnv(template: string, randomHex: (bytes: number) => s
   return rendered.join("\n");
 }
 
-/** Keeps an existing regular `.env`, but replaces a final symlink instead of trusting its target. */
+/** Preserve selected secrets, adding only the runtime credential newly required by the shipped template. */
 export async function ensureStackEnv(
   dir: string,
   template: string,
   randomHex: (bytes: number) => string,
+  hasConfiguredRuntimePassword: () => Promise<boolean>,
 ): Promise<"kept" | "created"> {
   const destination = path.join(dir, STACK_ENV_FILE);
   try {
     const info = await lstat(destination);
-    if (!info.isSymbolicLink()) return "kept";
-  } catch {
-    // Missing files are created below.
+    if (!info.isSymbolicLink()) {
+      if (template.split("\n").includes("POSTGRES_APP_PASSWORD=")) {
+        const existing = await readFile(destination, "utf8");
+        if (!(await hasConfiguredRuntimePassword())) {
+          const password = randomHex(GENERATED_SECRETS.POSTGRES_APP_PASSWORD!);
+          const next = `${existing}${existing.endsWith("\n") ? "" : "\n"}POSTGRES_APP_PASSWORD=${password}\n`;
+          await writePrivateFile(destination, next);
+        }
+      }
+      return "kept";
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await writePrivateFile(destination, renderStackEnv(template, randomHex));
   return "created";
@@ -473,7 +484,9 @@ export class LocalStackController {
       path.join(this.deps.stackDir, STACK_COMPOSE_FILE),
     );
     const template = await readFile(path.join(this.deps.resourceDir, STACK_ENV_TEMPLATE), "utf8");
-    await ensureStackEnv(this.deps.stackDir, template, this.deps.randomHex);
+    await ensureStackEnv(this.deps.stackDir, template, this.deps.randomHex, () =>
+      this.hasConfiguredRuntimePassword(binary, signal),
+    );
     const stackToken = await ensureStackToken(this.deps.stackDir, this.deps.randomHex);
     this.currentStackToken = stackToken;
 
@@ -490,6 +503,15 @@ export class LocalStackController {
     }
 
     this.push({ type: "up-start" });
+    const stopped = await this.compose(
+      binary,
+      ["stop", "--timeout", "120", "api", "worker"],
+      WRITER_STOP_TIMEOUT_MS,
+      signal,
+    );
+    if (interrupted(signal, stopped))
+      return this.push({ type: "failed", message: START_INTERRUPTED });
+    if (stopped.code !== 0) return this.push({ type: "failed", message: STOP_FAILED });
     const upArgs = composeSupportsWaitTimeout(version.stdout)
       ? ["up", "-d", "--wait", "--wait-timeout", String(COMPOSE_WAIT_TIMEOUT_S)]
       : ["up", "-d"];
@@ -536,7 +558,53 @@ export class LocalStackController {
     });
   }
 
-  private docker(binary: string, args: string[], timeoutMs: number, signal?: AbortSignal) {
+  private async hasConfiguredRuntimePassword(
+    binary: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const directory = await mkdtemp(path.join(this.deps.stackDir, ".runtime-env-"));
+    const file = path.join(directory, "compose.json");
+    const service: { image: string; environment?: Record<string, string> } = { image: "scratch" };
+    const args = [
+      "compose",
+      "--project-name",
+      STACK_PROJECT_NAME,
+      "--env-file",
+      STACK_ENV_FILE,
+      "-f",
+      file,
+      "config",
+      "--quiet",
+    ];
+    try {
+      await writePrivateFile(file, JSON.stringify({ services: { runtimeEnv: service } }));
+      const valid = await this.docker(binary, args, STOP_TIMEOUT_MS, signal, true);
+      if (interrupted(signal, valid)) throw new Error(START_INTERRUPTED);
+      if (valid.code !== 0)
+        throw new Error("The existing environment file cannot be parsed by Docker Compose");
+      service.environment = {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose evaluates this expression.
+        PROVIDED: "${POSTGRES_APP_PASSWORD:?COGINEBOT_RUNTIME_PASSWORD_REQUIRED}",
+      };
+      await writePrivateFile(file, JSON.stringify({ services: { runtimeEnv: service } }));
+      const required = await this.docker(binary, args, STOP_TIMEOUT_MS, signal, true);
+      if (interrupted(signal, required)) throw new Error(START_INTERRUPTED);
+      if (required.code === 0) return true;
+      if (`${required.stdout}\n${required.stderr}`.includes("COGINEBOT_RUNTIME_PASSWORD_REQUIRED"))
+        return false;
+      throw new Error("The existing runtime password could not be verified by Docker Compose");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  private docker(
+    binary: string,
+    args: string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+    quiet = false,
+  ) {
     return this.deps.run(binary, args, {
       cwd: this.deps.stackDir,
       env: dockerSpawnEnv(this.deps.platform, this.deps.env, binary, {
@@ -555,7 +623,7 @@ export class LocalStackController {
       }),
       timeoutMs,
       signal,
-      onLine: (line) => this.push({ type: "output", line }),
+      onLine: quiet ? undefined : (line) => this.push({ type: "output", line }),
     });
   }
 

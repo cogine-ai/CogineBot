@@ -1,6 +1,8 @@
+import { parse } from "dotenv";
 import { describe, expect, it } from "vitest";
 
 import {
+  COMPOSE_LOCAL_BUILD_UPGRADE_COMMANDS,
   COMPOSE_MANUAL_UPGRADE_COMMANDS,
   chooseUpdateStrategy,
   commitImageTag,
@@ -192,12 +194,10 @@ describe("strategy and mode selection", () => {
       "# Published release tag",
       ...COMPOSE_MANUAL_UPGRADE_COMMANDS,
       "# Local tag (rebuild from checkout)",
-      "git pull",
-      "GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --pull never --build api worker web",
+      ...COMPOSE_LOCAL_BUILD_UPGRADE_COMMANDS,
     ]);
     expect(manualUpgradeCommands("compose", { imageTag: "local" })).toEqual([
-      "git pull",
-      "GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --pull never --build api worker web",
+      ...COMPOSE_LOCAL_BUILD_UPGRADE_COMMANDS,
     ]);
     expect(manualUpgradeCommands("compose", { imageTag: "sha-abc" })).toEqual([
       ...COMPOSE_MANUAL_UPGRADE_COMMANDS,
@@ -290,7 +290,11 @@ describe("compose argv construction", () => {
       expect(composeSteps.length).toBeGreaterThan(0);
       for (const step of composeSteps) {
         expect(step.args.filter((arg) => arg === "--file")).toHaveLength(2);
-        expect(step.args).toContain("supervisor");
+        if (["pull", "build", "recreate"].includes(step.id))
+          expect(step.args).toContain("supervisor");
+        if (step.id === "stop")
+          expect(step.args.slice(-4)).toEqual(["api", "worker", "web", "supervisor"]);
+        if (step.id === "migrate") expect(step.args).toContain("migrate");
       }
     }
   });
@@ -467,13 +471,49 @@ describe("dirty-tree argv and CRLF filtering", () => {
 });
 
 describe("update plans", () => {
-  it("pulls then recreates on the official path, with no migration step", () => {
+  it("downloads first, stops old writers, migrates with the administrator, then recreates", () => {
     const steps = composeUpdatePlan({ strategy: "pull", target });
-    expect(steps.map((step) => step.id)).toEqual(["pull", "recreate"]);
-    expect(steps.some((step) => step.id === "migrate")).toBe(false);
+    expect(steps.map((step) => step.id)).toEqual([
+      "pull",
+      "stop",
+      "migrate",
+      "verify-forward",
+      "recreate",
+    ]);
+    expect(steps.find((step) => step.id === "migrate")?.args).toEqual(
+      expect.arrayContaining([
+        "up",
+        "--no-deps",
+        "--abort-on-container-exit",
+        "--exit-code-from",
+        "migrate",
+      ]),
+    );
+    expect(steps.at(-1)?.args).toContain("--no-deps");
     for (const step of steps) {
       expect(step.args.slice(0, 3)).toEqual(["compose", "-p", DEFAULT_COMPOSE_PROJECT_NAME]);
     }
+  });
+
+  it("keeps administrator and database services out of every runtime phase", () => {
+    const steps = composeUpdatePlan({
+      strategy: "pull",
+      target: {
+        ...target,
+        services: ["api", "worker", "web", "scheduler", "migrate", "postgres", "updater"],
+      },
+    });
+    for (const id of ["stop", "recreate"]) {
+      const args = steps.find((step) => step.id === id)!.args;
+      expect(args.slice(-4)).toEqual(["api", "worker", "web", "scheduler"]);
+      expect(args).not.toContain("migrate");
+      expect(args).not.toContain("postgres");
+      expect(args).not.toContain("updater");
+    }
+    expect(steps.find((step) => step.id === "pull")!.args).toContain("migrate");
+    expect(steps.findIndex((step) => step.id === "stop")).toBeLessThan(
+      steps.findIndex((step) => step.id === "migrate"),
+    );
   });
 
   it("fetches, fast-forwards, then builds on the fork path", () => {
@@ -489,12 +529,17 @@ describe("update plans", () => {
       "fetch",
       "checkout",
       "merge",
+      "build",
+      "stop",
+      "migrate",
+      "verify-forward",
       "recreate",
     ]);
     const merge = steps.find((step) => step.id === "merge");
     expect(merge?.args).toEqual(["merge", "--ff-only", "origin/trunk"]);
     expect(steps.find((step) => step.id === "fetch")?.args).not.toContain("--prune");
-    expect(steps.at(-1)?.args).toContain("--build");
+    expect(steps.find((step) => step.id === "build")?.args).toContain("--with-dependencies");
+    expect(steps.at(-1)?.args).toContain("--no-build");
   });
 
   it("leaves the remote alone when the checkout already points at the chosen repository", () => {
@@ -504,7 +549,16 @@ describe("update plans", () => {
       branch: "main",
       repointRemote: false,
     });
-    expect(steps.map((step) => step.id)).toEqual(["fetch", "checkout", "merge", "recreate"]);
+    expect(steps.map((step) => step.id)).toEqual([
+      "fetch",
+      "checkout",
+      "merge",
+      "build",
+      "stop",
+      "migrate",
+      "verify-forward",
+      "recreate",
+    ]);
   });
 
   it("keeps the repository URL in argv rather than in any compose input", () => {
@@ -544,6 +598,14 @@ describe("rollback", () => {
 });
 
 describe("managed env assignments", () => {
+  it("preserves managed-looking lines inside a multiline credential", () => {
+    const secret =
+      'OTHER_SECRET="first line\nRAKAZO_IMAGE_TAG=inside-secret\nPOSTGRES_APP_PASSWORD=inside-secret\nlast line"';
+    expect(
+      upsertEnvAssignments(`${secret}\nRAKAZO_IMAGE_TAG=old\n`, { RAKAZO_IMAGE_TAG: "new" }),
+    ).toBe(`${secret}\nRAKAZO_IMAGE_TAG=new\n`);
+  });
+
   it("replaces a managed key in place and leaves everything else alone", () => {
     const contents = [
       "# deployment",
@@ -586,6 +648,81 @@ describe("managed env assignments", () => {
     expect(result).not.toContain("stale");
   });
 
+  it.each([
+    " RAKAZO_IMAGE_TAG=v1.2.0",
+    "\tRAKAZO_IMAGE_TAG=v1.2.0",
+    "RAKAZO_IMAGE_TAG = v1.2.0",
+    "RAKAZO_IMAGE_TAG\t=\tv1.2.0",
+    "\u00a0RAKAZO_IMAGE_TAG\u00a0=\u00a0v1.2.0",
+    " export RAKAZO_IMAGE_TAG = 'v1.2.0' # pinned",
+    'RAKAZO_IMAGE_TAG: "v1.2.0"',
+  ])("rewrites a later Compose assignment: %s", (duplicate) => {
+    const contents = `RAKAZO_IMAGE_TAG=v1.1.0\n${duplicate}\n`;
+    expect(parse(contents).RAKAZO_IMAGE_TAG).toBe("v1.2.0");
+    const result = upsertEnvAssignments(contents, {
+      RAKAZO_IMAGE_TAG: "v2.0.0",
+    });
+
+    expect(result).toBe("RAKAZO_IMAGE_TAG=v2.0.0\nRAKAZO_IMAGE_TAG=v2.0.0\n");
+    expect(parse(result).RAKAZO_IMAGE_TAG).toBe("v2.0.0");
+  });
+
+  it("rewrites mixed current and rollback duplicates while preserving unrelated CRLF content", () => {
+    const unrelated = [
+      "# RAKAZO_IMAGE_TAG = commented",
+      "  # RAKAZO_IMAGE_TAG=also-commented",
+      "RAKAZO_IMAGE_TAG_EXTRA=untouched",
+      "OTHER = 'keep # this' # comment",
+      "",
+    ];
+    const contents = [
+      "RAKAZO_IMAGE_TAG=v1.0.0",
+      "RAKAZO_IMAGE_TAG_PREVIOUS=v0.9.0",
+      ...unrelated,
+      " \tRAKAZO_IMAGE_TAG \t= v1.2.0 # pinned",
+      "\tRAKAZO_IMAGE_TAG_PREVIOUS = 'v1.1.0' # rollback",
+    ].join("\r\n");
+    const assignments = { RAKAZO_IMAGE_TAG: "v2.0.0", RAKAZO_IMAGE_TAG_PREVIOUS: "v1.2.0" };
+    const result = upsertEnvAssignments(contents, assignments);
+
+    expect(result).toBe(
+      [
+        "RAKAZO_IMAGE_TAG=v2.0.0",
+        "RAKAZO_IMAGE_TAG_PREVIOUS=v1.2.0",
+        ...unrelated,
+        "RAKAZO_IMAGE_TAG=v2.0.0",
+        "RAKAZO_IMAGE_TAG_PREVIOUS=v1.2.0",
+        "",
+      ].join("\r\n"),
+    );
+    expect(parse(result)).toMatchObject(assignments);
+  });
+
+  it.each(
+    ["'", '"', "`"].flatMap((quote) => ["", "\uFEFF", "\u00a0"].map((prefix) => [quote, prefix])),
+  )(
+    "preserves assignment-like text inside an unrelated %s quoted value with prefix %j",
+    (quote, prefix) => {
+      const unrelated = `${prefix}notes.value: ${quote}first\\\nRAKAZO_IMAGE_TAG=v0.9.0\n RAKAZO_IMAGE_TAG = v1.0.0\nlast${quote} # keep`;
+      const result = upsertEnvAssignments(`${unrelated}\nRAKAZO_IMAGE_TAG=v1.2.0\n`, {
+        RAKAZO_IMAGE_TAG: "v2.0.0",
+      });
+
+      expect(result).toBe(`${unrelated}\nRAKAZO_IMAGE_TAG=v2.0.0\n`);
+      expect(parse(result)["notes.value"]).toBe(parse(unrelated)["notes.value"]);
+    },
+  );
+
+  it("preserves a leading BOM when rewriting managed duplicates", () => {
+    const result = upsertEnvAssignments(
+      "\uFEFFRAKAZO_IMAGE_TAG=v1.1.0\nRAKAZO_IMAGE_TAG = v1.2.0\n",
+      {
+        RAKAZO_IMAGE_TAG: "v2.0.0",
+      },
+    );
+    expect(result).toBe("\uFEFFRAKAZO_IMAGE_TAG=v2.0.0\nRAKAZO_IMAGE_TAG=v2.0.0\n");
+    expect(parse(result).RAKAZO_IMAGE_TAG).toBe("v2.0.0");
+  });
   it("refuses values that would inject a second assignment or a compose expression", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal is the hostile input under test
     for (const value of ["v1\nEVIL=1", "v1 v2", "$(id)", "v1;rm -rf /", "${OTHER}"]) {

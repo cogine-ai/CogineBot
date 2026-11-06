@@ -98,6 +98,8 @@ import {
   pushSessionExpiresAt,
   requireMembership,
   runAsSystem,
+  verifyRealtimeDatabase,
+  verifyRuntimeDatabase,
 } from "@rakazo/db";
 import type { Logger } from "@rakazo/logging";
 import {
@@ -225,7 +227,28 @@ async function buildApp(
     : createDb(env.databaseUrl, {
         poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
         applicationName: "rakazo-api",
+        rowSecurity: true,
       });
+  if (created.pool) {
+    try {
+      const status = await verifyRuntimeDatabase(created.prisma);
+      if (!realtimeOverride && env.realtimeDatabaseUrl !== env.databaseUrl)
+        await verifyRealtimeDatabase(
+          env.realtimeDatabaseUrl,
+          status.connectionEnforced,
+          !status.problems.includes("runtime-not-prepared"),
+        );
+    } catch (error) {
+      try {
+        await created.prisma.$disconnect();
+      } finally {
+        await created.pool.end();
+      }
+      throw error;
+    }
+  } else if (env.wakeupDriver !== "memory") {
+    await verifyRealtimeDatabase(env.databaseUrl, false, true);
+  }
   // Injected database callers can supply their own check without opening another pool.
   const readiness =
     prismaOverride || readinessCheckOverride ? undefined : createReadinessProbe(env.databaseUrl);
@@ -298,6 +321,7 @@ async function buildApp(
     ownedJobPool = createPool(env.databaseUrl, {
       poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
       applicationName: "rakazo-api-jobs",
+      rowSecurity: true,
     });
   }
   const jobPool = created.pool ?? ownedJobPool;

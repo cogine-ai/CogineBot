@@ -103,8 +103,23 @@ if (args[0] === "inspect") {
 } else if (args.includes("pg_dump")) {
   if (process.env.FAIL_DUMP === "1") process.exit(2);
   console.log("CREATE TABLE example (id integer);");
+} else if (args.some(arg => arg.includes("exec psql "))) {
+  fs.writeFileSync(process.env.SQL_INPUT, fs.readFileSync(0));
+  if (process.env.FAIL_TRANSFER_FENCE === "1") { console.error("ERROR: transfer write revocation failed"); process.exit(3); }
+  if (process.env.FAIL_SQL === "1") { console.error("ERROR: relation example already exists"); process.exit(3); }
+} else if (args.includes("run")) {
+  if (args.at(-1) === "fence") process.stdout.write("DO $test_authority$ BEGIN NULL; END; $test_authority$;\\n");
+  if (args.at(-1) === "prepare" && process.env.FAIL_PREPARE === "1") process.exit(4);
+  if (args.at(-1) === "verify" && process.env.FAIL_READINESS === "1") process.exit(5);
+} else if (args.includes("stop")) {
+  // Stops are recorded above; no real service exists in this fixture.
+} else if (args.some(arg => arg.startsWith("pg_isready "))) {
 } else if (args.includes("sh")) {
-  if (!args.at(-1).startsWith("pg_dump ")) process.exit(91);
+  if (!args.at(-1).includes("pg_dump ")) process.exit(91);
+  if (!args.at(-1).includes("--format=custom")) {
+    if (process.env.FAIL_DUMP === "1") process.exit(2);
+    console.log("CREATE TABLE example (id integer);"); process.exit(0);
+  }
   if (process.env.FAIL_DUMP === "1") process.exit(2);
   if (process.env.HOLD_DUMP === "1") {
     fs.writeFileSync(process.env.DUMP_READY, JSON.stringify({ pid: process.pid }));
@@ -118,7 +133,7 @@ if (args[0] === "inspect") {
     while (written < 65536) written += fs.writeSync(1, Buffer.alloc(65536 - written));
   }
   console.log("fake custom-format dump");
-} else if (args.includes("psql")) {
+} else if (args.some((arg) => arg.includes("psql"))) {
   fs.writeFileSync(process.env.SQL_INPUT, fs.readFileSync(0));
   if (process.env.FAIL_TRANSFER_FENCE === "1" && args.includes("--command")) {
     console.error("ERROR: transfer write revocation failed");
@@ -501,18 +516,16 @@ describe("development restore failures", () => {
         FAIL_SQL: fail ? "1" : "0",
       });
       expect(result.status).toBe(fail ? 3 : 0);
-      const command = f.commands().find((args) => args.includes("psql"));
-      expect(command).toEqual(
-        expect.arrayContaining([
-          "-X",
-          "--set=ON_ERROR_STOP=on",
-          "--single-transaction",
-          "--file=-",
-        ]),
-      );
+      const command = f.commands().find((args) => args.some((arg) => arg.includes("exec psql ")));
+      for (const flag of ["-X", "--set=ON_ERROR_STOP=on", "--single-transaction", "--file=-"])
+        expect(command?.join(" ")).toContain(flag);
       expect(readFileSync(f.env.SQL_INPUT, "utf8")).toContain("CREATE TABLE example");
-      expect(f.commands().filter((args) => args.includes("psql"))).toHaveLength(1);
-      expect(command!.indexOf("--command")).toBeGreaterThan(command!.indexOf("--file=-"));
+      expect(f.commands().filter((args) => args.some((arg) => arg.includes("psql")))).toHaveLength(
+        1,
+      );
+      expect(command!.join(" ").indexOf("--command")).toBeGreaterThan(
+        command!.join(" ").indexOf("--file=-"),
+      );
       expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe(
         fail ? "current home" : "backed-up home",
       );
@@ -533,6 +546,42 @@ describe("development restore failures", () => {
     expect(f.commands().some((args) => args.slice(-2).join(" ") === "up -d")).toBe(false);
     expect(result.stdout).not.toContain("Restore complete");
   });
+
+  it.each(["FAIL_PREPARE", "FAIL_READINESS"])(
+    "keeps old files and writers stopped when %s fails",
+    (failure) => {
+      const f = restoreFixture();
+      const result = f.run("scripts/restore.sh", [path.join(f.checkout, "backups/example")], {
+        [failure]: "1",
+      });
+      expect(result.status).not.toBe(0);
+      expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe("current home");
+      expect(f.commands().some((args) => args.slice(-2).join(" ") === "up -d")).toBe(false);
+      expect(f.commands().findLast((args) => args.includes("supervisor"))).toEqual(
+        expect.arrayContaining(["stop", "api", "worker", "supervisor"]),
+      );
+      if (failure === "FAIL_READINESS") {
+        const commands = f.commands();
+        const verification = commands.findIndex(
+          (args) => args.includes("run") && args.at(-1) === "verify",
+        );
+        const cleanupStop = commands.findIndex(
+          (args, index) =>
+            index > verification && args.includes("stop") && args.includes("supervisor"),
+        );
+        expect(verification).toBeGreaterThanOrEqual(0);
+        expect(cleanupStop).toBeGreaterThan(verification);
+        expect(commands[cleanupStop]).toEqual(
+          expect.arrayContaining(["stop", "api", "worker", "supervisor"]),
+        );
+        expect(f.commands().at(-1)).toEqual(expect.arrayContaining(["stop", "migrate"]));
+      }
+      if (failure === "FAIL_PREPARE")
+        expect(f.commands().some((args) => args.some((arg) => arg.includes("exec psql ")))).toBe(
+          false,
+        );
+    },
+  );
 
   it("fails rather than starting services after an invalid homes archive", () => {
     const f = restoreFixture();

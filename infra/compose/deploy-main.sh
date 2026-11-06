@@ -139,6 +139,35 @@ read_config() {
         else {service:.key,image:.value.image,build:(.value.build != null)} end) | sort_by(.service))}
     end'
 }
+
+# Keep resolved credentials only in this process; the deployment image ledger contains none.
+runtime_configuration() {
+  docker_command 1m compose --project-name "${project}" "${compose_args[@]}" config --format json 2>/dev/null | jq -ce '
+    .services as $services |
+    if ($services.api == null or $services.worker == null) then error("missing runtime services") else
+      {urls:([$services | to_entries[] |
+        select(.key != "migrate" and .key != "postgres" and .key != "updater") |
+        . as $service | (.value.environment // {}) as $env |
+        if any(["DATABASE_MIGRATION_URL","POSTGRES_PASSWORD","PGPASSWORD","PGPASSFILE","PGSERVICE","PGSERVICEFILE"][];
+          . as $key | $env[$key] != null and $env[$key] != "") then error("administrator credential channel") else
+          ([.value.command,.value.entrypoint] | map(if type == "array" then join(" ") else (. // "" | tostring) end) | join(" ")) as $command |
+          if ($command | test("\\bprisma\\s+migrate\\b|\\bdb:(migrate|deploy)\\b")) then error("administrator migration command") else
+            ($env.DATABASE_URL // "") as $primary |
+            if ($primary | type) != "string" or ($primary == "" and ($service.key == "api" or $service.key == "worker")) then error("missing runtime database")
+            else [$primary, (if ($env.REALTIME_DATABASE_URL // "") == "" then $primary else $env.REALTIME_DATABASE_URL end)][] | select(type == "string" and length > 0)
+            end
+          end
+        end] | unique),
+       selected:([($services.migrate.environment // {}) | .DATABASE_URL,.REALTIME_DATABASE_URL] |
+         map(select(type == "string" and length > 0)) | unique)}
+    end' 2>/dev/null
+}
+verified_runtime_urls='[]'
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+prepare_env="${script_dir}/prepare-runtime-env.sh"
+if [[ ! -f "${prepare_env}" ]]; then prepare_env="${script_dir}/rakazo-prepare-runtime-env"; fi
+[[ -f "${prepare_env}" && ! -L "${prepare_env}" ]] || fail "Install the runtime environment preparation helper beside the deployment command"
+bash "${prepare_env}" "${APP_DIR}/.env"
 config="$(read_config)"; project="$(jq -r .project <<<"${config}")"
 owner_id="$(printf '%s\0' "${APP_DIR}" "${project}" "${daemon_id}" "${endpoint}" | "${hash_command[@]}" | awk '{print $1}')"
 [[ "${owner_id}" =~ ^[0-9a-f]{64}$ ]] || fail "Cannot derive deployment ownership"
@@ -214,6 +243,9 @@ fi
 temporary_files=()
 generation_committed=0
 publishing_healthy=0
+writers_may_be_stopped=0
+migration_started=0
+writer_services=()
 cleanup_files() {
   local file
   if ((${#temporary_files[@]} > 0)); then
@@ -251,8 +283,8 @@ publish_state() { state="$(check_state <<<"$1")"; write_json "${state_file}" "${
 read_containers() {
   local rows ids id
   rows="$(docker_command 1m container ls --all --no-trunc --format '{{json .}}' | jq -cs \
-    'if all(.[]; (.ID|type == "string" and test("^[0-9a-f]{64}$")) and (.Names|type == "string")) then . else error("invalid container inventory") end')"
-  ids="$(jq -r '.[].ID' <<<"${rows}")"
+    'if all(.[]; (.ID|type == "string" and test("^[0-9a-f]{64}$")) and (.Names|type == "string")) then . else error("invalid container inventory") end')" || return 1
+  ids="$(jq -r '.[].ID' <<<"${rows}")" || return 1
   containers='[]'
   if [[ -n "${ids}" ]]; then
     local list=(); while IFS= read -r id; do list+=("${id}"); done <<<"${ids}"
@@ -262,9 +294,51 @@ read_containers() {
         all(.[]; (.Id|type == "string" and test("^[0-9a-f]{64}$")) and (.Image|type == "string" and test("^sha256:[0-9a-f]{64}$")) and
           (.Config.Labels == null or (.Config.Labels|type == "object")) and (.Name|type == "string" and startswith("/")) and
           (.State.Status|type == "string" and length > 0))
-      then . else error("invalid container inspection") end')"
+      then map({Id,Name,Image,
+        Config:{Labels:(.Config.Labels | {"com.docker.compose.project":.["com.docker.compose.project"],
+          "com.docker.compose.service":.["com.docker.compose.service"],"com.docker.compose.oneoff":.["com.docker.compose.oneoff"]})},
+        State:{Status:.State.Status,Running:.State.Running,ExitCode:.State.ExitCode}})
+      else error("invalid container inspection") end')" || return 1
   fi
 }
+# Retired services are no longer addressable through the target Compose file.
+# Inspect the complete project inventory and pass only container IDs to Docker.
+runtime_writer_ids() {
+  jq -ce --arg project "${project}" '
+    [.[] | select(.Config.Labels["com.docker.compose.project"] == $project) |
+      (.Config.Labels["com.docker.compose.oneoff"] // "false") as $oneoff |
+      if ($oneoff | type) != "string" or ($oneoff | ascii_downcase | IN("true","false") | not)
+      then error("invalid runtime container classification")
+      elif ($oneoff | ascii_downcase) == "true" then empty
+      else .Config.Labels["com.docker.compose.service"] as $service |
+        if ($service | IN("postgres","migrate","updater")) then empty
+        elif ($service | type) != "string" or ($service | test("^[A-Za-z0-9][A-Za-z0-9_.-]*$") | not)
+        then error("invalid runtime service identity")
+        elif (.State.Status | IN("created","running","paused","restarting","removing","exited","dead") | not)
+          or (.State.Running != null and (.State.Running | type) != "boolean")
+        then error("invalid runtime container state")
+        elif (.State.Status | IN("created","exited","dead")) and (.State.Running // false) == false
+        then empty else .Id end
+      end]'
+}
+stop_runtime_writers() {
+  local timeout="$1" writers id
+  local -a ids=()
+  check_engine || return 1
+  docker_command "${timeout}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 "${writer_services[@]}" || return 1
+  read_containers || return 1
+  writers="$(runtime_writer_ids <<<"${containers}")" || return 1
+  while IFS= read -r id; do ids+=("${id}"); done < <(jq -r '.[]' <<<"${writers}")
+  if ((${#ids[@]} > 0)); then
+    check_engine || return 1
+    docker_command "${timeout}" container stop --time 120 "${ids[@]}" || return 1
+  fi
+  check_engine || return 1
+  read_containers || return 1
+  writers="$(runtime_writer_ids <<<"${containers}")" || return 1
+  [[ "${writers}" == '[]' ]] || { echo "Application database writers remain active; the deployment cannot continue." >&2; return 1; }
+}
+
 read_images() {
   images="$(docker_command 1m image ls --all --no-trunc --format '{{json .}}' | jq -cs \
     'if all(.[]; (.ID|type == "string" and test("^sha256:[0-9a-f]{64}$")) and (.Repository|type == "string") and (.Tag|type == "string")) then . else error("invalid image inventory") end')"
@@ -337,13 +411,13 @@ fi
 
 capture_services() {
   current_services="$(jq -cn --arg project "${project}" --arg ns "${namespace}" --argjson config "${config}" --argjson containers "${containers}" '
-    [$config.services[].service as $service |
+    [$config.services[] | select(.service != "migrate") | .service as $service |
       [$containers[] | select(.Config.Labels["com.docker.compose.project"] == $project and
         .Config.Labels["com.docker.compose.service"] == $service and ((.Config.Labels["com.docker.compose.oneoff"] // "false")|ascii_downcase) != "true" and .State.Status == "running") | .Image] | unique |
       if length > 1 then error("ambiguous service images") elif length == 1 then
         {service:$service,id:.[0],ref:($ns+":"+(.[0]|ltrimstr("sha256:")))} else empty end] | sort_by(.service)')"
   current_complete=0
-  if [[ "$(jq length <<<"${current_services}")" == "$(jq '.services|length' <<<"${config}")" ]]; then current_complete=1; fi
+  if [[ "$(jq length <<<"${current_services}")" == "$(jq '[.services[]|select(.service != "migrate")]|length' <<<"${config}")" ]]; then current_complete=1; fi
 }
 record_image() {
   local id="$1" ref actual next
@@ -455,6 +529,19 @@ restore_legacy() {
   fi
 }
 
+migration_receipt() {
+  local success="$1"
+  jq -en --arg success "${success}" --arg project "${project}" --argjson containers "${containers}" --argjson expected "${expected_services}" '
+    ($expected[]|select(.service == "migrate")|.id) as $id |
+    [$containers[]|select(.Config.Labels["com.docker.compose.project"] == $project and
+      .Config.Labels["com.docker.compose.service"] == "migrate" and
+      ((.Config.Labels["com.docker.compose.oneoff"] // "false")|ascii_downcase) != "true")] |
+    length == 1 and .[0].Image == $id and .[0].State.Running == false and
+      (if $success == "true" then .[0].State.Status == "exited" and .[0].State.ExitCode == 0
+       else (.[0].State.Status == "exited" or .[0].State.Status == "created") end)
+  ' >/dev/null
+}
+
 rollback() {
   trap - ERR
   if [[ "${generation_committed}" == 1 ]]; then
@@ -462,30 +549,59 @@ rollback() {
     exit 1
   fi
   echo "Deployment failed; restoring the previous revision ${previous_revision}." >&2
+  if [[ "${writers_may_be_stopped}" == 1 ]]; then
+    if ! stop_runtime_writers "${ROLLBACK_TIMEOUT}"; then
+      echo "Database writers could not be stopped; runtime recovery was not started." >&2; exit 1
+    fi
+    if [[ "${migration_started}" == 1 ]]; then
+      if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 migrate; then
+        echo "The administrator migration could not be stopped; runtime recovery was not started." >&2; exit 1
+      fi
+      read_containers
+      if ! migration_receipt false; then
+        echo "The administrator migration termination could not be verified; runtime recovery was not started." >&2; exit 1
+      fi
+    fi
+    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify; then
+      echo "Database readiness failed; runtime recovery was not started." >&2; exit 1
+    fi
+  fi
   if ! git reset --hard "${previous_revision}" >/dev/null; then echo "Rollback failed while restoring the checkout." >&2; exit 1; fi
   if ! restore_legacy; then
     echo "The prior deployment revision record could not be restored; the healthy image receipt remains authoritative." >&2
+  fi
+  if [[ "${writers_may_be_stopped}" != 1 ]]; then
+    echo "No runtime stop was attempted; no recovery restart was started." >&2
+    exit 1
   fi
   if [[ "${rollback_complete}" != 1 ]]; then
     echo "Exact-image rollback is unavailable because the previous deployment image map is incomplete." >&2
     exit 1
   fi
   local rollback_config override
+  local -a rollback_services=()
   if ! rollback_config="$(read_config)"; then
     echo "The previous Compose configuration could not be resolved; exact-image rollback was not started." >&2
     exit 1
   fi
   if ! jq -e --arg project "${project}" --argjson previous "${before_services}" \
-    '.project == $project and (.services|map(.service)|sort) == ($previous|map(.service)|sort)' <<<"${rollback_config}" >/dev/null; then
+    '.project == $project and (.services|map(select(.service != "migrate")|.service)|sort) == ($previous|map(.service)|sort)' <<<"${rollback_config}" >/dev/null; then
     echo "The previous Compose project or active services changed; exact-image rollback was not started." >&2
     exit 1
   fi
+  local previous_runtime
+  if ! previous_runtime="$(runtime_configuration)" || ! printf '%s\n%s\n' "${previous_runtime}" "${verified_runtime_urls}" | jq -es \
+    '.[0] as $previous | .[1] as $verified | all($previous.urls[]; . as $url | $verified | index($url) != null)' >/dev/null; then
+    echo "The previous runtime configuration is outside the verified credential inventory; exact-image rollback was not started. Recover it manually with runtime-only credentials." >&2
+    exit 1
+  fi
   config="${rollback_config}"
+  while IFS= read -r service; do rollback_services+=("${service}"); done < <(jq -r '.services[] | select(.service != "migrate") | .service' <<<"${config}")
   override="$(jq -cn --argjson images "${before_services}" '{services:($images|map({key:.service,value:{image:.ref}})|from_entries)}')"
   write_json "${state_dir}/rollback.json" "${override}"
   check_engine
   if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
-    -f "${state_dir}/rollback.json" up -d --remove-orphans --no-build --pull never; then
+    -f "${state_dir}/rollback.json" up -d --remove-orphans --no-deps --no-build --pull never "${rollback_services[@]}"; then
     echo "Exact-image rollback could not restart the previous deployment." >&2; exit 1
   fi
   for _ in {1..30}; do
@@ -509,6 +625,10 @@ git reset --hard "${target_revision}"
 target_config="$(read_config)"
 [[ "$(jq -r .project <<<"${target_config}")" == "${project}" ]] || fail "Target Compose project differs from the protected deployment"
 config="${target_config}"
+runtime_inventory="$(runtime_configuration)" || fail "The runtime database configuration could not be verified"
+jq -e '. as $config | ($config.selected | length > 0) and all($config.urls[]; . as $url | $config.selected | index($url) != null)' \
+  <<<"${runtime_inventory}" >/dev/null || fail "The runtime configuration is outside the selected credential inventory"
+verified_runtime_urls="$(jq -c .urls <<<"${runtime_inventory}")"
 require_space
 compose 1m config --quiet
 check_engine
@@ -532,14 +652,34 @@ forward_override="$(jq -cn --argjson images "${expected_services}" \
   '{services:($images | map({key:.service,value:{image:.ref}}) | from_entries)}')"
 write_json "${state_dir}/forward.json" "${forward_override}"
 check_engine
+# The owner step must not run while the previous API or worker still writes.
+jq -e 'any(.services[];.service == "migrate")' <<<"${config}" >/dev/null || fail "The target Compose stack has no administrator migration service"
+while IFS= read -r service; do writer_services+=("${service}"); done < <(jq -r '.services[] | select(.service != "migrate" and .service != "postgres" and .service != "updater") | .service' <<<"${config}")
+writers_may_be_stopped=1
+stop_runtime_writers "${UP_TIMEOUT}"
+check_engine
 docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
-  -f "${state_dir}/forward.json" up -d --remove-orphans --no-build --pull never
+  -f "${state_dir}/forward.json" up -d --wait --no-deps --no-build --pull never postgres
+migration_started=1
+docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
+  -f "${state_dir}/forward.json" up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate
 
+# A one-shot is successful only when the canonical container exited zero on
+# the exact protected target image, not merely when Compose returned zero.
+read_containers
+migration_receipt true || fail "The administrator migration did not complete on the protected target image"
+docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
+  -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
+runtime_services=()
+while IFS= read -r service; do runtime_services+=("${service}"); done < <(jq -r '.services[] | select(.service != "migrate") | .service' <<<"${config}")
+docker_command "${UP_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" \
+  -f "${state_dir}/forward.json" up -d --remove-orphans --no-deps --no-build --pull never "${runtime_services[@]}"
+expected_runtime_services="$(jq 'map(select(.service != "migrate"))' <<<"${expected_services}")"
 for _ in {1..30}; do
   if healthy; then
     read_containers; capture_services
     [[ "${current_complete}" == 1 ]] || fail "The healthy deployment has an incomplete service image map"
-    jq -e --argjson actual "${current_services}" '. == $actual' <<<"${expected_services}" >/dev/null ||
+    jq -e --argjson actual "${current_services}" '. == $actual' <<<"${expected_runtime_services}" >/dev/null ||
       fail "Deployment service images differ from the protected target images"
     while IFS= read -r id; do [[ -z "${id}" ]] || record_image "${id}"; done < <(jq -r 'map(.id)|unique[]' <<<"${current_services}")
     # Preserve the accepted predecessor; repairing the same generation must keep its earlier fallback.

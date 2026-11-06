@@ -70,6 +70,8 @@ import {
   parsePositiveInteger,
   pushSessionExpiresAt,
   runAsSystem,
+  verifyRealtimeDatabase,
+  verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { SERVICE_NAMES } from "@rakazo/logging";
 import { createRootLogger } from "@rakazo/logging/axiom";
@@ -91,11 +93,20 @@ async function main() {
   const created = createDb(databaseUrl, {
     poolMax,
     applicationName: "rakazo-worker",
+    rowSecurity: true,
   });
   const { pool } = created;
   let { prisma } = created;
+  const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim() || databaseUrl;
+  const status = await verifyRuntimeDatabase(prisma);
+  if (realtimeUrl !== databaseUrl)
+    await verifyRealtimeDatabase(
+      realtimeUrl,
+      status.connectionEnforced,
+      !status.problems.includes("runtime-not-prepared"),
+    );
   const realtime = new PostgresRealtimeFanout({
-    connectionString: process.env.REALTIME_DATABASE_URL ?? databaseUrl,
+    connectionString: realtimeUrl,
     publisher: pool,
   });
   const secrets = await createWorkerSecretStore(process.env, realtime);

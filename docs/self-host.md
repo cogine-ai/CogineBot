@@ -86,9 +86,18 @@ an existing runtime uses the grant role itself as its login, moving to a differe
 login requires an administrator-controlled transition. The ordinary new-login
 rollout below does not automatically convert that existing grant role.
 
-Before activating a restored database, reconcile any grant-role ACLs carried by
-the backup and prepare the restored database's role and key. Preparation does
-not migrate legacy role ACLs or change the backup/restore workflow.
+Administrator and runtime database credentials must use distinct passwords,
+including equivalent passwords under the supported PostgreSQL client's mapping.
+Compose passes the administrator URL only to the `migrate` one-shot; API and worker
+receive the runtime URL. A separate `REALTIME_DATABASE_URL` is checked at its actual
+endpoint without granting it new privileges. When the primary connection uses a
+prepared runtime role, its listener must also use a prepared role. Direct listener
+endpoints around a pooler remain supported.
+
+The wholly unprotected legacy database phase remains compatible. Once any app
+policy is installed or enabled, service startup requires the complete registered
+policy set, restricted runtime identity, and authenticated system key. These
+connection checks do not certify every independently deployed writer.
 
 Preparation preserves an existing login's password and verifies the supplied
 credential as it stands. To roll out a new password without breaking reconnects,
@@ -107,11 +116,15 @@ passwords when the same login must work across clients.
 
 Success reports role and key readiness, not complete row-level isolation. Full
 table policies and trusted API, worker and CLI contexts must be connected before
-activation. This command does not switch the current Compose services to a new
-login. Keep owner credentials out of their shared environment files; separating
-long-running service environments remains part of that activation rollout. With
-a single login, the command retains migration compatibility and reports that
-row-level security is not enforced.
+activation. The shipped Compose stacks run API and worker with the runtime
+login; only the `migrate` one-shot receives the administrator URL. With a single
+login, the command retains migration compatibility and reports that row-level
+security is not enforced.
+
+`db:row-security verify` checks the selected runtime and realtime connections
+without changing roles, keys, or policies. Normal updates and rollback use this
+check, which permits retained keys during credential rotation. Database restores
+also require an exact role and key inventory before services restart.
 
 ### Inspect and install row policies
 
@@ -319,7 +332,7 @@ so the mode does not apply there.
 
 ## Docker Compose (single machine)
 
-1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD` (`openssl rand -hex 16`), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` to independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing `ENCRYPTION_KEY` values so stored credentials stay decryptable.
+1. Copy `.env.example` to `.env` and generate separate `POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` values (`openssl rand -hex 16` for each), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` as independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing passwords and `ENCRYPTION_KEY` values so current connections and stored credentials remain valid.
 2. Set `OPENROUTER_API_KEY` if using OpenRouter. `COMPOSIO_API_KEY` is optional and enables the Composio managed app catalog; [native app connections](native-connectors.md) do not require it.
 3. Build the computer image: `pnpm sandbox:build` (Compose also builds it via the `computer` service).
 4. `docker compose --env-file .env -f infra/compose/docker-compose.yml up --build`
@@ -330,7 +343,9 @@ On Windows, if an older clone with `core.autocrlf=true` leaves the computer pane
 Compose runs Postgres, the sandbox supervisor (Docker socket), API, worker, and a Vite preview of the web app. Bot computers are sibling containers (`rakazo/computer:local`) on separate per-bot networks; only the supervisor and screen proxy join each one. The API process does not get an unrestricted Docker socket; the supervisor owns the lifecycle.
 
 Postgres stays on the Compose network only (not published on the host), matching the images
-compose. Credentials come from `.env` (`POSTGRES_PASSWORD` is required). Prefer a URI-safe value
+compose. Credentials come from `.env`: `POSTGRES_PASSWORD` is for PostgreSQL and the one-shot
+administrator migration, while the distinct `POSTGRES_APP_PASSWORD` is for API/worker runtime.
+Prefer URI-safe values
 (`openssl rand -hex 16`); characters such as `@ : / ? # %` break the interpolated `DATABASE_URL`
 inside Compose. Official Postgres images set user, password, and database only on first volume
 init, so an existing `pgdata` volume keeps its original identity: keep those values in `.env`, or
@@ -733,7 +748,7 @@ container logs, default no-new-privileges, and the kernel NAT path instead of Do
    from Cloudflare's [published IP ranges](https://www.cloudflare.com/ips/); reconcile those ranges
    whenever Cloudflare publishes a change. A Cloudflare Tunnel can replace the public web listeners.
 2. Clone the repository on the VM and create a root `.env` with production-only values. At minimum set
-   `POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `SCREEN_PROXY_SECRET`,
+   distinct `POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` values, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `SCREEN_PROXY_SECRET`,
    `OPENROUTER_API_KEY`, the API key for your selected sandbox provider,
    `RAKAZO_HOST`, and the three public origins. Set `RAKAZO_DEPLOY_DIR` when the checkout is not at
    the supported Linux default, `/srv/rakazo`. Use URL-safe random values for database credentials.
@@ -862,7 +877,8 @@ When updating an existing backup installation, reinstall both the script and ser
 then run `systemctl daemon-reload`.
 
 To deploy from CI, install `infra/compose/deploy-main.sh` as `/usr/local/sbin/rakazo-deploy-main`
-and give CI a key restricted to it in the deploy user's `authorized_keys`
+and `infra/compose/prepare-runtime-env.sh` as `/usr/local/sbin/rakazo-prepare-runtime-env`
+(both root-owned executable files), and give CI a key restricted to it in the deploy user's `authorized_keys`
 (`restrict,command="/usr/local/sbin/rakazo-deploy-main" ssh-ed25519 …`). It builds `origin/main`,
 restarts the stack, requires both `https://$RAKAZO_HOST/health` and container-local API `/ready`, and
 retains the previous deployment's exact images for rollback. `RAKAZO_HEALTH_URL` still overrides
@@ -995,54 +1011,137 @@ docker compose --env-file .env \
 
 ## Restore
 
-For backups created by `scripts/backup.sh`, use an empty `rakazo` database in the development
-Compose stack, with application services stopped. The SQL import runs in one transaction and
-stops on the first error, including conflicts with existing tables. The same transaction revokes
-old credential-transfer grants and rotates credential revisions, retaining completed receipts and
-unresolved write evidence. Files are restored and application services started only after both
-the import and this fence succeed. This script does not consume the
-production snapshot's custom-format `rakazo.dump` or `appdata.tgz`.
+Restore into an independent empty database with application writers stopped.
+These commands do not delete existing tables, strip another role's permissions,
+or reconcile an already prepared target. A target with existing managed role
+memberships or authority needs an explicit administrator inventory and a fresh
+restore target. Keep the old database and data directory as rollback evidence.
+
+Use one coordinated administrator for the entire restore window. Stop automated
+updaters and scheduled maintenance before starting. Do not run another restore,
+deployment, update, rollback, or role/policy change against the same deployment
+from any host until SQL import, migration, verification, file publication, and
+service restart have finished. The scripts do not provide operation-wide or
+cross-entrypoint exclusion: database advisory locks cover individual helper
+sessions, and writer/readiness checks describe the state at that point in time.
+Concurrent authorized maintenance can invalidate those checks.
+
+For `scripts/backup.sh` backups, use the development Compose stack:
 
 ```bash
 ./scripts/restore.sh backups/<stamp>
 ```
 
-For other database restore tooling, keep application writers stopped and apply
-`scripts/restore-transfer-fence.sql` to the restored database with SQL errors treated as fatal
-before restarting them. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery).
+This consumes plain `rakazo.sql` and `homes.tgz`. Plain SQL retains role and owner
+references, so this path supports a controlled target with the same owner and
+managed-role identity. A missing old role is fatal; do not create a foreign
+managed login or rewrite arbitrary SQL to make the import succeed.
+
+Production snapshots contain `rakazo.dump`, `appdata.tgz`, `SOURCE_SIZE_KB`, and
+`SHA256SUMS`. Use the production restore command instead:
+
+```bash
+sudo RAKAZO_DEPLOY_DIR=/srv/rakazo bash infra/compose/restore-prod.sh /var/backups/rakazo/<stamp>
+```
+
+Set the original `COMPOSE_PROJECT_NAME`, and, for a layered stack, export the same
+`RAKAZO_COMPOSE_FILE` list and `COMPOSE_PATH_SEPARATOR` used by its updater. The
+command validates checksums and the native archive before importing. It defers
+only the four recognized managed Graphile queue policies; all other policies,
+row-security settings, data, constraints, and native SQL errors remain intact.
+The current target's inert grant role is prepared before import. The administrator
+migration then prepares the restored queue and runtime grants for the new database
+OID. An unknown role or altered queue policy fails closed.
+
+Both paths import SQL in one transaction with errors treated as fatal. Trusted
+native-catalog authorization checks run before COMMIT, alongside transfer-grant
+revocation and credential revision fencing. They reject foreign roles, unexpected
+PUBLIC authority, unsafe defaults, or permission delegation without stripping
+those permissions. The post-import check independently authenticates selected
+runtime credentials, verifies the actual role/ACL/policy/key state, and refuses
+other client sessions in the target database. Files are published and runtime
+services started only after these checks succeed; the previous data directory is
+retained under the reported rollback path. Failures leave writers stopped.
+
+Verification accepts either a wholly unprotected legacy database or the complete
+registered row-security state for the selected connection. Partial policy states
+are refused. It does not activate policies or certify a whole deployment. A connection loss during COMMIT requires inspecting the database before retrying;
+a client failure does not prove that the server rolled back. The key
+registry must exactly match the selected authenticated credential inventory. Extra
+old digests are not removed automatically: after draining writers, an administrator
+must identify their old credential inventory and retire only explicitly known old
+digests before retrying. Never clear the registry to bypass this check.
+
+Restore maintenance URLs must use one trusted database endpoint for both the owner
+and each selected main/listener credential. If the live listener uses a separate
+direct endpoint around a pooler, override only the maintenance command with that
+listener credential at the same trusted restore endpoint. The check does not infer
+cluster identity from equal database names or silently omit listener credentials.
+
+For other restore tooling, preserve the same stopped-writer and authorization
+checks. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery)
+for the transfer fence that must remain in the import transaction.
 
 ## Upgrade
 
-A Compose deployment on a published release tag upgrades by moving that tag:
+Refresh the deployment files from the reviewed version before upgrading old
+stacks. The new `migrate` service and separate runtime credential are part of the
+same change; an old updater binary or Compose file does not acquire them merely
+because an application image tag moves. Install the updated updater image through
+its existing operator-controlled maintenance command before using its new flow.
+`prepare-runtime-env.sh` generates only a missing or effectively empty app
+password. It preserves every selected administrator/runtime password and refuses
+unparseable environment files rather than modifying another multiline secret.
+
+A deployment on a published release tag uses:
 
 ```bash
-docker compose --env-file .env -f infra/compose/docker-compose.prod.yml pull api worker web
-docker compose --env-file .env -f infra/compose/docker-compose.prod.yml \
-  up -d --wait --pull never api worker web
+bash infra/compose/prepare-runtime-env.sh .env
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml pull api worker web migrate
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web
 ```
 
-A deployment on the default `local` tag has no registry to pull from, so it upgrades by rebuilding
-the checkout instead:
+For the default `local` tag, build before stopping the old writers:
 
 ```bash
 git pull
-GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml \
-  up -d --wait --pull never --build api worker web
+bash infra/compose/prepare-runtime-env.sh .env
+GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/docker-compose.prod.yml build --with-dependencies api worker web migrate
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml stop --timeout 120 api worker web
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up --no-deps --no-build --pull never --abort-on-container-exit --exit-code-from migrate migrate
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --wait --no-deps --no-build --pull never api worker web
 ```
 
-`up --wait` does not report success until the new API is healthy and the worker and web containers
-are running. The API's start command runs `prisma migrate deploy` before it serves, so migration
-failure keeps health red. A failed CLI recreate does not auto-roll back; recover with the previous
-`RAKAZO_IMAGE_TAG` (or rebuild `local`) and `up -d --wait --pull never`.
+The canonical migration service explicitly runs `pnpm --filter @rakazo/api run
+db:migrate`; a missing script or failed migration must exit nonzero. API and worker
+never run administrator DDL. Keep them stopped after a failed migration or readiness
+check. The maintenance check authenticates roles and keys but does not reverse
+schema changes. A manual rollback must use the reviewed current maintenance image
+to verify the database first, then restore only cached runtime images with
+`--no-deps --no-build --pull never`.
 
 The updater sidecar has its own image and tag so an update never recreates the process performing
 it. Move it deliberately by setting `RAKAZO_UPDATER_IMAGE_TAG` to the full `sha-<commit>` tag, then
 running `docker compose … pull updater && docker compose … up -d --wait --pull never updater`.
-Sidecar `/apply` and `/rollback` recover a failed recreate by redeploying the previously cached
-image when possible; if that also fails, they report a possible mixed-version runtime.
+Sidecar `/apply` and `/rollback` stop database writers before administrator work.
+Before cached runtime recovery, they verify that the canonical migration has
+terminated and run a read-only database check using the pinned current maintenance
+image. Unverified termination or readiness keeps runtime services stopped and
+requires operator recovery; no old migration command is replayed. Automatic
+recovery also resolves the previous Compose configuration and requires its actual
+API/worker/listener URLs to match the verified runtime credential inventory.
+Administrator credential channels or inline migration commands in the old runtime
+configuration require manual recovery. This deliberately refuses older stacks
+that ran application services with administrator credentials.
 
 Source checkouts (not Compose) still upgrade the old way: pull, rebuild with
-`GIT_SHA=$(git rev-parse HEAD)`, run `pnpm --filter @rakazo/db migrate`, then restart API and worker.
+`GIT_SHA=$(git rev-parse HEAD)`, stop API and worker, run `pnpm run db:migrate`
+with `DATABASE_MIGRATION_URL` for the administrator and `DATABASE_URL` for runtime,
+then restart API and worker only after the command succeeds.
 Product contracts stay compatible across cloud and self-hosted.
 
 ### Space privacy-boundary migration
@@ -1161,18 +1260,24 @@ restart it — so the work happens in a separate `updater` container that outliv
 - *Official repository:* resolves the newest stable release and its source commit with
   `git ls-remote --tags`, pins the corresponding full `sha-<commit>` image tag in `.env`, keeps the
   outgoing tag in `RAKAZO_IMAGE_TAG_PREVIOUS`, explicitly pulls the new image, then runs
-  `up -d --wait --pull never`. No build runs on the server.
+  the canonical administrator migration after stopping old writers, then recreates
+  runtime services with dependencies disabled. No build runs on the server.
 - *Fork (Advanced):* a fork has no published images, so the sidecar fast-forwards the checkout in
-  `RAKAZO_DEPLOY_DIR` and runs `up -d --build`. This builds on the server and takes minutes rather
+  `RAKAZO_DEPLOY_DIR` and builds before stopping writers or running the administrator
+  migration. This builds on the server and takes minutes rather
   than seconds. Point it only at a fork you control and have reviewed — the sidecar runs that
   Compose file through a root-equivalent Docker socket.
 
-Updates and rollbacks run one at a time. A failed pull leaves running services alone; a failed recreate restores the previous environment
-pin and attempts to redeploy the cached previous image. A failed fork build also restores the
-pre-update branch and commit (including when checkout succeeded but merge did not) so a later
-manual `--build` cannot deploy the rejected or unintended revision. Database migrations are not
-reversed. The sidecar never recreates itself, never touches Postgres or Caddy, and never runs
-migrations — that ordering belongs to the API start command.
+Updates and rollbacks run one at a time. Failed downloads/builds leave the old
+writers running. Once a stop is attempted, failures stop remaining writers and the
+canonical migration service, verify its actual container outcome and pinned image,
+then check database readiness before restoring cached runtime images. If those
+checks fail, recovery is reported as requiring manual action and runtime is not
+started. A failed fork update also restores its original checkout and environment
+pin; a newly generated app password remains selected across retries. Database
+migrations are not reversed. The sidecar never recreates itself, never gives the
+administrator credential to API/worker, and does not grant its own long-lived
+process an owner connection.
 
 Only `https://` and `ssh://` git remotes are accepted. Merges are fast-forward only. A dirty or
 untracked source tree fails closed before anything runs (the application Dockerfile uses `COPY . .`).

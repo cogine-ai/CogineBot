@@ -41,7 +41,10 @@ describe("server update install kind", () => {
     expect(status.installKind).toBe("source");
     expect(status.supported).toBe(false);
     expect(status.manualCommands.some((line) => line.includes("git pull"))).toBe(true);
-    expect(status.manualCommands.some((line) => line.includes("migrate"))).toBe(true);
+    const migrate = status.manualCommands.indexOf("pnpm run db:migrate");
+    expect(migrate).toBeGreaterThan(0);
+    expect(status.manualCommands[migrate - 1]).toMatch(/Stop the API and worker/);
+    expect(status.manualCommands[migrate + 1]).toMatch(/Restart the API and worker/);
   });
 
   it("detects compose-without-sidecar when the updater URL is set but unreachable", async () => {
@@ -58,8 +61,15 @@ describe("server update install kind", () => {
     });
     expect(status.installKind).toBe("compose");
     expect(status.supported).toBe(false);
-    expect(status.manualCommands[0]).toMatch(/docker compose .*pull api worker web/);
-    expect(status.manualCommands[1]).toMatch(/up -d --wait --pull never/);
+    expect(status.manualCommands).toHaveLength(6);
+    expect(status.manualCommands[0]).toBe("bash infra/compose/prepare-runtime-env.sh .env");
+    expect(status.manualCommands[1]).toMatch(/docker compose .*pull api worker web migrate$/);
+    expect(status.manualCommands[2]).toMatch(/stop --timeout 120 api worker web$/);
+    expect(status.manualCommands[3]).toMatch(/--no-deps .*--exit-code-from migrate migrate$/);
+    expect(status.manualCommands[4]).toMatch(/--no-deps .*db:row-security verify$/);
+    expect(status.manualCommands[5]).toMatch(
+      /up -d --wait --no-deps --no-build --pull never api worker web$/,
+    );
   });
 
   it("shows rebuild commands for a compose install on the local image tag", async () => {
@@ -75,8 +85,16 @@ describe("server update install kind", () => {
       }),
     });
     expect(status.installKind).toBe("compose");
-    expect(status.manualCommands.some((line) => line.includes("--build"))).toBe(true);
-    expect(status.manualCommands.some((line) => line.includes("git pull"))).toBe(true);
+    expect(status.manualCommands).toHaveLength(7);
+    expect(status.manualCommands[0]).toBe("git pull");
+    expect(status.manualCommands[1]).toBe("bash infra/compose/prepare-runtime-env.sh .env");
+    expect(status.manualCommands[2]).toMatch(/build --with-dependencies api worker web migrate$/);
+    expect(status.manualCommands[3]).toMatch(/stop --timeout 120 api worker web$/);
+    expect(status.manualCommands[4]).toMatch(/--no-deps .*--exit-code-from migrate migrate$/);
+    expect(status.manualCommands[5]).toMatch(/--no-deps .*db:row-security verify$/);
+    expect(status.manualCommands[6]).toMatch(
+      /up -d --wait --no-deps --no-build --pull never api worker web$/,
+    );
     expect(status.manualCommands.some((line) => /\bpull api worker web\b/.test(line))).toBe(false);
   });
 

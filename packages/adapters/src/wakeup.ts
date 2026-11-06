@@ -22,6 +22,33 @@ const INTERACTIVE_RUN_TASK = "run.interactive";
 type RunLookup = Pick<PrismaClient, "run">;
 type Workload = "interactive" | "background" | "maintenance";
 
+const QUEUE_NOT_READY =
+  "The background job schema is not ready; run database migrations as the administrator";
+
+const runtimeQueuePreset: GraphileConfig.Preset = {
+  plugins: [
+    {
+      name: "CogineBotReadyQueueSchema",
+      version: "1.0.0",
+      worker: {
+        middleware: {
+          bootstrap() {
+            throw new Error(QUEUE_NOT_READY);
+          },
+          async migrate(next, event) {
+            const { rows } = await event.client.query<{ id: number }>(
+              `SELECT id FROM ${event.ctx.escapedWorkerSchema}.migrations ORDER BY id DESC LIMIT 1`,
+            );
+            if (rows[0]?.id === undefined || rows[0].id < event.ctx.maxMigrationNumber)
+              throw new Error(QUEUE_NOT_READY);
+            return next();
+          },
+        },
+      },
+    },
+  ],
+};
+
 async function isInteractiveRun(prisma: RunLookup, runId: string): Promise<boolean> {
   const run = await prisma.run.findUnique({ where: { id: runId }, select: { trigger: true } });
   return Boolean(
@@ -110,7 +137,7 @@ export class GraphileJobPublisher implements JobPublisher {
 
   private getUtils(): Promise<WorkerUtils> {
     if (this.closed) throw new Error("Background job publisher is closed");
-    this.utils ??= makeWorkerUtils({ pgPool: this.pgPool });
+    this.utils ??= makeWorkerUtils({ pgPool: this.pgPool, preset: runtimeQueuePreset });
     return this.utils;
   }
 
@@ -254,9 +281,12 @@ export class GraphileJobWorkerHost implements JobWorkerHost {
       // host's shutdown has handed back the runs it executes outside Graphile.
       noHandleSignals: true,
       taskList,
-      ...(this.options.localQueueSize
-        ? { preset: { worker: { localQueue: { size: this.options.localQueueSize } } } }
-        : {}),
+      preset: {
+        ...runtimeQueuePreset,
+        ...(this.options.localQueueSize
+          ? { worker: { localQueue: { size: this.options.localQueueSize } } }
+          : {}),
+      },
     });
     runner.events.on("job:failed", ({ job, error }) => {
       recordHistoryCompactAttemptsExhausted(job, error);

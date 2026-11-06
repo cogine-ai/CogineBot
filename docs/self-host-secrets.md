@@ -12,7 +12,8 @@ overwrite an existing `.env` without an explicit backup and operator consent.**
 
 | Key | Installer fill | Role |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | `openssl rand -hex 16` | Postgres role password inside Compose |
+| `POSTGRES_PASSWORD` | `openssl rand -hex 16` | Administrator password, used only by PostgreSQL and one-shot migration |
+| `POSTGRES_APP_PASSWORD` | A separate `openssl rand -hex 16` value | Runtime password for API, worker and their default listener |
 | `BETTER_AUTH_SECRET` | `openssl rand -hex 32` | Auth/session signing |
 | `ENCRYPTION_KEY` | `openssl rand -hex 32` | Encrypts stored credentials at rest |
 | `SCREEN_PROXY_SECRET` | `openssl rand -hex 32` | Signs short-lived `/novnc/*` screen capabilities |
@@ -26,15 +27,18 @@ Manual generation (same shapes the installer uses):
 
 ```bash
 openssl rand -hex 16   # POSTGRES_PASSWORD
+openssl rand -hex 16   # POSTGRES_APP_PASSWORD (different value)
 openssl rand -hex 32   # BETTER_AUTH_SECRET, ENCRYPTION_KEY, SCREEN_PROXY_SECRET, SANDBOX_SUPERVISOR_TOKEN
 ```
 
-Source-checkout `.env.example` also requires `POSTGRES_PASSWORD` (same
-`openssl rand -hex 16` shape) for `infra/compose/docker-compose.yml`. Put the
-same value in host-side `DATABASE_URL` when using the optional
-`docker-compose.postgres-host.yml` overlay. Keep the password URI-safe: Compose
-interpolates it into `DATABASE_URL` the same way the images stack does. Hex from
-`openssl rand` is safe; characters such as `@ : / ? # %` are not.
+Source-checkout `.env.example` and the images stack require separate
+`POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` values. Put the administrator
+credential in host-side `DATABASE_MIGRATION_URL` and the app credential in
+`DATABASE_URL` when using the optional PostgreSQL host overlay. Compose gives
+the owner URL only to the migration one-shot and the app URL to long-lived
+services. The installer and desktop generate missing app credentials without
+rotating existing values. Keep passwords URI-safe; independent hexadecimal
+values from OpenSSL work for Compose URL interpolation.
 
 Existing source-checkout `pgdata` volumes keep the user, password, and database
 from first init (often the former hardcoded `rakazo` / `rakazo`). Keep those

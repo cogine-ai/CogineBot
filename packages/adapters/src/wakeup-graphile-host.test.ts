@@ -352,7 +352,19 @@ describe("reserved Graphile workloads", () => {
       true,
       true,
     ]);
-    expect(configurations[2].preset).toEqual({ worker: { localQueue: { size: 10 } } });
+    expect(configurations[2].preset.worker).toEqual({ localQueue: { size: 10 } });
+    for (const { preset } of configurations)
+      expect(preset.plugins).toContainEqual(
+        expect.objectContaining({
+          name: "CogineBotReadyQueueSchema",
+          worker: {
+            middleware: {
+              bootstrap: expect.any(Function),
+              migrate: expect.any(Function),
+            },
+          },
+        }),
+      );
     expect(Object.keys(configurations[0].taskList)).toEqual(["run.interactive"]);
     expect(Object.keys(configurations[1].taskList)).toEqual(["run.continue"]);
     expect(Object.keys(configurations[2].taskList)).not.toContain("run.continue");

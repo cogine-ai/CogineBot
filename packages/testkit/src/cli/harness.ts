@@ -47,6 +47,8 @@ if (sandboxProvider === "box" && !process.env.BOX_API_KEY) {
 async function main() {
   const remainingLifecycleSuite =
     "packages/adapters/src/native-connectors/remaining-lifecycle.postgres.test.ts";
+  const serviceStartupSuite = "packages/adapters/src/service-startup.postgres.test.ts";
+  const databaseRestoreSuite = "packages/testkit/src/database-restore.postgres.test.ts";
   const suites = [
     "packages/testkit/src/pi-offline.postgres.test.ts",
     "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
@@ -109,6 +111,8 @@ async function main() {
     "packages/db/src/row-security.postgres.test.ts",
     "apps/api/src/row-security-policies.postgres.test.ts",
     "apps/api/src/control-plane-metadata.postgres.test.ts",
+    serviceStartupSuite,
+    databaseRestoreSuite,
     "packages/db/src/scripted-state-failure.postgres.test.ts",
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",
@@ -165,6 +169,7 @@ async function main() {
     const webOrigin = `http://127.0.0.1:${webPort}`;
 
     process.env.DATABASE_URL = databaseUrl;
+    process.env.DATABASE_MIGRATION_URL = databaseUrl;
     process.env.REALTIME_DATABASE_URL = databaseUrl;
     process.env.VERIFY_DATABASE = "1";
     process.env.WAKEUP_DRIVER = "memory";
@@ -228,7 +233,10 @@ async function main() {
         const dualDeployment = suite === "apps/api/src/deployment-transfer.postgres.test.ts";
         const completeRowPolicies =
           suite === "apps/api/src/row-security-policies.postgres.test.ts" ||
-          suite === "apps/api/src/control-plane-metadata.postgres.test.ts";
+          suite === "apps/api/src/control-plane-metadata.postgres.test.ts" ||
+          suite === databaseRestoreSuite ||
+          suite === serviceStartupSuite ||
+          suite === "apps/api/src/health-app.postgres.test.ts";
         if (dualDeployment)
           await databaseCommand(`CREATE DATABASE "${peerDatabase}" TEMPLATE "${template}"`);
         try {
@@ -238,7 +246,9 @@ async function main() {
             {
               ...process.env,
               DATABASE_URL: suiteUrl.toString(),
+              DATABASE_MIGRATION_URL: suiteUrl.toString(),
               REALTIME_DATABASE_URL: suiteUrl.toString(),
+              VERIFY_POSTGRES_CONTAINER_ID: suite === databaseRestoreSuite ? container.getId() : "",
               DEPLOYMENT_TRANSFER_PEER_DATABASE_URL: dualDeployment ? peerUrl.toString() : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE:
                 suite === remainingLifecycleSuite ? "harness_isolated" : "",
