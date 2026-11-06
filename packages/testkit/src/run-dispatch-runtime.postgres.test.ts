@@ -137,7 +137,12 @@ async function openApp(
   };
 }
 
-async function seed(handles: AppHandles, label: string, computerMode?: "dedicated") {
+async function seed(
+  handles: AppHandles,
+  label: string,
+  computerMode?: "dedicated",
+  afterIntro?: () => Promise<void>,
+) {
   const signup = await handles.app.request("/api/auth/sign-up/email", {
     method: "POST",
     headers: { "content-type": "application/json", origin },
@@ -165,6 +170,7 @@ async function seed(handles: AppHandles, label: string, computerMode?: "dedicate
       }),
     ).toBe(0),
   );
+  await afterIntro?.();
   const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
   const identity = { userId: me.userId, spaceId: me.spaceId, botId: bot.id, threadId: thread.id };
   const task = await handles.prisma.task.create({
@@ -1426,7 +1432,26 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         deploymentModelConfigured: true,
         contextStrategy: "current",
       });
-      const seeded = await seed(fixture.handles, "dirty loop guard", "dedicated");
+      const continueRun = fixture.handles.executor.continueRun.bind(fixture.handles.executor);
+      const introExecutions: Promise<void>[] = [];
+      const intro = vi
+        .spyOn(fixture.handles.executor, "continueRun")
+        .mockImplementation((...args) => {
+          const execution = continueRun(...args);
+          introExecutions.push(execution);
+          return execution;
+        });
+      let seeded: Awaited<ReturnType<typeof seed>>;
+      try {
+        seeded = await seed(fixture.handles, "dirty loop guard", "dedicated", async () => {
+          // The intro becomes terminal before its executor releases the computer and
+          // starts queued work. Finish that cleanup before inserting the manual Run.
+          expect(introExecutions).not.toHaveLength(0);
+          await Promise.all(introExecutions);
+        });
+      } finally {
+        intro.mockRestore();
+      }
       targetRunId = seeded.run.id;
       executing = fixture.handles.executor.continueRun(targetRunId, "dirty-loop-guard-worker");
       await executing;

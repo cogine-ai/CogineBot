@@ -341,6 +341,8 @@ async function main() {
       port: apiPort,
       hostname: "127.0.0.1",
     });
+    let failed = false;
+    let cleanupFailure: AggregateError | undefined;
     try {
       await waitForHealth(`http://127.0.0.1:${apiPort}/health`, 15_000);
       try {
@@ -375,6 +377,9 @@ async function main() {
         if (failedRuns.length) console.error("Failed agent runs:", failedRuns);
         throw error;
       }
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
       const cleanupErrors: unknown[] = [];
       const computers = await managedComputers(handles, runAsSystem).catch((error) => {
@@ -419,13 +424,14 @@ async function main() {
         );
       }
       if (cleanupErrors.length) {
-        console.error(
-          new AggregateError(cleanupErrors, "End-to-end test cleanup or database context failed"),
+        cleanupFailure = new AggregateError(
+          cleanupErrors,
+          "End-to-end test cleanup or database context failed",
         );
-        process.exitCode = 1;
+        if (failed) console.error(cleanupFailure);
       }
     }
-    if (process.exitCode) throw new Error("End-to-end test cleanup or database context failed");
+    if (cleanupFailure) throw cleanupFailure;
     await writeSummary(reportDir, {
       ok: true,
       mode,
