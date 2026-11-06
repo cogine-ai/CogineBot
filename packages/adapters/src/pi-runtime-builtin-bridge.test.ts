@@ -558,10 +558,13 @@ describe("real Pi built-in discovery and execution", () => {
         ]);
       return response();
     });
-    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async (name) => {
-      expect(name).toBe("read_file");
-      return { error: "The synthetic file is unavailable" };
-    });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) => {
+        if (name === "run_subagent") return observer!.runSubagent!(args);
+        expect(name).toBe("read_file");
+        return { error: "The synthetic file is unavailable" };
+      },
+    );
     const events = await consume(
       request([builtin("read_file"), builtin("run_subagent")], {
         executeTool: execute,
@@ -615,7 +618,7 @@ describe("real Pi built-in discovery and execution", () => {
       streak: { count: 6 },
       stopped: [false, false, false, false, false, true],
     });
-    expect(execute).toHaveBeenCalledTimes(12);
+    expect(execute).toHaveBeenCalledTimes(13);
     expect(mainRequests).toBe(3);
     expect(helperRequests).toBe(2);
   });

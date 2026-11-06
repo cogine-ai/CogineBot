@@ -207,6 +207,8 @@ export interface PauseRunForTakeover {
   computerId: string;
   /** Internal scripted progress; associated with the takeover pause atomically. */
   scriptedState?: Prisma.InputJsonObject;
+  /** Executor-authorized local effect; its receipt commits with the actual pause. */
+  effect?: { id: string; expectedStatus: "intended" | "approved" };
 }
 
 export interface AnswerRunInput {
@@ -1256,9 +1258,23 @@ export async function pauseRunForTakeover(
     });
     if (marked.count !== 1) throw new Error("Computer was not available to mark for takeover");
 
+    if (input.effect) {
+      const completed = await tx.externalEffect.updateMany({
+        where: {
+          id: input.effect.id,
+          spaceId: input.spaceId,
+          runId: input.runId,
+          kind: "request_takeover",
+          status: { equals: input.effect.expectedStatus, in: ["intended", "approved"] },
+        },
+        data: { status: "completed", result: { takeover: "requested" } },
+      });
+      if (completed.count !== 1) throw new Error("Takeover approval effect was not available");
+    }
+
     let firstResponse = false;
-    if (input.scriptedState) {
-      // Durable scripted cards must commit with the receipt that makes their pause resumable.
+    if (input.scriptedState || input.effect) {
+      // Durable cards commit with the receipt that makes their pause resumable.
       const blocks: MessageBlock[] = [{ kind: "computer", state: "Needs you", text: input.reason }];
       const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,

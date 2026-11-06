@@ -218,6 +218,135 @@ describe.skipIf(!enabled).sequential("takeover release settlement (PostgreSQL)",
   const run = () => db.prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
   const computer = () => db.prisma.computer.findUniqueOrThrow({ where: { id: f.computer.id } });
 
+  async function gatedTakeover(status: "intended" | "approved" = "approved") {
+    await db.prisma.run.update({ where: { id: f.run.id }, data: { status: "running" } });
+    const attempt = await db.prisma.attempt.create({
+      data: { runId: f.run.id, fence: 7, status: "running" },
+    });
+    const effect = await db.prisma.externalEffect.create({
+      data: {
+        spaceId: f.space.id,
+        runId: f.run.id,
+        kind: "request_takeover",
+        idempotencyKey: randomUUID(),
+        status,
+        request: { toolName: "request_takeover", args: { reason: "Sign in" } },
+      },
+    });
+    return {
+      spaceId: f.space.id,
+      botId: f.bot.id,
+      threadId: f.groupThread.id,
+      runId: f.run.id,
+      computerId: f.computer.id,
+      attemptId: attempt.id,
+      leaseOwner: "worker",
+      leaseFence: 7,
+      reason: "Sign in",
+      effect: { id: effect.id, expectedStatus: status },
+    };
+  }
+
+  it.each(["intended", "approved"] as const)(
+    "atomic gated takeover commits the %s receipt with its pause and card only once",
+    async (status) => {
+      const input = await gatedTakeover(status);
+      expect(await pauseRunForTakeover(db.prisma, input, realtime)).toBe(true);
+      expect(
+        await db.prisma.externalEffect.findUniqueOrThrow({ where: { id: input.effect.id } }),
+      ).toMatchObject({ status: "completed", result: { takeover: "requested" } });
+      expect(await run()).toMatchObject({ status: "waiting_takeover", leaseOwner: null });
+      expect(
+        await db.prisma.attempt.findUniqueOrThrow({ where: { id: input.attemptId } }),
+      ).toMatchObject({ status: "waiting_takeover" });
+      expect(await db.prisma.message.findMany({ where: { runId: f.run.id } })).toHaveLength(2);
+      expect((await events()).map((event) => event.type)).toEqual([
+        "thread.message.created",
+        "computer.takeover.requested",
+      ]);
+      expect(publish).toHaveBeenCalledOnce();
+      expect(await pauseRunForTakeover(db.prisma, input, realtime)).toBe(false);
+      expect(await db.prisma.message.findMany({ where: { runId: f.run.id } })).toHaveLength(2);
+      expect(await events()).toHaveLength(2);
+      expect(publish).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["denied", "executing", "completed", "kind", "run", "space"] as const)(
+    "atomic gated takeover rejects a %s effect and rolls back every pause write",
+    async (mismatch) => {
+      const input = await gatedTakeover();
+      const data: Prisma.ExternalEffectUncheckedUpdateInput =
+        mismatch === "kind"
+          ? { kind: "web_search" }
+          : mismatch === "run"
+            ? { runId: f.sibling.id }
+            : mismatch === "space"
+              ? {
+                  spaceId: (
+                    await db.prisma.space.create({
+                      data: {
+                        id: `takeover-other-space-${randomUUID()}`,
+                        organizationId: f.space.organizationId,
+                        name: "Other",
+                      },
+                    })
+                  ).id,
+                }
+              : { status: mismatch };
+      await db.prisma.externalEffect.update({ where: { id: input.effect.id }, data });
+      const before = {
+        run: await run(),
+        computer: await computer(),
+        effect: await db.prisma.externalEffect.findUniqueOrThrow({
+          where: { id: input.effect.id },
+        }),
+      };
+      await expect(pauseRunForTakeover(db.prisma, input, realtime)).rejects.toThrow();
+      expect(await run()).toEqual(before.run);
+      expect(await computer()).toEqual(before.computer);
+      expect(
+        await db.prisma.externalEffect.findUniqueOrThrow({ where: { id: input.effect.id } }),
+      ).toEqual(before.effect);
+      expect(
+        await db.prisma.attempt.findUniqueOrThrow({ where: { id: input.attemptId } }),
+      ).toMatchObject({ status: "running", finishedAt: null });
+      expect(await db.prisma.message.findMany({ where: { runId: f.run.id } })).toHaveLength(1);
+      expect(await events()).toHaveLength(0);
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it("atomic gated takeover rolls back its receipt when a later event write fails", async () => {
+    const input = await gatedTakeover();
+    const failed = new Error("injected takeover event failure");
+    const prisma = transactionBoundary(
+      (tx) =>
+        new Proxy(tx, {
+          get(target, key) {
+            if (key !== "event") return Reflect.get(target, key);
+            return new Proxy(target.event, {
+              get(events, method) {
+                return method === "create"
+                  ? async () => {
+                      throw failed;
+                    }
+                  : Reflect.get(events, method);
+              },
+            });
+          },
+        }),
+    );
+    await expect(pauseRunForTakeover(prisma, input, realtime)).rejects.toBe(failed);
+    expect(await run()).toMatchObject({ status: "running", leaseOwner: "worker" });
+    expect(
+      await db.prisma.externalEffect.findUniqueOrThrow({ where: { id: input.effect.id } }),
+    ).toMatchObject({ status: "approved", result: null });
+    expect(await db.prisma.message.findMany({ where: { runId: f.run.id } })).toHaveLength(1);
+    expect(await events()).toHaveLength(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it.each(["done", "released", "skipped", "expired"] as const)(
     "atomically settles %s on the group run and notifies the durable final cursor",
     async (reason) => {

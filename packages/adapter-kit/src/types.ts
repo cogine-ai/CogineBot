@@ -191,8 +191,12 @@ export interface AgentToolExecutionResult {
   details: unknown;
 }
 
-/** Hooks for a tool call that can report output before it returns. */
+/** Trusted runtime execution capabilities and notifications for one tool call. */
 export interface AgentToolExecutionObserver {
+  /** Only run_subagent consumes this capability, after gating, with canonical approved args. */
+  runSubagent?: (
+    args: Record<string, unknown>,
+  ) => Promise<{ result: string } | AgentToolExecutionResult>;
   /** Executor-resolved identity for this call; provider result fields are not trusted routes. */
   onConnectorRouteResolved?: (route: ConnectorRoute) => void;
   /**
@@ -515,6 +519,8 @@ export interface AgentRunRequest {
   onCheckpoint?: (capture: () => string, executionId: string) => void | Promise<void>;
   /** Validated response to the suspended ask/takeover interaction. */
   resumeToolResult?: AgentToolExecutionResult;
+  /** Server-verified pending takeover without a user release; re-enter its executor gate. */
+  resumeUnreleasedTakeoverExecutionId?: string;
   /** Current offered subset; discovery does not change the stable model tool list. */
   availableToolNames?: () => Promise<readonly string[]>;
   /** Revalidate private saved ownership against the current authorized service. */

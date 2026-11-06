@@ -164,7 +164,8 @@ describe("automated source in the real Agent loop", () => {
         history: [],
         contextStrategy: "retrieval",
         model: { provider: model.provider, id: model.id },
-        executeTool: async () => structuredClone(toolResult),
+        executeTool: async (name, args, _id, _route, observer) =>
+          name === "run_subagent" ? observer!.runSubagent!(args) : structuredClone(toolResult),
         onToolCompleted,
       },
       { userId: "different-actor", spaceId: "shared-space" },
