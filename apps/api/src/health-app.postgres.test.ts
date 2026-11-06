@@ -11,7 +11,14 @@ import type {
 } from "@rakazo/adapter-kit";
 import { routineJobKey, routineWakeupJob, runContinueJob, runJobKey } from "@rakazo/adapter-kit";
 import * as adapters from "@rakazo/adapters";
-import type { Actor, Bot, Routine, RoutineHistory, ThreadSnapshot } from "@rakazo/contracts";
+import type {
+  Actor,
+  Bot,
+  Routine,
+  RoutineHistory,
+  SpaceNavigation,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -399,6 +406,8 @@ describePostgres("protected database app composition", () => {
   class JourneyRuntime implements AgentRuntime {
     failing = false;
     writeScratchpad = false;
+    createSpaceName?: string;
+    readonly spaceContextsAfterTool: Array<ReturnType<typeof database.currentDbContext>> = [];
     readonly calls: Array<{
       runId: string;
       context: Partial<AdapterContext> | undefined;
@@ -426,6 +435,15 @@ describePostgres("protected database app composition", () => {
         databaseContext: database.currentDbContext(),
       });
       if (this.failing) throw new Error("Offline protected journey failure");
+      if (this.createSpaceName) {
+        yield {
+          type: "tool",
+          name: "create_space",
+          args: { name: this.createSpaceName },
+          executionId: `protected-create-space:${request.runId}`,
+        };
+        this.spaceContextsAfterTool.push(database.currentDbContext());
+      }
       if (this.writeScratchpad) {
         yield {
           type: "tool",
@@ -722,6 +740,144 @@ describePostgres("protected database app composition", () => {
           where: { botId: second.bot.id, title: `Protected item ${runId}` },
         }),
       ).toEqual(items);
+    } finally {
+      await journey.close();
+    }
+  }, 60_000);
+
+  it("creates a sibling Space only after approval and keeps its completed delivery idempotent", async () => {
+    const journey = await openJourney();
+    try {
+      const first = await journey.account();
+      const second = await journey.account();
+      const name = `Protected sibling ${randomUUID()}`;
+      const before = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      const originalSpace = await owner!.prisma.space.findUniqueOrThrow({
+        where: { id: first.actor.spaceId },
+      });
+      journey.runtime.createSpaceName = name;
+      const { runId } = await journey.rpc<{ runId: string }>(first.cookie, "threads/send", {
+        botId: first.bot.id,
+        text: `Create a space named ${name}`,
+        clientNonce: randomUUID(),
+      });
+      await vi.waitFor(
+        async () => {
+          expect((await journey.state(runId)).run.status).toBe("waiting_input");
+        },
+        { timeout: 15_000, interval: 25 },
+      );
+      await journey.drained(runJobKey(runId));
+      const paused = await journey.state(runId);
+      expect(paused.effects).toEqual([
+        expect.objectContaining({ kind: "create_space", status: "intended", request: { name } }),
+      ]);
+      const snapshot = await journey.rpc<ThreadSnapshot>(first.cookie, "threads/get", {
+        botId: first.bot.id,
+      });
+      const approval = snapshot.messages.find((message) =>
+        message.blocks.some(
+          (block) => block.kind === "ask" && block.approvalEffectId === paused.effects[0]!.id,
+        ),
+      );
+      expect(approval).toBeDefined();
+      expect(approval!.blocks).toContainEqual(
+        expect.objectContaining({
+          kind: "ask",
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Create space", outcome: "created" },
+            { id: "deny", label: "Cancel", outcome: "cancelled" },
+          ],
+        }),
+      );
+      const answer = {
+        botId: first.bot.id,
+        runId,
+        messageId: approval!.id,
+        answer: "allow",
+      };
+      const denied = await journey.raw(second.cookie, "threads/answer", answer);
+      expect(denied.status).toBeGreaterThanOrEqual(400);
+      expect((await journey.state(runId)).run.status).toBe("waiting_input");
+      expect(await owner!.prisma.space.count({ where: { name } })).toBe(0);
+      const awaitingApproval = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      expect(awaitingApproval.spaces.map((space) => space.id)).toEqual(
+        before.spaces.map((space) => space.id),
+      );
+
+      await journey.rpc(first.cookie, "threads/answer", answer);
+      await vi.waitFor(
+        async () => {
+          expect((await journey.state(runId)).run.status).toBe("completed");
+        },
+        { timeout: 15_000, interval: 25 },
+      );
+      await journey.drained(runJobKey(runId));
+      const completed = await journey.state(runId);
+      const spaces = await owner!.prisma.space.findMany({ where: { name } });
+      expect(spaces).toEqual([
+        expect.objectContaining({
+          createdByUserId: first.actor.userId,
+          organizationId: originalSpace.organizationId,
+        }),
+      ]);
+      const space = spaces[0]!;
+      expect(completed.effects).toEqual([
+        expect.objectContaining({
+          id: paused.effects[0]!.id,
+          kind: "create_space",
+          status: "completed",
+          result: { ok: true, spaceId: space.id, name },
+        }),
+      ]);
+      expect(completed.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+      expect(await owner!.prisma.spaceMember.findMany({ where: { spaceId: space.id } })).toEqual([
+        expect.objectContaining({ userId: first.actor.userId, role: "owner" }),
+      ]);
+      expect(await owner!.prisma.memoryDocument.findMany({ where: { spaceId: space.id } })).toEqual(
+        [
+          expect.objectContaining({
+            userId: first.actor.userId,
+            scope: "user",
+            path: "MEMORY.md",
+            content: "# Space memory\n\n",
+          }),
+        ],
+      );
+      expect(
+        await owner!.prisma.notificationPreference.findMany({ where: { spaceId: space.id } }),
+      ).toEqual([expect.objectContaining({ userId: first.actor.userId })]);
+      const navigation = await journey.rpc<SpaceNavigation>(first.cookie, "spaces/list");
+      expect(navigation.current.id).toBe(first.actor.spaceId);
+      expect(navigation.spaces).toHaveLength(before.spaces.length + 1);
+      expect(navigation.spaces).toContainEqual(expect.objectContaining({ id: space.id, name }));
+      const selected = await journey.raw(first.cookie, "me", {}, space.id);
+      expect(selected.status).toBe(200);
+      expect(((await selected.json()) as { json: Actor }).json.spaceId).toBe(space.id);
+      expect((await journey.raw(second.cookie, "me", {}, space.id)).status).toBe(403);
+      expect(
+        await journey.rpc<ThreadSnapshot>(first.cookie, "threads/get", { botId: first.bot.id }),
+      ).toMatchObject({ threadId: first.thread.id });
+      const calls = journey.runtime.calls.filter((call) => call.runId === runId);
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call.databaseContext).toEqual({
+          kind: "tenant",
+          userId: first.actor.userId,
+          spaceId: first.actor.spaceId,
+        });
+      }
+      expect(journey.runtime.spaceContextsAfterTool).toEqual([
+        { kind: "tenant", userId: first.actor.userId, spaceId: first.actor.spaceId },
+      ]);
+      expect(database.currentDbContext()).toBeUndefined();
+
+      await journey.publisher.enqueue(runContinueJob(runId));
+      await journey.drained(runJobKey(runId));
+      expect(await journey.state(runId)).toEqual(completed);
+      expect(journey.runtime.calls.filter((call) => call.runId === runId)).toEqual(calls);
+      expect(await owner!.prisma.space.findMany({ where: { name } })).toEqual(spaces);
     } finally {
       await journey.close();
     }
