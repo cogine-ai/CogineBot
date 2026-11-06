@@ -669,10 +669,6 @@ export async function sendThreadMessage(
     deps.prisma.$transaction(async (tx) => {
       let pageContext: PageTextContext | undefined;
       if (input.pageContext) {
-        if (input.replyToMessageId)
-          throw new ORPCError("BAD_REQUEST", {
-            message: "Page context is only valid without a reply target",
-          });
         const page = await tx.page.findFirst({
           where: {
             id: input.pageContext.pageId,
