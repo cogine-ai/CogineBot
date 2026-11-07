@@ -54,7 +54,7 @@ async function send(page: Page, text: string) {
 
 test("the Pages button reflects the library's open state", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
-  await signup(page, `pages-toggle-${Date.now()}@rakazo.test`, "password12", "Page Owner");
+  await signup(page, `pages-toggle-${Date.now()}@example.test`, "password12", "Page Owner");
   await completeOnboarding(page);
 
   const toggle = page.getByRole("button", { name: "Pages", exact: true });
@@ -102,7 +102,7 @@ test("a private page opens from its card, replies in chat and updates", async ({
       route.fulfill({ status: 200, contentType: "text/html", body: "<p>Example metrics</p>" }),
     );
   await page.setViewportSize({ width: 1280, height: 860 });
-  await signup(page, `pages-${Date.now()}@rakazo.test`, "password12", "Page Owner");
+  await signup(page, `pages-${Date.now()}@example.test`, "password12", "Page Owner");
   await completeOnboarding(page);
 
   const title = "Test dashboard (example data)";
@@ -358,7 +358,7 @@ test("a page acts for its reader only after a click in it, never on load or from
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 860 });
-  await signup(page, `pages-rogue-${Date.now()}@rakazo.test`, "password12", "Rogue Reader");
+  await signup(page, `pages-rogue-${Date.now()}@example.test`, "password12", "Rogue Reader");
   await completeOnboarding(page);
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.evaluate(() => navigator.clipboard.writeText("untouched"));
@@ -424,7 +424,7 @@ test("a deep-linked page replies in its originating bot or group, leaving the ot
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 860 });
-  await signup(page, `pages-origin-${Date.now()}@rakazo.test`, "password12", "Page Reader");
+  await signup(page, `pages-origin-${Date.now()}@example.test`, "password12", "Page Reader");
   await completeOnboarding(page);
   const originBotId = activeBotId(page);
   const save = async (title: string, reply: string) => {
@@ -563,7 +563,7 @@ test("the network viewer shell loads an embedded font and blocks remote font req
 test("a page without a loaded card preserves owner text and stores generated context separately", async ({
   page,
 }, testInfo) => {
-  await signup(page, `pages-context-${Date.now()}@rakazo.test`, "password12", "Context Owner");
+  await signup(page, `pages-context-${Date.now()}@example.test`, "password12", "Context Owner");
   await completeOnboarding(page);
   const botId = activeBotId(page);
   const title = "https://automatic.example/report";

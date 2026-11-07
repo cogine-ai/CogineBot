@@ -1265,7 +1265,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("saves, edits and guards pages through the bot's save_page", async () => {
-      const cookie = await signup(app, `pages-${stamp}@rakazo.test`, "Page Owner");
+      const cookie = await signup(app, `pages-${stamp}@example.test`, "Page Owner");
       const bot = await createBot(app, cookie, "Reporter");
       const save = (args: unknown, botId = bot.id, as = cookie) =>
         sendAndWait(app, as, botId, { text: `call save_page with ${JSON.stringify(args)}` });
@@ -1339,7 +1339,7 @@ describePages("private Pages with production row-security policies", () => {
       expect(await lastResult(bot.id)).toMatchObject({ version: 3, source: page("Fourth") });
 
       // Another account cannot read or write it by id.
-      const otherCookie = await signup(app, `pages-other-${stamp}@rakazo.test`, "Other");
+      const otherCookie = await signup(app, `pages-other-${stamp}@example.test`, "Other");
       const intruder = await createBot(app, otherCookie, "Intruder");
       await save({ pageId, source: page("Stolen") }, intruder.id, otherCookie);
       expect(await lastResult(intruder.id)).toMatchObject({ error: expect.any(String) });
@@ -1411,7 +1411,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("keeps personal Pages reusable by their bot while group Pages stay in the current group", async () => {
-      const cookie = await signup(app, `pages-scope-${stamp}@rakazo.test`, "Scope Owner");
+      const cookie = await signup(app, `pages-scope-${stamp}@example.test`, "Scope Owner");
       const maker = await createBot(app, cookie, "Maker");
       const other = await createBot(app, cookie, "Other");
       const actor = await rpc<Actor>(app, cookie, "me");
@@ -1576,7 +1576,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("shows a routine's new page once and refreshes it each run without a new card", async () => {
-      const cookie = await signup(app, `pages-routine-${stamp}@rakazo.test`, "Routine Owner");
+      const cookie = await signup(app, `pages-routine-${stamp}@example.test`, "Routine Owner");
       const bot = await createBot(app, cookie, "Refresher");
       const clock = new Date();
       const hour = (clock.getUTCHours() + 6) % 24;
@@ -1636,7 +1636,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("hands cleanup the link a swap commits while its pages' links are being deleted", async () => {
-      const cookie = await signup(app, `pages-swap-delete-${stamp}@rakazo.test`, "Swap Owner");
+      const cookie = await signup(app, `pages-swap-delete-${stamp}@example.test`, "Swap Owner");
       const owner = await rpc<{ userId: string; spaceId: string }>(app, cookie, "me");
       const sealed = (ciphertext: string) =>
         db().secret.create({
@@ -1842,7 +1842,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("lets only one of two saves built on the same version through", async () => {
-      const cookie = await signup(app, `pages-save-race-${stamp}@rakazo.test`, "Save Racer");
+      const cookie = await signup(app, `pages-save-race-${stamp}@example.test`, "Save Racer");
       const first = await createBot(app, cookie, "First");
       const second = await createBot(app, cookie, "Second");
       await sendAndWait(app, cookie, first.id, {
@@ -1906,7 +1906,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("keeps a rename that lands while a bot's untitled save is in flight", async () => {
-      const cookie = await signup(app, `pages-rename-race-${stamp}@rakazo.test`, "Rename Racer");
+      const cookie = await signup(app, `pages-rename-race-${stamp}@example.test`, "Rename Racer");
       const bot = await createBot(app, cookie, "Builder");
       await sendAndWait(app, cookie, bot.id, {
         text: `call save_page with ${JSON.stringify({ title: "Q3 plan", source: page("One") })}`,
@@ -1933,7 +1933,7 @@ describePages("private Pages with production row-security policies", () => {
     });
 
     it("pages through pinned then unpinned pages one at a time with no gap or repeat, and finds titles", async () => {
-      const cookie = await signup(app, `pages-walk-${stamp}@rakazo.test`, "Walker");
+      const cookie = await signup(app, `pages-walk-${stamp}@example.test`, "Walker");
       const owner = await rpc<{ userId: string; spaceId: string }>(app, cookie, "me");
       const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 12, minute));
       const made = async (title: string, updatedAt: Date, pinnedAt: Date | null) =>
