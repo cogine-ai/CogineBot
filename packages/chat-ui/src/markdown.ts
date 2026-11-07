@@ -66,10 +66,7 @@ export type PlainTextPart =
   | { type: "link"; value: string; href: string }
   | { type: "page"; value: string; pageId: string };
 
-const PLAIN_PAGE_LINK = new RegExp(
-  String.raw`\[((?:\\[\\[\]]|[^\\[\]\n])*)\]\(${PAGE_REFERENCE_PATTERN}\)`,
-  "g",
-);
+const PLAIN_PAGE_REFERENCE = new RegExp(String.raw`\(${PAGE_REFERENCE_PATTERN}\)`, "y");
 
 function appendPlainText(parts: PlainTextPart[], value: string) {
   if (!value) return;
@@ -91,11 +88,34 @@ function appendPlainText(parts: PlainTextPart[], value: string) {
 export function plainTextLinkParts(text: string): PlainTextPart[] {
   const parts: PlainTextPart[] = [];
   let cursor = 0;
-  for (const match of text.matchAll(PLAIN_PAGE_LINK)) {
-    if (match.index > cursor) parts.push(...urlLinkParts(text.slice(cursor, match.index)));
-    const value = match[1]!.replace(/\\([\\[\]])/g, "$1");
-    parts.push({ type: "page", value, pageId: match[2]! });
-    cursor = match.index + match[0].length;
+  let at = 0;
+  while (at < text.length) {
+    if (text[at] !== "[") {
+      at += 1;
+      continue;
+    }
+    let end = at + 1;
+    while (end < text.length) {
+      const next = text[end];
+      if (next === "\\") {
+        const escaped = text[end + 1];
+        if (escaped !== "\\" && escaped !== "[" && escaped !== "]") break;
+        end += 2;
+      } else if (next === "[" || next === "]" || next === "\n") break;
+      else end += 1;
+    }
+    PLAIN_PAGE_REFERENCE.lastIndex = end + 1;
+    const match = text[end] === "]" ? PLAIN_PAGE_REFERENCE.exec(text) : null;
+    if (match) {
+      if (at > cursor) parts.push(...urlLinkParts(text.slice(cursor, at)));
+      const value = text.slice(at + 1, end).replace(/\\([\\[\]])/g, "$1");
+      parts.push({ type: "page", value, pageId: match[1]! });
+      cursor = end + 1 + match[0].length;
+      at = cursor;
+    } else {
+      // Escaped openers already scanned share this failure; resume at the next delimiter.
+      at = text[end] === "]" ? end + 1 : end;
+    }
   }
   if (cursor === 0) return urlLinkParts(text);
   if (cursor < text.length) parts.push(...urlLinkParts(text.slice(cursor)));

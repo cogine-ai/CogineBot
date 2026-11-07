@@ -764,6 +764,7 @@ export class PiAgentRuntime implements AgentRuntime {
             // Complete unresolved calls before another model choice. The executor
             // still enforces canonical approved arguments, routes and idempotency.
             const unresolved = new Set(unresolvedTurnCheckpointCalls(history as Message[]));
+            const hasToolBridge = partitionRuntimeTools(toolDefs).deferred.length > 0;
             if (restored.executionMode !== "sequential") {
               for (const message of [...history]) {
                 if (message.role !== "assistant") continue;
@@ -798,11 +799,16 @@ export class PiAgentRuntime implements AgentRuntime {
                 if (call.type !== "toolCall" || !unresolved.has(call)) continue;
                 const tool = tools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error("Pending checkpoint tool is no longer available");
+                const interactionTool =
+                  hasToolBridge && call.name === USE_TOOL && typeof call.arguments.name === "string"
+                    ? tools.find((candidate) => candidate.name === call.arguments.name)
+                    : tool;
                 const interaction =
                   call.id === restored.pendingToolCallId &&
-                  (call.name === "ask_user" || call.name === "request_takeover") &&
+                  (interactionTool?.name === "ask_user" ||
+                    interactionTool?.name === "request_takeover") &&
                   !(
-                    call.name === "request_takeover" &&
+                    interactionTool?.name === "request_takeover" &&
                     request.resumeUnreleasedTakeoverExecutionId ===
                       JSON.stringify(["pi-tool", "main", call.id])
                   );
@@ -814,6 +820,15 @@ export class PiAgentRuntime implements AgentRuntime {
                     arguments: (tool.prepareArguments?.(call.arguments) ??
                       call.arguments) as typeof call.arguments,
                   });
+                  if (interaction && interactionTool !== tool) {
+                    const innerArgs = args.arguments;
+                    validateToolArguments(interactionTool, {
+                      ...call,
+                      name: interactionTool.name,
+                      arguments: (interactionTool.prepareArguments?.(innerArgs) ??
+                        innerArgs) as typeof call.arguments,
+                    });
+                  }
                   result = interaction
                     ? {
                         ...request.resumeToolResult,
