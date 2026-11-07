@@ -734,9 +734,10 @@ export function LinkifiedText({
   onOpenPage?: (pageId: string) => void;
 }) {
   const { request, dialog } = useExternalLinkConfirm();
+  const parts = onOpenPage ? plainTextLinkParts(children, true) : plainTextLinkParts(children);
   return (
     <ConfirmLinkContext.Provider value={request}>
-      {plainTextLinkParts(children, true).map((part, index) =>
+      {parts.map((part, index) =>
         part.type === "text" ? (
           part.value
         ) : part.type === "page" ? (

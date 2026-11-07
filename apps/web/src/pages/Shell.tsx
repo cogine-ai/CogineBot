@@ -1,7 +1,7 @@
 import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
-import { ChatMarkdown } from "@rakazo/chat-ui/web";
+import { ChatMarkdown, LinkifiedText } from "@rakazo/chat-ui/web";
 import type {
   AgentSkillCatalogEntry,
   Bot,
@@ -71,6 +71,7 @@ import {
   truncateSlashDescription,
   userVisibleMessages,
   withLiveStreamingProgress,
+  withPageReplyContext,
 } from "@rakazo/core";
 import {
   AccountAvatar,
@@ -9293,9 +9294,13 @@ const MessageView = memo(function MessageView({
             );
           }
           if (block.kind === "text" && message.role === "user") {
-            // User bubbles stay literal text on web and mobile. Only explicit URLs
-            // and email addresses are links, so a sent address is tappable without
-            // formatting bold or headings.
+            // Only the persisted Page context can turn a user message's prefix into a Page link.
+            const prefix = block.pageContext && withPageReplyContext("", block.pageContext);
+            const reference = prefix?.trimEnd();
+            const ownerText =
+              prefix && (block.text === reference || block.text.startsWith(prefix))
+                ? block.text.slice(prefix.length)
+                : undefined;
             return (
               <div
                 key={i}
@@ -9307,7 +9312,13 @@ const MessageView = memo(function MessageView({
                   className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[18px] bg-chat-user px-[15px] py-2.5 text-[14px] leading-[1.7] text-chat-user-foreground"
                   dir="auto"
                 >
-                  <SentMentionText text={block.text} targets={mentionTargets} />
+                  {reference && ownerText !== undefined ? (
+                    <>
+                      <LinkifiedText onOpenPage={openPage}>{reference}</LinkifiedText>
+                      {ownerText && "\n"}
+                    </>
+                  ) : null}
+                  <SentMentionText text={ownerText ?? block.text} targets={mentionTargets} />
                 </div>
               </div>
             );

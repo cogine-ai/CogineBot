@@ -754,7 +754,7 @@ test("a page without a loaded card preserves owner text and stores generated con
   await completeOnboarding(page);
   const botId = activeBotId(page);
   const title = "https://automatic.example/report";
-  const body = "Read the page result.";
+  const body = "Read the page result. [Manual](page:manual)";
   const source = `export default function Result() { return <Page title="Fallback context"><ReplyButton label="Ask result" reply="${body}" /></Page>; }`;
   await seedPage(page, { botId }, { title, source, reply: "Saved fallback page." });
   await expect(page.getByTestId("page-card")).toHaveCount(1, { timeout: 30_000 });
@@ -802,7 +802,17 @@ test("a page without a loaded card preserves owner text and stores generated con
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("page-view")).toBeHidden();
-  const manual = "[https://owner.example/report](page:manual)\nPlease read this.";
+  const generated = page.getByTestId("message-user-bubble").filter({ hasText: body }).last();
+  await expect(generated).toContainText("[Manual](page:manual)");
+  await expect(generated.getByRole("button", { name: "Manual", exact: true })).toHaveCount(0);
+  await expect(generated.getByRole("link")).toHaveCount(0);
+  await generated.getByRole("button", { name: title, exact: true }).click();
+  await expect(page.getByTestId("page-view")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`[?&]page=${pageId}`));
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("page-view")).toBeHidden();
+
+  const manual = "[Manual](page:manual)\nhttps://owner.example/report\nPlease read this.";
   await composer.fill(manual);
   const second = page.waitForRequest(
     (request) => request.url().includes("/rpc/threads/send") && request.method() === "POST",
@@ -818,6 +828,16 @@ test("a page without a loaded card preserves owner text and stores generated con
         .find((block) => block.kind === "text" && block.text === manual),
     )
     .toEqual({ kind: "text", text: manual });
+  const handwritten = page
+    .getByTestId("message-user-bubble")
+    .filter({ hasText: "Please read this." })
+    .last();
+  await expect(handwritten).toContainText("[Manual](page:manual)");
+  await expect(handwritten.getByRole("button", { name: "Manual", exact: true })).toHaveCount(0);
+  await expect(handwritten.getByRole("link")).toHaveAttribute(
+    "href",
+    "https://owner.example/report",
+  );
 
   // A definitive Page rejection must not trap an unchanged draft in the old context.
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
