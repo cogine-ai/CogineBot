@@ -1,9 +1,11 @@
 import { RPCHandler } from "@orpc/server/fetch";
 import type { Actor } from "@rakazo/contracts";
-import { IsolationError, Prisma, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { IsolationError, Prisma } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { listPages, PageListCursorError } from "./pages.js";
-import { createRouter, type RouterDeps } from "./router.js";
+import type { RouterDeps } from "./router.js";
+import { createRouter } from "./router.js";
 
 const actor = {
   userId: "user-a",

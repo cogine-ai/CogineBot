@@ -6,7 +6,8 @@ import type {
   AgentSteeringMessage,
   AutoReviewProvider,
 } from "@rakazo/adapter-kit";
-import { type MessageBlock, MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import type { MessageBlock } from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { blocksToAgentHistoryText, pageReplyTaskPrompt, withPageReplyContext } from "@rakazo/core";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import {

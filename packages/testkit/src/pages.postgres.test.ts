@@ -1,10 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Actor } from "@rakazo/contracts";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
-  type Prisma,
-  type PrismaClient,
   provisionRuntimeRole,
   rlsBypassKey,
   runAsTenant,
@@ -19,11 +18,8 @@ import {
   removePage,
   renamePage,
 } from "../../../apps/api/src/pages.js";
-import {
-  type PageToolContext,
-  recoverSavedPageFromTool,
-  savePageFromTool,
-} from "../../adapters/src/page-tools.js";
+import type { PageToolContext } from "../../adapters/src/page-tools.js";
+import { recoverSavedPageFromTool, savePageFromTool } from "../../adapters/src/page-tools.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgres =

@@ -1,9 +1,5 @@
-import {
-  type MessageBlock,
-  MessageBlock as MessageBlockSchema,
-  type PageTextContext,
-  PageTitleSchema,
-} from "@rakazo/contracts";
+import type { MessageBlock, PageTextContext } from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema, PageTitleSchema } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   CALL_CLIENT_NONCE_PREFIX,
