@@ -29,6 +29,8 @@ export interface SafeWebFetchOptions {
   truncate?: boolean;
   /** Refuse any hop, redirects included, whose port is not listed. */
   allowedPorts?: readonly number[];
+  /** Caller authority for each redirect, checked before the next hop's DNS or HTTP request. */
+  assertRedirectAllowed?: (url: string) => void;
   /**
    * Test seam for dispatcher teardown. Defaults to `Agent.close()`.
    * Always raced against the shared operation deadline.
@@ -50,6 +52,7 @@ export async function assertSafeWebUrl(
   resolve: ResolveHostname = defaultResolveHostname,
   signal?: AbortSignal,
   allowedPorts?: readonly number[],
+  beforeResolve?: (url: string) => void,
 ): Promise<URL> {
   let url: URL;
   try {
@@ -71,6 +74,7 @@ export async function assertSafeWebUrl(
   if (isBlockedHostname(hostname)) {
     throw new Error("URL targets a private or internal host");
   }
+  beforeResolve?.(url.href);
   assertPublicAddresses(await withAbort(resolve(hostname), signal));
   return url;
 }
@@ -135,6 +139,7 @@ export async function fetchSafeWebBytes(
       redirectsRemaining: options.maxRedirects ?? MAX_REDIRECTS,
       truncate: options.truncate ?? false,
       allowedPorts: options.allowedPorts,
+      assertRedirectAllowed: options.assertRedirectAllowed,
     });
   } finally {
     // Race graceful close against the shared deadline. Do not wait unbounded on close().
@@ -165,12 +170,20 @@ async function followRedirects(
     redirectsRemaining: number;
     truncate: boolean;
     allowedPorts?: readonly number[];
+    assertRedirectAllowed?: (url: string) => void;
+    redirected?: boolean;
   },
 ): Promise<SafeWebResponse<Uint8Array>> {
   if (state.signal.aborted) {
     throw abortError(state.signal);
   }
-  const validated = await assertSafeWebUrl(rawUrl, state.resolve, state.signal, state.allowedPorts);
+  const validated = await assertSafeWebUrl(
+    rawUrl,
+    state.resolve,
+    state.signal,
+    state.allowedPorts,
+    state.redirected ? state.assertRedirectAllowed : undefined,
+  );
   // Race fetch against the deadline — injected fetch may ignore init.signal.
   const response = await withAbort(
     state.baseFetch(validated.href, {
@@ -204,6 +217,7 @@ async function followRedirects(
     return followRedirects(next.href, {
       ...state,
       headers,
+      redirected: true,
       redirectsRemaining: state.redirectsRemaining - 1,
     });
   }

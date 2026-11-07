@@ -11,6 +11,7 @@ import {
   ACTIVE_RUN_STATUSES,
   blocksToAgentHistoryText,
   callIdFromClientNonce,
+  canonicalApprovalSite,
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
@@ -20,9 +21,11 @@ import {
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
   runSecretKind,
+  SITE_SENDING_TOOLS,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
+import { urlSite } from "@rakazo/core/egress";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
@@ -736,8 +739,9 @@ async function commitAnswerRunInput(
     ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
     : undefined;
   if (login && !login.success) return null;
-  let approvalEffect: { id: string; kind: string } | null = null;
+  let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
   let approvalUserId: string | null = null;
+  let approvalSite: string | undefined;
 
   if (approvalAsk) {
     if (!pendingAsk.actions?.some((action) => action.id === input.answer)) return null;
@@ -752,6 +756,21 @@ async function commitAnswerRunInput(
     if (!approvalEffect) return null;
     if (input.answer === "always") {
       if (run.userId !== input.answeredByUserId) return null;
+      approvalSite = alwaysAllowedSite(approvalEffect);
+      if (approvalSite) {
+        // An older card can still offer Always after the owner added a site rule.
+        const requiredSites = await tx.actionApprovalRule.findMany({
+          where: {
+            spaceId: input.spaceId,
+            createdByUserId: input.answeredByUserId,
+            matchKind: "site",
+            effect: "require_approval",
+          },
+          select: { matchValue: true },
+        });
+        if (requiredSites.some((rule) => canonicalApprovalSite(rule.matchValue) === approvalSite))
+          return null;
+      }
       approvalUserId = input.answeredByUserId;
     }
   }
@@ -803,23 +822,27 @@ async function commitAnswerRunInput(
       where: { id: approvalEffect!.id },
       data: { status: allowed ? "approved" : "denied" },
     });
-    if (input.answer === "always") {
+    // A site's approval permits that destination, not every destination the tool can reach.
+    if (
+      input.answer === "always" &&
+      (approvalSite || !SITE_SENDING_TOOLS.has(approvalEffect!.kind))
+    ) {
       await tx.actionApprovalRule.upsert({
         where: {
           spaceId_createdByUserId_effect_matchKind_matchValue: {
             spaceId: input.spaceId,
             createdByUserId: approvalUserId!,
             effect: "always_allow",
-            matchKind: "tool",
-            matchValue: approvalEffect!.kind,
+            matchKind: approvalSite ? "site" : "tool",
+            matchValue: approvalSite ?? approvalEffect!.kind,
           },
         },
         create: {
           spaceId: input.spaceId,
           createdByUserId: approvalUserId!,
           effect: "always_allow",
-          matchKind: "tool",
-          matchValue: approvalEffect!.kind,
+          matchKind: approvalSite ? "site" : "tool",
+          matchValue: approvalSite ?? approvalEffect!.kind,
         },
         update: {},
       });
@@ -2102,4 +2125,13 @@ class ChangeLatch {
       if (this.generation !== expected || signal?.aborted) finish();
     });
   }
+}
+
+function alwaysAllowedSite(effect: {
+  kind: string;
+  request: Prisma.JsonValue;
+}): string | undefined {
+  if (!SITE_SENDING_TOOLS.has(effect.kind)) return undefined;
+  const request = effect.request as { url?: unknown } | null;
+  return typeof request?.url === "string" ? urlSite(request.url) : undefined;
 }

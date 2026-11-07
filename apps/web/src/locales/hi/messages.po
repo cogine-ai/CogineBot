@@ -657,6 +657,10 @@ msgid "Always allow this tool"
 msgstr "इस टूल को हमेशा अनुमति दें"
 
 #: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "{site} को हमेशा अनुमति दें"
+
+#: src/components/AskCard.tsx
 msgid "Always allowed"
 msgstr "हमेशा अनुमत"
 

@@ -15,12 +15,14 @@ const KNOWN_ASK_ACTION_LABELS: Record<string, string> = {
 
 export function AskActions({
   actions,
+  site,
   disabled,
   onAnswer,
   accessibilityActions,
   onAccessibilityAction,
 }: {
   actions: AskAction[];
+  site?: string;
   disabled?: boolean;
   onAnswer: (answer: string) => Promise<void>;
   accessibilityActions?: ViewProps["accessibilityActions"];
@@ -72,9 +74,11 @@ export function AskActions({
             >
               {pendingAction === action.id
                 ? t("Sending…")
-                : Object.hasOwn(KNOWN_ASK_ACTION_LABELS, action.id)
-                  ? t(KNOWN_ASK_ACTION_LABELS[action.id]!)
-                  : action.label}
+                : action.id === "always" && site
+                  ? t("Always allow {site}", { site })
+                  : Object.hasOwn(KNOWN_ASK_ACTION_LABELS, action.id)
+                    ? t(KNOWN_ASK_ACTION_LABELS[action.id]!)
+                    : action.label}
             </Text>
           </Pressable>
         );

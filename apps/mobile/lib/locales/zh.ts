@@ -1,4 +1,5 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "始终允许 {site}",
   "This model's context window is too small. Choose another model.":
     "此模型的上下文容量太小。请选择其他模型。",
   "This server's tool result does not fit the model. Choose another model.":

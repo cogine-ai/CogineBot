@@ -657,6 +657,10 @@ msgid "Always allow this tool"
 msgstr "Always allow this tool"
 
 #: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "Always allow {site}"
+
+#: src/components/AskCard.tsx
 msgid "Always allowed"
 msgstr "Always allowed"
 

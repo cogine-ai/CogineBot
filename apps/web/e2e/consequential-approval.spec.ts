@@ -8,6 +8,18 @@ import {
   signup,
 } from "./helpers";
 
+test("site approval displays the site and submits Always", async ({ page }, testInfo) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=site-approval");
+  const always = page.getByRole("button", { name: "Always allow example.com", exact: true });
+  await expect(always).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Always allow this tool", exact: true }),
+  ).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "site-approval-always");
+  await always.click();
+  await expect(page.getByText("Always allowed", { exact: true })).toBeVisible();
+});
+
 test("actions run by default while optional confirmations live in Space settings", async ({
   page,
 }, testInfo) => {

@@ -191,18 +191,27 @@ function RoutineShot() {
   );
 }
 
-function ApprovalShot() {
+function ApprovalShot({ site }: { site?: string }) {
+  const [answer, setAnswer] = useState<string>();
   return (
     <main data-ready="true" className="mx-auto max-w-[760px] bg-background p-8 text-foreground">
       <AskCard
         canAnswer
-        onAnswer={async () => undefined}
+        onAnswer={async (value) => {
+          if (site) setAnswer(value);
+        }}
         block={{
           kind: "ask",
           approvalEffectId: "effect-demo",
-          text: "Review before sending a reply from the demo inbox.",
-          detail: "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
-          status: "pending",
+          text: site
+            ? "Review before opening the report."
+            : "Review before sending a reply from the demo inbox.",
+          detail: site
+            ? `url: https://docs.${site}/report`
+            : "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
+          site,
+          status: answer ? "answered" : "pending",
+          answer,
           actions: [
             { id: "allow", label: "Allow once" },
             { id: "always", label: "Always allow this tool" },
@@ -517,8 +526,8 @@ void bootstrapI18n("en").then(() => {
       <ModelShot />
     ) : view === "routine" ? (
       <RoutineShot />
-    ) : view === "approval" ? (
-      <ApprovalShot />
+    ) : view === "approval" || view === "site-approval" ? (
+      <ApprovalShot site={view === "site-approval" ? "example.com" : undefined} />
     ) : view === "chat" ? (
       <ChatShot />
     ) : view === "subscription" ? (
