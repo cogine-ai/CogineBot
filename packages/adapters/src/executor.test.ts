@@ -1568,6 +1568,9 @@ describe("createRunExecutor", () => {
           routine: {
             updateMany,
             findUnique: vi.fn(async () => ({
+              prompt: "say hi",
+              authorizedInstructions: null,
+              authorizedSites: [],
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -1596,7 +1599,14 @@ describe("createRunExecutor", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
     expect(taskCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ threadId: "group-thread-1" }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          threadId: "group-thread-1",
+          prompt: "say hi",
+          routineInstructions: null,
+          routineSites: [],
+        }),
+      }),
     );
     expect(runCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ threadId: "group-thread-1" }) }),
@@ -1648,7 +1658,11 @@ describe("createRunExecutor", () => {
             routine: {
               updateMany: vi.fn(async () => ({ count: 1 })),
               findUnique: vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
-                Object.fromEntries(Object.entries(claimedModel).filter(([key]) => select[key])),
+                Object.fromEntries(
+                  Object.entries({ prompt: "say hi", ...claimedModel }).filter(
+                    ([key]) => select[key],
+                  ),
+                ),
               ),
             },
             task: { create: taskCreate },
@@ -1809,6 +1823,7 @@ describe("createRunExecutor", () => {
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
+              prompt: "remind the group",
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -1881,6 +1896,7 @@ describe("createRunExecutor", () => {
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
+              prompt: "remind me",
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -1970,6 +1986,7 @@ description: Prepare standup notes
           routine: {
             updateMany: vi.fn(async () => ({ count: 1 })),
             findUnique: vi.fn(async () => ({
+              prompt: "Run @Daily standup, then email me",
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -2030,6 +2047,7 @@ description: Prepare standup notes
           routine: {
             updateMany,
             findUnique: vi.fn(async () => ({
+              prompt: "say hi",
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -2095,6 +2113,7 @@ description: Prepare standup notes
             routine: {
               updateMany: claimUpdateMany,
               findUnique: vi.fn(async () => ({
+                prompt: "say hi",
                 modelProvider: null,
                 modelId: null,
                 thinkingLevel: null,

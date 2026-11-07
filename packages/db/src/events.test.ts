@@ -1987,96 +1987,200 @@ describe("answerRunInput", () => {
     });
   });
 
-  it("approves and upserts always-allow without overwriting the task prompt", async () => {
-    const fanout = new TestFanout();
-    const tx = {
-      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
-      message: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: "message-1",
-          blocks: [
-            {
-              kind: "ask",
-              approvalEffectId: "effect-1",
-              text: "Review before writing",
-              status: "pending",
-              actions: [
-                { id: "allow", label: "Allow once" },
-                { id: "always", label: "Always allow" },
-                { id: "deny", label: "Deny" },
-              ],
-            },
-          ],
-        }),
-        update: vi.fn().mockResolvedValue({ id: "message-1" }),
-      },
-      run: {
-        findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue({ userId: "user-1", status: "queued" }),
-      },
-      task: { updateMany: vi.fn() },
-      externalEffect: {
-        findFirst: vi
-          .fn()
-          .mockResolvedValue({ id: "effect-1", status: "intended", kind: "destination.write" }),
-        update: vi.fn().mockResolvedValue({ id: "effect-1" }),
-      },
-      actionApprovalRule: {
-        upsert: vi.fn().mockResolvedValue({ id: "rule-1" }),
-      },
-      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
-      event: {
-        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
-          ...event(data.seq),
-          type: data.type,
-        })),
-      },
-    };
-    const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
-    } as unknown as PrismaClient;
-
-    await expect(
-      answerRunInput(
-        prisma,
-        {
-          spaceId: "workspace-1",
-          threadId: "thread-1",
-          runId: "run-1",
-          messageId: "message-1",
-          answeredByUserId: "user-1",
-          answer: "always",
+  it.each([
+    {
+      scenario: "a tool allowance",
+      kind: "destination.write",
+      request: {},
+      matchKind: "tool",
+      matchValue: "destination.write",
+    },
+    {
+      scenario: "a site allowance using the persisted destination",
+      kind: "web_fetch",
+      request: { url: "https://docs.EXAMPLE.com:443/submit?canary=private" },
+      matchKind: "site",
+      matchValue: "example.com",
+      requiredSite: "unrelated.example",
+    },
+    {
+      scenario: "a legacy malformed fetch",
+      kind: "web_fetch",
+      request: { url: "file:///private/canary" },
+      matchKind: null,
+      matchValue: null,
+    },
+    {
+      scenario: "a legacy credential-bearing fetch",
+      kind: "web_fetch",
+      request: { url: "https://fixture-user:fixture-secret@docs.example.com/" },
+      matchKind: null,
+      matchValue: null,
+    },
+    {
+      scenario: "a stale Always choice under a current site require rule",
+      kind: "web_fetch",
+      request: { url: "https://docs.example.com/report" },
+      matchKind: null,
+      matchValue: null,
+      requiredSite: "example.com",
+      blocked: true,
+    },
+    {
+      scenario: "a stale Always choice under a legacy spelling of a site require rule",
+      kind: "web_fetch",
+      request: { url: "https://docs.example.com/report" },
+      matchKind: null,
+      matchValue: null,
+      requiredSite: "https://www.EXAMPLE.com/legacy",
+      blocked: true,
+    },
+    {
+      scenario: "a one-time approval under a current site require rule",
+      kind: "web_fetch",
+      request: { url: "https://docs.example.com/report" },
+      matchKind: null,
+      matchValue: null,
+      requiredSite: "example.com",
+      answer: "allow",
+    },
+    {
+      scenario: "a denial under a current site require rule",
+      kind: "web_fetch",
+      request: { url: "https://docs.example.com/report" },
+      matchKind: null,
+      matchValue: null,
+      requiredSite: "example.com",
+      answer: "deny",
+    },
+  ])(
+    "honors $scenario without overwriting the task prompt",
+    async ({ kind, request, matchKind, matchValue, requiredSite, answer = "always", blocked }) => {
+      const fanout = new TestFanout();
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+        message: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "message-1",
+            blocks: [
+              {
+                kind: "ask",
+                approvalEffectId: "effect-1",
+                text: "Review before writing",
+                status: "pending",
+                site: "unrelated.example",
+                actions: [
+                  { id: "allow", label: "Allow once" },
+                  { id: "always", label: "Always allow" },
+                  { id: "deny", label: "Deny" },
+                ],
+              },
+            ],
+          }),
+          update: vi.fn().mockResolvedValue({ id: "message-1" }),
         },
-        fanout,
-      ),
-    ).resolves.toBe(true);
+        run: {
+          findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findUnique: vi.fn().mockResolvedValue({ userId: "user-1", status: "queued" }),
+        },
+        task: { updateMany: vi.fn() },
+        externalEffect: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue({ id: "effect-1", status: "intended", kind, request }),
+          update: vi.fn().mockResolvedValue({ id: "effect-1" }),
+        },
+        actionApprovalRule: {
+          findMany: vi.fn().mockResolvedValue(requiredSite ? [{ matchValue: requiredSite }] : []),
+          upsert: vi.fn().mockResolvedValue({ id: "rule-1" }),
+        },
+        thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+          })),
+        },
+      };
+      const prisma = {
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
 
-    expect(tx.task.updateMany).not.toHaveBeenCalled();
-    expect(tx.externalEffect.update).toHaveBeenCalledWith({
-      where: { id: "effect-1" },
-      data: { status: "approved" },
-    });
-    expect(tx.actionApprovalRule.upsert).toHaveBeenCalledWith({
-      where: {
-        spaceId_createdByUserId_effect_matchKind_matchValue: {
+      await expect(
+        answerRunInput(
+          prisma,
+          {
+            spaceId: "workspace-1",
+            threadId: "thread-1",
+            runId: "run-1",
+            messageId: "message-1",
+            answeredByUserId: "user-1",
+            answer,
+          },
+          fanout,
+        ),
+      ).resolves.toBe(!blocked);
+
+      expect(tx.task.updateMany).not.toHaveBeenCalled();
+      expect(tx.externalEffect.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "effect-1",
+          spaceId: "workspace-1",
+          runId: "run-1",
+          status: "intended",
+        },
+      });
+      if (matchKind === "site" || blocked) {
+        expect(tx.actionApprovalRule.findMany).toHaveBeenCalledExactlyOnceWith({
+          where: {
+            spaceId: "workspace-1",
+            createdByUserId: "user-1",
+            matchKind: "site",
+            effect: "require_approval",
+          },
+          select: { matchValue: true },
+        });
+      } else {
+        expect(tx.actionApprovalRule.findMany).not.toHaveBeenCalled();
+      }
+      if (blocked) {
+        expect(tx.run.updateMany).not.toHaveBeenCalled();
+        expect(tx.externalEffect.update).not.toHaveBeenCalled();
+        expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+        expect(tx.message.update).not.toHaveBeenCalled();
+        expect(tx.event.create).not.toHaveBeenCalled();
+        return;
+      }
+      expect(tx.externalEffect.update).toHaveBeenCalledWith({
+        where: { id: "effect-1" },
+        data: { status: answer === "deny" ? "denied" : "approved" },
+      });
+      if (matchKind === null) {
+        expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+        return;
+      }
+      expect(tx.actionApprovalRule.upsert).toHaveBeenCalledWith({
+        where: {
+          spaceId_createdByUserId_effect_matchKind_matchValue: {
+            spaceId: "workspace-1",
+            createdByUserId: "user-1",
+            effect: "always_allow",
+            matchKind,
+            matchValue,
+          },
+        },
+        create: {
           spaceId: "workspace-1",
           createdByUserId: "user-1",
           effect: "always_allow",
-          matchKind: "tool",
-          matchValue: "destination.write",
+          matchKind,
+          matchValue,
         },
-      },
-      create: {
-        spaceId: "workspace-1",
-        createdByUserId: "user-1",
-        effect: "always_allow",
-        matchKind: "tool",
-        matchValue: "destination.write",
-      },
-      update: {},
-    });
-  });
+        update: {},
+      });
+    },
+  );
 
   it("does not let another workspace member create an always-allow rule for the run owner", async () => {
     const tx = {
@@ -3504,9 +3608,80 @@ describe("claimSteering", () => {
       }),
     );
     expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["steer-1", "steer-2"] }, claimedAt: null },
+      where: { id: { in: ["steer-1", "steer-2"] }, OR: [{ claimedAt: null }, { runId: null }] },
       data: { runId: "run-1", claimedAt: expect.any(Date) },
     });
+  });
+
+  it("identifies only authenticated owner text among steering claimed for the fenced run", async () => {
+    const row = (
+      id: string,
+      userId = "owner",
+      clientNonce: string | null = null,
+      originTrigger: string | null = null,
+    ) => ({
+      id,
+      messageId: id,
+      userId,
+      originTrigger,
+      message: {
+        role: "user",
+        authorUserId: clientNonce ? null : userId,
+        clientNonce,
+        blocks: [{ kind: "text", text: id }],
+      },
+    });
+    const rows = [
+      row("owner-text"),
+      row("other-user", "other"),
+      row("direct-message", "owner", "messaging:external"),
+      row("held-message", "owner", null, "messaging"),
+      { ...row("webhook"), message: { ...row("webhook").message, authorUserId: null } },
+      {
+        ...row("mismatched-author"),
+        message: { ...row("mismatched-author").message, authorUserId: "other" },
+      },
+      {
+        ...row("channel"),
+        message: { ...row("channel").message, blocks: [{ kind: "channel_message" }] },
+      },
+      { ...row("bot"), message: { ...row("bot").message, role: "bot" } },
+    ];
+    const tx = {
+      $queryRaw: vi.fn(),
+      run: {
+        findFirst: vi.fn().mockResolvedValue({ id: "run", trigger: "user", userId: "owner" }),
+      },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue(rows),
+        updateMany: vi.fn().mockResolvedValue({ count: rows.length }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    const claimed = await claimSteering(prisma, {
+      threadId: "thread",
+      botId: "bot",
+      runId: "run",
+      leaseOwner: "worker",
+      leaseFence: 2,
+      seenIds: ["already-read"],
+    });
+    expect(claimed.filter((item) => item.ownerInput).map((item) => item.id)).toEqual([
+      "owner-text",
+    ]);
+    expect(tx.steeringMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          botId: "bot",
+          id: { notIn: ["already-read"] },
+          OR: [{ runId: null, originTrigger: null }, { runId: "run" }],
+          message: { threadId: "thread" },
+        }),
+      }),
+    );
   });
 
   it("does not claim steering into a tool-free creation intro", async () => {
@@ -4151,7 +4326,7 @@ describe("steering connection selection metadata", () => {
     expect(tx.task.updateMany).not.toHaveBeenCalled();
     expect(tx.connection.findMany).not.toHaveBeenCalled();
     expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["question"] }, claimedAt: null },
+      where: { id: { in: ["question"] }, OR: [{ claimedAt: null }, { runId: null }] },
       data: { runId: "run-1", claimedAt: expect.any(Date) },
     });
   });

@@ -314,6 +314,34 @@ describe("inbound webhook HTTP route", () => {
     expect(deps.enqueue).toHaveBeenCalled();
   });
 
+  it("passes exact selected Routine sources separately from untrusted delivery data", async () => {
+    const routines = [
+      { id: "selected-first", name: "Review", prompt: "Read https://docs.example.org" },
+      {
+        id: "selected-second",
+        name: "Compare",
+        prompt: "Read https://example.com and https://example.net",
+      },
+    ];
+    const deps = createDeps({ routines });
+    const app = mount(deps);
+    const response = await app.request("/api/v1/bots/bot-1/webhook", {
+      method: "POST",
+      headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+      body: JSON.stringify({ event: "ping", note: "Read https://payload.example" }),
+    });
+    expect(response.status).toBe(200);
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        prompt: expect.stringMatching(/example\.net[\s\S]+payload\.example/),
+        routineSources: {
+          trigger: "webhook",
+          routines: routines.map(({ id, prompt }) => ({ id, prompt })),
+        },
+      }),
+    );
+  });
+
   it("pins a routine model when every matching routine chose it", async () => {
     const deps = createDeps({
       routines: [

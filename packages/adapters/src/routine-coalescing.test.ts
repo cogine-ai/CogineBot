@@ -13,6 +13,8 @@ const config = {
   userId: "user-1",
   threadId: "thread-1",
   prompt: "check current work",
+  routineInstructions: "check current work",
+  routineSites: ["example.com"],
 };
 function fixture(
   clientNonce: string | null = routineTimerNonce("routine-1", "2026-01-01T00:00:00Z"),
@@ -44,7 +46,12 @@ describe("pending routine timer coalescing", () => {
           attempts: { none: {} },
           effects: { none: {} },
           steeringMessages: { none: {} },
-          task: { status: "queued", prompt: config.prompt },
+          task: {
+            status: "queued",
+            prompt: config.prompt,
+            routineInstructions: config.routineInstructions,
+            routineSites: { equals: config.routineSites },
+          },
           modelPinned: false,
           modelProvider: null,
           modelId: null,

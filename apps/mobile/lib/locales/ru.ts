@@ -1,4 +1,5 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "Всегда разрешать {site}",
   "This model's context window is too small. Choose another model.":
     "Контекстное окно этой модели слишком мало. Выберите другую модель.",
   "This server's tool result does not fit the model. Choose another model.":

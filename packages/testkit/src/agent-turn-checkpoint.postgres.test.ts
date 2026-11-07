@@ -22,6 +22,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
+import { FakeWebProvider } from "../../adapters/src/fake-web.js";
 import { modelsForRequest, PiAgentRuntime } from "../../adapters/src/pi-runtime.js";
 import type { TurnCheckpoint } from "../../adapters/src/turn-checkpoint.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
@@ -765,6 +766,103 @@ describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => 
     },
     45_000,
   );
+});
+
+describe.skipIf(!enabled)("Pi trusted-site approval", () => {
+  it("persists Always for the saved fetch site in the actor's Space", async () => {
+    const url = "https://Docs.EXAMPLE.com:443/report?view=sample";
+    const canonicalUrl = "https://docs.example.com/report?view=sample";
+    const site = "example.com";
+    vi.stubEnv("WEB_PROVIDER", "fake");
+    const f = await fixture([() => [call("fresh-site-fetch", "web_fetch", { url })]], {
+      prompt: "Read the synthetic report after asking when needed.",
+    });
+    const fetch = vi.spyOn(FakeWebProvider.prototype, "fetch");
+    const runId = f.sent.runId;
+    try {
+      await f.continueRun("site-approval-first-worker");
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "waiting_input",
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      const effects = await f.app.prisma.externalEffect.findMany({
+        where: { runId, kind: "web_fetch" },
+      });
+      expect(effects).toEqual([
+        expect.objectContaining({
+          spaceId: f.me.spaceId,
+          status: "intended",
+          request: expect.objectContaining({ url: canonicalUrl }),
+        }),
+      ]);
+      const effect = effects[0]!;
+      const messages = await f.app.prisma.message.findMany({ where: { runId, role: "bot" } });
+      const cards = messages.flatMap((message) =>
+        MessageBlockSchema.array()
+          .parse(message.blocks)
+          .flatMap((block) => (block.kind === "ask" ? [{ message, block }] : [])),
+      );
+      expect(cards).toEqual([
+        expect.objectContaining({
+          block: expect.objectContaining({
+            approvalEffectId: effect.id,
+            status: "pending",
+            site,
+            actions: expect.arrayContaining([{ id: "always", label: `Always allow ${site}` }]),
+          }),
+        }),
+      ]);
+      const answer = {
+        botId: f.bot.id,
+        runId,
+        messageId: cards[0]!.message.id,
+        answer: "always",
+      };
+      const required = await f.rpc<{ id: string }>("approvalRules/set", {
+        effect: "require_approval",
+        matchKind: "site",
+        matchValue: "https://docs.example.com",
+      });
+      await expect(f.rpc("threads/answer", answer)).rejects.toThrow();
+      expect(
+        await f.app.prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+      ).toMatchObject({ status: "intended" });
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "waiting_input",
+      });
+      await expect(f.rpc("approvalRules/list")).resolves.toEqual([
+        expect.objectContaining({ id: required.id, effect: "require_approval", matchValue: site }),
+      ]);
+      await f.rpc("approvalRules/remove", { id: required.id });
+      await f.rpc("threads/answer", answer);
+      expect(
+        await f.app.prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+      ).toMatchObject({ status: "approved", request: effect.request });
+      const rule = { effect: "always_allow", matchKind: "site", matchValue: site };
+      const actorScope = { spaceId: f.me.spaceId, createdByUserId: f.me.userId };
+      expect(await f.app.prisma.actionApprovalRule.findMany({ where: actorScope })).toEqual([
+        expect.objectContaining({ ...actorScope, ...rule }),
+      ]);
+      await expect(f.rpc("approvalRules/list")).resolves.toEqual([expect.objectContaining(rule)]);
+      expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+        status: "queued",
+        leaseFence: 1,
+      });
+      expect(f.providerRequests).toHaveLength(1);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+      try {
+        // Later fixtures share this database and reconcile queued work on startup.
+        await f.rpc("threads/stop", { botId: f.bot.id });
+        expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+          status: "cancelled",
+        });
+      } finally {
+        await f.close();
+      }
+    }
+  }, 45_000);
 });
 
 describe.skipIf(!enabled)("parallel Pi approval checkpoint ownership", () => {

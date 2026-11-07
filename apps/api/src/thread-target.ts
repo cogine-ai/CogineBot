@@ -721,6 +721,7 @@ export async function sendThreadMessage(
         const message = await createThreadMessageInTransaction(tx, {
           threadId: target.threadId,
           role: "user",
+          authorUserId: actor.userId,
           blocks,
           replyToMessageId,
           replyQuote,
@@ -906,6 +907,7 @@ export async function sendThreadMessage(
       const message = await createThreadMessageInTransaction(tx, {
         threadId: target.threadId,
         role: "user",
+        authorUserId: actor.userId,
         blocks,
         replyToMessageId,
         replyQuote,

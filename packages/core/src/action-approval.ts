@@ -1,4 +1,5 @@
 import type { ActionApprovalRule as StoredActionApprovalRule } from "@rakazo/contracts";
+import { urlSite } from "./egress.js";
 
 const APPROVAL_EXEMPT_TOOLS = new Set([
   "computer_observe",
@@ -108,6 +109,15 @@ export function toolRequiresExplicitApproval(toolName: string): boolean {
   return EXPLICIT_APPROVAL_BUILTIN_TOOLS.has(toolName);
 }
 
+/**
+ * A run the owner started: their own message, a follow-up they wrote, or the close of their call.
+ * Bot messages, channels, spawns, tickets, webhooks and routines are not, nor is anything new.
+ */
+export function isOwnerStartedRun(trigger: string, followUpFromUser: boolean): boolean {
+  if (trigger === "follow_up") return followUpFromUser;
+  return trigger === "user" || trigger === "call_end";
+}
+
 /** External webhook runs may inspect state unattended, but side effects always need the owner. */
 export function unattendedTriggerToolRequiresApproval(
   trigger: string,
@@ -119,6 +129,95 @@ export function unattendedTriggerToolRequiresApproval(
   return viaConnector
     ? connectorToolRequiresApproval(toolName, readOnly)
     : !UNATTENDED_SAFE_BUILTIN_TOOLS.has(toolName);
+}
+
+/**
+ * Tools whose results bring in nothing from outside during the run: confirmations of the bot's own
+ * writes, the owner's answers, and the product's own saved state (memory, skills), which
+ * is treated like the conversation already in context. Every other result (history, search hits,
+ * files, connector data, the screen, shell output, other bots) can carry text an attacker wrote,
+ * and taints the run. New tools taint by default.
+ */
+const OWN_STATE_RESULT_TOOLS = new Set([
+  "ask_user",
+  "attach_file",
+  "end_call",
+  "list_secrets",
+  "message_user",
+  "recall_memory",
+  "remember",
+  "render_plot",
+  "request_secret",
+  "save_memory",
+  "save_shared_memory",
+  "schedule_cancel",
+  "schedule_create",
+  "schedule_list",
+  "scratchpad_add",
+  "scratchpad_complete",
+  "scratchpad_list",
+  "scratchpad_remove",
+  "scratchpad_update",
+  "skill_read",
+  "task_catalog",
+  "write_file",
+]);
+
+export function toolResultTaintsRun(toolName: string): boolean {
+  return !OWN_STATE_RESULT_TOOLS.has(toolName);
+}
+
+/**
+ * A connector read still sends its arguments to the connector's server. Until outside content
+ * enters the run, those arguments come from the owner's request. After that, injected text could
+ * choose them, so a read skips approval only on a connector this run already used before then or
+ * was approved for. Reads on that connector stay free, so list-then-get flows never ask twice.
+ */
+export function connectorReadRequiresApproval(input: {
+  tainted: boolean;
+  connectorTrusted: boolean;
+}): boolean {
+  return input.tainted && !input.connectorTrusted;
+}
+
+/** An outbound URL is trusted by its site, not by an allowance for the whole fetch tool. */
+export function outboundSiteGate(input: {
+  site: string;
+  trusted: boolean;
+  rules: ActionApprovalRule[];
+}): "allow" | "new" {
+  return input.trusted || siteAlwaysAllowed(input.rules, input.site) ? "allow" : "new";
+}
+
+/** A webhook cannot pause for a person to approve a destination it discovered. */
+export function newSiteOutcome(input: {
+  trigger: string;
+  decision: "ask" | "allow";
+}): "ask" | "allow" | "deny" {
+  if (input.decision === "allow") return "allow";
+  return input.trigger === "webhook" ? "deny" : "ask";
+}
+
+export const SITE_SENDING_TOOLS: ReadonlySet<string> = new Set(["web_fetch"]);
+
+/** Site rules use the same private-suffix-aware identity as outbound requests. */
+export function canonicalApprovalSite(value: string): string | undefined {
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    if (url.username || url.password) return undefined;
+    return urlSite(url.href);
+  } catch {
+    return undefined;
+  }
+}
+
+export function siteAlwaysAllowed(rules: ActionApprovalRule[], site: string): boolean {
+  return rules.some(
+    (rule) =>
+      rule.effect === "always_allow" &&
+      rule.matchKind === "site" &&
+      canonicalApprovalSite(rule.matchValue) === site,
+  );
 }
 
 function categoryMatches(
@@ -145,9 +244,12 @@ function ruleMatches(
   toolName: string,
   connectorKind: string,
   readOnly: boolean | undefined,
+  site?: string,
 ): boolean {
   const value = rule.matchValue.toLowerCase();
   switch (rule.matchKind) {
+    case "site":
+      return site !== undefined && site === canonicalApprovalSite(rule.matchValue);
     case "tool":
       return toolName.toLowerCase() === value;
     case "connector":
@@ -161,6 +263,8 @@ function ruleMatches(
 
 function ruleSpecificity(rule: ActionApprovalRule): number {
   switch (rule.matchKind) {
+    case "site":
+      return 4;
     case "tool":
       return 3;
     case "connector":
@@ -185,11 +289,12 @@ export function resolveActionApprovalDetail(input: {
   toolName: string;
   connectorKind?: string;
   readOnly?: boolean;
+  site?: string;
   rules: ActionApprovalRule[];
 }): ActionApprovalResolved {
   const connectorKind = input.connectorKind ?? connectorKindFromToolName(input.toolName);
   const matchingRules = input.rules.filter((rule) =>
-    ruleMatches(rule, input.toolName, connectorKind, input.readOnly),
+    ruleMatches(rule, input.toolName, connectorKind, input.readOnly, input.site),
   );
   if (matchingRules.length === 0) {
     return { decision: "allow", source: "default", matchingRules };
@@ -207,6 +312,7 @@ export function resolveActionApproval(input: {
   toolName: string;
   connectorKind?: string;
   readOnly?: boolean;
+  site?: string;
   rules: ActionApprovalRule[];
 }): "ask" | "allow" {
   return resolveActionApprovalDetail(input).decision;
@@ -224,11 +330,17 @@ export function planActionGate(input: {
   consequential: boolean;
   autoReviewEnabled: boolean;
   checkerConfigured: boolean;
+  /** Outside content may have selected a new connector's read arguments. */
+  reviewOnly?: boolean;
+  /** An outbound URL whose site the run has not been given. */
+  newDestination?: boolean;
 }): "ask" | "allow" | "judge" {
   if (input.resolved.decision === "ask") return "ask";
+  if (input.newDestination)
+    return input.autoReviewEnabled && input.checkerConfigured ? "judge" : "ask";
   if (input.resolved.source === "always_allow") return "allow";
   if (
-    input.consequential &&
+    (input.consequential || input.reviewOnly) &&
     input.autoReviewEnabled &&
     input.checkerConfigured &&
     input.resolved.source === "default"

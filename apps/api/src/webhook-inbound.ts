@@ -2,31 +2,33 @@ import { createHash } from "node:crypto";
 import type { JobPublisher, SecretStore } from "@rakazo/adapter-kit";
 import { runContinueJob, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { inboundRoutineModelPin } from "@rakazo/adapters";
-import type { PrismaClient } from "@rakazo/db";
+import type { PrismaClient, SendUserMessageInput } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
 export const WEBHOOK_SECRET_KIND = "webhook";
 
 export type WebhookEvents = {
-  sendUserMessage(input: {
-    spaceId: string;
-    threadId: string;
-    botId: string;
-    userId: string;
-    blocks: Array<{ kind: "text"; text: string }>;
-    prompt: string;
-    trigger: "webhook";
-    clientNonce?: string;
-    allowParallelRun?: boolean;
-    modelPin?: {
-      routineIds: string[];
-      modelProvider: string;
-      modelId: string;
-      modelCredentialId: string | null;
-      thinkingLevel: string | null;
-    };
-  }): Promise<{ messageId: string; runId: string | null; seq: number }>;
+  sendUserMessage(
+    input: Pick<SendUserMessageInput, "routineSources"> & {
+      spaceId: string;
+      threadId: string;
+      botId: string;
+      userId: string;
+      blocks: Array<{ kind: "text"; text: string }>;
+      prompt: string;
+      trigger: "webhook";
+      clientNonce?: string;
+      allowParallelRun?: boolean;
+      modelPin?: {
+        routineIds: string[];
+        modelProvider: string;
+        modelId: string;
+        modelCredentialId: string | null;
+        thinkingLevel: string | null;
+      };
+    },
+  ): Promise<{ messageId: string; runId: string | null; seq: number }>;
 };
 
 export type WebhookDeps = {
@@ -279,6 +281,7 @@ export async function deliverWebhookEvent(
       thinkingLevel: string | null;
     }>;
     source: "webhook" | "github" | "messaging";
+    messageProvider?: string;
     idempotencyKey?: string;
     /** Messaging wakes share the live chat thread; keep a separate webhook run. */
     allowParallelRun?: boolean;
@@ -314,6 +317,15 @@ export async function deliverWebhookEvent(
     prompt: promptText,
     trigger: "webhook",
     clientNonce,
+    ...(input.routines.length
+      ? {
+          routineSources: {
+            trigger: input.source,
+            ...(input.messageProvider ? { messageProvider: input.messageProvider } : {}),
+            routines: input.routines.map(({ id, prompt }) => ({ id, prompt })),
+          },
+        }
+      : {}),
     ...(input.allowParallelRun ? { allowParallelRun: true } : {}),
     ...(pin.modelProvider && pin.modelId
       ? {

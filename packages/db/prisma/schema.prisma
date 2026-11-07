@@ -658,6 +658,8 @@ model Message {
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   seq              Int
   role             String
+  /// Authenticated in-product author, if this message was directly sent by a user.
+  authorUserId     String?
   blocks           Json
   botId            String?
   replyToMessageId String?
@@ -710,6 +712,10 @@ model Task {
   thread    Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   userId    String
   prompt    String
+  /// Owner instructions captured before adding skill content or event data.
+  routineInstructions String?
+  /// Sites authorized for this Routine before the Run was queued.
+  routineSites String[] @default([])
   status    String
   connectionIds String[] @default([])
   createdAt DateTime @default(now())
@@ -904,6 +910,10 @@ model Routine {
   thread         Thread?   @relation(fields: [threadId], references: [id], onDelete: SetNull)
   name           String
   prompt         String
+  /// Prompt explicitly provided by the owner.
+  authorizedInstructions String?
+  /// Canonical sites approved for model-written instructions.
+  authorizedSites String[] @default([])
   crons          String[]
   timezone       String    @default("UTC")
   active         Boolean   @default(false)

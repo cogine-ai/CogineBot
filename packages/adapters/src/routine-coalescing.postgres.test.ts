@@ -56,18 +56,31 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
         ...identity,
         name: "timer fixture",
         prompt: "fixture",
+        authorizedInstructions: "fixture",
         crons: ["* * * * *"],
         active: true,
       },
     });
-    const config = { ...identity, routineId: routine.id, prompt: "fixture" };
+    const config = {
+      ...identity,
+      routineId: routine.id,
+      prompt: "fixture",
+      routineInstructions: routine.authorizedInstructions,
+      routineSites: routine.authorizedSites,
+    };
     async function create(
       tx: Prisma.TransactionClient,
       clientNonce: string | null,
       data: Partial<Prisma.RunUncheckedCreateInput> = {},
     ) {
       const task = await tx.task.create({
-        data: { ...identity, prompt: "fixture", status: "queued" },
+        data: {
+          ...identity,
+          prompt: config.prompt,
+          routineInstructions: config.routineInstructions,
+          routineSites: config.routineSites,
+          status: "queued",
+        },
       });
       return tx.run.create({
         data: {
@@ -98,6 +111,25 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     expect(results[0]!.id).toBe(results[1]!.id);
     expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
   });
+  it.each([
+    { routineInstructions: "different owner instructions" },
+    { routineInstructions: null },
+    { routineSites: ["example.com"] },
+  ])(
+    "preserves pending work with the same execution prompt and different authorization %j",
+    async (data) => {
+      const { routine, config, create } = await fixture();
+      const previous = await system.$transaction(async (tx) => {
+        const run = await create(tx, routineTimerNonce(routine.id, "2026-01-01T00:00:00Z"));
+        await tx.task.update({ where: { id: run.taskId }, data });
+        return run;
+      });
+      expect(await system.$transaction((tx) => findPendingRoutineTick(tx, config))).toBeNull();
+      expect(await system.run.findUnique({ where: { id: previous.id } })).toMatchObject({
+        status: "queued",
+      });
+    },
+  );
   it("preserves ambiguous legacy runs even with scheduled firing events", async () => {
     const { config, create } = await fixture();
     const legacy = await system.$transaction((tx) => create(tx, null));
@@ -351,7 +383,9 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
         ...identity,
         id: taskId,
         status: "queued",
-        prompt: "fixture",
+        prompt: config.prompt,
+        routineInstructions: config.routineInstructions,
+        routineSites: config.routineSites,
       })),
     });
     await system.run.createMany({
@@ -455,6 +489,8 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       expect(surviving.status).toBe(status);
       expect(await system.task.findUnique({ where: { id: surviving.taskId } })).toMatchObject({
         status: status === "completed" ? "completed" : "queued",
+        routineInstructions: routine.authorizedInstructions,
+        routineSites: routine.authorizedSites,
       });
       expect(
         (

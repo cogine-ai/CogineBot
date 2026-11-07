@@ -8,6 +8,35 @@ import {
   signup,
 } from "./helpers";
 
+test("site approval displays the site and submits Always", async ({ page }, testInfo) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=site-approval");
+  const always = page.getByRole("button", { name: "Always allow example.com", exact: true });
+  await expect(always).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Always allow this tool", exact: true }),
+  ).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "site-approval-always");
+  await always.click();
+  await expect(page.getByText("Always allowed", { exact: true })).toBeVisible();
+});
+
+test("routine destination approval shows each site without an Always action", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=routine-approval");
+  await expect(
+    page.getByText("Allow this Routine to use these sites each time it runs?", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("pre")).toHaveText(/^example\.net\s+example\.org$/);
+  await expect(page.getByRole("button", { name: "Allow once", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Always allow/ })).toHaveCount(0);
+  const deny = page.getByRole("button", { name: "Deny", exact: true });
+  await expect(deny).toBeVisible();
+  await captureScreenshot(page, testInfo, "routine-destination-approval");
+  await deny.click();
+  await expect(page.getByText("Denied", { exact: true })).toBeVisible();
+});
+
 test("actions run by default while optional confirmations live in Space settings", async ({
   page,
 }, testInfo) => {

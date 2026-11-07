@@ -171,6 +171,7 @@ import {
   AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
   callClientNonce,
+  canonicalApprovalSite,
   clampCatalogThinkingLevel,
   containsSecret,
   expandSkillReferencesInPrompt,
@@ -2790,6 +2791,7 @@ export function createRouter(deps: RouterDeps) {
           const message = await createThreadMessageInTransaction(tx, {
             threadId: target.threadId,
             role: "user",
+            authorUserId: context.actor.userId,
             blocks,
             clientNonce: input.clientNonce,
           });
@@ -3905,6 +3907,7 @@ export function createRouter(deps: RouterDeps) {
                   userId: context.actor.userId,
                   name: input.name,
                   prompt: input.prompt,
+                  authorizedInstructions: input.prompt,
                   crons: input.crons,
                   timezone: input.timezone,
                   notify: input.notify,
@@ -4066,15 +4069,19 @@ export function createRouter(deps: RouterDeps) {
         const { row } = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
-              if (settingModel || input.thinkingLevel) {
-                const current = await tx.routine.findFirst({
-                  where: {
-                    id: existing.id,
-                    userId: context.actor.userId,
-                    spaceId: context.actor.spaceId,
-                  },
-                });
-                if (!current) throw new ORPCError("NOT_FOUND");
+              const checkModel = settingModel || Boolean(input.thinkingLevel);
+              const current =
+                checkModel || input.prompt !== undefined
+                  ? await tx.routine.findFirst({
+                      where: {
+                        id: existing.id,
+                        userId: context.actor.userId,
+                        spaceId: context.actor.spaceId,
+                      },
+                    })
+                  : undefined;
+              if (current === null) throw new ORPCError("NOT_FOUND");
+              if (checkModel && current) {
                 const binding = settingModel
                   ? input
                   : {
@@ -4106,6 +4113,10 @@ export function createRouter(deps: RouterDeps) {
                   data: {
                     name: input.name,
                     prompt: input.prompt,
+                    // Clients can submit the existing prompt on a metadata-only save.
+                    ...(input.prompt !== undefined && input.prompt !== current?.prompt
+                      ? { authorizedInstructions: input.prompt, authorizedSites: [] }
+                      : {}),
                     crons: input.crons,
                     timezone: input.timezone,
                     active: input.active,
@@ -4209,7 +4220,6 @@ export function createRouter(deps: RouterDeps) {
           if (existing) return { runId: existing.id };
         }
         const skillRecords = await agentSkills.listWithContent(context.actor);
-        const prompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords);
         let run: { id: string };
         try {
           // Task + run must commit together so a nonce collision cannot leave an orphan queued Task.
@@ -4225,26 +4235,25 @@ export function createRouter(deps: RouterDeps) {
               WHERE id=${routine.id} AND "userId"=${context.actor.userId}
                 AND "spaceId"=${context.actor.spaceId} AND "botId"=${bot.id} FOR UPDATE`;
             if (locked.length !== 1) throw new IsolationError();
-            const currentModel = await tx.routine.findUnique({
+            const current = await tx.routine.findUnique({
               where: { id: routine.id },
               select: {
+                prompt: true,
+                authorizedInstructions: true,
+                authorizedSites: true,
                 modelProvider: true,
                 modelId: true,
                 modelCredentialId: true,
                 thinkingLevel: true,
               },
             });
-            if (!currentModel) throw new IsolationError();
-            if (
-              currentModel.modelProvider &&
-              currentModel.modelId &&
-              currentModel.modelCredentialId
-            ) {
+            if (!current) throw new IsolationError();
+            if (current.modelProvider && current.modelId && current.modelCredentialId) {
               const credential = await tx.$queryRaw<
                 Array<{ id: string }>
               >`SELECT id FROM user_model_credentials
-                WHERE id=${currentModel.modelCredentialId} AND "userId"=${context.actor.userId}
-                  AND provider=${currentModel.modelProvider} FOR KEY SHARE`;
+                WHERE id=${current.modelCredentialId} AND "userId"=${context.actor.userId}
+                  AND provider=${current.modelProvider} FOR KEY SHARE`;
               if (credential.length !== 1)
                 throw new IsolationError("Model connection is unavailable.");
             }
@@ -4254,7 +4263,9 @@ export function createRouter(deps: RouterDeps) {
                 botId: bot.id,
                 threadId,
                 userId: context.actor.userId,
-                prompt,
+                prompt: expandSkillReferencesInPrompt(current.prompt, skillRecords),
+                routineInstructions: current.authorizedInstructions ?? null,
+                routineSites: current.authorizedSites,
                 status: "queued",
                 connectionIds,
               },
@@ -4269,7 +4280,7 @@ export function createRouter(deps: RouterDeps) {
                 status: "queued",
                 trigger: "routine",
                 routineId: routine.id,
-                ...routineRunModelPin(currentModel),
+                ...routineRunModelPin(current),
                 clientNonce: nonce,
               },
               select: { id: true },
@@ -7006,12 +7017,16 @@ export function createRouter(deps: RouterDeps) {
         return rows.map((row) => ({
           id: row.id,
           effect: row.effect as "always_allow" | "require_approval",
-          matchKind: row.matchKind as "tool" | "connector" | "category",
+          matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
         }));
       }),
       set: authed.approvalRules.set.handler(async ({ context, input }) => {
+        const matchValue =
+          input.matchKind === "site" ? canonicalApprovalSite(input.matchValue) : input.matchValue;
+        if (!matchValue)
+          throw new ORPCError("BAD_REQUEST", { message: "Enter an HTTP(S) site or hostname." });
         const row = await deps.prisma.actionApprovalRule.upsert({
           where: {
             spaceId_createdByUserId_effect_matchKind_matchValue: {
@@ -7019,7 +7034,7 @@ export function createRouter(deps: RouterDeps) {
               createdByUserId: context.actor.userId,
               effect: input.effect,
               matchKind: input.matchKind,
-              matchValue: input.matchValue,
+              matchValue,
             },
           },
           create: {
@@ -7027,14 +7042,14 @@ export function createRouter(deps: RouterDeps) {
             createdByUserId: context.actor.userId,
             effect: input.effect,
             matchKind: input.matchKind,
-            matchValue: input.matchValue,
+            matchValue,
           },
           update: {},
         });
         return {
           id: row.id,
           effect: row.effect as "always_allow" | "require_approval",
-          matchKind: row.matchKind as "tool" | "connector" | "category",
+          matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
         };

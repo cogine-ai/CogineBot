@@ -1,4 +1,5 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "{site} immer erlauben",
   "This model's context window is too small. Choose another model.":
     "Das Kontextfenster dieses Modells ist zu klein. Wähle ein anderes Modell.",
   "This server's tool result does not fit the model. Choose another model.":

@@ -4156,6 +4156,7 @@ const MessageBubble = memo(function MessageBubble({
             </Text>
           ) : canAnswer && onAnswer ? (
             <AskActions
+              site={askBlock.site}
               actions={askBlock.actions}
               accessibilityActions={actionProps.accessibilityActions}
               onAccessibilityAction={actionProps.onAccessibilityAction}

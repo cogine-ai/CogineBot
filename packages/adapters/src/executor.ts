@@ -34,6 +34,7 @@ import type {
   AgentToolResultForHistory,
   ArtifactStore,
   AutoReviewProvider,
+  AutoReviewRequest,
   BrowserProvider,
   ComputerRef,
   ConnectorCall,
@@ -94,6 +95,8 @@ import {
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
+  connectorReadRequiresApproval,
+  connectorToolRequiresApproval,
   containsSecret,
   createStreamingRedactor,
   endsSentence,
@@ -106,13 +109,16 @@ import {
   isCallClientNonce,
   isMessagingChannelRun,
   isOneShotRoutineCrons,
+  isOwnerStartedRun,
   isTerminal,
   messagingChannelId,
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
+  newSiteOutcome,
   nextCronDateAcross,
   nextFence,
   normalizeRunError,
+  outboundSiteGate,
   PlatformModelForbiddenError,
   planActionGate,
   promptInvokesSkill,
@@ -123,10 +129,12 @@ import {
   sanitizeJsonValue,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
+  toolResultTaintsRun,
   truncatedPlainText,
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
 } from "@rakazo/core";
+import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
   approvalEffectKey,
   isToolEffectIdempotencyKey,
@@ -175,7 +183,11 @@ import {
   formatAgentEnvironmentInstruction,
   redactShellStreams,
 } from "./agent-environment.js";
-import { buildApprovalAskBlock } from "./approval-ask.js";
+import {
+  buildApprovalAskBlock,
+  formatRoutineSiteApprovalDetail,
+  MAX_FETCH_URL_LENGTH,
+} from "./approval-ask.js";
 import {
   approvalPausedToolResult,
   approvalReplayPathError,
@@ -401,6 +413,12 @@ import {
   secretPausedToolResult,
   tryCompleteConnectionWithCode,
 } from "./run-secret.js";
+import {
+  connectorBatchActions,
+  connectorTrustKeys,
+  createRunTrust,
+  loadCallEndOwnerWords,
+} from "./run-trust.js";
 import type { RunTurnCheckpointState } from "./run-turn-state.js";
 import {
   claimTurnEffectOccurrence,
@@ -415,6 +433,8 @@ import {
   filterBuiltinToolsForRun,
   filterBuiltinToolsForThread,
   listSchedulesFromTool,
+  routineSiteApprovalDetails,
+  routineSiteApprovalRequest,
 } from "./schedule-tools.js";
 import { loadAgentScratchpadContext } from "./scratchpad-context.js";
 import {
@@ -3063,7 +3083,9 @@ export function buildApprovalContinuation(
         }
         return `${uniquified ?? effect.kind}: ${formatRequest(bound.args)}`;
       }
-      return `${effect.kind}: ${formatRequest(effect.request)}`;
+      const routine =
+        effect.kind === "schedule_create" && routineSiteApprovalDetails(effect.request);
+      return `${effect.kind}: ${formatRequest(routine ? routine.args : effect.request)}`;
     }),
   ].join("\n");
 }
@@ -3314,7 +3336,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         spaceId: routine.spaceId,
         userId: routine.userId,
       });
-      const routinePrompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords);
       const claimed = await deps.prisma.$transaction(async (tx) => {
         const updated = await tx.routine.updateMany({
           where: {
@@ -3330,17 +3351,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
         });
         if (updated.count !== 1) return null;
-        // The claim locks the row, so this is the model that was committed when it fired.
-        const currentModel = await tx.routine.findUnique({
+        // The claim locks the row, so instructions and model are from the same firing.
+        const current = await tx.routine.findUnique({
           where: { id: routine.id },
           select: {
+            prompt: true,
+            authorizedInstructions: true,
+            authorizedSites: true,
             modelProvider: true,
             modelId: true,
             modelCredentialId: true,
             thinkingLevel: true,
           },
         });
-        if (!currentModel) return null;
+        if (!current) return null;
+        const routinePrompt = expandSkillReferencesInPrompt(current.prompt, skillRecords);
         const timerNonce = !isOneShotRoutineCrons(routine.crons)
           ? routineTimerNonce(routine.id, scheduledFor)
           : undefined;
@@ -3352,7 +3377,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             userId: routine.userId,
             threadId: thread.id,
             prompt: routinePrompt,
-            ...routineRunModelPin(currentModel),
+            routineInstructions: current.authorizedInstructions ?? null,
+            routineSites: current.authorizedSites ?? [],
+            ...routineRunModelPin(current),
           });
           if (pending) return { ...pending, coalesced: true };
           const fired = await tx.run.findUnique({
@@ -3368,6 +3395,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             threadId: thread.id,
             userId: routine.userId,
             prompt: routinePrompt,
+            routineInstructions: current.authorizedInstructions ?? null,
+            routineSites: current.authorizedSites ?? [],
             status: "queued",
           },
         });
@@ -3382,7 +3411,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             trigger: "routine",
             routineId: routine.id,
             clientNonce: timerNonce,
-            ...routineRunModelPin(currentModel),
+            ...routineRunModelPin(current),
           },
         });
         return { ...run, coalesced: false };
@@ -3868,14 +3897,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
       try {
         onRunStarted?.();
         dispatchHandedOff = Boolean(onRunStarted);
+        const sourceMessage = run.sourceMessageId
+          ? await deps.prisma.message.findUnique({
+              where: { id: run.sourceMessageId, threadId: run.threadId },
+              select: { clientNonce: true, role: true, blocks: true, authorUserId: true },
+            })
+          : null;
         const sourceBlocks =
-          run.trigger === "messaging" && run.sourceMessageId
-            ? ((
-                await deps.prisma.message.findUnique({
-                  where: { id: run.sourceMessageId },
-                  select: { blocks: true },
-                })
-              )?.blocks as MessageBlock[] | undefined)
+          run.trigger === "messaging"
+            ? (sourceMessage?.blocks as MessageBlock[] | undefined)
             : undefined;
         const channelId = messagingChannelId(sourceBlocks);
         const messagingChannelRun = isMessagingChannelRun(run.trigger, sourceBlocks);
@@ -4427,14 +4457,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         registerRetainedScreen();
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
         const sourceClientNonce =
-          (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
-            ? ((
-                await deps.prisma.message.findUnique({
-                  where: { id: run.sourceMessageId },
-                  select: { clientNonce: true },
-                })
-              )?.clientNonce ?? null)
+          run.trigger === "user" || run.trigger === "follow_up"
+            ? (sourceMessage?.clientNonce ?? null)
             : null;
+        const ownerStartedRun = isOwnerStartedRun(
+          run.trigger,
+          sourceMessage?.role === "user" && sourceMessage.authorUserId === run.userId,
+        );
         // A hang-up run has no source message: its own nonce carries the call it closes.
         const callEndRun = run.trigger === "call_end";
         const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
@@ -4782,6 +4811,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel("Saved turn checkpoint could not be restored");
           return;
         }
+        const trust = createRunTrust(deps.prisma, {
+          run,
+          routineInstructions: task.routineInstructions,
+          routineSites: task.routineSites,
+          callOwnerWords:
+            callEndRun &&
+            thread.botId === bot.id &&
+            thread.userId === run.userId &&
+            thread.spaceId === run.spaceId &&
+            !thread.groupId &&
+            !thread.externalConversationId
+              ? () => loadCallEndOwnerWords(deps.prisma, run)
+              : undefined,
+          sourceMessage,
+          ownerStartedRun,
+          messagingChannelRun,
+          restored: turnState.blob !== undefined || scriptedResume.stored !== undefined,
+          connectedProviders: connectedPlugins.map((plugin) => plugin.provider),
+          catalogApprovalMarker: CATALOG_APPROVAL_TOOL,
+        });
+        const searchResultUrls = new Set<string>();
         const verbatimMcpServers =
           !scripted &&
           (turnState.blob !== undefined || tools.some((tool) => tool.route?.connectorId === "mcp"))
@@ -5069,7 +5119,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           approvedKey?: string,
         ) => claimTurnEffectOccurrence(turnState, runId, toolName, args, executionId, approvedKey);
 
-        const applyTool = async (
+        const dispatchTool = async (
           name: string,
           args: Record<string, unknown>,
           executionId: string,
@@ -5284,7 +5334,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else {
               // Catalog wrappers keep resolveCall's parsed args so Zod stripping/coercion
               // still matches the first-approval effect key and execute payload.
-              args = approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
+              const routine =
+                name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
+              args = routine
+                ? routine.args
+                : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
             // Bound / shrink-direct approvals may skip catalog parse — reject before execute
             // if they no longer match the live schema.
@@ -5313,6 +5367,65 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const declaredReadOnly = viaConnector
             ? (resolvedTool ?? connectorTools.get(name))?.readOnly
             : undefined;
+          const fetchUrl =
+            name === "web_fetch" ? normalizedHttpUrl(String(args.url ?? "")) : undefined;
+          const fetchSite = fetchUrl ? urlSite(fetchUrl) : undefined;
+          if (name === "web_fetch" && !fetchSite) {
+            return { error: "url must be an http(s) URL without credentials" };
+          }
+          if (fetchUrl && fetchUrl.length > MAX_FETCH_URL_LENGTH)
+            return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
+          if (fetchUrl) {
+            args = { ...args, url: fetchUrl };
+            effectRequest = args;
+          }
+          const siteGate =
+            fetchUrl && fetchSite
+              ? outboundSiteGate({
+                  site: fetchSite,
+                  trusted:
+                    searchResultUrls.has(fetchUrl) ||
+                    (await trust.loadTrustedSites()).has(fetchSite),
+                  rules: await loadApprovalRules(),
+                })
+              : "allow";
+          const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
+          const connectorKind = connectorKindFromToolName(name, connectorProviders);
+          const batch = connectorBatchActions(liveRoute?.toolName ?? name, args);
+          const connectorTrusts = connectorTrustKeys(
+            batch?.actions,
+            liveRoute,
+            connectorKind,
+            connectorProviders,
+          );
+          const connectorReadGated =
+            viaConnector &&
+            !(batch && !batch.complete) &&
+            (batch?.actions.map((action) => action.name) ?? [name]).every(
+              (tool) => !connectorToolRequiresApproval(tool, declaredReadOnly),
+            ) &&
+            connectorReadRequiresApproval({
+              tainted: await trust.isTainted(),
+              connectorTrusted: await trust
+                .loadTrustedConnectors()
+                .then((trusted) => connectorTrusts.every((key) => trusted.has(key))),
+            });
+          const routineSitePolicy =
+            name === "schedule_create"
+              ? await trust.routineSitePolicy(String(args.prompt ?? ""), await loadApprovalRules())
+              : undefined;
+          const routineSitesToReview = routineSitePolicy?.sitesToReview ?? [];
+          const routineApproval =
+            routineSitesToReview.length && !nextApprovedTool
+              ? formatRoutineSiteApprovalDetail(routineSitesToReview, runSecrets)
+              : undefined;
+          if (routineApproval && "error" in routineApproval) return routineApproval;
+          const routineSiteDetail = routineApproval?.detail;
+          if (name === "schedule_create") {
+            effectRequest = routineSiteDetail
+              ? routineSiteApprovalRequest(args, routineSitesToReview)
+              : { ...args };
+          }
           const requiresUnattendedApproval = unattendedTriggerToolRequiresApproval(
             run.trigger,
             name,
@@ -5321,13 +5434,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           );
           const requiresApprovalByDefault =
             requiresUnattendedApproval ||
+            siteGate === "new" ||
             toolRequiresApproval(name, viaConnector, declaredReadOnly);
+          const gated = requiresApprovalByDefault || connectorReadGated;
           const requiresMandatoryApproval =
-            requiresUnattendedApproval || toolRequiresExplicitApproval(name);
-          const connectorKind = connectorKindFromToolName(
-            name,
-            connectedPlugins.map((plugin) => plugin.provider),
-          );
+            requiresUnattendedApproval ||
+            routineSitesToReview.length > 0 ||
+            toolRequiresExplicitApproval(name);
           const approvalResolved = requiresMandatoryApproval
             ? {
                 decision: "ask" as const,
@@ -5338,6 +5451,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 toolName: name,
                 connectorKind,
                 readOnly: declaredReadOnly,
+                site: fetchSite,
                 rules: await loadApprovalRules(),
               });
           const autoReviewPref = requiresMandatoryApproval
@@ -5369,6 +5483,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : planActionGate({
                 resolved: approvalResolved,
                 consequential: requiresApprovalByDefault,
+                reviewOnly: connectorReadGated,
+                newDestination: siteGate === "new",
                 autoReviewEnabled: autoReviewPref,
                 checkerConfigured,
               });
@@ -5377,10 +5493,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const needsApprovalEarly = plan === "ask" || plan === "judge";
           // A resumed approval keeps its key even if "Always allow" changed the policy.
           const usesApprovalKey =
-            nextApprovedTool ||
-            name === "request_secret" ||
-            needsApprovalEarly ||
-            requiresApprovalByDefault;
+            nextApprovedTool || name === "request_secret" || needsApprovalEarly || gated;
           // Count before choosing a key so an approved replay (occurrence 0 / base
           // key) cannot collide with a later identical-args call in this attempt.
           // request_secret stays single-use: retries must reuse the same card.
@@ -5402,6 +5515,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const applied =
             READ_ONLY_AGENT_TOOLS.has(name) &&
             !needsApprovalEarly &&
+            siteGate !== "new" &&
             nextApprovedTool !== name &&
             !nextApprovedKey
               ? undefined
@@ -5415,15 +5529,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   consumedEffectIds,
                 );
           if (applied) await bindScriptedEffect(applied.effect, executionId);
+          if (
+            routineSiteDetail &&
+            applied?.effect.status === "intended" &&
+            !routineSiteApprovalDetails(applied.effect.request)
+          ) {
+            return {
+              error: "This Routine needs a new destination approval. Try scheduling it again.",
+            };
+          }
 
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
             try {
-              const reviewRequest = {
+              const newSite = siteGate === "new" && fetchUrl !== undefined;
+              const reviewRequest: AutoReviewRequest = {
                 toolName: name,
                 connectorKind,
-                args: redactToolArgsForReview(args, runSecrets),
-                userTask: redactSecrets(task.prompt, runSecrets),
+                args: redactToolArgsForReview(newSite ? { url: fetchUrl } : args, runSecrets),
+                userTask: redactSecrets(
+                  newSite ? await trust.loadOwnerWords() : task.prompt,
+                  runSecrets,
+                ),
+                ...(newSite ? { newSite: true } : {}),
                 botDescription: redactSecrets(
                   `${bot.name}: ${bot.title}\n${bot.description}`,
                   runSecrets,
@@ -5512,7 +5640,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               reviewReason = judge.reason;
               gateDecision = applyJudgeDecision({
                 decision: judge.decision,
-                consequential: requiresApprovalByDefault,
+                consequential: gated,
               });
               if (applied) {
                 await deps.prisma.externalEffect.update({
@@ -5531,7 +5659,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               reviewReason = "Checker could not authenticate.";
               gateDecision = applyJudgeDecision({
                 decision: "error",
-                consequential: requiresApprovalByDefault,
+                consequential: gated,
               });
               if (applied) {
                 await deps.prisma.externalEffect.update({
@@ -5574,9 +5702,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (context.signal.aborted) return pauseForApproval();
 
+          if (
+            siteGate === "new" &&
+            newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
+          ) {
+            if (applied) {
+              await deps.prisma.externalEffect.updateMany({
+                where: { id: applied.effect.id, status: "intended" },
+                data: { status: "denied" },
+              });
+            }
+            return { error: `Fetching ${fetchSite} needs approval, and a webhook run cannot ask.` };
+          }
+
           const needsApproval = gateDecision === "ask";
-          const bypassApproval = gateDecision === "allow" && requiresApprovalByDefault;
+          const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
+          let approvedRoutineSites: string[] = [];
 
           const claimOrReturn = async (
             from: "approved" | "intended",
@@ -5625,6 +5767,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 blocks: [
                   buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                     reviewReason,
+                    routineSiteDetail,
+                    allowSiteAlways: !approvalResolved.matchingRules.some(
+                      (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
+                    ),
                   }),
                 ],
               },
@@ -5716,6 +5862,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (name !== "request_takeover") {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
+                if (name === "schedule_create" && claimedEffect) {
+                  approvedRoutineSites =
+                    routineSiteApprovalDetails(applied.effect.request)?.sites ?? [];
+                }
               }
             }
           } else if (needsApproval && applied) {
@@ -5723,6 +5873,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           } else if (bypassApproval && applied && name !== "request_takeover") {
             const early = await claimOrReturn("intended");
             if (early !== undefined) return early;
+          }
+          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
+          if (viaConnector && !(batch && !batch.complete)) {
+            const trusted = await trust.loadTrustedConnectors();
+            for (const key of connectorTrusts) trusted.add(key);
           }
           const persistEffectResult = (result: unknown) =>
             applied
@@ -6310,10 +6465,46 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
           if (name === "web_search") {
-            return finish(await webSearchFromTool(web, context, args));
+            const result = await webSearchFromTool(web, context, args);
+            for (const row of ("results" in result ? result.results : []) ?? []) {
+              const url = normalizedHttpUrl(row.url);
+              if (url) searchResultUrls.add(url);
+            }
+            return finish(result);
           }
           if (name === "web_fetch") {
-            return finish(await webFetchFromTool(web, context, args));
+            const trustedSites = await trust.loadTrustedSites();
+            const rules = await loadApprovalRules();
+            return finish(
+              await webFetchFromTool(web, context, args, (url) => {
+                if (url.length > MAX_FETCH_URL_LENGTH)
+                  throw new Error(
+                    `Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`,
+                  );
+                const site = urlSite(url);
+                const siteAllowed =
+                  site !== undefined &&
+                  outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
+                // An exact search hit grants its URL. Site authority is separate.
+                if (site === fetchSite && siteAllowed) return;
+                const resolved = resolveActionApprovalDetail({
+                  toolName: name,
+                  connectorKind,
+                  readOnly: declaredReadOnly,
+                  site,
+                  rules,
+                });
+                if (
+                  site &&
+                  resolved.decision === "allow" &&
+                  (searchResultUrls.has(url) || siteAllowed)
+                )
+                  return;
+                throw new Error(
+                  `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
+                );
+              }),
+            );
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {
@@ -6511,6 +6702,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               name: String(args.name ?? ""),
               prompt: String(args.prompt ?? ""),
+              authorizedSites: [
+                ...new Set([
+                  ...(routineSitePolicy?.authorizedSites ?? []),
+                  ...approvedRoutineSites,
+                ]),
+              ],
               timezone: args.timezone ? String(args.timezone) : undefined,
               schedule: compactScheduleInput({
                 cron: args.cron,
@@ -7678,6 +7875,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return pause.owned && pause.result === true;
         };
 
+        const applyTool = async (
+          name: string,
+          args: Record<string, unknown>,
+          executionId: string,
+          route?: unknown,
+          observer?: AgentToolExecutionObserver,
+        ) => {
+          try {
+            return await dispatchTool(name, args, executionId, route, observer);
+          } finally {
+            // Only this bot's own profile is a confirmation of its own write.
+            const ownProfile =
+              name === "update_bot" &&
+              (args.bot_id === undefined ||
+                args.bot_id === null ||
+                String(args.bot_id).trim() === "");
+            if (toolResultTaintsRun(name) && !ownProfile) trust.state.tainted = true;
+          }
+        };
+
         const pluginLine =
           connectedPlugins.length > 0
             ? `Connected plugins: ${connectedPlugins.map((row) => `${row.displayName} (${row.connectorId}:${row.provider})`).join(", ")}. Prefer those plugin tools over the computer browser or web search when reading app data (repos, releases, mail, calendar, and similar).`
@@ -8125,7 +8342,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseFence: fence,
                   seenIds,
                 });
-                return Promise.all(
+                const mapped = await Promise.all(
                   steering.map(async (item) => {
                     const { images, files, unavailableInstruction } =
                       await settleSteeringAttachmentLoads(
@@ -8167,6 +8384,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     };
                   }),
                 );
+                trust.recordSteering(steering);
+                return mapped;
               },
             },
             context,
