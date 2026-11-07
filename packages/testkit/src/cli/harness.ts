@@ -264,6 +264,7 @@ async function main() {
               DATABASE_URL: suiteUrl.toString(),
               DATABASE_MIGRATION_URL: suiteUrl.toString(),
               REALTIME_DATABASE_URL: suiteUrl.toString(),
+              VERIFY_ISOLATED_DATABASE: database,
               VERIFY_POSTGRES_CONTAINER_ID: suite === databaseRestoreSuite ? container.getId() : "",
               DEPLOYMENT_TRANSFER_PEER_DATABASE_URL: dualDeployment ? peerUrl.toString() : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE:

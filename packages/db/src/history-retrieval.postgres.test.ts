@@ -6,12 +6,17 @@ import type { Prisma } from "./client.js";
 import { PrismaClient } from "./client.js";
 import { readHistory, searchHistory } from "./history-retrieval.js";
 
-// Temporary synthetic tables shadow product tables. Never inspect existing chat content.
 const enabled = process.env.VERIFY_DATABASE && process.env.DATABASE_URL;
 const postgres = enabled ? describe.sequential : describe.skip;
 postgres("history retrieval (PostgreSQL)", () => {
   let pool: Pool;
   let prisma: PrismaClient;
+  const messageColumns =
+    '(id, "threadId", seq, role, "runId", "replyToMessageId", "createdAt", blocks)';
+  const runColumns =
+    '(id, "spaceId", "userId", "threadId", "botId", "sourceMessageId", status, "createdAt", "completedAt", "taskId", trigger, "updatedAt")';
+  const artifactColumns =
+    '(id, "spaceId", "userId", "botId", "groupId", "runId", name, "mimeType", size, "createdAt", hash, "storageKey")';
   const scope = {
     spaceId: "synthetic-space",
     userId: "synthetic-user",
@@ -19,34 +24,58 @@ postgres("history retrieval (PostgreSQL)", () => {
     botId: "synthetic-bot",
   };
   beforeAll(async () => {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: "pg_temp" }) });
+    const url = new URL(process.env.DATABASE_URL!);
+    const database = url.pathname.slice(1);
+    if (
+      !["postgres:", "postgresql:"].includes(url.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      Number(url.port) <= 1024 ||
+      ["host", "port", "dbname", "database"].some((key) => url.searchParams.has(key)) ||
+      !/^integration_(0|[1-9][0-9]*)$/.test(database) ||
+      database !== process.env.VERIFY_ISOLATED_DATABASE
+    )
+      throw new Error("History retrieval tests require an explicitly isolated harness database");
+
+    // Prisma resolves Run and Artifact to public. Keep synthetic rows and the
+    // production full-text index in the same rollback-scoped connection.
+    pool = new Pool({ connectionString: url.toString(), max: 1, idleTimeoutMillis: 0 });
+    const identity = await pool.query<{ database: string }>(
+      "SELECT current_database() AS database",
+    );
+    if (identity.rows[0]?.database !== database)
+      throw new Error("History retrieval fixture connection did not reach its isolated database");
+    prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
     await pool.query(`
-      CREATE TEMP TABLE bots (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
-      CREATE TEMP TABLE threads (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text);
-      CREATE TEMP TABLE chat_groups (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
-      CREATE TEMP TABLE chat_group_members ("groupId" text, "botId" text);
-      CREATE TEMP TABLE messages (id text PRIMARY KEY, "threadId" text, seq integer, role text, "runId" text,
-        "replyToMessageId" text, "createdAt" timestamptz, blocks jsonb);
-      CREATE TEMP TABLE runs (id text PRIMARY KEY, "spaceId" text, "userId" text, "threadId" text, "botId" text,
-        "sourceMessageId" text, status text, "createdAt" timestamptz, "completedAt" timestamptz);
-      CREATE TEMP TABLE artifacts (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text,
-        "runId" text, name text, "mimeType" text, size integer, "createdAt" timestamptz);
-      INSERT INTO bots VALUES ('synthetic-bot','synthetic-space','synthetic-user',NULL);
-      INSERT INTO threads VALUES ('synthetic-thread','synthetic-space','synthetic-user','synthetic-bot');
-      INSERT INTO messages SELECT 'm-' || n, 'synthetic-thread', n, 'user', NULL, NULL,
+      BEGIN;
+      SET LOCAL search_path = public, pg_catalog;
+      SET LOCAL TIME ZONE 'UTC';
+      INSERT INTO "user" (id, name, email, "updatedAt")
+        VALUES ('synthetic-user', 'History owner', 'synthetic-history@example.test', now());
+      INSERT INTO organization (id, name, slug, "createdAt")
+        VALUES ('synthetic-org', 'History organization', 'synthetic-history', now());
+      INSERT INTO spaces (id, "organizationId", name, "createdByUserId")
+        VALUES ('synthetic-space', 'synthetic-org', 'History space', 'synthetic-user');
+      INSERT INTO bots (id, "spaceId", "userId", name, color, "updatedAt")
+        VALUES ('synthetic-bot', 'synthetic-space', 'synthetic-user', 'History bot', '#000000', now());
+      INSERT INTO threads (id, "spaceId", "userId", "botId")
+        VALUES ('synthetic-thread', 'synthetic-space', 'synthetic-user', 'synthetic-bot');
+      INSERT INTO tasks (id, "spaceId", "botId", "threadId", "userId", prompt, status, "updatedAt")
+        VALUES ('synthetic-task', 'synthetic-space', 'synthetic-bot', 'synthetic-thread',
+          'synthetic-user', 'Synthetic history', 'completed', now());
+      INSERT INTO messages ${messageColumns} SELECT 'm-' || n, 'synthetic-thread', n, 'user', NULL, NULL,
         '2026-01-01'::timestamptz + n * interval '1 minute',
         jsonb_build_array(jsonb_build_object('kind','text','text', CASE WHEN n = 100 THEN 'exports use batching' ELSE 'filler exchange ' || n END))
         FROM generate_series(1,10000) n;
-      CREATE INDEX synthetic_history_fts ON messages USING GIN (to_tsvector('simple',jsonb_path_query_array(blocks,
-        '$[*] ? (@.kind == "text" || @.kind == "channel_message" || @.kind == "bot_message_received" || @.kind == "bot_message_sent" || @.kind == "handoff").text')::text || jsonb_path_query_array(blocks, '$[*] ? (@.kind == "subagent").task')::text || jsonb_path_query_array(blocks, '$[*] ? (@.kind == "subagent").result')::text));
-      CREATE INDEX synthetic_history_seq ON messages ("threadId",seq);
       ANALYZE messages;
     `);
   });
   afterAll(async () => {
-    await prisma?.$disconnect();
-    await pool?.end();
+    try {
+      await pool?.query("ROLLBACK");
+    } finally {
+      await prisma?.$disconnect();
+      await pool?.end();
+    }
   });
   it("finds a distant fact in 10,000 messages using the full text index", async () => {
     const querySpy = vi.spyOn(prisma, "$queryRaw");
@@ -59,14 +88,14 @@ postgres("history retrieval (PostgreSQL)", () => {
       authorizedQuery.values,
     );
     const plan = explained.rows[0]["QUERY PLAN"][0];
-    expect(JSON.stringify(plan)).toContain("synthetic_history_fts");
+    expect(JSON.stringify(plan)).toContain("messages_history_search_idx");
     expect(plan.Plan["Actual Rows"]).toBe(1);
     expect(plan["Planning Time"]).toBeGreaterThanOrEqual(0);
     expect(plan["Execution Time"]).toBeGreaterThanOrEqual(0);
     process.stdout.write(
       `Synthetic authorized 10k history search ${JSON.stringify({
         messages: 10000,
-        index: "equivalent local GIN expression",
+        index: "messages_history_search_idx",
         returnedRows: plan.Plan["Actual Rows"],
         planningMs: plan["Planning Time"],
         executionMs: plan["Execution Time"],
@@ -74,7 +103,7 @@ postgres("history retrieval (PostgreSQL)", () => {
     );
   });
   it("keeps query-specific continuation available after a narrower empty query in the 10k corpus", async () => {
-    await pool.query(`INSERT INTO messages SELECT 'continuation-' || n, 'synthetic-thread', n, 'user', NULL, NULL,
+    await pool.query(`INSERT INTO messages ${messageColumns} SELECT 'continuation-' || n, 'synthetic-thread', n, 'user', NULL, NULL,
       '2026-01-01T00:00:00Z'::timestamptz,
       jsonb_build_array(jsonb_build_object('kind','text','text',CASE WHEN n = 13001
         THEN 'continuation original ORBIT-731' ELSE 'continuation broad topic' END))
@@ -201,22 +230,22 @@ postgres("history retrieval (PostgreSQL)", () => {
     expect(offset.nextSearch).toBeNull();
   });
   it("does not index credential prompts or tool metadata", async () => {
-    await pool.query(`INSERT INTO messages VALUES
+    await pool.query(`INSERT INTO messages ${messageColumns} VALUES
       ('secret-metadata','synthetic-thread',11000,'system',NULL,NULL,now(),
         '[{"kind":"secret_prompt","text":"synthetic credential needle"},{"kind":"progress","text":"hidden trace needle"}]')`);
     expect((await searchHistory(prisma, scope, { query: "needle" })).messages).toEqual([]);
   });
   it("indexes persisted subagent conclusions and retrieves them as linked outcomes", async () => {
-    await pool.query(`INSERT INTO messages VALUES ('subagent-result','synthetic-thread',11999,'bot',NULL,NULL,now(),
+    await pool.query(`INSERT INTO messages ${messageColumns} VALUES ('subagent-result','synthetic-thread',11999,'bot',NULL,NULL,now(),
       '[{"kind":"subagent","agentId":"synthetic-agent","name":"Research","task":"Inspect exports","status":"completed","result":"ledger-indexer produced aurora-investigation.txt"}]');`);
     const result = await searchHistory(prisma, scope, { query: "ledger-indexer" });
     expect(result.messages[0]!.text).toContain("ledger-indexer");
     expect(result.messages[0]!.text).toContain("aurora-investigation.txt");
   });
   it("finds an open task-only background investigation through its original-backed snapshot topic", async () => {
-    await pool.query(`INSERT INTO runs VALUES ('task-only-run','synthetic-space','synthetic-user','synthetic-thread',
-        'synthetic-bot',NULL,'running',now(),NULL);
-      INSERT INTO messages VALUES ('task-only-message','synthetic-thread',11998,'bot','task-only-run',NULL,now(),
+    await pool.query(`INSERT INTO runs ${runColumns} VALUES ('task-only-run','synthetic-space','synthetic-user','synthetic-thread',
+        'synthetic-bot',NULL,'running',now(),NULL,'synthetic-task','manual',now());
+      INSERT INTO messages ${messageColumns} VALUES ('task-only-message','synthetic-thread',11998,'bot','task-only-run',NULL,now(),
         '[{"kind":"subagent","agentId":"synthetic-agent","name":"Research","task":"Inspect quartz routing congestion","status":"running","result":""}]');`);
     const search = await searchHistory(prisma, scope, { query: "quartz routing congestion" });
     expect(search.messages.map((message) => message.messageId)).toEqual(["task-only-message"]);
@@ -246,9 +275,9 @@ postgres("history retrieval (PostgreSQL)", () => {
     ).toEqual([]);
   });
   it("retrieves source-less background work only through a surviving private output", async () => {
-    await pool.query(`INSERT INTO runs VALUES
-      ('background-run','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',NULL,'completed',now(),now());
-      INSERT INTO messages VALUES ('background-result','synthetic-thread',12000,'bot','background-run',NULL,now(),
+    await pool.query(`INSERT INTO runs ${runColumns} VALUES
+      ('background-run','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',NULL,'completed',now(),now(),'synthetic-task','manual',now());
+      INSERT INTO messages ${messageColumns} VALUES ('background-result','synthetic-thread',12000,'bot','background-run',NULL,now(),
         '[{"kind":"text","text":"Background investigation complete"}]');`);
     const result = await readHistory(prisma, scope, { messageId: "background-result", limit: 1 });
     expect(result.runs.map((run) => run.id)).toEqual(["background-run"]);
@@ -265,15 +294,24 @@ postgres("history retrieval (PostgreSQL)", () => {
     expect((await readHistory(prisma, scope, { messageId: "background-result" })).runs).toEqual([]);
   });
   it("reads native group history only for owned member bots and scopes group artifacts", async () => {
-    await pool.query(`INSERT INTO bots VALUES ('synthetic-outsider','synthetic-space','synthetic-user',NULL);
-      INSERT INTO chat_groups VALUES ('synthetic-group','synthetic-space','synthetic-user',NULL);
-      INSERT INTO chat_group_members VALUES ('synthetic-group','synthetic-bot');
-      INSERT INTO threads VALUES ('synthetic-group-thread','synthetic-space','synthetic-user',NULL,'synthetic-group');
-      INSERT INTO messages VALUES
+    await pool.query(`INSERT INTO bots (id, "spaceId", "userId", name, color, "updatedAt")
+        VALUES ('synthetic-outsider','synthetic-space','synthetic-user','Outside bot','#000000',now());
+      INSERT INTO chat_groups (id, "spaceId", "userId", name, "updatedAt")
+        VALUES ('synthetic-group','synthetic-space','synthetic-user','History group',now());
+      INSERT INTO chat_group_members (id, "groupId", "botId")
+        VALUES ('synthetic-member','synthetic-group','synthetic-bot');
+      INSERT INTO threads (id, "spaceId", "userId", "groupId")
+        VALUES ('synthetic-group-thread','synthetic-space','synthetic-user','synthetic-group');
+      INSERT INTO tasks (id, "spaceId", "botId", "threadId", "userId", prompt, status, "updatedAt")
+        VALUES ('synthetic-group-task','synthetic-space','synthetic-bot','synthetic-group-thread',
+          'synthetic-user','Synthetic group history','completed',now());
+      INSERT INTO messages ${messageColumns} VALUES
         ('group-source','synthetic-group-thread',0,'user',NULL,NULL,now(),'[{"kind":"text","text":"group exports"}]'),
         ('group-outcome','synthetic-group-thread',1,'bot','group-run',NULL,now(),'[{"kind":"text","text":"group exports done"}]');
-      INSERT INTO runs VALUES ('group-run','synthetic-space','synthetic-user','synthetic-group-thread','synthetic-bot','group-source','completed',now(),now());
-      INSERT INTO artifacts VALUES ('group-artifact','synthetic-space','synthetic-user','synthetic-bot','synthetic-group','group-run','group-report.txt','text/plain',10,now());`);
+      INSERT INTO runs ${runColumns} VALUES ('group-run','synthetic-space','synthetic-user','synthetic-group-thread',
+        'synthetic-bot','group-source','completed',now(),now(),'synthetic-group-task','manual',now());
+      INSERT INTO artifacts ${artifactColumns} VALUES ('group-artifact','synthetic-space','synthetic-user','synthetic-bot',
+        'synthetic-group','group-run','group-report.txt','text/plain',10,now(),'fixture-hash','synthetic-storage-key');`);
     const groupScope = { ...scope, threadId: "synthetic-group-thread" };
     expect(
       (await searchHistory(prisma, groupScope, { query: "group exports" })).messages,
@@ -306,15 +344,17 @@ postgres("history retrieval (PostgreSQL)", () => {
   it("keeps complete JSON and pages all 50 linked runs, 100 artifacts and long original text", async () => {
     const original = `Original evidence\n${"長い\n".repeat(4000)}`;
     await pool.query(
-      `INSERT INTO messages VALUES ('paging-source','synthetic-thread',15000,'user',NULL,NULL,now(), $1::jsonb)`,
+      `INSERT INTO messages ${messageColumns} VALUES ('paging-source','synthetic-thread',15000,'user',NULL,NULL,now(), $1::jsonb)`,
       [JSON.stringify([{ kind: "text", text: original }])],
     );
     await pool.query(`
-      INSERT INTO runs SELECT 'paging-run-' || lpad(n::text,2,'0'), 'synthetic-space','synthetic-user',
-        'synthetic-thread','synthetic-bot','paging-source','completed',now(),now() FROM generate_series(0,49) n;
-      INSERT INTO artifacts SELECT 'paging-artifact-' || lpad(n::text,3,'0'), 'synthetic-space','synthetic-user',
-        'synthetic-bot',NULL,'paging-run-00','report-' || n || '.txt','text/plain',10,now() FROM generate_series(0,99) n;
-      INSERT INTO messages SELECT 'paging-outcome-' || n,'synthetic-thread',15001+n,'bot','paging-run-00',NULL,now(),
+      INSERT INTO runs ${runColumns} SELECT 'paging-run-' || lpad(n::text,2,'0'), 'synthetic-space','synthetic-user',
+        'synthetic-thread','synthetic-bot','paging-source','completed',now(),now(),'synthetic-task','manual',now()
+        FROM generate_series(0,49) n;
+      INSERT INTO artifacts ${artifactColumns} SELECT 'paging-artifact-' || lpad(n::text,3,'0'), 'synthetic-space','synthetic-user',
+        'synthetic-bot',NULL,'paging-run-00','report-' || n || '.txt','text/plain',10,now(),'fixture-hash','synthetic-storage-key'
+        FROM generate_series(0,99) n;
+      INSERT INTO messages ${messageColumns} SELECT 'paging-outcome-' || n,'synthetic-thread',15001+n,'bot','paging-run-00',NULL,now(),
         jsonb_build_array(jsonb_build_object('kind','text','text', repeat('outcome evidence ',200))) FROM generate_series(0,29) n;
     `);
     const assertBounded = (result: unknown) => {
@@ -386,13 +426,13 @@ postgres("history retrieval (PostgreSQL)", () => {
     ).toEqual([]);
   });
   it("searches original-backed snapshots and pages from a short source to linked outcomes and open work", async () => {
-    await pool.query(`INSERT INTO messages VALUES ('navigation-source','synthetic-thread',16000,'user',NULL,NULL,now(),
+    await pool.query(`INSERT INTO messages ${messageColumns} VALUES ('navigation-source','synthetic-thread',16000,'user',NULL,NULL,now(),
       '[{"kind":"text","text":"Inspect the navigation canary"}]');
-      INSERT INTO runs VALUES ('navigation-open-run','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
-        'navigation-source','running',now(),NULL),
+      INSERT INTO runs ${runColumns} VALUES ('navigation-open-run','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
+        'navigation-source','running',now(),NULL,'synthetic-task','manual',now()),
         ('navigation-complete-run','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
-        'navigation-source','completed',now(),now());
-      INSERT INTO messages VALUES ('navigation-result','synthetic-thread',16001,'bot','navigation-complete-run',NULL,now(),
+        'navigation-source','completed',now(),now(),'synthetic-task','manual',now());
+      INSERT INTO messages ${messageColumns} VALUES ('navigation-result','synthetic-thread',16001,'bot','navigation-complete-run',NULL,now(),
         '[{"kind":"subagent","task":"Inspect navigation","result":"Navigation diagnostic final result: ledger-indexer"}]');`);
     const search = await searchHistory(prisma, scope, { query: "navigation canary", limit: 1 });
     expect(search.messages[0]!.messageId).toBe("navigation-source");
@@ -429,14 +469,14 @@ postgres("history retrieval (PostgreSQL)", () => {
   });
   it("checks ownership and excludes private history from channel retrieval", async () => {
     await pool.query(`
-      INSERT INTO messages VALUES
+      INSERT INTO messages ${messageColumns} VALUES
         ('channel-source','synthetic-thread',10001,'user',NULL,NULL,now(),'[{"kind":"channel_message","channelId":"channel-a","text":"exports approved"}]'),
         ('channel-result','synthetic-thread',10002,'bot','run-a',NULL,now(),'[{"kind":"text","text":"exports completed"}]'),
         ('private-source','synthetic-thread',10003,'user',NULL,NULL,now(),'[{"kind":"text","text":"exports private"}]'),
         ('private-result','synthetic-thread',10004,'bot','run-private',NULL,now(),'[{"kind":"text","text":"exports confidential"}]');
-      INSERT INTO runs VALUES
-        ('run-a','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot','channel-source','completed',now(),now()),
-        ('run-private','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot','private-source','completed',now(),now());
+      INSERT INTO runs ${runColumns} VALUES
+        ('run-a','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot','channel-source','completed',now(),now(),'synthetic-task','manual',now()),
+        ('run-private','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot','private-source','completed',now(),now(),'synthetic-task','manual',now());
     `);
     const channelScope = { ...scope, channelId: "channel-a" };
     expect(
