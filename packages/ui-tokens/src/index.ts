@@ -132,14 +132,15 @@ export type WebColorTokens = ColorTokens & {
 
 export const webDarkTokens = {
   ...darkTokens,
-  destructiveFill: "#E5484D",
+  // Small labels on this fill use white ink, which needs at least 4.5:1 contrast.
+  destructiveFill: lightTokens.destructive,
   primaryHover: "#DBDBDB",
   primaryDisabled: "#F5F5F521",
 } as const satisfies WebColorTokens;
 
 export const webLightTokens = {
   ...lightTokens,
-  destructiveFill: "#E5484D",
+  destructiveFill: lightTokens.destructive,
   primaryHover: "#363636",
   primaryDisabled: "#1C1C1C26",
 } as const satisfies WebColorTokens;
