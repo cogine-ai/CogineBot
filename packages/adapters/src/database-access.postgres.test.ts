@@ -198,6 +198,61 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     expect(await digestCount()).toBe(before);
   });
 
+  it.each(["public usage", "delegated table access", "column access", "default grants"] as const)(
+    "rejects Pages schema ACL drift from %s",
+    async (fixture) => {
+      const group = escapeIdentifier(grantRole);
+      const queries = {
+        "public usage": [
+          "GRANT USAGE ON SCHEMA cogine_pages TO PUBLIC",
+          "REVOKE USAGE ON SCHEMA cogine_pages FROM PUBLIC",
+        ],
+        "delegated table access": [
+          `GRANT UPDATE ON cogine_pages.pages TO ${group} WITH GRANT OPTION`,
+          `REVOKE GRANT OPTION FOR UPDATE ON cogine_pages.pages FROM ${group}`,
+        ],
+        "column access": [
+          `GRANT SELECT (id) ON cogine_pages.pages TO ${group}`,
+          `REVOKE SELECT (id) ON cogine_pages.pages FROM ${group}`,
+        ],
+        "default grants": [
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA cogine_pages GRANT SELECT ON TABLES TO ${group}`,
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA cogine_pages REVOKE SELECT ON TABLES FROM ${group}`,
+        ],
+      } as const;
+      const [grant, revoke] = queries[fixture];
+      await owner.pool.query(grant);
+      try {
+        expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+        await expect(provisionRuntimeRole(databaseUrl!, runtimeUrl)).rejects.toThrow(
+          "Pages database schema",
+        );
+      } finally {
+        await owner.pool.query(revoke);
+      }
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
+    },
+  );
+
+  it("repairs Pages runtime grants when the namespace ACL is empty", async () => {
+    const group = escapeIdentifier(grantRole);
+    await owner.pool.query(`REVOKE ALL ON SCHEMA cogine_pages FROM CURRENT_USER, ${group}`);
+    try {
+      expect(
+        (
+          await owner.pool.query(
+            "SELECT cardinality(nspacl) AS grants FROM pg_namespace WHERE nspname = 'cogine_pages'",
+          )
+        ).rows,
+      ).toEqual([{ grants: 0 }]);
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: false });
+      await provisionRuntimeRole(databaseUrl!, runtimeUrl);
+      expect(await describeRowSecurity(runtime!.prisma)).toMatchObject({ prepared: true });
+    } finally {
+      await owner.pool.query("GRANT ALL ON SCHEMA cogine_pages TO CURRENT_USER");
+    }
+  });
+
   it("preserves the old login credential until its instances drain", async () => {
     const name = `${login}_rotation`;
     allocated.add(name);

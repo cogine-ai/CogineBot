@@ -32,8 +32,14 @@ export interface RowSecurityPolicyStatus {
 interface PolicyDefinition {
   readonly model: string;
   readonly table: string;
+  readonly schema?: "cogine_pages";
   readonly scope: RowSecurityPolicyScope;
   readonly tenantPredicate?: string;
+}
+
+export interface RowSecurityCatalogOptions {
+  /** Recovery may verify the exact predecessor when the Pages namespace does not exist. */
+  allowPrePages?: boolean;
 }
 
 const space = "NULLIF(current_setting('app.space_id'::text, true), ''::text)";
@@ -340,6 +346,25 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         tenantPredicate: local(),
       },
       {
+        model: "Page",
+        table: "pages",
+        schema: "cogine_pages",
+        scope: "tenant",
+        tenantPredicate: all(local(), own()),
+      },
+      {
+        model: "PageVersion",
+        table: "page_versions",
+        schema: "cogine_pages",
+        scope: "tenant",
+        tenantPredicate: exists(
+          "cogine_pages.pages p",
+          equal("p.id", 'page_versions."pageId"'),
+          equal('p."spaceId"', space),
+          own('p."userId"'),
+        ),
+      },
+      {
         model: "MessagingOutbound",
         table: "messaging_outbound",
         scope: "tenant",
@@ -455,12 +480,14 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
 );
 
 interface RelationRow {
+  schema: string;
   table: string;
   kind: string;
   enabled: boolean;
   active: boolean;
 }
 interface PolicyRow {
+  schema: string;
   table: string;
   name: string;
   command: string;
@@ -479,6 +506,7 @@ interface Catalog {
   policies: PolicyRow[];
   guard: GuardRow | undefined;
   versionFunction: boolean;
+  pageSchemaPresent: boolean;
 }
 type Query = <T>(statement: Prisma.Sql) => Promise<T[]>;
 
@@ -489,14 +517,17 @@ const guardBody = `SELECT coalesce(current_setting('app.rls_bypass', true) = 'on
     WHERE digest = sha256(convert_to(current_setting('app.rls_bypass_key', true), 'UTF8'))
   )`;
 const normalized = (sql: string | null) => sql?.replace(/\s+/g, " ").trim();
-const knownTables = new Set(ROW_SECURITY_POLICIES.map((definition) => definition.table));
-const relationSql = Prisma.sql`SELECT c.relname AS "table", c.relkind::text AS kind,
+const publicDefinitions = ROW_SECURITY_POLICIES.filter(({ schema }) => schema === undefined);
+const pageDefinitions = ROW_SECURITY_POLICIES.filter(({ schema }) => schema === "cogine_pages");
+const tableKey = ({ schema, table }: { schema?: string; table: string }) =>
+  `${schema ?? "public"}.${table}`;
+const relationSql = Prisma.sql`SELECT n.nspname AS schema, c.relname AS "table", c.relkind::text AS kind,
   c.relrowsecurity AS enabled, pg_catalog.row_security_active(c.oid) AS active
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
-  ORDER BY c.relname`;
-const policySql = Prisma.sql`SELECT c.relname AS "table", p.polname AS name,
+  WHERE n.nspname IN ('public', 'cogine_pages') AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  ORDER BY n.nspname, c.relname`;
+const policySql = Prisma.sql`SELECT n.nspname AS schema, c.relname AS "table", p.polname AS name,
   p.polcmd::text AS command, p.polpermissive AS permissive,
   p.polroles = ARRAY[0::pg_catalog.oid] AS "publicRole",
   pg_catalog.pg_get_expr(p.polqual, p.polrelid, false) AS predicate,
@@ -504,7 +535,7 @@ const policySql = Prisma.sql`SELECT c.relname AS "table", p.polname AS name,
   FROM pg_catalog.pg_policy p
   JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'public' ORDER BY c.relname, p.polname`;
+  WHERE n.nspname IN ('public', 'cogine_pages') ORDER BY n.nspname, c.relname, p.polname`;
 const guardSql = Prisma.sql`SELECT f.prosrc AS body,
   (f.prosecdef AND NOT f.proretset AND f.prokind = 'f' AND f.provolatile = 's'
     AND f.prorettype = 'pg_catalog.bool'::pg_catalog.regtype
@@ -529,10 +560,18 @@ async function readCatalog(query: Query): Promise<Catalog> {
   const relations = await query<RelationRow>(relationSql);
   const policies = await query<PolicyRow>(policySql);
   const [guard] = await query<GuardRow>(guardSql);
-  const [version] = await query<{ exists: boolean }>(
-    Prisma.sql`SELECT pg_catalog.to_regprocedure('public.app_rls_version()') IS NOT NULL AS exists`,
+  const [metadata] = await query<{ versionFunction: boolean; pageSchemaPresent: boolean }>(
+    Prisma.sql`SELECT
+      pg_catalog.to_regprocedure('public.app_rls_version()') IS NOT NULL AS "versionFunction",
+      pg_catalog.to_regnamespace('cogine_pages') IS NOT NULL AS "pageSchemaPresent"`,
   );
-  return { relations, policies, guard, versionFunction: version?.exists === true };
+  return {
+    relations,
+    policies,
+    guard,
+    versionFunction: metadata?.versionFunction === true,
+    pageSchemaPresent: metadata?.pageSchemaPresent !== false,
+  };
 }
 
 function expectedPolicies(definition: PolicyDefinition) {
@@ -561,11 +600,19 @@ function isLegacy(policy: PolicyRow): boolean {
   );
 }
 
-function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
-  const relations = new Map(catalog.relations.map((relation) => [relation.table, relation]));
-  const tables = ROW_SECURITY_POLICIES.map((definition): RowSecurityTableStatus => {
-    const relation = relations.get(definition.table);
-    const policies = catalog.policies.filter((policy) => policy.table === definition.table);
+function report(
+  catalog: Catalog,
+  prepared: boolean,
+  { allowPrePages }: RowSecurityCatalogOptions = {},
+): RowSecurityPolicyStatus {
+  const definitions =
+    allowPrePages && !catalog.pageSchemaPresent ? publicDefinitions : ROW_SECURITY_POLICIES;
+  const knownTables = new Set(definitions.map(tableKey));
+  const relations = new Map(catalog.relations.map((relation) => [tableKey(relation), relation]));
+  const tables = definitions.map((definition): RowSecurityTableStatus => {
+    const key = tableKey(definition);
+    const relation = relations.get(key);
+    const policies = catalog.policies.filter((policy) => tableKey(policy) === key);
     const expected = expectedPolicies(definition);
     const policyMatch =
       policies.length === expected.length &&
@@ -590,9 +637,13 @@ function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
   });
   const problems = catalog.relations
     .filter(
-      (relation) => !knownTables.has(relation.table) && relation.table !== "_prisma_migrations",
+      (relation) =>
+        !knownTables.has(tableKey(relation)) && tableKey(relation) !== "public._prisma_migrations",
     )
-    .map((relation) => `unmapped-table:${relation.table}`);
+    .map(
+      (relation) =>
+        `unmapped-table:${relation.schema === "public" ? relation.table : tableKey(relation)}`,
+    );
   const legacyPolicyCount = catalog.policies.filter(isLegacy).length;
   if (legacyPolicyCount > 0 || catalog.versionFunction) problems.push("legacy-policy");
   const guardValid =
@@ -608,7 +659,7 @@ function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
     );
   const policyEnabled = tables.every((table) => table.enabled);
   return {
-    expectedTables: ROW_SECURITY_POLICIES.length,
+    expectedTables: definitions.length,
     policyInstalled,
     policyEnabled,
     connectionEnforced:
@@ -628,21 +679,24 @@ function report(catalog: Catalog, prepared: boolean): RowSecurityPolicyStatus {
 /** Inspect definitions and this connection, without certifying activation of API or worker pools. */
 export async function describeRowSecurityPolicies(
   prisma: PrismaClient,
+  options?: RowSecurityCatalogOptions,
 ): Promise<RowSecurityPolicyStatus> {
   const catalog = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL search_path = pg_catalog, pg_temp`;
+    await tx.$executeRaw`SET LOCAL quote_all_identifiers = off`;
     return readCatalog(<T>(statement: Prisma.Sql) => tx.$queryRaw<T[]>(statement));
   });
-  const status = report(catalog, false);
+  const status = report(catalog, false, options);
   if (!status.guardValid) return status;
   const runtime = await describeRowSecurity(prisma);
-  return report(catalog, runtime.prepared);
+  return report(catalog, runtime.prepared, options);
 }
 
 /** Retire only the registered compatibility shape; other policies need explicit review. */
 function canRetire(policy: PolicyRow): boolean {
   if (
-    !knownTables.has(policy.table) ||
+    policy.schema !== "public" ||
+    !publicDefinitions.some((definition) => definition.table === policy.table) ||
     policy.command !== "*" ||
     !policy.permissive ||
     !policy.publicRole ||
@@ -664,7 +718,7 @@ function assertInstallable(catalog: Catalog): void {
   )
     throw new Error("The database schema does not match the registered row-security policies");
   for (const policy of catalog.policies) {
-    const definition = ROW_SECURITY_POLICIES.find((entry) => entry.table === policy.table);
+    const definition = ROW_SECURITY_POLICIES.find((entry) => tableKey(entry) === tableKey(policy));
     if (!definition) continue;
     if (expectedPolicies(definition).some((expected) => expected.name === policy.name)) continue;
     if (canRetire(policy)) continue;
@@ -701,6 +755,7 @@ export async function applyRowSecurityPolicies(
     await owner.query("BEGIN");
     inTransaction = true;
     await owner.query("SET LOCAL search_path = pg_catalog, pg_temp");
+    await owner.query("SET LOCAL quote_all_identifiers = off");
     const query: Query = async <T>(statement: Prisma.Sql) =>
       (await owner.query(statement.text, statement.values)).rows as T[];
     const before = await readCatalog(query);
@@ -719,7 +774,8 @@ export async function applyRowSecurityPolicies(
     const ownership = await query<{ owns: boolean }>(Prisma.sql`SELECT
       pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owns
       FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relname = ANY(${ROW_SECURITY_POLICIES.map((entry) => entry.table)}::text[])`);
+      WHERE (n.nspname = 'public' AND c.relname = ANY(${publicDefinitions.map((entry) => entry.table)}::text[]))
+        OR (n.nspname = 'cogine_pages' AND c.relname = ANY(${pageDefinitions.map((entry) => entry.table)}::text[]))`);
     if (ownership.length !== ROW_SECURITY_POLICIES.length || ownership.some((row) => !row.owns))
       throw new Error("The administrator must own every registered application table");
     for (const policy of before.policies.filter(canRetire))
@@ -729,10 +785,11 @@ export async function applyRowSecurityPolicies(
     for (const definition of [...ROW_SECURITY_POLICIES].sort((a, b) =>
       a.table.localeCompare(b.table),
     )) {
-      const table = `public.${escapeIdentifier(definition.table)}`;
+      const table = `${escapeIdentifier(definition.schema ?? "public")}.${escapeIdentifier(definition.table)}`;
+      const key = tableKey(definition);
       for (const policy of expectedPolicies(definition)) {
         const existing = before.policies.find(
-          (entry) => entry.table === definition.table && entry.name === policy.name,
+          (entry) => tableKey(entry) === key && entry.name === policy.name,
         );
         if (existing && matches(existing, policy.predicate)) continue;
         await owner.query(`DROP POLICY IF EXISTS ${escapeIdentifier(policy.name)} ON ${table}`);
@@ -740,7 +797,7 @@ export async function applyRowSecurityPolicies(
           `CREATE POLICY ${escapeIdentifier(policy.name)} ON ${table} FOR ALL TO PUBLIC USING (${policy.predicate})`,
         );
       }
-      if (!before.relations.find((relation) => relation.table === definition.table)?.enabled)
+      if (!before.relations.find((relation) => tableKey(relation) === key)?.enabled)
         await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
     }
     if (before.versionFunction) await owner.query("DROP FUNCTION public.app_rls_version()");

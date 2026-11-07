@@ -10,15 +10,21 @@ describe("row-security policy schema coverage", () => {
       ([, model, body]) => ({
         model: model!,
         table: body!.match(/@@map\(\s*"([^"]+)"\s*\)/)?.[1] ?? model!,
+        schema: body!.match(/@@schema\(\s*"([^"]+)"\s*\)/)?.[1] ?? "public",
       }),
     );
     expect(actual.length).toBeGreaterThan(0);
     expect(new Set(ROW_SECURITY_POLICIES.map((entry) => entry.model)).size).toBe(actual.length);
-    expect(new Set(ROW_SECURITY_POLICIES.map((entry) => entry.table)).size).toBe(actual.length);
     expect(
-      ROW_SECURITY_POLICIES.map(({ model, table }) => ({ model, table })).sort((a, b) =>
-        a.model.localeCompare(b.model),
-      ),
+      new Set(ROW_SECURITY_POLICIES.map(({ table, schema = "public" }) => `${schema}.${table}`))
+        .size,
+    ).toBe(actual.length);
+    expect(
+      ROW_SECURITY_POLICIES.map(({ model, table, schema = "public" }) => ({
+        model,
+        table,
+        schema,
+      })).sort((a, b) => a.model.localeCompare(b.model)),
     ).toEqual(actual.sort((a, b) => a.model.localeCompare(b.model)));
     expect(new Set(ROW_SECURITY_POLICIES.map(({ model }) => model))).toEqual(ROW_SECURITY_MODELS);
   });

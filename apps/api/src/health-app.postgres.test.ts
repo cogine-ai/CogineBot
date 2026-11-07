@@ -151,10 +151,15 @@ describePostgres("protected database app composition", () => {
   };
   const managedPolicies = ROW_SECURITY_POLICIES.flatMap((definition) => [
     ...(definition.tenantPredicate ? [`${definition.table}_tenant`] : []).map((policy) => ({
+      schema: definition.schema ?? "public",
       table: definition.table,
       policy,
     })),
-    { table: definition.table, policy: `${definition.table}_system` },
+    {
+      schema: definition.schema ?? "public",
+      table: definition.table,
+      policy: `${definition.table}_system`,
+    },
   ]);
   let owner: ReturnType<typeof database.createDb> | undefined;
   let runtimeUrl: string;
@@ -218,7 +223,7 @@ describePostgres("protected database app composition", () => {
       (
         await owner!.pool.query(
           `SELECT p.polname FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid
-           JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'`,
+           JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')`,
         )
       ).rows,
     ).toEqual([]);
@@ -226,7 +231,7 @@ describePostgres("protected database app composition", () => {
       (
         await owner!.pool.query(
           `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-           WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relrowsecurity`,
+           WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relrowsecurity`,
         )
       ).rows,
     ).toEqual([]);
@@ -266,7 +271,7 @@ describePostgres("protected database app composition", () => {
     owner = database.createDb(ownerUrl);
     await legacyCatalog();
     await adapters.migrateJobQueue(ownerUrl);
-    expect(ROW_SECURITY_POLICIES).toHaveLength(84);
+    expect(ROW_SECURITY_POLICIES).toHaveLength(86);
     grantRole = (
       await owner.pool.query<{ role: string }>(
         "SELECT 'coginebot_app_' || oid::text AS role FROM pg_database WHERE datname=current_database()",
@@ -298,7 +303,7 @@ describePostgres("protected database app composition", () => {
     }
     policiesOwned = true;
     expect(await database.applyRowSecurityPolicies(ownerUrl, runtimeUrl)).toMatchObject({
-      expectedTables: 84,
+      expectedTables: 86,
       connectionEnforced: true,
     });
     previousSecretStore = process.env.SECRET_STORE;
@@ -318,13 +323,13 @@ describePostgres("protected database app composition", () => {
     if (owner) {
       if (policiesOwned)
         await cleanup(async () => {
-          for (const { table, policy } of managedPolicies)
+          for (const { schema, table, policy } of managedPolicies)
             await owner!.pool.query(
-              `DROP POLICY IF EXISTS ${escapeIdentifier(policy)} ON public.${escapeIdentifier(table)}`,
+              `DROP POLICY IF EXISTS ${escapeIdentifier(policy)} ON ${escapeIdentifier(schema)}.${escapeIdentifier(table)}`,
             );
-          for (const { table } of ROW_SECURITY_POLICIES)
+          for (const { schema = "public", table } of ROW_SECURITY_POLICIES)
             await owner!.pool.query(
-              `ALTER TABLE public.${escapeIdentifier(table)} DISABLE ROW LEVEL SECURITY`,
+              `ALTER TABLE ${escapeIdentifier(schema)}.${escapeIdentifier(table)} DISABLE ROW LEVEL SECURITY`,
             );
           await legacyCatalog();
         });
@@ -500,7 +505,7 @@ describePostgres("protected database app composition", () => {
     };
     try {
       expect(await database.verifyRuntimeDatabase(jobsDatabase.prisma)).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
       });
       await owner!.prisma.deploymentSettings.upsert({
@@ -1017,7 +1022,7 @@ describePostgres("protected database app composition", () => {
     let handles: Awaited<ReturnType<typeof createApp>> | undefined;
     try {
       expect(await database.verifyRuntimeDatabase(trusted.prisma)).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
       });
       const settings = await owner!.prisma.deploymentSettings.findMany({ orderBy: { id: "asc" } });

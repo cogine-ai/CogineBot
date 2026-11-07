@@ -321,10 +321,15 @@ postgres("restricted service startup against the prepared queue schema", () => {
     let policiesOwned = false;
     const managedPolicies = ROW_SECURITY_POLICIES.flatMap((definition) => [
       ...(definition.tenantPredicate ? [`${definition.table}_tenant`] : []).map((policy) => ({
+        schema: definition.schema ?? "public",
         table: definition.table,
         policy,
       })),
-      { table: definition.table, policy: `${definition.table}_system` },
+      {
+        schema: definition.schema ?? "public",
+        table: definition.table,
+        policy: `${definition.table}_system`,
+      },
     ]);
     const serviceNotReady = "The service database role, policies, or system guard are not ready";
     const listenerNotReady = "The realtime database role, policies, or system guard are not ready";
@@ -334,7 +339,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
         (
           await owner!.pool.query(
             `SELECT p.polname FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid
-             JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'`,
+             JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')`,
           )
         ).rows,
       ).toEqual([]);
@@ -342,7 +347,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
         (
           await owner!.pool.query(
             `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-             WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relrowsecurity`,
+             WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relrowsecurity`,
           )
         ).rows,
       ).toEqual([]);
@@ -350,13 +355,13 @@ postgres("restricted service startup against the prepared queue schema", () => {
 
     async function removeManagedPolicies() {
       if (!policiesOwned) return;
-      for (const { table, policy } of managedPolicies)
+      for (const { schema, table, policy } of managedPolicies)
         await owner!.pool.query(
-          `DROP POLICY IF EXISTS ${escapeIdentifier(policy)} ON public.${escapeIdentifier(table)}`,
+          `DROP POLICY IF EXISTS ${escapeIdentifier(policy)} ON ${escapeIdentifier(schema)}.${escapeIdentifier(table)}`,
         );
-      for (const { table } of ROW_SECURITY_POLICIES)
+      for (const { schema = "public", table } of ROW_SECURITY_POLICIES)
         await owner!.pool.query(
-          `ALTER TABLE public.${escapeIdentifier(table)} DISABLE ROW LEVEL SECURITY`,
+          `ALTER TABLE ${escapeIdentifier(schema)}.${escapeIdentifier(table)} DISABLE ROW LEVEL SECURITY`,
         );
       policiesOwned = false;
       await assertLegacyCatalog();
@@ -370,7 +375,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       )
         throw new Error("Service readiness tests require the isolated policy harness opt-in");
       await assertLegacyCatalog();
-      expect(ROW_SECURITY_POLICIES).toHaveLength(84);
+      expect(ROW_SECURITY_POLICIES).toHaveLength(86);
       const url = new URL(databaseUrl!);
       url.username = listenerLogin;
       url.password = randomBytes(24).toString("hex");
@@ -384,7 +389,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       await provisionRuntimeRole(databaseUrl!, listenerUrl);
       policiesOwned = true;
       expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
       });
     }, 120_000);
@@ -406,7 +411,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
 
     it("accepts the protected runtime and an independently authenticated realtime listener", async () => {
       expect(await verifyRuntimeDatabase(activeRuntime().prisma)).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
         problems: [],
       });
@@ -437,7 +442,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
     it("permits the unprotected legacy owner while refusing a listener that requires protection", async () => {
       await removeManagedPolicies();
       expect(await verifyRuntimeDatabase(owner!.prisma)).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: false,
         guardValid: true,
         legacyPolicyCount: 0,
@@ -450,7 +455,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       await removeManagedPolicies();
       const main = await verifyRuntimeDatabase(activeRuntime().prisma);
       expect(main).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: false,
         guardValid: true,
       });
@@ -495,7 +500,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       beforeAll(async () => {
         policiesOwned = true;
         expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
-          expectedTables: 84,
+          expectedTables: 86,
           connectionEnforced: true,
         });
       }, 120_000);

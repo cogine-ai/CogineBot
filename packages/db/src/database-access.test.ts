@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   groupExists: true,
   databaseOid: 42,
   foreignGroup: false,
+  pageGrantsSafe: undefined as boolean | undefined,
   unsafePrivileges: false,
   privileged: false,
   member: true,
@@ -60,6 +61,11 @@ vi.mock("pg", async (importActual) => {
       }
       async query(sql: string, values?: unknown[]) {
         state.sent.push({ sql, values });
+        if (sql.startsWith("SELECT n.oid,") && sql.includes('AS "pageGrantsSafe"'))
+          return {
+            rows:
+              state.pageGrantsSafe === undefined ? [] : [{ pageGrantsSafe: state.pageGrantsSafe }],
+          };
         if (sql.includes('AS "grantRole"'))
           return {
             rows: [
@@ -139,6 +145,7 @@ beforeEach(() => {
     groupExists: true,
     databaseOid: 42,
     foreignGroup: false,
+    pageGrantsSafe: undefined,
     unsafePrivileges: false,
     privileged: false,
     member: true,
@@ -397,6 +404,34 @@ describe("SCRAM verifier", () => {
 });
 
 describe("runtime role preparation", () => {
+  it.each([false, true])(
+    "grants only the managed Pages tables when present (%s)",
+    async (present) => {
+      state.pageGrantsSafe = present ? true : undefined;
+      await expect(provisionRuntimeRole(owner, runtime)).resolves.toBeUndefined();
+      const grants = state.sent
+        .flatMap(({ sql }) => sql.trim().split(/;\s*/))
+        .filter((sql) => /GRANT\s+[^;]*\bcogine_pages\b/.test(sql))
+        .map((sql) => sql.trim().replace(/\s+/g, " "));
+      expect(grants).toEqual(
+        present
+          ? [
+              'GRANT USAGE ON SCHEMA cogine_pages TO "coginebot_app_42"',
+              'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE cogine_pages.pages, cogine_pages.page_versions TO "coginebot_app_42"',
+            ]
+          : [],
+      );
+    },
+  );
+
+  it("rejects an invalid Pages catalog before writing runtime grants", async () => {
+    state.pageGrantsSafe = false;
+    await expect(provisionRuntimeRole(owner, runtime)).rejects.toThrow("Pages database schema");
+    expect(state.sent.some(({ sql }) => /^\s*(?:CREATE|ALTER|GRANT|REVOKE)\b/m.test(sql))).toBe(
+      false,
+    );
+  });
+
   it("registers only an authenticated effective key, preserving old digests and closing resources", async () => {
     await expect(provisionRuntimeRole(owner, runtime)).resolves.toBeUndefined();
     const insert = state.sent.find((entry) => entry.sql.includes("INSERT INTO cogine_private"));
