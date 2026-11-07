@@ -1196,6 +1196,8 @@ export interface AutoReviewRequest {
   /** Caller must already redact secrets and sensitive keys. */
   args: Record<string, unknown>;
   userTask: string;
+  /** A new outbound destination, reviewed using only authenticated owner instructions. */
+  newSite?: true;
   botDescription: string;
   matchingRules: AutoReviewMatchingRule[];
 }

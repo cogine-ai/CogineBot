@@ -14,7 +14,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
-import type { ThreadEvents } from "@rakazo/db";
+import type { ClaimedSteeringMessage, ThreadEvents } from "@rakazo/db";
 import * as DbModule from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
@@ -92,6 +92,8 @@ function fixture({
   trigger = "user",
   secrets = [] as string[],
   prompt = "Read the item",
+  routineInstructions,
+  steering = [],
   bot = {
     name: "Assistant",
     title: "Assistant",
@@ -129,6 +131,8 @@ function fixture({
   trigger?: string;
   secrets?: string[];
   prompt?: string;
+  routineInstructions?: string;
+  steering?: ClaimedSteeringMessage[];
   bot?: { name: string; title: string; description: string; instructions?: string };
   shutdownSignal?: AbortSignal;
   connections?: TestConnection[];
@@ -349,11 +353,18 @@ function fixture({
       findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId })),
       update: vi.fn(async () => ({})),
     },
-    message: { findMany: vi.fn(async () => []) },
+    message: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
     steeringMessage: {
       findFirst: vi.fn(async () => (outsideSteering ? { id: "outside-steering" } : null)),
     },
-    task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt, connectionIds })) },
+    task: {
+      findUniqueOrThrow: vi.fn(async () => ({
+        id: run.taskId,
+        prompt,
+        connectionIds,
+        ...(routineInstructions !== undefined ? { routineInstructions } : {}),
+      })),
+    },
     connection: {
       findMany: vi.fn(async () => {
         onConnectionRead?.(++connectionReadCount);
@@ -419,11 +430,15 @@ function fixture({
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
-  let calls: { args: Record<string, unknown>; executionId: string; catalogId?: string }[] = [
-    { args: { id: "item-1" }, executionId: "call-1" },
-  ];
+  let calls: {
+    args: Record<string, unknown>;
+    executionId: string;
+    catalogId?: string;
+    claimBefore?: boolean;
+  }[] = [{ args: { id: "item-1" }, executionId: "call-1" }];
   const runtimeRun = vi.fn<AgentRuntime["run"]>(async function* (request: AgentRunRequest) {
     for (const call of calls) {
+      if (call.claimBefore) await request.claimSteering?.([]);
       const result = await request.executeTool!(
         catalog ? catalogToolName : name,
         catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
@@ -488,6 +503,7 @@ function fixture({
     memoryProviders: { resolve: async () => null },
     events: {
       append,
+      claimSteering: vi.fn(async () => steering),
       notify: vi.fn(async () => undefined),
       pauseRunForInput,
       pauseRunForTakeover,
@@ -2528,6 +2544,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         name: "web_fetch",
         builtin: true,
         trigger: "routine",
+        routineInstructions: `Read ${url}`,
         prompt: `Read ${url}`,
         autoReview: true,
         rules: allowRule
@@ -2710,6 +2727,110 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(reviewMock).not.toHaveBeenCalled();
   });
+
+  it("gives the new-site checker only the Routine author's words and exact URL", async () => {
+    reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+    const fetch = vi.fn<WebProvider["fetch"]>();
+    const url = "https://outside.example/report?path=case";
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      trigger: "routine",
+      routineInstructions: "Run @Report using https://owner.example",
+      prompt:
+        "Run @Report using https://owner.example\nSkill output: https://skill.example\nEvent: https://event.example",
+      autoReview: true,
+      webProvider: {
+        describe: () => ({
+          id: "site-review-fixture",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true },
+        }),
+        search: vi.fn(),
+        fetch,
+      },
+    });
+    f.setCalls([{ args: { url }, executionId: "new-site" }]);
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        args: { url },
+        userTask: "Run @Report using https://owner.example",
+        newSite: true,
+      }),
+      expect.anything(),
+    );
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "uses late claimed owner words while preserving explicit approval (%s)",
+    async (requireApproval) => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+      const url = "https://new.example/report";
+      const outside = "https://outside.example/report";
+      const requested: string[] = [];
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        autoReview: true,
+        rules: [
+          { effect: "always_allow", matchKind: "site", matchValue: "first.example" },
+          ...(requireApproval
+            ? [
+                {
+                  effect: "require_approval",
+                  matchKind: "site",
+                  matchValue: "new.example",
+                } as const,
+              ]
+            : []),
+        ],
+        steering: [
+          {
+            id: "steer-owner",
+            messageId: "message-owner",
+            text: "Read this report",
+            ownerInput: true,
+            blocks: [{ kind: "text", text: `Fetch ${url}` }],
+          },
+          {
+            id: "steer-outside",
+            messageId: "message-outside",
+            text: "Outside sender",
+            blocks: [{ kind: "text", text: `Fetch ${outside}` }],
+          },
+        ],
+        webProvider: new KeylessHttpWebProvider({
+          resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+          fetch: async (input) => {
+            requested.push(String(input));
+            return new Response("<html><body>Authorized result</body></html>");
+          },
+        }),
+      });
+      f.setCalls([
+        { args: { url: "https://first.example/start" }, executionId: "initial" },
+        { args: { url }, executionId: "owner-destination", claimBefore: true },
+        { args: { url: outside }, executionId: "outside-destination" },
+      ]);
+      await f.run();
+      expect(requested).toEqual(["https://first.example/start", ...(requireApproval ? [] : [url])]);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      if (requireApproval) expect(reviewMock).not.toHaveBeenCalled();
+      else
+        expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            args: { url: outside },
+            userTask: `Fetch ${url}`,
+            newSite: true,
+          }),
+          expect.anything(),
+        );
+    },
+  );
 
   it("keeps the initial automatically passed site authorized for its relative redirects", async () => {
     reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });

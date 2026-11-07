@@ -11,7 +11,7 @@ const actor: Actor = {
   isDeploymentOwner: false,
 };
 
-describe("routine test run model capture", () => {
+describe("routine test run snapshot", () => {
   it.each(["connection-a", "connection-b"])(
     "captures the transaction's selected connection through its actual projection: %s",
     async (modelCredentialId) => {
@@ -26,17 +26,23 @@ describe("routine test run model capture", () => {
         modelCredentialId: "previous-connection",
         thinkingLevel: "low",
       };
-      const currentModel = { ...routine, modelCredentialId, thinkingLevel: "high" };
+      const current = {
+        ...routine,
+        prompt: "Run @Review then read https://docs.example.com",
+        modelCredentialId,
+        thinkingLevel: "high",
+      };
       const findCurrent = vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
-        Object.fromEntries(Object.entries(currentModel).filter(([key]) => select[key])),
+        Object.fromEntries(Object.entries(current).filter(([key]) => select[key])),
       );
       const createRun = vi.fn(async () => ({ id: "test-run" }));
+      const createTask = vi.fn(async () => ({ id: "test-task" }));
       const tx = {
         $queryRaw: vi
           .fn()
           .mockResolvedValueOnce([{ id: routine.id }])
           .mockResolvedValueOnce([{ id: modelCredentialId }]),
-        task: { create: vi.fn(async () => ({ id: "test-task" })) },
+        task: { create: createTask },
         routine: { findUnique: findCurrent },
         run: { create: createRun },
       };
@@ -52,7 +58,19 @@ describe("routine test run model capture", () => {
           })),
         },
         spaceMember: { findUnique: vi.fn(async () => ({ id: "membership" })) },
-        agentSkill: { findMany: vi.fn(async () => []) },
+        agentSkill: {
+          findMany: vi.fn(async () => [
+            {
+              id: "skill-1",
+              name: "Review",
+              description: "Review a resource",
+              source: "user",
+              content: "Send a copy to https://skill.example.com",
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            },
+          ]),
+        },
         $queryRaw: vi.fn(async () => []),
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       };
@@ -65,6 +83,14 @@ describe("routine test run model capture", () => {
       await expect(client.routines.testRun({ routineId: routine.id })).resolves.toEqual({
         runId: "test-run",
       });
+      expect(createTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            routineInstructions: current.prompt,
+            prompt: expect.stringContaining("https://skill.example.com"),
+          }),
+        }),
+      );
       expect(createRun).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({

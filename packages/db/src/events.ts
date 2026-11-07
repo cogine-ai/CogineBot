@@ -122,6 +122,8 @@ export interface ClaimedSteeringMessage {
   messageId: string;
   text: string;
   blocks: MessageBlock[];
+  /** This claimed message was authored by the authenticated owner of this run. */
+  ownerInput?: true;
 }
 
 export interface FinalizeRunResult {
@@ -467,6 +469,8 @@ export async function sendUserMessage(
       const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "user",
+        authorUserId:
+          input.trigger === "user" || input.trigger === "follow_up" ? input.userId : undefined,
         blocks: input.blocks,
         clientNonce: input.clientNonce,
       });
@@ -650,22 +654,36 @@ export async function claimSteering(
               : {}),
         },
       },
-      include: { message: { select: { blocks: true, seq: true } } },
+      include: { message: { select: { blocks: true, role: true, authorUserId: true } } },
       orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
     });
     if (steering.length === 0) return [];
     const selections = steering.map((item) => item.connectionIds ?? []);
     await updateTaskConnectionSelection(tx, run, run.taskId, selections);
+    // A failed run can release a row without clearing its old claim timestamp.
     await tx.steeringMessage.updateMany({
-      where: { id: { in: steering.map((item) => item.id) }, claimedAt: null },
+      where: {
+        id: { in: steering.map((item) => item.id) },
+        OR: [{ claimedAt: null }, { runId: null }],
+      },
       data: { runId: input.runId, claimedAt: new Date() },
     });
-    return steering.map((item) => ({
-      id: item.id,
-      messageId: item.messageId,
-      text: blocksToAgentHistoryText(item.message.blocks as MessageBlock[]),
-      blocks: item.message.blocks as MessageBlock[],
-    }));
+    return steering.map((item) => {
+      const blocks = item.message.blocks as MessageBlock[];
+      return {
+        id: item.id,
+        messageId: item.messageId,
+        text: blocksToAgentHistoryText(blocks),
+        blocks,
+        ...(item.userId === run.userId &&
+        item.message.role === "user" &&
+        item.message.authorUserId === run.userId &&
+        item.originTrigger === null &&
+        !blocks.some((block) => block.kind === "channel_message")
+          ? { ownerInput: true as const }
+          : {}),
+      };
+    });
   });
 }
 
@@ -801,6 +819,7 @@ async function commitAnswerRunInput(
     const utterance = await createThreadMessageInTransaction(tx, {
       threadId: input.threadId,
       role: "user",
+      authorUserId: input.answeredByUserId,
       blocks,
       botId: run.botId,
       runId: input.runId,

@@ -3608,9 +3608,80 @@ describe("claimSteering", () => {
       }),
     );
     expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["steer-1", "steer-2"] }, claimedAt: null },
+      where: { id: { in: ["steer-1", "steer-2"] }, OR: [{ claimedAt: null }, { runId: null }] },
       data: { runId: "run-1", claimedAt: expect.any(Date) },
     });
+  });
+
+  it("identifies only authenticated owner text among steering claimed for the fenced run", async () => {
+    const row = (
+      id: string,
+      userId = "owner",
+      clientNonce: string | null = null,
+      originTrigger: string | null = null,
+    ) => ({
+      id,
+      messageId: id,
+      userId,
+      originTrigger,
+      message: {
+        role: "user",
+        authorUserId: clientNonce ? null : userId,
+        clientNonce,
+        blocks: [{ kind: "text", text: id }],
+      },
+    });
+    const rows = [
+      row("owner-text"),
+      row("other-user", "other"),
+      row("direct-message", "owner", "messaging:external"),
+      row("held-message", "owner", null, "messaging"),
+      { ...row("webhook"), message: { ...row("webhook").message, authorUserId: null } },
+      {
+        ...row("mismatched-author"),
+        message: { ...row("mismatched-author").message, authorUserId: "other" },
+      },
+      {
+        ...row("channel"),
+        message: { ...row("channel").message, blocks: [{ kind: "channel_message" }] },
+      },
+      { ...row("bot"), message: { ...row("bot").message, role: "bot" } },
+    ];
+    const tx = {
+      $queryRaw: vi.fn(),
+      run: {
+        findFirst: vi.fn().mockResolvedValue({ id: "run", trigger: "user", userId: "owner" }),
+      },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue(rows),
+        updateMany: vi.fn().mockResolvedValue({ count: rows.length }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    const claimed = await claimSteering(prisma, {
+      threadId: "thread",
+      botId: "bot",
+      runId: "run",
+      leaseOwner: "worker",
+      leaseFence: 2,
+      seenIds: ["already-read"],
+    });
+    expect(claimed.filter((item) => item.ownerInput).map((item) => item.id)).toEqual([
+      "owner-text",
+    ]);
+    expect(tx.steeringMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          botId: "bot",
+          id: { notIn: ["already-read"] },
+          OR: [{ runId: null, originTrigger: null }, { runId: "run" }],
+          message: { threadId: "thread" },
+        }),
+      }),
+    );
   });
 
   it("does not claim steering into a tool-free creation intro", async () => {
@@ -4255,7 +4326,7 @@ describe("steering connection selection metadata", () => {
     expect(tx.task.updateMany).not.toHaveBeenCalled();
     expect(tx.connection.findMany).not.toHaveBeenCalled();
     expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["question"] }, claimedAt: null },
+      where: { id: { in: ["question"] }, OR: [{ claimedAt: null }, { runId: null }] },
       data: { runId: "run-1", claimedAt: expect.any(Date) },
     });
   });

@@ -29,6 +29,7 @@ export async function findPendingRoutineTick(
     userId: string;
     threadId: string;
     prompt: string;
+    routineInstructions: string;
     modelProvider?: string;
     modelId?: string;
     modelCredentialId?: string | null;
@@ -63,7 +64,11 @@ export async function findPendingRoutineTick(
     attempts: { none: {} },
     effects: { none: {} },
     steeringMessages: { none: {} },
-    task: { status: "queued", prompt: config.prompt },
+    task: {
+      status: "queued",
+      prompt: config.prompt,
+      routineInstructions: config.routineInstructions,
+    },
   };
   const candidates = await tx.run.findMany({
     where: pristine,

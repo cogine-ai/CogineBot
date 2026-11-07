@@ -658,6 +658,8 @@ model Message {
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   seq              Int
   role             String
+  /// Authenticated in-product author, if this message was directly sent by a user.
+  authorUserId     String?
   blocks           Json
   botId            String?
   replyToMessageId String?
@@ -710,6 +712,8 @@ model Task {
   thread    Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   userId    String
   prompt    String
+  /// Owner instructions captured before adding skill content or event data.
+  routineInstructions String?
   status    String
   connectionIds String[] @default([])
   createdAt DateTime @default(now())

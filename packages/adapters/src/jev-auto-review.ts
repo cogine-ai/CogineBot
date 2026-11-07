@@ -11,6 +11,10 @@ import {
   autoReviewMinConfidence,
   autoReviewTimeoutMs,
   DEFAULT_JEV_MODEL,
+  MAX_SITE_REVIEW_ARGS_CHARS,
+  MAX_SITE_REVIEW_TASK_CHARS,
+  SITE_REVIEW_ASK,
+  SITE_REVIEW_PASS,
   sanitizeAutoReviewReason,
 } from "./auto-review.js";
 import { readBodyCapped } from "./web-ssrf.js";
@@ -48,11 +52,11 @@ function truncate(value: string, max: number): string {
   return `${trimmed.slice(0, max - 1)}…`;
 }
 
-function boundArgs(args: Record<string, unknown>): Record<string, unknown> {
+function boundArgs(args: Record<string, unknown>, max: number): Record<string, unknown> {
   try {
     const serialized = JSON.stringify(args);
-    if (serialized !== undefined && serialized.length <= MAX_ARGS_CHARS) return args;
-    return { _truncated: truncate(serialized ?? "", MAX_ARGS_CHARS) };
+    if (serialized !== undefined && serialized.length <= max) return args;
+    return { _truncated: truncate(serialized ?? "", max) };
   } catch {
     return { _unserializable: true };
   }
@@ -111,8 +115,15 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
           state: {
             toolName: request.toolName,
             connectorKind: request.connectorKind,
-            args: boundArgs(request.args),
-            userTask: truncate(request.userTask, MAX_TASK_CHARS),
+            args: boundArgs(
+              request.args,
+              request.newSite ? MAX_SITE_REVIEW_ARGS_CHARS : MAX_ARGS_CHARS,
+            ),
+            userTask: truncate(
+              request.userTask,
+              request.newSite ? MAX_SITE_REVIEW_TASK_CHARS : MAX_TASK_CHARS,
+            ),
+            ...(request.newSite ? { newSite: true } : {}),
             botDescription: truncate(request.botDescription, MAX_BOT_CHARS),
             matchingRules: request.matchingRules.map((rule) => ({
               effect: rule.effect,
@@ -123,11 +134,15 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
           questions: {
             decision: {
               type: "choice",
-              instructions: "Should this bot tool call auto-pass or ask the user to approve?",
-              criteria: {
-                pass: "Clearly fits the user task and looks low risk",
-                ask: "Unexpected, high risk, or outside the task. Ask the user",
-              },
+              instructions: request.newSite
+                ? "The run was not given this site. The whole URL reaches it. The task contains only the owner's words."
+                : "Should this bot tool call auto-pass or ask the user to approve?",
+              criteria: request.newSite
+                ? { pass: SITE_REVIEW_PASS, ask: SITE_REVIEW_ASK }
+                : {
+                    pass: "Clearly fits the user task and looks low risk",
+                    ask: "Unexpected, high risk, or outside the task. Ask the user",
+                  },
             },
           },
         }),

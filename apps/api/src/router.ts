@@ -2791,6 +2791,7 @@ export function createRouter(deps: RouterDeps) {
           const message = await createThreadMessageInTransaction(tx, {
             threadId: target.threadId,
             role: "user",
+            authorUserId: context.actor.userId,
             blocks,
             clientNonce: input.clientNonce,
           });
@@ -4210,7 +4211,6 @@ export function createRouter(deps: RouterDeps) {
           if (existing) return { runId: existing.id };
         }
         const skillRecords = await agentSkills.listWithContent(context.actor);
-        const prompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords);
         let run: { id: string };
         try {
           // Task + run must commit together so a nonce collision cannot leave an orphan queued Task.
@@ -4226,26 +4226,23 @@ export function createRouter(deps: RouterDeps) {
               WHERE id=${routine.id} AND "userId"=${context.actor.userId}
                 AND "spaceId"=${context.actor.spaceId} AND "botId"=${bot.id} FOR UPDATE`;
             if (locked.length !== 1) throw new IsolationError();
-            const currentModel = await tx.routine.findUnique({
+            const current = await tx.routine.findUnique({
               where: { id: routine.id },
               select: {
+                prompt: true,
                 modelProvider: true,
                 modelId: true,
                 modelCredentialId: true,
                 thinkingLevel: true,
               },
             });
-            if (!currentModel) throw new IsolationError();
-            if (
-              currentModel.modelProvider &&
-              currentModel.modelId &&
-              currentModel.modelCredentialId
-            ) {
+            if (!current) throw new IsolationError();
+            if (current.modelProvider && current.modelId && current.modelCredentialId) {
               const credential = await tx.$queryRaw<
                 Array<{ id: string }>
               >`SELECT id FROM user_model_credentials
-                WHERE id=${currentModel.modelCredentialId} AND "userId"=${context.actor.userId}
-                  AND provider=${currentModel.modelProvider} FOR KEY SHARE`;
+                WHERE id=${current.modelCredentialId} AND "userId"=${context.actor.userId}
+                  AND provider=${current.modelProvider} FOR KEY SHARE`;
               if (credential.length !== 1)
                 throw new IsolationError("Model connection is unavailable.");
             }
@@ -4255,7 +4252,8 @@ export function createRouter(deps: RouterDeps) {
                 botId: bot.id,
                 threadId,
                 userId: context.actor.userId,
-                prompt,
+                prompt: expandSkillReferencesInPrompt(current.prompt, skillRecords),
+                routineInstructions: current.prompt,
                 status: "queued",
                 connectionIds,
               },
@@ -4270,7 +4268,7 @@ export function createRouter(deps: RouterDeps) {
                 status: "queued",
                 trigger: "routine",
                 routineId: routine.id,
-                ...routineRunModelPin(currentModel),
+                ...routineRunModelPin(current),
                 clientNonce: nonce,
               },
               select: { id: true },

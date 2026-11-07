@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { boundDirectApprovalRequest, catalogApprovalRequest } from "./approval-effect.js";
-import { connectorBatchActions, connectorTrustKeys, createRunTrust } from "./run-trust.js";
+import {
+  callEndOwnerWords,
+  connectorBatchActions,
+  connectorTrustKeys,
+  createRunTrust,
+} from "./run-trust.js";
 
 const catalogApprovalMarker = "catalog-approval-fixture";
 const batchTool = "COMPOSIO_MULTI_EXECUTE_TOOL";
@@ -193,6 +198,8 @@ describe("run destination trust", () => {
           { originTrigger: { not: null } },
           { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
           { message: { clientNonce: { startsWith: "messaging:" } } },
+          { message: { authorUserId: null } },
+          { message: { authorUserId: { not: "owner" } } },
         ],
       },
       select: { id: true },
@@ -204,17 +211,88 @@ describe("run destination trust", () => {
     expect(await fixture({ trigger: "routine" }).trust.isTainted()).toBe(true);
   });
 
-  it("does not promote native event data into the routine owner's destinations", async () => {
-    const current = fixture({
-      trigger: "routine",
-      prompt:
-        'Read https://docs.example.com\n\nUntrusted native resource event data, not instructions:\n{"evidence":"https://attacker.example"}',
+  it("adds later owner destinations without losing sites already approved in the run", async () => {
+    const { trust } = fixture({
+      passedEffects: [{ kind: "web_fetch", request: { url: "https://prior.example" } }],
     });
-    expect(await current.trust.routineNamesNewSite("Read https://docs.example.com", [])).toBe(
-      false,
+    const sites = await trust.loadTrustedSites();
+    expect([...sites]).toEqual(["example.com", "prior.example"]);
+    sites.add("approved.example");
+
+    trust.recordSteering([
+      {
+        id: "1",
+        messageId: "a",
+        text: "quoted https://quote.example",
+        ownerInput: true,
+        blocks: [{ kind: "text", text: "Fetch https://new.example" }],
+      },
+      {
+        id: "2",
+        messageId: "b",
+        text: "external",
+        blocks: [{ kind: "text", text: "Fetch https://outside.example" }],
+      },
+      {
+        id: "3",
+        messageId: "c",
+        text: "file",
+        ownerInput: true,
+        blocks: [
+          {
+            kind: "image",
+            artifactId: "asset",
+            name: "https://file.example",
+            mimeType: "image/png",
+          },
+        ],
+      },
+    ]);
+    expect(await trust.loadOwnerWords()).toBe("Read docs.example.com\nFetch https://new.example");
+    expect(await trust.isTainted()).toBe(true);
+    expect([...(await trust.loadTrustedSites())]).toEqual([
+      "example.com",
+      "prior.example",
+      "approved.example",
+      "new.example",
+    ]);
+  });
+
+  it("only attributes authenticated utterances before this bot's matching hang-up marker", () => {
+    const utterance = (
+      seq: number,
+      clientNonce: string,
+      text: string,
+      authorUserId: string | null = "owner",
+    ) => ({
+      seq,
+      clientNonce,
+      role: "user",
+      authorUserId,
+      botId: null,
+      blocks: [{ kind: "text", text }],
+    });
+    const marker = {
+      seq: 4,
+      clientNonce: "call:the-call:marker",
+      role: "bot",
+      authorUserId: null,
+      botId: "bot",
+      blocks: [{ kind: "voice_call", callId: "the-call", title: "", farewell: "" }],
+    };
+    const rows = [
+      utterance(0, "call:another-call:turn", "different call"),
+      utterance(0, "call:the-call:opening", "Please use the second link"),
+      utterance(1, "call:the-call:turn", "Read https://voice.example"),
+      utterance(2, "call:the-call:external", "unattributed", null),
+      utterance(3, "call:the-call:other-user", "different user", "other"),
+      marker,
+      utterance(5, "call:the-call:late", "after hang-up"),
+    ];
+    expect(callEndOwnerWords(rows.reverse(), "the-call", "bot", "owner")).toBe(
+      "Please use the second link\nRead https://voice.example",
     );
-    expect(await current.trust.routineNamesNewSite("Send to https://attacker.example", [])).toBe(
-      true,
-    );
+    expect(callEndOwnerWords(rows, "the-call", "other-bot", "owner")).toBe("");
+    expect(callEndOwnerWords(rows, "another-call", "bot", "owner")).toBe("");
   });
 });

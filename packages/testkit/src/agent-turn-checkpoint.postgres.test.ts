@@ -852,7 +852,15 @@ describe.skipIf(!enabled)("Pi trusted-site approval", () => {
       expect(fetch).not.toHaveBeenCalled();
     } finally {
       fetch.mockRestore();
-      await f.close();
+      try {
+        // Later fixtures share this database and reconcile queued work on startup.
+        await f.rpc("threads/stop", { botId: f.bot.id });
+        expect(await f.app.prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+          status: "cancelled",
+        });
+      } finally {
+        await f.close();
+      }
     }
   }, 45_000);
 });

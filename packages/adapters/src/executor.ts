@@ -34,6 +34,7 @@ import type {
   AgentToolResultForHistory,
   ArtifactStore,
   AutoReviewProvider,
+  AutoReviewRequest,
   BrowserProvider,
   ComputerRef,
   ConnectorCall,
@@ -408,7 +409,12 @@ import {
   secretPausedToolResult,
   tryCompleteConnectionWithCode,
 } from "./run-secret.js";
-import { connectorBatchActions, connectorTrustKeys, createRunTrust } from "./run-trust.js";
+import {
+  callEndOwnerWords,
+  connectorBatchActions,
+  connectorTrustKeys,
+  createRunTrust,
+} from "./run-trust.js";
 import type { RunTurnCheckpointState } from "./run-turn-state.js";
 import {
   claimTurnEffectOccurrence,
@@ -3322,7 +3328,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         spaceId: routine.spaceId,
         userId: routine.userId,
       });
-      const routinePrompt = expandSkillReferencesInPrompt(routine.prompt, skillRecords);
       const claimed = await deps.prisma.$transaction(async (tx) => {
         const updated = await tx.routine.updateMany({
           where: {
@@ -3338,17 +3343,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
         });
         if (updated.count !== 1) return null;
-        // The claim locks the row, so this is the model that was committed when it fired.
-        const currentModel = await tx.routine.findUnique({
+        // The claim locks the row, so instructions and model are from the same firing.
+        const current = await tx.routine.findUnique({
           where: { id: routine.id },
           select: {
+            prompt: true,
             modelProvider: true,
             modelId: true,
             modelCredentialId: true,
             thinkingLevel: true,
           },
         });
-        if (!currentModel) return null;
+        if (!current) return null;
+        const routinePrompt = expandSkillReferencesInPrompt(current.prompt, skillRecords);
         const timerNonce = !isOneShotRoutineCrons(routine.crons)
           ? routineTimerNonce(routine.id, scheduledFor)
           : undefined;
@@ -3360,7 +3367,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             userId: routine.userId,
             threadId: thread.id,
             prompt: routinePrompt,
-            ...routineRunModelPin(currentModel),
+            routineInstructions: current.prompt,
+            ...routineRunModelPin(current),
           });
           if (pending) return { ...pending, coalesced: true };
           const fired = await tx.run.findUnique({
@@ -3376,6 +3384,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             threadId: thread.id,
             userId: routine.userId,
             prompt: routinePrompt,
+            routineInstructions: current.prompt,
             status: "queued",
           },
         });
@@ -3390,7 +3399,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             trigger: "routine",
             routineId: routine.id,
             clientNonce: timerNonce,
-            ...routineRunModelPin(currentModel),
+            ...routineRunModelPin(current),
           },
         });
         return { ...run, coalesced: false };
@@ -3878,8 +3887,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         dispatchHandedOff = Boolean(onRunStarted);
         const sourceMessage = run.sourceMessageId
           ? await deps.prisma.message.findUnique({
-              where: { id: run.sourceMessageId },
-              select: { clientNonce: true, role: true, blocks: true },
+              where: { id: run.sourceMessageId, threadId: run.threadId },
+              select: { clientNonce: true, role: true, blocks: true, authorUserId: true },
             })
           : null;
         const sourceBlocks =
@@ -4439,7 +4448,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           run.trigger === "user" || run.trigger === "follow_up"
             ? (sourceMessage?.clientNonce ?? null)
             : null;
-        const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
+        const ownerStartedRun = isOwnerStartedRun(
+          run.trigger,
+          sourceMessage?.role === "user" && sourceMessage.authorUserId === run.userId,
+        );
         // A hang-up run has no source message: its own nonce carries the call it closes.
         const callEndRun = run.trigger === "call_end";
         const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
@@ -4791,6 +4803,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           run,
           botId: bot.id,
           taskPrompt: task.prompt,
+          routineInstructions: task.routineInstructions,
+          callOwnerWords:
+            callEndRun && thread.botId === bot.id && thread.userId === run.userId
+              ? callEndOwnerWords(
+                  messages,
+                  callIdFromClientNonce(run.clientNonce),
+                  bot.id,
+                  run.userId,
+                )
+              : undefined,
           sourceMessage,
           ownerStartedRun,
           messagingChannelRun,
@@ -5484,11 +5506,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
             try {
-              const reviewRequest = {
+              const newSite = siteGate === "new" && fetchUrl !== undefined;
+              const reviewRequest: AutoReviewRequest = {
                 toolName: name,
                 connectorKind,
-                args: redactToolArgsForReview(args, runSecrets),
-                userTask: redactSecrets(task.prompt, runSecrets),
+                args: redactToolArgsForReview(newSite ? { url: fetchUrl } : args, runSecrets),
+                userTask: redactSecrets(
+                  newSite ? await trust.loadOwnerWords() : task.prompt,
+                  runSecrets,
+                ),
+                ...(newSite ? { newSite: true } : {}),
                 botDescription: redactSecrets(
                   `${bot.name}: ${bot.title}\n${bot.description}`,
                   runSecrets,
@@ -8267,7 +8294,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseFence: fence,
                   seenIds,
                 });
-                return Promise.all(
+                const mapped = await Promise.all(
                   steering.map(async (item) => {
                     const { images, files, unavailableInstruction } =
                       await settleSteeringAttachmentLoads(
@@ -8309,6 +8336,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     };
                   }),
                 );
+                trust.recordSteering(steering);
+                return mapped;
               },
             },
             context,
