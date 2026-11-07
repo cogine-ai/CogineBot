@@ -21,12 +21,20 @@ describe("resolveScheduleTiming", () => {
   });
 
   it("accepts every 1 minute", () => {
-    const result = resolveScheduleTiming({ every: 1, unit: "minutes" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.cron).toBe("*/1 * * * *");
-    expect(result.oneShot).toBe(false);
-    expect(result.nextRunAt.getTime()).toBeGreaterThan(Date.now());
+    const started = new Date("2026-11-07T04:30:59.999Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: started });
+    try {
+      const result = resolveScheduleTiming({ every: 1, unit: "minutes" });
+      vi.setSystemTime(new Date("2026-11-07T04:31:00.000Z"));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.cron).toBe("*/1 * * * *");
+      expect(result.oneShot).toBe(false);
+      expect(result.nextRunAt.getTime()).toBeGreaterThan(started.getTime());
+      expect(result.nextRunAt).toEqual(new Date("2026-11-07T04:31:00.000Z"));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("accepts cron every minute", () => {

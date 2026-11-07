@@ -971,7 +971,9 @@ export class PiAgentRuntime implements AgentRuntime {
         queue.close();
         if (trackedBudget) {
           const keepForResume =
-            (signal.aborted || Boolean(resumeHost?.pausePending)) && !trackedBudget.exceeded;
+            (signal.aborted || Boolean(resumeHost?.pausePending)) &&
+            !trackedBudget.exceeded &&
+            !(resumeHost && "error" in resumeHost.controlFailure);
           releaseToolCallBudget(request.runId, keepForResume);
         }
       }

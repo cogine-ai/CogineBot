@@ -32,7 +32,7 @@ export async function webFetchFromTool(
   fetchProvider: WebFetchProvider,
   context: AdapterContext,
   args: Record<string, unknown>,
-  assertRedirectAllowed?: WebFetchRequest["assertRedirectAllowed"],
+  assertRedirectAllowed: NonNullable<WebFetchRequest["assertRedirectAllowed"]>,
 ) {
   const url = String(args.url ?? "").trim();
   if (!url) return { error: "url is required" };
