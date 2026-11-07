@@ -1,4 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { ORPCError } from "@orpc/client";
 import type {
   Bot,
   ExternalConversation,
@@ -21,6 +22,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { providerLabel } from "../lib/messaging";
 import { createSpaceRpc, currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
 import { ExternalConversationSettings } from "./ExternalConversationSettings";
+
+function hasRequestVersion({ requestVersion }: MessagingAgentConnection): boolean {
+  return Number.isInteger(requestVersion) && requestVersion >= 1 && requestVersion <= 2_147_483_647;
+}
 
 export function MessagingSettingsOverlay({
   onClose,
@@ -199,7 +204,10 @@ export function MessagingSettingsOverlay({
     };
   }, [linkCode, pollRevision, binding]);
 
-  async function act(action: () => Promise<unknown>, kind: "link" | "settings" = "settings") {
+  async function act(
+    action: () => Promise<unknown>,
+    kind: "link" | "settings" | "connection" = "settings",
+  ) {
     if (!isCurrent() || actionController.current) return;
     const controller = new AbortController();
     actionController.current = controller;
@@ -211,12 +219,24 @@ export function MessagingSettingsOverlay({
     // A displayed code must always match the current selection and link
     // state; the link action re-sets it after issuing.
     setLinkCode(null);
+    let mutationCompleted = false;
     try {
       await action();
+      mutationCompleted = true;
       if (isCurrent() && !controller.signal.aborted) await refresh(controller.signal);
-    } catch {
-      if (isCurrent() && !controller.signal.aborted)
+    } catch (failure) {
+      if (isCurrent() && !controller.signal.aborted) {
         setError(t`Couldn't update messaging settings`);
+        if (
+          !mutationCompleted &&
+          kind === "connection" &&
+          failure instanceof ORPCError &&
+          failure.code === "NOT_FOUND"
+        ) {
+          // A new request version requires a new decision after refreshing.
+          await refresh(controller.signal).catch(() => undefined);
+        }
+      }
     } finally {
       if (linkActionController.current === controller) linkActionController.current = null;
       if (actionController.current === controller) {
@@ -477,12 +497,16 @@ export function MessagingSettingsOverlay({
                       <>
                         <Button
                           className="rounded-full"
+                          disabled={!hasRequestVersion(connection)}
                           onClick={() =>
-                            void act(() =>
-                              rpc.messaging.connections.respond({
-                                connectionId: connection.id,
-                                accept: true,
-                              }),
+                            void act(
+                              () =>
+                                rpc.messaging.connections.respond({
+                                  connectionId: connection.id,
+                                  requestVersion: connection.requestVersion,
+                                  accept: true,
+                                }),
+                              "connection",
                             )
                           }
                         >
@@ -491,12 +515,16 @@ export function MessagingSettingsOverlay({
                         <Button
                           variant="secondary"
                           className="rounded-full"
+                          disabled={!hasRequestVersion(connection)}
                           onClick={() =>
-                            void act(() =>
-                              rpc.messaging.connections.respond({
-                                connectionId: connection.id,
-                                accept: false,
-                              }),
+                            void act(
+                              () =>
+                                rpc.messaging.connections.respond({
+                                  connectionId: connection.id,
+                                  requestVersion: connection.requestVersion,
+                                  accept: false,
+                                }),
+                              "connection",
                             )
                           }
                         >
@@ -508,9 +536,15 @@ export function MessagingSettingsOverlay({
                       <Button
                         variant="secondary"
                         className="rounded-full"
+                        disabled={!hasRequestVersion(connection)}
                         onClick={() =>
-                          void act(() =>
-                            rpc.messaging.connections.revoke({ connectionId: connection.id }),
+                          void act(
+                            () =>
+                              rpc.messaging.connections.revoke({
+                                connectionId: connection.id,
+                                requestVersion: connection.requestVersion,
+                              }),
+                            "connection",
                           )
                         }
                       >

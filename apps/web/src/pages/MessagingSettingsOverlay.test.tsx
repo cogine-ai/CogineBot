@@ -252,6 +252,7 @@ const connection = {
   peerBotName: "Peer helper",
   peerOwnerLabel: "Synthetic peer",
   incoming: true,
+  requestVersion: 7,
 };
 for (const [operation, heading, button, mutation] of [
   ["unlink", "Chat apps", "Unlink", api.unlink],
@@ -303,9 +304,32 @@ for (const [operation, heading, button, mutation] of [
     expect(view.container.querySelector("select")!.value).toBe("bot-2");
     expect(linkButton.disabled).toBe(false);
     expect(mutation).toHaveBeenCalledOnce();
+    if (operation.endsWith("connection")) {
+      expect(mutation).toHaveBeenCalledWith({
+        connectionId: connection.id,
+        requestVersion: connection.requestVersion,
+        ...(button !== "Revoke" ? { accept: button === "Approve" } : {}),
+      });
+    }
     expect(api.start).not.toHaveBeenCalled();
   });
 }
+it("keeps connection controls inactive when an older server omits the request version", async () => {
+  const { requestVersion: _version, ...older } = connection;
+  api.connections.mockResolvedValue([
+    { ...older, status: "pending" },
+    { ...older, id: "connection-2", status: "approved" },
+  ]);
+  view = await mount();
+  const controls = [...section("Agent connections").querySelectorAll("button")];
+  expect(controls.map((button) => button.textContent)).toEqual(["Approve", "Decline", "Revoke"]);
+  expect(controls.every((button) => button.disabled)).toBe(true);
+  await act(async () => {
+    for (const button of controls) button.click();
+  });
+  expect(api.connectionRespond).not.toHaveBeenCalled();
+  expect(api.connectionRevoke).not.toHaveBeenCalled();
+});
 it("shows a failed messaging mutation after the link Bot selection changes", async () => {
   api.status.mockResolvedValue(linked);
   const pending = deferred<unknown>();

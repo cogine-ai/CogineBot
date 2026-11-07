@@ -423,7 +423,10 @@ async function applyOwnerCommand(
         status: "pending",
         requestVersion: target.connection.requestVersion,
       },
-      data: { status: approved ? "approved" : "declined" },
+      data: {
+        status: approved ? "approved" : "declined",
+        responseVersion: target.connection.requestVersion,
+      },
     });
     // The observed request was answered, revoked, or reopened.
     if (count === 0) return false;

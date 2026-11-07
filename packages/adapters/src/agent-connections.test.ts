@@ -365,18 +365,19 @@ describe("respondAgentConnection", () => {
         requesterBotId: "bot-2",
         targetBotId: "bot-1",
         status: "pending",
+        requestVersion: 2,
       },
     });
     const result = await respondAgentConnection(deps, run, sender, {
       accept,
       connectionId: "ac-1",
-      connectionVersion: 1,
+      connectionVersion: 2,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: true, status }));
     expect(deps.prisma.agentConnection.updateMany).toHaveBeenCalledWith({
-      where: { id: "ac-1", targetBotId: "bot-1", status: "pending", requestVersion: 1 },
-      data: { status },
+      where: { id: "ac-1", targetBotId: "bot-1", status: "pending", requestVersion: 2 },
+      data: { status, responseVersion: 2 },
     });
   });
 

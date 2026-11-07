@@ -47,6 +47,7 @@ import {
 import {
   ActionApprovalRuleSchema,
   ActionAutoReviewSettingsSchema,
+  AgentConnectionRequestVersionSchema,
   AgentSecretInputSchema,
   AgentSecretSchema,
   AgentSkillCatalogEntrySchema,
@@ -1033,9 +1034,17 @@ export const appContract = {
     connections: {
       list: oc.output(z.array(MessagingAgentConnectionSchema)),
       respond: oc
-        .input(z.object({ connectionId: Id, accept: z.boolean() }))
+        .input(
+          z.object({
+            connectionId: Id,
+            requestVersion: AgentConnectionRequestVersionSchema,
+            accept: z.boolean(),
+          }),
+        )
         .output(MessagingAgentConnectionSchema),
-      revoke: oc.input(z.object({ connectionId: Id })).output(z.object({ ok: z.literal(true) })),
+      revoke: oc
+        .input(z.object({ connectionId: Id, requestVersion: AgentConnectionRequestVersionSchema }))
+        .output(z.object({ ok: z.literal(true) })),
     },
   },
   approvalRules: {

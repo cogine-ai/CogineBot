@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { captureScreenshot, completeOnboarding, openUserSettings, signup } from "./helpers";
 
 test.afterEach(async ({ page }) => {
   // Polling can leave a route.fetch response in use when the assertions finish.
@@ -73,6 +73,7 @@ test("Korean messaging settings show linked chat apps, channels, and connections
             peerOwnerLabel: "Dana",
             status: "pending",
             incoming: true,
+            requestVersion: 1,
           },
         ],
       }),
@@ -111,6 +112,71 @@ test("Korean messaging settings show linked chat apps, channels, and connections
 
   await page.getByRole("button", { name: "메시징 설정 닫기" }).click();
   await expect(page.getByTestId("messaging-settings")).toHaveCount(0);
+});
+
+test("a reopened connection requires a fresh decision in settings", async ({ page }, testInfo) => {
+  const connectionId = "cn-versioned";
+  let requestVersion = 1;
+  let status: "pending" | "approved" | "declined" = "pending";
+  const connection = () => ({
+    id: connectionId,
+    peerBotName: requestVersion === 1 ? "Original helper" : "Current helper",
+    peerOwnerLabel: "Dana",
+    status,
+    incoming: true,
+    requestVersion,
+  });
+  const decisions: Array<{ connectionId: string; requestVersion: number; accept: boolean }> = [];
+  await page.route("**/rpc/messaging/status", (route) =>
+    route.fulfill({
+      json: { json: { enabled: true, providers: ["slack"], openSignup: false, identities: [] } },
+    }),
+  );
+  await page.route("**/rpc/messaging/channels/list", (route) =>
+    route.fulfill({ json: { json: [] } }),
+  );
+  await page.route("**/rpc/messaging/connections/list", (route) =>
+    route.fulfill({ json: { json: [connection()] } }),
+  );
+  await page.route("**/rpc/messaging/connections/respond", (route) => {
+    const { json: decision } = route.request().postDataJSON() as {
+      json: (typeof decisions)[number];
+    };
+    decisions.push(decision);
+    if (decision.connectionId !== connectionId || decision.requestVersion !== requestVersion) {
+      return route.fulfill({
+        status: 404,
+        json: { json: { defined: false, code: "NOT_FOUND", status: 404, message: "Not Found" } },
+      });
+    }
+    status = decision.accept ? "approved" : "declined";
+    return route.fulfill({ json: { json: connection() } });
+  });
+
+  await signup(page, `connection-version-${Date.now()}@example.test`, "password12", "Messenger");
+  await completeOnboarding(page);
+  const settings = await openUserSettings(page);
+  await settings.getByRole("button", { name: "Manage messaging settings" }).click();
+  const overlay = page.getByTestId("messaging-settings");
+  await expect(overlay.getByText("Dana's Original helper", { exact: false })).toBeVisible();
+
+  // The same connection row has reopened while the previous version is on screen.
+  requestVersion = 2;
+  await overlay.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(overlay.getByText("Couldn't update messaging settings")).toBeVisible();
+  await expect(overlay.getByText("Dana's Current helper", { exact: false })).toBeVisible();
+  expect(decisions).toEqual([{ connectionId, requestVersion: 1, accept: true }]);
+  expect(status).toBe("pending");
+  await captureScreenshot(page, testInfo, "messaging-connection-refreshed");
+
+  await overlay.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(overlay.getByRole("button", { name: "Revoke", exact: true })).toBeVisible();
+  await expect(overlay.getByText("Couldn't update messaging settings")).toHaveCount(0);
+  expect(decisions).toEqual([
+    { connectionId, requestVersion: 1, accept: true },
+    { connectionId, requestVersion: 2, accept: true },
+  ]);
+  expect(status).toBe("approved");
 });
 
 test("team conversation settings open from messaging overlay", async ({ page }, testInfo) => {

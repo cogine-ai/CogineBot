@@ -268,7 +268,7 @@ async function respondToConnection(
       status: "pending",
       requestVersion: input.connectionVersion,
     },
-    data: { status },
+    data: { status, responseVersion: input.connectionVersion },
   });
   // A revoke or reopen between the read and this write wins.
   if (count === 0) return { ok: false, error: "connection request is no longer pending" };

@@ -951,6 +951,12 @@ revision with the same service-image map keeps the existing predecessor. Without
 receipt, the first managed deployment keeps the observed pre-deploy images as an unverified
 rollback fallback.
 
+If a rollback restores an image that predates connection request versions,
+existing connections remain visible and usable. Approving, declining, or revoking
+a request requires a compatible image.
+If a browser tab or bundled desktop app still has the previous Settings UI after
+a server update, reload the web page or update the desktop app before changing a request.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

@@ -360,11 +360,11 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     });
     expect(connection.requestVersion).toBe(1);
 
-    // The previous application image only wrote status and updatedAt.
     await prisma.agentConnection.update({
       where: { id: connection.id },
-      data: { status: "revoked" },
+      data: { status: "revoked", revocationVersion: connection.requestVersion },
     });
+    // The previous application image only wrote status and updatedAt on reopen.
     await prisma.agentConnection.update({
       where: { id: connection.id },
       data: { status: "pending" },
@@ -385,6 +385,151 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     ).toMatchObject({
       status: "pending",
       requestVersion: 2,
+    });
+  });
+
+  it("refuses unversioned decisions from an older application on both fresh and reopened requests", async () => {
+    const left = await fixture();
+    const right = await fixture();
+    const fresh = await prisma.agentConnection.create({
+      data: {
+        requesterBotId: left.sender.bot.id,
+        targetBotId: right.sender.bot.id,
+        status: "pending",
+      },
+    });
+    const closed = await prisma.agentConnection.create({
+      data: {
+        requesterBotId: left.target.bot.id,
+        targetBotId: right.sender.bot.id,
+        status: "revoked",
+      },
+    });
+    const reopened = await prisma.agentConnection.update({
+      where: { id: closed.id },
+      data: { status: "pending" },
+    });
+    expect([fresh.requestVersion, reopened.requestVersion]).toEqual([1, 2]);
+    for (const request of [fresh, reopened]) {
+      for (const status of ["approved", "declined"]) {
+        // The previous executor sends only the resolved id and pending status.
+        await expect(
+          prisma.agentConnection.updateMany({
+            where: { id: request.id, status: "pending" },
+            data: { status },
+          }),
+        ).resolves.toEqual({ count: 0 });
+      }
+      await expect(
+        prisma.agentConnection.updateMany({
+          where: { id: request.id, status: "pending" },
+          data: { status: "approved", responseVersion: request.requestVersion + 1 },
+        }),
+      ).resolves.toEqual({ count: 0 });
+    }
+    await expect(
+      respondAgentConnection(right.deps, right.run, right.sender.bot, {
+        accept: true,
+        connectionId: fresh.id,
+        connectionVersion: fresh.requestVersion,
+      }),
+    ).resolves.toMatchObject({ ok: true, status: "approved" });
+    await expect(
+      respondAgentConnection(right.deps, right.run, right.sender.bot, {
+        accept: false,
+        connectionId: reopened.id,
+        connectionVersion: reopened.requestVersion,
+      }),
+    ).resolves.toMatchObject({ ok: true, status: "declined" });
+    for (const request of [fresh, reopened]) {
+      expect(
+        await prisma.agentConnection.findUniqueOrThrow({ where: { id: request.id } }),
+      ).toMatchObject({ responseVersion: request.requestVersion });
+    }
+    const next = await prisma.agentConnection.update({
+      where: { id: reopened.id },
+      data: { status: "pending" },
+    });
+    expect(next).toMatchObject({ status: "pending", requestVersion: 3, responseVersion: null });
+    await expect(
+      prisma.agentConnection.updateMany({
+        where: { id: next.id, status: "pending" },
+        data: { status: "approved", responseVersion: 2 },
+      }),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("requires the current revocation version even on approved or reopened connections", async () => {
+    const left = await fixture();
+    const right = await fixture();
+    const connection = await prisma.agentConnection.create({
+      data: {
+        requesterBotId: left.sender.bot.id,
+        targetBotId: right.sender.bot.id,
+        status: "pending",
+      },
+    });
+    const approve = (requestVersion: number) =>
+      respondAgentConnection(right.deps, right.run, right.sender.bot, {
+        accept: true,
+        connectionId: connection.id,
+        connectionVersion: requestVersion,
+      });
+    const legacyRevoke = (status: string) =>
+      prisma.agentConnection.updateMany({
+        where: { id: connection.id, status },
+        data: { status: "revoked" },
+      });
+    const currentRevoke = (requestVersion: number) =>
+      prisma.agentConnection.updateMany({
+        where: { id: connection.id, status: "approved", requestVersion },
+        data: { status: "revoked", revocationVersion: requestVersion },
+      });
+    const readConnection = () =>
+      prisma.agentConnection.findUniqueOrThrow({ where: { id: connection.id } });
+
+    await expect(legacyRevoke("pending")).resolves.toEqual({ count: 0 });
+    await expect(approve(1)).resolves.toMatchObject({ ok: true, status: "approved" });
+    await expect(legacyRevoke("approved")).resolves.toEqual({ count: 0 });
+    await expect(currentRevoke(1)).resolves.toEqual({ count: 1 });
+    await expect(legacyRevoke("revoked")).resolves.toEqual({ count: 1 });
+    await expect(readConnection()).resolves.toMatchObject({
+      status: "revoked",
+      requestVersion: 1,
+      responseVersion: 1,
+      revocationVersion: 1,
+    });
+
+    const reopened = await prisma.agentConnection.update({
+      where: { id: connection.id },
+      data: { status: "pending" },
+    });
+    expect(reopened).toMatchObject({
+      status: "pending",
+      requestVersion: 2,
+      responseVersion: null,
+      revocationVersion: null,
+    });
+    await expect(approve(2)).resolves.toMatchObject({ ok: true, status: "approved" });
+    await expect(legacyRevoke("approved")).resolves.toEqual({ count: 0 });
+    await expect(
+      prisma.agentConnection.updateMany({
+        where: { id: connection.id, status: "approved" },
+        data: { status: "revoked", revocationVersion: 1 },
+      }),
+    ).resolves.toEqual({ count: 0 });
+    await expect(readConnection()).resolves.toMatchObject({
+      status: "approved",
+      requestVersion: 2,
+      responseVersion: 2,
+      revocationVersion: null,
+    });
+    await expect(currentRevoke(2)).resolves.toEqual({ count: 1 });
+    await expect(readConnection()).resolves.toMatchObject({
+      status: "revoked",
+      requestVersion: 2,
+      responseVersion: 2,
+      revocationVersion: 2,
     });
   });
 
@@ -792,7 +937,7 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     const connection = await connect(left, right);
     await prisma.agentConnection.update({
       where: { id: connection.connection.id },
-      data: { status: "revoked" },
+      data: { status: "revoked", revocationVersion: connection.connection.requestVersion },
     });
     await expect(connection.send()).resolves.toMatchObject({ ok: false });
     await prisma.agentConnection.update({

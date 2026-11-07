@@ -1015,8 +1015,11 @@ export const MessagingChannelMembershipSchema = z.object({
 });
 export type MessagingChannelMembership = z.infer<typeof MessagingChannelMembershipSchema>;
 
+export const AgentConnectionRequestVersionSchema = z.number().int().positive().max(2_147_483_647);
+
 export const MessagingAgentConnectionSchema = z.object({
   id: Id,
+  requestVersion: AgentConnectionRequestVersionSchema,
   peerBotName: z.string(),
   peerOwnerLabel: z.string(),
   status: z.enum(["pending", "approved", "declined", "revoked"]),

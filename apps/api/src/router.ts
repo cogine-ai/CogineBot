@@ -6840,6 +6840,7 @@ export function createRouter(deps: RouterDeps) {
                 deps.prisma.agentConnection.findFirst({
                   where: {
                     id: input.connectionId,
+                    requestVersion: input.requestVersion,
                     targetBotId: { in: [...myBotIds] },
                     status: "pending",
                   },
@@ -6859,9 +6860,12 @@ export function createRouter(deps: RouterDeps) {
                     id: connection.id,
                     targetBotId: connection.targetBotId,
                     status: "pending",
-                    requestVersion: connection.requestVersion,
+                    requestVersion: input.requestVersion,
                   },
-                  data: { status: input.accept ? "approved" : "declined" },
+                  data: {
+                    status: input.accept ? "approved" : "declined",
+                    responseVersion: input.requestVersion,
+                  },
                 });
                 if (count === 0) {
                   // The observed request was closed or reopened.
@@ -6911,6 +6915,7 @@ export function createRouter(deps: RouterDeps) {
                   deps.prisma.agentConnection.findFirst({
                     where: {
                       id: input.connectionId,
+                      requestVersion: input.requestVersion,
                       OR: [{ requesterBotId: { in: botIds } }, { targetBotId: { in: botIds } }],
                     },
                   }),
@@ -6931,9 +6936,9 @@ export function createRouter(deps: RouterDeps) {
                   where: {
                     id: connection.id,
                     status: connection.status,
-                    requestVersion: connection.requestVersion,
+                    requestVersion: input.requestVersion,
                   },
-                  data: { status: "revoked" },
+                  data: { status: "revoked", revocationVersion: input.requestVersion },
                 });
                 if (count === 0) throw new ORPCError("NOT_FOUND");
                 // Cancel undelivered invites, including rows the drain already
@@ -8598,6 +8603,7 @@ async function messagingConnectionDto(
     requesterBotId: string;
     targetBotId: string;
     status: string;
+    requestVersion: number;
   },
 ) {
   const incoming = myBotIds.has(connection.targetBotId);
@@ -8605,6 +8611,7 @@ async function messagingConnectionDto(
   if (!incoming && connection.status !== "approved") {
     return {
       id: connection.id,
+      requestVersion: connection.requestVersion,
       peerBotName: "agent",
       peerOwnerLabel: "owner",
       status: connection.status as "pending" | "approved" | "declined" | "revoked",
@@ -8636,6 +8643,7 @@ async function messagingConnectionDto(
     : null;
   return {
     id: connection.id,
+    requestVersion: connection.requestVersion,
     peerBotName: peerBot?.name ?? "agent",
     peerOwnerLabel: peerOwner?.name.trim().split(/\s+/)[0] || "owner",
     status: connection.status as "pending" | "approved" | "declined" | "revoked",
