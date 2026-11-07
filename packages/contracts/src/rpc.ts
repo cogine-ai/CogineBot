@@ -174,6 +174,7 @@ import {
 } from "./openapi-import.js";
 import {
   PAGE_LIST_MAX_LIMIT,
+  PAGE_LIST_QUERY_MAX_LENGTH,
   PageDetailSchema,
   PageInputIdSchema,
   PageReplyContextSchema,
@@ -1129,7 +1130,7 @@ export const appContract = {
           cursor: z.string().max(500).optional(),
           limit: z.number().int().min(1).max(PAGE_LIST_MAX_LIMIT).optional(),
           /** Titles containing this text, for the command palette. */
-          query: z.string().trim().min(1).max(200).optional(),
+          query: z.string().trim().min(1).max(PAGE_LIST_QUERY_MAX_LENGTH).optional(),
         }),
       )
       .output(

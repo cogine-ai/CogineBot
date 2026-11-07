@@ -1,5 +1,12 @@
+import type { PageReplyContext } from "@rakazo/contracts";
 import { newClientId } from "./client-id";
 import type { PendingComposerAttachment } from "./composer-draft";
+
+type ComposerPageReply = {
+  replyToMessageId?: string;
+  fromPage?: true;
+  pageContext?: PageReplyContext;
+};
 
 export type ComposerSendAttempt = {
   clientNonce: string;
@@ -7,6 +14,7 @@ export type ComposerSendAttempt = {
   inFlight: boolean;
   uploadedArtifactIds: Map<string, string>;
   completedRoutineIds: Set<string>;
+  pageReply: ComposerPageReply;
 };
 
 const fileIdentities = new WeakMap<File, number>();
@@ -24,7 +32,7 @@ export function composerAttachmentUploadKey(attachment: PendingComposerAttachmen
   return JSON.stringify([attachment.id, fileIdentity(attachment.file)]);
 }
 
-/** Mirrors the actual send payload; file identity avoids treating different same-named files as retries. */
+/** Owner-controlled intent; Page-derived fields stay with the attempt across reader changes. */
 export function composerSendSignature(input: {
   text: string;
   target: { botId?: string; groupId?: string };
@@ -48,7 +56,11 @@ export function composerSendSignature(input: {
 export function createComposerSendAttemptStore(makeNonce: () => string = newClientId) {
   const attempts = new Map<string, ComposerSendAttempt>();
   return {
-    acquire(key: string, signature: string): ComposerSendAttempt | null {
+    acquire(
+      key: string,
+      signature: string,
+      pageReply: ComposerPageReply = {},
+    ): ComposerSendAttempt | null {
       const previous = attempts.get(key);
       // Synchronous lock: React has not necessarily rendered `sending` after the first click.
       if (previous?.inFlight) return null;
@@ -61,6 +73,7 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
               inFlight: false,
               uploadedArtifactIds: new Map<string, string>(),
               completedRoutineIds: new Set<string>(),
+              pageReply,
             };
       attempt.inFlight = true;
       attempts.set(key, attempt);
@@ -70,6 +83,18 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
       if (attempts.get(key) !== attempt) return;
       if (succeeded) attempts.delete(key);
       else attempt.inFlight = false;
+    },
+    /** Drop rejected auto context; the same intent nonce still deduplicates an earlier uncertain send. */
+    rejectPageContext(key: string, attempt: ComposerSendAttempt, error: unknown): void {
+      const rejection = error as { code?: unknown; data?: { reason?: unknown } } | null;
+      if (
+        attempts.get(key) !== attempt ||
+        !attempt.pageReply.pageContext ||
+        rejection?.code !== "NOT_FOUND" ||
+        rejection.data?.reason !== "page_context_unavailable"
+      )
+        return;
+      attempt.pageReply = {};
     },
     isCurrent(key: string, attempt: ComposerSendAttempt): boolean {
       return attempts.get(key) === attempt;

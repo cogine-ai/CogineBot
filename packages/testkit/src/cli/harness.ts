@@ -371,6 +371,7 @@ async function main() {
             CI: "1",
             // Browser fixtures seed and inspect rows as the owner; the API keeps its runtime pool.
             DATABASE_URL: migrationUrl,
+            VERIFY_ISOLATED_DATABASE: container.getDatabase(),
             // Pin English so e2e selectors match source messages regardless of runner locale.
             VITE_DEFAULT_UI_LOCALE: "en",
           },

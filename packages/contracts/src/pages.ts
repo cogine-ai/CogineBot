@@ -1,8 +1,12 @@
 import * as z from "zod";
 import { Id, IsoDate } from "./ids.js";
 
+/** Shared public renderer asset served without account credentials. */
+export const PAGE_RUNTIME_PATH = "/api/v1/assets/page-runtime.js";
+
 export const PAGE_TITLE_MAX_LENGTH = 200;
 export const PAGE_LIST_MAX_LIMIT = 60;
+export const PAGE_LIST_QUERY_MAX_LENGTH = 200;
 /** The most UTF-8 a page's source may be, wherever it comes from: a save or an import. */
 export const PAGE_SOURCE_MAX_BYTES = 256 * 1024;
 

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { PAGE_RUNTIME_PATH } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   bundledRendererCandidates,
@@ -6,10 +7,17 @@ import {
   forwardedRendererRequestInit,
   immutableRendererAsset,
   isRendererAssetMiss,
+  isRendererViewerDocument,
+  rendererViewerDocumentHeaders,
 } from "./renderer-assets.js";
 
 const root = path.resolve("/tmp/rakazo-renderer");
 const origin = "https://app.example.com";
+const runtimePaths = [
+  PAGE_RUNTIME_PATH,
+  "/api/v1/assets/%70age-runtime.js",
+  "/%61pi/v1/assets/page-runtime.js",
+];
 
 describe("bundled desktop renderer", () => {
   it("serves static assets and falls back to index.html for app routes", () => {
@@ -27,11 +35,48 @@ describe("bundled desktop renderer", () => {
   });
 
   it("leaves APIs, screen proxying, and other origins on the network", () => {
-    for (const pathname of ["/api/auth/session", "/rpc/bots", "/novnc/socket"]) {
+    for (const pathname of ["/api/auth/session", ...runtimePaths, "/rpc/bots", "/novnc/socket"]) {
       expect(bundledRendererCandidates(root, `${origin}${pathname}`, origin, false)).toBeNull();
+      expect(bundledRendererCandidates(root, `${origin}${pathname}`, origin, true)).toBeNull();
     }
     expect(
       bundledRendererCandidates(root, "https://example.net/assets/app-123.js", origin, false),
+    ).toBeNull();
+  });
+
+  it.each([
+    "/html-viewer.html",
+    "/%68tml-viewer.html",
+    "/nested%2F..%2Fhtml-viewer.html",
+    "/HTML-VIEWER.HTML",
+    "/html-viewer.html?refresh=1",
+  ])("serves %s only as the restricted viewer document", (pathname) => {
+    const candidates = bundledRendererCandidates(root, `${origin}${pathname}`, origin, true);
+    expect(candidates).toEqual([path.join(root, "html-viewer.html")]);
+    expect(isRendererViewerDocument(root, candidates![0])).toBe(true);
+    expect(contentType(candidates![0])).toBe("text/html; charset=utf-8");
+    expect(immutableRendererAsset(candidates![0])).toBe(false);
+    expect(rendererViewerDocumentHeaders).toEqual({
+      "content-security-policy": "frame-ancestors 'self'",
+      "referrer-policy": "no-referrer",
+    });
+  });
+
+  it("limits the packaged viewer to its configured deployment and resolved root file", () => {
+    const pathnames = ["/nested/html-viewer.html", "/html-viewer.html/preview"];
+    for (const pathname of pathnames) {
+      const candidates = bundledRendererCandidates(root, `${origin}${pathname}`, origin, true);
+      expect(candidates).toHaveLength(2);
+      expect(isRendererViewerDocument(root, candidates![0])).toBe(false);
+    }
+    expect(isRendererViewerDocument(root, path.join(root, "index.html"))).toBe(false);
+    expect(
+      bundledRendererCandidates(
+        root,
+        "https://next-deployment.example.com/html-viewer.html",
+        origin,
+        true,
+      ),
     ).toBeNull();
   });
 
@@ -82,5 +127,48 @@ describe("bundled desktop renderer", () => {
       credentials: "include",
     });
     expect(oauthOptions.headers).toBeUndefined();
+  });
+
+  it.each(["GET", "HEAD"])(
+    "revalidates the public runtime without account credentials on %s",
+    (method) => {
+      const headers = new Headers({
+        authorization: "Bearer synthetic",
+        cookie: "session=synthetic",
+        origin: "null",
+        "if-none-match": '"page-runtime-fixture"',
+      });
+      for (const deployment of [origin, "https://next-deployment.example.com"]) {
+        for (const pathname of runtimePaths) {
+          const request = new Request(`${deployment}${pathname}`, {
+            credentials: "omit",
+            method,
+            headers,
+          });
+          const options = forwardedRendererRequestInit(request, origin);
+          expect(options).toMatchObject({
+            bypassCustomProtocolHandlers: true,
+            credentials: "omit",
+          });
+          expect(Object.fromEntries(new Headers(options.headers))).toEqual({
+            origin: "null",
+            "if-none-match": '"page-runtime-fixture"',
+          });
+        }
+      }
+      expect(headers.get("cookie")).toBe("session=synthetic");
+    },
+  );
+
+  it("keeps the public runtime exception off nonmatching routes and methods", () => {
+    const nearby = new Request(`${origin}${PAGE_RUNTIME_PATH}/unexpected`, { credentials: "omit" });
+    const separator = new Request(`${origin}/api%2fv1/assets/page-runtime.js`);
+    const malformed = new Request(`${origin}/api/v1/assets/%page-runtime.js`);
+    const mutation = new Request(`${origin}${PAGE_RUNTIME_PATH}`, { method: "POST" });
+    for (const request of [nearby, separator, malformed, mutation]) {
+      const options = forwardedRendererRequestInit(request, origin);
+      expect(options.credentials).toBe("include");
+      expect(new Headers(options.headers).get("origin")).toBe(origin);
+    }
   });
 });

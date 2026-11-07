@@ -1,0 +1,77 @@
+<!DOCTYPE html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data: blob:; font-src data:; frame-src about:; child-src 'none'; form-action 'none'; base-uri 'none'"><meta name="referrer" content="no-referrer"><style>html,body{height:100%;margin:0}iframe{width:100%;height:100%;border:0;background:transparent}</style><iframe id="preview" title="Preview" sandbox="allow-scripts" referrerpolicy="no-referrer" csp="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data: blob:; font-src data:; form-action 'none'; base-uri 'none'"></iframe><script>
+// A separate network document keeps the app's CSP out of the nested srcdoc. The shell's
+// own frame-src permits srcdoc and blocks network navigations from inside it.
+const preview = document.getElementById("preview");
+const GESTURE_WINDOW_MS = 1000;
+let instance = "";
+let interactive = false;
+let key = "";
+let gesture = 0;
+let gestureAt = 0;
+
+function guard() {
+  key = Array.from(crypto.getRandomValues(new Uint32Array(4)), (word) =>
+    word.toString(16).padStart(8, "0"),
+  ).join("");
+  // Only the guard knows the key. It runs first, captures the native repeat accessor,
+  // and removes its own script before the page can run.
+  return `<script>(() => { const up = parent, key = "${key}"; document.currentScript.remove(); const apply = Reflect.apply, repeat = Object.getOwnPropertyDescriptor(KeyboardEvent.prototype, "repeat").get; const tell = () => up.postMessage({ type: "rakazo-page:gesture", key }, "*"); addEventListener("pointerup", (event) => { if (event.isTrusted) tell(); }, true); addEventListener("keydown", (event) => { if (event.isTrusted && !apply(repeat, event, [])) tell(); }, true); })();</${"script"}>`;
+}
+
+function send(message) {
+  parent.postMessage({ type: "rakazo-viewer:message", instance, message }, "*");
+}
+
+addEventListener("message", (event) => {
+  if (parent === window || !event.data || typeof event.data !== "object") return;
+  const data = event.data;
+  if (event.source === parent) {
+    if (
+      !instance &&
+      data.type === "rakazo-viewer:load" &&
+      typeof data.instance === "string" && /^[a-f0-9]{32}$/.test(data.instance) &&
+      typeof data.document === "string" &&
+      typeof data.interactive === "boolean"
+    ) {
+      instance = data.instance;
+      interactive = data.interactive;
+      // The host supplies the standards-mode doctype and CSP. The guard goes before page scripts.
+      preview.srcdoc = interactive
+        ? data.document.replace(/^(\s*<!doctype\s+html\s*>)/i, "$1" + guard())
+        : data.document;
+      return;
+    }
+    if (interactive && data.type === "rakazo-viewer:answer" && data.instance === instance) {
+      const result = data.message;
+      if (result?.type === "rakazo-page:copied" && typeof result.id === "string" &&
+          result.id.length > 0 && result.id.length <= 64 && typeof result.ok === "boolean")
+        preview.contentWindow.postMessage({ type: result.type, id: result.id, ok: result.ok }, "*");
+    }
+    return;
+  }
+
+  if (!instance || event.source !== preview.contentWindow || event.origin !== "null") return;
+  if (data.type === "rakazo-page:height" && Number.isFinite(data.height)) {
+    send({ type: data.type, height: data.height });
+    return;
+  }
+  if (!interactive) return;
+  const active = navigator.userActivation?.isActive === true;
+  if (data.type === "rakazo-page:gesture") {
+    if (key && data.key === key && active) {
+      gesture += 1;
+      gestureAt = Date.now();
+    }
+    return;
+  }
+  if (!active || gesture === 0 || Date.now() - gestureAt > GESTURE_WINDOW_MS) return;
+  const fresh = `${key}:${gesture}`;
+  if (data.type === "rakazo-page:open-link" && typeof data.url === "string" && data.url.length <= 4096)
+    send({ type: data.type, url: data.url, gesture: fresh });
+  else if (data.type === "rakazo-page:reply" && typeof data.text === "string" && data.text.length <= 300)
+    send({ type: data.type, text: data.text, gesture: fresh });
+  else if (data.type === "rakazo-page:copy" && typeof data.id === "string" && data.id.length > 0 &&
+           data.id.length <= 64 && typeof data.text === "string" && data.text.length <= 20_000)
+    send({ type: data.type, id: data.id, text: data.text, gesture: fresh });
+});
+</script>

@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
 import type { ClientRequest, IncomingMessage } from "node:http";
 import http from "node:http";
 import https from "node:https";
@@ -29,6 +30,54 @@ const webPort = Number(process.env.WEB_PORT ?? 5173);
 const DESKTOP_STACK_PROBE_PATH = "/.well-known/rakazo-desktop-stack";
 const DESKTOP_STACK_TOKEN_HEADER = "x-rakazo-desktop-stack-token";
 const screenLog = createServiceLogger({ service: "rakazo-web" });
+
+const HTML_VIEWER_PATH = "/html-viewer.html";
+
+function normalizeViewerPath(pathname: string) {
+  return path.posix.normalize(pathname.replaceAll("\\", "/")).toLowerCase();
+}
+
+/** Keep aliases and missing viewer files out of the app's HTML fallback. */
+function attachPrivateHtmlViewer(
+  server: ViteDevServer | PreviewServer,
+  directory: string,
+  development = false,
+) {
+  const file = path.join(directory, HTML_VIEWER_PATH);
+  const paths = [HTML_VIEWER_PATH];
+  if (development) {
+    // Vite development can also serve the public file from its project root or raw fs route.
+    const relative = path.relative(server.config.root, file);
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+      paths.push(`/${relative}`);
+    paths.push(`/@fs/${file}`);
+  }
+  const viewerPaths = new Set(
+    paths.flatMap((pathname) => {
+      const normalized = normalizeViewerPath(pathname);
+      return [normalized, normalized.slice(0, -".html".length)];
+    }),
+  );
+  server.middlewares.use((req, res, next) => {
+    const raw = req.url?.split("?", 1)[0] ?? "";
+    let decoded: string;
+    try {
+      decoded = normalizeViewerPath(decodeURIComponent(raw));
+    } catch {
+      return next();
+    }
+    if (!viewerPaths.has(decoded)) return next();
+    res.setHeader("content-security-policy", "frame-ancestors 'self'");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("x-content-type-options", "nosniff");
+    if (raw !== HTML_VIEWER_PATH || !statSync(file, { throwIfNoEntry: false })?.isFile()) {
+      res.setHeader("cache-control", "no-store");
+      res.statusCode = 404;
+      return res.end();
+    }
+    next();
+  });
+}
 
 function screenPolicy(url: string | undefined) {
   return url?.startsWith("/novnc/session/control/") ? "control" : "view";
@@ -422,6 +471,15 @@ export default defineConfig(({ mode }) => {
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
   return {
     plugins: [
+      {
+        name: "private-html-viewer-headers",
+        configureServer: (server) => attachPrivateHtmlViewer(server, server.config.publicDir, true),
+        configurePreviewServer: (server) =>
+          attachPrivateHtmlViewer(
+            server,
+            path.resolve(server.config.root, server.config.build.outDir),
+          ),
+      },
       react(),
       babel({ plugins: ["@lingui/babel-plugin-lingui-macro"] }),
       lingui(),

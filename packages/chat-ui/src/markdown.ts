@@ -6,7 +6,16 @@ import { createContext, useContext, useEffect, useSyncExternalStore } from "reac
 export type ChatMarkdownProps = {
   children: string;
   streaming?: boolean;
+  /** Opens a private page linked as [title](page:id). */
+  onOpenPage?: (pageId: string) => void;
 };
+
+const PAGE_REFERENCE_PATTERN = "page:([A-Za-z0-9_-]{1,64})";
+const PAGE_URL_PATTERN = new RegExp(`^${PAGE_REFERENCE_PATTERN}$`);
+
+export function markdownPageId(href: string | undefined): string | undefined {
+  return href ? PAGE_URL_PATTERN.exec(href)?.[1] : undefined;
+}
 
 type LinkifyRules = {
   set(options: { fuzzyLink: boolean }): unknown;
@@ -56,6 +65,10 @@ export type PlainTextPart =
   | { type: "text"; value: string }
   | { type: "link"; value: string; href: string };
 
+type PageTextPart = { type: "page"; value: string; pageId: string };
+
+const PLAIN_PAGE_REFERENCE = new RegExp(String.raw`\(${PAGE_REFERENCE_PATTERN}\)`, "y");
+
 function appendPlainText(parts: PlainTextPart[], value: string) {
   if (!value) return;
   const previous = parts.at(-1);
@@ -73,7 +86,47 @@ function appendPlainText(parts: PlainTextPart[], value: string) {
  * messages, so a balanced parenthesis stays inside the URL and a closing
  * parenthesis that only wraps the surrounding prose does not.
  */
-export function plainTextLinkParts(text: string): PlainTextPart[] {
+export function plainTextLinkParts(text: string): PlainTextPart[];
+export function plainTextLinkParts(text: string, pages: true): (PlainTextPart | PageTextPart)[];
+export function plainTextLinkParts(text: string, pages?: true): (PlainTextPart | PageTextPart)[] {
+  if (!pages) return urlLinkParts(text);
+  const parts: (PlainTextPart | PageTextPart)[] = [];
+  let cursor = 0;
+  let at = 0;
+  while (at < text.length) {
+    if (text[at] !== "[") {
+      at += 1;
+      continue;
+    }
+    let end = at + 1;
+    while (end < text.length) {
+      const next = text[end];
+      if (next === "\\") {
+        const escaped = text[end + 1];
+        if (escaped !== "\\" && escaped !== "[" && escaped !== "]") break;
+        end += 2;
+      } else if (next === "[" || next === "]" || next === "\n") break;
+      else end += 1;
+    }
+    PLAIN_PAGE_REFERENCE.lastIndex = end + 1;
+    const match = text[end] === "]" ? PLAIN_PAGE_REFERENCE.exec(text) : null;
+    if (match) {
+      if (at > cursor) parts.push(...urlLinkParts(text.slice(cursor, at)));
+      const value = text.slice(at + 1, end).replace(/\\([\\[\]])/g, "$1");
+      parts.push({ type: "page", value, pageId: match[1]! });
+      cursor = end + 1 + match[0].length;
+      at = cursor;
+    } else {
+      // Escaped openers already scanned share this failure; resume at the next delimiter.
+      at = text[end] === "]" ? end + 1 : end;
+    }
+  }
+  if (cursor === 0) return urlLinkParts(text);
+  if (cursor < text.length) parts.push(...urlLinkParts(text.slice(cursor)));
+  return parts;
+}
+
+function urlLinkParts(text: string): PlainTextPart[] {
   const matches = plainTextLinkify.match(text);
   if (!matches || matches.length === 0) return [{ type: "text", value: text }];
 

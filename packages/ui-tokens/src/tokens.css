@@ -37,6 +37,14 @@
   --overlay: rgba(4, 4, 5, 0.72);
   --scrollbar: #1e2026;
   --scrollbar-hover: #2e313a;
+  --page-icon-sheet: #2c2c2e;
+  --page-icon-edge: #363638;
+  --page-icon-fold: #3c3c3e;
+  --page-icon-line: #6f6f71;
+  --page-icon-line-soft: #616163;
+  --page-tile: #343434;
+  --page-tile-edge: #414141;
+  --page-tile-line: #626262;
   --destructive-fill: #dc2626;
   --primary-hover: #dbdbdb;
   --primary-disabled: #f5f5f521;
@@ -79,8 +87,20 @@
   --overlay: rgba(20, 20, 22, 0.45);
   --scrollbar: #c8c8c4;
   --scrollbar-hover: #a8a8a4;
+  --page-icon-sheet: #e8e8ea;
+  --page-icon-edge: #d6d6da;
+  --page-icon-fold: #d0d0d4;
+  --page-icon-line: #8e8e93;
+  --page-icon-line-soft: #a1a1a6;
+  --page-tile: #ececee;
+  --page-tile-edge: #dadadd;
+  --page-tile-line: #a1a1a6;
   --destructive-fill: #dc2626;
   --primary-hover: #363636;
   --primary-disabled: #1c1c1c26;
   --radius: 0.75rem;
+}
+
+:root {
+  --page-print-background: #fff;
 }

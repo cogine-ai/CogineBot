@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { LinkifiedText } from "./markdown.web";
 
 describe("web user message links", () => {
+  it("keeps manually written Page syntax as text when no opener is supplied", () => {
+    const html = renderToStaticMarkup(
+      <LinkifiedText>{"[Manual](page:private_1) https://example.com/docs"}</LinkifiedText>,
+    );
+
+    expect(html).toContain("[Manual](page:private_1)");
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).not.toContain("rk-chat-page-chip");
+  });
+
   it("renders explicit urls as links and leaves markdown markers literal", () => {
     const html = renderToStaticMarkup(
       <LinkifiedText>{"# Title\n**important** https://example.com/docs."}</LinkifiedText>,
