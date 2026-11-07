@@ -29,6 +29,7 @@
     "@rakazo/core": "workspace:*",
     "@rakazo/db": "workspace:*",
     "@rakazo/logging": "workspace:*",
+    "@rakazo/page-kit": "workspace:*",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "chat": "4.40.0",

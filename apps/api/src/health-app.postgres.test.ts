@@ -19,6 +19,7 @@ import type {
   SpaceNavigation,
   ThreadSnapshot,
 } from "@rakazo/contracts";
+import { PAGE_RUNTIME_PATH } from "@rakazo/core";
 import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -37,6 +38,34 @@ describePostgres("database readiness app wiring", () => {
     sandboxProvider: "fake",
     agentRuntime: "scripted",
     wakeupDriver: "memory",
+  });
+
+  it("serves the mounted Page runtime to an anonymous opaque viewer", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "page-runtime-app-"));
+    let handles: Awaited<ReturnType<typeof createApp>> | undefined;
+    try {
+      handles = await createApp(options(dataDir));
+      const response = await handles.app.request(PAGE_RUNTIME_PATH, {
+        headers: { origin: "null" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe("*");
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+      expect(response.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(await response.text()).toContain("RakazoPage");
+      const etag = response.headers.get("etag");
+      expect(etag).not.toBeNull();
+      const cached = await handles.app.request(PAGE_RUNTIME_PATH, {
+        headers: { origin: "null", "if-none-match": `W/${etag}` },
+      });
+      expect(cached.status).toBe(304);
+      expect(await cached.text()).toBe("");
+      expect((await handles.app.request("/api/v1/assets/private.js")).status).toBe(404);
+    } finally {
+      await handles?.stop();
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("owns one probe, uses it for requests and closes it during shutdown", async () => {

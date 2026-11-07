@@ -5,7 +5,7 @@ import { withTransactionRetry } from "./transaction-retry.js";
 /** Group turns use channel inputs and their own outputs, never private thread history. */
 export function loadRunHistoryMessages(
   prisma: PrismaClient,
-  run: { id: string; threadId: string },
+  run: { id: string; threadId: string; botId: string },
   limit: number,
   channelId?: string,
 ) {
@@ -38,6 +38,10 @@ export function loadRunHistoryMessages(
       replyToMessageId: true,
       replyQuote: true,
       replyTo: { select: { id: true, threadId: true, role: true, botId: true, blocks: true } },
+      steeringMessages: {
+        where: { OR: [{ botId: run.botId }, { runId: null }, { claimedAt: null }] },
+        select: { botId: true, runId: true, claimedAt: true },
+      },
     },
   });
 }

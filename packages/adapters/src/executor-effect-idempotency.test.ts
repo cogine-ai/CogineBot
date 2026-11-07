@@ -213,6 +213,7 @@ function fixture(
     },
     thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })) },
     message: { findMany: vi.fn(async () => []) },
+    event: { findMany: vi.fn(async () => []) },
     task: {
       findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Update shared state" })),
     },

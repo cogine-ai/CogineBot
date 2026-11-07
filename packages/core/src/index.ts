@@ -55,6 +55,7 @@ export * from "./model-oauth.js";
 export * from "./model-probe.js";
 export * from "./model-providers.js";
 export * from "./openapi-import-review.js";
+export * from "./page-links.js";
 export * from "./plugin-discovery.js";
 export * from "./plugin-install-review.js";
 export * from "./plugin-server-setup.js";

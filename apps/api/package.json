@@ -23,6 +23,7 @@
     "@rakazo/core": "workspace:*",
     "@rakazo/db": "workspace:*",
     "@rakazo/logging": "workspace:*",
+    "@rakazo/page-kit": "workspace:*",
     "@rakazo/memory": "workspace:*",
     "hono": "4.13.7",
     "mermaid": "11.17.2",

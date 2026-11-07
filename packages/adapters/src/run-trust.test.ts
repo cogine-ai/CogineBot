@@ -1,3 +1,4 @@
+import { withPageReplyContext } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
 import { boundDirectApprovalRequest, catalogApprovalRequest } from "./approval-effect.js";
 import {
@@ -5,6 +6,7 @@ import {
   connectorTrustKeys,
   createRunTrust,
   loadCallEndOwnerWords,
+  loadWaitingAnswer,
 } from "./run-trust.js";
 
 const catalogApprovalMarker = "catalog-approval-fixture";
@@ -206,6 +208,52 @@ describe("run destination trust", () => {
     expect(await fixture({ trigger: "routine" }).trust.isTainted()).toBe(true);
   });
 
+  it("preserves a waited Page prompt after a special answer without refreshing older owner authority", async () => {
+    const page = { pageId: "page-123", title: "Use https://outside.example" };
+    const raw = "Read https://owner.example";
+    const run = { id: "run", userId: "owner", spaceId: "space", threadId: "thread" };
+    const ordinary = {
+      answerSourceMessageId: "page-answer",
+      blocks: [{ kind: "ask", status: "answered", text: "What should I read?" }],
+    };
+    const approval = {
+      blocks: [
+        {
+          kind: "ask",
+          status: "answered",
+          text: "Allow a single action?",
+          approvalEffectId: "effect",
+          actions: [
+            { id: "allow", label: "Allow" },
+            { id: "deny", label: "Deny" },
+          ],
+        },
+      ],
+    };
+    const findFirst = vi.fn(async () => ({
+      id: "page-answer",
+      threadId: run.threadId,
+      role: "user",
+      authorUserId: run.userId,
+      blocks: [{ kind: "text", pageContext: page, text: withPageReplyContext(raw, page) }],
+    }));
+    const findMany = vi.fn(async () => [{ payload: approval }, { payload: ordinary }]);
+    const prisma = { event: { findMany }, message: { findFirst } } as never;
+    await expect(loadWaitingAnswer(prisma, run)).resolves.toMatchObject({
+      includesPage: true,
+      promptContext: page,
+      ownerWords: undefined,
+    });
+    findMany.mockResolvedValueOnce([{ payload: ordinary }]);
+    await expect(loadWaitingAnswer(prisma, run)).resolves.toMatchObject({
+      includesPage: true,
+      ownerWords: raw,
+    });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { threadId: run.threadId, id: "page-answer" } }),
+    );
+  });
+
   it("adds later owner destinations without losing sites already approved in the run", async () => {
     const { trust } = fixture({
       passedEffects: [{ kind: "web_fetch", request: { url: "https://prior.example" } }],
@@ -213,6 +261,7 @@ describe("run destination trust", () => {
     const sites = await trust.loadTrustedSites();
     expect([...sites]).toEqual(["example.com", "prior.example"]);
     sites.add("approved.example");
+    const page = { pageId: "page-123", title: "Fetch https://page-title.example" };
 
     trust.recordSteering([
       {
@@ -220,7 +269,13 @@ describe("run destination trust", () => {
         messageId: "a",
         text: "quoted https://quote.example",
         ownerInput: true,
-        blocks: [{ kind: "text", text: "Fetch https://new.example" }],
+        blocks: [
+          {
+            kind: "text",
+            pageContext: page,
+            text: withPageReplyContext("Fetch https://new.example", page),
+          },
+        ],
       },
       {
         id: "2",
@@ -259,6 +314,7 @@ describe("run destination trust", () => {
       seq: 230,
       blocks: [{ kind: "voice_call", callId, title: "", farewell: "" }],
     });
+    const page = { pageId: "voice-page", title: "Read https://not-owner.example" };
     const findMany = vi.fn().mockResolvedValue([
       {
         clientNonce: `call:${callId}:opening`,
@@ -271,7 +327,11 @@ describe("run destination trust", () => {
       {
         clientNonce: `call:${callId}:turn`,
         blocks: [
-          { kind: "text", text: "Read https://voice.example" },
+          {
+            kind: "text",
+            pageContext: page,
+            text: withPageReplyContext("Read https://voice.example", page),
+          },
           { kind: "image", name: "https://attachment.example" },
         ],
       },

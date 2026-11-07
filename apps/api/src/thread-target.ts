@@ -7,11 +7,17 @@ import type {
   GroupMember,
   MessageBlock,
   MessageReaction,
+  PageReplyContext,
+  PageTextContext,
   ReplyPreview,
   RunStatus,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { GROUP_MEMBER_MIN, MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import {
+  GROUP_MEMBER_MIN,
+  MessageBlock as MessageBlockSchema,
+  PageTitleSchema,
+} from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
   BACKGROUND_RUN_TRIGGERS,
@@ -19,10 +25,12 @@ import {
   isActive,
   isConversationalRun,
   messageBypassesTakeoverWait,
+  pageReplyTaskPrompt,
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
   sanitizeRunErrorDetails,
+  withPageReplyContext,
 } from "@rakazo/core";
 import { deriveMessageQuote, messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -642,6 +650,8 @@ export async function sendThreadMessage(
     mentions?: MentionTargetInput[];
     replyToMessageId?: string;
     replyQuote?: string;
+    fromPage?: true;
+    pageContext?: PageReplyContext;
     clientNonce?: string;
   },
 ) {
@@ -656,8 +666,39 @@ export async function sendThreadMessage(
     throw new ORPCError("BAD_REQUEST", { message: "replyQuote requires replyToMessageId." });
   }
 
+  if (input.pageContext && input.replyToMessageId) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: "Page context is only valid without a reply target.",
+    });
+  }
+
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
+      let pageContext: PageTextContext | undefined;
+      if (input.pageContext) {
+        const page = await tx.page.findFirst({
+          where: {
+            id: input.pageContext.pageId,
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+            ...(target.kind === "group"
+              ? { groupId: target.groupId }
+              : { botId: target.botId, groupId: null }),
+          },
+          select: { id: true, title: true },
+        });
+        if (!page)
+          throw new ORPCError("NOT_FOUND", {
+            message: "This page isn't available",
+            data: { reason: "page_context_unavailable" },
+          });
+        pageContext = { pageId: page.id, title: PageTitleSchema.parse(page.title) };
+      }
+      const ownerText = input.text ?? "";
+      const composedText = pageContext
+        ? withPageReplyContext(ownerText, pageContext).trim()
+        : input.text;
+      let answeredPageContext = pageContext;
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
       let replyPreview: ReplyPreview | null | undefined;
@@ -682,7 +723,11 @@ export async function sendThreadMessage(
               reply.botId ?? undefined,
             );
             // Attachment labels stay in the preview; only selected text is persisted as a quote.
-            if (!requestedReplyQuote && !replyPreview.attachment) {
+            if (
+              !requestedReplyQuote &&
+              !replyPreview.attachment &&
+              !(input.fromPage && replyPreview.page)
+            ) {
               replyQuote = replyPreview.text || undefined;
             }
           }
@@ -701,8 +746,23 @@ export async function sendThreadMessage(
               replyQuote = undefined;
             }
           }
+          // A resumed tool answer uses its stored task prompt, even if the
+          // parent is outside the fresh history or the restored session.
+          if (reply.role === "bot" && replyPreview?.page && parsed.success) {
+            const card = parsed.data.find((block) => block.kind === "page");
+            if (card) {
+              const title = PageTitleSchema.safeParse(card.title);
+              if (title.success) answeredPageContext = { pageId: card.pageId, title: title.data };
+            }
+          }
         }
       }
+      const answerContext = answeredPageContext
+        ? {
+            taskPrompt: pageReplyTaskPrompt(ownerText, answeredPageContext),
+            choiceAnswer: ownerText,
+          }
+        : {};
 
       if (target.kind === "bot") {
         const mentionTargets = splitMentionTargets(input.mentions);
@@ -717,7 +777,7 @@ export async function sendThreadMessage(
           actor,
           mentionTargets.connectorMentionIds,
         );
-        const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+        const blocks = buildUserMessageBlocks(composedText, attachmentBlocks, pageContext);
         const message = await createThreadMessageInTransaction(tx, {
           threadId: target.threadId,
           role: "user",
@@ -743,7 +803,9 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               runId: run.id,
               answeredByUserId: actor.userId,
-              answer: input.text ?? "",
+              answer: composedText ?? "",
+              ...answerContext,
+              answerSourceMessageId: message.id,
               beforeMessageSeq: message.seq,
             })
           ) {
@@ -757,7 +819,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               botId: target.botId,
               runId: run.id,
-              answer: input.text ?? "",
+              answer: ownerText,
             });
           }
         }
@@ -830,13 +892,14 @@ export async function sendThreadMessage(
           });
           return { message, runs: [active], eventSeq: event.seq };
         }
+        const prompt = buildSendPrompt(input.text, artifacts, connectorNames);
         const task = await tx.task.create({
           data: {
             spaceId: actor.spaceId,
             botId: target.botId,
             threadId: target.threadId,
             userId: actor.userId,
-            prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            prompt: pageContext ? pageReplyTaskPrompt(prompt, pageContext) : prompt,
             ...(mentionTargets.connectorMentionIds.length
               ? { connectionIds: mentionTargets.connectorMentionIds }
               : {}),
@@ -903,7 +966,7 @@ export async function sendThreadMessage(
         actor,
         mentionTargets.connectorMentionIds,
       );
-      const blocks = buildUserMessageBlocks(input.text, attachmentBlocks);
+      const blocks = buildUserMessageBlocks(composedText, attachmentBlocks, pageContext);
       const message = await createThreadMessageInTransaction(tx, {
         threadId: target.threadId,
         role: "user",
@@ -930,7 +993,9 @@ export async function sendThreadMessage(
             threadId: target.threadId,
             runId: run.id,
             answeredByUserId: actor.userId,
-            answer: input.text ?? "",
+            answer: composedText ?? "",
+            ...answerContext,
+            answerSourceMessageId: message.id,
             beforeMessageSeq: message.seq,
           });
           if (answered) {
@@ -946,7 +1011,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               botId: run.botId,
               runId: run.id,
-              answer: input.text ?? "",
+              answer: ownerText,
             });
           }
           continue;
@@ -988,13 +1053,14 @@ export async function sendThreadMessage(
           runs.push(active);
           continue;
         }
+        const prompt = buildSendPrompt(input.text, artifacts, connectorNames);
         const task = await tx.task.create({
           data: {
             spaceId: actor.spaceId,
             botId,
             threadId: target.threadId,
             userId: actor.userId,
-            prompt: buildSendPrompt(input.text, artifacts, connectorNames),
+            prompt: pageContext ? pageReplyTaskPrompt(prompt, pageContext) : prompt,
             ...(mentionTargets.connectorMentionIds.length
               ? { connectionIds: mentionTargets.connectorMentionIds }
               : {}),

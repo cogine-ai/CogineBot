@@ -14,6 +14,8 @@ export interface HistoryScope {
   searchBeforeSeq?: number;
   /** Server-owned active run; permits its source-less results before an output exists. */
   activeRunId?: string;
+  /** Page-bearing messages accepted directly by this run, without a steering claim. */
+  acceptedPageMessageIds?: readonly string[];
   /** Server-only redaction of a full stored JSON value, before offsets are calculated. */
   transformToolResult?: (value: unknown) => unknown;
 }
@@ -73,6 +75,35 @@ function visible(scope: HistoryScope): Prisma.Sql {
   const channel = scope.channelId;
   return Prisma.sql`
     ${visibleThread(scope)}
+    AND NOT (
+      (
+        jsonb_path_exists(m.blocks, '$[*] ? (@.kind == "text" && exists(@.pageContext))')
+        OR EXISTS (
+          SELECT 1 FROM messages parent
+          WHERE parent.id = m."replyToMessageId" AND parent."threadId" = m."threadId"
+            AND (
+              (
+                parent.blocks @> '[{"kind":"page"}]'::jsonb
+                AND NOT jsonb_path_exists(parent.blocks, '$[*] ? (@.kind != "page")')
+              )
+              OR (
+                NULLIF(btrim(m."replyQuote"), '') IS NULL
+                AND jsonb_path_exists(parent.blocks, '$[*] ? (@.kind == "page" || (@.kind == "text" && exists(@.pageContext)))')
+              )
+            )
+        )
+      )
+      ${scope.acceptedPageMessageIds?.length ? Prisma.sql`AND m.id NOT IN (${Prisma.join(scope.acceptedPageMessageIds)})` : Prisma.empty}
+      AND EXISTS (
+        SELECT 1 FROM steering_messages pending
+        WHERE pending."messageId" = m.id AND (pending."runId" IS NULL OR pending."claimedAt" IS NULL)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM steering_messages claimed
+        WHERE claimed."messageId" = m.id AND claimed."botId" = ${scope.botId}
+          AND claimed."runId" IS NOT NULL AND claimed."claimedAt" IS NOT NULL
+      )
+    )
     ${
       channel
         ? Prisma.sql`AND (

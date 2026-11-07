@@ -1,6 +1,7 @@
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
-import { blocksToAgentHistoryText, isApprovalAskBlock, isSecretAskBlock } from "@rakazo/core";
+import { isApprovalAskBlock, isSecretAskBlock } from "@rakazo/core";
 import type { PrismaClient, Run } from "@rakazo/db";
+import { scriptedSteeringText } from "./reply-context.js";
 import type { StoredScriptedState } from "./scripted-state.js";
 import {
   parseStoredScriptedState,
@@ -77,7 +78,7 @@ export async function loadScriptedResume(
       row.messageId !== member.messageId ||
       row.message.id !== member.messageId ||
       !blocks.success ||
-      scriptedStateDigest(blocksToAgentHistoryText(blocks.data)) !== member.contentDigest
+      scriptedStateDigest(scriptedSteeringText(blocks.data)) !== member.contentDigest
     )
       invalidState();
   }

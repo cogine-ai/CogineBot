@@ -317,6 +317,14 @@ import {
   startOnboarding,
 } from "./onboarding.js";
 import { createOpenApiImportService } from "./openapi-import.js";
+import {
+  getPage,
+  listPages,
+  PageListCursorError,
+  pinPage,
+  removePage,
+  renamePage,
+} from "./pages.js";
 import { createPluginInstallsService } from "./plugin-installs.js";
 import { createPluginUninstaller } from "./plugin-uninstall.js";
 import { listRoutineRuns } from "./routine-runs.js";
@@ -7181,6 +7189,29 @@ export function createRouter(deps: RouterDeps) {
       remove: authed.artifacts.remove.handler(async ({ context, input }) => {
         return deleteArtifactFamily(deps, context.actor, { familyId: input.artifactId });
       }),
+    },
+    pages: {
+      list: authed.pages.list.handler(async ({ context, input }) => {
+        try {
+          return await listPages(deps.prisma, context.actor, input);
+        } catch (error) {
+          if (error instanceof PageListCursorError)
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          throw error;
+        }
+      }),
+      get: authed.pages.get.handler(({ context, input }) =>
+        getPage(deps.prisma, context.actor, input),
+      ),
+      rename: authed.pages.rename.handler(({ context, input }) =>
+        renamePage(deps.prisma, context.actor, input.pageId, input.title),
+      ),
+      pin: authed.pages.pin.handler(({ context, input }) =>
+        pinPage(deps.prisma, context.actor, input.pageId, input.pinned),
+      ),
+      remove: authed.pages.remove.handler(({ context, input }) =>
+        removePage(deps.prisma, context.actor, input.pageId),
+      ),
     },
     usage: {
       list: authed.usage.list.handler(async ({ context }) => {
