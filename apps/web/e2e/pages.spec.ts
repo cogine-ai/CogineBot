@@ -237,6 +237,7 @@ test("a private page opens from its card, replies in chat and updates", async ({
   await view.getByRole("button", { name: "Download PDF" }).click();
   expect(await page.evaluate(() => (window as Window & { printed?: number }).printed)).toBe(1);
   await page.emulateMedia({ media: "print" });
+  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   for (const name of ["Close page", title, "Download PDF"]) {
     await expect(view.getByRole("button", { name })).toBeHidden();
   }

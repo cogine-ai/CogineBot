@@ -100,3 +100,7 @@
   --primary-disabled: #1c1c1c26;
   --radius: 0.75rem;
 }
+
+:root {
+  --page-print-background: #fff;
+}

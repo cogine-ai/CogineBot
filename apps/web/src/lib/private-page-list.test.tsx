@@ -116,6 +116,26 @@ const button = (container: HTMLElement, text: string) =>
 const titles = (container: HTMLElement) =>
   [...container.querySelectorAll("li")].map((row) => row.textContent);
 
+it.each([
+  { input: `${"🧪".repeat(100)}x`, query: "🧪".repeat(100) },
+  { input: `${"a".repeat(199)}🧪`, query: "a".repeat(199) },
+])("keeps an oversized search within the RPC query limit", async ({ input: value, query }) => {
+  reads.list
+    .mockResolvedValueOnce(batch(1, null))
+    .mockResolvedValue({ items: [], nextCursor: null });
+  const container = await show();
+  const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+  const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    setValue.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(reads.list).toHaveBeenLastCalledWith({ botId: "bot-1", limit: 20, query });
+  expect(input.value).toBe(query);
+  expect(input.maxLength).toBe(200);
+  expect(container.textContent).toContain("No pages match");
+});
+
 it("retries a failed first-batch refresh with existing rows and no next cursor", async () => {
   reads.list
     .mockResolvedValueOnce({ items: [page(1)], nextCursor: null })

@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { PageIcon } from "@rakazo/chat-ui/web";
 import type { PageSummary } from "@rakazo/contracts";
-import { PAGE_TITLE_MAX_LENGTH } from "@rakazo/contracts";
+import { PAGE_LIST_QUERY_MAX_LENGTH, PAGE_TITLE_MAX_LENGTH } from "@rakazo/contracts";
 import { uniquePages } from "@rakazo/core";
 import {
   Button,
@@ -195,7 +195,12 @@ function OwnerPages({ botId, groupId }: { botId?: string; groupId?: string }) {
             aria-label={t`Find a page`}
             placeholder={t`Find a page`}
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            maxLength={PAGE_LIST_QUERY_MAX_LENGTH}
+            onChange={(event) => {
+              const value = event.currentTarget.value.slice(0, PAGE_LIST_QUERY_MAX_LENGTH);
+              // A clipped UTF-16 surrogate pair must not leave half a character in the query.
+              setSearch(value.replace(/[\uD800-\uDBFF]$/u, ""));
+            }}
             className="min-w-0 flex-1 bg-transparent text-[14px] text-foreground outline-none placeholder:text-muted-foreground"
           />
         </label>

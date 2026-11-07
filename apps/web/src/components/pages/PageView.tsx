@@ -53,24 +53,40 @@ export function PageView({
   const closeButton = useRef<HTMLButtonElement>(null);
   // The frame stays hidden until the page inside reports it has drawn, so neither a blank
   // frame nor a browser error page shows; a page that never draws gets a way to try again.
-  const [drawn, setDrawn] = useState(false);
-  const [stalled, setStalled] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  // A new document (an update, a theme change) has to draw again before it shows.
-  const [shown, setShown] = useState({ document, documentKey });
-  if (shown.document !== document || shown.documentKey !== documentKey) {
-    setShown({ document, documentKey });
-    setDrawn(false);
-    setStalled(false);
+  const frameDocument = notice === null ? document : null;
+  const [frame, setFrame] = useState<{
+    document: string | null;
+    documentKey?: string;
+    attempt: number;
+    status: "loading" | "drawn" | "stalled";
+  }>({ document: frameDocument, documentKey, attempt: 0, status: "loading" });
+  const { attempt, status } = frame;
+  // A notice removes the frame. Clearing it starts a new attempt even for the same document.
+  if (frame.document !== frameDocument || frame.documentKey !== documentKey) {
+    setFrame({ document: frameDocument, documentKey, attempt: attempt + 1, status: "loading" });
   }
+  const drawn = status === "drawn";
+  const stalled = status === "stalled";
   const frameKey = JSON.stringify([documentKey, attempt]);
-  const waiting = document !== null && !drawn && notice === null;
+  const waiting = frameDocument !== null && status === "loading";
   useEffect(() => {
     if (!waiting) return;
-    const timer = window.setTimeout(() => setStalled(true), FRAME_TIMEOUT_MS);
+    const timer = window.setTimeout(() => {
+      setFrame((current) =>
+        current.attempt === attempt && current.status === "loading"
+          ? { ...current, status: "stalled" }
+          : current,
+      );
+    }, FRAME_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [waiting, frameKey, document]);
-  const onDrawn = useCallback(() => setDrawn(true), []);
+  }, [waiting, attempt]);
+  const onDrawn = useCallback(() => {
+    setFrame((current) =>
+      current.attempt === attempt && current.status === "loading"
+        ? { ...current, status: "drawn" }
+        : current,
+    );
+  }, [attempt]);
   const control = `grid place-items-center rounded-full p-0 border border-foreground/[0.06] text-foreground outline-none hover:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-ring ${compact ? "size-11" : "size-[35px]"}`;
   return (
     <Dialog
@@ -151,13 +167,14 @@ export function PageView({
           >
             {notice ?? (
               <>
-                {document !== null && !stalled ? (
+                {frameDocument !== null && !stalled ? (
                   <div
                     key={attempt}
+                    inert={!drawn}
                     className={`h-full transition-opacity duration-200 motion-reduce:transition-none ${drawn ? "opacity-100" : "opacity-0"}`}
                   >
                     <PageFrame
-                      document={document}
+                      document={frameDocument}
                       documentKey={frameKey}
                       title={title}
                       interactive
@@ -171,8 +188,11 @@ export function PageView({
                     title={t`This page couldn't load`}
                     detail={t`Check your connection and try again.`}
                     onRetry={() => {
-                      setStalled(false);
-                      setAttempt((count) => count + 1);
+                      setFrame((current) => ({
+                        ...current,
+                        attempt: current.attempt + 1,
+                        status: "loading",
+                      }));
                     }}
                     onClose={() => onOpenChange(false)}
                   />

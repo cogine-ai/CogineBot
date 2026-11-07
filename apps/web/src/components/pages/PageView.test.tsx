@@ -32,6 +32,7 @@ afterEach(() => {
 function mount(props: {
   document: string;
   documentKey?: string;
+  notice?: ReactNode;
   onOpenChange?: (open: boolean) => void;
 }) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -45,6 +46,7 @@ function mount(props: {
           title="Plan"
           document={next.document}
           documentKey={next.documentKey}
+          notice={next.notice}
         />,
       ),
     );
@@ -87,6 +89,59 @@ it("waits for a distinct version and retry even when the compiled bytes match", 
   await act(async () => frame.drawn?.());
   expect(document.querySelector('button[title^="Opens your browser"]')).not.toBeNull();
   await view.unmount();
+});
+
+it("waits for a fresh frame after a refresh notice clears without changing the document", async () => {
+  vi.useFakeTimers();
+  const page = { document: "<p>cached plan</p>", documentKey: "plan:1" };
+  const view = mount(page);
+  const pdf = () => document.querySelector('button[title^="Opens your browser"]');
+  const loading = () => document.querySelector('[data-testid="page-loading"]');
+  const frameWrapper = () => document.querySelector('iframe[title="page"]')!.parentElement!;
+  try {
+    await view.render(page);
+    const originalDrawn = frame.drawn!;
+    const originalKey = frame.key;
+    await act(async () => originalDrawn());
+    expect(pdf()).not.toBeNull();
+
+    await view.render({ ...page, notice: <p>Refresh failed</p> });
+    expect(document.body.textContent).toContain("Refresh failed");
+    expect(document.querySelector('iframe[title="page"]')).toBeNull();
+    expect(pdf()).toBeNull();
+    await act(async () => vi.advanceTimersByTime(16_000));
+
+    await view.render(page);
+    expect(loading()).not.toBeNull();
+    expect(pdf()).toBeNull();
+    expect(frameWrapper().hasAttribute("inert")).toBe(true);
+    expect(frame.key).not.toBe(originalKey);
+    const remountedDrawn = frame.drawn!;
+    await act(async () => originalDrawn());
+    expect(loading()).not.toBeNull();
+    expect(pdf()).toBeNull();
+
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(document.body.textContent).toContain("This page couldn't load");
+    expect(pdf()).toBeNull();
+    await act(async () => remountedDrawn());
+    expect(document.body.textContent).toContain("This page couldn't load");
+
+    const retry = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    )!;
+    await act(async () => retry.click());
+    await act(async () => remountedDrawn());
+    expect(loading()).not.toBeNull();
+    expect(pdf()).toBeNull();
+    expect(frameWrapper().hasAttribute("inert")).toBe(true);
+    await act(async () => frame.drawn?.());
+    expect(loading()).toBeNull();
+    expect(pdf()).not.toBeNull();
+    expect(frameWrapper().hasAttribute("inert")).toBe(false);
+  } finally {
+    await view.unmount();
+  }
 });
 
 it("closes on Escape unless the key landed in a popup", async () => {

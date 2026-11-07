@@ -59,7 +59,7 @@ body,
   html:has([data-page-print]) body,
   html:has([data-page-print]) #root {
     height: auto;
-    background: #fff;
+    background: var(--page-print-background);
   }
   body:has([data-page-print]) > :not(:has([data-page-print])),
   [data-slot="dialog-overlay"]:has(~ [data-page-print]) {
