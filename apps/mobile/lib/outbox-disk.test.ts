@@ -5,6 +5,13 @@ import type { SendAttempt } from "./thread-feedback";
 import { deliverSend, OUTBOX_MAX_ENTRIES } from "./thread-feedback";
 
 const files = vi.hoisted(() => new Map<string, string>());
+const faults = vi.hoisted(() => ({
+  write: false,
+  move: false,
+  read: false,
+  list: false,
+  delete: false,
+}));
 vi.mock("expo-file-system", () => {
   class Directory {
     uri: string;
@@ -15,10 +22,23 @@ vi.mock("expo-file-system", () => {
       return [...files.keys()].some((p) => p.startsWith(this.uri));
     }
     create() {}
+    moveSync(target: Directory) {
+      if (faults.move && this.uri.endsWith(".tmp")) throw new Error("move failed");
+      for (const [path, value] of [...files]) {
+        if (path === this.uri || path.startsWith(`${this.uri}/`)) {
+          files.set(target.uri + path.slice(this.uri.length), value);
+          files.delete(path);
+        }
+      }
+      this.uri = target.uri;
+    }
     delete() {
-      for (const path of files.keys()) if (path.startsWith(`${this.uri}/`)) files.delete(path);
+      if (faults.delete && /\.(bak|tmp)$/.test(this.uri)) throw new Error("delete failed");
+      for (const path of files.keys())
+        if (path === this.uri || path.startsWith(`${this.uri}/`)) files.delete(path);
     }
     list() {
+      if (faults.list) throw new Error("list failed");
       const names = new Set(
         [...files.keys()]
           .filter((path) => path.startsWith(`${this.uri}/`))
@@ -40,9 +60,11 @@ vi.mock("expo-file-system", () => {
       return files.get(this.uri) ?? "";
     }
     textSync() {
+      if (faults.read) throw new Error("read failed");
       return files.get(this.uri);
     }
     write(text: string) {
+      if (faults.write && this.uri.endsWith(".tmp")) throw new Error("write failed");
       files.set(this.uri, text);
     }
   }
@@ -81,7 +103,14 @@ function attempt(nonce = "nonce-a"): SendAttempt {
     },
   };
 }
-beforeEach(() => files.clear());
+beforeEach(() => {
+  files.clear();
+  faults.write = false;
+  faults.move = false;
+  faults.read = false;
+  faults.list = false;
+  faults.delete = false;
+});
 it("restores payload, uploaded ids and nonce for an idempotent retry", async () => {
   const original = attempt();
   expect(outboxDisk.admit(original)).toBe(true);
@@ -235,3 +264,67 @@ it.each([{ trimmed: null }, { trimmed: 3 }, { shouldSend: "yes" }, { shouldRunRo
     expect(outboxDisk.load(2, scope)).toEqual([]);
   },
 );
+
+it.each(["write", "move"] as const)(
+  "preserves the committed Page attempt across a failed %s and restart",
+  (fault) => {
+    const original = attempt();
+    original.state = "failed";
+    original.payload.pageContext = { pageId: "page-a" };
+    expect(outboxDisk.admit(original)).toBe(true);
+    expect(outboxDisk.save([original])).toBe(true);
+    const candidate = { ...original, payload: { ...original.payload, pageContext: undefined } };
+    faults[fault] = true;
+    expect(outboxDisk.save([candidate])).toBe(false);
+    faults[fault] = false;
+    const [restored] = outboxDisk.load(2, scope);
+    expect(restored?.payload.pageContext).toEqual({ pageId: "page-a" });
+    expect(restored?.clientNonce).toBe(original.clientNonce);
+    expect(restored?.artifactIds).toEqual(original.artifactIds);
+    expect(outboxDisk.save([{ ...restored!, payload: candidate.payload }])).toBe(true);
+    const [plain] = outboxDisk.load(3, scope);
+    expect(plain?.payload.pageContext).toBeUndefined();
+    expect(plain?.clientNonce).toBe(original.clientNonce);
+    expect(plain?.state).toBe("failed");
+    expect(plain?.artifactIds).toEqual(original.artifactIds);
+  },
+);
+
+it.each(["read", "list"] as const)(
+  "retains committed backup and attachment bytes on a restore %s error",
+  (fault) => {
+    const original = attempt();
+    expect(outboxDisk.admit(original)).toBe(true);
+    expect(outboxDisk.save([original])).toBe(true);
+    faults.move = true;
+    expect(outboxDisk.save([])).toBe(false);
+    const before = new Map(files);
+    faults[fault] = true;
+    expect(() => outboxDisk.load(2, scope)).toThrow(`${fault} failed`);
+    if (fault === "read") expect(files).toEqual(before);
+    expect(files.get("cache/outbox/nonce-a/0")).toBe(before.get("cache/outbox/nonce-a/0"));
+    expect(
+      files.get("cache/outbox/sends-v4.json") ?? files.get("cache/outbox/sends-v4.json.bak"),
+    ).toBe(before.get("cache/outbox/sends-v4.json.bak"));
+    faults[fault] = false;
+    faults.move = false;
+    expect(outboxDisk.load(2, scope)[0]?.clientNonce).toBe(original.clientNonce);
+  },
+);
+
+it("keeps a committed retry when leftover backup cleanup fails", () => {
+  const original = attempt();
+  original.state = "failed";
+  original.payload.pageContext = { pageId: "page-a" };
+  expect(outboxDisk.admit(original)).toBe(true);
+  expect(outboxDisk.save([original])).toBe(true);
+  faults.delete = true;
+  const plain = { ...original, payload: { ...original.payload, pageContext: undefined } };
+  expect(outboxDisk.save([plain])).toBe(true);
+  expect(files.has("cache/outbox/sends-v4.json.bak")).toBe(true);
+  const [restored] = outboxDisk.load(2, scope);
+  expect(restored?.clientNonce).toBe(original.clientNonce);
+  expect(restored?.payload.pageContext).toBeUndefined();
+  expect(restored?.artifactIds).toEqual(original.artifactIds);
+  expect(files.has("cache/outbox/nonce-a/0")).toBe(true);
+});

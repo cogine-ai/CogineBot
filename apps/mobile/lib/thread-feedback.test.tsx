@@ -8,7 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { ThreadErrorNotices } from "../components/run-error-notice";
-import type { ComposerSnapshot, SendPayload } from "./thread-feedback";
+import type { ComposerSnapshot, SendAttempt, SendPayload } from "./thread-feedback";
 import {
   clearFailedSends,
   configureUnsentSends,
@@ -171,7 +171,7 @@ describe("scoped mobile outbox", () => {
     hydrate: vi.fn(async () => undefined),
     forget: vi.fn(),
     load: vi.fn(() => []),
-    save: vi.fn(),
+    save: vi.fn((_attempts: SendAttempt[]) => true),
     clear: vi.fn(),
   };
   const notDelivered = vi.fn();
@@ -302,6 +302,138 @@ describe("scoped mobile outbox", () => {
     ]);
     expect(request.mock.calls.filter(([proc]) => proc === "artifacts/create")).toHaveLength(2);
     expect(first.payload.displayText).toBe(`[A](page:page-a)\n${raw}`);
+  });
+
+  it("durably drops only rejected automatic Page context and lets the native bubble retry the same intent", async () => {
+    const raw = "[Owner link](page:manual)\nPlease revise";
+    const attempt = feedback.sendAttempt({
+      ...payload(raw),
+      displayText: `[Plan](page:page-a)\n${raw}`,
+      replyTargetId: undefined,
+      replyQuote: null,
+      pageContext: { pageId: "page-a" },
+    });
+    const nonce = attempt.clientNonce;
+    request.mockImplementation(async (proc) => {
+      if (proc === "artifacts/create") return { id: "artifact-a" };
+      throw Object.assign(new Error("Page unavailable"), {
+        status: 404,
+        code: "NOT_FOUND",
+        data: { reason: "page_context_unavailable" },
+      });
+    });
+    let durableTransition = false;
+    disk.save.mockImplementation((attempts) => {
+      const saved = attempts.find((entry) => entry.clientNonce === nonce);
+      if (!durableTransition && saved?.payload.pageContext === undefined) {
+        durableTransition = true;
+        expect(attempt.payload.pageContext).toEqual({ pageId: "page-a" });
+        expect(saved).toMatchObject({
+          state: "failed",
+          clientNonce: nonce,
+          payload: { plan: { trimmed: raw }, botTarget: "bot-1" },
+        });
+      }
+      return true;
+    });
+    await act(async () => feedback.send(attempt));
+    disk.save.mockImplementation(() => true);
+    expect(attempt.state).toBe("failed");
+    expect(attempt.payload.pageContext).toBeUndefined();
+    expect(attempt.payload.displayText).toBe(raw);
+    expect(container.textContent).toContain("Not sent · Tap to retry");
+    await act(async () => container.querySelector("button")!.click());
+    expect(retry).toHaveBeenCalled();
+    request.mockResolvedValue({ seq: 42 });
+    await act(async () => {
+      await Promise.all([feedback.send(attempt, true), feedback.send(attempt, true)]);
+    });
+    const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]![1]).toMatchObject({
+      clientNonce: nonce,
+      text: raw,
+      pageContext: undefined,
+      botId: "bot-1",
+      artifactIds: ["artifact-a"],
+    });
+    expect(request.mock.calls.filter(([proc]) => proc === "artifacts/create")).toHaveLength(1);
+  });
+
+  it.each(["storage", "account", "other404", "unknown", "upload", "routine"])(
+    "retains automatic Page context on %s without an authorized durable transition",
+    async (boundary) => {
+      const attempt = feedback.sendAttempt({
+        ...payload("Keep raw"),
+        replyTargetId: undefined,
+        replyQuote: null,
+        pageContext: { pageId: "page-a" },
+      });
+      if (boundary === "routine") {
+        attempt.payload.plan.shouldRunRoutines = true;
+        attempt.payload.plan.routineIds = ["routine-a"];
+      }
+      const error = Object.assign(new Error("Page unavailable"), {
+        status: 404,
+        code: "NOT_FOUND",
+        data: { reason: boundary === "other404" ? "other" : "page_context_unavailable" },
+      });
+      request.mockImplementation(async (proc) => {
+        if (boundary !== "upload" && proc === "artifacts/create") return { id: "artifact-a" };
+        if (boundary === "account") scope.userId = "user-b";
+        throw boundary === "unknown" ? new Error("Connection lost") : error;
+      });
+      if (boundary === "storage") disk.save.mockReturnValue(false);
+      try {
+        await act(async () => feedback.send(attempt));
+        expect(attempt.payload.pageContext).toEqual({ pageId: "page-a" });
+        expect(attempt.acceptedSeq).toBeUndefined();
+        expect(request.mock.calls.filter(([proc]) => proc === "threads/send")).toHaveLength(
+          ["upload", "routine"].includes(boundary) ? 0 : 1,
+        );
+        if (boundary === "storage") {
+          expect(attempt.state).toBe("failed");
+          expect(container.textContent).toContain("Not sent · Tap to retry");
+          disk.save.mockReturnValue(true);
+          await act(async () => feedback.send(attempt, true));
+          expect(attempt.payload.pageContext).toBeUndefined();
+          expect(attempt.state).toBe("failed");
+          const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
+          expect(sends).toHaveLength(2);
+          expect(sends[0]![1].clientNonce).toBe(sends[1]![1].clientNonce);
+        }
+      } finally {
+        scope.userId = "user-a";
+        scope.spaceId = "space-a";
+        disk.save.mockReturnValue(true);
+      }
+    },
+  );
+
+  it("keeps the captured Space for a rejected Page send and its explicit retry", async () => {
+    const attempt = feedback.sendAttempt({
+      ...payload("Keep raw"),
+      replyTargetId: undefined,
+      replyQuote: null,
+      pageContext: { pageId: "page-a" },
+    });
+    request.mockImplementation(async (proc) => {
+      if (proc === "artifacts/create") return { id: "artifact-a" };
+      scope.spaceId = "space-b";
+      throw Object.assign(new Error("Page unavailable"), {
+        status: 404,
+        code: "NOT_FOUND",
+        data: { reason: "page_context_unavailable" },
+      });
+    });
+    await act(async () => feedback.send(attempt));
+    expect(attempt.payload.pageContext).toBeUndefined();
+    expect(attempt.spaceId).toBe("space-a");
+    request.mockResolvedValue({ seq: 42 });
+    await act(async () => feedback.send(attempt, true));
+    expect(
+      request.mock.calls.filter(([proc]) => proc === "threads/send").map((call) => call[3]),
+    ).toEqual(["space-a", "space-a"]);
   });
 
   it("shows the optimistic payload before confirmation, then replaces it with the echo", async () => {

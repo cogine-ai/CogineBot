@@ -351,7 +351,7 @@ describe("rejected-session editor isolation", () => {
         admit: () => true,
         hydrate: async () => {},
         forget: () => {},
-        save: () => {},
+        save: () => true,
         load: () => [],
         clear: diskClear,
       },

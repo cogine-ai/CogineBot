@@ -110,7 +110,8 @@ export type UnsentDisk = {
   admit(attempt: SendAttempt): boolean;
   hydrate(attempt: SendAttempt): Promise<void>;
   forget(attempt: SendAttempt): void;
-  save(attempts: SendAttempt[]): void;
+  /** True acknowledges a committed index. */
+  save(attempts: SendAttempt[]): boolean;
   load(session: number, scope: OutboxScope): SendAttempt[];
   clear(): void;
 };
@@ -224,10 +225,16 @@ export function sendWaitingMessages(force = false): Promise<void> {
         if (!attempt) break;
         attempt.state = "pending";
         changed();
+        let messageRejection: unknown;
         try {
           const request = ((...args: Parameters<typeof rpc>) => {
             if (!inScope(attempt)) throw new Error("Session changed");
-            return config!.request(args[0], args[1], args[2], attempt.spaceId);
+            const response = config!.request(args[0], args[1], args[2], attempt.spaceId);
+            if (args[0] !== "threads/send") return response;
+            return response.catch((error: unknown) => {
+              messageRejection = error;
+              throw error;
+            });
           }) as typeof rpc;
           await config.disk.hydrate(attempt);
           const seq = await deliverSend(attempt.payload, attempt, request);
@@ -253,6 +260,49 @@ export function sendWaitingMessages(force = false): Promise<void> {
               ? "refused"
               : "failed";
           attempt.error = config.errorText(error);
+          const rejection = error as { code?: unknown; data?: { reason?: unknown } } | null;
+          if (
+            error === messageRejection &&
+            status === 404 &&
+            rejection?.code === "NOT_FOUND" &&
+            rejection.data?.reason === "page_context_unavailable" &&
+            attempt.payload.pageContext &&
+            unsentSends.includes(attempt)
+          ) {
+            const rejectedPayload = attempt.payload;
+            attempt.state = "failed";
+            const recovered: SendAttempt = {
+              ...attempt,
+              state: "failed",
+              payload: {
+                ...attempt.payload,
+                pageContext: undefined,
+                displayText: attempt.payload.plan.trimmed,
+              },
+            };
+            // Keep the same intent nonce: an earlier request may still commit after this rejection.
+            // Do not expose a context-free retry until its payload is committed for restart recovery.
+            let committed = false;
+            try {
+              committed =
+                config.disk.save(
+                  unsentSends
+                    .filter((a) => a.acceptedSeq === undefined)
+                    .map((a) => (a === attempt ? recovered : a)),
+                ) === true;
+            } catch {
+              // Keep the context for another explicit retry if storage is unavailable.
+            }
+            if (
+              committed &&
+              inScope(attempt) &&
+              unsentSends.includes(attempt) &&
+              attempt.payload === rejectedPayload
+            ) {
+              attempt.payload = recovered.payload;
+              attempt.state = recovered.state;
+            }
+          }
           changed();
           if (offline) break;
           config.notDelivered(attempt);
