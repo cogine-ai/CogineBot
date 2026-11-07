@@ -1,4 +1,4 @@
-import type { AgentToolCompletion, ConnectorTool } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, AgentToolCompletion, ConnectorTool } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakeAgentState = vi.hoisted(() => ({
@@ -719,7 +719,7 @@ describe("Pi connector tool dispatch", () => {
           cwd ? { command, cwd } : { command },
           JSON.stringify(["pi-tool", "main", "call-1"]),
           undefined,
-          { onShellStillRunning: expect.any(Function) },
+          { beforeInputPause: expect.any(Function), onShellStillRunning: expect.any(Function) },
         ],
       ]);
     },
@@ -758,7 +758,7 @@ describe("Pi connector tool dispatch", () => {
       { collection: "notes", title: "Result", body: "Done" },
       JSON.stringify(["pi-tool", "main", "call-1"]),
       { connectorId: "destination", toolName: "destination.write" },
-      { onShellStillRunning: expect.any(Function) },
+      { beforeInputPause: expect.any(Function), onShellStillRunning: expect.any(Function) },
     );
   });
 
@@ -1729,10 +1729,43 @@ describe("Pi connector tool dispatch", () => {
     });
   });
 
+  it("does not bypass an executor that declines the subagent capability", async () => {
+    fakeAgentState.mode = "subagent-limit";
+    const executeTool = vi.fn(async () => ({ error: "Runtime control is unavailable" }));
+    const events: unknown[] = [];
+    for await (const event of new PiAgentRuntime().run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "unsupported-control",
+        prompt: "Delegate work",
+        instructions: "",
+        history: [],
+        tools: [
+          {
+            name: "run_subagent",
+            description: "Delegate work",
+            inputSchema: { type: "object", properties: {} },
+          },
+          shellTool,
+        ],
+        model: { provider: "test", id: "dispatch-test-model" },
+        executeTool,
+      },
+      { signal: new AbortController().signal },
+    ))
+      events.push(event);
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(events.filter((event) => (event as { type?: string }).type === "subagent")).toEqual([]);
+  });
+
   it("shares an optional tool-call fuse with subagents and still emits a final message", async () => {
     process.env.MAX_TOOL_CALLS_PER_TURN = "80";
     fakeAgentState.mode = "subagent-limit";
-    const executeTool = vi.fn(async () => ({ ok: true }));
+    const executeTool = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) =>
+        name === "run_subagent" ? observer!.runSubagent!(args) : { ok: true },
+    );
     const runtime = new PiAgentRuntime();
     const events: unknown[] = [];
 
@@ -1766,7 +1799,7 @@ describe("Pi connector tool dispatch", () => {
       events.push(event);
     }
 
-    expect(executeTool).toHaveBeenCalledTimes(79);
+    expect(executeTool).toHaveBeenCalledTimes(80);
     expect(fakeAgentState.abortCount).toBeGreaterThanOrEqual(1);
     expect(events).toContainEqual({
       type: "progress",
@@ -1987,7 +2020,10 @@ describe("Pi connector tool dispatch", () => {
   it("keeps an optional tool-call fuse across nested ask_user pause and continueRun", async () => {
     process.env.MAX_TOOL_CALLS_PER_TURN = "4";
     fakeAgentState.mode = "nested-ask-pause";
-    const executeTool = vi.fn(async () => ({ ok: true }));
+    const executeTool = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) =>
+        name === "run_subagent" ? observer!.runSubagent!(args) : { ok: true },
+    );
     const runtime = new PiAgentRuntime();
     const events: unknown[] = [];
     const request = {
@@ -2024,7 +2060,7 @@ describe("Pi connector tool dispatch", () => {
       events.push(event);
     }
 
-    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(executeTool).toHaveBeenCalledTimes(3);
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "ask",
@@ -2050,7 +2086,7 @@ describe("Pi connector tool dispatch", () => {
       resumed.push(event);
     }
 
-    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(executeTool).toHaveBeenCalledTimes(3);
     expect(resumed).toContainEqual({
       type: "progress",
       text: "Stopped: more than 4 tool calls in one turn.",
@@ -2199,7 +2235,7 @@ describe("Pi connector tool dispatch", () => {
       },
       JSON.stringify(["pi-tool", "main", "call-1"]),
       undefined,
-      { onShellStillRunning: expect.any(Function) },
+      { beforeInputPause: expect.any(Function), onShellStillRunning: expect.any(Function) },
     );
   });
 });

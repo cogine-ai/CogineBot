@@ -321,6 +321,7 @@ export class PiAgentRuntime implements AgentRuntime {
           signal,
           depth: 0,
           pausePending: false,
+          controlFailure: {},
           pendingShells: [],
           modelResponses: 0,
         };
@@ -763,6 +764,7 @@ export class PiAgentRuntime implements AgentRuntime {
             // Complete unresolved calls before another model choice. The executor
             // still enforces canonical approved arguments, routes and idempotency.
             const unresolved = new Set(unresolvedTurnCheckpointCalls(history as Message[]));
+            const hasToolBridge = partitionRuntimeTools(toolDefs).deferred.length > 0;
             if (restored.executionMode !== "sequential") {
               for (const message of [...history]) {
                 if (message.role !== "assistant") continue;
@@ -797,9 +799,19 @@ export class PiAgentRuntime implements AgentRuntime {
                 if (call.type !== "toolCall" || !unresolved.has(call)) continue;
                 const tool = tools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error("Pending checkpoint tool is no longer available");
+                const interactionTool =
+                  hasToolBridge && call.name === USE_TOOL && typeof call.arguments.name === "string"
+                    ? tools.find((candidate) => candidate.name === call.arguments.name)
+                    : tool;
                 const interaction =
                   call.id === restored.pendingToolCallId &&
-                  (call.name === "ask_user" || call.name === "request_takeover");
+                  (interactionTool?.name === "ask_user" ||
+                    interactionTool?.name === "request_takeover") &&
+                  !(
+                    interactionTool?.name === "request_takeover" &&
+                    request.resumeUnreleasedTakeoverExecutionId ===
+                      JSON.stringify(["pi-tool", "main", call.id])
+                  );
                 let result: AgentToolResult<JsonValue | undefined>;
                 try {
                   signal.throwIfAborted();
@@ -808,6 +820,15 @@ export class PiAgentRuntime implements AgentRuntime {
                     arguments: (tool.prepareArguments?.(call.arguments) ??
                       call.arguments) as typeof call.arguments,
                   });
+                  if (interaction && interactionTool !== tool) {
+                    const innerArgs = args.arguments;
+                    validateToolArguments(interactionTool, {
+                      ...call,
+                      name: interactionTool.name,
+                      arguments: (interactionTool.prepareArguments?.(innerArgs) ??
+                        innerArgs) as typeof call.arguments,
+                    });
+                  }
                   result = interaction
                     ? {
                         ...request.resumeToolResult,
@@ -879,6 +900,8 @@ export class PiAgentRuntime implements AgentRuntime {
           }
         }
 
+        if ("error" in host.controlFailure) throw host.controlFailure.error;
+
         // Budget abort stops the agent underneath the model, which leaves
         // errorMessage set. Treat that as a soft stop so the turn still ends
         // with a durable assistant message instead of a failed run.
@@ -947,8 +970,11 @@ export class PiAgentRuntime implements AgentRuntime {
       } finally {
         queue.close();
         if (trackedBudget) {
+          const controlFailure = resumeHost?.controlFailure;
           const keepForResume =
-            (signal.aborted || Boolean(resumeHost?.pausePending)) && !trackedBudget.exceeded;
+            (signal.aborted || Boolean(resumeHost?.pausePending)) &&
+            !trackedBudget.exceeded &&
+            !(controlFailure && ("error" in controlFailure || controlFailure.nonResumableStop));
           releaseToolCallBudget(request.runId, keepForResume);
         }
       }
@@ -1421,7 +1447,9 @@ function toAgentTool(
     description: tool.description,
     // One sequential tool makes Pi execute the whole batch in call order,
     // including reads that must see a preceding memory or schedule write.
-    ...(SCHEDULE_TOOL_NAMES.has(tool.name) || tool.name === "remember"
+    ...(SCHEDULE_TOOL_NAMES.has(tool.name) ||
+    tool.name === "remember" ||
+    tool.name === "request_takeover"
       ? { executionMode: "sequential" as const }
       : {}),
     parameters: parametersFor(tool),
@@ -1561,9 +1589,61 @@ function toAgentTool(
       let result: unknown;
       let failure: unknown;
       let resolvedRoute = tool.route?.resourceId ? { ...tool.route } : undefined;
+      const beforeInputPause = () => host.queue.waitForConsumer(host.signal);
       try {
         result = await (async () => {
+          if (
+            host.request.executeTool &&
+            (tool.name === "request_takeover" || tool.name === "run_subagent")
+          ) {
+            // Persist queued narration and audit before a control call can pause the run.
+            await beforeInputPause();
+            host.signal.throwIfAborted();
+            if (host.pausePending) {
+              return { content: [], details: { skipped: true }, terminate: true };
+            }
+          }
           if (tool.name === "request_takeover") {
+            if (host.request.executeTool) {
+              let result: unknown;
+              try {
+                result = await host.request.executeTool(tool.name, args, executionId, tool.route);
+              } catch (error) {
+                host.controlFailure.error = error;
+                host.pausePending = true;
+                throw error;
+              }
+              if (isAgentToolExecutionResult(result)) {
+                if (isToolPauseResult(result)) {
+                  host.pausePending = true;
+                  const details = result.details as { takeover?: unknown; resumable?: unknown };
+                  if (details.takeover === "stopped" && details.resumable === false) {
+                    host.controlFailure.nonResumableStop = true;
+                  }
+                }
+                return result;
+              }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      result &&
+                      typeof result === "object" &&
+                      "takeover" in result &&
+                      result.takeover === "requested"
+                        ? "Takeover requested."
+                        : serializeToolResult(
+                            result,
+                            host.request.contextStrategy,
+                            tool.name,
+                            args,
+                          ),
+                  },
+                ],
+                details: result,
+              };
+            }
             host.pausePending = true;
             host.queue.push({
               type: "takeover",
@@ -1606,7 +1686,15 @@ function toAgentTool(
           }
           if (tool.name === "request_secret") {
             if (host.request.executeTool) {
-              const result = await host.request.executeTool(tool.name, args, executionId);
+              const result = await host.request.executeTool(
+                tool.name,
+                args,
+                executionId,
+                undefined,
+                {
+                  beforeInputPause,
+                },
+              );
               if (isAgentToolExecutionResult(result)) {
                 if (isToolPauseResult(result)) host.pausePending = true;
                 return result;
@@ -1644,10 +1732,31 @@ function toAgentTool(
             return { content: [{ type: "text", text: JSON.stringify(found) }], details: found };
           }
           if (tool.name === "run_subagent") {
-            const result = await executeSubagent(host, executionId, args);
+            const result = host.request.executeTool
+              ? await host.request.executeTool(tool.name, args, executionId, tool.route, {
+                  runSubagent: async (canonicalArgs) => ({
+                    result: await executeSubagent(host, executionId, canonicalArgs),
+                  }),
+                })
+              : { result: await executeSubagent(host, executionId, args) };
+            if (isAgentToolExecutionResult(result)) {
+              if (isToolPauseResult(result)) host.pausePending = true;
+              return result;
+            }
             return {
-              content: [{ type: "text", text: result }],
-              details: { result },
+              content: [
+                {
+                  type: "text",
+                  text:
+                    result &&
+                    typeof result === "object" &&
+                    "result" in result &&
+                    typeof result.result === "string"
+                      ? result.result
+                      : serializeToolResult(result, host.request.contextStrategy, tool.name, args),
+                },
+              ],
+              details: result,
             };
           }
           if (host.request.executeTool) {
@@ -1657,6 +1766,7 @@ function toAgentTool(
               executionId,
               tool.route,
               {
+                beforeInputPause,
                 ...(tool.route?.connectorId === "mcp"
                   ? {
                       onConnectorRouteResolved: (route: ConnectorRoute) => {
@@ -2621,6 +2731,7 @@ function sanitizeProviderError(provider: string, message: string): string {
 
 interface EventQueue {
   push(event: AgentRuntimeEvent): void;
+  waitForConsumer(signal: AbortSignal): Promise<void>;
   fail(error: Error): void;
   close(): void;
   iterate(): AsyncIterable<AgentRuntimeEvent>;
@@ -2647,6 +2758,8 @@ interface ToolHost {
   depth: number;
   agentNamespace?: string;
   pausePending: boolean;
+  /** Shared with helpers so terminal executor controls survive SDK error and pause handling. */
+  controlFailure: { error?: unknown; nonResumableStop?: true };
   /** Shell commands that returned output and are still running. */
   pendingShells: Array<Promise<FinishedShellCommand>>;
   /** Main response batches count once; helpers count each individual tool call. */
@@ -3353,7 +3466,7 @@ function createGate(max: number) {
 }
 
 function createQueue(): EventQueue {
-  const items: AgentRuntimeEvent[] = [];
+  const items: (AgentRuntimeEvent | (() => void))[] = [];
   let wake: (() => void) | undefined;
   let closed = false;
   let failure: Error | undefined;
@@ -3361,6 +3474,18 @@ function createQueue(): EventQueue {
     push(event) {
       items.push(event);
       wake?.();
+    },
+    waitForConsumer(signal) {
+      signal.throwIfAborted();
+      return new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        items.push(() => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        });
+        wake?.();
+      });
     },
     fail(error) {
       failure = error;
@@ -3374,7 +3499,9 @@ function createQueue(): EventQueue {
     async *iterate() {
       while (true) {
         if (items.length) {
-          yield items.shift()!;
+          const item = items.shift()!;
+          if (typeof item === "function") item();
+          else yield item;
           continue;
         }
         if (failure) throw failure;

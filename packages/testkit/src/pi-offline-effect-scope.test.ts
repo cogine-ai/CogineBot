@@ -95,7 +95,8 @@ it("isolates main and sibling effects with identical wire IDs and reconciles a c
         (tool) => tool.name === "write_file" || tool.name === "run_subagent",
       ),
       model: { ...model.model, maxTokens: 256 },
-      executeTool: async (name, args, executionId) => {
+      executeTool: async (name, args, executionId, _route, observer) => {
+        if (name === "run_subagent") return observer!.runSubagent!(args);
         expect(name).toBe("write_file");
         ids.push(executionId);
         const applied = await recordEffect(

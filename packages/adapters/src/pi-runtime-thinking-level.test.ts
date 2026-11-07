@@ -1,3 +1,4 @@
+import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
 
@@ -140,7 +141,10 @@ async function runWithModel(
         maxImagesPerPrompt,
         ...limits,
       },
-      executeTool: vi.fn(async () => ({ ok: true })),
+      executeTool: vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+        async (name, args, _id, _route, observer) =>
+          name === "run_subagent" ? observer!.runSubagent!(args) : { ok: true },
+      ),
       resolveModel,
     },
     {

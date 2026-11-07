@@ -348,14 +348,36 @@ export function approvalPausedToolResult(): ApprovalPausedToolResult {
   };
 }
 
+export function takeoverPausedToolResult(
+  state: "paused" | "stopped" = "paused",
+  resumable = state === "paused",
+): ApprovalPausedToolResult {
+  return {
+    kind: "agent_tool_result",
+    content: [
+      {
+        type: "text",
+        text: state === "paused" ? "Takeover requested." : "The takeover could not be started.",
+      },
+    ],
+    details: { takeover: state, resumable },
+    terminate: true,
+  };
+}
+
 export function isToolPauseResult(result: unknown): result is ApprovalPausedToolResult {
   if (!result || typeof result !== "object") return false;
   const record = result as ApprovalPausedToolResult;
   if (record.kind !== "agent_tool_result") return false;
   const details = record.details;
   if (!details || typeof details !== "object") return false;
-  const pause = details as { approval?: unknown; secret?: unknown };
-  return pause.approval === "paused" || pause.secret === "paused";
+  const pause = details as { approval?: unknown; secret?: unknown; takeover?: unknown };
+  return (
+    pause.approval === "paused" ||
+    pause.secret === "paused" ||
+    pause.takeover === "paused" ||
+    pause.takeover === "stopped"
+  );
 }
 
 export function isApprovalPausedResult(result: unknown): result is ApprovalPausedToolResult {
