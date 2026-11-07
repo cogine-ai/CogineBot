@@ -8,38 +8,42 @@ import type * as Pages from "./pages";
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  host.activeBots = [{ id: "bot-1" }];
-  host.activeGroups = [{ id: "group-1" }];
-  host.originError = null;
-  host.originRead = undefined;
+  resetHost();
+  takePageReply("bot-1");
+  takePageReply("group-1");
+  activateUiLocale("en");
 });
 
-const host = vi.hoisted(() => ({
-  touch: {} as Record<string, ((event: object) => void) | undefined>,
-  message: undefined as ((data: string, answer: (message: object) => void) => void) | undefined,
-  loadStart: undefined as (() => void) | undefined,
-  documentOptions: {} as { reply?: boolean; lang?: string },
-  copied: [] as string[],
-  opened: [] as string[],
-  routes: [] as { name: string; params?: object }[],
-  went: [] as unknown[],
-  html: "",
-  runtimeFails: false,
-  theme: "light",
-  spaceGeneration: 1,
-  readError: null as unknown,
-  activeBots: [{ id: "bot-1" }],
-  activeGroups: [{ id: "group-1" }],
-  originError: null as unknown,
-  originRead: undefined as undefined | ((proc: string) => Promise<Array<{ id: string }>>),
-  page: {
-    id: "page-1",
-    title: "Plan",
-    code: "",
-    botId: "bot-1" as string | null,
-    groupId: null as string | null,
-  },
-}));
+const { host, resetHost } = vi.hoisted(() => {
+  const initialHost = () => ({
+    touch: {} as Record<string, ((event: object) => void) | undefined>,
+    message: undefined as ((data: string, answer: (message: object) => void) => void) | undefined,
+    loadStart: undefined as (() => void) | undefined,
+    documentOptions: {} as { reply?: boolean; lang?: string },
+    copied: [] as string[],
+    opened: [] as string[],
+    routes: [] as { name: string; params?: object }[],
+    went: [] as unknown[],
+    html: "",
+    runtimeFails: false,
+    theme: "light",
+    spaceGeneration: 1,
+    readError: null as unknown,
+    activeBots: [{ id: "bot-1" }],
+    activeGroups: [{ id: "group-1" }],
+    originError: null as unknown,
+    originRead: undefined as undefined | ((proc: string) => Promise<Array<{ id: string }>>),
+    page: {
+      id: "page-1",
+      title: "Plan",
+      code: "",
+      botId: "bot-1" as string | null,
+      groupId: null as string | null,
+    },
+  });
+  const host = initialHost();
+  return { host, resetHost: () => Object.assign(host, initialHost()) };
+});
 
 vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
@@ -549,15 +553,18 @@ it("replaces an active bot's old read-only route rather than leaving its reply t
   host.routes = [{ name: "thread", params: { botId: "bot-1", readOnly: "1" } }];
   host.went = [];
   const root = createRoot(document.createElement("div"));
-  await act(async () => root.render(createElement(PageScreen)));
-  host.touch.onTouchStart?.(at(10, 10));
-  host.touch.onTouchEnd?.(at(10, 10));
-  await act(async () =>
-    host.message?.(JSON.stringify({ type: "rakazo-page:reply", text: "Restored bot" }), () => {}),
-  );
-  expect(host.went).toEqual([{ pathname: "/thread", params: { botId: "bot-1" } }]);
-  expect(takePageReply("bot-1")?.text).toBe("Restored bot");
-  await act(async () => root.unmount());
+  try {
+    await act(async () => root.render(createElement(PageScreen)));
+    host.touch.onTouchStart?.(at(10, 10));
+    host.touch.onTouchEnd?.(at(10, 10));
+    await act(async () =>
+      host.message?.(JSON.stringify({ type: "rakazo-page:reply", text: "Restored bot" }), () => {}),
+    );
+    expect(host.went).toEqual([{ pathname: "/thread", params: { botId: "bot-1" } }]);
+    expect(takePageReply("bot-1")?.text).toBe("Restored bot");
+  } finally {
+    await act(async () => root.unmount());
+  }
 });
 
 it("says a page that could not load in the user's words, with Try again unless it is gone", async () => {

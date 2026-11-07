@@ -273,3 +273,68 @@ it("refreshes the shown count but starts the next owner at five", async () => {
   await render("bot-b");
   expect(host.request).toHaveBeenLastCalledWith("pages/list", { botId: "bot-b", limit: 5 });
 });
+
+it.each(["success", "error"] as const)(
+  "keeps loaded rows during refocus and drops previous pagination %s",
+  async (result) => {
+    const initial = Array.from({ length: 5 }, (_, i) => item(`A${i}`));
+    host.request.mockResolvedValueOnce({ items: initial, nextCursor: "initial" });
+    await render("bot-a");
+    host.request.mockResolvedValueOnce({ items: [item("A5")], nextCursor: "previous" });
+    await act(async () => pages.showMore());
+    const retainedShowMore = pages.showMore;
+    const more = pending();
+    host.request.mockReturnValueOnce(more.promise);
+    let showing!: Promise<void>;
+    act(() => {
+      showing = pages.showMore();
+    });
+    await render("bot-a", false);
+    const refreshed = pending();
+    host.request.mockReturnValueOnce(refreshed.promise);
+    await render("bot-a", true);
+    expect(container.textContent).toBe("A0,A1,A2,A3,A4,A5");
+    expect(host.request).toHaveBeenLastCalledWith("pages/list", { botId: "bot-a", limit: 6 });
+    await act(async () => {
+      await pages.showMore();
+      await retainedShowMore();
+      if (result === "success") more.resolve({ items: [item("Stale")], nextCursor: null });
+      else more.reject(new Error("Stale pagination failure"));
+      await showing;
+    });
+    expect(host.request).toHaveBeenCalledTimes(4);
+    expect(container.textContent).toBe("A0,A1,A2,A3,A4,A5");
+    await act(async () => refreshed.resolve({ items: [item("Fresh A")], nextCursor: "fresh" }));
+    await act(async () => retainedShowMore());
+    expect(host.request).toHaveBeenCalledTimes(4);
+    host.request.mockResolvedValueOnce({ items: [item("B")], nextCursor: null });
+    await act(async () => pages.showMore());
+    expect(container.textContent).toBe("Fresh A,B");
+    expect(host.request).toHaveBeenLastCalledWith("pages/list", {
+      botId: "bot-a",
+      limit: 5,
+      cursor: "fresh",
+    });
+  },
+);
+
+it("shows the current refocus error and retries it without accepting an older result", async () => {
+  host.request.mockResolvedValueOnce({ items: [item("A")], nextCursor: null });
+  await render("bot-a");
+  await render("bot-a", false);
+  const old = pending();
+  host.request.mockReturnValueOnce(old.promise);
+  await render("bot-a", true);
+  const current = pending();
+  host.request.mockReturnValueOnce(current.promise);
+  act(() => pages.refresh());
+  expect(container.textContent).toBe("A");
+  await act(async () => old.resolve({ items: [item("Stale A")], nextCursor: null }));
+  expect(container.textContent).toBe("A");
+  const error = new Error("Current list failure");
+  await act(async () => current.reject(error));
+  expect(pages.listed).toEqual({ status: "error", error });
+  host.request.mockResolvedValueOnce({ items: [item("Fresh A")], nextCursor: null });
+  await act(async () => pages.refresh());
+  expect(container.textContent).toBe("Fresh A");
+});

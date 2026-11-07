@@ -1309,6 +1309,8 @@ function Thread({
       .then(() => {
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
+        jumpScrollTarget.current = null;
+        jumpAnchor.current.release();
         historyEpoch.current += 1;
         commitSnap(
           snapRef.current
@@ -1923,12 +1925,13 @@ function Thread({
     if (!botId && !groupId) return;
     // A conversation hit is the thread itself: stay on the live tail, not an older page.
     if (!messageId) {
-      const pinned = pinnedAroundRef.current != null || jumpAnchor.current.holds();
+      const pinned = pinnedAroundRef.current != null || jumpScrollTarget.current != null;
       jumpAnchor.current.release();
       jumpScrollTarget.current = null;
       pinnedAroundRef.current = null;
       if (pinned) {
         expandedHistoryThread.current = null;
+        setThreadScrollState(scrollBehavior.current.state());
         commitSnap(snapRef.current);
       }
       return;
@@ -2046,7 +2049,7 @@ function Thread({
     setReplyTarget(null);
     setReplyQuote(null);
     setAttachmentNotice(null);
-    if (pinnedAroundRef.current) showLatest();
+    if (jumpScrollTarget.current || pinnedAroundRef.current) showLatest();
     performScroll(scrollBehavior.current.jumpToLatest());
     publishThreadScrollState(scrollBehavior.current.state());
     await deliver(attempt);
@@ -2085,7 +2088,7 @@ function Thread({
       return;
     }
     if (isCurrentTarget(botTarget, groupTarget)) {
-      if (pinnedAroundRef.current) showLatest();
+      if (jumpScrollTarget.current || pinnedAroundRef.current) showLatest();
       void refresh().catch(() => undefined);
     }
   }
@@ -2494,7 +2497,6 @@ function Thread({
       );
     if (jumpAnchor.current.holds() && !targetDrawn) {
       jumpAnchor.current.release();
-      jumpScrollTarget.current = null;
     } else if (jumpAnchor.current.blocksPaging(targetDrawn, headerHeight + 24)) {
       return;
     }
@@ -2508,7 +2510,7 @@ function Thread({
     // Once the page reaches the latest message, the end of it is the live thread.
     if (
       pinnedNewerCursor === null &&
-      !jumpScrollTarget.current &&
+      !jumpAnchor.current.holds() &&
       pinnedDistanceFromEnd(event) <= 80
     ) {
       showLatest();
@@ -2872,9 +2874,8 @@ function Thread({
               onScrollBeginDrag={(event) => {
                 pinnedScrollBack.current.onDragStart(event.nativeEvent);
                 newerLoadFailed.current = false;
-                if (!jumpAnchor.current.holds()) return;
+                // A drag releases alignment, but keeps the current scroll window mounted.
                 jumpAnchor.current.release();
-                jumpScrollTarget.current = null;
               }}
               onScrollEndDrag={(event) => {
                 pinnedScrollBack.current.onDragEnd();

@@ -302,7 +302,9 @@ describe.skipIf(!enabled).sequential("takeover release settlement (PostgreSQL)",
           where: { id: input.effect.id },
         }),
       };
-      await expect(pauseRunForTakeover(db.prisma, input, realtime)).rejects.toThrow();
+      await expect(pauseRunForTakeover(db.prisma, input, realtime)).rejects.toThrow(
+        /^Takeover approval effect was not available$/,
+      );
       expect(await run()).toEqual(before.run);
       expect(await computer()).toEqual(before.computer);
       expect(

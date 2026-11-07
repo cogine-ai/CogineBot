@@ -66,6 +66,45 @@ const olderHandlers = ts.transpileModule(
   `${commitHandler}\n${source.slice(source.indexOf("  async function loadOlderMessages()"), source.indexOf("  const markReadIfVisible"))}\nreturn { older: loadOlderMessages, commit: commitSnap };`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
+const previewKeyStart = source.indexOf("  const previewWindowKey =");
+const previewKey = source.slice(
+  previewKeyStart,
+  source.indexOf("  const previewViewport =", previewKeyStart),
+);
+const pinnedView = source.slice(
+  source.indexOf("  const pinnedTarget ="),
+  source.indexOf("  function performScroll("),
+);
+const pinnedDrag = "onScrollBeginDrag={";
+const pinnedDragStart = source.indexOf(pinnedDrag, source.indexOf("key={previewWindowKey}"));
+const pinnedDragHandler = source.slice(
+  pinnedDragStart + pinnedDrag.length,
+  source.indexOf("}}\n", pinnedDragStart) + 1,
+);
+const pinnedEnd = source.slice(
+  source.indexOf("  function updatePinnedScroll("),
+  source.indexOf("  function updateUserScroll("),
+);
+const latestHandler = source.slice(
+  source.indexOf("  function showLatest("),
+  source.indexOf("  async function loadOlderMessages("),
+);
+const routeResetStart = source.indexOf("    // A conversation hit is the thread itself:");
+const routeReset = source.slice(
+  routeResetStart,
+  source.indexOf("    jumpAnchor.current.begin(messageId);", routeResetStart),
+);
+const pinnedHandlers = ts.transpileModule(
+  `${commitHandler}
+  ${latestHandler}
+  return {
+    view: () => { ${previewKey} ${pinnedView} return { key: previewWindowKey, shown: showPinnedPage }; },
+    startDrag: ${pinnedDragHandler},
+    endDrag: (event) => { ${pinnedView} (${pinnedEnd.trim()})(event); },
+    clearRoute: () => { const messageId = undefined; ${routeReset} },
+  };`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
 
 describe("mobile search jump", () => {
   it.each(["botId", "groupId"] as const)(
@@ -672,6 +711,37 @@ it.each(["botId", "groupId"] as const)(
       expect(scope.snapRef.current?.run?.id).toBe("new-run");
       expect(scope.pinnedAroundRef.current).toBeNull();
       expect(scope.jumpScrollTarget.current).toBe(deleted ? null : "card");
+      if (!deleted) {
+        const viewport = {
+          ...scope,
+          threadKey: "target-1",
+          pinnedScrollBack: { current: { onDragStart: vi.fn() } },
+          pinnedDistanceFromEnd: (event: { distance: number }) => event.distance,
+        };
+        const scrollWindow = new Function(...Object.keys(viewport), pinnedHandlers)(
+          ...Object.values(viewport),
+        );
+        expect(scrollWindow.view()).toEqual({ key: "card", shown: true });
+        scrollWindow.endDrag({ distance: 10 });
+        expect(scrollWindow.view()).toEqual({ key: "card", shown: true });
+        scrollWindow.startDrag({ nativeEvent: {} });
+        expect(scope.jumpAnchor.current.holds()).toBe(false);
+        // A later render must keep the same native scroll view while the person is still reading.
+        expect(scrollWindow.view()).toEqual({ key: "card", shown: true });
+        scrollWindow.endDrag({ distance: 100 });
+        expect(scrollWindow.view()).toEqual({ key: "card", shown: true });
+        scrollWindow.endDrag({ distance: 10 });
+        expect(scrollWindow.view()).toEqual({ key: "target-1", shown: false });
+        expect(scope.expandedHistoryThread.current).toBeNull();
+        expect(scope.snapRef.current).toBe(authoritative);
+        await handlers.jump({ [targetKey]: "target-1", messageId: "card" });
+        scrollWindow.startDrag({ nativeEvent: {} });
+        scope.setThreadScrollState.mockClear();
+        scrollWindow.clearRoute();
+        expect(scrollWindow.view()).toEqual({ key: "target-1", shown: false });
+        expect(scope.setThreadScrollState).toHaveBeenCalledOnce();
+        expect(scope.expandedHistoryThread.current).toBeNull();
+      }
     }
   },
 );

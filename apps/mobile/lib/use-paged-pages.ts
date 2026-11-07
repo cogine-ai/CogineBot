@@ -17,7 +17,7 @@ const PAGE_SIZE = 5;
 type PagedPages =
   | { status: "loading" }
   | { status: "error"; error: unknown }
-  | { status: "ready"; items: PageSummary[]; nextCursor: string | null };
+  | { status: "ready"; items: PageSummary[]; nextCursor: string | null; generation: number };
 
 /**
  * A bot's or group's pages, five at a time, read again each time the list comes back on screen
@@ -81,7 +81,8 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
       input(undefined, limit),
     ).then(
       (result) => {
-        if (isCurrent(started)) setStored({ identity, listed: { status: "ready", ...result } });
+        if (isCurrent(started))
+          setStored({ identity, listed: { status: "ready", ...result, generation: started } });
       },
       (error: unknown) => {
         if (isCurrent(started)) setStored({ identity, listed: { status: "error", error } });
@@ -90,7 +91,11 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
   }, [input, identity, isCurrent]);
   useFocusEffect(
     useCallback(() => {
-      setStored({ identity, listed: { status: "loading" } });
+      setStored((current) =>
+        current.identity === identity && current.listed.status === "ready"
+          ? current
+          : { identity, listed: { status: "loading" } },
+      );
       load();
       return () => {
         generation.current += 1;
@@ -98,10 +103,16 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
     }, [load, identity]),
   );
   const showMore = useCallback(async () => {
-    if (!isCurrent() || listed.status !== "ready" || !listed.nextCursor || loadingMore.current)
+    // Rows stay visible during a reload, but their old cursor cannot start another request.
+    if (
+      listed.status !== "ready" ||
+      !isCurrent(listed.generation) ||
+      !listed.nextCursor ||
+      loadingMore.current
+    )
       return;
     loadingMore.current = true;
-    const started = generation.current;
+    const started = listed.generation;
     try {
       const result = await privatePageRpc<{ items: PageSummary[]; nextCursor: string | null }>(
         "pages/list",
@@ -113,11 +124,13 @@ export function usePagedPages(owner: { botId?: string; groupId?: string }) {
       });
       if (!result || !isCurrent(started)) return;
       setStored((current) =>
-        current.identity === identity && current.listed.status === "ready"
+        current.identity === identity &&
+        current.listed.status === "ready" &&
+        current.listed.generation === started
           ? {
               identity,
               listed: {
-                status: "ready",
+                ...current.listed,
                 items: uniquePages([...current.listed.items, ...result.items]),
                 nextCursor: result.nextCursor,
               },
