@@ -99,3 +99,204 @@ export function pageReplyOwnerText(text: string, context?: unknown): string {
   const prefix = `${reference}\n`;
   return text.startsWith(prefix) ? text.slice(prefix.length) : "";
 }
+
+const PAGE_ID = /^\(page:([A-Za-z0-9_-]{1,64})\)/;
+// Markdown escapes only ASCII punctuation; any other backslash is part of the title.
+const ESCAPABLE = /[!-/:-@[-`{-~]/;
+
+/**
+ * Backtick runs and tilde fences, each with where its closer ends: the next run of the same
+ * length for a code span, the next fence line of its character at least as long, with nothing after it, for a block. Built in one pass from the end,
+ * so finding closers never rescans the text. `skipTo[at]` is where a run starting at `at` leaves
+ * off: past its closer, to the end for an unclosed fence, or past itself for a lone span.
+ */
+function codeSkips(text: string): Int32Array {
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const fences: boolean[] = [];
+  // Only a fence line with nothing but spaces after it can close a block; text after it opens one.
+  const closes: boolean[] = [];
+  let lineStart = 0;
+  for (let at = 0; at < text.length; at++) {
+    const char = text.charCodeAt(at);
+    if (char === 10) lineStart = at + 1;
+    if ((char !== 96 && char !== 126) || text.charCodeAt(at - 1) === char) continue;
+    let end = at + 1;
+    while (text.charCodeAt(end) === char) end++;
+    const fence = end - at >= 3 && at - lineStart <= 3 && text.slice(lineStart, at).trim() === "";
+    // Tildes mark only fences; a shorter run is plain text.
+    if (char === 126 && !fence) continue;
+    starts.push(at);
+    ends.push(end);
+    fences.push(fence);
+    let rest = end;
+    if (fence) while (text[rest] === " " || text[rest] === "\t") rest++;
+    const after = text.charCodeAt(rest);
+    closes.push(fence && (rest === text.length || after === 10 || after === 13));
+  }
+  const skipTo = new Int32Array(text.length);
+  const nextOfLength = new Map<number, number>();
+  // Later fences, nearest on top, each longer than every fence above it: a shorter one behind a
+  // nearer fence at least as long can close no earlier fence, so it leaves for good.
+  const laterFences: Record<string, number[]> = { "`": [], "~": [] };
+  const fenceLength = (index: number) => ends[index]! - starts[index]!;
+  for (let index = starts.length - 1; index >= 0; index--) {
+    const length = ends[index]! - starts[index]!;
+    let closer = -1;
+    if (fences[index]) {
+      const later = laterFences[text[starts[index]!]!]!;
+      if (closes[index]) {
+        while (later.length && fenceLength(later.at(-1)!) < length) later.pop();
+        closer = later.at(-1) ?? -1;
+        later.push(index);
+      } else {
+        // It closes nothing, so it keeps every later fence for earlier ones: the lengths only grow
+        // down the stack, so the nearest long enough is found by halving.
+        let low = 0;
+        let high = later.length;
+        while (low < high) {
+          const middle = (low + high) >> 1;
+          if (fenceLength(later[middle]!) >= length) low = middle + 1;
+          else high = middle;
+        }
+        closer = low > 0 ? later[low - 1]! : -1;
+      }
+    } else closer = nextOfLength.get(length) ?? -1;
+    nextOfLength.set(length, index);
+    skipTo[starts[index]!] =
+      closer >= 0 ? ends[closer]! : fences[index] ? text.length : ends[index]!;
+  }
+  return skipTo;
+}
+
+/**
+ * `[title](page:<id>)` links as their titles, in one linear pass so no input can make it slow.
+ * Code spans and fenced blocks are left as written.
+ */
+export function pageLinksAsTitles(
+  text: string,
+  onLink?: (pageId: string, title: string, start: number, end: number) => void,
+): string {
+  const skips = text.includes("`") || text.includes("~~~") ? codeSkips(text) : null;
+  let out = "";
+  let copied = 0;
+  let at = 0;
+  while (at < text.length) {
+    const char = text[at];
+    if (char === "\\") {
+      at += 2;
+      continue;
+    }
+    if (char === "`" || char === "~") {
+      // A backtick or tilde after an escape, inside a run or not opening a fence, is plain text.
+      at = skips?.[at] || at + 1;
+      continue;
+    }
+    if (char !== "[") {
+      at += 1;
+      continue;
+    }
+    let end = at + 1;
+    let title = "";
+    let closed = false;
+    while (end < text.length) {
+      const next = text[end]!;
+      if (next === "\\" && ESCAPABLE.test(text[end + 1] ?? "")) {
+        title += text[end + 1];
+        end += 2;
+      } else if (next === "]") {
+        closed = true;
+        break;
+      } else if (next === "[" || next === "\n") {
+        break;
+      } else {
+        title += next;
+        end += 1;
+      }
+    }
+    const link = closed ? PAGE_ID.exec(text.slice(end + 1, end + 2 + 6 + 64 + 1)) : null;
+    if (link) {
+      const next = end + 1 + link[0].length;
+      onLink?.(link[1]!, title, at, next);
+      out += text.slice(copied, at) + title;
+      at = next;
+      copied = at;
+    } else {
+      at = closed ? end + 1 : end;
+    }
+  }
+  return out + text.slice(copied);
+}
+
+/** External recipients can read titles. Reserved targets and known Page IDs stay in the app. */
+export function withoutPrivatePageTargets(text: string, pageIds?: ReadonlySet<string>): string {
+  if (!text.includes("page:") && !pageIds?.size) return text;
+  return text.replace(/\bpage:[A-Za-z0-9_-]+|[A-Za-z0-9_-]+/g, (token) =>
+    token.startsWith("page:") || pageIds?.has(token) ? "private page" : token,
+  );
+}
+
+type ExternalReplyPart = { text: string; pageId?: string; authoredText?: string };
+
+function rememberPageTargets(text: string, pageIds: Set<string>) {
+  for (const match of text.matchAll(/\bpage:([A-Za-z0-9_-]+)/g)) pageIds.add(match[1]!);
+}
+
+/** Keep a card's title only when it is absent from the reply text and other cards. */
+export function projectExternalPageMessages<T extends { blocks: unknown }>(messages: readonly T[]) {
+  const pageIds = new Set<string>();
+  const namedPages = new Set<string>();
+  const titles = new Set<string>();
+  const projected = messages.map((message) => ({
+    message,
+    parts: Array.isArray(message.blocks)
+      ? message.blocks.flatMap(
+          (
+            block: { kind?: unknown; text?: unknown; pageId?: unknown; title?: unknown } | null,
+          ): ExternalReplyPart[] => {
+            if (block?.kind === "text" && typeof block.text === "string") {
+              const original = block.text;
+              const outsideLinks: string[] = [];
+              let cursor = 0;
+              rememberPageTargets(original, pageIds);
+              const text = pageLinksAsTitles(original, (pageId, title, start, end) => {
+                pageIds.add(pageId);
+                namedPages.add(pageId);
+                titles.add(title.trim());
+                outsideLinks.push(original.slice(cursor, start));
+                cursor = end;
+              });
+              titles.add(text.trim());
+              // A Page title may contain an @name, but the label is not a peer wake request.
+              return [{ text, authoredText: [...outsideLinks, original.slice(cursor)].join(" ") }];
+            }
+            if (
+              block?.kind === "page" &&
+              typeof block.pageId === "string" &&
+              typeof block.title === "string"
+            ) {
+              pageIds.add(block.pageId);
+              rememberPageTargets(block.title, pageIds);
+              return [{ text: block.title, pageId: block.pageId }];
+            }
+            return [];
+          },
+        )
+      : [],
+  }));
+  return projected.map(({ message, parts }) => {
+    const text: string[] = [];
+    const authoredText: string[] = [];
+    for (const part of parts) {
+      const content = withoutPrivatePageTargets(part.text, pageIds);
+      if (part.pageId === undefined) {
+        text.push(content);
+        authoredText.push(part.authoredText ?? part.text);
+      } else if (!namedPages.has(part.pageId) && !titles.has(part.text.trim())) {
+        titles.add(part.text.trim());
+        text.push(content);
+      }
+    }
+    return { message, text: text.join("\n").trim(), authoredText: authoredText.join("\n") };
+  });
+}

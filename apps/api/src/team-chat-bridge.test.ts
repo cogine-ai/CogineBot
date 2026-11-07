@@ -41,6 +41,113 @@ describe("team chat bridge", () => {
     expect(teamChatResponseText([])).toBe("Bot completed the request without a written reply.");
   });
 
+  it("delivers Page-only and mixed results without IDs, while keeping ordinary text fragments joined", () => {
+    const card = { kind: "page", pageId: "private-id", version: 1, title: "Plan" } as const;
+    expect(teamChatResponseText([card], "Bot", true)).toBe("Plan");
+    expect(
+      teamChatResponseText([
+        { kind: "text", text: "I made " },
+        { kind: "text", text: "[Plan](pa" },
+        { kind: "text", text: "ge:private-id)." },
+        card,
+        { ...card, pageId: "private-other", title: "Details" },
+      ]),
+    ).toBe("I made Plan.\nDetails");
+    expect(teamChatResponseText([], "Bot", true)).toBe("");
+  });
+
+  it.each([
+    {
+      kind: "mention",
+      hasPage: false,
+      content: "Bot completed the request without a written reply.",
+    },
+    { kind: "ambient", hasPage: false, content: null },
+    { kind: "ambient", hasPage: true, content: "Launch plan" },
+  ])(
+    "uses the final bot row after interim text for $kind with Page=$hasPage",
+    async ({ kind, hasPage, content }) => {
+      const rows: Array<{ blocks: MessageBlock[] }> = [
+        {
+          blocks: [
+            {
+              kind: "file",
+              artifactId: "file-1",
+              mimeType: "text/plain",
+              name: "report.txt",
+              size: 4,
+            },
+          ],
+        },
+        { blocks: [{ kind: "text", text: "Interim answer" }] },
+      ];
+      if (hasPage)
+        rows.push({
+          blocks: [{ kind: "page", pageId: "page-private", version: 1, title: "Launch plan" }],
+        });
+      const send = vi.fn(async () => ({ handle: "reply" }));
+      const update = vi.fn(async () => ({}));
+      const prisma = {
+        message: {
+          findFirst: vi.fn(
+            async ({
+              where,
+            }: {
+              where: { blocks?: { array_contains: Array<{ kind: string }> } };
+            }) => {
+              const kind = where.blocks?.array_contains[0]?.kind;
+              return rows.find((row) => !kind || row.blocks.some((block) => block.kind === kind));
+            },
+          ),
+          findMany: vi.fn(async () =>
+            rows.filter((row) => row.blocks.some((block) => block.kind === "page")),
+          ),
+        },
+        externalMessage: {
+          findUnique: vi.fn(async () => null),
+          update,
+          updateMany: vi.fn(async () => ({ count: 1 })),
+        },
+      } as unknown as PrismaClient;
+      const bridge = new TeamChatBridge({
+        prisma,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send,
+        providerId: "slack",
+        botId: "bot-1",
+      });
+      await (
+        bridge as unknown as {
+          deliverCompletion(input: {
+            id: string;
+            runId: string;
+            kind: string;
+            replyThreadId: null;
+            externalConversation: { conversationId: string };
+          }): Promise<void>;
+        }
+      ).deliverCompletion({
+        id: "message-1",
+        runId: "run-1",
+        kind,
+        replyThreadId: null,
+        externalConversation: { conversationId: "room" },
+      });
+
+      if (content === null) {
+        expect(send).not.toHaveBeenCalled();
+        expect(update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ providerReplyHandle: "silent" }),
+          }),
+        );
+      } else {
+        expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content }));
+      }
+    },
+  );
+
   it("keeps deferred messages outside reconciliation until routine routing resolves them", async () => {
     const upsert = vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
       id: "external-deferred",
@@ -1704,8 +1811,16 @@ describe("team chat bridge", () => {
       message: {
         findUnique: vi.fn(async () => null),
         findFirst: vi.fn(async () => ({
-          blocks: [{ kind: "text", text: "The launch plan is ready." }],
+          blocks: [{ kind: "text", text: "The launch plan is ready (private-launch)." }],
         })),
+        findMany: vi.fn(async () => [
+          {
+            blocks: [
+              { kind: "page", pageId: "private-launch", version: 1, title: "Launch plan" },
+              { kind: "text", text: "Do not forward this older answer." },
+            ],
+          },
+        ]),
       },
     } as unknown as PrismaClient;
 
@@ -1777,10 +1892,21 @@ describe("team chat bridge", () => {
       expect.objectContaining({
         conversationId: "C-1",
         replyThreadId: "100.1",
-        content: "The launch plan is ready.",
+        content: "The launch plan is ready (private page).\nLaunch plan",
       }),
     ]);
     expect(records[0]).toMatchObject({ status: "delivered" });
+    expect(prisma.message.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { runId: "run-1", role: "bot" },
+        orderBy: { seq: "desc" },
+      }),
+    );
+    expect(prisma.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { runId: "run-1", role: "bot", blocks: { array_contains: [{ kind: "page" }] } },
+      }),
+    );
   });
 
   it("repairs previously observed messages that do not have transcript rows", async () => {

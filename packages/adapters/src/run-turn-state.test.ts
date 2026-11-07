@@ -367,6 +367,115 @@ describe("run turn checkpoint state", () => {
 });
 
 describe("persist run turn checkpoint", () => {
+  it("keeps canonical Page calls and discards rejected Page inputs and protected result data", async () => {
+    const f = storage();
+    const secret = 'fixture-"protected"-value';
+    const current = state(undefined, { tools: [builtin("write_file"), builtin("save_page")] });
+    const safe = { source: "export default function Report() {}", title: "Report" };
+    const privateResult = { source: `const credential = ${JSON.stringify(secret)}` };
+    const captured = checkpoint({
+      executionMode: "sequential",
+      messages: [
+        assistant([
+          call("completed-page", USE_TOOL, { name: "save_page", arguments: { pageId: "page-1" } }),
+        ]),
+        {
+          ...completed("completed-page", USE_TOOL),
+          content: [{ type: "text", text: JSON.stringify(privateResult) }],
+          details: privateResult,
+        },
+        assistant([
+          call(),
+          call("safe-page", USE_TOOL, { name: "save_page", arguments: safe }),
+          call("unsafe-page", USE_TOOL, {
+            name: "save_page",
+            arguments: { ...safe, source: secret },
+          }),
+          call("invalid-page", "save_page", { ...safe, source: "invalid\0data" }),
+          {
+            ...call("malformed-page", USE_TOOL, {}),
+            argumentsError: `Raw JSON attempted "save_page" with ${secret}`,
+          },
+          call("ordinary", "write_file", { path: "other.txt", content: "Unchanged ordinary call" }),
+        ]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(
+      f.prisma,
+      run,
+      "worker",
+      7,
+      current,
+      execution("pending"),
+      undefined,
+      undefined,
+      [secret],
+    );
+    const blob = f.client.externalEffect.upsert.mock.calls[0]![0].update.result;
+    const saved = JSON.parse(blob) as TurnCheckpoint;
+    const result = saved.messages[1];
+    expect(result).toMatchObject({
+      role: "toolResult",
+      details: { source: 'const credential = "[redacted]"' },
+    });
+    expect(result).not.toEqual(captured.messages[1]);
+    expect(blob).not.toContain("fixture-");
+    expect(blob).not.toContain("invalid\\u0000data");
+    expect(saved.messages[2]).toMatchObject({
+      role: "assistant",
+      content: [
+        call(),
+        call("safe-page", USE_TOOL, { name: "save_page", arguments: safe }),
+        {
+          ...call("unsafe-page", USE_TOOL, { name: "save_page", arguments: {} }),
+          argumentsError: expect.any(String),
+        },
+        { ...call("invalid-page", "save_page", {}), argumentsError: expect.any(String) },
+        {
+          ...call("malformed-page", USE_TOOL, { name: "save_page", arguments: {} }),
+          argumentsError: expect.any(String),
+        },
+        call("ordinary", "write_file", { path: "other.txt", content: "Unchanged ordinary call" }),
+      ],
+    });
+  });
+
+  it("leaves a connector named use_tool and its result unchanged without the actual bridge", async () => {
+    const f = storage();
+    const connector: ConnectorTool = {
+      name: USE_TOOL,
+      description: "A connector with its own input schema",
+      inputSchema: { type: "object" },
+      route: { connectorId: "mcp", resourceId: "connector", toolName: USE_TOOL },
+    };
+    const current = state(undefined, { tools: [builtin("write_file"), connector] });
+    const marker = "ordinary-connector-argument";
+    const messages = [
+      assistant([
+        call("connector", USE_TOOL, { name: "save_page", arguments: { source: marker } }),
+      ]),
+      { ...completed("connector", USE_TOOL), details: { value: marker } },
+      assistant([call()]),
+    ];
+    current.pendingCaptures.set(execution("pending"), () =>
+      JSON.stringify(checkpoint({ messages })),
+    );
+    await persistRunTurnCheckpoint(
+      f.prisma,
+      run,
+      "worker",
+      7,
+      current,
+      execution("pending"),
+      undefined,
+      undefined,
+      [marker],
+    );
+    const saved = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].update.result);
+    expect(saved.messages).toEqual(messages);
+  });
+
   it("captures only the matching pause, preserves private JSON data and adds executor assignments and baseline", async () => {
     const f = storage();
     const current = state();

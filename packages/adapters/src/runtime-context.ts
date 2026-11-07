@@ -47,8 +47,12 @@ interface ProjectionEntry {
   catalogIds?: string[];
 }
 const projections = new Map<string, ProjectionEntry[]>();
-/** Keep editable source and fleet instruction versions intact; these tools bound their own output. */
-export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set(["skill_read", "list_fleet"]);
+/** Keep editable source and bounded on-demand guides intact within the full model budget. */
+export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set([
+  "skill_read",
+  "list_fleet",
+  "save_page",
+]);
 // History reads are exact evidence and keep their own offset-aware shortening elsewhere.
 const UNSHORTENED_TOOL_RESULTS = new Set([
   "read_history",

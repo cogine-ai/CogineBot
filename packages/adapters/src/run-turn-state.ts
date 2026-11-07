@@ -4,7 +4,8 @@ import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key"
 import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
 import { approvedEffectOccurrence } from "./approval-effect.js";
-import { FIND_TOOL, USE_TOOL } from "./builtin-tool-bridge.js";
+import { FIND_TOOL, isDeferredTool, USE_TOOL } from "./builtin-tool-bridge.js";
+import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-checkpoint.js";
@@ -40,6 +41,7 @@ export interface RunTurnCheckpointState {
   pendingExecutionId?: string;
   pendingToolName?: string;
   pendingCaptures: Map<string, () => string>;
+  hasBuiltinBridge?: true;
 }
 
 /** Restore saved assignments and tool availability; execution still rechecks parameters and policy. */
@@ -62,6 +64,7 @@ export function createRunTurnCheckpointState(input: {
     counts: input.counts ?? new Map(),
     occurrences: [],
     pendingCaptures: new Map(),
+    ...(input.tools.some((tool) => isDeferredTool(tool.name)) ? { hasBuiltinBridge: true } : {}),
   };
   if (transcript === undefined) return state;
   const saved = restoreTurnCheckpoint(transcript, input.model);
@@ -166,12 +169,16 @@ export async function persistRunTurnCheckpoint(
   executionId?: string,
   pendingSecretEffectId?: string,
   connectionApprovalEffectKey?: string,
+  runSecrets: string[] = [],
 ): Promise<void> {
   const capture = executionId ? state.pendingCaptures.get(executionId) : undefined;
   const connectionCheckpoint = (transcript?: string) =>
     `${CONNECTION_APPROVAL_CHECKPOINT}${JSON.stringify({ effectKey: connectionApprovalEffectKey, transcript })}`;
   if (capture) {
-    const saved = JSON.parse(capture());
+    const saved = JSON.parse(capture()) as TurnCheckpoint;
+    saved.messages = saved.messages.map(
+      createPageTranscriptSanitizer(state.hasBuiltinBridge === true, () => runSecrets),
+    );
     saved.effectOccurrences = state.occurrences;
     saved.ownInstructionsBaseline = state.ownInstructionsBaseline;
     await saveRunTurnCheckpoint(

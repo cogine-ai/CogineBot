@@ -136,6 +136,46 @@ async function seedPage(
   }
 }
 
+test("the chat tool creates and updates a private Page", async ({ page }, testInfo) => {
+  await signup(page, `page-tool-${Date.now()}@example.test`, "password12", "Page Tool");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const title = "Weekly inventory";
+  const source =
+    'export default function Inventory() { return <Page title="Weekly inventory"><Text>Stock: 14</Text></Page>; }';
+  await send(page, `call save_page with ${JSON.stringify({ title, source })}`);
+  const card = page.getByTestId("page-card");
+  await expect(card).toHaveCount(1, { timeout: 30_000 });
+  await expect(card.getByRole("button", { name: `Open ${title}` })).toBeVisible();
+  const result = await rpc<{
+    items: Array<{ id: string; currentVersion: number; visibility: string }>;
+  }>(page, "pages/list", { botId });
+  expect(result.items).toHaveLength(1);
+  const saved = result.items[0]!;
+  expect(saved).toMatchObject({ currentVersion: 1, visibility: "private" });
+
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+  await send(
+    page,
+    `call save_page with ${JSON.stringify({
+      pageId: saved.id,
+      edits: [{ find: "Stock: 14", replace: "Stock: 19" }],
+    })}`,
+  );
+  await expect(card).toHaveCount(2, { timeout: 30_000 });
+  await card
+    .first()
+    .getByRole("button", { name: `Open ${title}` })
+    .click();
+  const reader = page.getByTestId("page-view");
+  await expect(reader).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`[?&]page=${saved.id}`));
+  await expect(pageFrame(page, title).getByText("Stock: 19")).toBeVisible();
+  await captureScreenshot(page, testInfo, "page-chat-tool");
+  const updated = await rpc<typeof result>(page, "pages/list", { botId });
+  expect(updated.items).toEqual([expect.objectContaining({ id: saved.id, currentVersion: 2 })]);
+});
+
 test("the Pages button reflects the library's open state", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await signup(page, `pages-toggle-${Date.now()}@example.test`, "password12", "Page Owner");

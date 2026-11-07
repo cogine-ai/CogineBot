@@ -29,6 +29,7 @@ export type ThreadComposerHandle = {
   snapshot: () => ComposerSnapshot;
   editableText: () => string | null;
   reset: () => void;
+  addReply: (text: string) => void;
   insertTextIfEmpty: (text: string, botId: string, isCurrent: () => boolean) => boolean;
   restoreEditableTextIfEmpty: (text: string, isCurrent: () => boolean) => boolean;
 };
@@ -64,6 +65,7 @@ type ThreadComposerProps = {
   stop: () => Promise<void>;
   startVoiceCall: () => Promise<void>;
   onSlashAction: (action: SlashActionId) => void;
+  onEmptied?: () => void;
 };
 
 export function ThreadComposer({
@@ -85,11 +87,18 @@ export function ThreadComposer({
   stop,
   startVoiceCall,
   onSlashAction,
+  onEmptied,
 }: ThreadComposerProps) {
   const tokens = useMobileTokens();
   const colorScheme = useResolvedAppearance();
   const { t } = useI18n();
-  const [draft, setDraft, draftValue] = useComposerValue("");
+  const [draft, updateDraftValue, draftValue] = useComposerValue("");
+  const input = useRef<TextInput>(null);
+  function setDraft(next: SetStateAction<string>) {
+    const previous = draftValue.current;
+    updateDraftValue(next);
+    if (previous && !draftValue.current) onEmptied?.();
+  }
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedMentions, setSelectedMentions, mentionsValue] = useComposerValue<
@@ -166,6 +175,15 @@ export function ThreadComposer({
         ...mentionsValue.current.map((mention) => `@${mention.name}`),
       ];
       return context.length ? `${context.join("\n")}\n${draftValue.current}` : draftValue.current;
+    },
+    addReply: (text) => {
+      const current = draftValue.current;
+      const next = current.trim() ? `${current.trimEnd()} ${text}` : text;
+      setDraft(next);
+      requestAnimationFrame(() => {
+        input.current?.focus();
+        input.current?.setNativeProps({ selection: { start: next.length, end: next.length } });
+      });
     },
     reset: () => {
       setDraft("");
@@ -535,6 +553,7 @@ export function ThreadComposer({
                 </Text>
               ) : null}
               <TextInput
+                ref={input}
                 value={draft}
                 onChangeText={updateDraft}
                 accessibilityLabel={composerPrompt}

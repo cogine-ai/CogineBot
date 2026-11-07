@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import type * as AutoReviewModule from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
+import { preparePageToolRequest, preparePageToolScriptArguments } from "./page-tool-request.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -54,6 +55,7 @@ function fixture(
     contextStrategy?: AgentContextStrategy;
     toolResultHistory?: boolean;
     ticketBoard?: boolean;
+    secrets?: string[];
   } = {},
 ) {
   const effects: Effect[] = [];
@@ -336,7 +338,7 @@ function fixture(
     memoryProviders: { resolve: async () => null },
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
-    secrets: [],
+    secrets: options.secrets ?? [],
     shutdownSignal: shutdown.signal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
@@ -424,6 +426,123 @@ describe("ticket tool caller identity", () => {
         result: { error: "Unknown bot." },
       }),
     ]);
+  });
+});
+
+describe("Page tool execution boundary", () => {
+  it("rejects malformed Unicode and measures source in UTF-8 bytes", () => {
+    for (const invalid of ["\ud800", "\udc00"]) {
+      for (const args of [
+        { title: "Plan", source: invalid },
+        { title: invalid, source: "src" },
+        { pageId: invalid },
+        { pageId: "page-1", edits: [{ find: "before", replace: invalid }] },
+      ]) {
+        expect(preparePageToolRequest(args, [])).toMatchObject({ ok: false });
+      }
+    }
+    expect(
+      preparePageToolRequest({ title: "Page", source: "中".repeat(90_000) }, []),
+    ).toMatchObject({ ok: false });
+    expect(
+      preparePageToolRequest({ pageId: "page-1", edits: [{ find: "before", replace: "😀" }] }, []),
+    ).toMatchObject({ ok: true, mode: "write" });
+  });
+
+  it("does not treat raw help objects as a safe scripted rejection marker", () => {
+    const secret = "fixture-page-script-credential";
+    const raw = { help: { credential: secret }, source: secret };
+    for (const revalidate of [true, false]) {
+      const safe = preparePageToolScriptArguments(raw, [secret], revalidate);
+      expect(safe).toEqual({ help: {} });
+      expect(JSON.stringify(safe)).not.toContain(secret);
+    }
+  });
+
+  it.each(["before-receipt-read", "before-finalize"] as const)(
+    "replays the same committed Page if an older worker settles it %s",
+    async (timing) => {
+      const runId = "run-page-race";
+      const f = fixture(runId, { catchToolErrors: true });
+      const args = { title: "Inventory", source: "valid fixture" };
+      const result = { pageId: "page-1", version: 1, title: "Inventory" };
+      const effect: Effect = {
+        id: "effect-page",
+        spaceId: "space-1",
+        runId,
+        kind: "save_page",
+        idempotencyKey: toolEffectIdempotencyKey(runId, "save_page", args),
+        status: "intended",
+        request: args,
+      };
+      f.effects.push(effect);
+      const findFirst = vi.fn(async ({ where }: { where: { status?: string } }) => {
+        if (where.status === "completed")
+          return effect.status === "completed" ? { ...effect } : null;
+        const receipt = { kind: "page_save", saved: result, cardEventSeq: null };
+        effect.status = "completed";
+        effect.result = result;
+        return { ...effect, result: timing === "before-finalize" ? receipt : result };
+      });
+      Object.assign(f.externalEffect, { findFirst });
+      f.setCalls([{ name: "save_page", args, executionId: "recovered" }]);
+
+      await f.run();
+
+      expect(f.results).toEqual([result]);
+      expect(f.effects).toHaveLength(1);
+      expect(findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: effect.id, runId, status: "completed" }),
+        }),
+      );
+    },
+  );
+
+  it("keeps help and ordinary reads effectless and rejects known secrets before persistence", async () => {
+    const secret = "fixture-page-key-unique";
+    const f = fixture("run-private-pages", { secrets: [secret] });
+    const source = vi.fn(async () => ({
+      id: "page-1",
+      title: "Page title",
+      currentVersion: 2,
+      versions: [{ source: `read ${secret}` }],
+    }));
+    Object.assign(f.prisma, { page: { findFirst: source } });
+    f.setCalls([
+      { name: "save_page", args: { help: true }, executionId: "guide" },
+      { name: "save_page", args: { pageId: "page-1", source: "", edits: [] }, executionId: "read" },
+      {
+        name: "save_page",
+        args: { title: "Plan", source: `source ${secret}` },
+        executionId: "secret",
+      },
+      {
+        name: "save_page",
+        args: { pageId: "page-1", edits: [{ find: "old", replace: secret }] },
+        executionId: "edit",
+      },
+      { name: "save_page", args: { title: "Plan", source: "bad\0source" }, executionId: "nul" },
+    ]);
+    await f.run();
+
+    expect(f.results[0]).toHaveProperty("guide", expect.stringContaining("Page"));
+    expect(f.results[1]).toMatchObject({ pageId: "page-1", source: "read [redacted]" });
+    expect(f.results[2]).toMatchObject({
+      unchanged: true,
+      error: expect.stringContaining("secret"),
+    });
+    expect(f.results[3]).toMatchObject({
+      unchanged: true,
+      error: expect.stringContaining("secret"),
+    });
+    expect(f.results[4]).toMatchObject({
+      unchanged: true,
+      error: expect.stringContaining("Invalid"),
+    });
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(f.effects).toEqual([]);
+    expect(JSON.stringify(f.results)).not.toContain(secret);
   });
 });
 

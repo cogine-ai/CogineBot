@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LEGACY_PAGE_CARD_FALLBACK } from "./message-visibility.js";
 import {
   narrateTool,
   speakable,
@@ -83,6 +84,19 @@ describe("speakable", () => {
         { kind: "ask", text: "Ship it?", status: "pending" },
       ]),
     ).toContain("Ship it?");
+  });
+
+  it("does not speak the old client notice for a Page-only reply", () => {
+    expect(
+      speechFromBlocks([
+        { kind: "page", pageId: "page-a", version: 1, title: "Plan" },
+        {
+          kind: "text",
+          text: LEGACY_PAGE_CARD_FALLBACK,
+          pageCardFallbackFor: { pageId: "page-a", version: 1 },
+        },
+      ]),
+    ).toBe("");
   });
 });
 

@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 
 /** A fenced block becomes a mention of itself, with its language if known. */
 function describeCodeBlock(fence: string): string {
@@ -197,7 +198,7 @@ export function narrateTool(toolName: string): string | null {
 }
 
 export function speechFromBlocks(blocks: MessageBlock[]): string {
-  return blocks
+  return withoutLegacyPageCardFallbacks(blocks)
     .map((block) => {
       if (block.kind === "text" || block.kind === "progress" || block.kind === "meta")
         return block.text;

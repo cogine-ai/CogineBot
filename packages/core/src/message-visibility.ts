@@ -1,5 +1,8 @@
 import type { MessageBlock } from "@rakazo/contracts";
 
+export const LEGACY_PAGE_CARD_FALLBACK =
+  "Page saved. Open this chat in a newer version to view it.";
+
 type PresentableMessage = {
   runId?: string;
   blocks: readonly MessageBlock[];
@@ -56,6 +59,28 @@ export function isBackgroundInputBlock(block: unknown): boolean {
   );
 }
 
+/** The companion stays visible if its actual card is missing. */
+export function withoutLegacyPageCardFallbacks(
+  blocks: readonly MessageBlock[],
+): readonly MessageBlock[] {
+  const hasCompanion = blocks.some(
+    (block) => block.kind === "text" && block.pageCardFallbackFor !== undefined,
+  );
+  if (!hasCompanion) return blocks;
+  const visible = blocks.filter((block) => {
+    if (block.kind !== "text" || block.text !== LEGACY_PAGE_CARD_FALLBACK) return true;
+    const target = block.pageCardFallbackFor;
+    return (
+      !target ||
+      !blocks.some(
+        (card) =>
+          card.kind === "page" && card.pageId === target.pageId && card.version === target.version,
+      )
+    );
+  });
+  return visible.length === blocks.length ? blocks : visible;
+}
+
 /** Drop peer-run activity/replies; optionally keep sent/received receipt rows. */
 export function userVisibleMessages<T extends PresentableMessage>(
   messages: readonly T[],
@@ -70,7 +95,9 @@ export function userVisibleMessages<T extends PresentableMessage>(
   const includePeerReceipts = options.includePeerReceipts === true;
   const backgroundRunIds = new Set(options.backgroundRunIds ?? []);
 
-  return messages.flatMap((message) => {
+  return messages.flatMap((original) => {
+    const displayed = withoutLegacyPageCardFallbacks(original.blocks);
+    const message = displayed === original.blocks ? original : { ...original, blocks: displayed };
     if (message.runId && backgroundRunIds.has(message.runId)) {
       return message.blocks.some(isBackgroundInputBlock) ? [message] : [];
     }

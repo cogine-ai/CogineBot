@@ -11,7 +11,10 @@ import { MessageCaption } from "../components/message-caption";
 const linking = vi.hoisted(() => ({
   canOpenURL: vi.fn(async () => true),
   openURL: vi.fn(async () => undefined),
+  openPage: vi.fn(),
 }));
+
+vi.mock("./use-open-page", () => ({ useOpenPrivatePage: () => linking.openPage }));
 
 vi.mock("react-native", () => {
   function View({ children }: { children?: ReactNode }) {
@@ -109,5 +112,27 @@ describe("attachment captions", () => {
     await act(async () => link?.click());
 
     expect(linking.openURL).toHaveBeenCalledWith("https://example.test/docs");
+  });
+  it("only opens a canonical Page reference and keeps the author's syntax literal", async () => {
+    const role = "user";
+    act(() => {
+      root.render(
+        <MessageCaption
+          role={role}
+          text={"[Plan](page:page-1)\nKeep [Manual](page:page-2)."}
+          pageContext={{ title: "Plan", pageId: "page-1" }}
+          tokens={lightTokens}
+          colorScheme="light"
+          streaming={false}
+        />,
+      );
+    });
+
+    const links = [...container.querySelectorAll<HTMLElement>('[role="link"]')];
+    expect(links).toHaveLength(1);
+    expect(container.textContent).toContain("[Manual](page:page-2)");
+    await act(async () => links[0]?.click());
+    expect(linking.openPage).toHaveBeenCalledWith("page-1");
+    expect(linking.openURL).not.toHaveBeenCalled();
   });
 });

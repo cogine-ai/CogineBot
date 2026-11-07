@@ -116,6 +116,7 @@ vi.mock("expo-document-picker", () => ({}));
 vi.mock("expo-image-picker", () => ({}));
 vi.mock("expo-sharing", () => ({}));
 vi.mock("react-native-svg", () => ({ default: () => null, G: () => null, Path: () => null }));
+vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: {} } }));
 vi.mock("./call-sounds", () => ({

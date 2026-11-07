@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   Api,
   AssistantMessage,
@@ -26,6 +29,7 @@ import { approvalPausedToolResult } from "./approval-effect.js";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { modelsForRequest, PiAgentRuntime } from "./pi-runtime.js";
+import { piSessionBotRoot } from "./pi-session.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 
@@ -388,6 +392,78 @@ describe("real Pi turn checkpoint producer and recovery", () => {
       "scratchpad_add",
     ]);
     expect(provider.stream).toHaveBeenCalledOnce();
+  });
+
+  it("keeps protected Page data out of the real Pi recorder and blocks an invalid saved tail before execution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cogine-page-session-"));
+    const store = captures();
+    const userId = "fixture-owner";
+    const secret = "fixture-page-protected-value";
+    let blob: string | undefined;
+    const input = request([builtin("write_file"), builtin("save_page")], {
+      pageToolSecrets: () => [secret],
+      onCheckpoint: store.onCheckpoint,
+      executeTool: async (name, _args, executionId) => {
+        if (name === "save_page") return { pageId: "page-1", source: secret };
+        blob = store.at(executionId);
+        return approvalPausedToolResult();
+      },
+    });
+    const runtime = new PiAgentRuntime({ sessionRoot: directory });
+    const consumeWithRecorder = async (request: AgentRunRequest) => {
+      for await (const _ of runtime.run(request, {
+        userId,
+        signal: new AbortController().signal,
+      })) {
+        // Consume the real runtime until completion or the persisted pause.
+      }
+    };
+    try {
+      provider.stream.mockImplementationOnce(() =>
+        response([
+          call("read-page", USE_TOOL, { name: "save_page", arguments: { pageId: "page-1" } }),
+          call("pending", "write_file", { path: "report.txt", content: "Exact pending body" }),
+          call("unsafe-page", USE_TOOL, {
+            name: "save_page",
+            arguments: { title: "Draft", source: secret },
+          }),
+          call("safe-page", USE_TOOL, { name: "save_page", arguments: { help: true } }),
+        ]),
+      );
+      await consumeWithRecorder(input);
+      expect(blob).toContain(secret);
+
+      provider.stream.mockImplementationOnce(
+        (activeModel: Model<Api>, context: TranscriptContext) => {
+          expect(resultText(context, "read-page")).toContain("[redacted]");
+          expect(resultText(context, "unsafe-page")).toContain("invalid or protected arguments");
+          expect(resultText(context, "safe-page")).toContain("Resumed safely");
+          expect(JSON.stringify(context)).not.toContain(secret);
+          return response(undefined, activeModel);
+        },
+      );
+      const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => ({
+        receipt: "Resumed safely",
+      }));
+      // Supply the original pre-filter capture to exercise the independent restore boundary.
+      await consumeWithRecorder({ ...input, turnCheckpoint: blob, executeTool: execute });
+      expect(execute.mock.calls.map(([name, args]) => [name, args])).toEqual([
+        ["write_file", { path: "report.txt", content: "Exact pending body" }],
+        ["save_page", { help: true }],
+      ]);
+
+      const owner = piSessionBotRoot(directory, userId, input.botId);
+      const files = await readdir(owner);
+      expect(files).toHaveLength(2);
+      const jsonl = (
+        await Promise.all(files.map((file) => readFile(join(owner, file), "utf8")))
+      ).join("\n");
+      expect(jsonl).toContain("Exact pending body");
+      expect(jsonl).toContain("[redacted]");
+      expect(jsonl).not.toContain(secret);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it.each(["ask_user", "request_takeover"] as const)(

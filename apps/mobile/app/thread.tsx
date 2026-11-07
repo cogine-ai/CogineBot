@@ -27,7 +27,9 @@ import {
   latestAnswerableAskMessageId,
   leaveThreadWindow,
   messageAttachmentLabels,
+  newestPageCards,
   openThreadWindow,
+  pageReply,
   plainTextFromMarkdown,
   projectMessageReactions,
   reconcileThreadScrollState,
@@ -39,6 +41,7 @@ import {
   timeSeparatorIds,
   userVisibleMessages,
   withLiveStreamingProgress,
+  withoutLegacyPageCardFallbacks,
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -108,6 +111,13 @@ import { MessageCaption } from "../components/message-caption";
 import { MessageContextMenu } from "../components/message-context-menu";
 import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
+import {
+  NewestPageCards,
+  PageCard,
+  PagePreviewRowBounds,
+  PagePreviewViewport,
+  usePagePreviewViewport,
+} from "../components/pages/page-card";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
 import { ThreadErrorNotices } from "../components/run-error-notice";
@@ -194,6 +204,8 @@ import {
   threadSpaceRequest,
   threadSpaceSwitchResult,
 } from "../lib/notification-open";
+import { useChatOnScreen } from "../lib/page-card-detail";
+import { pageScopeKey, subscribePageScope, takePageReply } from "../lib/pages";
 import type { PickedAttachment } from "../lib/pick-attachments";
 import { pickDocuments, pickFromLibrary, takePhoto } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
@@ -838,6 +850,12 @@ function Thread({
   // A failed newer page waits for the next drag instead of retrying on every scroll event.
   const newerLoadFailed = useRef(false);
   const pinnedScrollMetrics = useRef({ offset: 0, viewport: 0, content: 0 });
+  const pageScope = useSyncExternalStore(subscribePageScope, pageScopeKey, pageScopeKey);
+  const pageThreadPath = groupId ? "/group-thread" : "/thread";
+  const previewScope = JSON.stringify([pageScope, pageThreadPath, threadKey]);
+  const previewWindowKey =
+    jumpScrollTarget.current ?? pinnedAroundRef.current?.messageId ?? threadKey;
+  const previewViewport = usePagePreviewViewport(previewScope, previewWindowKey);
   const joinPinnedAfterLayout = useRef<number | null>(null);
   const [markdownPreview, setMarkdownPreview] = useState<MarkdownArtifactPreviewTarget | null>(
     null,
@@ -863,6 +881,24 @@ function Thread({
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
   const composerRef = useRef<ThreadComposerHandle>(null);
+  useChatOnScreen();
+  const replyPage = useRef<{ page: { id: string; title: string }; scope: string } | null>(null);
+  const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
+  const composerEmptied = useCallback(() => {
+    replyPage.current = null;
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      if (readOnly || pageScope !== pageScopeKey()) return;
+      const handle = composerRef.current;
+      const reply = handle ? takePageReply(pageThreadPath, threadKey) : null;
+      if (!handle || !reply) return;
+      handle.addReply(reply.text);
+      setReplyTarget(null);
+      setReplyQuote(null);
+      replyPage.current = { page: reply.page, scope: previewScope };
+    }, [threadKey, readOnly, pageScope, pageThreadPath, previewScope]),
+  );
   const [, updateExample] = useState(0);
   const exampleTarget = useRef<{
     botId?: string;
@@ -1276,6 +1312,8 @@ function Thread({
       .then(() => {
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
+        jumpScrollTarget.current = null;
+        jumpAnchor.current.release();
         historyEpoch.current += 1;
         commitSnap(
           snapRef.current
@@ -1890,12 +1928,13 @@ function Thread({
     if (!botId && !groupId) return;
     // A conversation hit is the thread itself: stay on the live tail, not an older page.
     if (!messageId) {
-      const pinned = pinnedAroundRef.current != null || jumpAnchor.current.holds();
+      const pinned = pinnedAroundRef.current != null || jumpScrollTarget.current != null;
       jumpAnchor.current.release();
       jumpScrollTarget.current = null;
       pinnedAroundRef.current = null;
       if (pinned) {
         expandedHistoryThread.current = null;
+        setThreadScrollState(scrollBehavior.current.state());
         commitSnap(snapRef.current);
       }
       return;
@@ -1940,6 +1979,7 @@ function Thread({
     const originThreadKey = initialGroupTarget ?? initialBotTarget;
     const submitted = composerRef.current?.snapshot();
     if (!submitted) return;
+    const submittedPage = replyPage.current;
     const attachments = attachmentsForThread(pendingAttachments, originThreadKey);
     const plan = resolveComposerSendPlan({
       text: submitted.promptText,
@@ -1966,6 +2006,7 @@ function Thread({
     }
     if (
       !isCurrentTarget(initialBotTarget, initialGroupTarget) ||
+      pageScope !== pageScopeKey() ||
       JSON.stringify(submitted) !== JSON.stringify(composerRef.current?.snapshot())
     )
       return;
@@ -1974,33 +2015,54 @@ function Thread({
     );
     const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
     const botTarget = reroutedToGroup ? undefined : initialBotTarget;
+    const current = snapRef.current;
+    const targetMessages =
+      current &&
+      (groupTarget
+        ? current.groupId === groupTarget
+        : !current.groupId && current.botId === botTarget)
+        ? current.messages
+        : [];
+    const fromPage: ReturnType<typeof pageReply> =
+      plan.shouldSend &&
+      !reroutedToGroup &&
+      submittedPage?.scope === previewScope &&
+      replyPage.current === submittedPage
+        ? pageReply(plan.trimmed, targetMessages, submittedPage.page, replyTarget?.id)
+        : { text: plan.trimmed };
+    const pageCard = targetMessages.find((message) => message.id === fromPage.replyToMessageId);
     let attempt: SendAttempt;
     try {
       attempt = feedback.sendAttempt({
         originThreadKey: originThreadKey!,
-        displayText: submitted.promptText,
-        replyPreview: replyQuote ?? (replyTarget ? previewMessageText(replyTarget) : null),
+        displayText: fromPage.text === plan.trimmed ? submitted.promptText : fromPage.text,
+        replyPreview: pageCard
+          ? previewMessageText(pageCard)
+          : (replyQuote ?? (replyTarget ? previewMessageText(replyTarget) : null)),
         initialBotTarget,
         botTarget,
         groupTarget,
         reroutedToGroup,
         plan,
         attachments,
-        replyTargetId: replyTarget?.id,
-        replyQuote,
+        replyTargetId: pageCard?.id ?? replyTarget?.id,
+        replyQuote: pageCard ? null : replyQuote,
+        fromPage: pageCard ? true : undefined,
+        pageContext: fromPage.pageContext,
       });
     } catch (error) {
       Alert.alert(t("Failed to send message"), errorText(error));
       return;
     }
     composerRef.current?.reset();
+    replyPage.current = null;
     setPendingAttachments((current) =>
       current.filter((attachment) => !submitted.attachmentIds.includes(attachment.id)),
     );
     setReplyTarget(null);
     setReplyQuote(null);
     setAttachmentNotice(null);
-    if (pinnedAroundRef.current) showLatest();
+    if (jumpScrollTarget.current || pinnedAroundRef.current) showLatest();
     performScroll(scrollBehavior.current.jumpToLatest());
     publishThreadScrollState(scrollBehavior.current.state());
     await deliver(attempt);
@@ -2039,7 +2101,7 @@ function Thread({
       return;
     }
     if (isCurrentTarget(botTarget, groupTarget)) {
-      if (pinnedAroundRef.current) showLatest();
+      if (jumpScrollTarget.current || pinnedAroundRef.current) showLatest();
       void refresh().catch(() => undefined);
     }
   }
@@ -2432,6 +2494,7 @@ function Thread({
   function scrollPinnedTo(offset: number) {
     pinnedScroll.current?.scrollTo({ y: offset, animated: false });
     pinnedScrollMetrics.current.offset = offset;
+    previewViewport.update({ offset });
   }
 
   function loadNewerNearEnd() {
@@ -2447,7 +2510,6 @@ function Thread({
       );
     if (jumpAnchor.current.holds() && !targetDrawn) {
       jumpAnchor.current.release();
-      jumpScrollTarget.current = null;
     } else if (jumpAnchor.current.blocksPaging(targetDrawn, headerHeight + 24)) {
       return;
     }
@@ -2461,7 +2523,7 @@ function Thread({
     // Once the page reaches the latest message, the end of it is the live thread.
     if (
       pinnedNewerCursor === null &&
-      !jumpScrollTarget.current &&
+      !jumpAnchor.current.holds() &&
       pinnedDistanceFromEnd(event) <= 80
     ) {
       showLatest();
@@ -2591,6 +2653,7 @@ function Thread({
         : undefined;
       return (
         <MessageRow
+          pageCards={pageCards}
           key={message.id}
           message={message}
           artifactDescriptions={storedArtifactDescriptions}
@@ -2621,6 +2684,7 @@ function Thread({
       );
     },
     [
+      pageCards,
       messagesById,
       snap?.members,
       snap?.activeRuns,
@@ -2777,70 +2841,73 @@ function Thread({
       {/* The floor keeps a tall suggestion list from sliding under the transparent header. */}
       <View style={{ flex: 1, minHeight: headerHeight, position: "relative" }}>
         {showPinnedPage ? (
-          <ScrollView
-            key={jumpScrollTarget.current ?? pinnedTarget?.messageId ?? threadKey}
-            ref={pinnedScroll}
-            style={{ flex: 1 }}
-            contentContainerStyle={{ paddingTop: headerHeight + 8, paddingBottom: 16 }}
-            maintainVisibleContentPosition={messageListPosition}
-            scrollEventThrottle={16}
-            onLayout={(event) => {
-              pinnedScrollMetrics.current.viewport = event.nativeEvent.layout.height;
-              loadNewerNearEnd();
-            }}
-            onContentSizeChange={(_, height) => {
-              pinnedScrollMetrics.current.content = height;
-              const jumpOffset = jumpAnchor.current.align(headerHeight + 24);
-              if (jumpOffset != null) scrollPinnedTo(jumpOffset);
-              const armedAt = joinPinnedAfterLayout.current;
-              if (armedAt != null && height !== armedAt) {
-                joinPinnedAfterLayout.current = null;
-                if (
-                  !jumpAnchor.current.holds() &&
-                  pinnedAroundRef.current?.newerCursor == null &&
-                  pinnedNearEnd()
-                ) {
-                  showLatest();
-                  return;
+          <PagePreviewViewport.Provider key={previewScope} value={previewViewport}>
+            <ScrollView
+              key={previewWindowKey}
+              ref={pinnedScroll}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingTop: headerHeight + 8, paddingBottom: 16 }}
+              maintainVisibleContentPosition={messageListPosition}
+              scrollEventThrottle={16}
+              onLayout={(event) => {
+                pinnedScrollMetrics.current.viewport = event.nativeEvent.layout.height;
+                previewViewport.update({ viewport: event.nativeEvent.layout.height });
+                loadNewerNearEnd();
+              }}
+              onContentSizeChange={(_, height) => {
+                pinnedScrollMetrics.current.content = height;
+                const jumpOffset = jumpAnchor.current.align(headerHeight + 24);
+                if (jumpOffset != null) scrollPinnedTo(jumpOffset);
+                const armedAt = joinPinnedAfterLayout.current;
+                if (armedAt != null && height !== armedAt) {
+                  joinPinnedAfterLayout.current = null;
+                  if (
+                    !jumpAnchor.current.holds() &&
+                    pinnedAroundRef.current?.newerCursor == null &&
+                    pinnedNearEnd()
+                  ) {
+                    showLatest();
+                    return;
+                  }
                 }
-              }
-              loadNewerNearEnd();
-            }}
-            onScroll={(event) => {
-              if (pinnedScrollBack.current.onScroll(event.nativeEvent) && Platform.OS === "ios")
-                Keyboard.dismiss();
-              const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-              pinnedScrollMetrics.current = {
-                offset: contentOffset.y,
-                viewport: layoutMeasurement.height,
-                content: contentSize.height,
-              };
-              loadNewerNearEnd();
-            }}
-            onScrollBeginDrag={(event) => {
-              pinnedScrollBack.current.onDragStart(event.nativeEvent);
-              newerLoadFailed.current = false;
-              if (!jumpAnchor.current.holds()) return;
-              jumpAnchor.current.release();
-              jumpScrollTarget.current = null;
-            }}
-            onScrollEndDrag={(event) => {
-              pinnedScrollBack.current.onDragEnd();
-              updatePinnedScroll(event);
-            }}
-            onMomentumScrollEnd={updatePinnedScroll}
-          >
-            {loadEarlierControl}
-            {threadWindowMessages(visibleMessages, pinnedNewerCursor).map((message, index) =>
-              renderMessageRow(message, { enableJump: true, index }),
-            )}
-            {pinnedNewerCursor === null ? failedSendBubbles : null}
-            {pinnedNewerCursor === null ? (
-              workingFooter
-            ) : loadingNewer ? (
-              <ActivityIndicator color={tokens.mutedForeground} style={{ marginVertical: 12 }} />
-            ) : null}
-          </ScrollView>
+                loadNewerNearEnd();
+              }}
+              onScroll={(event) => {
+                if (pinnedScrollBack.current.onScroll(event.nativeEvent) && Platform.OS === "ios")
+                  Keyboard.dismiss();
+                const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                pinnedScrollMetrics.current = {
+                  offset: contentOffset.y,
+                  viewport: layoutMeasurement.height,
+                  content: contentSize.height,
+                };
+                previewViewport.update(pinnedScrollMetrics.current);
+                loadNewerNearEnd();
+              }}
+              onScrollBeginDrag={(event) => {
+                pinnedScrollBack.current.onDragStart(event.nativeEvent);
+                newerLoadFailed.current = false;
+                // A drag releases alignment, but keeps the current scroll window mounted.
+                jumpAnchor.current.release();
+              }}
+              onScrollEndDrag={(event) => {
+                pinnedScrollBack.current.onDragEnd();
+                updatePinnedScroll(event);
+              }}
+              onMomentumScrollEnd={updatePinnedScroll}
+            >
+              {loadEarlierControl}
+              {threadWindowMessages(visibleMessages, pinnedNewerCursor).map((message, index) =>
+                renderMessageRow(message, { enableJump: true, index }),
+              )}
+              {pinnedNewerCursor === null ? failedSendBubbles : null}
+              {pinnedNewerCursor === null ? (
+                workingFooter
+              ) : loadingNewer ? (
+                <ActivityIndicator color={tokens.mutedForeground} style={{ marginVertical: 12 }} />
+              ) : null}
+            </ScrollView>
+          </PagePreviewViewport.Provider>
         ) : (
           <FlatList
             key={threadKey}
@@ -3090,6 +3157,7 @@ function Thread({
           </View>
         ) : null}
         <ThreadComposer
+          onEmptied={composerEmptied}
           key={threadKey}
           ref={composerRef}
           agentSkills={agentSkills}
@@ -3270,7 +3338,8 @@ function QuoteSheet({
 }
 
 function previewMessageText(message: MobileMessage): string {
-  const text = message.blocks
+  const blocks = withoutLegacyPageCardFallbacks(message.blocks);
+  const text = blocks
     .flatMap((block) => {
       if (block.kind === "channel_message" && block.text) {
         return [
@@ -3286,7 +3355,9 @@ function previewMessageText(message: MobileMessage): string {
     .join(" ")
     .trim();
   if (text) return text;
-  const attachment = replyAttachment(message.blocks);
+  const page = blocks.find((block) => block.kind === "page");
+  if (page) return page.title;
+  const attachment = replyAttachment(blocks);
   if (attachment)
     return attachment.kind === "image" ? t("Photo") : attachment.name || t("Attachment");
   return t("Message");
@@ -3344,6 +3415,7 @@ type MessageRowActions = {
 };
 
 type MessageRowProps = {
+  pageCards: ReadonlyMap<string, string>;
   artifactDescriptions: ReadonlyMap<string, string>;
   message: MobileMessage;
   actions: MessageRowActions;
@@ -3372,6 +3444,7 @@ type MessageRowProps = {
 };
 
 const MessageRow = memo(function MessageRow({
+  pageCards,
   artifactDescriptions,
   message,
   actions,
@@ -3431,11 +3504,17 @@ const MessageRow = memo(function MessageRow({
     (question: string) => actions.dismissChoice(message.id, question),
     [actions, message.id],
   );
+  const [previewBounds, setPreviewBounds] = useState<{ top: number; height: number } | null>(null);
   const onLayout = useMemo(
     () =>
       enableJump
-        ? (event: LayoutChangeEvent) =>
-            actions.layout(message.id, event.nativeEvent.layout.y, index)
+        ? (event: LayoutChangeEvent) => {
+            const { y, height } = event.nativeEvent.layout;
+            actions.layout(message.id, y, index);
+            setPreviewBounds((previous) =>
+              previous?.top === y && previous.height === height ? previous : { top: y, height },
+            );
+          }
         : undefined,
     [actions, message.id, enableJump, index],
   );
@@ -3682,23 +3761,27 @@ const MessageRow = memo(function MessageRow({
             onLongPress={actionProps.onLongPress}
           >
             <ThreadReadOnlyContext.Provider value={readOnly}>
-              <MessageBubble
-                artifactDescriptions={artifactDescriptions}
-                botId={bubbleBotId}
-                groupId={groupId}
-                message={message}
-                botName={botName}
-                bots={bots}
-                members={members}
-                canAnswer={canAnswer}
-                onAnswer={actions.answer}
-                onOpenBot={actions.openBot}
-                onOpenComputer={actions.openComputer}
-                onChoiceDismissed={onChoiceDismissed}
-                onPreviewMarkdown={actions.previewMarkdown}
-                onPreviewImage={actions.previewImage}
-                actionProps={actionProps}
-              />
+              <NewestPageCards.Provider value={pageCards}>
+                <PagePreviewRowBounds.Provider value={previewBounds}>
+                  <MessageBubble
+                    artifactDescriptions={artifactDescriptions}
+                    botId={bubbleBotId}
+                    groupId={groupId}
+                    message={message}
+                    botName={botName}
+                    bots={bots}
+                    members={members}
+                    canAnswer={canAnswer}
+                    onAnswer={actions.answer}
+                    onOpenBot={actions.openBot}
+                    onOpenComputer={actions.openComputer}
+                    onChoiceDismissed={onChoiceDismissed}
+                    onPreviewMarkdown={actions.previewMarkdown}
+                    onPreviewImage={actions.previewImage}
+                    actionProps={actionProps}
+                  />
+                </PagePreviewRowBounds.Provider>
+              </NewestPageCards.Provider>
             </ThreadReadOnlyContext.Provider>
           </MessageContextMenu>
           {messageReactions ? (
@@ -4193,6 +4276,9 @@ const MessageBubble = memo(function MessageBubble({
       </View>
     );
   }
+  const pageBlocks = message.blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "page" }> => block.kind === "page",
+  );
   const attachments = message.blocks.filter(
     (block) => block.kind === "image" || block.kind === "file",
   );
@@ -4239,11 +4325,19 @@ const MessageBubble = memo(function MessageBubble({
           <MessageCaption
             role={message.role}
             text={caption}
+            pageContext={
+              message.blocks.flatMap((block) =>
+                block.kind === "text" && block.pageContext ? [block.pageContext] : [],
+              )[0]
+            }
             tokens={tokens}
             colorScheme={colorScheme}
             streaming={message.id.startsWith("progress:")}
           />
         ) : null}
+        {pageBlocks.map((block) => (
+          <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
+        ))}
         {attachments.map((attachment, index) =>
           attachment.kind === "image" ? (
             attachment.artifactId && isInlineImageMimeType(attachment.mimeType) ? (
@@ -4389,6 +4483,9 @@ const MessageBubble = memo(function MessageBubble({
           actionProps={actionProps}
         />
       ))}
+      {pageBlocks.map((block) => (
+        <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
+      ))}
       {choiceBlocks.map((block, index) => (
         <ChoiceCard
           key={`choice-${index}`}
@@ -4465,6 +4562,11 @@ function MessageTextCard({
       <MessageCaption
         role={message.role}
         text={contentText}
+        pageContext={
+          message.blocks.flatMap((block) =>
+            block.kind === "text" && block.pageContext ? [block.pageContext] : [],
+          )[0]
+        }
         tokens={tokens}
         colorScheme={colorScheme}
         streaming={message.id.startsWith("progress:")}

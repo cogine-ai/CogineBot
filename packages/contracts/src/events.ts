@@ -105,6 +105,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     text: z.string(),
     /** Only the authenticated send transaction adds the resolved Page title. */
     pageContext: PageTextContextSchema.optional(),
+    /** Transport-only text companion for clients without Page cards. */
+    pageCardFallbackFor: z.strictObject({ pageId: Id, version: PageVersionSchema }).optional(),
   }),
   z.object({
     kind: z.literal("card"),

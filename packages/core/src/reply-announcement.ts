@@ -1,5 +1,6 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { visibleTextFromMarkdown } from "./message-quote.js";
+import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 import { isBackgroundRunTrigger } from "./run-state.js";
 
 export type AnnouncementSnapshot = {
@@ -137,7 +138,7 @@ export class ReplyAnnouncements {
         (message) => message.id === messageId && message.role === "bot" && message.runId === runId,
       );
       if (!message) continue;
-      const text = message.blocks
+      const text = withoutLegacyPageCardFallbacks(message.blocks)
         .flatMap((block) => (block.kind === "text" ? [this.textFromMarkdown(block.text)] : []))
         .join("\n");
       this.consumed.add(messageId);

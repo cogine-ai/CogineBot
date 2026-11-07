@@ -38,7 +38,13 @@ import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult, uncertainEffectResult } from "./approval-effect.js";
 import { automated, automatedToolMessages } from "./automated-messages.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
-import { FIND_TOOL, findTools, partitionTools, USE_TOOL } from "./builtin-tool-bridge.js";
+import {
+  FIND_TOOL,
+  findTools,
+  isDeferredTool,
+  partitionTools,
+  USE_TOOL,
+} from "./builtin-tool-bridge.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import {
   CHATGPT_PLAN_PROVIDER_ID,
@@ -71,6 +77,7 @@ import {
   normalizeOpenAiToolParameters,
   openAiToolParametersNeedNormalization,
 } from "./openai-tool-parameters.js";
+import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
@@ -327,6 +334,8 @@ export class PiAgentRuntime implements AgentRuntime {
         };
         resumeHost = host;
         const tools = toAgentTools(toolDefs, host);
+        const hasToolBridge = toolDefs.some((tool) => isDeferredTool(tool.name));
+        const pageToolSecrets = request.pageToolSecrets ?? (() => []);
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
@@ -360,7 +369,7 @@ export class PiAgentRuntime implements AgentRuntime {
           markMcpToolResultRoute(result.content, route);
         }
         const history =
-          restored?.messages ??
+          restored?.messages.map(createPageTranscriptSanitizer(hasToolBridge, pageToolSecrets)) ??
           toHistory(
             withoutSteeringMessages(request.history, initialSteering),
             request.prompt,
@@ -392,6 +401,7 @@ export class PiAgentRuntime implements AgentRuntime {
               : "You are a Rakazo bot with a persistent sandbox filesystem and shell. Be concise."));
         const thinkingLevel = thinkingLevelFor(model, request.model.thinkingLevel);
         let piSession: PiSessionHandle | undefined;
+        const sanitizeRecorded = createPageTranscriptSanitizer(hasToolBridge, pageToolSecrets);
         // Never write an unscoped transcript. Production requests carry userId;
         // callers without an authenticated context simply skip optional recording.
         if (this.sessionRecorder && context?.userId) {
@@ -406,7 +416,7 @@ export class PiAgentRuntime implements AgentRuntime {
               model: model.id,
               thinkingLevel,
               systemPrompt,
-              initialMessages: history,
+              initialMessages: history.map(sanitizeRecorded),
             });
           } catch (error) {
             getLogger().warn("Pi session recording could not start", {
@@ -655,7 +665,7 @@ export class PiAgentRuntime implements AgentRuntime {
             });
           }
           if (event.type === "message_end") {
-            await piSession?.appendMessage(event.message);
+            await piSession?.appendMessage(sanitizeRecorded(event.message));
           }
           if (event.type === "tool_execution_start") {
             finishedCalls.delete(event.toolCallId);
@@ -764,7 +774,6 @@ export class PiAgentRuntime implements AgentRuntime {
             // Complete unresolved calls before another model choice. The executor
             // still enforces canonical approved arguments, routes and idempotency.
             const unresolved = new Set(unresolvedTurnCheckpointCalls(history as Message[]));
-            const hasToolBridge = partitionRuntimeTools(toolDefs).deferred.length > 0;
             if (restored.executionMode !== "sequential") {
               for (const message of [...history]) {
                 if (message.role !== "assistant") continue;
@@ -862,7 +871,7 @@ export class PiAgentRuntime implements AgentRuntime {
                 });
                 unresolved.delete(call);
                 toolCalls += 1;
-                await piSession?.appendMessage(agent.state.messages.at(-1)!);
+                await piSession?.appendMessage(sanitizeRecorded(agent.state.messages.at(-1)!));
                 if ("terminate" in result && result.terminate) break;
               }
               if (host.pausePending) break;
@@ -1270,6 +1279,9 @@ export function describeToolActivity(toolName: string, args: unknown): string {
   if (toolName === "attach_file") return `Attaching ${detail(record.path)}`;
   if (toolName === "open_path") return `Opening ${detail(record.path)}`;
   if (toolName === "render_plot") return "Rendering a chart";
+  if (toolName === "save_page") {
+    return record.help === true ? "Reading the page kit reference" : "Working on a page";
+  }
   if (toolName === "add_mcp_server") return `Connecting MCP server: ${detail(record.name)}`;
   if (toolName === "computer_observe") return "Looking at the screen";
   if (toolName === "browser_navigate")

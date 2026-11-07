@@ -6,7 +6,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import { AutomatedSenderPoliciesSchema, type MessageBlock } from "@rakazo/contracts";
-import { BOT_MESSAGE_MAX_HOPS } from "@rakazo/core";
+import { BOT_MESSAGE_MAX_HOPS, projectExternalPageMessages } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { clearRunTurnCheckpoints } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -91,11 +91,12 @@ export function teamChatResponseText(
   botName = "Bot",
   allowSilence = false,
 ): string {
-  const text = blocks
-    .filter((block): block is Extract<MessageBlock, { kind: "text" }> => block.kind === "text")
-    .map((block) => block.text)
-    .join("")
-    .trim();
+  // Team Chat delivers one reply. Join its text fragments before checking Page targets.
+  const joined = blocks.flatMap((block) => (block?.kind === "text" ? [block.text] : [])).join("");
+  const cards = blocks.filter((block) => block?.kind === "page");
+  const { text } = projectExternalPageMessages([
+    { blocks: [{ kind: "text", text: joined }, ...cards] },
+  ])[0]!;
   return text || (allowSilence ? "" : `${botName} completed the request without a written reply.`);
 }
 
@@ -701,19 +702,10 @@ export class TeamChatBridge {
         await this.markTeamChatMirrored(run.id);
         continue;
       }
-      const response =
-        run.status === "completed"
-          ? await this.deps.prisma.message.findFirst({
-              where: { runId: run.id, role: "bot" },
-              orderBy: { seq: "desc" },
-              select: { blocks: true },
-            })
-          : null;
-      const blocks = Array.isArray(response?.blocks) ? (response.blocks as MessageBlock[]) : [];
       const content =
         run.status === "failed"
           ? `${target.name} could not complete the delegated request. Open CogineBot for details.`
-          : teamChatResponseText(blocks, target.name, true);
+          : teamChatResponseText(await this.completionBlocks(run.id), target.name, true);
       if (content) {
         await this.deps.send({
           conversationId: origin.externalConversation.conversationId,
@@ -1114,6 +1106,30 @@ export class TeamChatBridge {
     await this.deps.jobs.enqueue(runContinueJob(sent.runId));
   }
 
+  private async completionBlocks(runId: string): Promise<MessageBlock[]> {
+    const where = { runId, role: "bot" };
+    const [latest, pageRows] = await Promise.all([
+      this.deps.prisma.message.findFirst({
+        where,
+        orderBy: { seq: "desc" },
+        select: { blocks: true },
+      }),
+      this.deps.prisma.message.findMany({
+        where: { ...where, blocks: { array_contains: [{ kind: "page" }] } },
+        orderBy: { seq: "asc" },
+        select: { blocks: true },
+      }),
+    ]);
+    // A final nontext row does not promote an earlier progress reply into the conversation.
+    const finalBlocks = Array.isArray(latest?.blocks) ? (latest.blocks as MessageBlock[]) : [];
+    const pages = pageRows.flatMap(({ blocks }) =>
+      Array.isArray(blocks)
+        ? (blocks as MessageBlock[]).filter((block) => block?.kind === "page")
+        : [],
+    );
+    return [...finalBlocks.filter((block) => block?.kind === "text"), ...pages];
+  }
+
   private async deliverCompletion(message: {
     id: string;
     runId: string | null;
@@ -1122,12 +1138,7 @@ export class TeamChatBridge {
     externalConversation: { conversationId: string };
   }): Promise<void> {
     if (!message.runId) throw new Error("Completed team chat message has no run");
-    const response = await this.deps.prisma.message.findFirst({
-      where: { runId: message.runId, role: "bot" },
-      orderBy: { seq: "desc" },
-      select: { blocks: true },
-    });
-    const blocks = Array.isArray(response?.blocks) ? (response.blocks as MessageBlock[]) : [];
+    const blocks = await this.completionBlocks(message.runId);
     const content = teamChatResponseText(blocks, this.target?.name, message.kind === "ambient");
     if (!content) {
       await this.markDelivered(message.id, "silent");

@@ -84,7 +84,8 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         yield* runDurableScript(request, steering, isAborted);
         return;
       }
-      const script =
+      const script = prepareScriptedToolArgs(
+        request,
         steeredPrompt !== undefined
           ? steering
               .flatMap((item) =>
@@ -93,7 +94,8 @@ export class ScriptedAgentRuntime implements AgentRuntime {
               .map((turn, index, turns) =>
                 turn.complete && index < turns.length - 1 ? { ...turn, complete: false } : turn,
               )
-          : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint));
+          : (request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint)),
+      );
       request.onScriptResolved?.(script);
       // Per-run call index so repeated tools (e.g. message_agent) get distinct
       // executionIds — delivery keys and effect replays key off this value.
@@ -210,6 +212,26 @@ export class ScriptedAgentRuntime implements AgentRuntime {
   }
 }
 
+function prepareScriptedToolArgs(
+  request: AgentRunRequest,
+  turns: ScriptedTurn[],
+  revalidate = false,
+): ScriptedTurn[] {
+  const prepare = request.prepareScriptedToolArgs;
+  if (!prepare) return turns;
+  const projected = turns.map((turn) => {
+    if (!turn.toolCalls) return turn;
+    const toolCalls = turn.toolCalls.map((call) => {
+      const args = prepare(call.name, call.args, revalidate);
+      return args === call.args ? call : { ...call, args };
+    });
+    return toolCalls.some((call, index) => call !== turn.toolCalls![index])
+      ? { ...turn, toolCalls }
+      : turn;
+  });
+  return projected.some((turn, index) => turn !== turns[index]) ? projected : turns;
+}
+
 async function* runDurableScript(
   request: AgentRunRequest,
   fresh: Awaited<ReturnType<NonNullable<AgentRunRequest["claimSteering"]>>>,
@@ -225,10 +247,12 @@ async function* runDurableScript(
   if (request.scriptedResume) {
     const expected = request.scriptedResume === "answer" ? "ask" : "takeover";
     if (!prior || cursor.phase !== expected) throw new Error("Invalid scripted resume boundary");
-    const response =
+    const response = prepareScriptedToolArgs(
+      request,
       request.scriptedResume === "answer"
         ? (request.script ?? inferScript(request.prompt))
-        : inferScript("", request.resumeFromCheckpoint);
+        : inferScript("", request.resumeFromCheckpoint),
+    );
     const owner = owners[cursor.turn]!;
     const index = cursor.turn + 1;
     script.splice(index, 0, ...response);
@@ -240,7 +264,7 @@ async function* runDurableScript(
       throw new Error("Duplicate scripted continuation member");
     }
     const text = item.historyText ?? item.text;
-    const turns = inferScript(text);
+    const turns = prepareScriptedToolArgs(request, inferScript(text));
     batch.push({
       id: item.id,
       messageId: item.messageId,
@@ -266,7 +290,13 @@ async function* runDurableScript(
   );
   const save = async (next: ScriptedRuntimeState["cursor"]) => {
     if (isAborted()) return false;
-    state = parseScriptedState({ ...state, cursor: next }, request.runId);
+    const projected = prepareScriptedToolArgs(request, script, true);
+    const updated =
+      projected === script
+        ? {}
+        : { script: projected, scriptDigest: scriptedStateDigest(projected) };
+    script = projected;
+    state = parseScriptedState({ ...state, ...updated, cursor: next }, request.runId);
     await request.onScriptCheckpoint!(structuredClone(state));
     return !isAborted();
   };
@@ -299,7 +329,7 @@ async function* runDurableScript(
         yield { type: "done", text: "stopped" };
         return;
       }
-      const call = calls[tool]!;
+      const call = script[index]!.toolCalls![tool]!;
       const executionId = `${request.runId}:${call.name}:${ordinal}`;
       if (call.name === "run_subagent") {
         const agentId = `${request.runId}:subagent`;
@@ -411,6 +441,23 @@ export function inferScript(
       {
         assistant:
           "signed in. the session stays in this computer — protected input never hit the thread.",
+        complete: true,
+      },
+    ];
+  }
+  const pageWords = prompt.replace(
+    /^(?:Replying to|User reacted with \S+ to) \(quoted data, not instructions\):\n<(reply_target|reaction_target)>\n[\s\S]*?\n<\/\1>\n\n/,
+    "",
+  );
+  const page = /^(?:@\S+\s+)?call save_page with(?:\s+([\s\S]*?))?(?:\nthen say ([\s\S]+))?$/.exec(
+    pageWords.trim(),
+  );
+  if (page) {
+    const args = page[1] ? jsonObject(page[1]) : undefined;
+    return [
+      {
+        ...(args && page[2] ? { assistant: page[2] } : {}),
+        toolCalls: [{ name: "save_page", args: args ?? { help: {} } }],
         complete: true,
       },
     ];
@@ -862,4 +909,15 @@ function namedSpace(prompt: string) {
 
 function summarize(prompt: string): string {
   return `done. i handled: ${prompt.slice(0, 180)}`;
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

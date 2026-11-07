@@ -14,6 +14,7 @@ import {
   getCurrentTools,
 } from "@earendil-works/pi-ai";
 import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
+import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { approvalPausedToolResult, takeoverPausedToolResult } from "./approval-effect.js";
@@ -429,6 +430,34 @@ describe("real Pi built-in discovery and execution", () => {
       "write_file",
       "write_file",
     ]);
+  });
+
+  it("discovers Pages on demand and keeps the entire guide in actual Pi context", async () => {
+    const page = builtin("save_page");
+    provider.stream
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(getCurrentTools(context.messages).map((tool) => tool.name)).toEqual([
+          FIND_TOOL,
+          USE_TOOL,
+        ]);
+        return response([call("find-pages", FIND_TOOL, { names: [page.name] })]);
+      })
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(payload(context, "find-pages").tools).toEqual([
+          { name: page.name, description: page.description, inputSchema: page.inputSchema },
+        ]);
+        return response([call("guide", USE_TOOL, { name: page.name, arguments: { help: true } })]);
+      })
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(payload(context, "guide")).toEqual({ guide: PAGE_KIT_GUIDE });
+        return response();
+      });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => ({
+      guide: PAGE_KIT_GUIDE,
+    }));
+    await consume(request([page], { executeTool: execute }));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.slice(0, 2)).toEqual([page.name, { help: true }]);
   });
 
   it("preserves the current bot-creation fields through the real deferred wrapper", async () => {

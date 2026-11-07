@@ -22,6 +22,7 @@ export const BUILTIN_TOOL_NAMES = [
   "secret_request",
   "forget_secret",
   "render_plot",
+  "save_page",
   "add_mcp_server",
   "remember",
   "save_shared_memory",

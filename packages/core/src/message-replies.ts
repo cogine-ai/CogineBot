@@ -28,7 +28,7 @@ export function replyLineText(quote?: string, preview?: string, fallback?: strin
 }
 
 /** Pick only metadata from validated parent blocks, preferring a photo over a file. */
-export function replyAttachment(blocks: MessageBlock[]): ReplyPreview["attachment"] {
+export function replyAttachment(blocks: readonly MessageBlock[]): ReplyPreview["attachment"] {
   const block =
     blocks.find((block) => block.kind === "image") ?? blocks.find((block) => block.kind === "file");
   if (!block || (block.kind !== "image" && block.kind !== "file")) return undefined;

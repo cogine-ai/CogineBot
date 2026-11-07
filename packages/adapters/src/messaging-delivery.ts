@@ -6,7 +6,11 @@ import type {
 } from "@rakazo/adapter-kit";
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { botMessageHopExhausted, nextBotMessageHop } from "@rakazo/core";
+import {
+  botMessageHopExhausted,
+  nextBotMessageHop,
+  projectExternalPageMessages,
+} from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -103,18 +107,18 @@ async function mirrorRun(
   if (!identity) return;
 
   // bot_message runs can carry the bot's user-facing reply after a delegate wake.
-  // extractText only keeps kind:"text", so inter-bot chatter blocks never leak out.
+  // The projection keeps reply text and Page titles, separate from inter-bot chatter.
 
   const messages = await deps.prisma.message.findMany({
     where: { runId: run.id, role: "bot" },
     orderBy: { seq: "asc" },
   });
-  const rows = messages
-    .map((message) => ({
+  const rows = projectExternalPageMessages(messages)
+    .map(({ message, text }) => ({
       idempotencyKey: `msg:${message.id}`,
       kind: "dm",
       identityId: identity.id,
-      body: extractText(message.blocks),
+      body: text,
       sourceMessageId: message.id,
     }))
     .filter((row) => row.body);
@@ -164,9 +168,7 @@ async function mirrorChannelRun(
     )
   )
     return;
-  const messages = replies
-    .map((message) => ({ message, text: extractText(message.blocks) }))
-    .filter((entry) => entry.text);
+  const messages = projectExternalPageMessages(replies).filter((entry) => entry.text);
   if (messages.length === 0) return;
 
   await deps.prisma.messagingOutbound.createMany({
@@ -189,7 +191,7 @@ async function mirrorChannelRun(
       NOT: { identityId: identity.id },
     },
   });
-  for (const { message, text } of messages) {
+  for (const { message, text, authoredText } of messages) {
     for (const peer of peers) {
       const peerIdentity = await deps.prisma.messagingIdentity.findUnique({
         where: { id: peer.identityId! },
@@ -215,7 +217,7 @@ async function mirrorChannelRun(
       };
       const clientNonce = `messaging-peer:${message.id}:${peerIdentity.botId}`;
       const mentioned = peerBot?.name
-        ? new RegExp(`@${escapeRegExp(peerBot.name)}\\b`, "i").test(text)
+        ? new RegExp(`@${escapeRegExp(peerBot.name)}\\b`, "i").test(authoredText)
         : false;
       if (mentioned && !botMessageHopExhausted(hop)) {
         const sent = await deps.events.sendUserMessage({
@@ -496,19 +498,4 @@ export async function applyMessagingOutboundStatus(
     where: { providerHandle: event.handle },
     data: { status },
   });
-}
-
-function extractText(blocks: unknown): string {
-  if (!Array.isArray(blocks)) return "";
-  return blocks
-    .filter(
-      (block): block is { kind: string; text: string } =>
-        typeof block === "object" &&
-        block !== null &&
-        (block as { kind?: string }).kind === "text" &&
-        typeof (block as { text?: string }).text === "string",
-    )
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
 }

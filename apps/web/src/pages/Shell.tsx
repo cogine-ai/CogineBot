@@ -71,6 +71,7 @@ import {
   truncateSlashDescription,
   userVisibleMessages,
   withLiveStreamingProgress,
+  withoutLegacyPageCardFallbacks,
   withPageReplyContext,
 } from "@rakazo/core";
 import {
@@ -8639,7 +8640,8 @@ function mentionTypeLabel(mention: ComposerMention) {
 }
 
 function previewMessageText(message: ThreadMessage): string {
-  const text = message.blocks
+  const blocks = withoutLegacyPageCardFallbacks(message.blocks);
+  const text = blocks
     .map((block) => {
       if (block.kind === "channel_message") return block.text;
       if (block.kind === "text") {
@@ -8652,7 +8654,9 @@ function previewMessageText(message: ThreadMessage): string {
     .join(" ")
     .trim();
   if (text) return text;
-  const attachment = replyAttachment(message.blocks);
+  const page = blocks.find((block) => block.kind === "page");
+  if (page) return page.title;
+  const attachment = replyAttachment(blocks);
   if (attachment) return attachment.kind === "image" ? t`Photo` : attachment.name || t`Attachment`;
   return t`Message`;
 }

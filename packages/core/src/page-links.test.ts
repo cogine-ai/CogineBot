@@ -2,10 +2,64 @@ import { PageTitleSchema } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   PAGE_REPLY_TASK_CONTEXT,
+  pageLinksAsTitles,
   pageReplyOwnerText,
   pageReplyTaskPrompt,
+  projectExternalPageMessages,
+  withoutPrivatePageTargets,
   withPageReplyContext,
 } from "./page-links.js";
+
+describe("external Page text projection", () => {
+  it("converts actual Page links and identifies their IDs without changing other Markdown", () => {
+    const links: Array<[string, string]> = [];
+    expect(
+      pageLinksAsTitles(
+        "Use `[example](page:code)` or \\[escaped](page:literal). Read [Q3 \\[draft\\]](page:page-1) and [the docs](https://example.test).",
+        (pageId, title) => links.push([pageId, title]),
+      ),
+    ).toBe(
+      "Use `[example](page:code)` or \\[escaped](page:literal). Read Q3 [draft] and [the docs](https://example.test).",
+    );
+    expect(links).toEqual([["page-1", "Q3 [draft]"]]);
+  });
+
+  it.each(["```", "~~~"])("leaves %s code fences alone while converting the next link", (fence) => {
+    expect(
+      pageLinksAsTitles(`${fence}md\r\n[example](page:code)\r\n${fence} \r\n[Plan](page:live)`),
+    ).toBe(`${fence}md\r\n[example](page:code)\r\n${fence} \r\nPlan`);
+  });
+
+  it("accepts a long malformed label without swallowing the next valid link", () => {
+    const malformed = "[".repeat(100_000);
+    expect(pageLinksAsTitles(`${malformed}[Plan](page:live)`)).toBe(`${malformed}Plan`);
+  });
+
+  it("strips reserved targets and known IDs without changing unrelated text", () => {
+    expect(
+      withoutPrivatePageTargets(
+        "`[example](page:private-code)` bare page:other-id, p1, p10, and https://example.test.",
+        new Set(["p1"]),
+      ),
+    ).toBe(
+      "`[example](private page)` bare private page, private page, p10, and https://example.test.",
+    );
+  });
+
+  it("recognizes an ID introduced by a bare Page target throughout the same outgoing result", () => {
+    const [reply] = projectExternalPageMessages([
+      {
+        blocks: [
+          { kind: "text", text: "The old reference was private-draft; unrelated draft remains." },
+          { kind: "text", text: "See page:private-draft or private-draft-later." },
+        ],
+      },
+    ]);
+    expect(reply?.text).toBe(
+      "The old reference was private page; unrelated draft remains.\nSee private page or private-draft-later.",
+    );
+  });
+});
 
 describe("server-owned Page provenance", () => {
   it("keeps model context after owner words", () => {

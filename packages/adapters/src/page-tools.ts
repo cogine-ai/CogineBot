@@ -7,6 +7,7 @@ import { assertRunCanWriteHistory, withTransactionRetry } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { checkPageSource, PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { z } from "zod";
+import { MAX_PAGE_EDITS, pageToolSecretError } from "./page-tool-request.js";
 import { persistMessageInTransaction } from "./run-messages.js";
 
 export interface PageToolContext {
@@ -16,7 +17,7 @@ export interface PageToolContext {
   thread: { groupId: string | null };
   state: { tainted: boolean };
   secrets: string[];
-  effect: { id: string };
+  effect?: { id: string };
   lease: RunLease;
   notify?: (threadId: string, eventSeq: number, firstResponseRunId?: string) => Promise<void>;
 }
@@ -41,8 +42,6 @@ function argumentGiven(value: unknown): boolean {
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
 }
-
-const MAX_EDITS = 50;
 
 type PageEdit = { find: string; replace: string };
 
@@ -70,7 +69,7 @@ function applyPageEdits(
 
 function parseEdits(value: unknown): PageEdit[] | string {
   if (!Array.isArray(value) || value.length === 0) return "edits must be a non-empty list.";
-  if (value.length > MAX_EDITS) return `Send at most ${MAX_EDITS} edits at once.`;
+  if (value.length > MAX_PAGE_EDITS) return `Send at most ${MAX_PAGE_EDITS} edits at once.`;
   const edits: PageEdit[] = [];
   for (const [index, item] of value.entries()) {
     const edit = item as Partial<PageEdit> | null;
@@ -83,6 +82,7 @@ function parseEdits(value: unknown): PageEdit[] | string {
 }
 
 function pageEffectScope(ctx: PageToolContext) {
+  if (!ctx.effect) throw new Error("Page writes require an execution receipt.");
   return {
     id: ctx.effect.id,
     spaceId: ctx.run.spaceId,
@@ -116,6 +116,20 @@ async function readPageSaveReceipt(
   return receipt.data;
 }
 
+/** An earlier worker can settle the same receipt while this attempt is recovering it. */
+export async function readCompletedPageToolResult(
+  ctx: PageToolContext,
+  args: Record<string, unknown>,
+): Promise<unknown | undefined> {
+  if (!ctx.effect) return undefined;
+  const stored = await ctx.deps.prisma.externalEffect.findFirst({
+    where: { ...pageEffectScope(ctx), status: "completed" },
+    select: { request: true, result: true },
+  });
+  if (!stored || stableJsonValue(stored.request) !== stableJsonValue(args)) return undefined;
+  return stored.result ?? undefined;
+}
+
 /** Recover only a committed save; an interrupted approved call must never execute a new write. */
 export async function recoverSavedPageFromTool(
   ctx: PageToolContext,
@@ -136,7 +150,6 @@ export async function recoverSavedPageFromTool(
 export async function savePageFromTool(ctx: PageToolContext, args: Record<string, unknown>) {
   const { deps, run, bot, thread } = ctx;
   if (args.help === true) return { guide: PAGE_KIT_GUIDE };
-  const effectScope = pageEffectScope(ctx);
   const pageId = argumentGiven(args.pageId) ? String(args.pageId) : undefined;
   const hasSource = argumentGiven(args.source);
   // Serializers send unused optional fields blank, an empty list included.
@@ -206,8 +219,9 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
   }
   // Saved Page source and compiled output must not persist values this run keeps secret.
   const containsRunSecret = () => containsSecret([source, check.code], ctx.secrets);
-  if (containsRunSecret()) return secretValueResult();
+  if (containsRunSecret()) return pageToolSecretError();
 
+  const effectScope = pageEffectScope(ctx);
   let committed: { receipt: PageSaveReceipt; firstResponseRunId?: string };
   try {
     committed = await withTransactionRetry(() =>
@@ -285,7 +299,7 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
               "bot",
               [block],
               undefined,
-              `page-save:${ctx.effect.id}`,
+              `page-save:${effectScope.id}`,
               false,
               ctx.lease,
             )
@@ -299,14 +313,14 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
             : {}),
         };
         await tx.externalEffect.update({
-          where: { id: ctx.effect.id },
+          where: { id: effectScope.id },
           data: { result: receipt },
         });
         return { receipt, firstResponseRunId: card?.firstResponseRunId };
       }),
     );
   } catch (error) {
-    if (error instanceof PageContainsSecretError) return secretValueResult();
+    if (error instanceof PageContainsSecretError) return pageToolSecretError();
     if (error instanceof PageVersionLimitError)
       return {
         error: "The page reached its version limit; save a new page instead.",
@@ -356,13 +370,6 @@ function redactPageTitle(title: string, secrets: string[]): string {
   return redactSecrets(title, secrets)
     .slice(0, PAGE_TITLE_MAX_LENGTH)
     .replace(/[\uD800-\uDBFF]$/, "");
-}
-
-function secretValueResult() {
-  return {
-    error: "The page contains a secret value; nothing was saved. Remove it and save again.",
-    unchanged: true,
-  };
 }
 
 class PageChangedError extends Error {}

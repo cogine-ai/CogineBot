@@ -323,6 +323,37 @@ describe("deliverMessagingOutbound", () => {
     );
   });
 
+  it.each(["messaging", "bot_message"])(
+    "projects Page-only and mixed %s replies without private IDs or repeated titles",
+    async (trigger) => {
+      const deps = createDeps({
+        run: { ...messagingRun, trigger },
+        messages: [
+          { id: "m-page", blocks: [{ kind: "page", pageId: "private-one", title: "Report" }] },
+          { id: "m-dupe", blocks: [{ kind: "page", pageId: "private-two", title: "Report" }] },
+          { id: "m-linked", blocks: [{ kind: "page", pageId: "private-three", title: "Plan" }] },
+          {
+            id: "m-text",
+            blocks: [
+              {
+                kind: "text",
+                text: "Read [Plan](page:private-three). `page:secret-code` and private-one stay private.",
+              },
+              { kind: "page", pageId: "private-four", title: "Notes" },
+              { kind: "bot_message_sent", text: "Private peer chatter" },
+            ],
+          },
+        ],
+      });
+      await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+      expect(deps.rows.map(({ body }) => body)).toEqual([
+        "Report",
+        "Read Plan. `private page` and private page stay private.\nNotes",
+      ]);
+      expect(deps.sendToThread).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("holds sendblue DM sends at the consecutive-outbound cap", async () => {
     const deps = createDeps({
       identity: {
@@ -805,6 +836,31 @@ function createChannelDeps(
 }
 
 describe("deliverMessagingOutbound channel runs", () => {
+  it("projects the same safe title to the channel and peers without waking a mentioned title", async () => {
+    const deps = createChannelDeps({
+      messages: [
+        {
+          id: "m-page",
+          blocks: [{ kind: "page", pageId: "private-page", title: "@Helper report" }],
+        },
+      ],
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.rows.map(({ body }) => body)).toEqual(["Alice's agent: @Helper report"]);
+    expect(deps.contextMessages[0]?.blocks).toEqual([
+      expect.objectContaining({ text: "@Helper report" }),
+    ]);
+    expect(deps.events.sendUserMessage).not.toHaveBeenCalled();
+  });
+  it("shows @names in canonical Page labels without waking peers", async () => {
+    const deps = createChannelDeps({ text: "See [Report @Helper](page:private-page)." });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.rows.map(({ body }) => body)).toEqual(["Alice's agent: See Report @Helper."]);
+    expect(deps.contextMessages[0]?.blocks).toEqual([
+      expect.objectContaining({ text: "See Report @Helper." }),
+    ]);
+    expect(deps.events.sendUserMessage).not.toHaveBeenCalled();
+  });
   it("keeps privately answered runs out of the group and peer fan-out on retries", async () => {
     const deps = createChannelDeps({
       messages: [

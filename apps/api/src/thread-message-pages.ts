@@ -6,12 +6,55 @@ import {
   isBackgroundInputBlock,
   isBackgroundRunTrigger,
   isPeerReceiptBlocks,
+  LEGACY_PAGE_CARD_FALLBACK,
   peerVisibleMessageBlocks,
 } from "@rakazo/core";
 import { messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
+
+function legacyPageCardBlocks(blocks: MessageBlock[]): MessageBlock[] {
+  const first = blocks[0];
+  if (first?.kind !== "page" || !blocks.every((block) => block?.kind === "page")) return blocks;
+  const page = MessageBlockSchema.safeParse(first);
+  if (!page.success || page.data.kind !== "page") return blocks;
+  const { pageId, version } = page.data;
+  return [
+    ...blocks,
+    { kind: "text", text: LEGACY_PAGE_CARD_FALLBACK, pageCardFallbackFor: { pageId, version } },
+  ];
+}
+
+/** Older clients can render text in the same row. Storage and exports retain the actual blocks. */
+export function projectThreadPageFallbacks<T extends { messages: ThreadMessage[] }>(
+  snapshot: T,
+): T {
+  return {
+    ...snapshot,
+    messages: snapshot.messages.map((message) => {
+      if (message.role !== "bot") return message;
+      const blocks = legacyPageCardBlocks(message.blocks);
+      return blocks === message.blocks ? message : { ...message, blocks };
+    }),
+  };
+}
+
+export function projectThreadEventPageFallback<
+  T extends {
+    type: string;
+    payload: { blocks?: unknown; role?: unknown };
+  },
+>(event: T): T {
+  if (event.type !== "thread.message.created" && event.type !== "thread.message.updated")
+    return event;
+  const { role, blocks } = event.payload;
+  if ((role !== undefined && role !== "bot") || !Array.isArray(blocks)) return event;
+  const projected = legacyPageCardBlocks(blocks);
+  return projected === blocks
+    ? event
+    : { ...event, payload: { ...event.payload, blocks: projected } };
+}
 
 const replySelection = {
   threadId: true,

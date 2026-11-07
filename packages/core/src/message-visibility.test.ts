@@ -1,6 +1,10 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { peerVisibleMessageBlocks, userVisibleMessages } from "./message-visibility.js";
+import {
+  LEGACY_PAGE_CARD_FALLBACK,
+  peerVisibleMessageBlocks,
+  userVisibleMessages,
+} from "./message-visibility.js";
 
 function message(id: string, runId: string, blocks: ThreadMessage["blocks"]): ThreadMessage {
   return {
@@ -33,6 +37,27 @@ const peerExchange = [
 ];
 
 describe("user-visible messages", () => {
+  it("removes the exact cached compatibility text while retaining the actual Page-only blocks", () => {
+    const card = { kind: "page", title: "Report", pageId: "page-1", version: 2 } as const;
+    const fallback = {
+      kind: "text",
+      text: LEGACY_PAGE_CARD_FALLBACK,
+      pageCardFallbackFor: { pageId: "page-1", version: 2 },
+    } as const;
+    const cached = JSON.parse(JSON.stringify(message("page", "run-user", [card, fallback])));
+    const visible = userVisibleMessages([cached]);
+    expect(visible[0]?.blocks).toEqual([card]);
+    expect(cached.blocks).toEqual([card, fallback]);
+    const unrelated = [
+      message("missing", "run-user", [fallback]),
+      message("version", "run-user", [{ ...card, version: 1 }, fallback]),
+      message("page-id", "run-user", [{ ...card, pageId: "page-other" }, fallback]),
+      message("copy", "run-user", [card, { ...fallback, text: "Bot's reply" }]),
+      message("unmarked", "run-user", [card, { kind: "text", text: LEGACY_PAGE_CARD_FALLBACK }]),
+    ];
+    for (const row of unrelated) expect(userVisibleMessages([row])[0]).toBe(row);
+  });
+
   it("makes MCP-only peer approvals reachable while stripping newly exposed hidden blocks", () => {
     const approval: ThreadMessage["blocks"][number] = {
       kind: "mcp_approval",
