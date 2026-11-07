@@ -6,6 +6,7 @@ import {
   forwardedRendererRequestInit,
   immutableRendererAsset,
   isRendererAssetMiss,
+  rendererDocumentHeaders,
 } from "./renderer-assets.js";
 
 const root = path.resolve("/tmp/rakazo-renderer");
@@ -24,6 +25,22 @@ describe("bundled desktop renderer", () => {
       path.join(root, "app/bot.name"),
       path.join(root, "index.html"),
     ]);
+  });
+
+  it("serves the opaque viewer shell as its own HTML document and never as the app fallback", () => {
+    expect(bundledRendererCandidates(root, `${origin}/html-viewer.html`, origin, true)).toEqual([
+      path.join(root, "html-viewer.html"),
+    ]);
+    expect(contentType("html-viewer.html")).toBe("text/html; charset=utf-8");
+    expect(immutableRendererAsset(path.join(root, "html-viewer.html"))).toBe(false);
+    expect(rendererDocumentHeaders("/html-viewer.html")).toEqual({
+      "content-security-policy": "frame-ancestors 'self'",
+      "referrer-policy": "no-referrer",
+    });
+    expect(rendererDocumentHeaders("/index.html")).toEqual({});
+    expect(
+      bundledRendererCandidates(root, `${origin}/api/v1/assets/page-runtime.js`, origin, false),
+    ).toBeNull();
   });
 
   it("leaves APIs, screen proxying, and other origins on the network", () => {

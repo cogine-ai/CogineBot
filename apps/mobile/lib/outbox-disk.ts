@@ -1,3 +1,4 @@
+import { PageReplyContextSchema } from "@rakazo/contracts";
 import { Directory, File, Paths } from "expo-file-system";
 import type { SendAttempt, UnsentDisk } from "./thread-feedback";
 import { OUTBOX_MAX_ENTRIES } from "./thread-feedback";
@@ -15,11 +16,40 @@ function attachmentFile(nonce: string, index: number) {
 function file() {
   return new File(root(), "sends-v4.json");
 }
+function replacement() {
+  return new File(root(), "sends-v4.json.tmp");
+}
+function backup() {
+  return new File(root(), "sends-v4.json.bak");
+}
+function deleteLeftover(entry: File | Directory) {
+  try {
+    entry.delete();
+  } catch {}
+}
+function readIndex(index: File): unknown[] | undefined {
+  if (!index.exists) return undefined;
+  const text = index.textSync();
+  try {
+    const entries: unknown = JSON.parse(text);
+    return Array.isArray(entries) ? entries : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function committedIndex() {
+  const entries = readIndex(file());
+  if (entries) return entries;
+  const previous = readIndex(backup());
+  if (previous) backup().moveSync(file(), { overwrite: true });
+  return previous;
+}
 export const OUTBOX_MAX_BYTES = 50 * 1024 * 1024;
 function diskBytes(directory: Directory): number {
   return directory.exists
     ? directory
         .list()
+        .filter((entry) => ![replacement().uri, backup().uri].includes(entry.uri))
         .reduce((sum, entry) => sum + (entry instanceof File ? entry.size : diskBytes(entry)), 0)
     : 0;
 }
@@ -72,23 +102,38 @@ export const outboxDisk: UnsentDisk = {
       const target = file();
       const text = JSON.stringify(attempts.slice(0, OUTBOX_MAX_ENTRIES).map(storedEntry));
       const bytes = new TextEncoder().encode(text).length;
-      if (diskBytes(root()) - (target.exists ? target.size : 0) + bytes > OUTBOX_MAX_BYTES) return;
-      target.create({ overwrite: true });
-      target.write(text);
+      if (diskBytes(root()) - (target.exists ? target.size : 0) + bytes > OUTBOX_MAX_BYTES)
+        return false;
+      if (backup().exists) committedIndex();
+      const next = replacement();
+      next.create({ overwrite: true });
+      next.write(text);
+      if (target.exists) target.moveSync(backup(), { overwrite: true });
+      try {
+        next.moveSync(file());
+      } catch (error) {
+        // A native copy-and-delete move may commit before reporting a source cleanup failure.
+        if (!file().exists || file().textSync() !== text) throw error;
+      }
     } catch {
-      /* Optional persistence; the in-memory outbox remains usable. */
+      return false;
     }
+    if (backup().exists) deleteLeftover(backup());
+    if (replacement().exists) deleteLeftover(replacement());
+    return true;
   },
   load(session, scope) {
+    // Read/move errors must propagate without deleting a committed backup.
+    const entries: unknown = committedIndex();
+    const target = file();
+    if (!entries || diskBytes(root()) > OUTBOX_MAX_BYTES) {
+      outboxDisk.clear();
+      return [];
+    }
+    if (!Array.isArray(entries)) return [];
+    let loaded: SendAttempt[];
     try {
-      const target = file();
-      if (!target.exists || diskBytes(root()) > OUTBOX_MAX_BYTES) {
-        outboxDisk.clear();
-        return [];
-      }
-      const entries: unknown = JSON.parse(target.textSync());
-      if (!Array.isArray(entries)) return [];
-      const loaded = entries.slice(0, OUTBOX_MAX_ENTRIES).flatMap((entry): SendAttempt[] => {
+      loaded = entries.slice(0, OUTBOX_MAX_ENTRIES).flatMap((entry): SendAttempt[] => {
         if (
           entry?.apiBase !== scope.apiBase ||
           entry.userId !== scope.userId ||
@@ -100,9 +145,14 @@ export const outboxDisk: UnsentDisk = {
           typeof entry.payload?.originThreadKey !== "string" ||
           typeof entry.payload.displayText !== "string" ||
           !entry.payload.plan ||
+          typeof entry.payload.plan.trimmed !== "string" ||
+          typeof entry.payload.plan.shouldSend !== "boolean" ||
+          typeof entry.payload.plan.shouldRunRoutines !== "boolean" ||
           !Array.isArray(entry.payload.plan.routineIds) ||
           !Array.isArray(entry.payload.plan.mentionPayload) ||
           !Array.isArray(entry.payload.attachments) ||
+          (entry.payload.pageContext !== undefined &&
+            !PageReplyContextSchema.safeParse(entry.payload.pageContext).success) ||
           !Array.isArray(entry.artifactIds) ||
           !entry.artifactIds.every(
             (pair: unknown) =>
@@ -130,13 +180,13 @@ export const outboxDisk: UnsentDisk = {
           },
         ];
       });
-      const keep = new Set([target.uri, ...loaded.map((a) => folder(a.clientNonce).uri)]);
-      for (const entry of root().list()) if (!keep.has(entry.uri)) entry.delete();
-      return loaded;
     } catch {
       outboxDisk.clear();
       return [];
     }
+    const keep = new Set([target.uri, ...loaded.map((a) => folder(a.clientNonce).uri)]);
+    for (const entry of root().list()) if (!keep.has(entry.uri)) deleteLeftover(entry);
+    return loaded;
   },
   async hydrate(attempt) {
     for (const [index, attachment] of attempt.payload.attachments.entries()) {

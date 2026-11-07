@@ -29,3 +29,9 @@ export function authErrorText(error: unknown, fallback: string): string {
     password: credentialIssueText("password"),
   });
 }
+
+/** The structured RPC code, when the server supplied one. */
+export function errorCode(error: unknown): string | undefined {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  return typeof code === "string" ? code : undefined;
+}

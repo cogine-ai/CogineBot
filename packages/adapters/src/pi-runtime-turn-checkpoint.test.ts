@@ -226,6 +226,27 @@ async function capturedApproval(
   return { input, blob: blob!, events };
 }
 
+async function capturedWrappedInteraction(name: "ask_user" | "request_takeover") {
+  const store = captures();
+  const args: JsonObject =
+    name === "ask_user"
+      ? { question: "Which option?", options: ["First", "Second"] }
+      : { reason: "Finish the sign-in." };
+  const input = request([builtin(name), builtin("scratchpad_add")], {
+    onCheckpoint: store.onCheckpoint,
+  });
+  provider.stream.mockImplementationOnce(() =>
+    response([call("wrapped-interaction", USE_TOOL, { name, arguments: args })]),
+  );
+  const events = await consume(input);
+  const interaction = events.find((event) => event.type === "tool" && event.name === name);
+  if (interaction?.type !== "tool") throw new Error("Missing wrapped interaction");
+  const blob = store.at(interaction.executionId);
+  expect((JSON.parse(blob) as TurnCheckpoint).pendingToolCallId).toBe("wrapped-interaction");
+  provider.stream.mockReset();
+  return { input, blob, executionId: interaction.executionId };
+}
+
 describe("real Pi turn checkpoint producer and recovery", () => {
   beforeEach(() => {
     provider.stream.mockReset();
@@ -412,6 +433,156 @@ describe("real Pi turn checkpoint producer and recovery", () => {
       expect(provider.stream).toHaveBeenCalledOnce();
     },
   );
+
+  it.each(["release", "skip", "prompt"] as const)(
+    "restores a wrapped takeover with the %s response without replaying it",
+    async (kind) => {
+      const { input, blob } = await capturedWrappedInteraction("request_takeover");
+      const note = `Verified ${kind} response: continue without assuming sign-in completed.`;
+      provider.stream.mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+        expect(resultText(context, "wrapped-interaction")).toBe(note);
+        expect(result(context, "wrapped-interaction").toolName).toBe(USE_TOOL);
+        return response(undefined, activeModel);
+      });
+      const execute = vi.fn(async () => ({ takeover: "requested" }));
+      const events = await consume({
+        ...input,
+        prompt: note,
+        turnCheckpoint: blob,
+        ...(kind === "prompt"
+          ? {}
+          : {
+              resumeToolResult: {
+                kind: "agent_tool_result" as const,
+                content: [{ type: "text" as const, text: note }],
+                details: {},
+              },
+            }),
+        executeTool: execute,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(events.some((event) => event.type === "takeover" || event.type === "ask")).toBe(false);
+      expect(provider.stream).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("restores a wrapped question with its supplied answer", async () => {
+    const { input, blob } = await capturedWrappedInteraction("ask_user");
+    provider.stream.mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+      expect(resultText(context, "wrapped-interaction")).toBe("Selected First");
+      return response(undefined, activeModel);
+    });
+    const execute = vi.fn(async () => ({ ok: true }));
+    await consume({
+      ...input,
+      turnCheckpoint: blob,
+      resumeToolResult: {
+        kind: "agent_tool_result",
+        content: [{ type: "text", text: "Selected First" }],
+        details: {},
+      },
+      executeTool: execute,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(provider.stream).toHaveBeenCalledOnce();
+  });
+
+  it("still executes an unapproved wrapped takeover through its original authorization path", async () => {
+    const { input, blob, executionId } = await capturedWrappedInteraction("request_takeover");
+    const execute = vi.fn(async () => approvalPausedToolResult());
+    await consume({
+      ...input,
+      turnCheckpoint: blob,
+      resumeUnreleasedTakeoverExecutionId: executionId,
+      executeTool: execute,
+    });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      "request_takeover",
+      { reason: "Finish the sign-in." },
+      executionId,
+      undefined,
+    );
+    expect(provider.stream).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing target", "malformed wrapper", "invalid question"] as const)(
+    "preserves the wrapped restore error for %s",
+    async (kind) => {
+      const { input, blob } = await capturedWrappedInteraction(
+        kind === "invalid question" ? "ask_user" : "request_takeover",
+      );
+      const checkpoint = JSON.parse(blob) as TurnCheckpoint;
+      for (const message of checkpoint.messages) {
+        if (message.role !== "assistant") continue;
+        for (const pending of message.content) {
+          if (pending.type !== "toolCall" || pending.id !== "wrapped-interaction") continue;
+          if (kind === "malformed wrapper") pending.arguments.name = 42;
+          if (kind === "invalid question") {
+            pending.arguments.arguments = { question: "Which option?", options: [] };
+          }
+        }
+      }
+      provider.stream.mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+        expect(result(context, "wrapped-interaction").isError).toBe(true);
+        expect(resultText(context, "wrapped-interaction")).not.toContain("SHOULD NOT RESUME");
+        return response(undefined, activeModel);
+      });
+      const execute = vi.fn(async () => ({ takeover: "requested" }));
+      await consume({
+        ...input,
+        ...(kind === "missing target" ? { tools: [builtin("scratchpad_add")] } : {}),
+        turnCheckpoint: JSON.stringify(checkpoint),
+        prompt: "SHOULD NOT RESUME",
+        executeTool: execute,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provider.stream).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not treat an ordinary connector named use_tool as the built-in bridge", async () => {
+    const store = captures();
+    const connector: ConnectorTool = {
+      name: USE_TOOL,
+      description: "A synthetic connector, not the built-in dispatcher",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" }, arguments: { type: "object" } },
+        required: ["name", "arguments"],
+      },
+      route: { connectorId: "custom", toolName: USE_TOOL },
+    };
+    let blob: string | undefined;
+    const input = request([connector, builtin("ask_user")], {
+      onCheckpoint: store.onCheckpoint,
+      executeTool: async (_name, _args, executionId) => {
+        blob = store.at(executionId);
+        return approvalPausedToolResult();
+      },
+    });
+    const args = { name: "ask_user", arguments: { question: "Not an interaction" } };
+    provider.stream.mockImplementationOnce(() => response([call("custom-call", USE_TOOL, args)]));
+    await consume(input);
+    expect(blob).toBeDefined();
+    provider.stream
+      .mockReset()
+      .mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+        expect(resultText(context, "custom-call")).toContain("custom receipt");
+        return response(undefined, activeModel);
+      });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => ({
+      receipt: "custom receipt",
+    }));
+    await consume({ ...input, turnCheckpoint: blob!, executeTool: execute });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]!.slice(0, 4)).toEqual([
+      USE_TOOL,
+      args,
+      JSON.stringify(["pi-tool", "main", "custom-call"]),
+      connector.route,
+    ]);
+    expect(provider.stream).toHaveBeenCalledOnce();
+  });
 
   it.each([false, true])(
     "does not replay an unknown parallel sibling, including a reused wire ID (%s)",

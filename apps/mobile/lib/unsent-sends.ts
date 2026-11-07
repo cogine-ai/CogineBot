@@ -12,9 +12,11 @@ import { t } from "./i18n";
 import { integrationsCacheScope } from "./integrations-cache";
 import { outboxDisk } from "./outbox-disk";
 import {
+  currentReadySessionGeneration,
   currentSessionGeneration,
   loadSessionToken,
   loadVerifiedIntegrationsScope,
+  subscribeSessionGeneration,
 } from "./session";
 import type { OutboxScope } from "./thread-feedback";
 import { configureUnsentSends, restoreUnsentSends, sendWaitingMessages } from "./thread-feedback";
@@ -28,7 +30,7 @@ function scope() {
     ? activeScope
     : null;
 }
-export async function prepareUnsentSends(): Promise<void> {
+async function prepareUnsentScope(): Promise<void> {
   const generation = currentSessionGeneration();
   const apiBase = currentApiBase();
   const spaceId = selectedSpaceId();
@@ -53,6 +55,9 @@ export async function prepareUnsentSends(): Promise<void> {
       generation,
     };
   }
+}
+export async function prepareUnsentSends(): Promise<void> {
+  await prepareUnsentScope();
   restoreUnsentSends();
 }
 // Configure the wipe before bootstrap can replace credentials or the saved server.
@@ -81,14 +86,65 @@ configureUnsentSends({
     Alert.alert(t("Failed to send message"), attempt.error);
   },
 });
+const RESTORE_RETRY_MIN_MS = 250;
+const RESTORE_RETRY_MAX_MS = 5_000;
+type RestoreRetry = {
+  id: ReturnType<typeof setTimeout>;
+  force: boolean;
+  generation: number;
+  apiBase: string;
+};
+
 export function startUnsentSends(): () => void {
   let stopped = false;
-  const retry = (force = false) =>
-    void prepareUnsentSends()
+  let timer: RestoreRetry | undefined;
+  let delay = RESTORE_RETRY_MIN_MS;
+  const cancelRetry = () => {
+    if (timer !== undefined) clearTimeout(timer.id);
+    timer = undefined;
+  };
+  const retry = (force = false) => {
+    if (stopped) return;
+    const generation = currentSessionGeneration();
+    const apiBase = currentApiBase();
+    force ||= timer?.generation === generation && timer.apiBase === apiBase && timer.force;
+    const isCurrent = () =>
+      !stopped && generation === currentSessionGeneration() && apiBase === currentApiBase();
+    cancelRetry();
+    void prepareUnsentScope()
       .then(() => {
-        if (!stopped) return sendWaitingMessages(force);
+        if (!isCurrent()) return;
+        try {
+          restoreUnsentSends();
+        } catch {
+          // Retry only a storage restore, never failed authentication or network preparation.
+          if (isCurrent()) {
+            if (timer) timer.force ||= force;
+            else {
+              const wait = delay;
+              delay = Math.min(RESTORE_RETRY_MAX_MS, delay * 2);
+              const pending: RestoreRetry = {
+                force,
+                generation,
+                apiBase,
+                id: setTimeout(() => {
+                  if (timer !== pending) return;
+                  timer = undefined;
+                  if (isCurrent()) retry(pending.force);
+                }, wait),
+              };
+              timer = pending;
+            }
+          }
+          return;
+        }
+        force ||= timer?.force ?? false;
+        cancelRetry();
+        delay = RESTORE_RETRY_MIN_MS;
+        return sendWaitingMessages(force);
       })
       .catch(() => undefined);
+  };
   retry();
   const reachable = subscribeServerReachable(() => {
     if (isServerReachable()) retry();
@@ -96,9 +152,16 @@ export function startUnsentSends(): () => void {
   const appState = AppState.addEventListener("change", (state) => {
     if (state === "active") retry(true);
   });
+  const session = subscribeSessionGeneration(() => {
+    cancelRetry();
+    delay = RESTORE_RETRY_MIN_MS;
+    if (currentReadySessionGeneration() === currentSessionGeneration()) retry();
+  });
   return () => {
     stopped = true;
+    cancelRetry();
     reachable();
     appState.remove();
+    session();
   };
 }

@@ -22,6 +22,7 @@ import {
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { EncryptedSecretStore } from "../../adapters/src/secrets.js";
 import {
   GraphileJobPublisher,
   GraphileJobWorkerHost,
@@ -153,6 +154,12 @@ postgres("custom archive recovery into a different cluster and database identity
   const alternateLogin = `restore_alternate_${suffix}`;
   const foreignRole = `restore_foreign_${suffix}`;
   const applicationPassword = randomBytes(24).toString("hex");
+  const pageSecrets = new EncryptedSecretStore("synthetic-page-restore-encryption-key");
+  const sealedPageTokens = new Map<string, string>();
+  const pageTitle = (name: string) => `Synthetic ${name === "a" ? "α" : "合成乙"} report`;
+  const pageSource = (name: string, version: number) =>
+    `export default () => <Page title="${pageTitle(name)} v${version}" />;`;
+  const pageCode = (name: string, version: number) => `/* ${name}:${version} compiled */`;
   const alternatePassword = randomBytes(24).toString("hex");
   let nativeBin: string | undefined;
   let source: Endpoint;
@@ -280,7 +287,7 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(target.url);
     await provisionRuntimeRole(target.url, targetRuntimeUrl);
     const status = await verify();
-    expect(status).toMatchObject({ expectedTables: 84, connectionEnforced: true });
+    expect(status).toMatchObject({ expectedTables: 86, connectionEnforced: true });
     expect(status.problems).toEqual([]);
     restored = true;
   }
@@ -459,12 +466,52 @@ postgres("custom archive recovery into a different cluster and database identity
           blocks: [{ kind: "text", text: name === "a" ? "Synthetic α" : "合成乙" }],
         },
       });
+      const secretId = id(`page-token-${name}`);
+      const sealed = await pageSecrets.put(
+        id(`synthetic-page-link-${name}`),
+        {
+          operationId: id(`seal-${name}`),
+          traceId: id("restore"),
+          userId,
+          spaceId,
+          signal: new AbortController().signal,
+        },
+        { recordId: secretId },
+      );
+      sealedPageTokens.set(name, sealed.ciphertext);
+      await sourceOwner.prisma.secret.create({
+        data: { id: secretId, userId, spaceId, kind: "page_share", ciphertext: sealed.ciphertext },
+      });
+      await sourceOwner.prisma.page.create({
+        data: {
+          id: id(`page-${name}`),
+          spaceId,
+          userId,
+          botId: id(`bot-${name}`),
+          title: pageTitle(name),
+          visibility: "private",
+          currentVersion: 2,
+          shareTokenHash: createHash("sha256")
+            .update(id(`synthetic-page-link-${name}`))
+            .digest("hex"),
+          shareSecretId: secretId,
+          versions: {
+            create: [1, 2].map((version) => ({
+              id: id(`page-version-${name}-${version}`),
+              version,
+              title: `${pageTitle(name)} v${version}`,
+              source: pageSource(name, version),
+              code: pageCode(name, version),
+            })),
+          },
+        },
+      });
     }
     expect(sourceIdentity.user).not.toBe(sourceLogin);
     await migrateJobQueue(source.url);
     await provisionRuntimeRole(source.url, sourceRuntimeUrl);
     expect(await applyRowSecurityPolicies(source.url, sourceRuntimeUrl)).toMatchObject({
-      expectedTables: 84,
+      expectedTables: 86,
       connectionEnforced: true,
     });
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
@@ -682,9 +729,66 @@ postgres("custom archive recovery into a different cluster and database identity
                 where: { threadId: id(`thread-${name === "a" ? "b" : "a"}`) },
               }),
             ).toEqual([]);
+            const foreign = name === "a" ? "b" : "a";
+            expect(
+              await runtime.prisma.page.findMany({
+                select: {
+                  id: true,
+                  title: true,
+                  currentVersion: true,
+                  shareTokenHash: true,
+                  shareSecretId: true,
+                  versions: {
+                    orderBy: { version: "asc" },
+                    select: { id: true, version: true, title: true, source: true, code: true },
+                  },
+                },
+              }),
+            ).toEqual([
+              {
+                id: id(`page-${name}`),
+                title: pageTitle(name),
+                currentVersion: 2,
+                shareTokenHash: createHash("sha256")
+                  .update(id(`synthetic-page-link-${name}`))
+                  .digest("hex"),
+                shareSecretId: id(`page-token-${name}`),
+                versions: [1, 2].map((version) => ({
+                  id: id(`page-version-${name}-${version}`),
+                  version,
+                  title: `${pageTitle(name)} v${version}`,
+                  source: pageSource(name, version),
+                  code: pageCode(name, version),
+                })),
+              },
+            ]);
+            expect(
+              await runtime.prisma.page.findMany({ where: { id: id(`page-${foreign}`) } }),
+            ).toEqual([]);
+            expect(
+              await runtime.prisma.pageVersion.findMany({
+                where: { pageId: id(`page-${foreign}`) },
+              }),
+            ).toEqual([]);
+            const secret = await runtime.prisma.secret.findUniqueOrThrow({
+              where: { id: id(`page-token-${name}`) },
+            });
+            expect(secret.ciphertext).toBe(sealedPageTokens.get(name));
+            expect(await pageSecrets.load(secret.ciphertext, secret.id)).toBe(
+              id(`synthetic-page-link-${name}`),
+            );
+            await expect(
+              pageSecrets.load(secret.ciphertext, id(`page-token-${foreign}`)),
+            ).rejects.toThrow();
+            expect(
+              await runtime.prisma.secret.findMany({ where: { id: id(`page-token-${foreign}`) } }),
+            ).toEqual([]);
           },
         );
       expect((await runtime.pool.query("SELECT id FROM public.messages")).rows).toEqual([]);
+      expect((await runtime.pool.query("SELECT id FROM public.pages")).rows).toEqual([]);
+      expect((await runtime.pool.query("SELECT id FROM public.page_versions")).rows).toEqual([]);
+      expect((await runtime.pool.query("SELECT id FROM public.secrets")).rows).toEqual([]);
       expect(
         await runAsSystem("verify restored synthetic content", () =>
           runtime.prisma.message.count(),
@@ -700,6 +804,9 @@ postgres("custom archive recovery into a different cluster and database identity
             { allowed: false },
           ]);
           expect((await client.query("SELECT id FROM public.messages")).rows).toEqual([]);
+          expect((await client.query("SELECT id FROM public.pages")).rows).toEqual([]);
+          expect((await client.query("SELECT id FROM public.page_versions")).rows).toEqual([]);
+          expect((await client.query("SELECT id FROM public.secrets")).rows).toEqual([]);
         });
       await host.start(handlers(received));
       await vi.waitFor(() => expect(received).toEqual([id("persisted-job")]), {
@@ -717,7 +824,7 @@ postgres("custom archive recovery into a different cluster and database identity
       await runtime.prisma.$disconnect();
       await runtime.pool.end();
     }
-    expect(await verify()).toMatchObject({ expectedTables: 84, connectionEnforced: true });
+    expect(await verify()).toMatchObject({ expectedTables: 86, connectionEnforced: true });
   }, 120_000);
 
   it("rejects an extra system key without deleting it or the selected credential", async () => {
@@ -761,7 +868,7 @@ postgres("custom archive recovery into a different cluster and database identity
         /outside the selected (owner and runtime roles|credential inventory)/,
       );
       expect(await verify([targetRuntimeUrl, alternateUrl])).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
       });
     } finally {

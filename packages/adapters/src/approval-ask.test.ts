@@ -70,4 +70,41 @@ describe("buildApprovalAskBlock", () => {
     if (block.kind !== "ask") throw new Error("expected ask block");
     expect(block.detail).toContain("stay separate from other spaces");
   });
+
+  it("shows a fetch's complete destination and offers an allowance for its site", () => {
+    const url = `https://docs.example.com/${"a".repeat(1_800)}?query=value`;
+    const block = buildApprovalAskBlock("effect-fetch", "web_fetch", { url }, [], {
+      reviewReason: "reason ".repeat(1_000),
+    });
+    expect(block).toMatchObject({
+      kind: "ask",
+      site: "example.com",
+      actions: expect.arrayContaining([{ id: "always", label: "Always allow example.com" }]),
+    });
+    if (block.kind !== "ask") throw new Error("expected ask");
+    expect(block.detail).toContain(`url: ${url}`);
+  });
+
+  it("asks once for the exact connection's requester without a permanent tool allowance", () => {
+    const block = buildApprovalAskBlock(
+      "effect-connection",
+      "respond_agent_connection",
+      {
+        accept: true,
+        requester_name: "Peer*Bot",
+        requester_address: "+15550001111",
+        requester_provider: "sendblue",
+      },
+      [],
+    );
+    expect(block).toMatchObject({
+      kind: "ask",
+      text: "Approve connection with “Peer\\*Bot”?",
+      detail: "iMessage: +15550001111",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+  });
 });

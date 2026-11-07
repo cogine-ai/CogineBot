@@ -460,6 +460,29 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "save_page",
+    description:
+      'Save a page the user opens from the chat: a dashboard, report, tracker or comparison. Pass the page as JSX source written against the CogineBot page kit; call with {"help": true} first for the kit guide. Problems come back with line numbers and nothing is saved. To change a page, pass its pageId with edits (applied together, or not at all) or full source; pass only pageId to read its current source.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        help: { type: "boolean", description: "Return the page kit guide instead of saving." },
+        pageId: { type: "string", description: "The page to read or update." },
+        title: { type: "string", description: "Page title; required for a new page." },
+        source: { type: "string", description: "The whole page as JSX." },
+        edits: {
+          type: "array",
+          description: "Changes to the current source; each find must occur exactly once.",
+          items: {
+            type: "object",
+            properties: { find: { type: "string" }, replace: { type: "string" } },
+            required: ["find", "replace"],
+          },
+        },
+      },
+    },
+  },
+  {
     name: "add_mcp_server",
     description:
       "Connect an MCP tool server to this Space when the user asks you to add one and provides the details (URL or command, optional token/headers/env). The server is created immediately and assigned to you. If it needs browser OAuth authorization, an approval card appears in the chat for the user to complete — tell them to click Authorize. Do not invent endpoints; only use details the user provided.",

@@ -179,7 +179,10 @@ function request(fallbackModels: AgentRunRequest["model"][] = []): AgentRunReque
     ],
     model: { provider: primary.provider, id: primary.id, apiKey: "fake-primary-key" },
     fallbackModels,
-    executeTool: vi.fn(async () => ({ ok: true })),
+    executeTool: vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) =>
+        name === "run_subagent" ? observer!.runSubagent!(args) : { ok: true },
+    ),
   } as unknown as AgentRunRequest;
 }
 
@@ -385,7 +388,9 @@ describe("Pi runtime completion recovery", () => {
     );
     expect(events.at(-1)).toEqual({ type: "done", text: "Parent complete." });
     expect(providerState.stream).toHaveBeenCalledTimes(4);
-    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
+      "run_subagent",
+    ]);
     expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000]);
   });
 
@@ -2555,7 +2560,9 @@ describe("Pi runtime signature recovery guards", () => {
       await options.fetch("https://models.invalid/v1/responses");
     }
     expect(transport).toHaveBeenCalledTimes(3);
-    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
+      "run_subagent",
+    ]);
   });
 });
 
@@ -3036,6 +3043,8 @@ describe("Pi runtime corrective dispatch deadlines", () => {
     );
     expect(afterCall.mock.calls[2]).toEqual(["reservation-3", null]);
     expect(providerState.stream.mock.calls[2]?.[2].timeoutMs).toBe(120_000);
-    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
+      "run_subagent",
+    ]);
   });
 });

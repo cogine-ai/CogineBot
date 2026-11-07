@@ -1801,7 +1801,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
     });
     expect(result.stdout).toContain("Runtime role and system key are ready");
     expect(result.stdout).toContain(
-      "This command does not activate table policies or service contexts.",
+      "This command preserves the database protection phase and does not activate service contexts.",
     );
     expect(result.stdout + result.stderr).not.toContain(password);
     expect(result.stdout + result.stderr).not.toContain(runtimeUrl);

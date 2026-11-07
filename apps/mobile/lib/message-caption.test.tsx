@@ -8,6 +8,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageCaption } from "../components/message-caption";
 
+const openPage = vi.hoisted(() => vi.fn());
+vi.mock("./use-open-page", () => ({ useOpenPrivatePage: () => openPage }));
+
 const linking = vi.hoisted(() => ({
   canOpenURL: vi.fn(async () => true),
   openURL: vi.fn(async () => undefined),
@@ -75,12 +78,12 @@ describe("attachment captions", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(role: "bot" | "user", streaming = false) {
+  function render(role: "bot" | "user", streaming = false, text = caption) {
     act(() => {
       root.render(
         <MessageCaption
           role={role}
-          text={caption}
+          text={text}
           tokens={lightTokens}
           colorScheme="light"
           streaming={streaming}
@@ -88,6 +91,18 @@ describe("attachment captions", () => {
       );
     });
   }
+
+  it.each(["bot", "user"] as const)(
+    "opens a private page from a %s caption without opening an external URL",
+    async (role) => {
+      render(role, false, "[Plan](page:p1)");
+      const link = container.querySelector<HTMLElement>('[role="link"]');
+      expect(link?.textContent).toBe("Plan");
+      await act(async () => link?.click());
+      expect(openPage).toHaveBeenCalledWith("p1");
+      expect(linking.openURL).not.toHaveBeenCalled();
+    },
+  );
 
   it("formats bot Markdown through ChatMarkdown", () => {
     render("bot");

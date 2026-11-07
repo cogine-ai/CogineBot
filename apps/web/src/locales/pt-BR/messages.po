@@ -7075,3 +7075,115 @@ msgstr "Reload this connection before saving."
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Maximum output tokens must be smaller than the context limit."
 msgstr "Maximum output tokens must be smaller than the context limit."
+
+#: src/components/pages/PageNotice.tsx
+msgid "Back to chat"
+msgstr "Voltar ao chat"
+
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Check your connection and try again."
+msgstr "Verifique sua conexão e tente novamente."
+
+#: src/components/pages/PageView.tsx
+msgid "Close page"
+msgstr "Fechar página"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not change who can view this page. Try again."
+msgstr "Não foi possível mudar quem pode ver esta página. Tente de novo."
+
+#: src/components/pages/PagesList.tsx
+msgid "Could not pin this page. Try again."
+msgstr "Não foi possível fixar esta página. Tente novamente."
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not rename this page. Try again."
+msgstr "Não foi possível renomear esta página. Tente de novo."
+
+#: src/components/pages/PagesList.tsx
+msgid "Couldn't load pages."
+msgstr "Não foi possível carregar as páginas."
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Download PDF"
+msgstr "Baixar PDF"
+
+#: src/components/pages/PagesList.tsx
+msgid "Find a page"
+msgstr "Encontrar uma página"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "It may have been deleted, or it belongs to someone else."
+msgstr "Ela pode ter sido excluída ou pertencer a outra pessoa."
+
+#: src/components/pages/PagesList.tsx
+msgid "Its shared link stops working and its cards in chat show it as deleted. This can't be undone."
+msgstr "O link compartilhado deixará de funcionar e os cartões no chat aparecerão como excluídos. Não é possível desfazer."
+
+#: src/components/pages/PagesList.tsx
+msgid "No pages match “{query}”."
+msgstr "Nenhuma página corresponde a “{query}”."
+
+#: src/components/pages/PageCard.tsx
+msgid "Open {title}"
+msgstr "Abrir {title}"
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Opens your browser's print dialog. Choose Save as PDF as the destination."
+msgstr "Abre a caixa de impressão do navegador. Escolha Salvar como PDF como destino."
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · {when}"
+msgstr "Página · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Deleted"
+msgstr "Página · Excluída"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · {when}"
+msgstr "Página · Compartilhada · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Updated below"
+msgstr "Página · Atualizada abaixo"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageView.tsx
+msgid "Page title"
+msgstr "Título da página"
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this bot builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "As páginas que este bot cria para você aparecem aqui. Peça um painel, um acompanhamento ou um plano para criar uma."
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this group builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "As páginas que este grupo cria para você aparecem aqui. Peça um painel, um acompanhamento ou um plano para criar uma."
+
+#: src/components/pages/PagesList.tsx
+#: src/pages/Shell.tsx
+msgid "Pinned"
+msgstr "Fixados"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/SharePopover.tsx
+msgid "Share"
+msgstr "Compartilhar"
+
+#: src/lib/pages.ts
+msgid "This page couldn't be shown."
+msgstr "Não foi possível mostrar esta página."
+
+#: src/components/pages/PageCard.tsx
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "This page couldn't load"
+msgstr "Não foi possível carregar esta página"
+
+#: src/components/pages/PageViewHost.tsx
+#: src/pages/SharedPage.tsx
+msgid "This page isn't available"
+msgstr "Esta página não está disponível"

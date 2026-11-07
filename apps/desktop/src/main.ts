@@ -41,6 +41,7 @@ import {
   forwardedRendererRequestInit,
   immutableRendererAsset,
   isRendererAssetMiss,
+  rendererDocumentHeaders,
 } from "./renderer-assets.js";
 import { installSessionPermissions } from "./session-permissions.js";
 import {
@@ -513,6 +514,7 @@ async function installBundledRenderer(
         throw error;
       }
       const headers = new Headers({
+        ...rendererDocumentHeaders(new URL(request.url).pathname),
         "cache-control": immutableRendererAsset(file)
           ? "public, max-age=31536000, immutable"
           : "no-cache",

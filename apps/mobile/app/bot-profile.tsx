@@ -335,6 +335,16 @@ function Profile({
               }}
             />
           ) : null}
+          {!readOnly ? (
+            <SettingsRow
+              accessibilityRole="button"
+              title={t("Pages")}
+              chevron="right"
+              onPress={() => {
+                if (current()) router.push({ pathname: "/pages", params: { botId } });
+              }}
+            />
+          ) : null}
           <SettingsRow
             accessibilityRole="button"
             title={t("Artifacts")}

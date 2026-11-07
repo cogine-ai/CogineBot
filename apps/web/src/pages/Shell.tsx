@@ -158,6 +158,9 @@ import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { LoadFailureNotice } from "../components/LoadFailureNotice";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
+import { PageBlockCard } from "../components/pages/PageBlockCard";
+import { PagesList } from "../components/pages/PagesList";
+import { PageViewHost } from "../components/pages/PageViewHost";
 import { RunErrorDetails } from "../components/RunErrorDetails";
 import {
   LIVE_TOOL_STEP_WINDOW,
@@ -221,6 +224,10 @@ import { currentMentionAppearance } from "../lib/mention-display";
 import { copyableMessageText } from "../lib/message-text";
 import { messageProviderLabel } from "../lib/messaging";
 import { groupCreationIntent, newChatDraft } from "../lib/new-chat";
+import type { PageBlock } from "../lib/page-cards";
+import { projectPageCards } from "../lib/page-cards";
+import type { PageSession } from "../lib/pages";
+import { PagesProvider, useOpenPage, usePagesForChat } from "../lib/pages";
 import {
   isFileDrag,
   isFilePaste,
@@ -987,6 +994,16 @@ export function ShellPage() {
   const settingsTargetId = settingsSpaceId ?? settingsCurrentSpaceId;
   const settingsSpace = spaces.find((entry) => entry.id === settingsTargetId) ?? null;
   const settingsOwnerKey = JSON.stringify([userId, session.data?.session.id]);
+  const pages = usePagesForChat(
+    JSON.stringify([
+      settingsOwnerKey,
+      settingsCurrentSpaceId,
+      currentSpaceSelectionGeneration(),
+      botId,
+      groupId,
+    ]),
+    settingsCurrentSpaceId,
+  );
   const settingsOwner = useMemo(() => ({ key: settingsOwnerKey }), [settingsOwnerKey]);
   const sidebarAnnouncements = useSidebarAnnouncements(
     JSON.stringify([settingsOwnerKey, bootstrapMe?.spaceId, currentSpaceSelectionGeneration()]),
@@ -3465,7 +3482,14 @@ export function ShellPage() {
           ? newChat.botIds[0]
           : initialBotTarget;
       let target = groupTarget ? { groupId: groupTarget } : { botId: botTarget };
-      const replyToMessageId = reroutedToGroup ? undefined : submitted.replyTarget?.id;
+      const pageReply: ReturnType<PageSession["send"]> =
+        !reroutedToGroup && plan.shouldSend
+          ? pages.session.send(
+              plan.trimmed,
+              snapshotRef.current?.messages ?? [],
+              submitted.replyTarget?.id,
+            )
+          : { text: plan.trimmed };
       const replyQuote = reroutedToGroup ? undefined : submitted.replyQuote;
       const attempt = composerSendAttempts.acquire(
         originThreadKey,
@@ -3478,11 +3502,19 @@ export function ShellPage() {
           mentions: plan.mentionPayload,
           routineIds: plan.routineIds,
           attachments,
-          replyToMessageId,
+          replyToMessageId: reroutedToGroup ? undefined : submitted.replyTarget?.id,
           replyQuote,
         }),
+        {
+          replyToMessageId: reroutedToGroup
+            ? undefined
+            : (pageReply.replyToMessageId ?? submitted.replyTarget?.id),
+          fromPage: pageReply.replyToMessageId && !submitted.replyTarget?.id ? true : undefined,
+          pageContext: pageReply.pageContext,
+        },
       );
       if (!attempt) return false;
+      const { replyToMessageId, fromPage: isPageReply, pageContext } = attempt.pageReply;
       const context = { context: { spaceId: bootstrapMe?.spaceId } };
       const isCurrentAttempt = () => composerSendAttempts.isCurrent(originThreadKey, attempt);
       const stillHere = () =>
@@ -3559,18 +3591,25 @@ export function ShellPage() {
             artifactIds.push(artifactId);
           }
           if (!isCurrentAttempt()) return false;
-          const sent = await rpc.threads.send(
-            {
-              ...target,
-              clientNonce: attempt.clientNonce,
-              text: plan.trimmed || undefined,
-              mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-              artifactIds: artifactIds.length ? artifactIds : undefined,
-              replyToMessageId,
-              replyQuote: replyQuote ?? undefined,
-            },
-            context,
-          );
+          const sent = await rpc.threads
+            .send(
+              {
+                ...target,
+                clientNonce: attempt.clientNonce,
+                text: plan.trimmed || undefined,
+                mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+                artifactIds: artifactIds.length ? artifactIds : undefined,
+                replyToMessageId,
+                ...(isPageReply ? { fromPage: true } : {}),
+                pageContext,
+                replyQuote: replyQuote ?? undefined,
+              },
+              context,
+            )
+            .catch((error: unknown) => {
+              composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
+              throw error;
+            });
           if (!isCurrentAttempt()) return false;
           if (!sent?.runId || !sent?.taskId) throw new Error(t`Failed to send message`);
           if (botTarget && stillHere()) {
@@ -3619,7 +3658,15 @@ export function ShellPage() {
         setSending(false);
       }
     },
-    [draftScopeKey, bootstrapMe?.spaceId, userId, flushPendingBrowserNotifications, navigate, t],
+    [
+      draftScopeKey,
+      bootstrapMe?.spaceId,
+      userId,
+      flushPendingBrowserNotifications,
+      navigate,
+      t,
+      pages,
+    ],
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
@@ -4039,8 +4086,20 @@ export function ShellPage() {
       // Reload starts with panel=null so storage restores. In-session chat switches used to
       // keep computer/settings open; only routine was cleared (handled above). Carry is
       // session-only — do not write the carried panel onto the destination's saved prefs.
-      if (panel === "computer" || panel === "settings" || panel === "group-settings") {
-        const carried = panel === "computer" ? "computer" : inGroup ? "group-settings" : "settings";
+      if (
+        panel === "computer" ||
+        panel === "settings" ||
+        panel === "group-settings" ||
+        panel === "pages"
+      ) {
+        const carried =
+          panel === "pages"
+            ? "pages"
+            : panel === "computer"
+              ? "computer"
+              : inGroup
+                ? "group-settings"
+                : "settings";
         pendingPanelRestore.current = null;
         if (carried !== panel) setPanelState(carried);
         setRestoredPanelKey(null);
@@ -5580,6 +5639,18 @@ export function ShellPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  {active || activeGroup ? (
+                    <Button
+                      className="app-no-drag"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={t`Pages`}
+                      aria-expanded={panel === "pages"}
+                      onClick={() => setPanel(panel === "pages" ? null : "pages")}
+                    >
+                      <Trans>Pages</Trans>
+                    </Button>
+                  ) : null}
                   {!inGroup && active ? (
                     <button
                       type="button"
@@ -5761,6 +5832,7 @@ export function ShellPage() {
           ) : null}
           {active || activeGroup || inNewChat ? (
             <Composer
+              pageSession={pages.session}
               draftKey={draftScopeKey}
               key={draftScopeKey}
               active={!peerConversation}
@@ -5866,6 +5938,7 @@ export function ShellPage() {
         ) : null}
       </main>
 
+      <PageViewHost bots={bots} groups={groups} />
       <CallCard onSettings={() => openSettings("voice")} />
 
       <ResizableSidePanel
@@ -5882,7 +5955,9 @@ export function ShellPage() {
             panel !== "group-settings" ? (
               <div className="mb-4 flex items-center justify-between">
                 <span className="text-[13.5px] text-muted-foreground">
-                  {panel === "settings" ? (
+                  {panel === "pages" ? (
+                    <Trans>Pages</Trans>
+                  ) : panel === "settings" ? (
                     <Trans>Settings</Trans>
                   ) : active ? (
                     (computer?.state ?? active.status)
@@ -5925,6 +6000,12 @@ export function ShellPage() {
                   </Button>
                 </div>
               </div>
+            ) : null}
+            {panel === "pages" ? (
+              <PagesList
+                botId={inGroup ? undefined : active?.id}
+                groupId={inGroup ? groupId : undefined}
+              />
             ) : null}
             {panel === "computer" && active ? (
               <div>
@@ -7014,7 +7095,7 @@ export function ShellPage() {
     </div>
   );
 
-  return shell;
+  return <PagesProvider value={pages}>{shell}</PagesProvider>;
 }
 
 const Transcript = memo(function Transcript({
@@ -7098,7 +7179,11 @@ const Transcript = memo(function Transcript({
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
   );
-  const reactionView = useMemo(() => projectMessageReactions(messages), [messages]);
+  const pageProjection = useMemo(() => projectPageCards(messages), [messages]);
+  const reactionView = useMemo(
+    () => projectMessageReactions(pageProjection.visibleMessages),
+    [pageProjection],
+  );
   const separatorIds = timeSeparatorIds(
     reactionView.visibleMessages.filter((message) =>
       messageHasVisibleBlocks(message.blocks, showToolActivity),
@@ -7386,7 +7471,10 @@ const Transcript = memo(function Transcript({
                 </div>
               );
             }
-            const message = item.message;
+            const foldedPages = pageProjection.pages.get(item.message.id) ?? [];
+            const message = foldedPages.length
+              ? { ...item.message, blocks: [...item.message.blocks, ...foldedPages] }
+              : item.message;
             if (!messageHasVisibleBlocks(message.blocks, showToolActivity)) return null;
             const peerReceipt = isPeerReceiptBlocks(message.blocks);
             const messageReactions = reactionView.reactions.get(message.id);
@@ -7411,12 +7499,17 @@ const Transcript = memo(function Transcript({
                       className={
                         peerReceipt
                           ? undefined
-                          : `relative w-fit min-w-0 ${
-                              message.role === "user" ? "max-w-[85%]" : "max-w-[88%]"
+                          : `relative ${message.blocks.some((block) => block.kind === "page") ? "w-full" : "w-fit"} min-w-0 ${
+                              message.blocks.some((block) => block.kind === "page")
+                                ? "w-full max-w-[88%]"
+                                : message.role === "user"
+                                  ? "max-w-[85%]"
+                                  : "max-w-[88%]"
                             }`
                       }
                     >
                       <MessageView
+                        pageUpdated={(block) => pageProjection.isSuperseded(message.id, block)}
                         artifactDescriptions={artifactDescriptions}
                         artifactTarget={artifactTarget}
                         message={message}
@@ -7630,6 +7723,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 });
 
 export const Composer = memo(function Composer({
+  pageSession,
   draftKey,
   active,
   draftState,
@@ -7662,6 +7756,7 @@ export const Composer = memo(function Composer({
   onSlashOpen,
   onSlashAction,
 }: {
+  pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
   draftState: ComposerDraft;
@@ -7695,6 +7790,11 @@ export const Composer = memo(function Composer({
   onSlashAction?: (action: SlashActionId) => void;
 }) {
   const { t } = useLingui();
+  const dock = useSyncExternalStore(
+    pageSession?.dock.subscribe ?? noPageDockSubscribe,
+    pageSession?.dock.get ?? noPageDock,
+    noPageDock,
+  );
   const draft = draftState.text;
   const setDraft = (value: string | ((current: string) => string)) =>
     onDraftChange((current) => ({
@@ -7714,6 +7814,23 @@ export const Composer = memo(function Composer({
       selectedMentions: typeof value === "function" ? value(current.selectedMentions) : value,
     }));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pageReplyHandlers = useRef({ onDraftChange, onClearReply });
+  pageReplyHandlers.current = { onDraftChange, onClearReply };
+  useEffect(
+    () =>
+      pageSession?.subscribeReply((text) => {
+        pageReplyHandlers.current.onClearReply?.();
+        const current = readComposerDraft(draftKey).text;
+        const next = current.trim() ? `${current.trimEnd()} ${text}` : text;
+        pageReplyHandlers.current.onDraftChange({ text: next });
+        requestAnimationFrame(() => {
+          const field = textareaRef.current;
+          field?.focus();
+          field?.setSelectionRange(next.length, next.length);
+        });
+      }),
+    [pageSession, draftKey],
+  );
   const composerBarRef = useRef<HTMLDivElement>(null);
   const composerActionsRef = useRef<HTMLDivElement>(null);
   const composerMentionsRef = useRef<HTMLDivElement>(null);
@@ -8039,7 +8156,7 @@ export const Composer = memo(function Composer({
     }
   }, [replyTarget, replyName, t]);
 
-  return (
+  const content = (
     <fieldset
       aria-label={t`Message composer`}
       data-dragging={draggingFiles ? "files" : undefined}
@@ -8475,6 +8592,7 @@ export const Composer = memo(function Composer({
       </div>
     </fieldset>
   );
+  return dock.node ? createPortal(content, dock.node) : content;
 });
 
 function slashActionLabel(id: SlashActionId) {
@@ -8739,6 +8857,7 @@ const MessageView = memo(function MessageView({
   onOpenComputer,
   showToolActivity,
   hoverActions,
+  pageUpdated,
 }: {
   artifactDescriptions: ReadonlyMap<string, string>;
   artifactTarget: ArtifactTarget;
@@ -8763,8 +8882,10 @@ const MessageView = memo(function MessageView({
   onOpenComputer: (botId?: string) => void;
   showToolActivity: boolean;
   hoverActions?: ReactNode;
+  pageUpdated?: (block: PageBlock) => boolean;
 }) {
   const { t } = useLingui();
+  const openPage = useOpenPage();
   const isNarration =
     message.role === "bot" &&
     message.blocks.length > 0 &&
@@ -8866,7 +8987,9 @@ const MessageView = memo(function MessageView({
                     key={i}
                     data-quote-message-id={block.kind === "text" ? quoteMessageId : undefined}
                   >
-                    <ChatMarkdown streaming={block.kind === "progress"}>{block.text}</ChatMarkdown>
+                    <ChatMarkdown onOpenPage={openPage} streaming={block.kind === "progress"}>
+                      {block.text}
+                    </ChatMarkdown>
                   </div>
                 );
               }
@@ -8896,6 +9019,8 @@ const MessageView = memo(function MessageView({
           message.blocks,
           Boolean("botId" in artifactTarget ? artifactTarget.botId : message.botId),
         ).map((block, i) => {
+          if (block.kind === "page")
+            return <PageBlockCard key={i} block={block} updated={pageUpdated?.(block)} />;
           if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
             return (
               <StandaloneToolActivity
@@ -8989,7 +9114,9 @@ const MessageView = memo(function MessageView({
                   className="ms-8 max-w-full rounded-[18px] rounded-ss-[5px] bg-muted px-[15px] py-2.5 text-[14px] leading-[1.7] text-foreground/90"
                   dir="auto"
                 >
-                  <ChatMarkdown streaming>{block.text}</ChatMarkdown>
+                  <ChatMarkdown onOpenPage={openPage} streaming>
+                    {block.text}
+                  </ChatMarkdown>
                 </div>
               </div>
             );
@@ -9024,7 +9151,7 @@ const MessageView = memo(function MessageView({
                 <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
                 {block.progress || block.result ? (
                   <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                    <ChatMarkdown streaming={running}>
+                    <ChatMarkdown onOpenPage={openPage} streaming={running}>
                       {block.result || block.progress || ""}
                     </ChatMarkdown>
                   </div>
@@ -9175,7 +9302,7 @@ const MessageView = memo(function MessageView({
                   dir="auto"
                 >
                   <div data-quote-message-id={quoteMessageId}>
-                    <ChatMarkdown>{block.text}</ChatMarkdown>
+                    <ChatMarkdown onOpenPage={openPage}>{block.text}</ChatMarkdown>
                   </div>
                   {voiceReady ? (
                     <button
@@ -9247,7 +9374,7 @@ const MessageView = memo(function MessageView({
                   </span>
                 </div>
                 <div className="my-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                  <ChatMarkdown onOpenPage={openPage}>{block.text}</ChatMarkdown>
                 </div>
                 <Button
                   type="button"
@@ -9297,3 +9424,7 @@ function computerLabel(mode: ComputerStatus["mode"] | undefined, botName: string
 function newClientNonce(): string {
   return newClientId();
 }
+
+const EMPTY_PAGE_DOCK = { node: null, page: null };
+const noPageDock = () => EMPTY_PAGE_DOCK;
+const noPageDockSubscribe = () => () => {};

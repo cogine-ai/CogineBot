@@ -158,7 +158,7 @@ jobs:
           RAKAZO_AGENT_BROWSER: ${{ runner.temp }}/page-browser-engine/agent-browser
         run: |
           set -euo pipefail
-          xvfb-run -a pnpm test:e2e -- --sandbox=fake --runtime=scripted --shard="$CI_SHARD" '--spec=(page-browser|failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|mcp-results|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import|github-plugins|bot-packages|deployment-transfer|takeover-release|message-jump|billing-paywall|input-accessibility)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
+          xvfb-run -a pnpm test:e2e -- --sandbox=fake --runtime=scripted --shard="$CI_SHARD" '--spec=(pages|page-browser|failure-recovery-auth|failure-recovery|routine-execution|messaging-settings|bot-templates|account-profile|model-settings|chat-reliability|artifact-preview|artifacts-tab|markdown-table|markdown-diagram|peer-messages|spaces|space-settings|desktop-shell|continuous-chat|composer-paste|composer-send-failure|routine-crud|sidebar-density|team-computer|teach-task|message-quote|message-hover-actions|mention-picker-keyboard|golden|run-failure|chat-progress-messages|group-chats|group-member-settings|group-chat-creation|avatar-studio|avatar-editor|avatar-motion|avatar-style|bot-crud|activity-list|ui-appearance|bot-organization|collapsible-sidebar-sections|sidebar-reporting-tree|sidebar-roster-title|sidebar-work-status|new-bot-ux|resizable-side-panel|consequential-approval|graphql-integrations|load-failure|mcp-oauth|mcp-results|stuck-work|connector-accounts|native-connectors|native-event-authoring|native-notion-webhook|native-batch2|native-remaining|mcp-approval-card|integration-setup|openapi-import|github-plugins|bot-packages|deployment-transfer|takeover-release|message-jump|billing-paywall|input-accessibility)\.spec\.ts' 2>&1 | tee test-report/repository-ci/web-e2e.log
       - name: Collect acceptance screenshots for this shard
         if: github.event_name == 'pull_request' && matrix.lane == 'web' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -209,6 +209,22 @@ jobs:
         with:
           name: diagram-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/web/test-results/markdown-diagram-*/**/markdown-diagram-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Require private Page acceptance views
+        run: |
+          for view in page-chat-card page-full-screen page-print page-updated-below page-library-menu page-library-pinned page-delete-confirm page-library-empty page-link-confirm page-origin-group page-rejected-context; do
+            match="$(find apps/web/test-results -type f -path '*/pages-*/*' -name "${view}.png" -print -quit)"
+            if [ -z "$match" ]; then
+              echo "Missing private Page screenshot: $view" >&2
+              exit 1
+            fi
+          done
+      - name: Retain private Page acceptance screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-page-ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/pages-*/**/page-*.png
           if-no-files-found: error
           retention-days: 7
       - name: Retain model connection acceptance screenshots

@@ -1,4 +1,24 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "{site} immer erlauben",
+  Pinned: "Angeheftet",
+  "This cannot be undone.": "Dies kann nicht rückgängig gemacht werden.",
+  "Could not delete the page.": "Die Seite konnte nicht gelöscht werden.",
+  "Could not load pages.": "Seiten konnten nicht geladen werden.",
+  "Could not load this page.": "Diese Seite konnte nicht geladen werden.",
+  "Could not pin the page.": "Die Seite konnte nicht angeheftet werden.",
+  "Could not rename the page.": "Die Seite konnte nicht umbenannt werden.",
+  "Open {title}": "{title} öffnen",
+  "Pages this bot builds for you appear here.":
+    "Seiten, die dieser Bot für dich erstellt, erscheinen hier.",
+  "Pages this group builds for you appear here.":
+    "Seiten, die diese Gruppe für dich erstellt, erscheinen hier.",
+  "This page couldn't be shown.": "Diese Seite konnte nicht angezeigt werden.",
+  "This page couldn't load": "Diese Seite konnte nicht geladen werden",
+  "This page isn't available": "Diese Seite ist nicht verfügbar",
+  "Updated below": "Unten aktualisiert",
+  Deleted: "Gelöscht",
+  Page: "Seite",
+  Pages: "Seiten",
   "This model's context window is too small. Choose another model.":
     "Das Kontextfenster dieses Modells ist zu klein. Wähle ein anderes Modell.",
   "This server's tool result does not fit the model. Choose another model.":

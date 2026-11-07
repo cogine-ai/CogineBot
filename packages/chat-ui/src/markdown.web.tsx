@@ -17,6 +17,7 @@ import type { HastNode } from "./table-utils";
 import "./markdown.web.css";
 import "./markdown-table.css";
 import { droppedTableHtmlText } from "@rakazo/contracts";
+import { cssVariableName, pageIconBars } from "@rakazo/ui-tokens";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,6 +38,7 @@ import {
   linkLabel,
   markdownLinkDisplayParts,
   markdownLinkRequiresConfirmation,
+  markdownPageId,
   markRemoteImageLoaded,
   plainTextLinkParts,
   RemoteImagesContext,
@@ -49,6 +51,7 @@ import { useMarkdownLinkCopy } from "./markdown-link-prompt";
 import { MarkdownTable, MarkdownTableSourceContext } from "./markdown-table";
 import { isMermaidFence, mermaidSvgImage } from "./mermaid";
 import { useMermaidSvg } from "./mermaid.web";
+import { PAGE_ICON } from "./page-icon";
 
 function preserveSkippedTableText() {
   return (tree: HastNode) => {
@@ -74,7 +77,7 @@ const markdownOptions = {
   skipHtml: true,
   // Images own their source policy; links receive the same safe destination as the UI.
   urlTransform: (url: string, key: string) =>
-    key === "src" ? url : (sanitizeMarkdownUrl(url, true) ?? ""),
+    key === "src" || markdownPageId(url) ? url : (sanitizeMarkdownUrl(url, true) ?? ""),
 };
 
 /** Read this renderer's content without mounting components or loading remote resources. */
@@ -337,7 +340,7 @@ function ExternalLinkAlert({
   onDismiss,
 }: {
   url: string;
-  trigger: HTMLAnchorElement;
+  trigger: HTMLElement | null;
   onDismiss: () => void;
 }) {
   const copy = useMarkdownLinkCopy();
@@ -350,7 +353,11 @@ function ExternalLinkAlert({
     >
       <AlertDialogContent
         className="sm:max-w-md"
-        finalFocus={() => (trigger.isConnected && trigger.href === url ? trigger : false)}
+        finalFocus={() =>
+          trigger?.isConnected && (!(trigger instanceof HTMLAnchorElement) || trigger.href === url)
+            ? trigger
+            : false
+        }
       >
         <AlertDialogHeader className="place-items-start text-left">
           <AlertDialogTitle>{copy.title}</AlertDialogTitle>
@@ -375,10 +382,18 @@ function ExternalLinkAlert({
 }
 
 function useExternalLinkConfirm() {
-  const [target, setTarget] = useState<{ url: string; trigger: HTMLAnchorElement } | null>(null);
-  const request = useCallback((url: string, trigger: HTMLAnchorElement) => {
-    setTarget({ url, trigger });
-  }, []);
+  const [target, setTarget] = useState<{ url: string; trigger: HTMLElement | null } | null>(null);
+  const request = useCallback(
+    (
+      url: string,
+      trigger: HTMLElement | null = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null,
+    ) => {
+      setTarget({ url, trigger });
+    },
+    [],
+  );
   const dialog = target ? (
     <ExternalLinkAlert {...target} onDismiss={() => setTarget(null)} />
   ) : null;
@@ -599,7 +614,15 @@ function MarkdownAnchor({
   ...props
 }: React.ComponentPropsWithoutRef<"a"> & { node?: MarkdownHast }) {
   const loadRemote = useContext(RemoteImagesContext);
+  const openPage = useContext(PageChipsContext);
   const href = typeof props.href === "string" ? props.href : "";
+  const pageId = markdownPageId(href);
+  if (pageId)
+    return (
+      <PageChip pageId={pageId} openPage={openPage}>
+        {props.children}
+      </PageChip>
+    );
   const image = href ? soleRemoteImage(node) : undefined;
   if (image && !remoteImageRenders(image.href, loadRemote, false)) {
     return <LinkedRemoteImage href={href} image={image} alt={image.alt} title={image.title} />;
@@ -624,6 +647,68 @@ function MarkdownAnchor({
   );
 }
 
+function PageChip({
+  pageId,
+  openPage,
+  children,
+}: {
+  pageId: string;
+  openPage: ((pageId: string) => void) | undefined;
+  children: ReactNode;
+}) {
+  return openPage ? (
+    <button type="button" className="rk-chat-page-chip" onClick={() => openPage(pageId)}>
+      <PageIcon className="rk-chat-page-chip-icon" />
+      <span className="rk-chat-page-chip-title">{children}</span>
+    </button>
+  ) : (
+    <span>{children}</span>
+  );
+}
+
+const PageChipsContext = createContext<((pageId: string) => void) | undefined>(undefined);
+
+/** The page icon (see `PAGE_ICON`), sized by its container. */
+export function PageIcon({ className }: { className?: string }) {
+  const { width: w, height: h, radius: r, foldX, foldY } = PAGE_ICON;
+  return (
+    <svg aria-hidden="true" viewBox={`0 0 ${w} ${h}`} className={className}>
+      <path
+        d={`M${r} 0.25H${foldX}L${w - 0.25} ${foldY}V${h - r}A${r - 0.25} ${r - 0.25} 0 0 1 ${w - r} ${h - 0.25}H${r}A${r - 0.25} ${r - 0.25} 0 0 1 0.25 ${h - r}V${r}A${r - 0.25} ${r - 0.25} 0 0 1 ${r} 0.25Z`}
+        fill="var(--page-icon-sheet)"
+        stroke="var(--page-icon-edge)"
+        strokeWidth="0.5"
+      />
+      <path
+        d={`M${foldX} 0.25L${w - 0.25} ${foldY}H${foldX + 2}A2 2 0 0 1 ${foldX} ${foldY - 2}Z`}
+        fill="var(--page-icon-fold)"
+      />
+      {PAGE_ICON.lines.map((line) => (
+        <rect
+          key={line.y}
+          x={line.x}
+          y={line.y}
+          width={line.width}
+          height={line.height}
+          rx={line.height / 2}
+          fill={`var(${cssVariableName(line.token)})`}
+        />
+      ))}
+      {PAGE_ICON.bars.map((bar, index) => (
+        <rect
+          key={bar.x}
+          x={bar.x}
+          y={bar.y}
+          width={PAGE_ICON.barWidth}
+          height={bar.height}
+          rx={PAGE_ICON.barWidth / 2}
+          fill={pageIconBars[index]}
+        />
+      ))}
+    </svg>
+  );
+}
+
 const components: Components = {
   a: MarkdownAnchor,
   img({ node: _node, src, alt, title }) {
@@ -641,13 +726,23 @@ const components: Components = {
   },
 };
 
-export function LinkifiedText({ children }: { children: string }) {
+export function LinkifiedText({
+  children,
+  onOpenPage,
+}: {
+  children: string;
+  onOpenPage?: (pageId: string) => void;
+}) {
   const { request, dialog } = useExternalLinkConfirm();
   return (
     <ConfirmLinkContext.Provider value={request}>
       {plainTextLinkParts(children).map((part, index) =>
         part.type === "text" ? (
           part.value
+        ) : part.type === "page" ? (
+          <PageChip key={index} pageId={part.pageId} openPage={onOpenPage}>
+            {part.value}
+          </PageChip>
         ) : linkFaviconOrigin(part.href) ? (
           <WebsiteLink key={index} href={part.href}>
             {linkLabel(part.value, part.href)}
@@ -666,26 +761,29 @@ export function LinkifiedText({ children }: { children: string }) {
 export const ChatMarkdown = memo(function ChatMarkdown({
   children,
   streaming = false,
+  onOpenPage,
 }: ChatMarkdownProps) {
   const { request, dialog } = useExternalLinkConfirm();
   const source = streaming ? closeUnterminatedFence(children) : children;
 
   return (
     <ConfirmLinkContext.Provider value={request}>
-      <div
-        className={streaming ? "rk-chat-markdown rk-chat-markdown-streaming" : "rk-chat-markdown"}
-      >
-        <LinkFaviconsPausedContext.Provider value={streaming}>
-          <StreamingSourceContext.Provider value={streaming ? children : undefined}>
-            <MarkdownTableSourceContext.Provider value={source}>
-              <ReactMarkdown {...markdownOptions} components={components}>
-                {source}
-              </ReactMarkdown>
-            </MarkdownTableSourceContext.Provider>
-          </StreamingSourceContext.Provider>
-        </LinkFaviconsPausedContext.Provider>
-        {streaming ? <span aria-hidden="true" className="rk-chat-markdown-cursor" /> : null}
-      </div>
+      <PageChipsContext.Provider value={onOpenPage}>
+        <div
+          className={streaming ? "rk-chat-markdown rk-chat-markdown-streaming" : "rk-chat-markdown"}
+        >
+          <LinkFaviconsPausedContext.Provider value={streaming}>
+            <StreamingSourceContext.Provider value={streaming ? children : undefined}>
+              <MarkdownTableSourceContext.Provider value={source}>
+                <ReactMarkdown {...markdownOptions} components={components}>
+                  {source}
+                </ReactMarkdown>
+              </MarkdownTableSourceContext.Provider>
+            </StreamingSourceContext.Provider>
+          </LinkFaviconsPausedContext.Provider>
+          {streaming ? <span aria-hidden="true" className="rk-chat-markdown-cursor" /> : null}
+        </div>
+      </PageChipsContext.Provider>
       {dialog}
     </ConfirmLinkContext.Provider>
   );
@@ -695,3 +793,19 @@ export type { ChatMarkdownProps, LinkFavicons } from "./markdown";
 export { LinkFaviconsContext, RemoteImagesContext } from "./markdown";
 
 export { MarkdownLinkPromptProvider } from "./markdown-link-prompt";
+
+/** Opens page links through the same confirmation as links in chat. */
+export function useExternalLinkOpener(): { open: (url: string) => void; dialog: ReactNode } {
+  const { request, dialog } = useExternalLinkConfirm();
+  const open = useCallback(
+    (raw: string) => {
+      const url = sanitizeMarkdownUrl(raw);
+      if (!url) return;
+      if (markdownLinkRequiresConfirmation(url, pageOrigin()))
+        request(url, document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      else window.open(url, "_blank", "noopener,noreferrer");
+    },
+    [request],
+  );
+  return { open, dialog };
+}

@@ -1,8 +1,15 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { redactSecrets } from "@rakazo/core";
+import {
+  messagingProviderName,
+  redactSecrets,
+  SITE_SENDING_TOOLS,
+  sanitizeMessagingLabel,
+} from "@rakazo/core";
+import { urlSite } from "@rakazo/core/egress";
 
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
 const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
+export const MAX_FETCH_URL_LENGTH = 2_048;
 
 export function buildApprovalAskBlock(
   effectId: string,
@@ -11,6 +18,33 @@ export function buildApprovalAskBlock(
   secrets: string[],
   options?: { reviewReason?: string },
 ): MessageBlock {
+  if (toolName === "respond_agent_connection") {
+    const name = sanitizeMessagingLabel(String(args.requester_name ?? "agent")).replace(
+      /[\\`*_[\]<>~|]/g,
+      "\\$&",
+    );
+    return {
+      kind: "ask",
+      approvalEffectId: effectId,
+      text: redactSecrets(
+        `${args.accept === true ? "Approve" : "Decline"} connection with “${name}”?`,
+        secrets,
+      ),
+      detail: redactSecrets(
+        `${messagingProviderName(String(args.requester_provider ?? ""))}: ${String(args.requester_address ?? "").replace(/[\r\n]/g, " ")}`,
+        secrets,
+      ),
+      status: "pending",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    };
+  }
+  const fetchSite =
+    SITE_SENDING_TOOLS.has(toolName) && typeof args.url === "string"
+      ? urlSite(args.url)
+      : undefined;
   const summary = describeApprovalAction(toolName, args);
   const detail = formatApprovalDetail(toolName, args, options?.reviewReason);
   const safeDetail = detail ? redactSecrets(detail, secrets) : undefined;
@@ -25,6 +59,7 @@ export function buildApprovalAskBlock(
       MAX_APPROVAL_SUMMARY_LENGTH,
     ),
     detail: safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined,
+    ...(fetchSite ? { site: fetchSite } : {}),
     status: "pending",
     actions:
       toolName === "create_space"
@@ -34,7 +69,10 @@ export function buildApprovalAskBlock(
           ]
         : [
             { id: "allow", label: "Allow once" },
-            { id: "always", label: "Always allow this tool" },
+            {
+              id: "always",
+              label: fetchSite ? `Always allow ${fetchSite}` : "Always allow this tool",
+            },
             { id: "deny", label: "Deny" },
           ],
   };
@@ -65,14 +103,21 @@ function formatApprovalDetail(
 ): string | undefined {
   const lines: string[] = [];
   if (reviewReason?.trim()) {
-    lines.push(reviewReason.trim().replace(/\u2014|\u2013/g, "-"));
+    lines.push(
+      reviewReason
+        .trim()
+        .replace(/\u2014|\u2013/g, "-")
+        .slice(0, MAX_APPROVAL_SUMMARY_LENGTH),
+    );
   }
   if (toolName === "create_space") {
     lines.push(
       "Bots, groups, chats, files, memory, and integrations in this space stay separate from other spaces.",
     );
   }
-  for (const key of ["collection", "title", "to", "subject", "amount", "body"]) {
+  for (const key of SITE_SENDING_TOOLS.has(toolName)
+    ? ["url", "method", "body"]
+    : ["collection", "title", "to", "subject", "amount", "body"]) {
     const value = args[key];
     if (value == null || value === "") continue;
     lines.push(`${key}: ${String(value)}`);

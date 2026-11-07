@@ -162,6 +162,7 @@ function replyBlockText(block: MessageBlock): string {
       return block.steps.map((step) => step.label).join(" · ");
     case "voice_call":
     case "cloud_agent":
+    case "page":
       return block.title;
     case "subagent":
       return block.name || block.task;
@@ -178,6 +179,11 @@ function replyBlockText(block: MessageBlock): string {
   }
 }
 
+/** A message of only page cards: replies name the page instead of quoting its title. */
+export function isPageCardMessage(blocks: readonly { kind: string }[]): boolean {
+  return blocks.length > 0 && blocks.every((block) => block.kind === "page");
+}
+
 /** UI previews keep attachment labels separate from agent-history descriptions. */
 export function messageReplyPreview(
   blocks: MessageBlock[],
@@ -190,5 +196,6 @@ export function messageReplyPreview(
     role,
   );
   const text = caption || (attachment?.kind === "file" ? attachment.name : "");
-  return { role, botId, text, ...(attachment ? { attachment } : {}) };
+  const page = isPageCardMessage(blocks);
+  return { role, botId, text, ...(attachment ? { attachment } : {}), ...(page ? { page } : {}) };
 }

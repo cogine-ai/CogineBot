@@ -20,7 +20,12 @@ export type MessagePresentationSegment = {
 
 /** Blocks the thread draws as their own native card instead of inside the text bubble. */
 function isCardBlock(block: MessageBlock): boolean {
-  return block.kind === "app_connect" || block.kind === "choice" || block.kind === "computer";
+  return (
+    block.kind === "app_connect" ||
+    block.kind === "choice" ||
+    block.kind === "computer" ||
+    block.kind === "page"
+  );
 }
 
 export function messagePresentationSegments(

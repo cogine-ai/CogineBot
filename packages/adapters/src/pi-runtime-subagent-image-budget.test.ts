@@ -233,7 +233,8 @@ describe("parent and child screenshot budgets on the actual provider wire", () =
                   ...(childLimit === undefined ? {} : { maxImagesPerPrompt: childLimit }),
                 };
               },
-              executeTool: async (name, args, executionId) => {
+              executeTool: async (name, args, executionId, _route, observer) => {
+                if (name === "run_subagent") return observer!.runSubagent!(args);
                 expect(name).toBe("computer_observe");
                 expect(args).toEqual({});
                 const [kind, namespace, callId] = JSON.parse(executionId) as string[];

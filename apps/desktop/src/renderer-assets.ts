@@ -40,7 +40,9 @@ export function bundledRendererCandidates(
   const requested = pathname === "/" ? "index.html" : pathname.slice(1);
   const candidate = safeChild(root, requested);
   if (!candidate) return null;
-  return acceptsHtml ? [candidate, path.join(root, "index.html")] : [candidate];
+  return acceptsHtml && pathname !== "/html-viewer.html"
+    ? [candidate, path.join(root, "index.html")]
+    : [candidate];
 }
 
 export function contentType(file: string) {
@@ -78,4 +80,14 @@ function safeChild(root: string, requested: string) {
   const relative = path.relative(resolvedRoot, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
   return resolved;
+}
+
+/** A network viewer owns its restrictive meta policy instead of inheriting the app policy. */
+export function rendererDocumentHeaders(pathname: string): Record<string, string> {
+  return pathname === "/html-viewer.html"
+    ? {
+        "content-security-policy": "frame-ancestors 'self'",
+        "referrer-policy": "no-referrer",
+      }
+    : {};
 }

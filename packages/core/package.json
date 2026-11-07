@@ -48,6 +48,11 @@
       "types": "./src/node/shutdown-signals.ts",
       "development": "./src/node/shutdown-signals.ts",
       "default": "./src/node/shutdown-signals.ts"
+    },
+    "./egress": {
+      "types": "./src/egress.ts",
+      "development": "./src/egress.ts",
+      "default": "./src/egress.ts"
     }
   },
   "scripts": {
@@ -66,6 +71,7 @@
     "mdast-util-to-hast": "13.2.1",
     "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
+    "tldts": "7.4.19",
     "unified": "11.0.5"
   },
   "devDependencies": {

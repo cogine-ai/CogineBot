@@ -57,3 +57,11 @@ export function replyLabel(
     attachment?.kind === "image" ? labels.photo : attachment?.name || labels.attachment,
   );
 }
+
+/** A message from a page replies to its card without showing a quote of it. */
+export function isPageOriginReply(message: {
+  replyQuote?: string | null;
+  replyPreview?: ReplyPreview | null;
+}): boolean {
+  return message.replyPreview?.page === true && !message.replyQuote;
+}

@@ -340,6 +340,23 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         tenantPredicate: local(),
       },
       {
+        model: "Page",
+        table: "pages",
+        scope: "tenant",
+        tenantPredicate: all(local(), own()),
+      },
+      {
+        model: "PageVersion",
+        table: "page_versions",
+        scope: "tenant",
+        tenantPredicate: exists(
+          "public.pages p",
+          equal("p.id", 'page_versions."pageId"'),
+          equal('p."spaceId"', space),
+          own('p."userId"'),
+        ),
+      },
+      {
         model: "MessagingOutbound",
         table: "messaging_outbound",
         scope: "tenant",
@@ -672,6 +689,38 @@ function assertInstallable(catalog: Catalog): void {
   }
 }
 
+const pageTables = new Set(["pages", "page_versions"]);
+
+/** The automatic bridge only extends an exact prior installation; it never repairs drift. */
+function pageMigrationPhase(catalog: Catalog): "legacy" | "extend" | "current" {
+  const status = report(catalog, false);
+  if (catalog.versionFunction || status.legacyPolicyCount > 0)
+    throw new Error("Page policies require an unprotected or fully protected database");
+  if (catalog.policies.length === 0 && status.tables.every((table) => !table.enabled))
+    return "legacy";
+  if (status.policyInstalled && status.policyEnabled) return "current";
+  if (
+    status.tables.every((table) =>
+      pageTables.has(table.table)
+        ? !table.enabled && !catalog.policies.some((policy) => policy.table === table.table)
+        : table.enabled && table.policyMatch,
+    )
+  )
+    return "extend";
+  throw new Error("Page policies require an unprotected or fully protected database");
+}
+
+/**
+ * Keep an unprotected installation unprotected, or extend exact protected policies for new Pages.
+ * The canonical migration command calls this after DDL and role preparation, before fresh readiness.
+ */
+export async function migratePageRowSecurityPolicies(
+  migrationUrl: string,
+  runtimeUrl: string,
+): Promise<void> {
+  await installRowSecurityPolicies(migrationUrl, runtimeUrl, "pages");
+}
+
 /**
  * Authenticate the prepared runtime, install in one owner transaction, then verify a fresh runtime.
  * Changes roll back before a commit attempt; a missing commit acknowledgement leaves the outcome
@@ -681,6 +730,14 @@ function assertInstallable(catalog: Catalog): void {
 export async function applyRowSecurityPolicies(
   migrationUrl: string,
   runtimeUrl: string,
+): Promise<RowSecurityPolicyStatus> {
+  return installRowSecurityPolicies(migrationUrl, runtimeUrl, "all");
+}
+
+async function installRowSecurityPolicies(
+  migrationUrl: string,
+  runtimeUrl: string,
+  mode: "all" | "pages",
 ): Promise<RowSecurityPolicyStatus> {
   const urls = databaseUrls({ DATABASE_MIGRATION_URL: migrationUrl, DATABASE_URL: runtimeUrl });
   const owner = new Client({
@@ -692,6 +749,7 @@ export async function applyRowSecurityPolicies(
   let committed = false;
   let failed = false;
   let failure: unknown;
+  let legacy: RowSecurityPolicyStatus | undefined;
   try {
     await owner.connect();
     await owner.query("SET lock_timeout = '10s'");
@@ -705,52 +763,63 @@ export async function applyRowSecurityPolicies(
       (await owner.query(statement.text, statement.values)).rows as T[];
     const before = await readCatalog(query);
     assertInstallable(before);
-    const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
-    try {
-      const runtime = await describeRowSecurity(prisma);
-      if (!runtime.prepared) throw new Error("The runtime role and system key are not ready");
-    } finally {
+    const phase = mode === "pages" ? pageMigrationPhase(before) : null;
+    if (phase === "legacy") {
+      legacy = report(before, false);
+      await owner.query("ROLLBACK");
+      inTransaction = false;
+    } else {
+      const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
       try {
-        await prisma.$disconnect();
+        const runtime = await describeRowSecurity(prisma);
+        if (!runtime.prepared) throw new Error("The runtime role and system key are not ready");
       } finally {
-        await pool.end();
+        try {
+          await prisma.$disconnect();
+        } finally {
+          await pool.end();
+        }
       }
-    }
-    const ownership = await query<{ owns: boolean }>(Prisma.sql`SELECT
+      const ownership = await query<{ owns: boolean }>(Prisma.sql`SELECT
       pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owns
       FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relname = ANY(${ROW_SECURITY_POLICIES.map((entry) => entry.table)}::text[])`);
-    if (ownership.length !== ROW_SECURITY_POLICIES.length || ownership.some((row) => !row.owns))
-      throw new Error("The administrator must own every registered application table");
-    for (const policy of before.policies.filter(canRetire))
-      await owner.query(
-        `DROP POLICY ${escapeIdentifier(policy.name)} ON public.${escapeIdentifier(policy.table)}`,
-      );
-    for (const definition of [...ROW_SECURITY_POLICIES].sort((a, b) =>
-      a.table.localeCompare(b.table),
-    )) {
-      const table = `public.${escapeIdentifier(definition.table)}`;
-      for (const policy of expectedPolicies(definition)) {
-        const existing = before.policies.find(
-          (entry) => entry.table === definition.table && entry.name === policy.name,
-        );
-        if (existing && matches(existing, policy.predicate)) continue;
-        await owner.query(`DROP POLICY IF EXISTS ${escapeIdentifier(policy.name)} ON ${table}`);
+      if (ownership.length !== ROW_SECURITY_POLICIES.length || ownership.some((row) => !row.owns))
+        throw new Error("The administrator must own every registered application table");
+      for (const policy of before.policies.filter(canRetire))
         await owner.query(
-          `CREATE POLICY ${escapeIdentifier(policy.name)} ON ${table} FOR ALL TO PUBLIC USING (${policy.predicate})`,
+          `DROP POLICY ${escapeIdentifier(policy.name)} ON public.${escapeIdentifier(policy.table)}`,
         );
+      const definitions =
+        mode === "pages"
+          ? ROW_SECURITY_POLICIES.filter((entry) => pageTables.has(entry.table))
+          : ROW_SECURITY_POLICIES;
+      for (const definition of [...definitions].sort((a, b) => a.table.localeCompare(b.table))) {
+        const table = `public.${escapeIdentifier(definition.table)}`;
+        for (const policy of expectedPolicies(definition)) {
+          const existing = before.policies.find(
+            (entry) => entry.table === definition.table && entry.name === policy.name,
+          );
+          if (existing && matches(existing, policy.predicate)) continue;
+          await owner.query(`DROP POLICY IF EXISTS ${escapeIdentifier(policy.name)} ON ${table}`);
+          await owner.query(
+            `CREATE POLICY ${escapeIdentifier(policy.name)} ON ${table} FOR ALL TO PUBLIC USING (${policy.predicate})`,
+          );
+        }
+        if (!before.relations.find((relation) => relation.table === definition.table)?.enabled)
+          await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
       }
-      if (!before.relations.find((relation) => relation.table === definition.table)?.enabled)
-        await owner.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+      if (before.versionFunction) await owner.query("DROP FUNCTION public.app_rls_version()");
+      const installed = report(await readCatalog(query), false);
+      if (!installed.policyInstalled || !installed.policyEnabled || !installed.guardValid)
+        throw new Error(
+          "The database policy installation did not match the registered definitions",
+        );
+      commitAttempted = true;
+      await owner.query("COMMIT");
+      inTransaction = false;
+      committed = true;
     }
-    if (before.versionFunction) await owner.query("DROP FUNCTION public.app_rls_version()");
-    const installed = report(await readCatalog(query), false);
-    if (!installed.policyInstalled || !installed.policyEnabled || !installed.guardValid)
-      throw new Error("The database policy installation did not match the registered definitions");
-    commitAttempted = true;
-    await owner.query("COMMIT");
-    inTransaction = false;
-    committed = true;
   } catch (error) {
     if (inTransaction && !commitAttempted) await owner.query("ROLLBACK").catch(() => undefined);
     failed = true;
@@ -772,6 +841,7 @@ export async function applyRowSecurityPolicies(
       });
     throw failure;
   }
+  if (legacy) return legacy;
   let status: RowSecurityPolicyStatus;
   try {
     const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });

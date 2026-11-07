@@ -17,6 +17,8 @@ export interface RunTurnCheckpointState {
   counts: Map<string, number>;
   occurrences: TurnEffectOccurrence[];
   restoredPending?: TurnEffectOccurrence;
+  pendingExecutionId?: string;
+  pendingToolName?: string;
   pendingCaptures: Map<string, () => string>;
 }
 
@@ -39,6 +41,7 @@ export function createRunTurnCheckpointState(input: {
   };
   if (input.blob === undefined) return state;
   const saved = restoreTurnCheckpoint(input.blob, input.model);
+  state.pendingExecutionId = JSON.stringify(["pi-tool", "main", saved.pendingToolCallId]);
   const unresolved = new Set(unresolvedTurnCheckpointCalls(saved.messages));
   if (![...unresolved].some((call) => call.id === saved.pendingToolCallId))
     throw new Error("Unsupported turn checkpoint");
@@ -60,6 +63,8 @@ export function createRunTurnCheckpointState(input: {
     const tool = available.get(call.name);
     if (!tool || !realTool(tool, call.arguments))
       throw new Error("Pending checkpoint tool is no longer available");
+    if (call.id === saved.pendingToolCallId)
+      state.pendingToolName = realTool(tool, call.arguments)!.name;
   }
   if (saved.effectOccurrences) {
     state.occurrences.push(...saved.effectOccurrences);

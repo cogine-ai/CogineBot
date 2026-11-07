@@ -7075,3 +7075,115 @@ msgstr "Reload this connection before saving."
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Maximum output tokens must be smaller than the context limit."
 msgstr "Maximum output tokens must be smaller than the context limit."
+
+#: src/components/pages/PageNotice.tsx
+msgid "Back to chat"
+msgstr "채팅으로 돌아가기"
+
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Check your connection and try again."
+msgstr "연결을 확인하고 다시 시도하세요."
+
+#: src/components/pages/PageView.tsx
+msgid "Close page"
+msgstr "페이지 닫기"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not change who can view this page. Try again."
+msgstr "이 페이지를 볼 수 있는 사람을 변경하지 못했습니다. 다시 시도하세요."
+
+#: src/components/pages/PagesList.tsx
+msgid "Could not pin this page. Try again."
+msgstr "이 페이지를 고정하지 못했습니다. 다시 시도하세요."
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not rename this page. Try again."
+msgstr "이 페이지의 이름을 바꾸지 못했습니다. 다시 시도하세요."
+
+#: src/components/pages/PagesList.tsx
+msgid "Couldn't load pages."
+msgstr "페이지를 불러오지 못했습니다."
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Download PDF"
+msgstr "PDF 다운로드"
+
+#: src/components/pages/PagesList.tsx
+msgid "Find a page"
+msgstr "페이지 찾기"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "It may have been deleted, or it belongs to someone else."
+msgstr "삭제되었거나 다른 사람의 페이지일 수 있습니다."
+
+#: src/components/pages/PagesList.tsx
+msgid "Its shared link stops working and its cards in chat show it as deleted. This can't be undone."
+msgstr "공유 링크가 더 이상 작동하지 않고 채팅의 카드는 삭제됨으로 표시됩니다. 되돌릴 수 없습니다."
+
+#: src/components/pages/PagesList.tsx
+msgid "No pages match “{query}”."
+msgstr "“{query}”과(와) 일치하는 페이지가 없습니다."
+
+#: src/components/pages/PageCard.tsx
+msgid "Open {title}"
+msgstr "{title} 열기"
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Opens your browser's print dialog. Choose Save as PDF as the destination."
+msgstr "브라우저의 인쇄 대화상자를 엽니다. 대상으로 PDF로 저장을 선택하세요."
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · {when}"
+msgstr "페이지 · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Deleted"
+msgstr "페이지 · 삭제됨"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · {when}"
+msgstr "페이지 · 공유됨 · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Updated below"
+msgstr "페이지 · 아래에서 업데이트됨"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageView.tsx
+msgid "Page title"
+msgstr "페이지 제목"
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this bot builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "이 봇이 만든 페이지가 여기에 표시됩니다. 대시보드, 트래커 또는 계획을 요청해 만들어 보세요."
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this group builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "이 그룹이 만든 페이지가 여기에 표시됩니다. 대시보드, 트래커 또는 계획을 요청해 만들어 보세요."
+
+#: src/components/pages/PagesList.tsx
+#: src/pages/Shell.tsx
+msgid "Pinned"
+msgstr "고정됨"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/SharePopover.tsx
+msgid "Share"
+msgstr "공유"
+
+#: src/lib/pages.ts
+msgid "This page couldn't be shown."
+msgstr "이 페이지를 표시할 수 없습니다."
+
+#: src/components/pages/PageCard.tsx
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "This page couldn't load"
+msgstr "이 페이지를 불러오지 못했습니다"
+
+#: src/components/pages/PageViewHost.tsx
+#: src/pages/SharedPage.tsx
+msgid "This page isn't available"
+msgstr "이 페이지를 사용할 수 없습니다"

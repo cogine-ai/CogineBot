@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ActionApprovalRule,
   applyJudgeDecision,
+  canonicalApprovalSite,
   connectorKindFromToolName,
   connectorToolRequiresApproval,
   isApprovalAskBlock,
@@ -9,6 +10,7 @@ import {
   planActionGate,
   resolveActionApproval,
   resolveActionApprovalDetail,
+  siteAlwaysAllowed,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
   unattendedTriggerToolRequiresApproval,
@@ -190,6 +192,59 @@ describe("connectorKindFromToolName", () => {
 });
 
 describe("resolveActionApproval", () => {
+  it.each([
+    ["https://Docs.Example.com/report?q=1", "example.com"],
+    ["docs.example.com.", "example.com"],
+    ["https://alice.github.io/report", "alice.github.io"],
+    ["https://BÜCHER.de/report", "xn--bcher-kva.de"],
+    ["http://127.0.0.1:8080/report", "127.0.0.1"],
+    ["http://[::1]:8080/report", "[::1]"],
+  ])("uses outbound site identity for a rule naming %s", (value, site) => {
+    expect(canonicalApprovalSite(value)).toBe(site);
+    const requireRule = {
+      effect: "require_approval",
+      matchKind: "site",
+      matchValue: value,
+    } as const;
+    expect(resolveActionApproval({ toolName: "web_fetch", site, rules: [requireRule] })).toBe(
+      "ask",
+    );
+    const allowRule = { ...requireRule, effect: "always_allow" } as const;
+    expect(siteAlwaysAllowed([allowRule], site)).toBe(true);
+    expect(
+      resolveActionApprovalDetail({ toolName: "web_fetch", site, rules: [allowRule] }).source,
+    ).toBe("always_allow");
+    const canonicalAllow = { ...allowRule, matchValue: site };
+    expect(canonicalApprovalSite(site)).toBe(site);
+    expect(siteAlwaysAllowed([canonicalAllow], site)).toBe(true);
+    expect(
+      resolveActionApproval({ toolName: "web_fetch", site, rules: [canonicalAllow, requireRule] }),
+    ).toBe("ask");
+  });
+
+  it("preserves case-insensitive canonical grants without crossing private-host tenants", () => {
+    const rule = {
+      effect: "always_allow",
+      matchKind: "site",
+      matchValue: "ALICE.GITHUB.IO",
+    } as const;
+    expect(siteAlwaysAllowed([rule], "alice.github.io")).toBe(true);
+    expect(siteAlwaysAllowed([rule], "attacker.github.io")).toBe(false);
+  });
+
+  it.each(["ftp://example.com/file", "https://user:password@example.com", "https://", " "])(
+    "does not turn invalid site input %j into an allowance",
+    (value) => {
+      expect(canonicalApprovalSite(value)).toBeUndefined();
+      expect(
+        siteAlwaysAllowed(
+          [{ effect: "always_allow", matchKind: "site", matchValue: value }],
+          "example.com",
+        ),
+      ).toBe(false);
+    },
+  );
+
   const alwaysAllowDestination: ActionApprovalRule[] = [
     { effect: "always_allow", matchKind: "tool", matchValue: "destination.write" },
   ];

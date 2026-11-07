@@ -137,6 +137,14 @@ describe("thread composer isolation", () => {
     expect(props.send).toHaveBeenCalledOnce();
   });
 
+  it("adds a page reply after the current draft without sending and exposes the latest snapshot", () => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    type("Existing thought  ");
+    act(() => composer.current!.addReply("Watch the result"));
+    expect(composer.current!.snapshot().promptText).toBe("Existing thought Watch the result");
+    expect(props.send).not.toHaveBeenCalled();
+  });
+
   it("inserts an example once into the current empty composer without sending", () => {
     let inserted = false;
     let repeated = true;

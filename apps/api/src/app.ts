@@ -130,6 +130,7 @@ import {
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
 import { registerNativeEnterpriseWebhooks } from "./native-enterprise-webhooks.js";
 import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
+import { mountPageRuntime } from "./page-runtime.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
@@ -1138,6 +1139,7 @@ async function buildApp(
   }
 
   mountDiagramScript(app);
+  mountPageRuntime(app);
   app.route(
     "/",
     healthRoutes(

@@ -1,4 +1,24 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Always allow {site}": "Всегда разрешать {site}",
+  Pinned: "Закреплённые",
+  "This cannot be undone.": "Это невозможно отменить.",
+  "Could not delete the page.": "Не удалось удалить страницу.",
+  "Could not load pages.": "Не удалось загрузить страницы.",
+  "Could not load this page.": "Не удалось загрузить эту страницу.",
+  "Could not pin the page.": "Не удалось закрепить страницу.",
+  "Could not rename the page.": "Не удалось переименовать страницу.",
+  "Open {title}": "Открыть {title}",
+  "Pages this bot builds for you appear here.":
+    "Здесь появятся страницы, которые этот бот создаст для вас.",
+  "Pages this group builds for you appear here.":
+    "Здесь появятся страницы, которые эта группа создаст для вас.",
+  "This page couldn't be shown.": "Не удалось показать эту страницу.",
+  "This page couldn't load": "Не удалось загрузить страницу",
+  "This page isn't available": "Эта страница недоступна",
+  "Updated below": "Обновлено ниже",
+  Deleted: "Удалена",
+  Page: "Страница",
+  Pages: "Страницы",
   "This model's context window is too small. Choose another model.":
     "Контекстное окно этой модели слишком мало. Выберите другую модель.",
   "This server's tool result does not fit the model. Choose another model.":

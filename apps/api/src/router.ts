@@ -171,6 +171,7 @@ import {
   AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
   callClientNonce,
+  canonicalApprovalSite,
   clampCatalogThinkingLevel,
   containsSecret,
   expandSkillReferencesInPrompt,
@@ -316,6 +317,14 @@ import {
   startOnboarding,
 } from "./onboarding.js";
 import { createOpenApiImportService } from "./openapi-import.js";
+import {
+  getPage,
+  listPages,
+  PageListCursorError,
+  pinPage,
+  removePage,
+  renamePage,
+} from "./pages.js";
 import { createPluginInstallsService } from "./plugin-installs.js";
 import { createPluginUninstaller } from "./plugin-uninstall.js";
 import { listRoutineRuns } from "./routine-runs.js";
@@ -7006,12 +7015,16 @@ export function createRouter(deps: RouterDeps) {
         return rows.map((row) => ({
           id: row.id,
           effect: row.effect as "always_allow" | "require_approval",
-          matchKind: row.matchKind as "tool" | "connector" | "category",
+          matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
         }));
       }),
       set: authed.approvalRules.set.handler(async ({ context, input }) => {
+        const matchValue =
+          input.matchKind === "site" ? canonicalApprovalSite(input.matchValue) : input.matchValue;
+        if (!matchValue)
+          throw new ORPCError("BAD_REQUEST", { message: "Enter an HTTP(S) site or hostname." });
         const row = await deps.prisma.actionApprovalRule.upsert({
           where: {
             spaceId_createdByUserId_effect_matchKind_matchValue: {
@@ -7019,7 +7032,7 @@ export function createRouter(deps: RouterDeps) {
               createdByUserId: context.actor.userId,
               effect: input.effect,
               matchKind: input.matchKind,
-              matchValue: input.matchValue,
+              matchValue,
             },
           },
           create: {
@@ -7027,14 +7040,14 @@ export function createRouter(deps: RouterDeps) {
             createdByUserId: context.actor.userId,
             effect: input.effect,
             matchKind: input.matchKind,
-            matchValue: input.matchValue,
+            matchValue,
           },
           update: {},
         });
         return {
           id: row.id,
           effect: row.effect as "always_allow" | "require_approval",
-          matchKind: row.matchKind as "tool" | "connector" | "category",
+          matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
         };
@@ -7152,6 +7165,29 @@ export function createRouter(deps: RouterDeps) {
       remove: authed.artifacts.remove.handler(async ({ context, input }) => {
         return deleteArtifactFamily(deps, context.actor, { familyId: input.artifactId });
       }),
+    },
+    pages: {
+      list: authed.pages.list.handler(async ({ context, input }) => {
+        try {
+          return await listPages(deps.prisma, context.actor, input);
+        } catch (error) {
+          if (error instanceof PageListCursorError)
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          throw error;
+        }
+      }),
+      get: authed.pages.get.handler(({ context, input }) =>
+        getPage({ prisma: deps.prisma }, context.actor, input),
+      ),
+      rename: authed.pages.rename.handler(({ context, input }) =>
+        renamePage(deps.prisma, context.actor, input.pageId, input.title),
+      ),
+      pin: authed.pages.pin.handler(({ context, input }) =>
+        pinPage(deps.prisma, context.actor, input.pageId, input.pinned),
+      ),
+      remove: authed.pages.remove.handler(({ context, input }) =>
+        removePage({ prisma: deps.prisma }, context.actor, input.pageId),
+      ),
     },
     usage: {
       list: authed.usage.list.handler(async ({ context }) => {

@@ -65,7 +65,12 @@ test("Space menu and chat creation keep the existing approval and switching flow
   await expect(sidebar.getByRole("button", { name: /^Chief/ })).toHaveCount(2);
   await page.getByRole("combobox", { name: "Message Chief" }).fill("Reply with support-ready.");
   await page.keyboard.press("Enter");
-  await expect(page.getByText("done. i handled: Reply with support-ready.")).toBeVisible({
+  await expect(
+    page
+      .getByTestId("transcript")
+      .getByTestId("message-bot-bubble")
+      .getByText("done. i handled: Reply with support-ready.", { exact: true }),
+  ).toBeVisible({
     timeout: 30_000,
   });
   await expect(page.getByTestId("connection-status")).toHaveCount(0);

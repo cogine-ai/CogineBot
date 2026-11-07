@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ArtifactStore } from "@rakazo/adapter-kit";
-import type { Actor } from "@rakazo/contracts";
+import type { Actor, PageTextContext } from "@rakazo/contracts";
 import { ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import {
   AttachmentValidationError,
@@ -593,10 +593,12 @@ export async function resolveGroupSendAttachments(
 export function buildUserMessageBlocks(
   text: string | undefined,
   attachmentBlocks: ReturnType<typeof messageBlockForArtifact>[],
+  pageContext?: PageTextContext,
 ) {
   const blocks = [];
   const caption = text?.trim();
-  if (caption) blocks.push({ kind: "text" as const, text: caption });
+  if (caption)
+    blocks.push({ kind: "text" as const, text: caption, ...(pageContext ? { pageContext } : {}) });
   blocks.push(...attachmentBlocks);
   return blocks;
 }

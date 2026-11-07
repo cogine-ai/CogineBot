@@ -37,6 +37,23 @@
   --overlay: rgba(4, 4, 5, 0.72);
   --scrollbar: #1e2026;
   --scrollbar-hover: #2e313a;
+  --dialog: #1e1e1e;
+  --glass-fill: #2c2c2e;
+  --glass-stroke: #fcfcfc26;
+  --faint-foreground: #ebebf573;
+  --destructive-fill: #e5484d;
+  --unread: #006ceb;
+  --working-dot: #3fa266;
+  --page-icon-sheet: #2c2c2e;
+  --page-icon-edge: #363638;
+  --page-icon-fold: #3c3c3e;
+  --page-icon-line: #6f6f71;
+  --page-icon-line-soft: #616163;
+  --page-tile: #343434;
+  --page-tile-edge: #414141;
+  --page-tile-line: #626262;
+  --primary-hover: #dbdbdb;
+  --primary-disabled: #f5f5f521;
   --radius: 0.75rem;
 }
 
@@ -76,5 +93,22 @@
   --overlay: rgba(20, 20, 22, 0.45);
   --scrollbar: #c8c8c4;
   --scrollbar-hover: #a8a8a4;
+  --dialog: #ffffff;
+  --glass-fill: #ffffff;
+  --glass-stroke: #14141416;
+  --faint-foreground: #3c3c4394;
+  --destructive-fill: #e5484d;
+  --unread: #006ceb;
+  --working-dot: #3fa266;
+  --page-icon-sheet: #e8e8ea;
+  --page-icon-edge: #d6d6da;
+  --page-icon-fold: #d0d0d4;
+  --page-icon-line: #8e8e93;
+  --page-icon-line-soft: #a1a1a6;
+  --page-tile: #ececee;
+  --page-tile-edge: #dadadd;
+  --page-tile-line: #a1a1a6;
+  --primary-hover: #363636;
+  --primary-disabled: #1c1c1c26;
   --radius: 0.75rem;
 }
