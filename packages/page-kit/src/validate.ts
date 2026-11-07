@@ -75,10 +75,19 @@ export function checkPageSource(source: string): PageSourceCheck {
   const errors: string[] = [];
   const warnings: string[] = [];
   const scope = createComponentScope(parsed, source);
-  const missingTags = new Map<string, number>();
+  const componentErrors = new Map<string, string>();
   const checkComponent = (name: string, index: number, line: number) => {
-    if (!GIVEN.has(name) && !missingTags.has(name) && !scope.has(name, index)) {
-      missingTags.set(name, line);
+    if (componentErrors.has(name)) return;
+    if (scope.isInEagerTemporalDeadZone(name, index)) {
+      componentErrors.set(
+        name,
+        `line ${line}: <${name}> is used before it is initialized. Move its declaration before this use or render it inside a component.`,
+      );
+    } else if (!GIVEN.has(name) && !scope.has(name, index)) {
+      componentErrors.set(
+        name,
+        `line ${line}: <${name}> is not a kit component. Use ${KIT_LIST}, or define ${name} in this file.`,
+      );
     }
   };
   let defaults = 0;
@@ -181,13 +190,13 @@ export function checkPageSource(source: string): PageSourceCheck {
         checkComponent(name, index + 2, lineOf(argument.start));
       }
     } else if (
-      // createElement("iframe") makes the same element <iframe> would.
+      // Static names passed to createElement name the same elements as JSX.
       token.type === TokenType.name &&
       text === "createElement" &&
-      tokens[index + 1]?.type === TokenType.parenL &&
-      tokens[index + 2]?.type === TokenType.string
+      tokens[index + 1]?.type === TokenType.parenL
     ) {
-      const name = source.slice(tokens[index + 2]!.start + 1, tokens[index + 2]!.end - 1);
+      const name = staticElementName(tokens, index + 2, source);
+      if (name === undefined) return;
       const element = name.toLowerCase();
       if (BLOCKED_ELEMENTS.has(element) && !blocked.has(element)) {
         blocked.add(element);
@@ -208,11 +217,7 @@ export function checkPageSource(source: string): PageSourceCheck {
   for (const { name, start } of selfRenderingKitNames(tokens, source)) {
     errors.push(`line ${lineOf(start)}: ${selfRenderingMessage(name)}`);
   }
-  for (const [name, line] of missingTags) {
-    errors.push(
-      `line ${line}: <${name}> is not a kit component. Use ${KIT_LIST}, or define ${name} in this file.`,
-    );
-  }
+  errors.push(...componentErrors.values());
   if (defaults !== 1) {
     errors.push("The page needs exactly one `export default` of its top component.");
   }
@@ -342,6 +347,50 @@ const BLOCKED_ELEMENTS: ReadonlyMap<string, string> = new Map([
   ["embed", "pages cannot embed other content."],
   ["foreignobject", "draw with SVG shapes and text instead."],
 ]);
+
+function staticElementName(tokens: Tokens, start: number, source: string): string | undefined {
+  let index = start;
+  while (tokens[index]?.type === TokenType.parenL) index += 1;
+  const literal = tokens[index];
+  const quasi = tokens[index + 1];
+  let raw: string;
+  let end: number;
+  if (literal?.type === TokenType.string) {
+    raw = source.slice(literal.start + 1, literal.end - 1);
+    end = index + 1;
+  } else if (
+    literal?.type === TokenType.backQuote &&
+    quasi?.type === TokenType.template &&
+    tokens[index + 2]?.type === TokenType.backQuote
+  ) {
+    raw = source.slice(quasi.start, quasi.end);
+    end = index + 3;
+  } else {
+    return undefined;
+  }
+  for (let parens = index - start; parens > 0; parens -= 1) {
+    if (tokens[end]?.type !== TokenType.parenR) return undefined;
+    end += 1;
+  }
+  if (tokens[end]?.type !== TokenType.comma && tokens[end]?.type !== TokenType.parenR) {
+    return undefined;
+  }
+  // Decode spellings that can form a tag name without evaluating the page.
+  return raw.replace(
+    /\\(?:u\{([\da-fA-F]+)\}|u([\da-fA-F]{4})|x([\da-fA-F]{2})|\r\n|[\s\S])/g,
+    (match, point, unit, byte) => {
+      const hex = point ?? unit ?? byte;
+      if (hex !== undefined) {
+        const value = Number.parseInt(hex, 16);
+        return value <= 0x10ffff ? String.fromCodePoint(value) : match;
+      }
+      const escaped = match.slice(1);
+      if (/^[\r\n\u2028\u2029]+$/.test(escaped)) return "";
+      // Control and malformed escapes cannot spell a blocked name.
+      return /^[0-9bfnrtuvx]$/.test(escaped) ? match : escaped;
+    },
+  );
+}
 
 /** Finds the end of a list that only names the default export, as bundlers write it. */
 function defaultExportListEnd(tokens: Tokens, open: number, source: string): number | undefined {

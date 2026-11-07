@@ -251,6 +251,46 @@ describe("checkPageSource", () => {
     expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
   });
 
+  it.each([
+    ["const view = <Card />;\nconst Card = () => null;\nexport default () => view;", "Card"],
+    [
+      "function App() { const view = <Card />; let Card = () => null; return view; }\nexport default App;",
+      "Card",
+    ],
+    [
+      "const view = React.createElement(Card);\nclass Card extends React.Component { render() { return null; } }\nexport default () => view;",
+      "Card",
+    ],
+    ["const Card = [<Card />];\nexport default () => Card;", "Card"],
+    [
+      "const view = <Page title='t'><Card /></Page>;\nconst Card = () => null;\nexport default () => view;",
+      "Card",
+    ],
+    ["const view = <>{<Card />}</>;\nconst Card = () => null;\nexport default () => view;", "Card"],
+    ["const view = <Text />;\nconst Text = () => null;\nexport default () => view;", "Text"],
+    [
+      "const Card = () => null;\n{ const view = <Card />; const Card = () => null; }\nexport default Card;",
+      "Card",
+    ],
+  ])("rejects a component used before its lexical initialization: %s", (source, name) => {
+    expect(checkPageSource(source)).toEqual({
+      ok: false,
+      errors: [expect.stringContaining(`<${name}> is used before it is initialized`)],
+    });
+  });
+
+  it.each([
+    "const view = <Card />;\nfunction Card() { return null; }\nexport default () => view;",
+    "const render = () => <Card />;\nconst Card = () => <Text />;\nexport default render;",
+    "const Card = () => <Text />, view = <Card />;\nexport default () => view;",
+    "class Card extends React.Component { static view = <Card />; render() { return null; } }\nexport default Card;",
+    "function App() { return null; const view = <Card />; const Card = () => null; }\nexport default App;",
+    "function App() { return null; const view = <Card />; return view; const Card = () => null; }\nexport default App;",
+    "const view = <>{false && <Card />}</>;\nconst Card = () => null;\nexport default () => view;",
+  ])("allows already initialized, hoisted, and deferred component references: %s", (source) => {
+    expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
+  });
+
   it.each(["1;", "'text';", "false;", "((null));", "1n", "/report/;", "-1;"])(
     "rejects a default export that can only be a literal value: %s",
     (value) => {
