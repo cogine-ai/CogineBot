@@ -112,6 +112,7 @@ export class KeylessHttpWebProvider implements WebProvider {
       maxBytes: this.maxBufferBytes,
       userAgent: this.userAgent,
       signal: request.signal ?? context.signal,
+      assertRedirectAllowed: request.assertRedirectAllowed,
     });
     if (!body.trim()) throw new Error(`Failed to fetch content from ${url}`);
     const extracted = extractReadableText(body, url);

@@ -81,6 +81,74 @@ describe("account preferences", () => {
     return { update, deps, actor, handler: new RPCHandler(createRouter(deps)) };
   }
 
+  it.each(["always_allow", "require_approval"] as const)(
+    "persists and returns a canonical site rule with the actor's scope (%s)",
+    async (effect) => {
+      const { deps, actor } = preferencesDeps("robot");
+      const upsert = vi.fn(
+        async ({
+          create,
+        }: {
+          create: {
+            effect: typeof effect;
+            matchKind: "site";
+            matchValue: string;
+            spaceId: string;
+            createdByUserId: string;
+          };
+        }) => ({ id: "rule-1", ...create, createdAt: new Date("2026-11-01T00:00:00Z") }),
+      );
+      const findMany = vi.fn(async () => [await upsert.mock.results[0]!.value]);
+      Object.assign(deps.prisma, { actionApprovalRule: { upsert, findMany } });
+      const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+      const saved = await client.approvalRules.set({
+        effect,
+        matchKind: "site",
+        matchValue: "https://Docs.Example.com/report",
+      });
+      expect(saved.matchValue).toBe("example.com");
+      await expect(client.approvalRules.list()).resolves.toEqual([saved]);
+      expect(findMany).toHaveBeenCalledWith({
+        where: { spaceId: actor.spaceId, createdByUserId: actor.userId },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(upsert).toHaveBeenCalledWith({
+        where: {
+          spaceId_createdByUserId_effect_matchKind_matchValue: {
+            spaceId: actor.spaceId,
+            createdByUserId: actor.userId,
+            effect,
+            matchKind: "site",
+            matchValue: "example.com",
+          },
+        },
+        create: {
+          spaceId: actor.spaceId,
+          createdByUserId: actor.userId,
+          effect,
+          matchKind: "site",
+          matchValue: "example.com",
+        },
+        update: {},
+      });
+    },
+  );
+
+  it("rejects an invalid site before writing any rule", async () => {
+    const { deps, actor } = preferencesDeps("robot");
+    const upsert = vi.fn();
+    Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    await expect(
+      client.approvalRules.set({
+        effect: "always_allow",
+        matchKind: "site",
+        matchValue: "ftp://example.com/file",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("reports model credential store outages as service unavailable", async () => {
     const { deps, actor } = preferencesDeps("robot");
     Object.assign(deps.prisma, {
@@ -4369,6 +4437,29 @@ describe("routines.update", () => {
     expect(response.status).toBe(404);
     expect(update).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("authorizes a supplied prompt but leaves provenance alone on other edits", async () => {
+    const { update, call } = fixture(false, false, {
+      authorizedInstructions: null,
+      authorizedSites: ["old.example"],
+    });
+    const { response: renamed } = await call({ name: "New name", prompt: routine.prompt });
+    expect(renamed.status).toBe(200);
+    expect(update.mock.calls[0]?.[0].data).not.toHaveProperty("authorizedInstructions");
+    expect(update.mock.calls[0]?.[0].data).not.toHaveProperty("authorizedSites");
+    const prompt = "Read https://docs.example.org";
+    const { response: saved } = await call({ prompt });
+    expect(saved.status).toBe(200);
+    expect(update.mock.calls[1]?.[0].data).toMatchObject({
+      prompt,
+      authorizedInstructions: prompt,
+      authorizedSites: [],
+    });
+    const { json } = await saved.json();
+    expect(json.prompt).toBe(prompt);
+    expect(json).not.toHaveProperty("authorizedInstructions");
+    expect(json).not.toHaveProperty("authorizedSites");
   });
 
   it("re-arms a routine on an active bot", async () => {

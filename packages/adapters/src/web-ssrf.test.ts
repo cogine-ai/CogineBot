@@ -100,6 +100,78 @@ describe("web SSRF policy", () => {
     expect(result.body).toContain("hello");
   });
 
+  it("releases the first response and cleans up when Run authority rejects a redirect before DNS", async () => {
+    const cancel = vi.fn();
+    const cleanup = vi.fn(async () => {});
+    const resolve = vi.fn(publicResolver);
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(new ReadableStream({ cancel }), {
+          status: 302,
+          headers: { location: "https://other.example.test/final" },
+        }),
+    );
+    const authority = vi.fn(() => {
+      throw new Error("New destination needs approval");
+    });
+    await expect(
+      fetchSafeWebText("https://example.test/start", {
+        fetch: fetchMock,
+        resolveHostname: resolve,
+        assertRedirectAllowed: authority,
+        cleanup,
+      }),
+    ).rejects.toThrow("New destination needs approval");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("example.test");
+    expect(authority).toHaveBeenCalledExactlyOnceWith("https://other.example.test/final");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["http://127.0.0.1/private", /private|internal/],
+    ["https://name:password@other.example.test/", /credentials/],
+    ["ftp://other.example.test/", /Only http/],
+    ["https://other.example.test:8443/", /port/],
+  ])("retains local SSRF checks before redirect authority for %s", async (target, reason) => {
+    const authority = vi.fn();
+    const resolve = vi.fn(publicResolver);
+    const fetchMock = vi.fn(
+      async () => new Response(null, { status: 302, headers: { location: String(target) } }),
+    );
+    await expect(
+      fetchSafeWebText("https://example.test/start", {
+        fetch: fetchMock,
+        resolveHostname: resolve,
+        allowedPorts: [80, 443],
+        assertRedirectAllowed: authority,
+      }),
+    ).rejects.toThrow(reason);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("example.test");
+    expect(authority).not.toHaveBeenCalled();
+  });
+
+  it("still rejects private DNS after a redirect's authority check passes", async () => {
+    const authority = vi.fn();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, { status: 302, headers: { location: "https://other.example.test/" } }),
+    );
+    await expect(
+      fetchSafeWebText("https://example.test/start", {
+        fetch: fetchMock,
+        resolveHostname: async (hostname) => [
+          { address: hostname === "example.test" ? "203.0.113.10" : "10.1.2.3", family: 4 },
+        ],
+        assertRedirectAllowed: authority,
+      }),
+    ).rejects.toThrow(/private address/);
+    expect(authority).toHaveBeenCalledExactlyOnceWith("https://other.example.test/");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("refuses ports outside allowedPorts on every hop", async () => {
     await expect(
       assertSafeWebUrl("https://example.test:8443/", publicResolver, undefined, [80, 443]),
@@ -148,6 +220,7 @@ describe("web SSRF policy", () => {
 
   it("stops at maxRedirects", async () => {
     const fetched: string[] = [];
+    const authority = vi.fn();
     const fetchMock: typeof fetch = async (input) => {
       fetched.push(String(input));
       return new Response(null, { status: 302, headers: { location: `/${fetched.length}` } });
@@ -157,13 +230,16 @@ describe("web SSRF policy", () => {
         fetch: fetchMock,
         resolveHostname: publicResolver,
         maxRedirects: 1,
+        assertRedirectAllowed: authority,
       }),
     ).rejects.toThrow(/too many redirects/i);
     expect(fetched).toHaveLength(2);
+    expect(authority).toHaveBeenCalledExactlyOnceWith("https://example.test/1");
   });
 
   it("drops caller-provided headers on cross-origin redirects", async () => {
     let finalHeaders = new Headers();
+    const authority = vi.fn();
     const fetchMock: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       if (url.origin === "https://example.test") {
@@ -179,6 +255,7 @@ describe("web SSRF policy", () => {
     await fetchSafeWebText("https://example.test/start", {
       fetch: fetchMock,
       resolveHostname: publicResolver,
+      assertRedirectAllowed: authority,
       headers: {
         Authorization: "Bearer stored",
         "X-Api-Key": "stored-key",
@@ -189,6 +266,7 @@ describe("web SSRF policy", () => {
     expect(finalHeaders.get("authorization")).toBeNull();
     expect(finalHeaders.get("x-api-key")).toBeNull();
     expect(finalHeaders.get("x-trace-id")).toBeNull();
+    expect(authority).toHaveBeenCalledExactlyOnceWith("https://other.example.test/final");
   });
 
   it("drives the guarded dispatcher with a fetch from the same undici", async () => {

@@ -657,6 +657,10 @@ msgid "Always allow this tool"
 msgstr "Bu araca her zaman izin ver"
 
 #: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "{site} için her zaman izin ver"
+
+#: src/components/AskCard.tsx
 msgid "Always allowed"
 msgstr "Her zaman izinli"
 

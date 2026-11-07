@@ -987,6 +987,8 @@ export interface WebFetchRequest {
   url: string;
   maxChars?: number;
   signal?: AbortSignal;
+  /** Synchronous Run authority check before a redirect target is resolved or contacted. */
+  assertRedirectAllowed?: (url: string) => void;
 }
 
 export interface WebFetchResult {
@@ -1194,6 +1196,8 @@ export interface AutoReviewRequest {
   /** Caller must already redact secrets and sensitive keys. */
   args: Record<string, unknown>;
   userTask: string;
+  /** A new outbound destination, reviewed using only authenticated owner instructions. */
+  newSite?: true;
   botDescription: string;
   matchingRules: AutoReviewMatchingRule[];
 }

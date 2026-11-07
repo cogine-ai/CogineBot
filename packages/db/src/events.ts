@@ -11,6 +11,7 @@ import {
   ACTIVE_RUN_STATUSES,
   blocksToAgentHistoryText,
   callIdFromClientNonce,
+  canonicalApprovalSite,
   isApprovalAskBlock,
   isConversationalRun,
   isSecretAskBlock,
@@ -20,9 +21,11 @@ import {
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
   runSecretKind,
+  SITE_SENDING_TOOLS,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
+import { urlSite } from "@rakazo/core/egress";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
@@ -119,6 +122,8 @@ export interface ClaimedSteeringMessage {
   messageId: string;
   text: string;
   blocks: MessageBlock[];
+  /** This claimed message was authored by the authenticated owner of this run. */
+  ownerInput?: true;
 }
 
 export interface FinalizeRunResult {
@@ -236,6 +241,12 @@ export interface SendUserMessageInput {
   createRun?: boolean;
   /** When true, start a new run even if the bot is already busy (team-chat delivery). */
   allowParallelRun?: boolean;
+  /** Exact Routine prompts used to compose an inbound delivery. */
+  routineSources?: {
+    trigger: "webhook" | "github" | "messaging";
+    messageProvider?: string;
+    routines: Array<{ id: string; prompt: string }>;
+  };
   /** Model every routine in an inbound delivery agreed on. */
   modelPin?: {
     /** Trusted Routine rows which produced this server-side capture. */
@@ -381,44 +392,76 @@ export async function clearThread(
   };
 }
 
-async function lockInboundRoutineModelPin(
-  tx: Prisma.TransactionClient,
-  input: SendUserMessageInput,
-  pin: NonNullable<SendUserMessageInput["modelPin"]>,
-): Promise<void> {
-  const ids = [...new Set(pin.routineIds)].sort();
-  if (ids.length === 0) throw new IsolationError("Routine model selection changed.");
+async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUserMessageInput) {
+  const pin = input.modelPin;
+  const source = input.trigger === "webhook" ? input.routineSources : undefined;
+  const sourceRoutines = source?.routines ?? [];
+  if (pin?.routineIds.length === 0) throw new IsolationError("Routine model selection changed.");
+  const ids = [
+    ...new Set([...(pin?.routineIds ?? []), ...sourceRoutines.map(({ id }) => id)]),
+  ].sort();
+  if (ids.length === 0) return undefined;
   const routines = await tx.$queryRaw<
     Array<{
       id: string;
+      prompt: string;
+      active: boolean;
+      webhookEnabled: boolean;
+      githubEnabled: boolean;
+      messageProvider: string | null;
+      authorizedInstructions: string | null;
+      authorizedSites: string[];
       modelProvider: string | null;
       modelId: string | null;
       modelCredentialId: string | null;
       thinkingLevel: string | null;
     }>
   >(Prisma.sql`
-    SELECT id, "modelProvider", "modelId", "modelCredentialId", "thinkingLevel"
+    SELECT id, prompt, active, "webhookEnabled", "githubEnabled", "messageProvider",
+      "authorizedInstructions", "authorizedSites",
+      "modelProvider", "modelId", "modelCredentialId", "thinkingLevel"
     FROM routines
     WHERE id IN (${Prisma.join(ids)}) AND "userId"=${input.userId}
       AND "spaceId"=${input.spaceId} AND "botId"=${input.botId}
     ORDER BY id FOR UPDATE`);
+  const byId = new Map(routines.map((routine) => [routine.id, routine]));
   if (
-    routines.length !== ids.length ||
-    routines.some(
-      (routine) =>
+    pin?.routineIds.some((id) => {
+      const routine = byId.get(id);
+      return (
+        !routine ||
         routine.modelProvider !== pin.modelProvider ||
         routine.modelId !== pin.modelId ||
         routine.modelCredentialId !== (pin.modelCredentialId ?? null) ||
-        routine.thinkingLevel !== pin.thinkingLevel,
-    )
+        routine.thinkingLevel !== pin.thinkingLevel
+      );
+    })
   )
     throw new IsolationError("Routine model selection changed.");
-  if (pin.modelCredentialId) {
+  if (pin?.modelCredentialId) {
     const credential = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id FROM user_model_credentials WHERE id=${pin.modelCredentialId}
         AND "userId"=${input.userId} AND provider=${pin.modelProvider} FOR KEY SHARE`);
     if (credential.length !== 1) throw new IsolationError("Model connection is unavailable.");
   }
+  if (!source || sourceRoutines.length === 0) return undefined;
+  const instructions: string[] = [];
+  const sites = new Set<string>();
+  for (const captured of sourceRoutines) {
+    const routine = byId.get(captured.id);
+    // Keep the delivered prompt, but never inherit authorization after a Routine edit or disable.
+    if (!routine?.active || captured.prompt !== routine.prompt) continue;
+    const enabled =
+      source.trigger === "webhook"
+        ? routine.webhookEnabled
+        : source.trigger === "github"
+          ? routine.githubEnabled
+          : Boolean(source.messageProvider && routine.messageProvider === source.messageProvider);
+    if (!enabled) continue;
+    if (routine.authorizedInstructions) instructions.push(routine.authorizedInstructions);
+    for (const site of routine.authorizedSites) sites.add(site);
+  }
+  return { routineInstructions: instructions.join("\n\n") || null, routineSites: [...sites] };
 }
 
 export async function sendUserMessage(
@@ -454,8 +497,8 @@ export async function sendUserMessage(
 
   const commit = () =>
     prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      // Hold the source Routine selection until its Run or steering reference is durable.
-      if (input.modelPin) await lockInboundRoutineModelPin(tx, input, input.modelPin);
+      // Keep the selected model and authorized Routine snapshot consistent with enqueue.
+      const routineProvenance = await lockInboundRoutines(tx, input);
       // Message first: its thread-row lock serializes the whole send against clearThread, so a
       // concurrent clear either sees the committed run and cancels it, or strictly precedes this
       // transaction. Created in separate transactions, the run could land inside the clear's
@@ -464,6 +507,8 @@ export async function sendUserMessage(
       const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "user",
+        authorUserId:
+          input.trigger === "user" || input.trigger === "follow_up" ? input.userId : undefined,
         blocks: input.blocks,
         clientNonce: input.clientNonce,
       });
@@ -500,6 +545,7 @@ export async function sendUserMessage(
             threadId: input.threadId,
             userId: input.userId,
             prompt: input.prompt,
+            ...routineProvenance,
             status: "queued",
           },
         });
@@ -647,22 +693,36 @@ export async function claimSteering(
               : {}),
         },
       },
-      include: { message: { select: { blocks: true, seq: true } } },
+      include: { message: { select: { blocks: true, role: true, authorUserId: true } } },
       orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
     });
     if (steering.length === 0) return [];
     const selections = steering.map((item) => item.connectionIds ?? []);
     await updateTaskConnectionSelection(tx, run, run.taskId, selections);
+    // A failed run can release a row without clearing its old claim timestamp.
     await tx.steeringMessage.updateMany({
-      where: { id: { in: steering.map((item) => item.id) }, claimedAt: null },
+      where: {
+        id: { in: steering.map((item) => item.id) },
+        OR: [{ claimedAt: null }, { runId: null }],
+      },
       data: { runId: input.runId, claimedAt: new Date() },
     });
-    return steering.map((item) => ({
-      id: item.id,
-      messageId: item.messageId,
-      text: blocksToAgentHistoryText(item.message.blocks as MessageBlock[]),
-      blocks: item.message.blocks as MessageBlock[],
-    }));
+    return steering.map((item) => {
+      const blocks = item.message.blocks as MessageBlock[];
+      return {
+        id: item.id,
+        messageId: item.messageId,
+        text: blocksToAgentHistoryText(blocks),
+        blocks,
+        ...(item.userId === run.userId &&
+        item.message.role === "user" &&
+        item.message.authorUserId === run.userId &&
+        item.originTrigger === null &&
+        !blocks.some((block) => block.kind === "channel_message")
+          ? { ownerInput: true as const }
+          : {}),
+      };
+    });
   });
 }
 
@@ -736,8 +796,9 @@ async function commitAnswerRunInput(
     ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
     : undefined;
   if (login && !login.success) return null;
-  let approvalEffect: { id: string; kind: string } | null = null;
+  let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
   let approvalUserId: string | null = null;
+  let approvalSite: string | undefined;
 
   if (approvalAsk) {
     if (!pendingAsk.actions?.some((action) => action.id === input.answer)) return null;
@@ -752,6 +813,21 @@ async function commitAnswerRunInput(
     if (!approvalEffect) return null;
     if (input.answer === "always") {
       if (run.userId !== input.answeredByUserId) return null;
+      approvalSite = alwaysAllowedSite(approvalEffect);
+      if (approvalSite) {
+        // An older card can still offer Always after the owner added a site rule.
+        const requiredSites = await tx.actionApprovalRule.findMany({
+          where: {
+            spaceId: input.spaceId,
+            createdByUserId: input.answeredByUserId,
+            matchKind: "site",
+            effect: "require_approval",
+          },
+          select: { matchValue: true },
+        });
+        if (requiredSites.some((rule) => canonicalApprovalSite(rule.matchValue) === approvalSite))
+          return null;
+      }
       approvalUserId = input.answeredByUserId;
     }
   }
@@ -782,6 +858,7 @@ async function commitAnswerRunInput(
     const utterance = await createThreadMessageInTransaction(tx, {
       threadId: input.threadId,
       role: "user",
+      authorUserId: input.answeredByUserId,
       blocks,
       botId: run.botId,
       runId: input.runId,
@@ -803,23 +880,27 @@ async function commitAnswerRunInput(
       where: { id: approvalEffect!.id },
       data: { status: allowed ? "approved" : "denied" },
     });
-    if (input.answer === "always") {
+    // A site's approval permits that destination, not every destination the tool can reach.
+    if (
+      input.answer === "always" &&
+      (approvalSite || !SITE_SENDING_TOOLS.has(approvalEffect!.kind))
+    ) {
       await tx.actionApprovalRule.upsert({
         where: {
           spaceId_createdByUserId_effect_matchKind_matchValue: {
             spaceId: input.spaceId,
             createdByUserId: approvalUserId!,
             effect: "always_allow",
-            matchKind: "tool",
-            matchValue: approvalEffect!.kind,
+            matchKind: approvalSite ? "site" : "tool",
+            matchValue: approvalSite ?? approvalEffect!.kind,
           },
         },
         create: {
           spaceId: input.spaceId,
           createdByUserId: approvalUserId!,
           effect: "always_allow",
-          matchKind: "tool",
-          matchValue: approvalEffect!.kind,
+          matchKind: approvalSite ? "site" : "tool",
+          matchValue: approvalSite ?? approvalEffect!.kind,
         },
         update: {},
       });
@@ -2102,4 +2183,13 @@ class ChangeLatch {
       if (this.generation !== expected || signal?.aborted) finish();
     });
   }
+}
+
+function alwaysAllowedSite(effect: {
+  kind: string;
+  request: Prisma.JsonValue;
+}): string | undefined {
+  if (!SITE_SENDING_TOOLS.has(effect.kind)) return undefined;
+  const request = effect.request as { url?: unknown } | null;
+  return typeof request?.url === "string" ? urlSite(request.url) : undefined;
 }

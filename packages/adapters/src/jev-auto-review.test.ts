@@ -60,6 +60,29 @@ describe("JevAutoReviewProvider", () => {
     expect(JSON.stringify(body)).not.toContain("ts-key");
   });
 
+  it("sends the full new-site URL and disclosure criteria while keeping the generic request bounded", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const provider = new JevAutoReviewProvider({
+      apiKey: "ts-key",
+      fetch: async (_url, init) => {
+        seen.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ answers: { decision: { type: "choice", choice: "ask" } } });
+      },
+    });
+    const url = `https://new.example/?q=${"x".repeat(1_800)}&suffix=outside-context`;
+    const userTask = `${"words ".repeat(150)}last owner instruction`;
+    const web = { ...request, toolName: "web_fetch", args: { url }, userTask };
+    await provider.review({ ...web, newSite: true }, context);
+    await provider.review(web, context);
+    expect(seen[0]).toMatchObject({
+      state: { newSite: true, args: { url }, userTask },
+      questions: { decision: { criteria: { ask: expect.stringContaining("path or query") } } },
+    });
+    expect(JSON.stringify(seen[1])).not.toMatch(
+      /outside-context|last owner instruction|path or query|newSite/,
+    );
+  });
+
   it("maps an ask choice to ask", async () => {
     const provider = new JevAutoReviewProvider({
       apiKey: "ts-key",

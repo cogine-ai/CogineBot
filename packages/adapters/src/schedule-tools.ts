@@ -7,12 +7,42 @@ import {
   nextCronDate,
   ONCE_ROUTINE_CRON,
 } from "@rakazo/core";
+import { sitesInText } from "@rakazo/core/egress";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { listNativeRoutineTriggersBatch } from "./native-connectors/events/store.js";
 
 export { isOneShotRoutineCron, ONCE_ROUTINE_CRON };
 
 export const SCHEDULE_TOOL_NAMES = new Set(["schedule_create", "schedule_list", "schedule_cancel"]);
+
+const ROUTINE_SITE_APPROVAL_TAG = "routine-site-approval-v1";
+
+/** Store the exact schedule arguments and destinations shown on its dedicated approval card. */
+export function routineSiteApprovalRequest(args: Record<string, unknown>, sites: string[]) {
+  return [ROUTINE_SITE_APPROVAL_TAG, args, sites];
+}
+
+export function routineSiteApprovalDetails(
+  request: unknown,
+): { args: Record<string, unknown>; sites: string[] } | undefined {
+  if (!Array.isArray(request) || request.length !== 3 || request[0] !== ROUTINE_SITE_APPROVAL_TAG)
+    return undefined;
+  const [, args, sites] = request;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  if (
+    !Array.isArray(sites) ||
+    sites.length === 0 ||
+    !sites.every((site) => typeof site === "string")
+  )
+    return undefined;
+  const promptSites = [...sitesInText(typeof args.prompt === "string" ? args.prompt : "")];
+  if (
+    promptSites.length !== sites.length ||
+    promptSites.some((site, index) => site !== sites[index])
+  )
+    return undefined;
+  return { args, sites };
+}
 
 export function filterBuiltinToolsForRun<T extends { name: string }>(
   tools: T[],
@@ -210,6 +240,7 @@ export async function createScheduleFromTool(
     threadId: string;
     name: string;
     prompt: string;
+    authorizedSites?: string[];
     timezone?: string;
     schedule: Record<string, unknown>;
   },
@@ -231,6 +262,7 @@ export async function createScheduleFromTool(
       threadId: input.threadId,
       name,
       prompt,
+      ...(input.authorizedSites?.length ? { authorizedSites: input.authorizedSites } : {}),
       crons: [resolved.cron],
       timezone,
       notify: true,

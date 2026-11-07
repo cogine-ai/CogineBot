@@ -51,6 +51,18 @@ describe("buildApprovalAskBlock", () => {
     expect(block.detail).toContain("to: person@example.test");
   });
 
+  it("keeps a generic review reason within the full detail budget", () => {
+    const reviewReason = "r".repeat(4_000);
+    const block = buildApprovalAskBlock("effect-1", "destination.write", {}, [], {
+      reviewReason,
+      allowSiteAlways: false,
+    });
+    expect(block).toMatchObject({
+      detail: reviewReason,
+      actions: expect.arrayContaining([{ id: "always", label: "Always allow this tool" }]),
+    });
+  });
+
   it("uses a one-time create or cancel choice for a new security boundary", () => {
     const block = buildApprovalAskBlock(
       "effect-1",
@@ -70,4 +82,54 @@ describe("buildApprovalAskBlock", () => {
     if (block.kind !== "ask") throw new Error("expected ask block");
     expect(block.detail).toContain("stay separate from other spaces");
   });
+
+  it("shows a fetch's complete destination and offers an allowance for its site", () => {
+    const url = `https://docs.example.com/${"a".repeat(1_800)}?query=value`;
+    const block = buildApprovalAskBlock(
+      "effect-fetch",
+      "web_fetch",
+      { url, method: "POST", body: "ignored payload" },
+      [],
+      { reviewReason: "reason ".repeat(1_000) },
+    );
+    expect(block).toMatchObject({
+      kind: "ask",
+      site: "example.com",
+      actions: expect.arrayContaining([{ id: "always", label: "Always allow example.com" }]),
+    });
+    if (block.kind !== "ask") throw new Error("expected ask");
+    expect(block.detail).toContain(`url: ${url}`);
+    expect(block.detail).not.toContain("method: POST");
+    expect(block.detail).not.toContain("body: ignored payload");
+  });
+
+  it("retains the destination while suppressing a site allowance", () => {
+    const url = "https://docs.example.com/report";
+    const block = buildApprovalAskBlock("effect-fetch", "web_fetch", { url }, [], {
+      allowSiteAlways: false,
+    });
+    expect(block).toMatchObject({
+      site: "example.com",
+      detail: `url: ${url}`,
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+  });
+
+  it.each([undefined, "file:///fixture", "https://fixture-user:fixture-secret@example.com/"])(
+    "offers no persistent allowance when the fetch site cannot be named: %s",
+    (url) => {
+      const block = buildApprovalAskBlock("effect-fetch", "web_fetch", { url }, []);
+      expect(block).not.toHaveProperty("site");
+      expect(block).toMatchObject({
+        actions: [
+          { id: "allow", label: "Allow once" },
+          { id: "deny", label: "Deny" },
+        ],
+      });
+      expect(JSON.stringify(block)).not.toContain("fixture-secret");
+    },
+  );
 });

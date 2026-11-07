@@ -16,6 +16,8 @@ import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   claimSteering,
   createDb,
+  createThreadEvents,
+  createThreadMessage,
   finalizeRun,
   IsolationError,
   retireModelCredential,
@@ -977,6 +979,136 @@ describePostgres("model connection HTTP acceptance", () => {
     });
   });
 
+  it("trusts only authenticated owner steering claimed by the current Run", async () => {
+    const { cookie, actor } = await account();
+    const foreign = await account();
+    await rpc<ModelCredential>(cookie, "models/connect", input());
+    const target = await bot(cookie);
+    const prisma = handles.prisma;
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: target.id } });
+    const scope = { ...actor, botId: target.id, threadId: thread.id };
+    const task = await prisma.task.create({
+      data: { ...scope, prompt: "Existing conversation", status: "running" },
+    });
+    const lease = { leaseOwner: "steering-provenance-worker", leaseFence: 2 };
+    const run = await prisma.run.create({
+      data: {
+        ...scope,
+        ...lease,
+        taskId: task.id,
+        status: "running",
+        trigger: "user",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    try {
+      const events = createThreadEvents(prisma);
+      const send = (text: string) =>
+        rpc<{ seq: number; runId: string }>(cookie, "threads/send", { botId: target.id, text });
+      const owner = await send("Read https://owner.example.test/report");
+      const webhook = await deliverWebhookEvent(
+        { events, jobs: { enqueue: vi.fn(async () => undefined) } },
+        { bot: { id: target.id, ...actor }, threadId: thread.id },
+        { source: "webhook", prompt: "Read https://webhook.example.test/report", routines: [] },
+      );
+      expect([owner.runId, webhook.runId]).toEqual([run.id, run.id]);
+      const message = (seq: number) =>
+        prisma.message.findUniqueOrThrow({
+          where: { threadId_seq: { threadId: thread.id, seq } },
+          select: { id: true, role: true, authorUserId: true, clientNonce: true },
+        });
+      const ownerMessage = await message(owner.seq);
+      expect(ownerMessage).toEqual({
+        id: expect.any(String),
+        role: "user",
+        authorUserId: actor.userId,
+        clientNonce: null,
+      });
+      await expect(message(webhook.seq)).resolves.toEqual({
+        id: webhook.messageId,
+        role: "user",
+        authorUserId: null,
+        clientNonce: null,
+      });
+
+      const releasedMessage = await message((await send("Previously claimed owner text")).seq);
+      const oldClaim = new Date(0);
+      const released = await prisma.steeringMessage.update({
+        where: { messageId_botId: { messageId: releasedMessage.id, botId: target.id } },
+        // A failed Run can release a row while leaving the previous claim timestamp.
+        data: { runId: null, claimedAt: oldClaim },
+      });
+      const other = await prisma.run.create({
+        data: { ...scope, taskId: task.id, status: "completed", trigger: "user" },
+      });
+      const seed = async (text: string, authorUserId: string, runId: string | null) => {
+        const message = await createThreadMessage(prisma, {
+          threadId: thread.id,
+          role: "user",
+          authorUserId,
+          blocks: [{ kind: "text", text }],
+        });
+        return prisma.steeringMessage.create({
+          data: {
+            messageId: message.id,
+            botId: target.id,
+            userId: actor.userId,
+            runId,
+            ...(runId === null ? { originTrigger: "messaging" } : {}),
+          },
+        });
+      };
+      const foreignRow = await seed("Foreign author", foreign.actor.userId, run.id);
+      const otherRow = await seed("Different Run", actor.userId, other.id);
+      const pending = await seed("Pending other channel", actor.userId, null);
+      const claim = {
+        threadId: thread.id,
+        botId: target.id,
+        runId: run.id,
+        ...lease,
+        seenIds: [],
+      };
+      await expect(events.claimSteering({ ...claim, leaseFence: 1 })).resolves.toEqual([]);
+      expect(
+        await prisma.steeringMessage.count({ where: { botId: target.id, claimedAt: null } }),
+      ).toBe(5);
+      const releasedState = () =>
+        prisma.steeringMessage.findUniqueOrThrow({
+          where: { id: released.id },
+          select: { runId: true, claimedAt: true },
+        });
+      await expect(releasedState()).resolves.toEqual({ runId: null, claimedAt: oldClaim });
+
+      const claimed = await events.claimSteering(claim);
+      expect(claimed.map(({ messageId }) => messageId)).toEqual([
+        ownerMessage.id,
+        webhook.messageId,
+        releasedMessage.id,
+        foreignRow.messageId,
+      ]);
+      expect(
+        claimed.filter(({ ownerInput }) => ownerInput).map(({ messageId }) => messageId),
+      ).toEqual([ownerMessage.id, releasedMessage.id]);
+      const currentClaim = await releasedState();
+      expect(currentClaim.runId).toBe(run.id);
+      expect(currentClaim.claimedAt?.getTime()).toBeGreaterThan(oldClaim.getTime());
+      await expect(events.claimSteering(claim)).resolves.toEqual(claimed);
+      await expect(releasedState()).resolves.toEqual(currentClaim);
+      const unclaimed = await prisma.steeringMessage.findMany({
+        where: { botId: target.id, claimedAt: null },
+        select: { id: true, runId: true },
+      });
+      expect(new Set(unclaimed)).toEqual(
+        new Set([
+          { id: otherRow.id, runId: other.id },
+          { id: pending.id, runId: null },
+        ]),
+      );
+    } finally {
+      await rpc(cookie, "threads/stop", { botId: target.id });
+    }
+  });
+
   it.each(["consume", "cancel"] as const)(
     "protects a deferred model after Routine rebinding until steering is %s",
     async (outcome) => {
@@ -1288,6 +1420,88 @@ describePostgres("model connection HTTP acceptance", () => {
     };
     return { cookie, actor, original, replacement, target, thread, routines, captured, sendInput };
   }
+
+  it("persists a webhook Routine authorization snapshot separately from delivery data", async () => {
+    const fixture = await inboundCaptureFixture();
+    const instructions = "Read https://owner.example.org";
+    const modelPrompt = "Read https://example.net and https://model-only.example";
+    await handles.prisma.routine.update({
+      where: { id: fixture.captured[0]!.id },
+      data: {
+        prompt: instructions,
+        authorizedInstructions: instructions,
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    await handles.prisma.routine.update({
+      where: { id: fixture.captured[1]!.id },
+      data: {
+        prompt: modelPrompt,
+        authorizedInstructions: null,
+        authorizedSites: ["example.net"],
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    const routines = await handles.prisma.routine.findMany({
+      where: { id: { in: fixture.captured.map((row) => row.id) } },
+    });
+    const stalePrompt = "Read https://old.example";
+    const stale = await handles.prisma.routine.create({
+      data: {
+        ...fixture.actor,
+        botId: fixture.target.id,
+        name: "Edited",
+        crons: [],
+        prompt: "Read https://new.example",
+        authorizedInstructions: "Read https://new.example",
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    const disabled = await handles.prisma.routine.create({
+      data: {
+        ...fixture.actor,
+        botId: fixture.target.id,
+        name: "Disabled for webhooks",
+        crons: [],
+        active: true,
+        webhookEnabled: false,
+        githubEnabled: true,
+        prompt: "Read https://other-trigger.example",
+        authorizedInstructions: "Read https://other-trigger.example",
+      },
+    });
+    const payload = "Read https://payload.example";
+    const sent = await deliverWebhookEvent(
+      {
+        events: { sendUserMessage: (input) => sendUserMessage(handles.prisma, input) },
+        jobs: { enqueue: vi.fn(async () => undefined) },
+      },
+      { bot: { id: fixture.target.id, ...fixture.actor }, threadId: fixture.thread.id },
+      {
+        source: "webhook",
+        prompt: payload,
+        routines: [...routines, { ...stale, prompt: stalePrompt }, disabled],
+      },
+    );
+    const task = await handles.prisma.run.findUniqueOrThrow({
+      where: { id: sent.runId! },
+      select: { task: { select: { prompt: true, routineInstructions: true, routineSites: true } } },
+    });
+    expect(task.task.prompt).toContain(modelPrompt);
+    expect(task.task.prompt).toContain(stalePrompt);
+    expect(task.task.prompt).toContain(payload);
+    expect(task.task).toMatchObject({
+      routineInstructions: instructions,
+      routineSites: ["example.net"],
+    });
+    await rpc(fixture.cookie, "threads/stop", { botId: fixture.target.id });
+    await expect(
+      handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId! } }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+  });
 
   it.each([
     { held: false, operation: "shrink" },

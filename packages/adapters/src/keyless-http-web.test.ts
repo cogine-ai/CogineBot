@@ -1,5 +1,5 @@
 import type { AdapterContext } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeWebProvider } from "./fake-web.js";
 import {
   extractReadableText,
@@ -106,14 +106,21 @@ describe("web tool apply with fake provider", () => {
     });
     expect(fake.lastSearch?.query).toBe("q");
 
+    const assertRedirectAllowed = vi.fn();
     await expect(
-      webFetchFromTool(fake, ctx, { url: "https://example.test/1", maxChars: 100 }),
+      webFetchFromTool(
+        fake,
+        ctx,
+        { url: "https://example.test/1", maxChars: 100 },
+        assertRedirectAllowed,
+      ),
     ).resolves.toEqual({
       url: "https://example.test/1",
       title: "One",
       text: "Body text",
       truncated: false,
     });
+    expect(fake.lastFetch?.assertRedirectAllowed).toBe(assertRedirectAllowed);
   });
 
   it("surfaces provider errors as tool errors", async () => {

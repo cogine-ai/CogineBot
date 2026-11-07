@@ -877,6 +877,8 @@ export async function claimNativeRoutineEvent(
           botId: routine.botId,
           threadId,
           prompt,
+          routineInstructions: routine.authorizedInstructions ?? null,
+          routineSites: routine.authorizedSites,
           status: "queued",
           connectionIds: [row.connectionId],
         },
