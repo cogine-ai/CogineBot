@@ -5645,6 +5645,7 @@ export function ShellPage() {
                       variant="ghost"
                       size="sm"
                       aria-label={t`Pages`}
+                      aria-expanded={panel === "pages"}
                       onClick={() => setPanel(panel === "pages" ? null : "pages")}
                     >
                       <Trans>Pages</Trans>

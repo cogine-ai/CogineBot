@@ -52,6 +52,46 @@ async function send(page: Page, text: string) {
   await composer.press("Enter");
 }
 
+test("the Pages button reflects the library's open state", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await signup(page, `pages-toggle-${Date.now()}@rakazo.test`, "password12", "Page Owner");
+  await completeOnboarding(page);
+
+  const toggle = page.getByRole("button", { name: "Pages", exact: true });
+  const panel = page.getByTestId("side-panel");
+  const library = panel.getByText(/Pages this bot builds for you appear here/);
+
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(library).toBeHidden();
+  const closedBackground = await toggle.evaluate(
+    (button) => getComputedStyle(button).backgroundColor,
+  );
+  await toggle.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(library).toBeVisible();
+  await expect(toggle).not.toHaveCSS("background-color", closedBackground);
+
+  await toggle.press("Space");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(library).toBeHidden();
+  await expect(toggle).toHaveCSS("background-color", closedBackground);
+
+  await toggle.click();
+  await panel.getByRole("button", { name: "Show settings", exact: true }).click();
+  await expect(panel).toHaveAttribute("data-panel", "settings");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(library).toBeHidden();
+  await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(library).toBeVisible();
+  await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(library).toBeHidden();
+});
+
 test("a private page opens from its card, replies in chat and updates", async ({
   page,
 }, testInfo) => {
