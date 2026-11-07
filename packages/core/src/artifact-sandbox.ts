@@ -22,3 +22,6 @@ export function withSandboxedArtifactCsp(html: string): string {
   const end = leadingDoctype[0].length;
   return `${html.slice(0, end)}${meta}${html.slice(end)}`;
 }
+
+/** Served by the API; the viewer inlines it into the sandboxed document. */
+export const PAGE_RUNTIME_PATH = "/api/v1/assets/page-runtime.js";

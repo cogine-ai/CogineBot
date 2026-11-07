@@ -74,6 +74,9 @@ importers:
       '@rakazo/logging':
         specifier: workspace:*
         version: link:../../packages/logging
+      '@rakazo/page-kit':
+        specifier: workspace:*
+        version: link:../../packages/page-kit
       '@rakazo/memory':
         specifier: workspace:*
         version: link:../../packages/memory
@@ -611,6 +614,9 @@ importers:
       '@rakazo/logging':
         specifier: workspace:*
         version: link:../logging
+      '@rakazo/page-kit':
+        specifier: workspace:*
+        version: link:../page-kit
       ajv:
         specifier: 8.20.0
         version: 8.20.0

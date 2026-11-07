@@ -1,12 +1,21 @@
-import type { MessageBlock } from "@rakazo/contracts";
+import {
+  type MessageBlock,
+  MessageBlock as MessageBlockSchema,
+  type PageTextContext,
+  PageTitleSchema,
+} from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
+  isApprovalAskBlock,
+  isSecretAskBlock,
+  pageReplyOwnerText,
   resolveActionApprovalDetail,
 } from "@rakazo/core";
 import { sitesInText, urlSite } from "@rakazo/core/egress";
+import { isPageCardMessage } from "@rakazo/core/message-quote";
 import type { ClaimedSteeringMessage, PrismaClient } from "@rakazo/db";
 import {
   boundDirectApprovalDetails,
@@ -14,6 +23,7 @@ import {
   catalogApprovalInnerArgs,
 } from "./approval-effect.js";
 import { BUILTIN_AGENT_TOOL_NAMES } from "./builtin-tools.js";
+import { loadReplySource, pageInputContext, resolveReplyContext } from "./reply-context.js";
 
 /** These reached the gate; they do not necessarily represent a successful external operation. */
 const PASSED_EFFECT_STATUSES = ["approved", "executing", "uncertain", "completed"];
@@ -21,8 +31,65 @@ type AuthoredMessage = { role: string; authorUserId?: string | null; blocks: unk
 
 function textBlocks(blocks: unknown): string {
   return (Array.isArray(blocks) ? (blocks as MessageBlock[]) : [])
-    .flatMap((block) => (block.kind === "text" ? [block.text] : []))
+    .flatMap((block) =>
+      block.kind === "text" ? [pageReplyOwnerText(block.text, block.pageContext)] : [],
+    )
     .join("\n");
+}
+
+type WaitingAnswer = {
+  includesPage: boolean;
+  sourceMessageId?: string;
+  ownerWords?: string;
+  promptContext?: PageTextContext;
+};
+
+/** Locate the answer recorded by the composer, without treating a newer thread send as an answer. */
+export async function loadWaitingAnswer(
+  prisma: PrismaClient,
+  run: { id: string; threadId: string; spaceId: string; userId: string },
+): Promise<WaitingAnswer | undefined> {
+  const updates = await prisma.event.findMany({
+    where: {
+      runId: run.id,
+      threadId: run.threadId,
+      spaceId: run.spaceId,
+      type: "thread.message.updated",
+      payload: { path: ["blocks"], array_contains: [{ kind: "ask", status: "answered" }] },
+    },
+    orderBy: { seq: "desc" },
+    select: { payload: true },
+  });
+  for (const [index, { payload }] of updates.entries()) {
+    const update = payload as { answerSourceMessageId?: unknown; blocks?: unknown } | null;
+    const blocks = MessageBlockSchema.array().safeParse(update?.blocks);
+    if (!blocks.success) continue;
+    const ask = blocks.data.find((block) => block.kind === "ask" && block.status === "answered");
+    // Special answers preserve the previous ordinary task prompt, but its old answer
+    // should not be promoted to the currently authenticated owner's request.
+    if (!ask || isApprovalAskBlock(ask) || isSecretAskBlock(ask)) continue;
+    if (typeof update?.answerSourceMessageId !== "string") return { includesPage: false };
+    const source = await loadReplySource(prisma, run.threadId, update.answerSourceMessageId);
+    if (source?.role !== "user") return { includesPage: false };
+    const reply = resolveReplyContext(source, run.threadId);
+    let promptContext = pageInputContext(source.blocks);
+    const target = source.replyTo;
+    if (!promptContext && reply?.includesPage && target?.role === "bot") {
+      const blocks = Array.isArray(target.blocks) ? (target.blocks as MessageBlock[]) : [];
+      if (isPageCardMessage(blocks) && blocks[0]?.kind === "page") {
+        const title = PageTitleSchema.safeParse(blocks[0].title);
+        if (title.success) promptContext = { pageId: blocks[0].pageId, title: title.data };
+      }
+    }
+    const includesPage = Boolean(promptContext || reply?.includesPage);
+    return {
+      includesPage,
+      sourceMessageId: source.id,
+      promptContext,
+      ownerWords:
+        index === 0 && source.authorUserId === run.userId ? textBlocks(source.blocks) : undefined,
+    };
+  }
 }
 
 /** Use the closed call's own transcript, independent of the model's recent history window. */
@@ -134,6 +201,9 @@ export function createRunTrust(
     routineSites?: readonly string[];
     callOwnerWords?: () => Promise<string>;
     sourceMessage: AuthoredMessage | null;
+    sourceMessageId?: string | null;
+    sourcePage?: boolean;
+    waitingAnswer?: WaitingAnswer;
     ownerStartedRun: boolean;
     messagingChannelRun: boolean;
     restored: boolean;
@@ -142,7 +212,12 @@ export function createRunTrust(
   },
 ) {
   const { run } = input;
-  const state = { tainted: !input.ownerStartedRun || input.restored };
+  const state = { tainted: !input.ownerStartedRun || input.restored, pageInput: false };
+  const recordPageInput = () => {
+    state.tainted = true;
+    state.pageInput = true;
+  };
+  if (input.sourcePage || input.waitingAnswer?.includesPage) recordPageInput();
   let earlierAttempt: Promise<boolean> | undefined;
   const receivedOutsideMessage = async () =>
     Boolean(
@@ -188,20 +263,29 @@ export function createRunTrust(
     })());
   const ownerSteeringWords = new Map<string, string>();
   const ownerSteeringSites = new Set<string>();
+  let ownerSourceClaimed = false;
   const recordSteering = (steering: readonly ClaimedSteeringMessage[]) => {
     for (const item of steering) {
+      if (pageInputContext(item.blocks)) recordPageInput();
       if (!item.ownerInput) {
         state.tainted = true;
         continue;
       }
       if (ownerSteeringWords.has(item.id)) continue;
+      if (item.messageId === input.sourceMessageId) ownerSourceClaimed = true;
       const words = textBlocks(item.blocks);
       ownerSteeringWords.set(item.id, words);
       for (const site of sitesInText(words)) ownerSteeringSites.add(site);
     }
   };
   const loadOwnerWords = async () =>
-    [await loadInitialOwnerWords(), ...ownerSteeringWords.values()].filter(Boolean).join("\n");
+    [
+      ownerSourceClaimed ? "" : await loadInitialOwnerWords(),
+      input.waitingAnswer?.ownerWords,
+      ...ownerSteeringWords.values(),
+    ]
+      .filter(Boolean)
+      .join("\n");
   let trustedSites: Promise<Set<string>> | undefined;
   const loadTrustedSites = async () => {
     trustedSites ??= prisma.externalEffect
@@ -278,6 +362,7 @@ export function createRunTrust(
   return {
     state,
     isTainted,
+    recordPageInput,
     recordSteering,
     loadOwnerWords,
     loadTrustedSites,

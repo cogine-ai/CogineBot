@@ -85,6 +85,7 @@ describe("run response timing", () => {
   it.each([
     "card",
     "chart",
+    "page",
     "ask",
     "choice",
     "app_connect",

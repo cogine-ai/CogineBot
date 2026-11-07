@@ -2,6 +2,7 @@ import * as z from "zod";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
+import { PAGE_TITLE_MAX_LENGTH, PageTextContextSchema, PageVersionSchema } from "./pages.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -99,7 +100,12 @@ export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
 export const MessageBlock = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), text: z.string() }),
+  z.object({
+    kind: z.literal("text"),
+    text: z.string(),
+    /** Only the authenticated send transaction adds the resolved Page title. */
+    pageContext: PageTextContextSchema.optional(),
+  }),
   z.object({
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),
@@ -253,6 +259,13 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     size: z.number().int().nonnegative(),
   }),
   z.object({
+    /** A page the bot saved. Title and version are as sent; read the page for its latest. */
+    kind: z.literal("page"),
+    pageId: Id,
+    version: PageVersionSchema,
+    title: z.string().max(PAGE_TITLE_MAX_LENGTH),
+  }),
+  z.object({
     kind: z.literal("handoff"),
     deliveryStatus: BotCollaborationDeliveryStatus.optional(),
     fromBotId: Id,
@@ -352,6 +365,8 @@ export type ProductEvent = z.infer<typeof ProductEventSchema>;
 
 export const ReplyPreviewSchema = z.object({
   role: MessageRole,
+  /** The parent is a page card. */
+  page: z.literal(true).optional(),
   botId: Id.optional(),
   text: z.string(),
   attachment: z

@@ -173,6 +173,15 @@ import {
   OpenApiImportReceiptInputSchema,
 } from "./openapi-import.js";
 import {
+  PAGE_LIST_MAX_LIMIT,
+  PageDetailSchema,
+  PageInputIdSchema,
+  PageReplyContextSchema,
+  PageSummarySchema,
+  PageTitleSchema,
+  PageVersionSchema,
+} from "./pages.js";
+import {
   PluginInstallInputSchema,
   PluginInstallListingSchema,
   PluginInstallReceiptSchema,
@@ -224,6 +233,9 @@ const threadSendInput = threadTarget
       .optional(),
     replyToMessageId: Id.optional(),
     replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
+    /** Sent from the open page: a reply to its card that quotes nothing. */
+    fromPage: z.literal(true).optional(),
+    pageContext: PageReplyContextSchema.optional(),
     clientNonce: z.string().min(1).max(200).optional(),
   })
   .superRefine((input, ctx) => {
@@ -234,6 +246,13 @@ const threadSendInput = threadTarget
         code: "custom",
         message: "Provide text or at least one attachment",
         path: ["text"],
+      });
+    }
+    if (input.pageContext && input.replyToMessageId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Page context is only valid without a reply target",
+        path: ["pageContext"],
       });
     }
     if (input.replyQuote && !input.replyToMessageId) {
@@ -1098,6 +1117,41 @@ export const appContract = {
     get: oc.input(threadTarget.and(z.object({ artifactId: Id }))).output(ArtifactWithContentSchema),
     getById: oc.input(z.object({ artifactId: Id })).output(ArtifactWithContentSchema),
     remove: oc.input(z.object({ artifactId: Id })).output(z.object({ ok: z.literal(true) })),
+  },
+  /** Pages bots built for the caller in this Space. */
+  pages: {
+    /** Pinned first, then most recently updated. */
+    list: oc
+      .input(
+        z.strictObject({
+          botId: PageInputIdSchema.optional(),
+          groupId: PageInputIdSchema.optional(),
+          cursor: z.string().max(500).optional(),
+          limit: z.number().int().min(1).max(PAGE_LIST_MAX_LIMIT).optional(),
+          /** Titles containing this text, for the command palette. */
+          query: z.string().trim().min(1).max(200).optional(),
+        }),
+      )
+      .output(
+        z.strictObject({ items: z.array(PageSummarySchema), nextCursor: z.string().nullable() }),
+      ),
+    get: oc
+      .input(
+        z.strictObject({
+          pageId: PageInputIdSchema,
+          version: PageVersionSchema.optional(),
+        }),
+      )
+      .output(PageDetailSchema),
+    rename: oc
+      .input(z.strictObject({ pageId: PageInputIdSchema, title: PageTitleSchema }))
+      .output(PageSummarySchema),
+    pin: oc
+      .input(z.strictObject({ pageId: PageInputIdSchema, pinned: z.boolean() }))
+      .output(PageSummarySchema),
+    remove: oc
+      .input(z.strictObject({ pageId: PageInputIdSchema }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   usage: {
     list: oc.output(z.array(UsageRecordSchema)),

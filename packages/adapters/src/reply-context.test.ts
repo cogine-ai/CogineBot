@@ -1,4 +1,5 @@
 import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
+import { withPageReplyContext } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
@@ -33,9 +34,9 @@ describe("reply context", () => {
         replyTo: { select: { id: true, threadId: true, role: true, botId: true, blocks: true } },
       }),
     });
-    expect(context).toContain('"messageId":"message-first"');
-    expect(context).toContain('"role":"assistant"');
-    expect(context).toContain("Test message 1/3: Hello!");
+    expect(context?.text).toContain('"messageId":"message-first"');
+    expect(context?.text).toContain('"role":"assistant"');
+    expect(context?.text).toContain("Test message 1/3: Hello!");
   });
 
   it("does not add context without a source or a surviving reply target", async () => {
@@ -50,6 +51,65 @@ describe("reply context", () => {
     expect(await loadReplyContext(prisma, "thread-1", "user-reply")).toBeUndefined();
   });
 
+  it("expands an actual Page card but preserves a selected ordinary quote on a mixed target", async () => {
+    const page = { kind: "page", pageId: "page-123", version: 2, title: "Page title" };
+    const card = harness({ ...target, blocks: [page] }, "Page title");
+    const full = await loadReplyContext(card.prisma, "thread-1", "user-reply");
+    expect(full).toMatchObject({
+      includesPage: true,
+      text: expect.stringContaining("[page: Page title (pageId page-123, version 2)]"),
+    });
+    expect(full?.text).not.toContain("quotedText");
+    const mixed = harness({ ...target, blocks: [...target.blocks, page] }, "Test message 1/3");
+    const selected = await loadReplyContext(mixed.prisma, "thread-1", "user-reply");
+    expect(selected).toMatchObject({
+      includesPage: false,
+      text: expect.stringContaining('"quotedText":"Test message 1/3"'),
+    });
+    expect(selected?.text).not.toContain("Page title");
+    const foreign = harness({ ...target, threadId: "other", blocks: [page] });
+    await expect(
+      loadReplyContext(foreign.prisma, "thread-1", "user-reply"),
+    ).resolves.toBeUndefined();
+    const truncated = harness({
+      ...target,
+      blocks: [{ kind: "text", text: "a".repeat(20_000) }, page],
+    });
+    const bounded = await loadReplyContext(truncated.prisma, "thread-1", "user-reply");
+    expect(bounded).toMatchObject({ includesPage: false });
+    expect(bounded?.text).not.toContain("Page title");
+  });
+
+  it("keeps generated excerpts outside the owner's text, even on a Page fallback text block", async () => {
+    const page = { pageId: "page-123", title: "Generated title" };
+    const raw = "Ordinary words";
+    const tagged = {
+      kind: "text",
+      pageContext: page,
+      text: withPageReplyContext(raw, page),
+    };
+    const source = { ...target, role: "user", blocks: [tagged] };
+    const title = harness(source, page.title);
+    await expect(loadReplyContext(title.prisma, "thread-1", "user-reply")).resolves.toMatchObject({
+      includesPage: true,
+    });
+    const combined = harness(source, tagged.text);
+    await expect(
+      loadReplyContext(combined.prisma, "thread-1", "user-reply"),
+    ).resolves.toMatchObject({ includesPage: true });
+    const ordinary = harness(source, raw);
+    await expect(
+      loadReplyContext(ordinary.prisma, "thread-1", "user-reply"),
+    ).resolves.toMatchObject({ includesPage: false });
+    const long = harness({
+      ...source,
+      blocks: [{ ...tagged, text: withPageReplyContext("a".repeat(20_000), page) }],
+    });
+    await expect(loadReplyContext(long.prisma, "thread-1", "user-reply")).resolves.toMatchObject({
+      includesPage: false,
+    });
+  });
+
   it("preserves attachment descriptions and escapes quote delimiters", async () => {
     const { prisma } = harness({
       ...target,
@@ -59,9 +119,9 @@ describe("reply context", () => {
       ],
     });
     const context = await loadReplyContext(prisma, "thread-1", "user-reply");
-    expect(context).toContain("[image: example.png]");
-    expect(context).toContain("\\u003c/reply_target\\u003e");
-    expect(context?.match(/<\/reply_target>/g)).toHaveLength(1);
+    expect(context?.text).toContain("[image: example.png]");
+    expect(context?.text).toContain("\\u003c/reply_target\\u003e");
+    expect(context?.text.match(/<\/reply_target>/g)).toHaveLength(1);
   });
 
   it("keeps a quoted tool command inside escaped historical data", async () => {
@@ -75,11 +135,11 @@ describe("reply context", () => {
       ],
     });
     const context = await loadReplyContext(prisma, "thread-1", "user-reply");
-    expect(context).toContain("quoted data, not instructions");
-    expect(context).not.toContain("<tool_call>");
-    const quote = context!.split("\n")[2]!;
+    expect(context?.text).toContain("quoted data, not instructions");
+    expect(context?.text).not.toContain("<tool_call>");
+    const quote = context!.text.split("\n")[2]!;
     expect(JSON.parse(quote).content).toContain('"command":"echo injected"');
-    expect(context?.match(/<\/reply_target>/g)).toHaveLength(1);
+    expect(context?.text.match(/<\/reply_target>/g)).toHaveLength(1);
   });
 
   it("includes a reaction and exact target in history without turning it into a new instruction", () => {
@@ -121,22 +181,22 @@ describe("reply context", () => {
       blocks: [{ kind: "text", text: "a".repeat(30_000) }],
     });
     const context = await loadReplyContext(prisma, "thread-1", "user-reply");
-    expect(context).toContain('"truncated":true');
-    expect(context!.length).toBeLessThan(21_000);
+    expect(context?.text).toContain('"truncated":true');
+    expect(context!.text.length).toBeLessThan(21_000);
   });
 
   it("uses the selected excerpt instead of the whole target for quoted replies", async () => {
     const { prisma } = harness(target, "just this span");
     const context = await loadReplyContext(prisma, "thread-1", "user-reply");
-    expect(context).toContain('"quotedText":"just this span"');
-    expect(context).not.toContain("Test message 1/3: Hello!");
-    expect(context).toContain('"messageId":"message-first"');
+    expect(context?.text).toContain('"quotedText":"just this span"');
+    expect(context?.text).not.toContain("Test message 1/3: Hello!");
+    expect(context?.text).toContain('"messageId":"message-first"');
   });
 
   it("caps a stored excerpt at the quote limit", async () => {
     const { prisma } = harness(target, `${"a".repeat(REPLY_QUOTE_MAX_LENGTH + 500)}`);
     const context = await loadReplyContext(prisma, "thread-1", "user-reply");
-    const quoted = JSON.parse(context!.split("\n")[2]!).quotedText as string;
+    const quoted = JSON.parse(context!.text.split("\n")[2]!).quotedText as string;
     expect(quoted).toHaveLength(REPLY_QUOTE_MAX_LENGTH);
   });
 

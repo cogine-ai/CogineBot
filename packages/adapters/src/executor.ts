@@ -91,7 +91,6 @@ import {
   appendToolCallSegment,
   applyJudgeDecision,
   assertTransition,
-  blocksToAgentHistoryText,
   botMessageAllowsSilence,
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
@@ -121,6 +120,7 @@ import {
   normalizeRunError,
   outboundSiteGate,
   PlatformModelForbiddenError,
+  pageReplyTaskPrompt,
   planActionGate,
   promptInvokesSkill,
   redactSecrets,
@@ -403,7 +403,14 @@ import {
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
-import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import {
+  loadReplyContext,
+  messageToAgentHistoryText,
+  modelMessageBlocksText,
+  pageInputContext,
+  resolveReplyContext,
+  scriptedSteeringText,
+} from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
 import { findRunRecoveryBlockers } from "./run-recovery.js";
@@ -422,6 +429,7 @@ import {
   connectorTrustKeys,
   createRunTrust,
   loadCallEndOwnerWords,
+  loadWaitingAnswer,
 } from "./run-trust.js";
 import type { RunTurnCheckpointState } from "./run-turn-state.js";
 import {
@@ -3973,7 +3981,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const sourceMessage = run.sourceMessageId
           ? await deps.prisma.message.findUnique({
               where: { id: run.sourceMessageId, threadId: run.threadId },
-              select: { clientNonce: true, role: true, blocks: true, authorUserId: true },
+              select: {
+                clientNonce: true,
+                role: true,
+                blocks: true,
+                authorUserId: true,
+                steeringMessages: { where: { runId: run.id }, select: { id: true }, take: 1 },
+              },
             })
           : null;
         const sourceBlocks =
@@ -3985,7 +3999,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const [
           bot,
           thread,
-          messages,
+          loadedMessages,
+          sourceReply,
+          waitingAnswer,
           peerMessage,
           task,
           storedConnections,
@@ -4003,6 +4019,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           deps.prisma.thread.findUniqueOrThrow({ where: { id: run.threadId } }),
           loadRunHistoryMessages(deps.prisma, run, LEGACY_HISTORY_WINDOW_SIZE, channelId),
+          loadReplyContext(deps.prisma, run.threadId, run.sourceMessageId),
+          fence > 1 ? loadWaitingAnswer(deps.prisma, run) : undefined,
           run.trigger === "bot_message"
             ? loadBotMessageContext(deps.prisma, run.sourceMessageId)
             : Promise.resolve(undefined),
@@ -4044,6 +4062,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           loadBotCommandEnvironment(deps.prisma, deps.secretStore, run),
         ]);
+        const acceptedPageMessageIds = new Set(
+          [
+            sourceMessage?.steeringMessages?.length ? null : run.sourceMessageId,
+            waitingAnswer?.sourceMessageId,
+          ].filter((id): id is string => Boolean(id)),
+        );
+        const messages = loadedMessages.filter((message) => {
+          const steering = message.steeringMessages ?? [];
+          if (
+            acceptedPageMessageIds.has(message.id) ||
+            !steering.some((row) => row.runId === null || row.claimedAt === null) ||
+            steering.some((row) => row.botId === run.botId && row.runId && row.claimedAt)
+          )
+            return true;
+          return (
+            !pageInputContext(message.blocks) &&
+            !resolveReplyContext(message, run.threadId)?.includesPage
+          );
+        });
+        const sourcePageContext = pageInputContext(sourceMessage?.blocks);
+        const pageSource = Boolean(sourcePageContext || sourceReply?.includesPage);
+        const pendingPageSource = pageSource && Boolean(sourceMessage?.steeringMessages?.length);
+        const promptPageContext = waitingAnswer ? waitingAnswer.promptContext : sourcePageContext;
+        const pageContextSuffix = promptPageContext
+          ? pageReplyTaskPrompt("", promptPageContext)
+          : "";
+        const modelPageContext =
+          pageContextSuffix && task.prompt.endsWith(pageContextSuffix) ? pageContextSuffix : "";
+        // Model context cannot activate a skill or seed retrieval and scripted action inference.
+        const ownerTaskPrompt = modelPageContext
+          ? task.prompt.slice(0, -modelPageContext.length)
+          : task.prompt;
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??
@@ -4235,7 +4285,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           thread.historyCompactedUpToSeq != null
             ? semanticMemory.recall(
                 {
-                  query: task.prompt,
+                  query: ownerTaskPrompt,
                   scope: memoryScope,
                   botId: bot.id,
                   historyGeneration: thread.historyCompactionGeneration,
@@ -4267,7 +4317,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? Promise.resolve(undefined)
             : loadAgentTicketContext(deps, {
                 spaceId: run.spaceId,
-                text: task.prompt,
+                text: ownerTaskPrompt,
               }),
           recallPromise,
         ]);
@@ -4733,7 +4783,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let approvalPausePending = false;
         let handedOff = false;
         let progressRedactor = createStreamingRedactor(runSecrets);
-        const script = scripted ? inferScript(task.prompt, takeoverResume?.checkpoint) : undefined;
+        const script = scripted
+          ? inferScript(ownerTaskPrompt, takeoverResume?.checkpoint)
+          : undefined;
         let resolvedEffectScript: ScriptedTurn[] | undefined;
         let scriptCompleted = false;
         const flushProgress = async () => {
@@ -4897,7 +4949,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             !thread.externalConversationId
               ? () => loadCallEndOwnerWords(deps.prisma, run)
               : undefined,
-          sourceMessage,
+          sourceMessage: pendingPageSource ? null : sourceMessage,
+          sourceMessageId: run.sourceMessageId,
+          sourcePage: pageSource && !pendingPageSource,
+          waitingAnswer,
           ownerStartedRun,
           messagingChannelRun,
           restored: turnState.stored || scriptedResume.stored !== undefined,
@@ -5743,7 +5798,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 connectorKind,
                 args: redactToolArgsForReview(newSite ? { url: fetchUrl } : args, runSecrets),
                 userTask: redactSecrets(
-                  newSite ? await trust.loadOwnerWords() : task.prompt,
+                  newSite || trust.state.pageInput ? await trust.loadOwnerWords() : ownerTaskPrompt,
                   runSecrets,
                 ),
                 ...(newSite ? { newSite: true } : {}),
@@ -7167,6 +7222,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               channelId,
               searchBeforeSeq: historySearchBeforeSeq,
               activeRunId: runId,
+              acceptedPageMessageIds: [...acceptedPageMessageIds],
               transformToolResult: (value: unknown) =>
                 redactStoredToolResultView(value, runSecrets),
             };
@@ -8124,7 +8180,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           currentTurnImages,
         );
         const taskPrompt = expandSkillReferencesInPrompt(
-          [task.prompt, attachedFilesPrompt, missingImagesInstruction].filter(Boolean).join("\n\n"),
+          [ownerTaskPrompt, attachedFilesPrompt, missingImagesInstruction]
+            .filter(Boolean)
+            .join("\n\n"),
           agentSkills,
         );
         const invokedSkill = savedSkills.find((skill) =>
@@ -8141,7 +8199,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           (request) => redactSecrets(JSON.stringify(request), runSecrets),
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
-        const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
         let userTimezone: string | null | undefined;
         try {
           userTimezone = (
@@ -8154,8 +8211,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // Optional clock context must not prevent the run when its read fails.
         }
         const prompt = [
-          replyContext,
-          basePrompt,
+          pendingPageSource || (scripted && sourceReply?.includesPage)
+            ? undefined
+            : sourceReply?.text,
+          scripted ? basePrompt : `${basePrompt}${modelPageContext}`,
           takeoverResume?.promptNote,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
@@ -8572,24 +8631,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       );
                     workspaceCheckpoint.markFiles(files);
                     const filesInstruction = currentTurnFilesInstruction(files);
+                    const reply = await loadReplyContext(deps.prisma, thread.id, item.messageId);
+                    const text = pageInputContext(item.blocks)
+                      ? modelMessageBlocksText(item.blocks)
+                      : item.text;
                     return {
-                      id: item.id,
-                      messageId: item.messageId,
-                      historyText: item.text,
-                      text: [
-                        await loadReplyContext(deps.prisma, thread.id, item.messageId),
-                        item.text,
-                        filesInstruction,
-                        unavailableInstruction,
-                      ]
-                        .filter(Boolean)
-                        .join("\n\n"),
-                      images,
+                      includesPageReply: reply?.includesPage === true,
+                      message: {
+                        id: item.id,
+                        messageId: item.messageId,
+                        historyText: scripted ? scriptedSteeringText(item.blocks) : text,
+                        text: [reply?.text, text, filesInstruction, unavailableInstruction]
+                          .filter(Boolean)
+                          .join("\n\n"),
+                        images,
+                      },
                     };
                   }),
                 );
+                if (mapped.some((item) => item.includesPageReply)) trust.recordPageInput();
                 trust.recordSteering(steering);
-                return mapped;
+                return mapped.map((item) => item.message);
               },
             },
             context,
@@ -10921,7 +10983,7 @@ function markUnavailableHistoryImages(
   blocks: MessageBlock[],
   outcomes: readonly { name: string; unavailable: boolean }[],
 ): string {
-  const rendered = blocksToAgentHistoryText(blocks);
+  const rendered = modelMessageBlocksText(blocks);
   const suffixAt = rendered.length > 0 ? content.lastIndexOf(rendered) : -1;
   if (suffixAt >= 0) {
     const suffixEnd = suffixAt + rendered.length;
