@@ -39,6 +39,14 @@ describe("checkPageSource", () => {
       "function Wrap({ Icon }) { return <Icon />; }\nconst App = () => <Wrap Icon={Text} />;",
     ],
     [
+      "components captured from a containing scope",
+      "function App() { const Icon = () => <Text />; return [1].map(() => <Icon />); }",
+    ],
+    [
+      "a var component declared in a block of the same function",
+      "function App() { if (true) { var Card = () => <Text />; } return <Card />; }",
+    ],
+    [
       "lowercase HTML elements",
       "const App = () => <Page title='t'><div><strong>bold</strong></div></Page>;",
     ],
@@ -96,6 +104,16 @@ describe("checkPageSource", () => {
       "line 1: Card is not in the kit",
     ],
     [
+      "an unknown React named import",
+      "import { Fragment, Banana as Fruit } from 'react';\nconst App = () => <Fruit />;",
+      "line 1: Banana is not exported by React",
+    ],
+    [
+      "an inherited property used as a React named import",
+      "import { constructor } from 'react';\nconst App = () => <Text />;",
+      "line 1: constructor is not exported by React",
+    ],
+    [
       "a default import from the kit",
       "import Kit from 'rakazo/page';\nconst App = () => <Text />;",
       'line 1: "rakazo/page" has no default export',
@@ -129,6 +147,26 @@ describe("checkPageSource", () => {
       "an unknown component created without JSX",
       "const App = () => React.createElement(\n  Dropdown, { value: 1 });",
       "line 2: <Dropdown> is not a kit component",
+    ],
+    [
+      "a component local to a different function",
+      "function Sibling() { const Card = () => <Text />; return <Card />; }\nconst App = () => <Card />;",
+      "line 2: <Card> is not a kit component",
+    ],
+    [
+      "a block-local component referenced outside its block",
+      "function App() { if (true) { const Card = () => <Text />; }\nreturn <Card />; }",
+      "line 2: <Card> is not a kit component",
+    ],
+    [
+      "a component passed to createElement outside its declaring function",
+      "function Sibling(Icon) { return <Icon />; }\nconst App = () => React.createElement(Icon);",
+      "line 2: <Icon> is not a kit component",
+    ],
+    [
+      "a namespace passed to React.createElement outside its declaring function",
+      "function Sibling() { const icons = { Star: () => null }; return <icons.Star />; }\nconst App = () => React.createElement(icons.Star);",
+      "line 2: <icons> is not a kit component",
     ],
     [
       "a script element",
@@ -194,6 +232,7 @@ describe("checkPageSource", () => {
     ["export { Widget as default } from 'missing-module';", 'only "react" and "rakazo/page"'],
     ["export { Widget as default, }\nfrom 'missing-module';", 'only "react" and "rakazo/page"'],
     ["export { Missing as default } from 'rakazo/page';", "Missing is not in the kit"],
+    ["export { Banana as default } from 'react';", "Banana is not exported by React"],
   ])("checks the module of a default re-export: %s", (source, diagnostic) => {
     const checked = checkPageSource(source);
     expect(checked).toEqual({
@@ -204,6 +243,8 @@ describe("checkPageSource", () => {
 
   it.each([
     "export { Page as default } from 'rakazo/page';",
+    "import { default as R, useState as state } from 'react';\nexport default () => R.createElement('div', null, state(1)[0]);",
+    "import * as R from 'react';\nexport default () => <R.Fragment />;",
     "const App = () => <Text />;\nexport { App as default, };",
     "const App = () => <Text />;\nconst from = () => {};\nexport { App as default };\nfrom();",
   ])("accepts an available default re-export or local export list: %s", (source) => {

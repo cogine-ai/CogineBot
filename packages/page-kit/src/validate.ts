@@ -1,5 +1,6 @@
 /// <reference path="./sucrase-parser.d.ts" />
 import { PAGE_SOURCE_MAX_BYTES, pageSourceBytes } from "@rakazo/contracts";
+import React from "react";
 // Sucrase's own parser, pinned with it, so the check reads the same tokens the compiler does.
 import { parse } from "sucrase/dist/parser/index.js";
 import { IdentifierRole } from "sucrase/dist/parser/tokenizer/index.js";
@@ -10,6 +11,7 @@ import {
   hasPageSourceDeclaration,
   pageViewerCode,
 } from "./compile.js";
+import { createComponentScope, identifierName } from "./component-scope.js";
 import {
   PAGE_GLOBALS,
   PAGE_HELPERS,
@@ -72,8 +74,13 @@ export function checkPageSource(source: string): PageSourceCheck {
   const { tokens } = parsed;
   const errors: string[] = [];
   const warnings: string[] = [];
-  const declared = new Set<string>();
-  const tags = new Map<string, number>();
+  const scope = createComponentScope(parsed, source);
+  const missingTags = new Map<string, number>();
+  const checkComponent = (name: string, index: number, line: number) => {
+    if (!GIVEN.has(name) && !missingTags.has(name) && !scope.has(name, index)) {
+      missingTags.set(name, line);
+    }
+  };
   let defaults = 0;
   let loadsModule = false;
   const blocked = new Set<string>();
@@ -141,8 +148,6 @@ export function checkPageSource(source: string): PageSourceCheck {
       errors.push(
         `line ${line}: ${text} takes a function, not a string: write ${text}={() => ...}.`,
       );
-    } else if (token.type === TokenType.name && DECLARATION_ROLES.has(token.identifierRole)) {
-      declared.add(text);
     } else if (
       token.type === TokenType.name &&
       text === "require" &&
@@ -151,22 +156,30 @@ export function checkPageSource(source: string): PageSourceCheck {
       errors.push(
         `line ${line}: require is not available; everything a page can use is already in scope.`,
       );
-    } else if (
-      token.type === TokenType.jsxName &&
-      token.identifierRole === IdentifierRole.Access &&
-      !tags.has(text)
-    ) {
-      tags.set(text, line);
+    } else if (token.type === TokenType.jsxName && token.identifierRole === IdentifierRole.Access) {
+      checkComponent(text, index, line);
     } else if (
       // Compiled pages call React.createElement(Name, ...) where JSX would write <Name>.
       token.type === TokenType.name &&
       text === "createElement" &&
       tokens[index + 1]?.type === TokenType.parenL &&
-      tokens[index + 2]?.type === TokenType.name &&
-      tokens[index + 3]?.type !== TokenType.dot
+      tokens[index + 2]?.type === TokenType.name
     ) {
-      const name = source.slice(tokens[index + 2]!.start, tokens[index + 2]!.end);
-      if (/^[A-Z]/.test(name) && !tags.has(name)) tags.set(name, lineOf(tokens[index + 2]!.start));
+      const argument = tokens[index + 2]!;
+      const name = identifierName(source.slice(argument.start, argument.end));
+      const next = tokens[index + 3]?.type;
+      const member =
+        next === TokenType.dot || next === TokenType.questionDot || next === TokenType.bracketL;
+      const receiver = tokens[index - 2];
+      const receiverAccess = tokens[index - 1]?.type;
+      const reactMember =
+        member &&
+        receiver &&
+        (receiverAccess === TokenType.dot || receiverAccess === TokenType.questionDot) &&
+        source.slice(receiver.start, receiver.end) === "React";
+      if (reactMember || (!member && /^[A-Z]/.test(name))) {
+        checkComponent(name, index + 2, lineOf(argument.start));
+      }
     } else if (
       // createElement("iframe") makes the same element <iframe> would.
       token.type === TokenType.name &&
@@ -195,8 +208,7 @@ export function checkPageSource(source: string): PageSourceCheck {
   for (const { name, start } of selfRenderingKitNames(tokens, source)) {
     errors.push(`line ${lineOf(start)}: ${selfRenderingMessage(name)}`);
   }
-  for (const [name, line] of tags) {
-    if (GIVEN.has(name) || declared.has(name)) continue;
+  for (const [name, line] of missingTags) {
     errors.push(
       `line ${line}: <${name}> is not a kit component. Use ${KIT_LIST}, or define ${name} in this file.`,
     );
@@ -254,11 +266,7 @@ function moduleBindingConflicts(
     const role = token.identifierRole;
     if (token.type !== TokenType.name || !DECLARATION_ROLES.has(role) || localVarScopes > 0)
       continue;
-    const spelling = source.slice(token.start, token.end);
-    const name = spelling.replace(/\\u(?:\{([\da-f]+)\}|([\da-f]{4}))/gi, (match, point, unit) => {
-      const value = Number.parseInt(point ?? unit, 16);
-      return value <= 0x10ffff ? String.fromCodePoint(value) : match;
-    });
+    const name = identifierName(source.slice(token.start, token.end));
     if (!reserved.has(name)) continue;
 
     const before = tokens[i - 1]?.type;
@@ -357,13 +365,19 @@ function importProblem(tokens: Tokens, start: number, source: string): string | 
   let hasDefault = false;
   let inBraces = false;
   for (; index < tokens.length && tokens[index]!.type !== TokenType.string; index++) {
-    const type = tokens[index]!.type;
+    const { type, identifierRole } = tokens[index]!;
     if (type === TokenType.parenL || type === TokenType.dot) break;
     if (type === TokenType.braceL) inBraces = true;
     else if (type === TokenType.braceR) inBraces = false;
-    else if (type === TokenType.name && inBraces && text(index - 1) !== "as")
-      names.push(text(index));
-    else if (type === TokenType.name && !inBraces && !["from", "as"].includes(text(index))) {
+    else if (
+      type === TokenType.name &&
+      inBraces &&
+      (identifierRole === IdentifierRole.ImportAccess ||
+        identifierRole === IdentifierRole.ExportAccess ||
+        (identifierRole === IdentifierRole.ImportDeclaration && text(index - 1) !== "as"))
+    ) {
+      names.push(identifierName(text(index)));
+    } else if (type === TokenType.name && !inBraces && !["from", "as"].includes(text(index))) {
       // A namespace import ("* as Kit") is fine; a bare name is a default import.
       if (text(index - 1) !== "as") hasDefault = true;
     }
@@ -372,13 +386,16 @@ function importProblem(tokens: Tokens, start: number, source: string): string | 
   if (from === undefined || !PAGE_MODULES.has(from)) {
     return `only "react" and "${PAGE_KIT_MODULE}" can be imported, and neither is needed: the kit components, React and its hooks are already in scope.`;
   }
-  if (from !== PAGE_KIT_MODULE) return undefined;
+  if (from === "react") {
+    // The viewer supplies the same React package. Default imports also have compiler interop.
+    const unknown = names.filter((name) => name !== "default" && !Object.hasOwn(React, name));
+    return unknown.length
+      ? `${unknown.join(", ")} ${unknown.length > 1 ? "are" : "is"} not exported by React.`
+      : undefined;
+  }
   if (hasDefault) return `"${PAGE_KIT_MODULE}" has no default export; import components by name.`;
   const unknown = names.filter(
-    (name) =>
-      name !== "as" &&
-      !KIT_NAMES.has(name) &&
-      !PAGE_HELPERS.includes(name as (typeof PAGE_HELPERS)[number]),
+    (name) => !KIT_NAMES.has(name) && !PAGE_HELPERS.includes(name as (typeof PAGE_HELPERS)[number]),
   );
   return unknown.length
     ? `${unknown.join(", ")} ${unknown.length > 1 ? "are" : "is"} not in the kit. Use ${KIT_LIST}.`

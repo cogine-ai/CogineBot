@@ -1,6 +1,7 @@
 import { pageKitPalette } from "@rakazo/ui-tokens";
 import type { CSSProperties, ReactNode } from "react";
 import { Children, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { LinkButton, linkUrl, ReplyButton } from "./controls.js";
 import { openViaHost } from "./inline.js";
 import type { Words } from "./labels.js";
@@ -145,11 +146,13 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
       opener?.focus?.();
     };
   }, [onClose]);
-  return (
+  // Keep the fixed overlay outside containing blocks in the authored page.
+  return createPortal(
     // biome-ignore lint/a11y/useKeyWithClickEvents: Escape and the close button cover the keyboard.
     <div
       className="rk-lightbox"
       role="dialog"
+      dir={words.dir}
       aria-modal="true"
       aria-label={alt || words.t("image")}
       onClick={onClose}
@@ -166,7 +169,8 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
           <path d="M4 4l8 8M12 4l-8 8" />
         </svg>
       </button>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -275,6 +279,11 @@ type Photo = { src?: string; alt?: string };
 
 const GALLERY_MAX = 8;
 
+function galleryScrollSign(track: HTMLDivElement): number {
+  // The reader's language can translate the controls without changing the content direction.
+  return getComputedStyle(track).direction === "rtl" ? -1 : 1;
+}
+
 export function Gallery({
   photos,
   height = 360,
@@ -300,7 +309,10 @@ export function Gallery({
     const node = track.current;
     if (!node) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    node.scrollTo({ left: index * node.clientWidth, behavior: reduced ? "auto" : "smooth" });
+    node.scrollTo({
+      left: galleryScrollSign(node) * index * node.clientWidth,
+      behavior: reduced ? "auto" : "smooth",
+    });
     setCurrent(index);
   };
   return (
@@ -319,13 +331,19 @@ export function Gallery({
         onKeyDown={(event) => {
           if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
             event.preventDefault();
-            const step = event.key === "ArrowRight" ? 1 : -1;
+            const step =
+              (event.key === "ArrowRight" ? 1 : -1) * galleryScrollSign(event.currentTarget);
             show(Math.min(items.length - 1, Math.max(0, current + step)));
           }
         }}
         onScroll={(event) => {
           const node = event.currentTarget;
-          if (node.clientWidth > 0) setCurrent(Math.round(node.scrollLeft / node.clientWidth));
+          if (node.clientWidth > 0) {
+            const index = Math.round(
+              (galleryScrollSign(node) * node.scrollLeft) / node.clientWidth,
+            );
+            setCurrent(Math.max(0, Math.min(items.length - 1, index)));
+          }
         }}
       >
         {items.map((photo, index) => (

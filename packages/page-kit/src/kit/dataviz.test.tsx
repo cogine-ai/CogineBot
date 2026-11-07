@@ -388,6 +388,64 @@ describe("charts", () => {
 });
 
 describe("line chart", () => {
+  it("pins notes and chooses label placement using the named series", () => {
+    const root = mount(
+      <LineChart
+        floor={0}
+        ceiling={100}
+        points={[{ value: 10 }, { value: 15 }, { value: 10 }]}
+        lines={[{ values: [70, 30, 70] }]}
+        secondary={{ values: [80, 20, 80] }}
+        annotations={[
+          { at: 1, label: "Comparison", line: true },
+          { at: 1, label: "Extra series", line: 1 },
+          { at: 1, label: "Primary", line: 0 },
+          { at: 1, label: "Override", line: true, value: 95 },
+        ]}
+      />,
+    );
+    const [comparison, extra, primary, override] = [...root.querySelectorAll(".rk-annotation")];
+    const [, cx, cy] =
+      root
+        .querySelector(".rk-line-secondary")!
+        .getAttribute("d")!
+        .match(/L([\d.]+) ([\d.]+)/) ?? [];
+    expect(Number(comparison!.querySelector("circle")?.getAttribute("cx"))).toBeCloseTo(
+      Number(cx),
+      1,
+    );
+    expect(Number(comparison!.querySelector("circle")?.getAttribute("cy"))).toBeCloseTo(
+      Number(cy),
+      1,
+    );
+    expect(comparison!.querySelector("text")?.getAttribute("dy")).toBe("0.7em");
+    expect(extra!.querySelector("text")?.getAttribute("dy")).toBe("0.7em");
+    expect(primary!.querySelector("text")?.getAttribute("dy")).toBe("0");
+    expect(override!.querySelector("text")?.getAttribute("dy")).toBe("0");
+    expect(Number(override!.querySelector("circle")?.getAttribute("cy"))).toBeLessThan(Number(cy));
+  });
+
+  it("marks a moment without borrowing a value from a different series", () => {
+    const root = mount(
+      <LineChart
+        points={[{ value: 10 }, { value: Number.NaN }, { value: 30 }]}
+        lines={[{ values: [Number.NaN, 25, 40] }]}
+        secondary={{ values: [Number.NaN, 50, 60] }}
+        annotations={[
+          { at: 0, label: "Missing comparison", line: true },
+          { at: 0, label: "Missing extra value", line: 1 },
+          { at: 1, label: "Available comparison", line: true },
+        ]}
+      />,
+    );
+    const [missingComparison, missingExtra, availableComparison] = [
+      ...root.querySelectorAll(".rk-annotation"),
+    ];
+    expect(missingComparison!.querySelector("circle")).toBeNull();
+    expect(missingExtra!.querySelector("circle")).toBeNull();
+    expect(availableComparison!.querySelector("circle")).not.toBeNull();
+  });
+
   it("adds series with dots, a dashed comparison, gaps for missing values and pinned notes", () => {
     const root = mount(
       <LineChart

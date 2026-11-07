@@ -29,23 +29,26 @@ export function Link({ href, children }: { href: string; children?: ReactNode })
 
 const WORD = /[\p{L}\p{N}_]/u;
 const URL_END = /[\s<>"]/;
+// Match the viewer host's maximum open-link URL length.
+const MAX_BARE_URL_LENGTH = 4096;
 /** Punctuation that ends a sentence rather than the link, trimmed by walking back from the end. */
 const URL_TRAILING = new Set([".", ",", ";", ":", "!", "?", ")", "]", "'"]);
 
 // A backwards walk, not a `[...]+$` regex: the regex retries from every start in a long run.
-function withoutTrailingPunctuation(raw: string): string {
-  let end = raw.length;
-  while (end > 0 && URL_TRAILING.has(raw[end - 1]!)) end--;
-  return raw.slice(0, end);
+function trimmedUrlEnd(text: string, start: number, end: number): number {
+  while (end > start && URL_TRAILING.has(text[end - 1]!)) end--;
+  return end;
 }
 
 /**
  * **strong**, *em* or _em_, `code` and bare http(s) or www. links in one pass over the text.
- * Each marker looks for its closer at most once, so the scan stays linear on any input.
+ * Link candidates share token boundaries and have bounded parsing work.
  */
 export function inlineMarkup(text: string): ReactNode[] {
   const out: ReactNode[] = [];
   let plain = 0;
+  let tokenEnd = 0;
+  let linkEnd = 0;
   const emit = (start: number, end: number, node: ReactNode) => {
     if (start > plain) out.push(text.slice(plain, start));
     out.push(<Fragment key={out.length}>{node}</Fragment>);
@@ -94,13 +97,17 @@ export function inlineMarkup(text: string): ReactNode[] {
       boundary(index - 1) &&
       /^(?:https?:\/\/|www\.[\p{L}\p{N}])/u.test(text.slice(index, index + 8))
     ) {
-      let end = index;
-      while (end < text.length && !URL_END.test(text[end]!)) end++;
-      const raw = withoutTrailingPunctuation(text.slice(index, end));
+      if (index >= tokenEnd) {
+        tokenEnd = index;
+        while (tokenEnd < text.length && !URL_END.test(text[tokenEnd]!)) tokenEnd++;
+        linkEnd = trimmedUrlEnd(text, index, tokenEnd);
+      }
+      if (linkEnd - index > MAX_BARE_URL_LENGTH) continue;
+      const raw = text.slice(index, linkEnd);
       const href = webUrl(char === "w" ? `https://${raw}` : raw);
-      if (href) {
-        emit(index, index + raw.length, <Link href={href}>{raw}</Link>);
-        index += raw.length - 1;
+      if (href && href.length <= MAX_BARE_URL_LENGTH) {
+        emit(index, linkEnd, <Link href={href}>{raw}</Link>);
+        index = linkEnd - 1;
       }
     }
   }

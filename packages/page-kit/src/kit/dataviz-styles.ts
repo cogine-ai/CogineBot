@@ -38,7 +38,7 @@ export const DATAVIZ_CSS = `
 .rk-outlier{fill:var(--rk-secondary);font-size:11.5px;paint-order:stroke;stroke:var(--background);stroke-width:3px;stroke-linejoin:round}
 .rk-stacked{display:grid;grid-template-columns:fit-content(min(12rem,40%)) minmax(0,1fr);gap:.75rem .75rem;align-items:center;font-size:.8125rem;line-height:1.125rem;letter-spacing:.015em}
 .rk-stacked-row{display:contents}
-.rk-stacked-label{min-width:3rem;text-align:right;color:var(--rk-secondary);overflow-wrap:anywhere}
+.rk-stacked-label{min-width:3rem;text-align:end;color:var(--rk-secondary);overflow-wrap:anywhere}
 .rk-stacked-track{display:flex;align-items:center;gap:.5rem;min-width:0}
 .rk-stacked-bar{display:flex;gap:2px;height:10px;min-width:2px}
 .rk-stacked-part{display:block;min-width:2px;border-radius:2px}
@@ -50,12 +50,12 @@ export const DATAVIZ_CSS = `
 .rk-heatmap{display:grid;grid-template-columns:max-content repeat(var(--rk-heat-columns),minmax(8px,3.375rem));gap:3px;font-size:.75rem;line-height:1rem;color:var(--rk-secondary);width:max-content;max-width:100%;min-width:0}
 .rk-heatmap-column{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-bottom:3px}
 .rk-heatmap[data-thin] .rk-heatmap-column{overflow:visible}
-.rk-heatmap-row{padding:6px 8px 0 0;max-width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-heatmap-row{padding-block-start:6px;padding-inline-end:8px;max-width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rk-heatmap-cell{height:27px;border-radius:4px;outline-offset:1px}
 .rk-calendar{position:relative;display:flex;flex-direction:column;gap:1rem;min-width:0}
 .rk-calendar-grid{display:grid;grid-template-columns:auto repeat(var(--rk-weeks),12px);grid-template-rows:16px repeat(7,12px);gap:3px;width:max-content;font-size:.6875rem;line-height:1rem;color:var(--rk-secondary)}
 .rk-calendar-month{font-size:.75rem;white-space:nowrap;align-self:start;line-height:12px}
-.rk-calendar-weekday{padding-right:5px;line-height:12px}
+.rk-calendar-weekday{padding-inline-end:5px;line-height:12px}
 .rk-day{border-radius:2px}
 .rk-day[data-active],.rk-heatmap-cell[data-active]{outline:2px solid var(--foreground);outline-offset:1px}
 .rk-calendar-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.25rem 1rem;font-size:.75rem;line-height:1rem;color:var(--rk-secondary)}
@@ -88,7 +88,7 @@ export const DATAVIZ_CSS = `
 .rk-tip{position:absolute;z-index:3;pointer-events:none;min-width:7rem;max-width:16rem;padding:.5rem .625rem;border-radius:10px;background:var(--rk-surface);border:1px solid var(--rk-line);box-shadow:0 6px 24px ${pageKitPalette.shared.tipShadow};font-size:.75rem;line-height:1.05rem;color:var(--foreground);font-variant-numeric:tabular-nums;transform:translate(-50%,calc(-100% - 10px));white-space:nowrap}
 .rk-tip-title{margin-bottom:.2rem;color:var(--rk-secondary)}
 .rk-tip-row{display:flex;align-items:center;gap:.4rem}
-.rk-tip-row b{margin-left:auto;padding-left:.75rem;font-weight:500}
+.rk-tip-row b{margin-inline-start:auto;padding-inline-start:.75rem;font-weight:500}
 .rk-tip-swatch{flex:none;width:7px;height:7px;border-radius:50%}
 .rk-crosshair{stroke:var(--rk-line);stroke-width:1;shape-rendering:crispEdges}
 .rk-focus-ring:focus-visible{outline:2px solid var(--ring);outline-offset:4px;border-radius:6px}

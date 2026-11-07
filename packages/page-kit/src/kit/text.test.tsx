@@ -188,6 +188,34 @@ describe("structure", () => {
     // A plain section has no toggle.
     expect(html(<Section heading="Plain">x</Section>)).not.toContain("rk-section-toggle");
   });
+
+  it("keeps a heading text selection on pointer click and still allows keyboard toggling", () => {
+    const host = mount(
+      <Page title="t">
+        <Text>Other text</Text>
+        <Section heading="Details" collapsible>
+          <Text>Section body</Text>
+        </Section>
+      </Page>,
+    );
+    const button = host.querySelector<HTMLButtonElement>(".rk-section-toggle")!;
+    const selection = window.getSelection()!;
+    const click = () =>
+      act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+    try {
+      selection.selectAllChildren(button.querySelector("span")!);
+      click();
+      expect(button.getAttribute("aria-expanded")).toBe("false");
+      act(() => button.click());
+      expect(button.getAttribute("aria-expanded")).toBe("true");
+
+      selection.selectAllChildren(host.querySelector("p")!);
+      click();
+      expect(button.getAttribute("aria-expanded")).toBe("false");
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
 });
 
 describe("TableOfContents", () => {
@@ -220,7 +248,9 @@ describe("TableOfContents", () => {
     const host = mount(<TableOfContents items={items.slice(0, 5)} title="Contents" />);
     expect(host.querySelector("nav")!.getAttribute("aria-label")).toBe("Contents");
     expect(host.querySelector('a[aria-current="location"]')!.textContent).toBe("Part 1");
-    expect(host.querySelector<HTMLAnchorElement>('a[href="#p5"]')!.style.paddingLeft).toBe("22px");
+    expect(host.querySelector<HTMLAnchorElement>('a[href="#p5"]')!.style.paddingInlineStart).toBe(
+      "22px",
+    );
     act(() => host.querySelector<HTMLAnchorElement>('a[href="#p2"]')!.click());
     expect(target.scrollIntoView).toHaveBeenCalledOnce();
     target.remove();
@@ -429,6 +459,24 @@ describe("helpers", () => {
 });
 
 describe("inline links", () => {
+  it("bounds repeated malformed link candidates and preserves nearby valid links", () => {
+    const invalid = "[http://".repeat(6_000);
+    const next = "https://example.com/next";
+    const text = `${invalid} ${next}`;
+    const runs = [0, 1].map(() => {
+      const started = performance.now();
+      inlineMarkup(text);
+      return performance.now() - started;
+    });
+    expect(Math.min(...runs)).toBeLessThan(250);
+    const markup = html(<Text>{text}</Text>);
+    expect(markup).toContain(invalid);
+    expect(markup).toContain(`href="${next}"`);
+    expect(html(<Text>{`http://[invalid];${next}`}</Text>)).toContain(`href="${next}"`);
+    expect(html(<Text>{`${next}${".".repeat(5_000)}`}</Text>)).toContain(`href="${next}"`);
+    expect(html(<Text>{`${next}/${"a".repeat(4_096)}`}</Text>)).not.toContain("href=");
+  });
+
   it("trims a link's trailing punctuation in linear time, however long the run", () => {
     const html = (text: string) => renderToStaticMarkup(<span>{inlineMarkup(text)}</span>);
     expect(html("See https://example.com/a).")).toContain('href="https://example.com/a"');

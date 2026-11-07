@@ -284,9 +284,8 @@ export function LineChart({
                 : note.line === true
                   ? -1
                   : 0;
-            const v = finite(note.value)
-              ? note.value
-              : (series[Math.max(0, owner)]?.values[at] ?? primary[at]);
+            const ownerValues = owner < 0 ? comparison?.values : series[owner]?.values;
+            const v = finite(note.value) ? note.value : ownerValues?.[at];
             const width = textWidth(text(note.label));
             const cx = x(at);
             // Kept inside the plot: a note near either edge reads inward from its point.
@@ -303,7 +302,7 @@ export function LineChart({
                 </g>
               );
             }
-            const neighbours = [primary[at - 1], primary[at + 1]].filter(finite);
+            const neighbours = [ownerValues?.[at - 1], ownerValues?.[at + 1]].filter(finite);
             const above =
               neighbours.length === 0 ||
               v >= neighbours.reduce((a, b) => a + b, 0) / neighbours.length;

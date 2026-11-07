@@ -148,9 +148,17 @@ export function Section({
       type="button"
       className="rk-section-toggle"
       aria-expanded={open}
-      onClick={() => {
-        // Selecting text in the heading should not fold the section.
-        if (!window.getSelection()?.toString()) setOpen(!open);
+      onClick={(event) => {
+        // A pointer can select heading text without toggling. Keyboard clicks always toggle.
+        if (event.detail !== 0) {
+          const button = event.currentTarget;
+          const selection = button.ownerDocument.getSelection();
+          for (let index = 0; selection && index < selection.rangeCount; index++) {
+            const range = selection.getRangeAt(index);
+            if (range.intersectsNode(button) && range.toString()) return;
+          }
+        }
+        setOpen((current) => !current);
       }}
     >
       <svg width="16" height="16" viewBox="-2 -2 16 16" aria-hidden="true">

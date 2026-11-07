@@ -105,18 +105,20 @@ describe("media", () => {
     act(() => root.unmount());
   });
 
-  it("enlarges a picture on click and closes it with Escape, returning focus", () => {
+  it("opens a viewport lightbox outside the image and restores focus on Escape", () => {
     render(<Image src={PNG} alt="Harbour" />);
     const opener = q<HTMLButtonElement>('button[aria-label="Enlarge Harbour"]')!;
     opener.focus();
     click(opener);
-    const dialog = q('[role="dialog"]')!;
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.parentElement).toBe(document.body);
+    expect(q('[role="dialog"]')).toBeNull();
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Close");
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
-    expect(q('[role="dialog"]')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(opener);
   });
 
@@ -135,6 +137,35 @@ describe("media", () => {
     });
     expect(current()).toEqual(["Show photo 2"]);
     render(<Gallery photos={[]} />);
+  });
+
+  it("moves and marks gallery photos from the scroller's right-to-left start", () => {
+    render(<Gallery photos={["One", "Two", "Three"].map((alt) => ({ src: PNG, alt }))} />);
+    const track = q<HTMLDivElement>(".rk-gallery-track")!;
+    track.style.direction = "rtl";
+    Object.defineProperty(track, "clientWidth", { value: 100 });
+    const scroll = vi.spyOn(track, "scrollTo");
+    const current = () => q("button[aria-current]")!.getAttribute("aria-label");
+
+    click(q('button[aria-label="Show photo 2"]'));
+    expect(scroll).toHaveBeenLastCalledWith(expect.objectContaining({ left: -100 }));
+    act(() =>
+      track.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })),
+    );
+    expect(scroll).toHaveBeenLastCalledWith(expect.objectContaining({ left: -200 }));
+    expect(current()).toBe("Show photo 3");
+
+    for (const [left, label] of [
+      [-100, "Show photo 2"],
+      [100, "Show photo 1"],
+      [-350, "Show photo 3"],
+    ] as const) {
+      act(() => {
+        track.scrollLeft = left;
+        track.dispatchEvent(new Event("scroll"));
+      });
+      expect(current()).toBe(label);
+    }
   });
 
   it("keeps a photo marked when the gallery loses the one that was shown", () => {
