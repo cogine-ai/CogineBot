@@ -1,4 +1,9 @@
-import type { AdapterContext, AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  AgentRunRequest,
+  AgentRuntime,
+  AgentToolExecutionObserver,
+} from "@rakazo/adapter-kit";
 import { expect, it, vi } from "vitest";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "./history-observer.js";
 import { observeSyntheticHistory } from "./history-observer.js";
@@ -90,3 +95,58 @@ it("observes bounded synthetic diagnostic controls without retaining result bodi
   expect(observations[1]!.cursor).toBeUndefined();
   expect(execute).toHaveBeenCalledTimes(66);
 });
+
+it.each(["run_subagent", "search_history", "CRM_READ_DIAGNOSTIC"] as const)(
+  "passes the runtime execution observer through %s",
+  async (name) => {
+    const diagnostics: HistoryDiagnostic[] = [];
+    const observations: DiagnosticToolObservation[] = [];
+    const result = {
+      result: "Synthetic child result",
+      messages: [{ text: "private-result-content" }],
+      nextBeforeSeq: 8,
+      segment: 1,
+      nextCursor: null,
+    };
+    const runSubagent = vi.fn(async (_args: Record<string, unknown>) => result);
+    const observer: AgentToolExecutionObserver = { runSubagent };
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (_name, args, _id, _route, forwarded) => forwarded?.runSubagent?.(args),
+    );
+    const run = vi.fn((_request: AgentRunRequest) => (async function* () {})());
+    const runtime: AgentRuntime = { describe: vi.fn(), abort: vi.fn(), run };
+    observeSyntheticHistory(runtime, diagnostics, [], observations).run(
+      { executeTool: execute } as AgentRunRequest,
+      {} as AdapterContext,
+    );
+    const args = { task: "Inspect the fixture", cursor: "start", query: "Aurora" };
+    const route = { connectorId: "fixture", toolName: name };
+    const wrapped = run.mock.calls[0]![0];
+    await expect(wrapped.executeTool!(name, args, "fixture-call", route, observer)).resolves.toBe(
+      result,
+    );
+    expect(execute.mock.calls[0]?.[4]).toBe(observer);
+    expect(runSubagent).toHaveBeenCalledExactlyOnceWith(args);
+    expect(diagnostics).toEqual(
+      name === "search_history"
+        ? [{ tool: name, query: "Aurora", nextBeforeSeq: 8, resultCount: 1, failed: false }]
+        : [],
+    );
+    expect(observations).toEqual(
+      name === "CRM_READ_DIAGNOSTIC"
+        ? [
+            {
+              cursor: "start",
+              resultKind: "object",
+              resultKeys: ["segment", "nextCursor"],
+              resultBytes: Buffer.byteLength(JSON.stringify(result)),
+              jsonValid: true,
+              segment: 1,
+              nextCursor: null,
+              failed: false,
+            },
+          ]
+        : [],
+    );
+  },
+);

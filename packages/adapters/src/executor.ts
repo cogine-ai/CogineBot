@@ -201,6 +201,7 @@ import {
   replaceCompletedExternalEffectResult,
   resolveDuplicateEffectGate,
   settleUncertainEffect,
+  takeoverPausedToolResult,
   uncertainEffectResult,
 } from "./approval-effect.js";
 import {
@@ -5385,17 +5386,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? approvalEffectKey(runId, replayEffectToolName, args)
               : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence));
           // Connector read-only hints must not bypass approval, review, or replay decisions.
-          const applied = READ_ONLY_AGENT_TOOLS.has(name)
-            ? undefined
-            : await recordEffect(
-                deps,
-                run,
-                replayEffectToolName,
-                effectKey,
-                effectRequest,
-                executionId,
-                consumedEffectIds,
-              );
+          const applied =
+            READ_ONLY_AGENT_TOOLS.has(name) &&
+            !needsApprovalEarly &&
+            nextApprovedTool !== name &&
+            !nextApprovedKey
+              ? undefined
+              : await recordEffect(
+                  deps,
+                  run,
+                  replayEffectToolName,
+                  effectKey,
+                  effectRequest,
+                  executionId,
+                  consumedEffectIds,
+                );
           if (applied) await bindScriptedEffect(applied.effect, executionId);
 
           const runAutoReview = async () => {
@@ -5677,8 +5682,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 // An intended secret request resumes protected entry below, including
                 // recovery after action approval but before the card was committed.
               } else if (!needsApproval) {
-                const early = await claimOrReturn("intended");
-                if (early !== undefined) return early;
+                if (name !== "request_takeover") {
+                  const early = await claimOrReturn("intended");
+                  if (early !== undefined) return early;
+                }
               } else {
                 const current = await deps.prisma.run.findUnique({
                   where: { id: runId },
@@ -5693,12 +5700,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
-              const early = await claimOrReturn("approved");
-              if (early !== undefined) return early;
+              if (name !== "request_takeover") {
+                const early = await claimOrReturn("approved");
+                if (early !== undefined) return early;
+              }
             }
           } else if (needsApproval && applied) {
             return requestApproval();
-          } else if (bypassApproval && applied) {
+          } else if (bypassApproval && applied && name !== "request_takeover") {
             const early = await claimOrReturn("intended");
             if (early !== undefined) return early;
           }
@@ -5750,15 +5759,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           if (name === "computer_observe") {
             if (heldForTakeover) {
-              return { error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE };
+              return finish({ error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE });
             }
             if (await getActiveTeachingSession(deps.prisma, run.spaceId, run.botId)) {
-              return {
+              return finish({
                 error: "Teaching is in progress. Stop teaching before using the computer.",
-              };
+              });
             }
-            return computerScreenToolResult(async () =>
-              formatObservation(await deps.sandbox.observe(await runComputer.get(), context)),
+            return computerScreenToolResult(
+              async () =>
+                formatObservation(await deps.sandbox.observe(await runComputer.get(), context)),
+              finish,
             );
           }
           if (name === "computer_act") {
@@ -5802,13 +5813,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               resolveBotWorkspacePath(computerMode, bot.id, requestedPath),
               context,
             );
-            return {
+            return finish({
               path: requestedPath,
               entries: entries.map((entry) => ({
                 ...entry,
                 path: displayBotWorkspacePath(computerMode, bot.id, requestedPath, entry.path),
               })),
-            };
+            });
           }
           if (name === "read_file") {
             const filePath = String(args.path ?? "");
@@ -5820,33 +5831,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             } catch (error) {
               if (error instanceof Error && /exceeds \d+ bytes/.test(error.message)) {
-                return {
+                return finish({
                   error: "file is too large for model context",
                   path: filePath,
-                };
+                });
               }
               throw error;
             }
             if (bytes.byteLength > MAX_MODEL_FILE_BYTES) {
-              return {
+              return finish({
                 error: "file is too large for model context",
                 path: filePath,
                 size: bytes.byteLength,
-              };
+              });
             }
             try {
-              return {
+              return finish({
                 path: filePath,
                 content: redactSecrets(
                   new TextDecoder("utf-8", { fatal: true }).decode(bytes),
                   runSecrets,
                 ),
-              };
+              });
             } catch {
-              return {
+              return finish({
                 error: "file is not UTF-8 text; use open_path to inspect it",
                 path: filePath,
-              };
+              });
             }
           }
           if (name === "write_file") {
@@ -6359,23 +6370,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "task_catalog") {
-            return taskCatalogFromTool(deps, {
-              spaceId: run.spaceId,
-              botId: bot.id,
-              userId: run.userId,
-              ...(thread.groupId ? { threadId: thread.id } : {}),
-              tools,
-              skillsQuery: args.skillsQuery,
-              skillsOffset: args.skillsOffset,
-              skillsLimit: args.skillsLimit,
-            });
+            return finish(
+              await taskCatalogFromTool(deps, {
+                spaceId: run.spaceId,
+                botId: bot.id,
+                userId: run.userId,
+                ...(thread.groupId ? { threadId: thread.id } : {}),
+                tools,
+                skillsQuery: args.skillsQuery,
+                skillsOffset: args.skillsOffset,
+                skillsLimit: args.skillsLimit,
+              }),
+            );
           }
           if (name === "scratchpad_list") {
-            return listScratchpadItemsFromTool(deps, {
-              spaceId: run.spaceId,
-              botId: bot.id,
-              includeDone: Boolean(args.includeDone),
-            });
+            return finish(
+              await listScratchpadItemsFromTool(deps, {
+                spaceId: run.spaceId,
+                botId: bot.id,
+                includeDone: Boolean(args.includeDone),
+              }),
+            );
           }
           if (name === "scratchpad_add") {
             const created = await addScratchpadItemFromTool(deps, {
@@ -6496,12 +6511,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(created);
           }
           if (name === "schedule_list") {
-            return listSchedulesFromTool(deps, {
-              spaceId: run.spaceId,
-              botId: bot.id,
-              userId: run.userId,
-              ...(thread.groupId ? { threadId: thread.id } : {}),
-            });
+            return finish(
+              await listSchedulesFromTool(deps, {
+                spaceId: run.spaceId,
+                botId: bot.id,
+                userId: run.userId,
+                ...(thread.groupId ? { threadId: thread.id } : {}),
+              }),
+            );
           }
           if (name === "schedule_cancel") {
             const cancelled = await cancelScheduleFromTool(deps, {
@@ -6515,16 +6532,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(cancelled);
           }
           if (name === "skill_read") {
-            return skillReadFromTool(
-              deps.prisma,
-              {
-                spaceId: run.spaceId,
-                userId: run.userId,
-              },
-              {
-                name: args.name,
-                skillId: args.skillId,
-              },
+            return finish(
+              await skillReadFromTool(
+                deps.prisma,
+                {
+                  spaceId: run.spaceId,
+                  userId: run.userId,
+                },
+                {
+                  name: args.name,
+                  skillId: args.skillId,
+                },
+              ),
             );
           }
           if (name === "skill_create") {
@@ -6717,17 +6736,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
           if (name === "recall_memory") {
-            return semanticMemory!.recall(
-              {
-                query: String(args.query ?? ""),
-                scope: memoryScope!,
-                botId: bot.id,
-                ...(thread.historyCompactedUpToSeq == null
-                  ? {}
-                  : { historyGeneration: thread.historyCompactionGeneration }),
-                limit: MAX_RECALLED_MEMORIES,
-              },
-              context,
+            return finish(
+              await semanticMemory!.recall(
+                {
+                  query: String(args.query ?? ""),
+                  scope: memoryScope!,
+                  botId: bot.id,
+                  ...(thread.historyCompactedUpToSeq == null
+                    ? {}
+                    : { historyGeneration: thread.historyCompactionGeneration }),
+                  limit: MAX_RECALLED_MEMORIES,
+                },
+                context,
+              ),
             );
           }
           if (name === "search_history" || name === "read_history") {
@@ -6903,7 +6924,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : "Call ended and your farewell was spoken. The user is now reading, not listening: finish any remaining work as a normal chat reply with full formatting.",
             });
           }
-          if (name === "list_secrets") return listBotSecrets(deps.prisma, run);
+          if (name === "list_secrets") return finish(await listBotSecrets(deps.prisma, run));
           if (name === "forget_secret") {
             const parsed = BotSecretName.safeParse(args.name);
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
@@ -7158,12 +7179,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             return pause.owned ? pause.result : pauseForSecret();
           }
-          if (name === "request_takeover") return { ok: true };
+          if (name === "request_takeover") {
+            const paused = await requestTakeover(
+              String(args.reason ?? "I need you on the screen."),
+              executionId,
+              applied
+                ? {
+                    id: applied.effect.id,
+                    expectedStatus: applied.effect.status as "intended" | "approved",
+                  }
+                : undefined,
+            );
+            approvalPausePending = true;
+            return takeoverPausedToolResult(paused ? "paused" : "stopped");
+          }
           if (name === "run_subagent") {
-            return {
+            if (observer?.runSubagent) return finish(await observer.runSubagent(args));
+            return finish({
               ok: true,
               result: String(args.task ?? "done."),
-            };
+            });
           }
           if (name === "create_space") {
             try {
@@ -7541,6 +7576,94 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return finish({ error: `unknown tool ${name}` });
         };
 
+        const requestTakeover = async (
+          reason: string,
+          executionId?: string,
+          effect?: { id: string; expectedStatus: "intended" | "approved" },
+        ): Promise<boolean> => {
+          const pause = await requestPause(async () => {
+            if (!(await renewRunLease(deps, runId, workerId, fence))) return false;
+            // The user takes over the computer's screen, so it must be up before the run waits.
+            await runComputer.get();
+            const safeReason = redactSecrets(reason, runSecrets);
+            // Publish pending narration as tagged mid-turn progress so reconciliation
+            // does not treat pre-takeover text as the delegated final result.
+            await publishMidTurnNarration();
+            if (assembled.trim()) {
+              const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
+              if (narration && runPromotesMidTurnNarration(run.trigger)) {
+                if (isSteeringContinuation && lastScriptedState) {
+                  await publishDurableScriptedOutput(
+                    [{ kind: "text", text: narration }],
+                    undefined,
+                    "takeover-narration",
+                    { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
+                  );
+                  midTurnProgressCount += 1;
+                } else {
+                  await publishMessage(
+                    deps,
+                    run,
+                    "bot",
+                    [{ kind: "text", text: narration }],
+                    undefined,
+                    userProgressClientNonce(run.id, midTurnProgressCount++),
+                  );
+                }
+                midTurnUserTexts.push(narration);
+                publishedMidTurnUserMessage = true;
+              } else if (narration) {
+                discardedMidTurnNarration = true;
+              }
+              assembled = "";
+              hasStreamedText = false;
+              pendingProgress = "";
+            }
+            if (!(isSteeringContinuation && lastScriptedState) && !effect) {
+              await publishMessage(
+                deps,
+                run,
+                "bot",
+                [{ kind: "computer", state: "Needs you", text: safeReason }],
+                true,
+              );
+            }
+            await workspaceCheckpoint.flush();
+            if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
+              throw new Error("Computer lease expired before takeover");
+            }
+            const paused = await pauseRunForTakeover(
+              {
+                spaceId: run.spaceId,
+                threadId: run.threadId,
+                botId: run.botId,
+                runId,
+                attemptId: attempt.id,
+                leaseOwner: workerId,
+                leaseFence: fence,
+                reason: safeReason,
+                computerId: storedComputer.id,
+                ...(effect ? { effect } : {}),
+                ...(isSteeringContinuation && lastScriptedState
+                  ? { scriptedState: scriptedStateJson(lastScriptedState) }
+                  : {}),
+              },
+              executionId,
+            );
+            if (!paused) return false;
+            retainComputerLease = true;
+            await notifyRun(deps, run, {
+              kind: "takeover",
+              title: `${bot.name} needs you on the screen`,
+              body: safeReason,
+              botId: bot.id,
+              threadId: thread.id,
+            });
+            return true;
+          });
+          return pause.owned && pause.result === true;
+        };
+
         const pluginLine =
           connectedPlugins.length > 0
             ? `Connected plugins: ${connectedPlugins.map((row) => `${row.displayName} (${row.connectorId}:${row.provider})`).join(", ")}. Prefer those plugin tools over the computer browser or web search when reading app data (repos, releases, mail, calendar, and similar).`
@@ -7905,6 +8028,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? {}
                 : {
                     turnCheckpoint: turnState.blob,
+                    ...(!heldForTakeover &&
+                    !takeoverResume &&
+                    turnState.pendingToolName === "request_takeover"
+                      ? { resumeUnreleasedTakeoverExecutionId: turnState.pendingExecutionId }
+                      : {}),
                     onCheckpoint: (capture: () => string, executionId: string) => {
                       turnState.pendingCaptures.set(executionId, capture);
                     },
@@ -8146,85 +8274,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               return;
             } else if (event.type === "takeover") {
-              await requestPause(async () => {
-                if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-                // The user takes over the computer's screen, so it must be up before the run waits.
-                await runComputer.get();
-                const safeReason = redactSecrets(event.reason, runSecrets);
-                // Publish pending narration as tagged mid-turn progress so reconciliation
-                // does not treat pre-takeover text as the delegated final result.
-                await publishMidTurnNarration();
-                if (assembled.trim()) {
-                  const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
-                  if (narration && runPromotesMidTurnNarration(run.trigger)) {
-                    if (isSteeringContinuation && lastScriptedState) {
-                      await publishDurableScriptedOutput(
-                        [{ kind: "text", text: narration }],
-                        undefined,
-                        "takeover-narration",
-                        { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
-                      );
-                      midTurnProgressCount += 1;
-                    } else {
-                      await publishMessage(
-                        deps,
-                        run,
-                        "bot",
-                        [{ kind: "text", text: narration }],
-                        undefined,
-                        userProgressClientNonce(run.id, midTurnProgressCount++),
-                      );
-                    }
-                    midTurnUserTexts.push(narration);
-                    publishedMidTurnUserMessage = true;
-                  } else if (narration) {
-                    discardedMidTurnNarration = true;
-                  }
-                  assembled = "";
-                  hasStreamedText = false;
-                  pendingProgress = "";
-                }
-                if (!(isSteeringContinuation && lastScriptedState)) {
-                  await publishMessage(
-                    deps,
-                    run,
-                    "bot",
-                    [{ kind: "computer", state: "Needs you", text: safeReason }],
-                    true,
-                  );
-                }
-                await workspaceCheckpoint.flush();
-                if (!(await holdComputerExecutionLeaseForTakeover(deps.prisma, computerLease))) {
-                  throw new Error("Computer lease expired before takeover");
-                }
-                const paused = await pauseRunForTakeover(
-                  {
-                    spaceId: run.spaceId,
-                    threadId: run.threadId,
-                    botId: run.botId,
-                    runId,
-                    attemptId: attempt.id,
-                    leaseOwner: workerId,
-                    leaseFence: fence,
-                    reason: safeReason,
-                    computerId: storedComputer.id,
-                    ...(isSteeringContinuation && lastScriptedState
-                      ? { scriptedState: scriptedStateJson(lastScriptedState) }
-                      : {}),
-                  },
-                  event.executionId,
-                );
-                if (!paused) return;
-                retainComputerLease = true;
-                await notifyRun(deps, run, {
-                  kind: "takeover",
-                  title: `${bot.name} needs you on the screen`,
-                  body: safeReason,
-                  botId: bot.id,
-                  threadId: thread.id,
-                });
-                return;
-              });
+              await requestTakeover(event.reason, event.executionId);
               return;
             } else if (event.type === "tool") {
               // Preserve event ordering when the throttle still holds recent narration: the

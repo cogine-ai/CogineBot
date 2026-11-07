@@ -16,6 +16,7 @@ import {
 import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { approvalPausedToolResult } from "./approval-effect.js";
 import { FIND_TOOL, USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { modelsForRequest, PiAgentRuntime } from "./pi-runtime.js";
@@ -173,6 +174,99 @@ describe("real Pi built-in discovery and execution", () => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
+
+  it.each([
+    { failure: new Error("Synthetic takeover control failure"), abort: false },
+    { failure: undefined, abort: false },
+    { failure: new Error("Synthetic takeover control failure"), abort: true },
+  ])(
+    "releases a finite tool budget after terminal takeover control failure %#",
+    async ({ failure, abort }) => {
+      vi.stubEnv("MAX_TOOL_CALLS_PER_TURN", "2");
+      provider.stream
+        .mockImplementationOnce(() =>
+          response([call("takeover", "request_takeover", { reason: "Sign in" })]),
+        )
+        .mockImplementationOnce(() =>
+          response([
+            call("first", "read_file", { path: "first.txt" }),
+            call("second", "read_file", { path: "second.txt" }),
+          ]),
+        )
+        .mockImplementation(() => response());
+      const controller = new AbortController();
+      const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => {
+        if (abort) controller.abort();
+        return Promise.reject(failure);
+      });
+      const input = request([builtin("request_takeover"), builtin("read_file")], {
+        executeTool: execute,
+      });
+      await expect(consume(input, controller.signal)).rejects.toThrow(
+        failure instanceof Error ? failure.message : "undefined",
+      );
+      expect(execute).toHaveBeenCalledOnce();
+      execute.mockClear();
+      execute.mockImplementation(async () => ({ ok: true }));
+      const retried = await consume(input);
+      expect(execute.mock.calls.map(([name, args]) => [name, args.path])).toEqual([
+        ["read_file", "first.txt"],
+        ["read_file", "second.txt"],
+      ]);
+      expect(
+        retried.some((event) => event.type === "progress" && event.text.includes("tool calls")),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["pause", "abort", "exceeded"] as const)(
+    "keeps the finite-budget lifecycle for an ordinary %s",
+    async (ending) => {
+      vi.stubEnv("MAX_TOOL_CALLS_PER_TURN", "2");
+      provider.stream
+        .mockImplementationOnce(() =>
+          response(
+            ending === "pause"
+              ? [call("pause", "request_takeover", { reason: "Sign in" })]
+              : [
+                  call("initial", "read_file", { path: "initial.txt" }),
+                  ...(ending === "exceeded"
+                    ? [
+                        call("second", "read_file", { path: "second.txt" }),
+                        call("over", "read_file", { path: "over.txt" }),
+                      ]
+                    : []),
+                ],
+          ),
+        )
+        .mockImplementationOnce(() =>
+          response([
+            call("retry-first", "read_file", { path: "retry-first.txt" }),
+            call("retry-second", "read_file", { path: "retry-second.txt" }),
+          ]),
+        )
+        .mockImplementation(() => response());
+      const controller = new AbortController();
+      const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => {
+        if (ending === "abort") controller.abort();
+        return ending === "pause" ? approvalPausedToolResult() : { ok: true };
+      });
+      const input = request([builtin("request_takeover"), builtin("read_file")], {
+        executeTool: execute,
+      });
+      const first = consume(input, controller.signal);
+      if (ending === "abort") await expect(first).rejects.toThrow();
+      else await first;
+      expect(execute).toHaveBeenCalledTimes(ending === "exceeded" ? 2 : 1);
+      execute.mockClear();
+      execute.mockImplementation(async () => ({ ok: true }));
+      const resumed = await consume(input);
+      expect(execute).toHaveBeenCalledTimes(ending === "exceeded" ? 2 : 1);
+      expect(
+        resumed.some((event) => event.type === "progress" && event.text.includes("tool calls")),
+      ).toBe(ending !== "exceeded");
+    },
+  );
 
   it("keeps core schemas stable while discovering and executing the actual deferred tool", async () => {
     const contexts: TranscriptContext[] = [];
@@ -558,10 +652,13 @@ describe("real Pi built-in discovery and execution", () => {
         ]);
       return response();
     });
-    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async (name) => {
-      expect(name).toBe("read_file");
-      return { error: "The synthetic file is unavailable" };
-    });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) => {
+        if (name === "run_subagent") return observer!.runSubagent!(args);
+        expect(name).toBe("read_file");
+        return { error: "The synthetic file is unavailable" };
+      },
+    );
     const events = await consume(
       request([builtin("read_file"), builtin("run_subagent")], {
         executeTool: execute,
@@ -615,7 +712,7 @@ describe("real Pi built-in discovery and execution", () => {
       streak: { count: 6 },
       stopped: [false, false, false, false, false, true],
     });
-    expect(execute).toHaveBeenCalledTimes(12);
+    expect(execute).toHaveBeenCalledTimes(13);
     expect(mainRequests).toBe(3);
     expect(helperRequests).toBe(2);
   });

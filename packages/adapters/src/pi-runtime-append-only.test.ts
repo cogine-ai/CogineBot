@@ -174,9 +174,14 @@ function request(history: AgentRunRequest["history"] = []): AgentRunRequest {
       },
     ],
     model: { provider: claude.provider, id: claude.id, apiKey: "fake-key", thinkingLevel: "high" },
-    executeTool: vi.fn(async (_name: string, args: { step: number }) => ({
-      lines: `log ${args.step} ${"synthetic log line ".repeat(300)}`,
-    })),
+    executeTool: vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(
+      async (name, args, _id, _route, observer) =>
+        name === "run_subagent"
+          ? observer!.runSubagent!(args)
+          : {
+              lines: `log ${args.step} ${"synthetic log line ".repeat(300)}`,
+            },
+    ),
   } as unknown as AgentRunRequest;
 }
 
@@ -467,7 +472,7 @@ describe("Pi runtime transcript sent to a provider that binds thinking to its co
     expect(first).toContain("Messages marked as automated come from CogineBot");
     expect(first).not.toContain("cannot talk to the user");
     expect(first).toContain("Asia/Taipei");
-    expect(input.executeTool).toHaveBeenCalledTimes(8);
+    expect(input.executeTool).toHaveBeenCalledTimes(9);
     expect(input.executeTool).toHaveBeenLastCalledWith(
       "message_user",
       { message: "Helper progress" },

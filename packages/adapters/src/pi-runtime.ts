@@ -321,6 +321,7 @@ export class PiAgentRuntime implements AgentRuntime {
           signal,
           depth: 0,
           pausePending: false,
+          controlFailure: {},
           pendingShells: [],
           modelResponses: 0,
         };
@@ -763,6 +764,7 @@ export class PiAgentRuntime implements AgentRuntime {
             // Complete unresolved calls before another model choice. The executor
             // still enforces canonical approved arguments, routes and idempotency.
             const unresolved = new Set(unresolvedTurnCheckpointCalls(history as Message[]));
+            const hasToolBridge = partitionRuntimeTools(toolDefs).deferred.length > 0;
             if (restored.executionMode !== "sequential") {
               for (const message of [...history]) {
                 if (message.role !== "assistant") continue;
@@ -797,9 +799,19 @@ export class PiAgentRuntime implements AgentRuntime {
                 if (call.type !== "toolCall" || !unresolved.has(call)) continue;
                 const tool = tools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error("Pending checkpoint tool is no longer available");
+                const interactionTool =
+                  hasToolBridge && call.name === USE_TOOL && typeof call.arguments.name === "string"
+                    ? tools.find((candidate) => candidate.name === call.arguments.name)
+                    : tool;
                 const interaction =
                   call.id === restored.pendingToolCallId &&
-                  (call.name === "ask_user" || call.name === "request_takeover");
+                  (interactionTool?.name === "ask_user" ||
+                    interactionTool?.name === "request_takeover") &&
+                  !(
+                    interactionTool?.name === "request_takeover" &&
+                    request.resumeUnreleasedTakeoverExecutionId ===
+                      JSON.stringify(["pi-tool", "main", call.id])
+                  );
                 let result: AgentToolResult<JsonValue | undefined>;
                 try {
                   signal.throwIfAborted();
@@ -808,6 +820,15 @@ export class PiAgentRuntime implements AgentRuntime {
                     arguments: (tool.prepareArguments?.(call.arguments) ??
                       call.arguments) as typeof call.arguments,
                   });
+                  if (interaction && interactionTool !== tool) {
+                    const innerArgs = args.arguments;
+                    validateToolArguments(interactionTool, {
+                      ...call,
+                      name: interactionTool.name,
+                      arguments: (interactionTool.prepareArguments?.(innerArgs) ??
+                        innerArgs) as typeof call.arguments,
+                    });
+                  }
                   result = interaction
                     ? {
                         ...request.resumeToolResult,
@@ -879,6 +900,8 @@ export class PiAgentRuntime implements AgentRuntime {
           }
         }
 
+        if ("error" in host.controlFailure) throw host.controlFailure.error;
+
         // Budget abort stops the agent underneath the model, which leaves
         // errorMessage set. Treat that as a soft stop so the turn still ends
         // with a durable assistant message instead of a failed run.
@@ -948,7 +971,9 @@ export class PiAgentRuntime implements AgentRuntime {
         queue.close();
         if (trackedBudget) {
           const keepForResume =
-            (signal.aborted || Boolean(resumeHost?.pausePending)) && !trackedBudget.exceeded;
+            (signal.aborted || Boolean(resumeHost?.pausePending)) &&
+            !trackedBudget.exceeded &&
+            !(resumeHost && "error" in resumeHost.controlFailure);
           releaseToolCallBudget(request.runId, keepForResume);
         }
       }
@@ -1421,7 +1446,9 @@ function toAgentTool(
     description: tool.description,
     // One sequential tool makes Pi execute the whole batch in call order,
     // including reads that must see a preceding memory or schedule write.
-    ...(SCHEDULE_TOOL_NAMES.has(tool.name) || tool.name === "remember"
+    ...(SCHEDULE_TOOL_NAMES.has(tool.name) ||
+    tool.name === "remember" ||
+    tool.name === "request_takeover"
       ? { executionMode: "sequential" as const }
       : {}),
     parameters: parametersFor(tool),
@@ -1564,6 +1591,40 @@ function toAgentTool(
       try {
         result = await (async () => {
           if (tool.name === "request_takeover") {
+            if (host.request.executeTool) {
+              let result: unknown;
+              try {
+                result = await host.request.executeTool(tool.name, args, executionId, tool.route);
+              } catch (error) {
+                host.controlFailure.error = error;
+                host.pausePending = true;
+                throw error;
+              }
+              if (isAgentToolExecutionResult(result)) {
+                if (isToolPauseResult(result)) host.pausePending = true;
+                return result;
+              }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      result &&
+                      typeof result === "object" &&
+                      "takeover" in result &&
+                      result.takeover === "requested"
+                        ? "Takeover requested."
+                        : serializeToolResult(
+                            result,
+                            host.request.contextStrategy,
+                            tool.name,
+                            args,
+                          ),
+                  },
+                ],
+                details: result,
+              };
+            }
             host.pausePending = true;
             host.queue.push({
               type: "takeover",
@@ -1644,10 +1705,31 @@ function toAgentTool(
             return { content: [{ type: "text", text: JSON.stringify(found) }], details: found };
           }
           if (tool.name === "run_subagent") {
-            const result = await executeSubagent(host, executionId, args);
+            const result = host.request.executeTool
+              ? await host.request.executeTool(tool.name, args, executionId, tool.route, {
+                  runSubagent: async (canonicalArgs) => ({
+                    result: await executeSubagent(host, executionId, canonicalArgs),
+                  }),
+                })
+              : { result: await executeSubagent(host, executionId, args) };
+            if (isAgentToolExecutionResult(result)) {
+              if (isToolPauseResult(result)) host.pausePending = true;
+              return result;
+            }
             return {
-              content: [{ type: "text", text: result }],
-              details: { result },
+              content: [
+                {
+                  type: "text",
+                  text:
+                    result &&
+                    typeof result === "object" &&
+                    "result" in result &&
+                    typeof result.result === "string"
+                      ? result.result
+                      : serializeToolResult(result, host.request.contextStrategy, tool.name, args),
+                },
+              ],
+              details: result,
             };
           }
           if (host.request.executeTool) {
@@ -2647,6 +2729,8 @@ interface ToolHost {
   depth: number;
   agentNamespace?: string;
   pausePending: boolean;
+  /** Shared with helpers so a failed executor control survives the SDK's tool-error conversion. */
+  controlFailure: { error?: unknown };
   /** Shell commands that returned output and are still running. */
   pendingShells: Array<Promise<FinishedShellCommand>>;
   /** Main response batches count once; helpers count each individual tool call. */

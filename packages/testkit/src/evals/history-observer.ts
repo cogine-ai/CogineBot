@@ -42,7 +42,7 @@ export function observeSyntheticHistory(
       return runtime.run(
         {
           ...request,
-          executeTool: async (name, args, id, route) => {
+          executeTool: async (name, args, id, route, observer) => {
             if (
               name === "CRM_READ_DIAGNOSTIC" &&
               toolLoopDiagnostics &&
@@ -52,7 +52,7 @@ export function observeSyntheticHistory(
               if (syntheticCursor(args.cursor)) entry.cursor = args.cursor;
               toolLoopDiagnostics.push(entry);
               try {
-                const result = await execute(name, args, id, route);
+                const result = await execute(name, args, id, route, observer);
                 entry.resultKind =
                   result === null ? "null" : Array.isArray(result) ? "array" : typeof result;
                 let parsed: unknown = result;
@@ -94,7 +94,7 @@ export function observeSyntheticHistory(
               }
             }
             if (name !== "search_history" && name !== "read_history")
-              return execute(name, args, id, route);
+              return execute(name, args, id, route, observer);
             const entry: HistoryDiagnostic = { tool: name, resultCount: null, failed: false };
             if (name === "search_history" && typeof args.query === "string")
               entry.query = redact(args.query, secrets)
@@ -112,7 +112,7 @@ export function observeSyntheticHistory(
                 entry[key] = args[key];
             diagnostics.push(entry);
             try {
-              const result = await execute(name, args, id, route);
+              const result = await execute(name, args, id, route, observer);
               if (
                 result &&
                 typeof result === "object" &&
