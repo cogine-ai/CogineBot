@@ -85,13 +85,32 @@ export function checkPageSource(source: string): PageSourceCheck {
         `line ${line}: ${text.match(HTML_ENTITY)![0]} in a JavaScript string shows up literally; write the plain character instead.`,
       );
     } else if (token.type === TokenType._export) {
-      if (tokens[index + 1]?.type === TokenType._default) defaults += 1;
-      else if (
-        tokens[index + 1]?.type === TokenType.braceL &&
-        exportsOnlyDefault(tokens, index + 1, source)
-      )
+      if (tokens[index + 1]?.type === TokenType._default) {
         defaults += 1;
-      else errors.push(`line ${line}: only \`export default\` is allowed.`);
+        if (isLiteralDefault(tokens, index + 2, token.rhsEndIndex)) {
+          errors.push(
+            `line ${line}: the default export must be a React component, not a literal value.`,
+          );
+        }
+      } else {
+        const end =
+          tokens[index + 1]?.type === TokenType.braceL
+            ? defaultExportListEnd(tokens, index + 1, source)
+            : undefined;
+        if (end === undefined) {
+          errors.push(`line ${line}: only \`export default\` is allowed.`);
+        } else {
+          defaults += 1;
+          // A default re-export loads a module just as an import does.
+          if (tokens[end + 2]?.type === TokenType.string) {
+            const from = tokens[end + 1]!;
+            if (source.slice(from.start, from.end) === "from") {
+              const problem = importProblem(tokens, index, source);
+              if (problem) errors.push(`line ${line}: ${problem}`);
+            }
+          }
+        }
+      }
     } else if (token.type === TokenType.jsxTagStart) {
       const nameToken =
         tokens[index + 1]?.type === TokenType.jsxName ? tokens[index + 1] : undefined;
@@ -189,6 +208,38 @@ export function checkPageSource(source: string): PageSourceCheck {
 
 type Tokens = ReturnType<typeof parse>["tokens"];
 
+/** Reject only literal values we can identify without running page code. */
+function isLiteralDefault(tokens: Tokens, start: number, end: number | null): boolean {
+  if (end === null) return false;
+  if (tokens[end - 1]?.type === TokenType.semi) end -= 1;
+  while (
+    end - start > 2 &&
+    tokens[start]?.type === TokenType.parenL &&
+    tokens[end - 1]?.type === TokenType.parenR
+  ) {
+    start += 1;
+    end -= 1;
+  }
+  const first = tokens[start]?.type;
+  if (end - start === 1) {
+    return (
+      first === TokenType.num ||
+      first === TokenType.bigint ||
+      first === TokenType.string ||
+      first === TokenType.regexp ||
+      first === TokenType._null ||
+      first === TokenType._true ||
+      first === TokenType._false
+    );
+  }
+  const next = tokens[start + 1]?.type;
+  return (
+    end - start === 2 &&
+    (first === TokenType.plus || first === TokenType.minus) &&
+    (next === TokenType.num || next === TokenType.bigint)
+  );
+}
+
 // Plain HTML and SVG elements are fine for custom visuals; these would load or run something
 // else, which the viewer's sandbox blocks anyway, so the page would show a hole.
 const BLOCKED_ELEMENTS: ReadonlyMap<string, string> = new Map([
@@ -200,17 +251,18 @@ const BLOCKED_ELEMENTS: ReadonlyMap<string, string> = new Map([
   ["foreignobject", "draw with SVG shapes and text instead."],
 ]);
 
-/** \`export { App as default }\`, as bundlers write it, names the default export and nothing else. */
-function exportsOnlyDefault(tokens: Tokens, open: number, source: string): boolean {
+/** Finds the end of a list that only names the default export, as bundlers write it. */
+function defaultExportListEnd(tokens: Tokens, open: number, source: string): number | undefined {
   const words: string[] = [];
   for (let index = open + 1; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token.type === TokenType.braceR) {
-      return words.length === 3 && words[1] === "as" && words[2] === "default";
+      if (words.at(-1) === ",") words.pop();
+      return words.length === 3 && words[1] === "as" && words[2] === "default" ? index : undefined;
     }
     words.push(source.slice(token.start, token.end));
   }
-  return false;
+  return undefined;
 }
 
 /** An import of React or the kit is allowed and changes nothing; anything else cannot load. */

@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import type { ComponentType, ExoticComponent } from "react";
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,7 +17,15 @@ import { PAGE_STYLES } from "./kit/styles.js";
 /** What the host's boot script passes to `RakazoPage.mount`; `code` comes from `pageViewerCode`. */
 type PageBoot = { code: string; theme: "light" | "dark"; errorTitle: string; lang?: string };
 
+type PageComponent = ComponentType | ExoticComponent;
 type PageFactory = (exports: { default?: unknown }, ...globals: unknown[]) => void;
+
+// React tags its memo, forwardRef, and lazy components, which are not callable functions.
+const COMPONENT_WRAPPERS: ReadonlySet<unknown> = new Set([
+  Symbol.for("react.memo"),
+  Symbol.for("react.forward_ref"),
+  Symbol.for("react.lazy"),
+]);
 
 declare global {
   interface Window {
@@ -32,7 +40,7 @@ declare global {
  * kit, which the check allows, compiles to a require of what is already in scope. The page runs
  * in an inner function, so its own `const Steps` replaces the kit's instead of failing to load.
  */
-function loadPage(code: string): ComponentType {
+function loadPage(code: string): PageComponent {
   const script = document.createElement("script");
   script.text = `window.__rakazoPageFactory=function(exports,require,${PAGE_GLOBALS.join(",")}){(function(){${code}\n})()};`;
   document.head.append(script);
@@ -54,10 +62,15 @@ function loadPage(code: string): ComponentType {
     ...PAGE_HELPERS.map((name) => helpers[name]),
     ...PAGE_KIT_COMPONENTS.map((name) => kit[name]),
   );
-  if (typeof exports.default !== "function") {
+  const component = exports.default;
+  const wrapper =
+    component && typeof component === "object" && "$$typeof" in component
+      ? component.$$typeof
+      : undefined;
+  if (typeof component !== "function" && !COMPONENT_WRAPPERS.has(wrapper)) {
     throw new Error("The page has no default export component.");
   }
-  return exports.default as ComponentType;
+  return component as PageComponent;
 }
 
 const HOOKS: Record<(typeof PAGE_HOOKS)[number], unknown> = {
@@ -92,7 +105,7 @@ function mount(boot: PageBoot) {
   const host =
     document.getElementById("root") ?? document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  let Page: ComponentType;
+  let Page: PageComponent;
   try {
     Page = loadPage(boot.code);
   } catch (error) {

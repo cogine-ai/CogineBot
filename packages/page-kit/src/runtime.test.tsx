@@ -26,26 +26,59 @@ it("mounts a page and reports its height where the browser has no ResizeObserver
   expect(posted).toContainEqual(expect.objectContaining({ type: "rakazo-page:height" }));
 });
 
-it("runs a saved page that declares its own component under a kit component's name", async () => {
+it.each([
+  [
+    "a local component under a kit name",
+    "const Steps = () => <p>Own steps</p>;\nconst App = () => <Steps />;\nexport default App;\n",
+    "Own steps",
+  ],
+  [
+    "a memoized default component",
+    "export default React.memo(function App() { return <p>Memoized page</p>; });",
+    "Memoized page",
+  ],
+  [
+    "a default component forwarding a ref",
+    "export default React.forwardRef(function App(_props, ref) { return <p ref={ref}>Ref page</p>; });",
+    "Ref page",
+  ],
+  [
+    "a lazy default component",
+    "export default React.lazy(() => Promise.resolve({default: () => <p>Lazy page</p>}));",
+    "Lazy page",
+  ],
+  [
+    "a default export that is only data",
+    "export default { count: 2 };",
+    "This page couldn't be shown.",
+  ],
+])("handles %s in saved viewer code", async (_name, source, expected) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   await import("./runtime.js");
   // jsdom runs no inline scripts, so run the page's script the way a browser would.
   const append = document.head.append.bind(document.head);
-  vi.spyOn(document.head, "append").mockImplementation((...nodes) => {
+  const appendSpy = vi.spyOn(document.head, "append").mockImplementation((...nodes) => {
     for (const node of nodes) {
       if (node instanceof HTMLScriptElement) new Function(node.text)();
     }
     append(...nodes);
   });
-  const checked = checkPageSource(
-    "const Steps = () => <p>Own steps</p>;\nconst App = () => <Steps />;\nexport default App;\n",
-  );
-  if (!checked.ok) throw new Error(checked.errors.join("\n"));
-  document.body.replaceChildren();
-  const page = (window as unknown as { RakazoPage: { mount: (boot: object) => void } }).RakazoPage;
-  await act(async () => {
-    page.mount({ code: checked.code, theme: "light", errorTitle: "This page couldn't be shown." });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  expect(document.body.textContent).toBe("Own steps");
+  try {
+    const checked = checkPageSource(source);
+    if (!checked.ok) throw new Error(checked.errors.join("\n"));
+    document.body.replaceChildren();
+    const page = (window as unknown as { RakazoPage: { mount: (boot: object) => void } })
+      .RakazoPage;
+    await act(async () => {
+      page.mount({
+        code: checked.code,
+        theme: "light",
+        errorTitle: "This page couldn't be shown.",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.body.textContent).toContain(expected);
+  } finally {
+    appendSpy.mockRestore();
+  }
 });

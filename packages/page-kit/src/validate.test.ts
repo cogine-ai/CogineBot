@@ -191,6 +191,47 @@ describe("checkPageSource", () => {
   });
 
   it.each([
+    ["export { Widget as default } from 'missing-module';", 'only "react" and "rakazo/page"'],
+    ["export { Widget as default, }\nfrom 'missing-module';", 'only "react" and "rakazo/page"'],
+    ["export { Missing as default } from 'rakazo/page';", "Missing is not in the kit"],
+  ])("checks the module of a default re-export: %s", (source, diagnostic) => {
+    const checked = checkPageSource(source);
+    expect(checked).toEqual({
+      ok: false,
+      errors: [expect.stringContaining(diagnostic)],
+    });
+  });
+
+  it.each([
+    "export { Page as default } from 'rakazo/page';",
+    "const App = () => <Text />;\nexport { App as default, };",
+    "const App = () => <Text />;\nconst from = () => {};\nexport { App as default };\nfrom();",
+  ])("accepts an available default re-export or local export list: %s", (source) => {
+    expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
+  });
+
+  it.each(["1;", "'text';", "false;", "((null));", "1n", "/report/;", "-1;"])(
+    "rejects a default export that can only be a literal value: %s",
+    (value) => {
+      expect(checkPageSource(`\nexport default ${value}`)).toEqual({
+        ok: false,
+        errors: ["line 2: the default export must be a React component, not a literal value."],
+      });
+    },
+  );
+
+  it.each(["true ? App : Other", "false || App", "'ready' && App", "(1, App)"])(
+    "leaves the result of a computed default export to the viewer: %s",
+    (expression) => {
+      expect(
+        checkPageSource(
+          `const App = () => <Text />; const Other = App; export default ${expression};`,
+        ),
+      ).toEqual({ ok: true, code: expect.any(String) });
+    },
+  );
+
+  it.each([
     ["no default export", "const App = () => <Text />;"],
     [
       "two default exports",
