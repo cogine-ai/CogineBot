@@ -4977,6 +4977,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }),
           );
         };
+        let resumablePauseApplied = false;
         const pauseRunForInput = async (
           input: Parameters<ThreadEvents["pauseRunForInput"]>[0],
           executionId?: string,
@@ -4985,7 +4986,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (!scripted) await persistTurnCheckpoint(executionId, pendingSecretEffectId);
           try {
             const paused = await deps.events.pauseRunForInput(input);
-            if (paused) stopHeartbeatAfterCompletion();
+            if (paused) {
+              resumablePauseApplied = true;
+              stopHeartbeatAfterCompletion();
+            }
             return paused;
           } catch (error) {
             if (isSteeringContinuation) throw new ScriptedStateError();
@@ -4999,7 +5003,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (!scripted) await persistTurnCheckpoint(executionId);
           try {
             const paused = await deps.events.pauseRunForTakeover(input);
-            if (paused) stopHeartbeatAfterCompletion();
+            if (paused) {
+              resumablePauseApplied = true;
+              stopHeartbeatAfterCompletion();
+            }
             return paused;
           } catch (error) {
             if (isSteeringContinuation) throw new ScriptedStateError();
@@ -7191,7 +7198,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : undefined,
             );
             approvalPausePending = true;
-            return takeoverPausedToolResult(paused ? "paused" : "stopped");
+            return takeoverPausedToolResult(paused ? "paused" : "stopped", resumablePauseApplied);
           }
           if (name === "run_subagent") {
             if (observer?.runSubagent) return finish(await observer.runSubagent(args));

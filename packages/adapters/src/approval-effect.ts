@@ -350,6 +350,7 @@ export function approvalPausedToolResult(): ApprovalPausedToolResult {
 
 export function takeoverPausedToolResult(
   state: "paused" | "stopped" = "paused",
+  resumable = state === "paused",
 ): ApprovalPausedToolResult {
   return {
     kind: "agent_tool_result",
@@ -359,7 +360,7 @@ export function takeoverPausedToolResult(
         text: state === "paused" ? "Takeover requested." : "The takeover could not be started.",
       },
     ],
-    details: { takeover: state },
+    details: { takeover: state, resumable },
     terminate: true,
   };
 }

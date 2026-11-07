@@ -16,7 +16,7 @@ import {
 import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { approvalPausedToolResult } from "./approval-effect.js";
+import { approvalPausedToolResult, takeoverPausedToolResult } from "./approval-effect.js";
 import { FIND_TOOL, USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { modelsForRequest, PiAgentRuntime } from "./pi-runtime.js";
@@ -219,14 +219,52 @@ describe("real Pi built-in discovery and execution", () => {
     },
   );
 
-  it.each(["pause", "abort", "exceeded"] as const)(
+  it.each([false, true])(
+    "releases the finite budget after a stopped takeover without a committed pause (abort=%s)",
+    async (abort) => {
+      vi.stubEnv("MAX_TOOL_CALLS_PER_TURN", "2");
+      provider.stream
+        .mockImplementationOnce(() =>
+          response([
+            call("takeover", "request_takeover", { reason: "Sign in" }),
+            call("tail", "read_file", { path: "must-not-run.txt" }),
+          ]),
+        )
+        .mockImplementationOnce(() =>
+          response([
+            call("retry-first", "read_file", { path: "first.txt" }),
+            call("retry-second", "read_file", { path: "second.txt" }),
+          ]),
+        )
+        .mockImplementation(() => response());
+      const controller = new AbortController();
+      const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => {
+        if (abort) controller.abort();
+        return takeoverPausedToolResult("stopped");
+      });
+      const input = request([builtin("request_takeover"), builtin("read_file")], {
+        executeTool: execute,
+      });
+      await consume(input, controller.signal);
+      expect(controller.signal.aborted).toBe(abort);
+      expect(execute.mock.calls.map(([name]) => name)).toEqual(["request_takeover"]);
+      expect(provider.stream).toHaveBeenCalledOnce();
+
+      execute.mockClear();
+      execute.mockImplementation(async () => ({ ok: true }));
+      await consume(input);
+      expect(execute.mock.calls.map(([, args]) => args.path)).toEqual(["first.txt", "second.txt"]);
+    },
+  );
+
+  it.each(["pause", "competing", "abort", "exceeded"] as const)(
     "keeps the finite-budget lifecycle for an ordinary %s",
     async (ending) => {
       vi.stubEnv("MAX_TOOL_CALLS_PER_TURN", "2");
       provider.stream
         .mockImplementationOnce(() =>
           response(
-            ending === "pause"
+            ending === "pause" || ending === "competing"
               ? [call("pause", "request_takeover", { reason: "Sign in" })]
               : [
                   call("initial", "read_file", { path: "initial.txt" }),
@@ -249,6 +287,7 @@ describe("real Pi built-in discovery and execution", () => {
       const controller = new AbortController();
       const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => {
         if (ending === "abort") controller.abort();
+        if (ending === "competing") return takeoverPausedToolResult("stopped", true);
         return ending === "pause" ? approvalPausedToolResult() : { ok: true };
       });
       const input = request([builtin("request_takeover"), builtin("read_file")], {

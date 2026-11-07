@@ -1159,6 +1159,75 @@ describe("real Pi runtime control approval", () => {
     },
   );
 
+  it.each([false, true])(
+    "reports the committed pause outcome to a competing takeover (committed=%s)",
+    async (committed) => {
+      const f = fixture({
+        builtin: true,
+        deploymentModelKey: "synthetic-control-key",
+        sandboxProvider: {
+          describe: () => ({
+            id: "desktop",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: {
+              graphical: false,
+              pty: true,
+              snapshots: false,
+              takeover: true,
+              persistentHome: true,
+            },
+          }),
+        },
+      });
+      f.prisma.deploymentSettings.findUnique.mockResolvedValue({
+        defaultModelProvider: "openrouter",
+        defaultModelId: "openai/gpt-5.6-luna",
+      });
+      let signalEntered!: () => void;
+      let finishPause!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        signalEntered = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        finishPause = resolve;
+      });
+      const originalPause = f.pauseRunForTakeover.getMockImplementation()!;
+      f.pauseRunForTakeover.mockImplementation(async (input) => {
+        signalEntered();
+        await release;
+        return committed ? originalPause(input) : false;
+      });
+      const publication = vi.spyOn(RunMessagesModule, "publishMessage").mockResolvedValue(null);
+      try {
+        f.runtimeRun.mockImplementation(async function* (request) {
+          const execute = request.executeTool!;
+          const first = execute("request_takeover", { reason: "First request" }, "first");
+          await Promise.race([
+            entered,
+            first.then(() => {
+              throw new Error("The first request did not reach the pause transaction");
+            }),
+          ]);
+          const second = execute("request_takeover", { reason: "Competing request" }, "second");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          finishPause();
+          f.results.push(...(await Promise.all([first, second])));
+        });
+        await f.run();
+        expect(f.pauseRunForTakeover).toHaveBeenCalledOnce();
+        expect(f.results).toMatchObject([
+          { details: { takeover: committed ? "paused" : "stopped", resumable: committed } },
+          { details: { takeover: "stopped", resumable: committed } },
+        ]);
+        expect(f.finalizeRun).not.toHaveBeenCalled();
+      } finally {
+        finishPause();
+        publication.mockRestore();
+      }
+    },
+  );
+
   it.each([
     { name: "request_takeover" as const, decision: "approved" as const },
     { name: "run_subagent" as const, decision: "approved" as const },

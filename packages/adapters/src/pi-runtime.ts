@@ -970,10 +970,11 @@ export class PiAgentRuntime implements AgentRuntime {
       } finally {
         queue.close();
         if (trackedBudget) {
+          const controlFailure = resumeHost?.controlFailure;
           const keepForResume =
             (signal.aborted || Boolean(resumeHost?.pausePending)) &&
             !trackedBudget.exceeded &&
-            !(resumeHost && "error" in resumeHost.controlFailure);
+            !(controlFailure && ("error" in controlFailure || controlFailure.nonResumableStop));
           releaseToolCallBudget(request.runId, keepForResume);
         }
       }
@@ -1601,7 +1602,13 @@ function toAgentTool(
                 throw error;
               }
               if (isAgentToolExecutionResult(result)) {
-                if (isToolPauseResult(result)) host.pausePending = true;
+                if (isToolPauseResult(result)) {
+                  host.pausePending = true;
+                  const details = result.details as { takeover?: unknown; resumable?: unknown };
+                  if (details.takeover === "stopped" && details.resumable === false) {
+                    host.controlFailure.nonResumableStop = true;
+                  }
+                }
                 return result;
               }
               return {
@@ -2729,8 +2736,8 @@ interface ToolHost {
   depth: number;
   agentNamespace?: string;
   pausePending: boolean;
-  /** Shared with helpers so a failed executor control survives the SDK's tool-error conversion. */
-  controlFailure: { error?: unknown };
+  /** Shared with helpers so terminal executor controls survive SDK error and pause handling. */
+  controlFailure: { error?: unknown; nonResumableStop?: true };
   /** Shell commands that returned output and are still running. */
   pendingShells: Array<Promise<FinishedShellCommand>>;
   /** Main response batches count once; helpers count each individual tool call. */
