@@ -1593,6 +1593,9 @@ function toAgentTool(
         result = await (async () => {
           if (tool.name === "request_takeover") {
             if (host.request.executeTool) {
+              // The executor must persist the queued narration and tool call before pausing.
+              await host.queue.waitForConsumer(host.signal);
+              host.signal.throwIfAborted();
               let result: unknown;
               try {
                 result = await host.request.executeTool(tool.name, args, executionId, tool.route);
@@ -2710,6 +2713,7 @@ function sanitizeProviderError(provider: string, message: string): string {
 
 interface EventQueue {
   push(event: AgentRuntimeEvent): void;
+  waitForConsumer(signal: AbortSignal): Promise<void>;
   fail(error: Error): void;
   close(): void;
   iterate(): AsyncIterable<AgentRuntimeEvent>;
@@ -3444,7 +3448,7 @@ function createGate(max: number) {
 }
 
 function createQueue(): EventQueue {
-  const items: AgentRuntimeEvent[] = [];
+  const items: (AgentRuntimeEvent | (() => void))[] = [];
   let wake: (() => void) | undefined;
   let closed = false;
   let failure: Error | undefined;
@@ -3452,6 +3456,18 @@ function createQueue(): EventQueue {
     push(event) {
       items.push(event);
       wake?.();
+    },
+    waitForConsumer(signal) {
+      signal.throwIfAborted();
+      return new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        items.push(() => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        });
+        wake?.();
+      });
     },
     fail(error) {
       failure = error;
@@ -3465,7 +3481,9 @@ function createQueue(): EventQueue {
     async *iterate() {
       while (true) {
         if (items.length) {
-          yield items.shift()!;
+          const item = items.shift()!;
+          if (typeof item === "function") item();
+          else yield item;
           continue;
         }
         if (failure) throw failure;

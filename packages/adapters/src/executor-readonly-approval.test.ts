@@ -400,6 +400,7 @@ function fixture({
     },
   );
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
+  const append = vi.fn(async (_event: Parameters<ThreadEvents["append"]>[0]) => undefined);
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
@@ -471,7 +472,7 @@ function fixture({
     },
     memoryProviders: { resolve: async () => null },
     events: {
-      append: vi.fn(async () => undefined),
+      append,
       notify: vi.fn(async () => undefined),
       pauseRunForInput,
       pauseRunForTakeover,
@@ -491,6 +492,7 @@ function fixture({
     executor,
     runRecord: run,
     finalizeRun,
+    append,
     runtimeRun,
     effects,
     results,
@@ -878,11 +880,13 @@ describe("real Pi runtime control approval", () => {
     tool?:
       | { name: string; args: Record<string, unknown> }
       | Array<{ name: string; args: Record<string, unknown> }>,
+    narration?: string,
   ) {
     const calls = tool ? (Array.isArray(tool) ? tool : [tool]) : [];
     const delta = calls.length
       ? {
           role: "assistant",
+          ...(narration ? { content: narration } : {}),
           tool_calls: calls.map((call, index) => ({
             index,
             id: index === 0 ? "control-call" : `control-call-${index}`,
@@ -1035,6 +1039,7 @@ describe("real Pi runtime control approval", () => {
     "settles real Pi takeover transaction outcome=%s before stopping",
     async (outcome) => {
       let requests = 0;
+      const narration = "I need you to finish signing in before I can continue.";
       const fetcher = vi.fn(async () =>
         ++requests === 1
           ? sse(
@@ -1045,6 +1050,7 @@ describe("real Pi runtime control approval", () => {
                     { name: "web_search", args: { query: "Must not run after takeover" } },
                   ]
                 : { name: "request_takeover", args: { reason: "Finish sign-in" } },
+              outcome === "deferred" ? narration : undefined,
             )
           : sse(),
       );
@@ -1101,12 +1107,36 @@ describe("real Pi runtime control approval", () => {
           f.pauseRunForTakeover.mockRejectedValue(
             new Error("Synthetic takeover transaction failed"),
           );
-        if (outcome === "deferred")
+        let enterAudit!: () => void;
+        let finishAudit!: () => void;
+        const auditEntered = new Promise<void>((resolve) => {
+          enterAudit = resolve;
+        });
+        const auditRelease = new Promise<void>((resolve) => {
+          finishAudit = resolve;
+        });
+        const beforePause: string[] = [];
+        if (outcome === "deferred") {
+          publication.mockImplementation(async (_deps, _run, _role, blocks) => {
+            if (blocks.some((block) => block.kind === "text" && block.text === narration)) {
+              beforePause.push("narration");
+            }
+            return null;
+          });
+          f.append.mockImplementation(async (event) => {
+            if (event.type !== "agent.tool.called" || event.payload?.name !== "request_takeover")
+              return;
+            enterAudit();
+            await auditRelease;
+            beforePause.push("audit");
+          });
           f.pauseRunForTakeover.mockImplementation(async (input) => {
+            beforePause.push("pause");
             entered();
             await resumePause;
             return originalPause(input);
           });
+        }
         const pi = new PiAgentRuntime();
         f.runtimeRun.mockImplementation(async function* (request, context) {
           yield* pi.run({ ...request, claimSteering: undefined }, context);
@@ -1124,6 +1154,9 @@ describe("real Pi runtime control approval", () => {
           const running = f.run().finally(() => {
             settled = true;
           });
+          await Promise.race([auditEntered, enteredPause]);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          finishAudit();
           await enteredPause;
           await new Promise<void>((resolve) => setImmediate(resolve));
           const executionSignal = f.runtimeRun.mock.calls[0]![1]?.signal;
@@ -1134,6 +1167,7 @@ describe("real Pi runtime control approval", () => {
           await running;
           expect(abortedBeforeCommit).toBe(false);
           expect(settledBeforeCommit).toBe(false);
+          expect(beforePause).toEqual(["narration", "audit", "pause"]);
           expect(search).toHaveBeenCalledOnce();
           expect(search).toHaveBeenCalledWith(
             expect.objectContaining({ query: "Prefix read before takeover" }),
