@@ -19,6 +19,8 @@ describe("right panel preferences", () => {
       routineId: "routine-a",
     });
     expect(readRightPanelState("user-b:space-a:bot-a")).toEqual({ panel: null });
+    writeRightPanelState("user-a:space-a:bot-a", "pages");
+    expect(readRightPanelState("user-a:space-a:bot-a")).toEqual({ panel: "pages" });
     writeRightPanelState("user-a:space-a:bot-a", null, "routine-a");
     expect(readRightPanelState("user-a:space-a:bot-a")).toEqual({ panel: null });
   });

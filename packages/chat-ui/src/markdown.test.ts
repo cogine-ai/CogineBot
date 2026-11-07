@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import {
@@ -109,6 +110,68 @@ describe("plainTextLinkParts", () => {
     const parts = plainTextLinkParts(text);
     expect(performance.now() - started).toBeLessThan(250);
     expect(parts).toEqual([{ type: "text", value: text }]);
+  });
+
+  it("bounds an unclosed escaped Page title and keeps the following valid link", () => {
+    // Isolate hostile input so a scanner regression cannot block the test runner itself.
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `import { plainTextLinkParts } from ${JSON.stringify(new URL("./markdown.ts", import.meta.url).href)};
+const prefix = "[" + "\\\\[".repeat(200_000);
+const parts = plainTextLinkParts(prefix + "\\n[Later](page:later_2)", true);
+process.stdout.write(JSON.stringify({ literal: parts[0]?.type === "text" && parts[0].value === prefix + "\\n", rest: parts.slice(1) }));`,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      literal: true,
+      rest: [{ type: "page", value: "Later", pageId: "later_2" }],
+    });
+  });
+
+  it.each([
+    { text: "[](page:p)", values: [""], ids: ["p"] },
+    { text: "[Q3 \\[draft\\] \\\\ plan](page:p_1)", values: ["Q3 [draft] \\ plan"], ids: ["p_1"] },
+    { text: "\\[Report](page:p)", values: ["Report"], ids: ["p"] },
+    { text: "`[Title](page:p)`", values: ["Title"], ids: ["p"] },
+    { text: "[outer[Inner](page:p)", values: ["Inner"], ids: ["p"] },
+    { text: "[bad\n[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: "[bad\\q[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: "[bad\\!](page:no)[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: "[Bad](page:bad id)[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: `[Bad](page:${"a".repeat(65)})[Good](page:p)`, values: ["Good"], ids: ["p"] },
+    { text: "[Bad](page:中文)[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: "[Bad](page:)[Good](page:p)", values: ["Good"], ids: ["p"] },
+    { text: "[Good](page:p", values: [], ids: [] },
+    { text: "[Title\nmore](page:p)", values: [], ids: [] },
+    { text: "[Title\rmore](page:p)", values: ["Title\rmore"], ids: ["p"] },
+    { text: "[One](page:p)[Two](page:q-2)", values: ["One", "Two"], ids: ["p", "q-2"] },
+    { text: `[Bound](page:${"a".repeat(64)})`, values: ["Bound"], ids: ["a".repeat(64)] },
+  ])("preserves literal-user Page syntax in $text", ({ text, values, ids }) => {
+    const pages = plainTextLinkParts(text, true).filter((part) => part.type === "page");
+    expect(pages.map((part) => part.value)).toEqual(values);
+    expect(pages.map((part) => part.pageId)).toEqual(ids);
+  });
+
+  it("keeps ordinary URL runs around adjacent escaped Page links", () => {
+    expect(
+      plainTextLinkParts(
+        "https://before.example [Q3 \\[draft\\]](page:p)[Next](page:q) https://after.example",
+        true,
+      ),
+    ).toEqual([
+      { type: "link", value: "https://before.example", href: "https://before.example" },
+      { type: "text", value: " " },
+      { type: "page", value: "Q3 [draft]", pageId: "p" },
+      { type: "page", value: "Next", pageId: "q" },
+      { type: "text", value: " " },
+      { type: "link", value: "https://after.example", href: "https://after.example" },
+    ]);
   });
 });
 

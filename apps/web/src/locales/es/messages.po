@@ -7079,3 +7079,104 @@ msgstr "Reload this connection before saving."
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Maximum output tokens must be smaller than the context limit."
 msgstr "Maximum output tokens must be smaller than the context limit."
+
+#: src/components/pages/PageNotice.tsx
+msgid "Back to chat"
+msgstr "Volver al chat"
+
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Check your connection and try again."
+msgstr "Comprueba tu conexión e inténtalo de nuevo."
+
+#: src/components/pages/PageView.tsx
+msgid "Close page"
+msgstr "Cerrar página"
+
+#: src/pages/shell/dialogs.tsx
+msgid "Could not delete page"
+msgstr "No se pudo eliminar la página"
+
+#: src/components/pages/PagesList.tsx
+msgid "Could not pin this page. Try again."
+msgstr "No se pudo fijar esta página. Inténtalo de nuevo."
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "Could not rename this page. Try again."
+msgstr "No se pudo cambiar el nombre de esta página. Inténtalo de nuevo."
+
+#: src/components/pages/PagesList.tsx
+msgid "Couldn't load pages."
+msgstr "No se pudieron cargar las páginas."
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Download PDF"
+msgstr "Descargar PDF"
+
+#: src/components/pages/PagesList.tsx
+msgid "Find a page"
+msgstr "Buscar una página"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "It may have been deleted, or it belongs to someone else."
+msgstr "Puede que se haya eliminado o que pertenezca a otra persona."
+
+#: src/components/pages/PagesList.tsx
+msgid "No pages match “{query}”."
+msgstr "Ninguna página coincide con «{query}»."
+
+#: src/components/pages/PageCard.tsx
+msgid "Open {title}"
+msgstr "Abrir {title}"
+
+#: src/components/pages/DownloadPdfButton.tsx
+msgid "Opens your browser's print dialog. Choose Save as PDF as the destination."
+msgstr "Abre el diálogo de impresión del navegador. Elige Guardar como PDF como destino."
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · {when}"
+msgstr "Página · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Deleted"
+msgstr "Página · Eliminada"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Updated below"
+msgstr "Página · Actualizada abajo"
+
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PageView.tsx
+msgid "Page title"
+msgstr "Título de la página"
+
+#: src/pages/Shell.tsx
+msgid "Pages"
+msgstr "Páginas"
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this bot builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "Las páginas que este bot crea para ti aparecen aquí. Pide un panel, un seguimiento o un plan para crear una."
+
+#: src/components/pages/PagesList.tsx
+msgid "Pages this group builds for you appear here. Ask for a dashboard, tracker or plan to make one."
+msgstr "Las páginas que este grupo crea para ti aparecen aquí. Pide un panel, un seguimiento o un plan para crear una."
+
+#: src/components/pages/PagesList.tsx
+msgid "Pinned"
+msgstr "Fijados"
+
+#: src/lib/pages.ts
+msgid "This page couldn't be shown."
+msgstr "No se pudo mostrar esta página."
+
+#: src/components/pages/PageCard.tsx
+#: src/components/pages/PageView.tsx
+#: src/components/pages/PageViewHost.tsx
+msgid "This page couldn't load"
+msgstr "No se pudo cargar esta página"
+
+#: src/components/pages/PageViewHost.tsx
+msgid "This page isn't available"
+msgstr "Esta página no está disponible"

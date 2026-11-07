@@ -41,6 +41,8 @@ import {
   forwardedRendererRequestInit,
   immutableRendererAsset,
   isRendererAssetMiss,
+  isRendererViewerDocument,
+  rendererViewerDocumentHeaders,
 } from "./renderer-assets.js";
 import { installSessionPermissions } from "./session-permissions.js";
 import {
@@ -500,6 +502,7 @@ async function installBundledRenderer(
     const acceptsHtml = request.headers.get("accept")?.includes("text/html") ?? false;
     const candidates = bundledRendererCandidates(root, request.url, webUrl.origin, acceptsHtml);
     if (!candidates) return forward();
+    const viewerDocument = isRendererViewerDocument(root, candidates[0]);
     for (const file of candidates) {
       let body: Buffer | null = null;
       try {
@@ -513,6 +516,7 @@ async function installBundledRenderer(
         throw error;
       }
       const headers = new Headers({
+        ...(viewerDocument ? rendererViewerDocumentHeaders : {}),
         "cache-control": immutableRendererAsset(file)
           ? "public, max-age=31536000, immutable"
           : "no-cache",
@@ -520,6 +524,12 @@ async function installBundledRenderer(
         "x-content-type-options": "nosniff",
       });
       return new Response(body, { headers });
+    }
+    if (viewerDocument) {
+      return new Response(null, {
+        status: 404,
+        headers: { ...rendererViewerDocumentHeaders, "cache-control": "no-store" },
+      });
     }
     return forward();
   });

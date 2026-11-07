@@ -47,6 +47,14 @@ export type ColorTokens = {
   overlay: string;
   scrollbar: string;
   scrollbarHover: string;
+  pageIconSheet: string;
+  pageIconEdge: string;
+  pageIconFold: string;
+  pageIconLine: string;
+  pageIconLineSoft: string;
+  pageTile: string;
+  pageTileEdge: string;
+  pageTileLine: string;
 };
 
 export const darkTokens = {
@@ -84,6 +92,14 @@ export const darkTokens = {
   overlay: "rgba(4, 4, 5, 0.72)",
   scrollbar: "#1E2026",
   scrollbarHover: "#2E313A",
+  pageIconSheet: "#2C2C2E",
+  pageIconEdge: "#363638",
+  pageIconFold: "#3C3C3E",
+  pageIconLine: "#6F6F71",
+  pageIconLineSoft: "#616163",
+  pageTile: "#343434",
+  pageTileEdge: "#414141",
+  pageTileLine: "#626262",
 } as const satisfies ColorTokens;
 
 export const lightTokens = {
@@ -121,6 +137,14 @@ export const lightTokens = {
   overlay: "rgba(20, 20, 22, 0.45)",
   scrollbar: "#C8C8C4",
   scrollbarHover: "#A8A8A4",
+  pageIconSheet: "#E8E8EA",
+  pageIconEdge: "#D6D6DA",
+  pageIconFold: "#D0D0D4",
+  pageIconLine: "#8E8E93",
+  pageIconLineSoft: "#A1A1A6",
+  pageTile: "#ECECEE",
+  pageTileEdge: "#DADADD",
+  pageTileLine: "#A1A1A6",
 } as const satisfies ColorTokens;
 
 /** Web states extend the shared palette for the PageKit theme. */
@@ -144,6 +168,13 @@ export const webLightTokens = {
   primaryHover: "#363636",
   primaryDisabled: "#1C1C1C26",
 } as const satisfies WebColorTokens;
+
+/**
+ * The rising bars on the page icon, the same in both themes. The folded icon was measured from
+ * the chat chip; the card footer's tile draws them a little brighter.
+ */
+export const pageIconBars = ["#489D61", "#E7712E", "#BC3B3D", "#3E82F3"] as const;
+export const pageTileBars = ["#5AC078", "#E9993A", "#E87031", "#3E82F4"] as const;
 
 /**
  * Bot-built pages: data series and status tones, a step deeper on white. Kept out of tokens.css
