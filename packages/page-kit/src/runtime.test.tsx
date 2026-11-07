@@ -48,6 +48,25 @@ it.each([
     "Lazy page",
   ],
   [
+    "a lowered import alias and names local to nested scopes",
+    `import { useState as exports } from "react";
+     class Support { static { var Object = "local"; } }
+     for (var name of []) { let exports; }
+     { function Object() {} }
+     export default function App() {
+       const [label] = exports("Scoped page");
+       return <p>{label}</p>;
+     }`,
+    "Scoped page",
+  ],
+  [
+    "local names the generated module does not need",
+    `const globalThis = {require: "Local data"};
+     const require = {};
+     export default function App() { return <p>{globalThis.require}</p>; }`,
+    "Local data",
+  ],
+  [
     "a default export that is only data",
     "export default { count: 2 };",
     "This page couldn't be shown.",

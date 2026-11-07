@@ -232,6 +232,27 @@ describe("checkPageSource", () => {
   );
 
   it.each([
+    ["const exports = {};", "exports"],
+    ["const { exports } = {};", "exports"],
+    ["const \\u0065xports = {};", "exports"],
+    ["if (true) { var exports; }", "exports"],
+    ["for (var { exports } of []) {}", "exports"],
+    ["import { useState } from 'react';\nconst require = {};", "require"],
+    ["import * as exports from 'react';", "exports"],
+    ["const Object = {};", "Object"],
+    ["/* page-sources\n{}\n*/\nconst globalThis = {};", "globalThis"],
+  ])("rejects a declaration that shadows a generated binding: %s", (setup, name) => {
+    expect(checkPageSource(`${setup}\nexport default function App() { return <Text />; }`)).toEqual(
+      {
+        ok: false,
+        errors: [
+          expect.stringMatching(new RegExp(`^line \\d+: rename the module binding \`${name}\``)),
+        ],
+      },
+    );
+  });
+
+  it.each([
     ["no default export", "const App = () => <Text />;"],
     [
       "two default exports",

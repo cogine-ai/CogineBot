@@ -12,6 +12,10 @@ export function compilePageSource(source: string): string {
 
 const SOURCES_PRAGMA = /^\uFEFF?\s*\/\*(?!\*)[ \t]*page-sources[ \t]*\r?\n([\s\S]*?)\*\//;
 
+export function hasPageSourceDeclaration(source: string): boolean {
+  return SOURCES_PRAGMA.test(source);
+}
+
 /**
  * A page may open with a comment declaring data sources: `/* page-sources` then a JSON object
  * of snapshots keyed by id. useSource reads them back; nothing refreshes them yet.

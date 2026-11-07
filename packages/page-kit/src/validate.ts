@@ -4,7 +4,12 @@ import { PAGE_SOURCE_MAX_BYTES, pageSourceBytes } from "@rakazo/contracts";
 import { parse } from "sucrase/dist/parser/index.js";
 import { IdentifierRole } from "sucrase/dist/parser/tokenizer/index.js";
 import { TokenType } from "sucrase/dist/parser/tokenizer/types.js";
-import { compilePageSource, declaredSources, pageViewerCode } from "./compile.js";
+import {
+  compilePageSource,
+  declaredSources,
+  hasPageSourceDeclaration,
+  pageViewerCode,
+} from "./compile.js";
 import {
   PAGE_GLOBALS,
   PAGE_HELPERS,
@@ -58,17 +63,19 @@ export function checkPageSource(source: string): PageSourceCheck {
     };
   }
   const lineOf = lineLocator(source);
-  let tokens: ReturnType<typeof parse>["tokens"];
+  let parsed: ReturnType<typeof parse>;
   try {
-    tokens = parse(source, true, false, false).tokens;
+    parsed = parse(source, true, false, false);
   } catch (error) {
     return { ok: false, errors: [syntaxErrorText(error)] };
   }
+  const { tokens } = parsed;
   const errors: string[] = [];
   const warnings: string[] = [];
   const declared = new Set<string>();
   const tags = new Map<string, number>();
   let defaults = 0;
+  let loadsModule = false;
   const blocked = new Set<string>();
   tokens.forEach((token, index) => {
     const text = source.slice(token.start, token.end);
@@ -76,6 +83,7 @@ export function checkPageSource(source: string): PageSourceCheck {
     if (token.type === TokenType._import) {
       const problem = importProblem(tokens, index, source);
       if (problem) errors.push(`line ${line}: ${problem}`);
+      else loadsModule = true;
     } else if (
       (token.type === TokenType.string || token.type === TokenType.template) &&
       !isJsxAttributeValue(tokens, index) &&
@@ -107,6 +115,7 @@ export function checkPageSource(source: string): PageSourceCheck {
             if (source.slice(from.start, from.end) === "from") {
               const problem = importProblem(tokens, index, source);
               if (problem) errors.push(`line ${line}: ${problem}`);
+              else loadsModule = true;
             }
           }
         }
@@ -175,6 +184,14 @@ export function checkPageSource(source: string): PageSourceCheck {
       }
     }
   });
+  const moduleBindings = new Set(["exports", "Object"]);
+  if (loadsModule) moduleBindings.add("require");
+  if (hasPageSourceDeclaration(source)) moduleBindings.add("globalThis");
+  for (const { name, start } of moduleBindingConflicts(parsed, source, moduleBindings)) {
+    errors.push(
+      `line ${lineOf(start)}: rename the module binding \`${name}\`; the viewer uses this name.`,
+    );
+  }
   for (const { name, start } of selfRenderingKitNames(tokens, source)) {
     errors.push(`line ${lineOf(start)}: ${selfRenderingMessage(name)}`);
   }
@@ -207,6 +224,73 @@ export function checkPageSource(source: string): PageSourceCheck {
 }
 
 type Tokens = ReturnType<typeof parse>["tokens"];
+
+/** Sucrase emits its bridge in the same scope as the compiled page. */
+function moduleBindingConflicts(
+  { tokens, scopes }: ReturnType<typeof parse>,
+  source: string,
+  reserved: ReadonlySet<string>,
+) {
+  const conflicts: { name: string; start: number }[] = [];
+  const stack: typeof scopes = [];
+  const root = scopes.at(-1);
+  let nextScope = scopes.length - 1;
+  let localVarScopes = 0;
+  const isLocalVarScope = (scope: (typeof scopes)[number]) =>
+    scope !== root &&
+    (scope.isFunctionScope || tokens[scope.startTokenIndex - 1]?.type === TokenType._static);
+
+  // Sucrase lists scopes by end index. Walk backwards to tell module vars from nested locals.
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    while (stack.at(-1)?.startTokenIndex === i + 1) {
+      if (isLocalVarScope(stack.pop()!)) localVarScopes -= 1;
+    }
+    while (scopes[nextScope]?.endTokenIndex === i + 1) {
+      const scope = scopes[nextScope--]!;
+      stack.push(scope);
+      if (isLocalVarScope(scope)) localVarScopes += 1;
+    }
+    const token = tokens[i]!;
+    const role = token.identifierRole;
+    if (token.type !== TokenType.name || !DECLARATION_ROLES.has(role) || localVarScopes > 0)
+      continue;
+    const spelling = source.slice(token.start, token.end);
+    const name = spelling.replace(/\\u(?:\{([\da-f]+)\}|([\da-f]{4}))/gi, (match, point, unit) => {
+      const value = Number.parseInt(point ?? unit, 16);
+      return value <= 0x10ffff ? String.fromCodePoint(value) : match;
+    });
+    if (!reserved.has(name)) continue;
+
+    const before = tokens[i - 1]?.type;
+    const namespaceImport =
+      role === IdentifierRole.ImportDeclaration && tokens[i - 2]?.type === TokenType.star;
+    const strictBlockFunction =
+      before === TokenType._function ||
+      (before === TokenType.star && tokens[i - 2]?.type === TokenType._function);
+    const moduleVar =
+      (role === IdentifierRole.FunctionScopedDeclaration ||
+        role === IdentifierRole.ObjectShorthandFunctionScopedDeclaration) &&
+      !strictBlockFunction;
+    // In a for header Sucrase gives var declarations the same role as let and const.
+    const inner = stack.at(-1)?.startTokenIndex ?? 0;
+    const forVar =
+      (role === IdentifierRole.BlockScopedDeclaration ||
+        role === IdentifierRole.ObjectShorthandBlockScopedDeclaration) &&
+      tokens[inner]?.type === TokenType._for &&
+      tokens[inner + 1]?.type === TokenType.parenL &&
+      tokens[inner + 2]?.type === TokenType._var;
+    if (
+      role === IdentifierRole.TopLevelDeclaration ||
+      role === IdentifierRole.ObjectShorthandTopLevelDeclaration ||
+      namespaceImport ||
+      moduleVar ||
+      forVar
+    ) {
+      conflicts.push({ name, start: token.start });
+    }
+  }
+  return conflicts.reverse();
+}
 
 /** Reject only literal values we can identify without running page code. */
 function isLiteralDefault(tokens: Tokens, start: number, end: number | null): boolean {
