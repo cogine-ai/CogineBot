@@ -175,29 +175,28 @@ describe("real Pi built-in discovery and execution", () => {
     vi.unstubAllEnvs();
   });
 
-  it("cancels a takeover when the iterator closes before acknowledging its tool event", async () => {
-    provider.stream.mockImplementationOnce(() =>
-      response([call("takeover", "request_takeover", { reason: "Sign in" })]),
-    );
-    const execute = vi.fn(async () => approvalPausedToolResult());
-    const events = new PiAgentRuntime().run(
-      request([builtin("request_takeover")], { executeTool: execute }),
-    );
-    try {
-      let event = await events.next();
-      while (!event.done && event.value.type !== "tool") event = await events.next();
-      expect(event).toMatchObject({
-        done: false,
-        value: { type: "tool", name: "request_takeover" },
-      });
-      await nextMacrotask();
+  it.each<{ name: string; args: JsonObject }>([
+    { name: "request_takeover", args: { reason: "Sign in" } },
+    { name: "run_subagent", args: { name: "scout", task: "Inspect the report" } },
+  ])(
+    "cancels $name when the iterator closes before acknowledging its tool event",
+    async ({ name, args }) => {
+      provider.stream.mockImplementationOnce(() => response([call("control", name, args)]));
+      const execute = vi.fn(async () => approvalPausedToolResult());
+      const events = new PiAgentRuntime().run(request([builtin(name)], { executeTool: execute }));
+      try {
+        let event = await events.next();
+        while (!event.done && event.value.type !== "tool") event = await events.next();
+        expect(event).toMatchObject({ done: false, value: { type: "tool", name } });
+        await nextMacrotask();
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        await expect(events.return!()).resolves.toMatchObject({ done: true });
+      }
       expect(execute).not.toHaveBeenCalled();
-    } finally {
-      await expect(events.return!()).resolves.toMatchObject({ done: true });
-    }
-    expect(execute).not.toHaveBeenCalled();
-    expect(provider.stream).toHaveBeenCalledOnce();
-  });
+      expect(provider.stream).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     { failure: new Error("Synthetic takeover control failure"), abort: false },

@@ -5641,6 +5641,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           const requestApproval = async () => {
+            if (observer?.beforeApprovalPause) {
+              // An earlier queued interaction can itself acquire the shared pause.
+              await observer.beforeApprovalPause();
+              context.signal.throwIfAborted();
+            }
             const pause = await requestPause(showApprovalCard);
             return pause.owned ? pause.result : pauseForApproval();
           };

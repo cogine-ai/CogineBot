@@ -193,6 +193,8 @@ export interface AgentToolExecutionResult {
 
 /** Trusted runtime execution capabilities and notifications for one tool call. */
 export interface AgentToolExecutionObserver {
+  /** Wait for earlier runtime output before committing an approval pause. */
+  beforeApprovalPause?: () => Promise<void>;
   /** Only run_subagent consumes this capability, after gating, with canonical approved args. */
   runSubagent?: (
     args: Record<string, unknown>,

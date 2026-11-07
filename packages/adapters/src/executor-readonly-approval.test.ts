@@ -380,7 +380,7 @@ function fixture({
       callback(prisma),
     ),
   });
-  const pauseRunForInput = vi.fn(async () => {
+  const pauseRunForInput = vi.fn<ThreadEvents["pauseRunForInput"]>(async () => {
     run.status = "waiting_input";
     return true;
   });
@@ -901,7 +901,7 @@ describe("real Pi runtime control approval", () => {
     );
   }
 
-  it.each(["ask", "secret", "approval"] as const)(
+  it.each(["ask", "secret", "approval", "takeover", "takeover-skipped"] as const)(
     "continues a paused child %s in the main conversation without repeating delegation",
     async (mode) => {
       const delegateArgs = { name: "scout", task: "Inspect the report" };
@@ -911,12 +911,15 @@ describe("real Pi runtime control approval", () => {
         name: "service-key",
         auth: { type: "command" },
       };
+      const takeover = mode === "takeover" || mode === "takeover-skipped";
       const action =
         mode === "ask"
           ? { name: "ask_user", args: { question: "Which report?", options: ["First", "Second"] } }
           : mode === "secret"
             ? { name: "request_secret", args: secretArgs }
-            : { name: "web_search", args: { query: "Original child query" } };
+            : takeover
+              ? { name: "request_takeover", args: { reason: "Finish sign-in for this report" } }
+              : { name: "web_search", args: { query: "Original child query" } };
       let parentCalls = 0;
       let childCalls = 0;
       const mainPayloads: unknown[] = [];
@@ -946,10 +949,31 @@ describe("real Pi runtime control approval", () => {
       vi.stubEnv("PI_DEFAULT_PROVIDER", "openrouter");
       vi.stubEnv("OPENROUTER_API_KEY", "synthetic-control-key");
       const publication = vi.spyOn(RunMessagesModule, "publishMessage").mockResolvedValue(null);
+      const settlement = vi
+        .spyOn(DbModule, "settleReleasedTakeoverCards")
+        .mockResolvedValue(undefined);
       try {
         const f = fixture({
           builtin: true,
           deploymentModelKey: "synthetic-control-key",
+          ...(takeover
+            ? {
+                sandboxProvider: {
+                  describe: () => ({
+                    id: "desktop",
+                    contractVersion: "1",
+                    adapterVersion: "1",
+                    capabilities: {
+                      graphical: false,
+                      pty: true,
+                      snapshots: false,
+                      takeover: true,
+                      persistentHome: true,
+                    },
+                  }),
+                },
+              }
+            : {}),
           rules: [
             { effect: "require_approval", matchKind: "tool", matchValue: "run_subagent" },
             ...(mode === "approval"
@@ -987,14 +1011,26 @@ describe("real Pi runtime control approval", () => {
         const parent = f.effects.find((effect) => effect.kind === "run_subagent")!;
         parent.status = "approved";
         await f.run();
-        expect(f.pauseRunForInput).toHaveBeenCalledTimes(2);
+        expect(f.pauseRunForInput).toHaveBeenCalledTimes(takeover ? 1 : 2);
         expect(childCalls).toBe(1);
         expect(parent).toMatchObject({
           status: "completed",
-          result: { result: expect.stringMatching(/Waiting for|Protected input/) },
+          result: {
+            result: expect.stringMatching(
+              takeover ? /Takeover requested/ : /Waiting for|Protected input/,
+            ),
+          },
         });
         expect(search).not.toHaveBeenCalled();
-        if (mode === "ask") {
+        if (takeover) {
+          expect(f.runRecord.status).toBe("waiting_takeover");
+          expect(f.pauseRunForTakeover).toHaveBeenCalledOnce();
+          expect(f.pauseRunForTakeover).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: "Finish sign-in for this report" }),
+          );
+          expect(f.effects.some((effect) => effect.kind === "runtime_checkpoint")).toBe(false);
+          Object.assign(f.runRecord, { checkpoint: mode });
+        } else if (mode === "ask") {
           f.prisma.task.findUniqueOrThrow.mockResolvedValue({
             id: "task-1",
             prompt: "The user chose First.",
@@ -1011,8 +1047,14 @@ describe("real Pi runtime control approval", () => {
         }
         await f.run();
         expect(childCalls).toBe(1);
-        expect(f.pauseRunForInput).toHaveBeenCalledTimes(2);
-        if (mode === "approval") {
+        expect(f.pauseRunForInput).toHaveBeenCalledTimes(takeover ? 1 : 2);
+        if (takeover) {
+          expect(f.pauseRunForTakeover).toHaveBeenCalledOnce();
+          expect(settlement).toHaveBeenCalledOnce();
+          expect(JSON.stringify(mainPayloads.at(-1))).toContain(
+            mode === "takeover" ? "handed the computer back" : "without the user completing it",
+          );
+        } else if (mode === "approval") {
           expect(search).toHaveBeenCalledOnce();
           expect(search).toHaveBeenCalledWith(
             expect.objectContaining({ query: "Original child query" }),
@@ -1029,6 +1071,7 @@ describe("real Pi runtime control approval", () => {
         } else expect(JSON.stringify(mainPayloads.at(-1))).toContain("The user chose First.");
       } finally {
         publication.mockRestore();
+        settlement.mockRestore();
         vi.unstubAllGlobals();
         vi.unstubAllEnvs();
       }
@@ -1262,9 +1305,65 @@ describe("real Pi runtime control approval", () => {
     },
   );
 
+  it("lets an earlier queued question pause while a tool waits to show its approval", async () => {
+    const f = fixture({
+      builtin: true,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "web_search" }],
+    });
+    let enter!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const consumed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const question = "Which report should I use?";
+    f.runtimeRun.mockImplementation(async function* (request) {
+      const approval = request.executeTool!(
+        "web_search",
+        { query: "Search after approval" },
+        "pending-search",
+        undefined,
+        {
+          beforeApprovalPause: () => {
+            enter();
+            return consumed;
+          },
+        },
+      ).catch(() => undefined);
+      try {
+        await Promise.race([waiting, approval]);
+        yield {
+          type: "ask",
+          text: question,
+          actions: [
+            { id: "first", label: "First report" },
+            { id: "second", label: "Second report" },
+          ],
+        };
+      } finally {
+        await approval;
+      }
+    });
+    const running = f.run();
+    try {
+      await Promise.race([waiting, running]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ blocks: [expect.objectContaining({ text: question })] }),
+      );
+    } finally {
+      release();
+      await running;
+    }
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { name: "request_takeover" as const, decision: "approved" as const },
     { name: "run_subagent" as const, decision: "approved" as const },
+    { name: "web_search" as const, decision: "approved" as const },
     { name: "request_takeover" as const, decision: "pending" as const },
     { name: "request_takeover" as const, decision: "denied" as const },
     { name: "run_subagent" as const, decision: "denied" as const },
@@ -1273,6 +1372,13 @@ describe("real Pi runtime control approval", () => {
   ])(
     "gates real Pi $name with decision=$decision and preserves canonical replay",
     async ({ name, decision }) => {
+      const narration = "I am ready to start this step once it is approved.";
+      const controlArgs = {
+        request_takeover: { reason: "Finish the sign-in" },
+        run_subagent: { name: "scout", task: "Inspect the report" },
+        web_search: { query: "Original report query" },
+      };
+      const search = vi.fn(async () => []);
       const childRequests: unknown[] = [];
       const parentPayloads: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
       let parentRequests = 0;
@@ -1289,13 +1395,7 @@ describe("real Pi runtime control approval", () => {
         parentPayloads.push(payload);
         parentRequests += 1;
         return parentRequests === 1
-          ? sse({
-              name,
-              args:
-                name === "request_takeover"
-                  ? { reason: "Finish the sign-in" }
-                  : { name: "scout", task: "Inspect the report" },
-            })
+          ? sse({ name, args: controlArgs[name] }, decision === "approved" ? narration : undefined)
           : sse();
       });
       vi.stubGlobal("fetch", fetcher);
@@ -1309,6 +1409,16 @@ describe("real Pi runtime control approval", () => {
         const f = fixture({
           builtin: true,
           deploymentModelKey: "synthetic-control-key",
+          webProvider: {
+            describe: () => ({
+              id: "control-search",
+              contractVersion: "1",
+              adapterVersion: "1",
+              capabilities: { search: true, fetch: true, readability: true },
+            }),
+            search,
+            fetch: vi.fn(),
+          },
           sandboxProvider: {
             describe: () => ({
               id: "desktop",
@@ -1337,7 +1447,50 @@ describe("real Pi runtime control approval", () => {
         f.runtimeRun.mockImplementation(async function* (request, context) {
           yield* pi.run({ ...request, claimSteering: undefined }, context);
         });
-        await f.run();
+        if (decision === "approved") {
+          const ordered: string[] = [];
+          let signalAudit!: () => void;
+          let signalPause!: () => void;
+          let finishAudit!: () => void;
+          const auditEntered = new Promise<void>((resolve) => {
+            signalAudit = resolve;
+          });
+          const pauseEntered = new Promise<void>((resolve) => {
+            signalPause = resolve;
+          });
+          const auditRelease = new Promise<void>((resolve) => {
+            finishAudit = resolve;
+          });
+          publication.mockImplementation(async (_deps, _run, _role, blocks) => {
+            if (blocks.some((block) => block.kind === "text" && block.text === narration)) {
+              ordered.push("narration");
+            }
+            return null;
+          });
+          f.append.mockImplementation(async (event) => {
+            if (event.type !== "agent.tool.called" || event.payload?.name !== name) return;
+            signalAudit();
+            await auditRelease;
+            ordered.push("audit");
+          });
+          const pause = f.pauseRunForInput.getMockImplementation()!;
+          f.pauseRunForInput.mockImplementation(async (input) => {
+            ordered.push("approval");
+            signalPause();
+            return pause(input);
+          });
+          const running = f.run();
+          try {
+            await Promise.race([auditEntered, pauseEntered, running]);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          } finally {
+            finishAudit();
+          }
+          await running;
+          expect(ordered).toEqual(["narration", "audit", "approval"]);
+        } else {
+          await f.run();
+        }
         if (decision === "default") {
           expect(f.pauseRunForInput).not.toHaveBeenCalled();
           expect(f.effects.filter((effect) => effect.kind === name)).toHaveLength(0);
@@ -1347,6 +1500,7 @@ describe("real Pi runtime control approval", () => {
         }
         expect(f.pauseRunForTakeover).not.toHaveBeenCalled();
         expect(childRequests).toHaveLength(0);
+        expect(search).not.toHaveBeenCalled();
         expect(f.pauseRunForInput).toHaveBeenCalledOnce();
         expect(f.effects.filter((effect) => effect.kind === name)).toHaveLength(1);
         expect(f.effects.find((effect) => effect.kind === name)).toMatchObject({
@@ -1385,10 +1539,12 @@ describe("real Pi runtime control approval", () => {
             (part: { type?: string; id?: string }) =>
               part.type === "toolCall" && part.id === "control-call",
           );
-        pending.arguments =
-          name === "request_takeover"
-            ? { reason: "Changed reason" }
-            : { name: "scout", task: "Changed task" };
+        const changedArgs = {
+          request_takeover: { reason: "Changed reason" },
+          run_subagent: { name: "scout", task: "Changed task" },
+          web_search: { query: "Changed query" },
+        };
+        pending.arguments = changedArgs[name];
         checkpoint.result = JSON.stringify(altered);
         await f.run();
         expect(effect.status).toBe("completed");
@@ -1401,7 +1557,7 @@ describe("real Pi runtime control approval", () => {
           });
           expect(childRequests).toHaveLength(0);
           Object.assign(f.runRecord, { checkpoint: "takeover" });
-        } else {
+        } else if (name === "run_subagent") {
           expect(childRequests).toHaveLength(1);
           expect(JSON.stringify(childRequests[0])).toContain("Inspect the report");
           expect(JSON.stringify(childRequests[0])).not.toContain("Changed task");
@@ -1411,12 +1567,19 @@ describe("real Pi runtime control approval", () => {
           );
           expect(toolText).toContain("Control task complete.");
           expect(toolText).not.toContain('"result":');
+        } else {
+          expect(search).toHaveBeenCalledOnce();
+          expect(search).toHaveBeenCalledWith(
+            expect.objectContaining(controlArgs.web_search),
+            expect.anything(),
+          );
         }
         const saved = f.effects.find((row) => row.kind === "runtime_checkpoint");
         if (saved) saved.result = originalBlob;
         else f.effects.push({ ...checkpoint, result: originalBlob });
         await f.run();
         expect(childRequests).toHaveLength(name === "run_subagent" ? 1 : 0);
+        expect(search).toHaveBeenCalledTimes(name === "web_search" ? 1 : 0);
         expect(f.pauseRunForTakeover).toHaveBeenCalledTimes(name === "request_takeover" ? 1 : 0);
         expect(f.pauseRunForInput).toHaveBeenCalledOnce();
       } finally {

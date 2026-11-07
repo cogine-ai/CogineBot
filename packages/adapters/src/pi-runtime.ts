@@ -1591,11 +1591,19 @@ function toAgentTool(
       let resolvedRoute = tool.route?.resourceId ? { ...tool.route } : undefined;
       try {
         result = await (async () => {
+          if (
+            host.request.executeTool &&
+            (tool.name === "request_takeover" || tool.name === "run_subagent")
+          ) {
+            // Persist queued narration and audit before a control call can pause the run.
+            await host.queue.waitForConsumer(host.signal);
+            host.signal.throwIfAborted();
+            if (host.pausePending) {
+              return { content: [], details: { skipped: true }, terminate: true };
+            }
+          }
           if (tool.name === "request_takeover") {
             if (host.request.executeTool) {
-              // The executor must persist the queued narration and tool call before pausing.
-              await host.queue.waitForConsumer(host.signal);
-              host.signal.throwIfAborted();
               let result: unknown;
               try {
                 result = await host.request.executeTool(tool.name, args, executionId, tool.route);
@@ -1749,6 +1757,7 @@ function toAgentTool(
               executionId,
               tool.route,
               {
+                beforeApprovalPause: () => host.queue.waitForConsumer(host.signal),
                 ...(tool.route?.connectorId === "mcp"
                   ? {
                       onConnectorRouteResolved: (route: ConnectorRoute) => {
