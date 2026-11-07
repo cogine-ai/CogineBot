@@ -6,16 +6,35 @@ const MAX_APPROVAL_SUMMARY_LENGTH = 500;
 const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
 export const MAX_FETCH_URL_LENGTH = 2_048;
 
+export function formatRoutineSiteApprovalDetail(
+  sites: readonly string[],
+  secrets: string[],
+): { detail: string } | { error: string } {
+  const destinations = sites.join("\n");
+  if (redactSecrets(destinations, secrets) !== destinations) {
+    return {
+      error: "A Routine destination contains protected information and cannot be reviewed.",
+    };
+  }
+  return destinations.length <= MAX_APPROVAL_DETAIL_LENGTH
+    ? { detail: destinations }
+    : {
+        error:
+          "Too many Routine destinations to review at once. Split them into separate Routines.",
+      };
+}
+
 export function buildApprovalAskBlock(
   effectId: string,
   toolName: string,
   args: Record<string, unknown>,
   secrets: string[],
-  options?: { reviewReason?: string; allowSiteAlways?: boolean },
+  options?: { reviewReason?: string; allowSiteAlways?: boolean; routineSiteDetail?: string },
 ): MessageBlock {
   const siteSending = SITE_SENDING_TOOLS.has(toolName);
   const destination = siteSending && typeof args.url === "string" ? args.url : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
+  const routineSiteApproval = options?.routineSiteDetail !== undefined;
   const alwaysLabel = siteSending
     ? fetchSite && options?.allowSiteAlways !== false
       ? `Always allow ${fetchSite}`
@@ -28,17 +47,17 @@ export function buildApprovalAskBlock(
     options?.reviewReason,
     fetchSite ? destination : undefined,
   );
-  const safeDetail = detail ? redactSecrets(detail, secrets) : undefined;
+  const safeDetail =
+    options?.routineSiteDetail ?? (detail ? redactSecrets(detail, secrets) : undefined);
+  const text = routineSiteApproval
+    ? "Allow this Routine to use these sites each time it runs?"
+    : toolName === "create_space"
+      ? `${summary}?`
+      : `Review before ${summary}`;
   return {
     kind: "ask",
     approvalEffectId: effectId,
-    text: truncate(
-      redactSecrets(
-        toolName === "create_space" ? `${summary}?` : `Review before ${summary}`,
-        secrets,
-      ),
-      MAX_APPROVAL_SUMMARY_LENGTH,
-    ),
+    text: truncate(redactSecrets(text, secrets), MAX_APPROVAL_SUMMARY_LENGTH),
     detail: safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined,
     ...(fetchSite ? { site: fetchSite } : {}),
     status: "pending",
@@ -50,7 +69,7 @@ export function buildApprovalAskBlock(
           ]
         : [
             { id: "allow", label: "Allow once" },
-            ...(alwaysLabel ? [{ id: "always", label: alwaysLabel }] : []),
+            ...(alwaysLabel && !routineSiteApproval ? [{ id: "always", label: alwaysLabel }] : []),
             { id: "deny", label: "Deny" },
           ],
   };

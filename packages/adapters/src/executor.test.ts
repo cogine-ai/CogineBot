@@ -1569,6 +1569,8 @@ describe("createRunExecutor", () => {
             updateMany,
             findUnique: vi.fn(async () => ({
               prompt: "say hi",
+              authorizedInstructions: null,
+              authorizedSites: [],
               modelProvider: null,
               modelId: null,
               thinkingLevel: null,
@@ -1597,7 +1599,14 @@ describe("createRunExecutor", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
     expect(taskCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ threadId: "group-thread-1" }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          threadId: "group-thread-1",
+          prompt: "say hi",
+          routineInstructions: null,
+          routineSites: [],
+        }),
+      }),
     );
     expect(runCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ threadId: "group-thread-1" }) }),

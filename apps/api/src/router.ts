@@ -3907,6 +3907,7 @@ export function createRouter(deps: RouterDeps) {
                   userId: context.actor.userId,
                   name: input.name,
                   prompt: input.prompt,
+                  authorizedInstructions: input.prompt,
                   crons: input.crons,
                   timezone: input.timezone,
                   notify: input.notify,
@@ -4068,15 +4069,19 @@ export function createRouter(deps: RouterDeps) {
         const { row } = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
-              if (settingModel || input.thinkingLevel) {
-                const current = await tx.routine.findFirst({
-                  where: {
-                    id: existing.id,
-                    userId: context.actor.userId,
-                    spaceId: context.actor.spaceId,
-                  },
-                });
-                if (!current) throw new ORPCError("NOT_FOUND");
+              const checkModel = settingModel || Boolean(input.thinkingLevel);
+              const current =
+                checkModel || input.prompt !== undefined
+                  ? await tx.routine.findFirst({
+                      where: {
+                        id: existing.id,
+                        userId: context.actor.userId,
+                        spaceId: context.actor.spaceId,
+                      },
+                    })
+                  : undefined;
+              if (current === null) throw new ORPCError("NOT_FOUND");
+              if (checkModel && current) {
                 const binding = settingModel
                   ? input
                   : {
@@ -4108,6 +4113,10 @@ export function createRouter(deps: RouterDeps) {
                   data: {
                     name: input.name,
                     prompt: input.prompt,
+                    // Clients can submit the existing prompt on a metadata-only save.
+                    ...(input.prompt !== undefined && input.prompt !== current?.prompt
+                      ? { authorizedInstructions: input.prompt, authorizedSites: [] }
+                      : {}),
                     crons: input.crons,
                     timezone: input.timezone,
                     active: input.active,
@@ -4230,6 +4239,8 @@ export function createRouter(deps: RouterDeps) {
               where: { id: routine.id },
               select: {
                 prompt: true,
+                authorizedInstructions: true,
+                authorizedSites: true,
                 modelProvider: true,
                 modelId: true,
                 modelCredentialId: true,
@@ -4253,7 +4264,8 @@ export function createRouter(deps: RouterDeps) {
                 threadId,
                 userId: context.actor.userId,
                 prompt: expandSkillReferencesInPrompt(current.prompt, skillRecords),
-                routineInstructions: current.prompt,
+                routineInstructions: current.authorizedInstructions ?? null,
+                routineSites: current.authorizedSites,
                 status: "queued",
                 connectionIds,
               },

@@ -56,6 +56,7 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
         ...identity,
         name: "timer fixture",
         prompt: "fixture",
+        authorizedInstructions: "fixture",
         crons: ["* * * * *"],
         active: true,
       },
@@ -64,7 +65,8 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       ...identity,
       routineId: routine.id,
       prompt: "fixture",
-      routineInstructions: routine.prompt,
+      routineInstructions: routine.authorizedInstructions,
+      routineSites: routine.authorizedSites,
     };
     async function create(
       tx: Prisma.TransactionClient,
@@ -76,6 +78,7 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
           ...identity,
           prompt: config.prompt,
           routineInstructions: config.routineInstructions,
+          routineSites: config.routineSites,
           status: "queued",
         },
       });
@@ -108,13 +111,17 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     expect(results[0]!.id).toBe(results[1]!.id);
     expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
   });
-  it.each(["different owner instructions", null])(
-    "preserves pending work with the same execution prompt and owner snapshot %s",
-    async (routineInstructions) => {
+  it.each([
+    { routineInstructions: "different owner instructions" },
+    { routineInstructions: null },
+    { routineSites: ["example.com"] },
+  ])(
+    "preserves pending work with the same execution prompt and different authorization %j",
+    async (data) => {
       const { routine, config, create } = await fixture();
       const previous = await system.$transaction(async (tx) => {
         const run = await create(tx, routineTimerNonce(routine.id, "2026-01-01T00:00:00Z"));
-        await tx.task.update({ where: { id: run.taskId }, data: { routineInstructions } });
+        await tx.task.update({ where: { id: run.taskId }, data });
         return run;
       });
       expect(await system.$transaction((tx) => findPendingRoutineTick(tx, config))).toBeNull();
@@ -378,6 +385,7 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
         status: "queued",
         prompt: config.prompt,
         routineInstructions: config.routineInstructions,
+        routineSites: config.routineSites,
       })),
     });
     await system.run.createMany({
@@ -481,7 +489,8 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       expect(surviving.status).toBe(status);
       expect(await system.task.findUnique({ where: { id: surviving.taskId } })).toMatchObject({
         status: status === "completed" ? "completed" : "queued",
-        routineInstructions: routine.prompt,
+        routineInstructions: routine.authorizedInstructions,
+        routineSites: routine.authorizedSites,
       });
       expect(
         (

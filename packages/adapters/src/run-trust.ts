@@ -1,10 +1,10 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
+  CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
-  inboundRoutinePrompts,
-  siteAlwaysAllowed,
+  resolveActionApprovalDetail,
 } from "@rakazo/core";
 import { sitesInText, urlSite } from "@rakazo/core/egress";
 import type { ClaimedSteeringMessage, PrismaClient } from "@rakazo/db";
@@ -25,39 +25,44 @@ function textBlocks(blocks: unknown): string {
     .join("\n");
 }
 
-/** A hang-up Run may use the owner's utterances from the call it closed. */
-export function callEndOwnerWords(
-  messages: readonly (AuthoredMessage & {
-    seq: number;
-    botId: string | null;
-    clientNonce: string | null;
-  })[],
-  callId: string | undefined,
-  botId: string,
-  userId: string,
-): string {
+/** Use the closed call's own transcript, independent of the model's recent history window. */
+export async function loadCallEndOwnerWords(
+  prisma: PrismaClient,
+  run: { threadId: string; botId: string; userId: string; clientNonce: string | null },
+): Promise<string> {
+  const callId = callIdFromClientNonce(run.clientNonce);
   if (!callId) return "";
-  const marker = messages.find(
-    (message) =>
-      message.role === "bot" &&
-      message.botId === botId &&
-      callIdFromClientNonce(message.clientNonce) === callId &&
-      message.clientNonce?.endsWith(":marker") &&
-      Array.isArray(message.blocks) &&
-      (message.blocks as MessageBlock[]).some(
-        (block) => block.kind === "voice_call" && block.callId === callId,
-      ),
-  );
-  if (!marker) return "";
-  return messages
-    .filter(
-      (message) =>
-        message.seq < marker.seq &&
-        message.role === "user" &&
-        message.authorUserId === userId &&
-        callIdFromClientNonce(message.clientNonce) === callId,
+  const prefix = `${CALL_CLIENT_NONCE_PREFIX}${callId}:`;
+  const marker = await prisma.message.findUnique({
+    where: {
+      threadId_clientNonce: { threadId: run.threadId, clientNonce: `${prefix}marker` },
+      role: "bot",
+      botId: run.botId,
+    },
+    select: { seq: true, blocks: true },
+  });
+  if (
+    !Array.isArray(marker?.blocks) ||
+    !(marker.blocks as MessageBlock[]).some(
+      (block) => block.kind === "voice_call" && block.callId === callId,
     )
-    .sort((left, right) => left.seq - right.seq)
+  )
+    return "";
+  // Prisma uses LIKE for startsWith, and call IDs may contain literal wildcards.
+  const noncePrefix = prefix.replace(/[\\%_]/g, "\\$&");
+  const messages = await prisma.message.findMany({
+    where: {
+      threadId: run.threadId,
+      role: "user",
+      authorUserId: run.userId,
+      clientNonce: { startsWith: noncePrefix },
+      seq: { lt: marker.seq },
+    },
+    orderBy: { seq: "asc" },
+    select: { clientNonce: true, blocks: true },
+  });
+  return messages
+    .filter((message) => callIdFromClientNonce(message.clientNonce) === callId)
     .map((message) => textBlocks(message.blocks))
     .join("\n");
 }
@@ -125,10 +130,9 @@ export function createRunTrust(
   prisma: PrismaClient,
   input: {
     run: { id: string; userId: string; spaceId: string; trigger: string };
-    botId: string;
-    taskPrompt: string;
     routineInstructions?: string | null;
-    callOwnerWords?: string;
+    routineSites?: readonly string[];
+    callOwnerWords?: () => Promise<string>;
     sourceMessage: AuthoredMessage | null;
     ownerStartedRun: boolean;
     messagingChannelRun: boolean;
@@ -177,15 +181,9 @@ export function createRunTrust(
           (input.sourceMessage.authorUserId == null && run.trigger === "user"))
       )
         return textBlocks(input.sourceMessage.blocks);
-      if (run.trigger === "call_end") return input.callOwnerWords ?? "";
-      if (run.trigger === "routine") return input.routineInstructions ?? "";
-      if (run.trigger === "webhook") {
-        const routines = await prisma.routine.findMany({
-          where: { botId: input.botId, spaceId: run.spaceId, userId: run.userId },
-          select: { name: true, prompt: true },
-        });
-        return inboundRoutinePrompts(input.taskPrompt, routines).join("\n\n");
-      }
+      if (run.trigger === "call_end") return input.callOwnerWords?.() ?? "";
+      if (run.trigger === "routine" || run.trigger === "webhook")
+        return input.routineInstructions ?? "";
       return "";
     })());
   const ownerSteeringWords = new Map<string, string>();
@@ -218,6 +216,9 @@ export function createRunTrust(
       })
       .then(async (rows) => {
         const sites = sitesInText(await loadInitialOwnerWords());
+        if (run.trigger === "routine" || run.trigger === "webhook") {
+          for (const site of input.routineSites ?? []) sites.add(site);
+        }
         for (const row of rows) {
           const url = (row.request as { url?: unknown } | null)?.url;
           const site = typeof url === "string" ? urlSite(url) : undefined;
@@ -229,11 +230,24 @@ export function createRunTrust(
     for (const site of ownerSteeringSites) sites.add(site);
     return sites;
   };
-  const routineNamesNewSite = async (prompt: string, rules: ActionApprovalRule[]) => {
-    const sites = await loadTrustedSites();
-    return [...sitesInText(prompt)].some(
-      (site) => !sites.has(site) && !siteAlwaysAllowed(rules, site),
+  const routineSitePolicy = async (prompt: string, rules: ActionApprovalRule[]) => {
+    const sites = [...sitesInText(prompt)];
+    if (sites.length === 0) return { sitesToReview: [], authorizedSites: [] };
+    // A saved Routine can trust these sites in future Runs. A prior fetch approval only
+    // applies to the current Run and cannot authorize a change to its saved instructions.
+    const ownerSites = sitesInText(await loadOwnerWords());
+    const siteRules = rules.filter((rule) => rule.matchKind === "site");
+    const namesNewSite = sites.some(
+      (site) =>
+        !ownerSites.has(site) &&
+        resolveActionApprovalDetail({ toolName: "web_fetch", site, rules: siteRules }).source !==
+          "always_allow",
     );
+    // Approval binds the whole prompt, so show every destination it will save.
+    return {
+      sitesToReview: namesNewSite ? sites : [],
+      authorizedSites: sites.filter((site) => ownerSites.has(site)),
+    };
   };
   let trustedConnectors: Promise<Set<string>> | undefined;
   const loadTrustedConnectors = () =>
@@ -268,6 +282,6 @@ export function createRunTrust(
     loadOwnerWords,
     loadTrustedSites,
     loadTrustedConnectors,
-    routineNamesNewSite,
+    routineSitePolicy,
   };
 }

@@ -191,30 +191,36 @@ function RoutineShot() {
   );
 }
 
-function ApprovalShot({ site }: { site?: string }) {
+function ApprovalShot({ variant }: { variant: "default" | "site" | "routine" }) {
   const [answer, setAnswer] = useState<string>();
+  const site = variant === "site" ? "example.com" : undefined;
+  const routine = variant === "routine";
   return (
     <main data-ready="true" className="mx-auto max-w-[760px] bg-background p-8 text-foreground">
       <AskCard
         canAnswer
         onAnswer={async (value) => {
-          if (site) setAnswer(value);
+          if (site || routine) setAnswer(value);
         }}
         block={{
           kind: "ask",
           approvalEffectId: "effect-demo",
-          text: site
-            ? "Review before opening the report."
-            : "Review before sending a reply from the demo inbox.",
-          detail: site
-            ? `url: https://docs.${site}/report`
-            : "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
+          text: routine
+            ? "Allow this Routine to use these sites each time it runs?"
+            : site
+              ? "Review before opening the report."
+              : "Review before sending a reply from the demo inbox.",
+          detail: routine
+            ? "example.net\nexample.org"
+            : site
+              ? `url: https://docs.${site}/report`
+              : "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
           site,
           status: answer ? "answered" : "pending",
           answer,
           actions: [
             { id: "allow", label: "Allow once" },
-            { id: "always", label: "Always allow this tool" },
+            ...(routine ? [] : [{ id: "always", label: "Always allow this tool" }]),
             { id: "deny", label: "Deny" },
           ],
         }}
@@ -526,8 +532,12 @@ void bootstrapI18n("en").then(() => {
       <ModelShot />
     ) : view === "routine" ? (
       <RoutineShot />
-    ) : view === "approval" || view === "site-approval" ? (
-      <ApprovalShot site={view === "site-approval" ? "example.com" : undefined} />
+    ) : view === "approval" || view === "site-approval" || view === "routine-approval" ? (
+      <ApprovalShot
+        variant={
+          view === "site-approval" ? "site" : view === "routine-approval" ? "routine" : "default"
+        }
+      />
     ) : view === "chat" ? (
       <ChatShot />
     ) : view === "subscription" ? (

@@ -31,8 +31,6 @@ export function loadRunHistoryMessages(
       threadId: true,
       seq: true,
       role: true,
-      authorUserId: true,
-      clientNonce: true,
       botId: true,
       runId: true,
       blocks: true,

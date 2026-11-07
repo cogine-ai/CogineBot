@@ -4439,6 +4439,29 @@ describe("routines.update", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it("authorizes a supplied prompt but leaves provenance alone on other edits", async () => {
+    const { update, call } = fixture(false, false, {
+      authorizedInstructions: null,
+      authorizedSites: ["old.example"],
+    });
+    const { response: renamed } = await call({ name: "New name", prompt: routine.prompt });
+    expect(renamed.status).toBe(200);
+    expect(update.mock.calls[0]?.[0].data).not.toHaveProperty("authorizedInstructions");
+    expect(update.mock.calls[0]?.[0].data).not.toHaveProperty("authorizedSites");
+    const prompt = "Read https://docs.example.org";
+    const { response: saved } = await call({ prompt });
+    expect(saved.status).toBe(200);
+    expect(update.mock.calls[1]?.[0].data).toMatchObject({
+      prompt,
+      authorizedInstructions: prompt,
+      authorizedSites: [],
+    });
+    const { json } = await saved.json();
+    expect(json.prompt).toBe(prompt);
+    expect(json).not.toHaveProperty("authorizedInstructions");
+    expect(json).not.toHaveProperty("authorizedSites");
+  });
+
   it("re-arms a routine on an active bot", async () => {
     const { update, enqueue, call } = fixture(false);
     const { response } = await call();

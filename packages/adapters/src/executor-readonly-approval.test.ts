@@ -2431,13 +2431,39 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(search).not.toHaveBeenCalled();
   });
 
-  it("waits for approval before saving a Routine that names a new site after outside steering", async () => {
+  it.each([
+    { scenario: "a clean Run" },
+    { scenario: "outside steering", outsideSteering: true },
+    { scenario: "a prior fetch in the same Run", outsideSteering: true, priorFetch: true },
+    { scenario: "conflicting site rules", outsideSteering: true, conflictingRules: true },
+  ])("requires approval for new Routine sites after $scenario", async (input) => {
     const f = fixture({
       name: "schedule_create",
       builtin: true,
-      outsideSteering: true,
-      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "schedule_create" }],
+      outsideSteering: input.outsideSteering,
+      autoReview: true,
+      rules: [
+        { effect: "always_allow", matchKind: "tool", matchValue: "schedule_create" },
+        { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+        ...(input.conflictingRules
+          ? [
+              { effect: "always_allow", matchKind: "site", matchValue: "example.net" } as const,
+              { effect: "require_approval", matchKind: "site", matchValue: "example.net" } as const,
+            ]
+          : []),
+      ],
     });
+    if (input.priorFetch) {
+      f.effects.push({
+        id: "fetch-effect",
+        idempotencyKey: "prior-fetch",
+        kind: "web_fetch",
+        status: "completed",
+        request: { url: "https://fresh.example.net/report" },
+        runId: f.runRecord.id,
+        spaceId: f.runRecord.spaceId,
+      });
+    }
     const createRoutine = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
       ...data,
       id: "routine-fixture",
@@ -2445,34 +2471,201 @@ describe("connector read-only metadata and approval enforcement", () => {
     Object.assign(f.prisma, { routine: { create: createRoutine } });
     const args = {
       name: "Read the report",
-      prompt: "Read https://fresh.example.net/report and summarize it.",
+      prompt:
+        "Read https://fresh.example.net/report?token=fixture-value and https://docs.example.org, then compare https://example.net.",
       every: 10,
       unit: "minutes",
     };
     f.setCalls([{ args, executionId: "schedule-first" }]);
     await f.run();
     expect(createRoutine).not.toHaveBeenCalled();
-    expect(f.effects).toHaveLength(1);
-    const effect = f.effects[0]!;
-    expect(effect).toMatchObject({ kind: "schedule_create", status: "intended" });
+    expect(reviewMock).not.toHaveBeenCalled();
+    const effect = f.effects.find((row) => row.kind === "schedule_create")!;
+    expect(effect).toMatchObject({
+      kind: "schedule_create",
+      status: "intended",
+      request: ["routine-site-approval-v1", args, ["example.net", "example.org"]],
+    });
     expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        blocks: [expect.objectContaining({ kind: "ask", approvalEffectId: effect.id })],
+        blocks: [
+          expect.objectContaining({
+            kind: "ask",
+            approvalEffectId: effect.id,
+            text: "Allow this Routine to use these sites each time it runs?",
+            detail: "example.net\nexample.org",
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ],
+          }),
+        ],
       }),
     );
 
     effect.status = "approved";
-    f.setCalls([{ args, executionId: "schedule-approved" }]);
+    f.setCalls([
+      {
+        args: { ...args, prompt: "Read https://replacement.example.com/" },
+        executionId: "schedule-approved",
+      },
+    ]);
     await f.run();
+    expect(f.runtimeRun.mock.calls.at(-1)?.[0].prompt).not.toContain("routine-site-approval-v1");
     expect(createRoutine).toHaveBeenCalledExactlyOnceWith({
       data: expect.objectContaining({
         name: args.name,
         prompt: args.prompt,
+        authorizedSites: ["example.net", "example.org"],
         crons: ["*/10 * * * *"],
       }),
     });
     expect(effect.status).toBe("completed");
     expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("saves a Routine using only sites named by its owner or covered by a site allowance", async () => {
+    const f = fixture({
+      name: "schedule_create",
+      builtin: true,
+      rules: [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }],
+    });
+    Object.assign(f.runRecord, { sourceMessageId: "message-owner" });
+    Object.assign(f.prisma.message, {
+      findUnique: vi.fn(async () => ({
+        role: "user",
+        authorUserId: f.runRecord.userId,
+        blocks: [{ kind: "text", text: "Every ten minutes, check https://docs.example.net." }],
+      })),
+    });
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: "routine-fixture",
+    }));
+    Object.assign(f.prisma, { routine: { create } });
+    f.setCalls([
+      {
+        args: {
+          name: "Read updates",
+          prompt: "Compare https://docs.example.net/report and https://news.example.org.",
+          // A provider that bypasses schema validation still cannot provide the approval receipt.
+          "0": "routine-site-approval-v1",
+          "2": ["example.org"],
+          every: 10,
+          unit: "minutes",
+        },
+        executionId: "schedule-allowed",
+      },
+    ]);
+    await f.run();
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      data: expect.objectContaining({ authorizedSites: ["example.net"] }),
+    });
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it.each(["approved", "intended"] as const)(
+    "does not upgrade a legacy %s Schedule request to a dedicated approval",
+    async (status) => {
+      const f = fixture({ name: "schedule_create", builtin: true });
+      const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...data,
+        id: "routine-fixture",
+      }));
+      Object.assign(f.prisma, { routine: { create } });
+      const args = {
+        name: "Read updates",
+        prompt: "Read https://docs.example.net.",
+        every: 10,
+        unit: "minutes",
+      };
+      f.effects.push({
+        id: "generic-schedule",
+        idempotencyKey: approvalEffectKey(f.runRecord.id, "schedule_create", args),
+        kind: "schedule_create",
+        status,
+        request: args,
+        runId: f.runRecord.id,
+        spaceId: f.runRecord.spaceId,
+      });
+      f.setCalls([
+        {
+          args:
+            status === "approved"
+              ? { ...args, prompt: "Read https://replacement.example.org." }
+              : args,
+          executionId: "schedule-replay",
+        },
+      ]);
+      await f.run();
+      if (status === "approved") {
+        expect(create).toHaveBeenCalledExactlyOnceWith({
+          data: expect.objectContaining({ prompt: args.prompt }),
+        });
+        expect(create.mock.calls[0]![0].data).not.toHaveProperty("authorizedSites");
+      } else {
+        expect(f.results).toEqual([
+          { error: "This Routine needs a new destination approval. Try scheduling it again." },
+        ]);
+        expect(create).not.toHaveBeenCalled();
+        expect(f.effects[0]).toMatchObject({ status: "intended", request: args });
+      }
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a destination approval card whose canonical site would be redacted", async () => {
+    const f = fixture({
+      name: "schedule_create",
+      builtin: true,
+      secrets: ["fixture-private-label"],
+    });
+    const create = vi.fn();
+    Object.assign(f.prisma, { routine: { create } });
+    f.setCalls([
+      {
+        args: {
+          name: "Read updates",
+          prompt: "Read https://fixture-private-label.net/report.",
+          every: 10,
+          unit: "minutes",
+        },
+        executionId: "schedule-blinded",
+      },
+    ]);
+    await f.run();
+    expect(f.results).toEqual([
+      { error: "A Routine destination contains protected information and cannot be reviewed." },
+    ]);
+    expect(create).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects).toHaveLength(0);
+  });
+
+  it("asks to split a Routine whose new sites cannot all fit in one approval card", async () => {
+    const f = fixture({ name: "schedule_create", builtin: true });
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: "routine-fixture",
+    }));
+    Object.assign(f.prisma, { routine: { create } });
+    const prompt = Array.from(
+      { length: 85 },
+      (_, index) => `https://site-${index}-${"a".repeat(45)}.net/`,
+    ).join("\n");
+    f.setCalls([
+      { args: { name: "Read updates", prompt, every: 10, unit: "minutes" }, executionId: "wide" },
+    ]);
+    await f.run();
+    expect(f.results).toEqual([
+      {
+        error:
+          "Too many Routine destinations to review at once. Split them into separate Routines.",
+      },
+    ]);
+    expect(create).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects).toHaveLength(0);
   });
 
   it.each(["site", "tool"] as const)(
@@ -2485,6 +2678,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         builtin: true,
         trigger: "routine",
         prompt: `Read ${url}`,
+        routineInstructions: `Read ${url}`,
         autoReview: true,
         rules: [
           {
@@ -2726,6 +2920,82 @@ describe("connector read-only metadata and approval enforcement", () => {
     });
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(reviewMock).not.toHaveBeenCalled();
+  });
+
+  it("honors an authenticated call destination even after the general history window has moved on", async () => {
+    const url = "https://voice.example/report";
+    const fetch = vi.fn(async () => ({ url, title: "Report", text: "Report", truncated: false }));
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      trigger: "call_end",
+      webProvider: {
+        describe: () => ({
+          id: "call-destination-fixture",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true },
+        }),
+        fetch,
+        search: vi.fn(),
+      },
+    });
+    const { botId, userId, threadId, spaceId } = f.runRecord;
+    Object.assign(f.runRecord, { clientNonce: "call:long-call:hang-up" });
+    f.prisma.thread.findUniqueOrThrow.mockImplementation(async () => ({
+      id: threadId,
+      botId,
+      userId,
+      spaceId,
+      groupId: null,
+      externalConversationId: null,
+    }));
+    const findMarker = vi.fn(async () => ({
+      seq: 230,
+      blocks: [{ kind: "voice_call", callId: "long-call", title: "", farewell: "" }],
+    }));
+    const findMessages = vi.fn(async ({ take }: { take?: number }) => {
+      if (take !== undefined) {
+        // At least 200 later messages have displaced both the marker and the owner's request.
+        return Array.from({ length: take }, (_, i) => ({
+          id: `message-${i}`,
+          seq: 500 - i,
+          role: "user",
+          blocks: [{ kind: "text", text: "Later conversation" }],
+        }));
+      }
+      return [
+        { clientNonce: "call:long-call:opening", blocks: [{ kind: "text", text: `Read ${url}` }] },
+      ];
+    });
+    Object.assign(f.prisma.message, { findUnique: findMarker, findMany: findMessages });
+    f.setCalls([{ args: { url }, executionId: "call-destination" }]);
+
+    await f.run();
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(findMarker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          threadId_clientNonce: { threadId, clientNonce: "call:long-call:marker" },
+          role: "bot",
+          botId,
+        },
+      }),
+    );
+    expect(findMessages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          threadId,
+          role: "user",
+          authorUserId: userId,
+          clientNonce: { startsWith: "call:long-call:" },
+          seq: { lt: 230 },
+        },
+        orderBy: { seq: "asc" },
+      }),
+    );
   });
 
   it("gives the new-site checker only the Routine author's words and exact URL", async () => {

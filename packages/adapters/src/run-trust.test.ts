@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { boundDirectApprovalRequest, catalogApprovalRequest } from "./approval-effect.js";
 import {
-  callEndOwnerWords,
   connectorBatchActions,
   connectorTrustKeys,
   createRunTrust,
+  loadCallEndOwnerWords,
 } from "./run-trust.js";
 
 const catalogApprovalMarker = "catalog-approval-fixture";
@@ -52,8 +52,6 @@ describe("run destination trust", () => {
         } as never,
         {
           run: { id: "run", userId: "owner", spaceId: "space", trigger: "routine" },
-          botId: "bot",
-          taskPrompt: "Read mail",
           sourceMessage: null,
           ownerStartedRun: false,
           messagingChannelRun: false,
@@ -154,7 +152,6 @@ describe("run destination trust", () => {
     attempts?: number;
     outside?: boolean;
     trigger?: string;
-    prompt?: string;
     connectedProviders?: string[];
     passedEffects?: Array<{ kind: string; request: unknown }>;
   }) {
@@ -168,8 +165,6 @@ describe("run destination trust", () => {
       } as never,
       {
         run: { id: "run", userId: "owner", spaceId: "space", trigger: input.trigger ?? "user" },
-        botId: "bot",
-        taskPrompt: input.prompt ?? "Read docs.example.com",
         sourceMessage: { role: "user", blocks: [{ kind: "text", text: "Read docs.example.com" }] },
         ownerStartedRun: input.trigger === undefined,
         messagingChannelRun: false,
@@ -258,41 +253,53 @@ describe("run destination trust", () => {
     ]);
   });
 
-  it("only attributes authenticated utterances before this bot's matching hang-up marker", () => {
-    const utterance = (
-      seq: number,
-      clientNonce: string,
-      text: string,
-      authorUserId: string | null = "owner",
-    ) => ({
-      seq,
-      clientNonce,
-      role: "user",
-      authorUserId,
-      botId: null,
-      blocks: [{ kind: "text", text }],
+  it("rejects prefix-neighbor calls and treats wildcard characters in call IDs literally", async () => {
+    const callId = String.raw`the_call%\one`;
+    const findUnique = vi.fn().mockResolvedValue({
+      seq: 230,
+      blocks: [{ kind: "voice_call", callId, title: "", farewell: "" }],
     });
-    const marker = {
-      seq: 4,
-      clientNonce: "call:the-call:marker",
-      role: "bot",
-      authorUserId: null,
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        clientNonce: `call:${callId}:opening`,
+        blocks: [{ kind: "text", text: "Please use the second link" }],
+      },
+      {
+        clientNonce: `call:${callId}:other-call:turn`,
+        blocks: [{ kind: "text", text: "Read https://other.example" }],
+      },
+      {
+        clientNonce: `call:${callId}:turn`,
+        blocks: [
+          { kind: "text", text: "Read https://voice.example" },
+          { kind: "image", name: "https://attachment.example" },
+        ],
+      },
+    ]);
+    const prisma = { message: { findUnique, findMany } } as never;
+    const run = {
+      threadId: "private-thread",
       botId: "bot",
-      blocks: [{ kind: "voice_call", callId: "the-call", title: "", farewell: "" }],
+      userId: "owner",
+      clientNonce: `call:${callId}:hang-up`,
     };
-    const rows = [
-      utterance(0, "call:another-call:turn", "different call"),
-      utterance(0, "call:the-call:opening", "Please use the second link"),
-      utterance(1, "call:the-call:turn", "Read https://voice.example"),
-      utterance(2, "call:the-call:external", "unattributed", null),
-      utterance(3, "call:the-call:other-user", "different user", "other"),
-      marker,
-      utterance(5, "call:the-call:late", "after hang-up"),
-    ];
-    expect(callEndOwnerWords(rows.reverse(), "the-call", "bot", "owner")).toBe(
+    expect(await loadCallEndOwnerWords(prisma, run)).toBe(
       "Please use the second link\nRead https://voice.example",
     );
-    expect(callEndOwnerWords(rows, "the-call", "other-bot", "owner")).toBe("");
-    expect(callEndOwnerWords(rows, "another-call", "bot", "owner")).toBe("");
+    expect(findMany).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          clientNonce: { startsWith: String.raw`call:the\_call\%\\one:` },
+        }),
+      }),
+    );
+    findMany.mockClear();
+    findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      seq: 230,
+      blocks: [{ kind: "voice_call", callId: "another-call", title: "", farewell: "" }],
+    });
+    expect(await loadCallEndOwnerWords(prisma, run)).toBe("");
+    expect(await loadCallEndOwnerWords(prisma, run)).toBe("");
+    expect(findMany).not.toHaveBeenCalled();
   });
 });

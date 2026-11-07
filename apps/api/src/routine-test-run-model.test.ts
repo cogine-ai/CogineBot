@@ -12,9 +12,21 @@ const actor: Actor = {
 };
 
 describe("routine test run snapshot", () => {
-  it.each(["connection-a", "connection-b"])(
-    "captures the transaction's selected connection through its actual projection: %s",
-    async (modelCredentialId) => {
+  it.each([
+    {
+      modelCredentialId: "connection-a",
+      authorizedInstructions: "Run @Review then read https://docs.example.com",
+      authorizedSites: [],
+    },
+    {
+      modelCredentialId: "connection-b",
+      authorizedInstructions: null,
+      authorizedSites: ["example.com"],
+    },
+    { modelCredentialId: "connection-c", authorizedInstructions: null, authorizedSites: [] },
+  ])(
+    "captures the locked routine's model and authorization ($modelCredentialId)",
+    async ({ modelCredentialId, authorizedInstructions, authorizedSites }) => {
       const routine = {
         id: "routine-1",
         botId: "bot-1",
@@ -29,6 +41,8 @@ describe("routine test run snapshot", () => {
       const current = {
         ...routine,
         prompt: "Run @Review then read https://docs.example.com",
+        authorizedInstructions,
+        authorizedSites,
         modelCredentialId,
         thinkingLevel: "high",
       };
@@ -86,7 +100,8 @@ describe("routine test run snapshot", () => {
       expect(createTask).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            routineInstructions: current.prompt,
+            routineInstructions: authorizedInstructions,
+            routineSites: authorizedSites,
             prompt: expect.stringContaining("https://skill.example.com"),
           }),
         }),

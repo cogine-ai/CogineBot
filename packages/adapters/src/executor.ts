@@ -183,7 +183,11 @@ import {
   formatAgentEnvironmentInstruction,
   redactShellStreams,
 } from "./agent-environment.js";
-import { buildApprovalAskBlock, MAX_FETCH_URL_LENGTH } from "./approval-ask.js";
+import {
+  buildApprovalAskBlock,
+  formatRoutineSiteApprovalDetail,
+  MAX_FETCH_URL_LENGTH,
+} from "./approval-ask.js";
 import {
   approvalPausedToolResult,
   approvalReplayPathError,
@@ -410,10 +414,10 @@ import {
   tryCompleteConnectionWithCode,
 } from "./run-secret.js";
 import {
-  callEndOwnerWords,
   connectorBatchActions,
   connectorTrustKeys,
   createRunTrust,
+  loadCallEndOwnerWords,
 } from "./run-trust.js";
 import type { RunTurnCheckpointState } from "./run-turn-state.js";
 import {
@@ -429,6 +433,8 @@ import {
   filterBuiltinToolsForRun,
   filterBuiltinToolsForThread,
   listSchedulesFromTool,
+  routineSiteApprovalDetails,
+  routineSiteApprovalRequest,
 } from "./schedule-tools.js";
 import { loadAgentScratchpadContext } from "./scratchpad-context.js";
 import {
@@ -3077,7 +3083,9 @@ export function buildApprovalContinuation(
         }
         return `${uniquified ?? effect.kind}: ${formatRequest(bound.args)}`;
       }
-      return `${effect.kind}: ${formatRequest(effect.request)}`;
+      const routine =
+        effect.kind === "schedule_create" && routineSiteApprovalDetails(effect.request);
+      return `${effect.kind}: ${formatRequest(routine ? routine.args : effect.request)}`;
     }),
   ].join("\n");
 }
@@ -3348,6 +3356,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: routine.id },
           select: {
             prompt: true,
+            authorizedInstructions: true,
+            authorizedSites: true,
             modelProvider: true,
             modelId: true,
             modelCredentialId: true,
@@ -3367,7 +3377,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             userId: routine.userId,
             threadId: thread.id,
             prompt: routinePrompt,
-            routineInstructions: current.prompt,
+            routineInstructions: current.authorizedInstructions ?? null,
+            routineSites: current.authorizedSites ?? [],
             ...routineRunModelPin(current),
           });
           if (pending) return { ...pending, coalesced: true };
@@ -3384,7 +3395,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             threadId: thread.id,
             userId: routine.userId,
             prompt: routinePrompt,
-            routineInstructions: current.prompt,
+            routineInstructions: current.authorizedInstructions ?? null,
+            routineSites: current.authorizedSites ?? [],
             status: "queued",
           },
         });
@@ -4801,17 +4813,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const trust = createRunTrust(deps.prisma, {
           run,
-          botId: bot.id,
-          taskPrompt: task.prompt,
           routineInstructions: task.routineInstructions,
+          routineSites: task.routineSites,
           callOwnerWords:
-            callEndRun && thread.botId === bot.id && thread.userId === run.userId
-              ? callEndOwnerWords(
-                  messages,
-                  callIdFromClientNonce(run.clientNonce),
-                  bot.id,
-                  run.userId,
-                )
+            callEndRun &&
+            thread.botId === bot.id &&
+            thread.userId === run.userId &&
+            thread.spaceId === run.spaceId &&
+            !thread.groupId &&
+            !thread.externalConversationId
+              ? () => loadCallEndOwnerWords(deps.prisma, run)
               : undefined,
           sourceMessage,
           ownerStartedRun,
@@ -5323,7 +5334,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else {
               // Catalog wrappers keep resolveCall's parsed args so Zod stripping/coercion
               // still matches the first-approval effect key and execute payload.
-              args = approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
+              const routine =
+                name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
+              args = routine
+                ? routine.args
+                : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
             // Bound / shrink-direct approvals may skip catalog parse — reject before execute
             // if they no longer match the live schema.
@@ -5395,10 +5410,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 .loadTrustedConnectors()
                 .then((trusted) => connectorTrusts.every((key) => trusted.has(key))),
             });
-          const scheduleNamesNewSite =
-            name === "schedule_create" &&
-            (await trust.isTainted()) &&
-            (await trust.routineNamesNewSite(String(args.prompt ?? ""), await loadApprovalRules()));
+          const routineSitePolicy =
+            name === "schedule_create"
+              ? await trust.routineSitePolicy(String(args.prompt ?? ""), await loadApprovalRules())
+              : undefined;
+          const routineSitesToReview = routineSitePolicy?.sitesToReview ?? [];
+          const routineApproval =
+            routineSitesToReview.length && !nextApprovedTool
+              ? formatRoutineSiteApprovalDetail(routineSitesToReview, runSecrets)
+              : undefined;
+          if (routineApproval && "error" in routineApproval) return routineApproval;
+          const routineSiteDetail = routineApproval?.detail;
+          if (name === "schedule_create") {
+            effectRequest = routineSiteDetail
+              ? routineSiteApprovalRequest(args, routineSitesToReview)
+              : { ...args };
+          }
           const requiresUnattendedApproval = unattendedTriggerToolRequiresApproval(
             run.trigger,
             name,
@@ -5412,7 +5439,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const gated = requiresApprovalByDefault || connectorReadGated;
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
-            scheduleNamesNewSite ||
+            routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
           const approvalResolved = requiresMandatoryApproval
             ? {
@@ -5502,6 +5529,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   consumedEffectIds,
                 );
           if (applied) await bindScriptedEffect(applied.effect, executionId);
+          if (
+            routineSiteDetail &&
+            applied?.effect.status === "intended" &&
+            !routineSiteApprovalDetails(applied.effect.request)
+          ) {
+            return {
+              error: "This Routine needs a new destination approval. Try scheduling it again.",
+            };
+          }
 
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
@@ -5682,6 +5718,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const needsApproval = gateDecision === "ask";
           const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
+          let approvedRoutineSites: string[] = [];
 
           const claimOrReturn = async (
             from: "approved" | "intended",
@@ -5730,6 +5767,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 blocks: [
                   buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                     reviewReason,
+                    routineSiteDetail,
                     allowSiteAlways: !approvalResolved.matchingRules.some(
                       (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
                     ),
@@ -5824,6 +5862,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (name !== "request_takeover") {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
+                if (name === "schedule_create" && claimedEffect) {
+                  approvedRoutineSites =
+                    routineSiteApprovalDetails(applied.effect.request)?.sites ?? [];
+                }
               }
             }
           } else if (needsApproval && applied) {
@@ -6660,6 +6702,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               name: String(args.name ?? ""),
               prompt: String(args.prompt ?? ""),
+              authorizedSites: [
+                ...new Set([
+                  ...(routineSitePolicy?.authorizedSites ?? []),
+                  ...approvedRoutineSites,
+                ]),
+              ],
               timezone: args.timezone ? String(args.timezone) : undefined,
               schedule: compactScheduleInput({
                 cron: args.cron,

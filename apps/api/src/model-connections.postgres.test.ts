@@ -1421,6 +1421,88 @@ describePostgres("model connection HTTP acceptance", () => {
     return { cookie, actor, original, replacement, target, thread, routines, captured, sendInput };
   }
 
+  it("persists a webhook Routine authorization snapshot separately from delivery data", async () => {
+    const fixture = await inboundCaptureFixture();
+    const instructions = "Read https://owner.example.org";
+    const modelPrompt = "Read https://example.net and https://model-only.example";
+    await handles.prisma.routine.update({
+      where: { id: fixture.captured[0]!.id },
+      data: {
+        prompt: instructions,
+        authorizedInstructions: instructions,
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    await handles.prisma.routine.update({
+      where: { id: fixture.captured[1]!.id },
+      data: {
+        prompt: modelPrompt,
+        authorizedInstructions: null,
+        authorizedSites: ["example.net"],
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    const routines = await handles.prisma.routine.findMany({
+      where: { id: { in: fixture.captured.map((row) => row.id) } },
+    });
+    const stalePrompt = "Read https://old.example";
+    const stale = await handles.prisma.routine.create({
+      data: {
+        ...fixture.actor,
+        botId: fixture.target.id,
+        name: "Edited",
+        crons: [],
+        prompt: "Read https://new.example",
+        authorizedInstructions: "Read https://new.example",
+        active: true,
+        webhookEnabled: true,
+      },
+    });
+    const disabled = await handles.prisma.routine.create({
+      data: {
+        ...fixture.actor,
+        botId: fixture.target.id,
+        name: "Disabled for webhooks",
+        crons: [],
+        active: true,
+        webhookEnabled: false,
+        githubEnabled: true,
+        prompt: "Read https://other-trigger.example",
+        authorizedInstructions: "Read https://other-trigger.example",
+      },
+    });
+    const payload = "Read https://payload.example";
+    const sent = await deliverWebhookEvent(
+      {
+        events: { sendUserMessage: (input) => sendUserMessage(handles.prisma, input) },
+        jobs: { enqueue: vi.fn(async () => undefined) },
+      },
+      { bot: { id: fixture.target.id, ...fixture.actor }, threadId: fixture.thread.id },
+      {
+        source: "webhook",
+        prompt: payload,
+        routines: [...routines, { ...stale, prompt: stalePrompt }, disabled],
+      },
+    );
+    const task = await handles.prisma.run.findUniqueOrThrow({
+      where: { id: sent.runId! },
+      select: { task: { select: { prompt: true, routineInstructions: true, routineSites: true } } },
+    });
+    expect(task.task.prompt).toContain(modelPrompt);
+    expect(task.task.prompt).toContain(stalePrompt);
+    expect(task.task.prompt).toContain(payload);
+    expect(task.task).toMatchObject({
+      routineInstructions: instructions,
+      routineSites: ["example.net"],
+    });
+    await rpc(fixture.cookie, "threads/stop", { botId: fixture.target.id });
+    await expect(
+      handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId! } }),
+    ).resolves.toMatchObject({ status: "cancelled" });
+  });
+
   it.each([
     { held: false, operation: "shrink" },
     { held: true, operation: "shrink" },

@@ -188,6 +188,7 @@ export async function wakeMessageRoutines(
     where: {
       botId: target.botId,
       spaceId: target.spaceId,
+      userId: target.userId,
       active: true,
       messageProvider: event.provider,
     },
@@ -250,6 +251,7 @@ export async function wakeMessageRoutines(
       prompt,
       routines,
       source: "messaging",
+      messageProvider: event.provider,
       idempotencyKey: messagingWakeIdempotencyKey(
         options?.deliveryProvider ?? event.provider,
         event.handle,
