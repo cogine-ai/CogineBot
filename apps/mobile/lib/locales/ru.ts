@@ -1,4 +1,6 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Use {count} characters or fewer": "Используйте не более {count} символов",
+  "Use a valid name": "Введите допустимое название",
   "Always allow {site}": "Всегда разрешать {site}",
   Pinned: "Закреплённые",
   "This cannot be undone.": "Это невозможно отменить.",

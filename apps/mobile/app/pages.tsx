@@ -45,7 +45,11 @@ function OwnerPages({
   const [query, setQuery] = useState("");
   const { listed, showMore, refresh } = usePagedPages({ botId, groupId }, query);
   const [problem, setProblem] = useState<string | null>(null);
-  const rename = useTextEditDialog(t("Rename"), PAGE_TITLE_MAX_LENGTH);
+  const rename = useTextEditDialog(
+    t("Rename"),
+    PAGE_TITLE_MAX_LENGTH,
+    () => scope === pageScopeKey(),
+  );
 
   const open = (page: PageSummary) => openPage(page.id);
   // A failed change may still have been made with only its answer lost: the list is read again.

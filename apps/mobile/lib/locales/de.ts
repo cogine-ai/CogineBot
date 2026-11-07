@@ -1,4 +1,6 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Use {count} characters or fewer": "Verwende höchstens {count} Zeichen",
+  "Use a valid name": "Verwende einen gültigen Namen",
   "Always allow {site}": "{site} immer erlauben",
   Pinned: "Angeheftet",
   "This cannot be undone.": "Dies kann nicht rückgängig gemacht werden.",
