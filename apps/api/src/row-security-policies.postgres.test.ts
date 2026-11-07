@@ -82,14 +82,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   const catalog = async () =>
     (
       await owner.pool.query(
-        "SELECT c.relname, c.relrowsecurity, p.polname, p.polcmd, p.polpermissive, " +
+        "SELECT n.nspname AS schema, c.relname, c.relrowsecurity, p.polname, p.polcmd, p.polpermissive, " +
           "p.polroles::text, pg_get_expr(p.polqual,p.polrelid) AS qualifier, " +
           "pg_get_expr(p.polwithcheck,p.polrelid) AS write_check " +
           "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace " +
           "LEFT JOIN pg_catalog.pg_policy p ON p.polrelid=c.oid " +
-          "WHERE n.nspname='public' AND c.relname=ANY($1::text[]) " +
-          "ORDER BY c.relname,p.polname",
-        [ROW_SECURITY_POLICIES.map(({ table }) => table)],
+          "WHERE (n.nspname || '.' || c.relname)=ANY($1::text[]) " +
+          "ORDER BY n.nspname,c.relname,p.polname",
+        [ROW_SECURITY_POLICIES.map(({ schema = "public", table }) => `${schema}.${table}`)],
       )
     ).rows;
 
@@ -515,7 +515,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(154);
+    expect(snapshot).toHaveLength(158);
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1507,19 +1507,32 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   });
 
   it("detects changed qualifiers, write checks, roles and disabled tables at unchanged policy counts", async () => {
-    for (const change of [
-      "ALTER POLICY memory_documents_tenant ON public.memory_documents USING (true)",
-      "ALTER POLICY memory_documents_system ON public.memory_documents WITH CHECK (true)",
-      "ALTER POLICY memory_documents_tenant ON public.memory_documents TO " +
-        escapeIdentifier(role),
-    ]) {
+    for (const [table, change] of [
+      [
+        "memory_documents",
+        "ALTER POLICY memory_documents_tenant ON public.memory_documents USING (true)",
+      ],
+      [
+        "memory_documents",
+        "ALTER POLICY memory_documents_system ON public.memory_documents WITH CHECK (true)",
+      ],
+      [
+        "memory_documents",
+        "ALTER POLICY memory_documents_tenant ON public.memory_documents TO " +
+          escapeIdentifier(role),
+      ],
+      [
+        "page_versions",
+        "ALTER POLICY page_versions_tenant ON cogine_pages.page_versions USING (true)",
+      ],
+    ] as const) {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(154);
+        expect((await catalog()).length).toBe(158);
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
-        expect(state.tables.find(({ table }) => table === "memory_documents")?.policyMatch).toBe(
+        expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
           false,
         );
       } finally {
@@ -1559,27 +1572,31 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         `DROP POLICY IF EXISTS ${escapeIdentifier(extraPolicy)} ON public.memory_documents`,
       );
     }
-    const extraTable = `policy_fixture_unclassified_${suffix}`;
-    try {
-      await owner.pool.query(
-        `CREATE TABLE public.${escapeIdentifier(extraTable)} (id text PRIMARY KEY)`,
-      );
-      expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
-        policyInstalled: false,
-        connectionEnforced: false,
-      });
-      const before = await catalog();
-      await expect(applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).rejects.toThrow();
-      expect(await catalog()).toEqual(before);
-      expect(
-        (
-          await owner.pool.query("SELECT to_regclass($1) IS NOT NULL AS present", [
-            `public.${extraTable}`,
-          ])
-        ).rows,
-      ).toEqual([{ present: true }]);
-    } finally {
-      await owner.pool.query(`DROP TABLE IF EXISTS public.${escapeIdentifier(extraTable)}`);
+    for (const [schema, table] of [
+      ["public", `policy_fixture_unclassified_${suffix}`],
+      ["cogine_pages", `policy_fixture_unclassified_${suffix}`],
+      ["public", "pages"],
+    ] as const) {
+      const qualified = `${escapeIdentifier(schema)}.${escapeIdentifier(table)}`;
+      try {
+        await owner.pool.query(`CREATE TABLE ${qualified} (id text PRIMARY KEY)`);
+        expect(await describeRowSecurityPolicies(runtime!.prisma)).toMatchObject({
+          policyInstalled: false,
+          connectionEnforced: false,
+          problems: expect.arrayContaining([
+            `unmapped-table:${schema === "public" ? table : `${schema}.${table}`}`,
+          ]),
+        });
+        const before = await catalog();
+        await expect(applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).rejects.toThrow();
+        expect(await catalog()).toEqual(before);
+        expect(
+          (await owner.pool.query("SELECT to_regclass($1) IS NOT NULL AS present", [qualified]))
+            .rows,
+        ).toEqual([{ present: true }]);
+      } finally {
+        await owner.pool.query(`DROP TABLE IF EXISTS ${qualified}`);
+      }
     }
   }, 120_000);
 
@@ -1805,7 +1822,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(154);
+        expect(committed).toHaveLength(158);
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -1851,7 +1868,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(154);
+      expect(committed).toHaveLength(158);
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

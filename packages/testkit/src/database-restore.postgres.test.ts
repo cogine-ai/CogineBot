@@ -280,7 +280,7 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(target.url);
     await provisionRuntimeRole(target.url, targetRuntimeUrl);
     const status = await verify();
-    expect(status).toMatchObject({ expectedTables: 84, connectionEnforced: true });
+    expect(status).toMatchObject({ expectedTables: 86, connectionEnforced: true });
     expect(status.problems).toEqual([]);
     restored = true;
   }
@@ -369,7 +369,7 @@ postgres("custom archive recovery into a different cluster and database identity
       (
         await targetWork((client) =>
           client.query(
-            `SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','graphile_worker','cogine_private') AND c.relkind IN ('r','p')`,
+            `SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','graphile_worker','cogine_private','cogine_pages') AND c.relkind IN ('r','p')`,
           ),
         )
       ).rows,
@@ -459,12 +459,31 @@ postgres("custom archive recovery into a different cluster and database identity
           blocks: [{ kind: "text", text: name === "a" ? "Synthetic α" : "合成乙" }],
         },
       });
+      const title = `Synthetic restored Page ${name}`;
+      await sourceOwner.prisma.page.create({
+        data: {
+          id: id(`page-${name}`),
+          userId,
+          spaceId,
+          botId: id(`bot-${name}`),
+          title,
+          versions: {
+            create: {
+              id: id(`page-version-${name}`),
+              version: 1,
+              title,
+              source: `source-${name}`,
+              code: `code-${name}`,
+            },
+          },
+        },
+      });
     }
     expect(sourceIdentity.user).not.toBe(sourceLogin);
     await migrateJobQueue(source.url);
     await provisionRuntimeRole(source.url, sourceRuntimeUrl);
     expect(await applyRowSecurityPolicies(source.url, sourceRuntimeUrl)).toMatchObject({
-      expectedTables: 84,
+      expectedTables: 86,
       connectionEnforced: true,
     });
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
@@ -615,7 +634,7 @@ postgres("custom archive recovery into a different cluster and database identity
           await targetWork((client) =>
             client.query(
               `SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-               WHERE n.nspname IN ('public','graphile_worker','cogine_private') AND c.relkind IN ('r','p')`,
+               WHERE n.nspname IN ('public','graphile_worker','cogine_private','cogine_pages') AND c.relkind IN ('r','p')`,
             ),
           )
         ).rows,
@@ -682,9 +701,34 @@ postgres("custom archive recovery into a different cluster and database identity
                 where: { threadId: id(`thread-${name === "a" ? "b" : "a"}`) },
               }),
             ).toEqual([]);
+            expect(
+              await runtime.prisma.page.findMany({
+                select: {
+                  id: true,
+                  visibility: true,
+                  versions: { select: { id: true, version: true, source: true, code: true } },
+                },
+              }),
+            ).toEqual([
+              {
+                id: id(`page-${name}`),
+                visibility: "private",
+                versions: [
+                  {
+                    id: id(`page-version-${name}`),
+                    version: 1,
+                    source: `source-${name}`,
+                    code: `code-${name}`,
+                  },
+                ],
+              },
+            ]);
           },
         );
       expect((await runtime.pool.query("SELECT id FROM public.messages")).rows).toEqual([]);
+      expect((await runtime.pool.query("SELECT id FROM cogine_pages.page_versions")).rows).toEqual(
+        [],
+      );
       expect(
         await runAsSystem("verify restored synthetic content", () =>
           runtime.prisma.message.count(),
@@ -717,7 +761,7 @@ postgres("custom archive recovery into a different cluster and database identity
       await runtime.prisma.$disconnect();
       await runtime.pool.end();
     }
-    expect(await verify()).toMatchObject({ expectedTables: 84, connectionEnforced: true });
+    expect(await verify()).toMatchObject({ expectedTables: 86, connectionEnforced: true });
   }, 120_000);
 
   it("rejects an extra system key without deleting it or the selected credential", async () => {
@@ -761,7 +805,7 @@ postgres("custom archive recovery into a different cluster and database identity
         /outside the selected (owner and runtime roles|credential inventory)/,
       );
       expect(await verify([targetRuntimeUrl, alternateUrl])).toMatchObject({
-        expectedTables: 84,
+        expectedTables: 86,
         connectionEnforced: true,
       });
     } finally {

@@ -5,6 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  schemas = ["public", "cogine_pages"]
 }
 
 model AiDataConsent {
@@ -19,6 +20,7 @@ model AiDataConsent {
 
   @@id([userId, spaceId, recipientKey])
   @@map("ai_data_consents")
+  @@schema("public")
 }
 
 model User {
@@ -54,8 +56,11 @@ model User {
   createdTickets              Ticket[]                     @relation("TicketCreatorUser")
   ticketComments              TicketComment[]              @relation("TicketCommentAuthorUser")
 
+  pages Page[]
+
   @@unique([email])
   @@map("user")
+  @@schema("public")
 }
 
 model Session {
@@ -73,6 +78,7 @@ model Session {
   @@unique([token])
   @@index([userId])
   @@map("session")
+  @@schema("public")
 }
 
 model Account {
@@ -93,6 +99,7 @@ model Account {
 
   @@index([userId])
   @@map("account")
+  @@schema("public")
 }
 
 model Verification {
@@ -105,6 +112,7 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+  @@schema("public")
 }
 
 /// Better Auth credential rate limits. `lastRequest` is epoch milliseconds.
@@ -115,6 +123,7 @@ model RateLimit {
   lastRequest BigInt
 
   @@map("rateLimit")
+  @@schema("public")
 }
 
 model Organization {
@@ -131,6 +140,7 @@ model Organization {
 
   @@unique([slug])
   @@map("organization")
+  @@schema("public")
 }
 
 model BillingAccount {
@@ -153,6 +163,7 @@ model BillingAccount {
   updatedAt           DateTime     @updatedAt
 
   @@map("billing_accounts")
+  @@schema("public")
 }
 
 model ActionApprovalRule {
@@ -169,6 +180,7 @@ model ActionApprovalRule {
   @@unique([spaceId, createdByUserId, effect, matchKind, matchValue])
   @@index([spaceId, createdByUserId])
   @@map("action_approval_rules")
+  @@schema("public")
 }
 
 model ActionAutoReviewPreference {
@@ -183,6 +195,7 @@ model ActionAutoReviewPreference {
 
   @@unique([spaceId, userId])
   @@map("action_auto_review_preferences")
+  @@schema("public")
 }
 
 model Member {
@@ -199,6 +212,7 @@ model Member {
   @@index([organizationId])
   @@index([userId])
   @@map("member")
+  @@schema("public")
 }
 
 model Space {
@@ -259,10 +273,13 @@ model Space {
   tickets                     Ticket[]
   ticketComments              TicketComment[]
 
+  pages Page[]
+
   @@unique([id, organizationId])
   @@index([organizationId, createdAt])
   @@index([createdByUserId])
   @@map("spaces")
+  @@schema("public")
 }
 
 model SpaceMember {
@@ -283,6 +300,7 @@ model SpaceMember {
   @@index([organizationId, userId])
   @@index([userId, createdAt])
   @@map("space_members")
+  @@schema("public")
 }
 
 model SpaceCollaborationChange {
@@ -297,6 +315,7 @@ model SpaceCollaborationChange {
 
   @@unique([spaceId, revision])
   @@map("space_collaboration_changes")
+  @@schema("public")
 }
 
 model Invitation {
@@ -314,6 +333,7 @@ model Invitation {
   @@index([organizationId])
   @@index([email])
   @@map("invitation")
+  @@schema("public")
 }
 
 model DeploymentSettings {
@@ -330,6 +350,7 @@ model DeploymentSettings {
   updatedAt                       DateTime @updatedAt
 
   @@map("deployment_settings")
+  @@schema("public")
 }
 
 model UserModelCredential {
@@ -348,6 +369,7 @@ model UserModelCredential {
   @@unique([id, userId])
   @@index([userId, provider, updatedAt])
   @@map("user_model_credentials")
+  @@schema("public")
 }
 
 model UserVoiceCredential {
@@ -363,6 +385,7 @@ model UserVoiceCredential {
   @@unique([id, userId])
   @@index([userId, provider, updatedAt])
   @@map("user_voice_credentials")
+  @@schema("public")
 }
 
 model SpaceModelPreference {
@@ -383,6 +406,7 @@ model SpaceModelPreference {
   @@index([credentialId])
   // Partial unique index space_model_preferences_default_key is created in SQL.
   @@map("space_model_preferences")
+  @@schema("public")
 }
 
 model SpaceBackupModel {
@@ -397,6 +421,7 @@ model SpaceBackupModel {
   @@id([spaceId, userId, position])
   @@unique([spaceId, userId, modelCredentialId, provider, modelId], map: "space_backup_models_connection_model_key")
   @@map("space_backup_models")
+  @@schema("public")
 }
 
 model SpaceVoicePreference {
@@ -418,6 +443,7 @@ model SpaceVoicePreference {
   @@index([credentialId])
   // Partial unique index space_voice_preferences_default_key is created in SQL.
   @@map("space_voice_preferences")
+  @@schema("public")
 }
 
 model Bot {
@@ -479,12 +505,15 @@ model Bot {
 
   externalConversations ExternalConversation[]
 
+  pages Page[]
+
   @@unique([spaceId, spawnKey])
   @@index([spaceId, userId, archivedAt, pinned, updatedAt])
   @@index([sectionId])
   @@index([computerId])
   @@index([parentBotId])
   @@map("bots")
+  @@schema("public")
 }
 
 model BotPackagePreview {
@@ -506,6 +535,7 @@ model BotPackagePreview {
   @@index([spaceId, userId, expiresAt])
   @@index([expiresAt, id])
   @@map("bot_package_previews")
+  @@schema("public")
 }
 
 model BotPackageImport {
@@ -533,6 +563,7 @@ model BotPackageImport {
   @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId, createdAt])
   @@map("bot_package_imports")
+  @@schema("public")
 }
 
 model BotPackageComponent {
@@ -554,6 +585,7 @@ model BotPackageComponent {
   @@unique([importId, key])
   @@index([botId])
   @@map("bot_package_components")
+  @@schema("public")
 }
 
 model BotSection {
@@ -572,6 +604,7 @@ model BotSection {
   @@unique([spaceId, userId, name])
   @@index([spaceId, userId, position, createdAt])
   @@map("bot_sections")
+  @@schema("public")
 }
 
 model BotDeletion {
@@ -585,6 +618,7 @@ model BotDeletion {
 
   @@index([spaceId, deletedAt])
   @@map("bot_deletions")
+  @@schema("public")
 }
 
 model ChatGroup {
@@ -605,10 +639,13 @@ model ChatGroup {
   thread            Thread?
   artifacts         Artifact[]
 
+  pages Page[]
+
   @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId, archivedAt, pinned, updatedAt])
   @@index([sectionId])
   @@map("chat_groups")
+  @@schema("public")
 }
 
 model ChatGroupMember {
@@ -622,6 +659,7 @@ model ChatGroupMember {
   @@unique([groupId, botId])
   @@index([botId])
   @@map("chat_group_members")
+  @@schema("public")
 }
 
 model Thread {
@@ -650,6 +688,7 @@ model Thread {
 
   @@index([spaceId])
   @@map("threads")
+  @@schema("public")
 }
 
 model Message {
@@ -678,6 +717,7 @@ model Message {
   @@index([threadId, seq])
   @@index([replyToMessageId])
   @@map("messages")
+  @@schema("public")
 }
 
 model Event {
@@ -700,6 +740,7 @@ model Event {
   @@index([threadId, seq])
   @@index([runId, type, seq])
   @@map("events")
+  @@schema("public")
 }
 
 model Task {
@@ -724,6 +765,7 @@ model Task {
 
   @@index([spaceId, botId])
   @@map("tasks")
+  @@schema("public")
 }
 
 model Run {
@@ -797,6 +839,7 @@ model Run {
   @@index([threadId, status, createdAt])
   @@index([routineId])
   @@map("runs")
+  @@schema("public")
 }
 
 model SteeringMessage {
@@ -823,6 +866,7 @@ model SteeringMessage {
   @@index([botId, runId, createdAt])
   @@index([runId])
   @@map("steering_messages")
+  @@schema("public")
 }
 
 model Attempt {
@@ -837,6 +881,7 @@ model Attempt {
 
   @@index([runId])
   @@map("attempts")
+  @@schema("public")
 }
 
 // Deliberately independent of chat/user cascades: the worker must still be able
@@ -874,6 +919,7 @@ model CloudAgent {
   @@index([providerKey, nextPollAt])
   @@index([spaceId, userId, id])
   @@map("cloud_agents")
+  @@schema("public")
 }
 
 model ExternalEffect {
@@ -896,6 +942,7 @@ model ExternalEffect {
   @@unique([idempotencyKey])
   @@index([runId, status])
   @@map("external_effects")
+  @@schema("public")
 }
 
 model Routine {
@@ -934,6 +981,7 @@ model Routine {
   @@index([active, nextRunAt])
   @@index([spaceId, botId])
   @@map("routines")
+  @@schema("public")
 }
 
 model ScratchpadItem {
@@ -952,6 +1000,7 @@ model ScratchpadItem {
   @@index([spaceId, botId, status])
   @@index([spaceId, botId, updatedAt])
   @@map("scratchpad_items")
+  @@schema("public")
 }
 
 model TaughtSkill {
@@ -977,6 +1026,7 @@ model TaughtSkill {
   // Partial unique index taught_skills_botId_recording_key is created in SQL:
   // one recording session per bot.
   @@map("taught_skills")
+  @@schema("public")
 }
 
 /// Claude Agent Skills: SKILL.md recipes shared across assistants (not per-bot).
@@ -1001,6 +1051,7 @@ model AgentSkill {
   @@index([installId])
   // Case-insensitive unique index agent_skills_spaceId_userId_name_lower_key is created in SQL.
   @@map("agent_skills")
+  @@schema("public")
 }
 
 model Connection {
@@ -1029,6 +1080,7 @@ model Connection {
 
   @@index([spaceId, userId, connectorId])
   @@map("connections")
+  @@schema("public")
 }
 
 model CapabilityInstall {
@@ -1060,6 +1112,7 @@ model CapabilityInstall {
   @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId])
   @@map("capability_installs")
+  @@schema("public")
 }
 
 model OpenApiImportReceipt {
@@ -1083,6 +1136,7 @@ model OpenApiImportReceipt {
   @@index([spaceId, userId])
   @@index([userId])
   @@map("openapi_import_receipts")
+  @@schema("public")
 }
 
 model MemoryDocument {
@@ -1103,6 +1157,7 @@ model MemoryDocument {
   @@unique([spaceId, scope, botId, path])
   @@index([spaceId, userId])
   @@map("memory_documents")
+  @@schema("public")
 }
 
 model MemoryRevision {
@@ -1117,6 +1172,7 @@ model MemoryRevision {
 
   @@unique([documentId, revision])
   @@map("memory_revisions")
+  @@schema("public")
 }
 
 model AgentHome {
@@ -1131,6 +1187,7 @@ model AgentHome {
   updatedAt DateTime @updatedAt
 
   @@map("agent_homes")
+  @@schema("public")
 }
 
 model BrowserProfile {
@@ -1145,6 +1202,7 @@ model BrowserProfile {
   updatedAt DateTime @updatedAt
 
   @@map("browser_profiles")
+  @@schema("public")
 }
 
 model ComputerUpdate {
@@ -1161,6 +1219,7 @@ model ComputerUpdate {
   @@index([computerId, createdAt])
   @@index([status, updatedAt])
   @@map("computer_updates")
+  @@schema("public")
 }
 
 model Computer {
@@ -1196,6 +1255,7 @@ model Computer {
 
   @@index([spaceId, scope])
   @@map("computers")
+  @@schema("public")
 }
 
 model ComputerExecutionLease {
@@ -1214,6 +1274,7 @@ model ComputerExecutionLease {
   @@index([computerId, expiresAt])
   @@index([botId, expiresAt])
   @@map("computer_execution_leases")
+  @@schema("public")
 }
 
 model Artifact {
@@ -1248,6 +1309,7 @@ model Artifact {
   @@index([rootArtifactId])
   // artifacts_family_version_key is raw SQL: Prisma cannot express COALESCE indexes.
   @@map("artifacts")
+  @@schema("public")
 }
 
 model UsageRecord {
@@ -1292,6 +1354,7 @@ model UsageRecord {
 
   @@index([spaceId, userId, createdAt])
   @@map("usage_records")
+  @@schema("public")
 }
 
 model NotificationPreference {
@@ -1305,6 +1368,7 @@ model NotificationPreference {
 
   @@unique([spaceId, userId])
   @@map("notification_preferences")
+  @@schema("public")
 }
 
 model SpaceMemoryConfig {
@@ -1321,6 +1385,7 @@ model SpaceMemoryConfig {
   updatedAt          DateTime @updatedAt
 
   @@map("space_memory_configs")
+  @@schema("public")
 }
 
 model Secret {
@@ -1340,6 +1405,7 @@ model Secret {
 
   @@index([userId, spaceId])
   @@map("secrets")
+  @@schema("public")
 }
 
 model McpServer {
@@ -1377,6 +1443,7 @@ model McpServer {
   @@index([spaceId, userId])
   @@index([installId])
   @@map("mcp_servers")
+  @@schema("public")
 }
 
 model McpOAuthSession {
@@ -1393,6 +1460,7 @@ model McpOAuthSession {
 
   @@index([spaceId, userId, createdAt])
   @@map("mcp_oauth_sessions")
+  @@schema("public")
 }
 
 model BotMcpServer {
@@ -1412,6 +1480,7 @@ model BotMcpServer {
   @@unique([botId, serverId])
   @@index([spaceId, userId, botId])
   @@map("bot_mcp_servers")
+  @@schema("public")
 }
 
 model MessagingIdentity {
@@ -1434,6 +1503,7 @@ model MessagingIdentity {
   @@unique([provider, address])
   @@index([userId])
   @@map("messaging_identities")
+  @@schema("public")
 }
 
 model MessagingChannel {
@@ -1448,6 +1518,7 @@ model MessagingChannel {
   members       MessagingChannelMember[]
 
   @@map("messaging_channels")
+  @@schema("public")
 }
 
 model MessagingChannelMember {
@@ -1463,6 +1534,7 @@ model MessagingChannelMember {
   @@unique([channelId, address])
   @@index([identityId])
   @@map("messaging_channel_members")
+  @@schema("public")
 }
 
 /// Short-lived web-issued code binding a chat address to an existing user+bot.
@@ -1477,6 +1549,7 @@ model MessagingLinkCode {
 
   @@index([userId])
   @@map("messaging_link_codes")
+  @@schema("public")
 }
 
 model MessagingOutbound {
@@ -1498,6 +1571,7 @@ model MessagingOutbound {
 
   @@index([status, nextAttemptAt])
   @@map("messaging_outbound")
+  @@schema("public")
 }
 
 model AgentConnection {
@@ -1514,6 +1588,7 @@ model AgentConnection {
   @@unique([requesterBotId, targetBotId])
   @@index([targetBotId, status])
   @@map("agent_connections")
+  @@schema("public")
 }
 
 model BotSecret {
@@ -1536,6 +1611,7 @@ model BotSecret {
   @@index([botId])
   @@index([spaceId])
   @@map("bot_secrets")
+  @@schema("public")
 }
 
 /// Deployment keys survive account and Space lifecycle changes.
@@ -1550,6 +1626,7 @@ model DeploymentIdentity {
   updatedAt      DateTime @updatedAt
 
   @@map("deployment_identities")
+  @@schema("public")
 }
 
 /// Scope ids are provenance, not authority. Unsettled provider writes must survive scope deletion.
@@ -1604,6 +1681,7 @@ model DeploymentTransferSession {
   @@index([localUserId, localSpaceId, updatedAt], map: "deployment_transfer_sessions_owner_updated_idx")
   @@index([status, expiresAt], map: "deployment_transfer_sessions_status_expires_idx")
   @@map("deployment_transfer_sessions")
+  @@schema("public")
 }
 
 model DeploymentTransferItem {
@@ -1643,6 +1721,7 @@ model DeploymentTransferItem {
   @@index([writeState, updatedAt])
   @@index([recoveryRef])
   @@map("deployment_transfer_items")
+  @@schema("public")
 }
 
 
@@ -1670,6 +1749,7 @@ model ExternalConversation {
   @@unique([provider, workspaceId, externalKey])
   @@index([spaceId, botId])
   @@map("external_conversations")
+  @@schema("public")
 }
 
 model ExternalMessage {
@@ -1702,6 +1782,7 @@ model ExternalMessage {
   @@unique([externalConversationId, providerEventId])
   @@index([status, nextAttemptAt])
   @@map("external_messages")
+  @@schema("public")
 }
 
 model AgentSecret {
@@ -1719,6 +1800,7 @@ model AgentSecret {
   @@unique([spaceId, name])
   @@index([spaceId, updatedAt])
   @@map("agent_secrets")
+  @@schema("public")
 }
 
 // Deployment-owned integration credentials; never exposed through read DTOs.
@@ -1728,6 +1810,7 @@ model IntegrationProviderConfig {
   updatedAt  DateTime @updatedAt
 
   @@map("integration_provider_configs")
+  @@schema("public")
 }
 
 model Board {
@@ -1742,6 +1825,7 @@ model Board {
   tickets      Ticket[]
 
   @@map("boards")
+  @@schema("public")
 }
 
 model Ticket {
@@ -1770,6 +1854,7 @@ model Ticket {
   @@index([spaceId, status])
   @@index([boardId, status])
   @@map("tickets")
+  @@schema("public")
 }
 
 model TicketComment {
@@ -1788,6 +1873,7 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+  @@schema("public")
 }
 
 
@@ -1815,6 +1901,7 @@ model NativeAppConfig {
 
   @@index([appId, enabled])
   @@map("native_app_configs")
+  @@schema("public")
 }
 
 model NativeOAuthSession {
@@ -1839,6 +1926,7 @@ model NativeOAuthSession {
 
   @@index([userId, spaceId, expiresAt])
   @@map("native_oauth_sessions")
+  @@schema("public")
 }
 
 model NativeOAuthGrant {
@@ -1872,6 +1960,7 @@ model NativeOAuthGrant {
 
   @@index([userId, spaceId, authority])
   @@map("native_oauth_grants")
+  @@schema("public")
 }
 
 model NativeRoutineTrigger {
@@ -1902,6 +1991,7 @@ model NativeRoutineTrigger {
   @@index([connectionId, authorizationRevision])
   @@index([nextPollAt])
   @@map("native_routine_triggers")
+  @@schema("public")
 }
 
 model NativeNotionHook {
@@ -1931,6 +2021,7 @@ model NativeNotionHook {
   @@index([configId])
   // SQL enforces one enabled hook per config with a partial unique index.
   @@map("native_notion_hooks")
+  @@schema("public")
 }
 
 
@@ -1958,6 +2049,7 @@ model NativeSlackHook {
   @@index([configId])
   // SQL also enforces one enabled hook per app and per config (Slack has one Request URL).
   @@map("native_slack_hooks")
+  @@schema("public")
 }
 
 model NativeSlackEventInbox {
@@ -1973,4 +2065,47 @@ model NativeSlackEventInbox {
   @@unique([hookId, eventId])
   @@index([dispatchedAt, receivedAt])
   @@map("native_slack_event_inbox")
+  @@schema("public")
+}
+
+model Page {
+  id             String        @id @default(cuid())
+  spaceId        String
+  space          Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  botId          String?
+  bot            Bot?          @relation(fields: [botId], references: [id], onDelete: SetNull)
+  groupId        String?
+  group          ChatGroup?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  title          String
+  visibility     String        @default("private")
+  pinnedAt       DateTime?
+  currentVersion Int           @default(1)
+  createdAt      DateTime      @default(now())
+  /// Set when the page's content or title changes; pinning or sharing it is not an update.
+  updatedAt      DateTime      @default(now())
+  versions       PageVersion[]
+
+  @@index([spaceId, userId, updatedAt])
+  @@index([botId])
+  @@index([groupId])
+  @@map("pages")
+  @@schema("cogine_pages")
+}
+
+model PageVersion {
+  id        String   @id @default(cuid())
+  pageId    String
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  version   Int
+  title     String
+  source    String
+  /// The source compiled for the viewer when it was saved, so reads never run the compiler.
+  code      String
+  createdAt DateTime @default(now())
+
+  @@unique([pageId, version])
+  @@map("page_versions")
+  @@schema("cogine_pages")
 }

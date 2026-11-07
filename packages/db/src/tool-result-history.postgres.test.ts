@@ -1,46 +1,134 @@
-import { PrismaPg } from "@prisma/adapter-pg";
-import { Pool } from "pg";
+import { randomUUID } from "node:crypto";
+import type { Pool } from "pg";
+import { escapeLiteral } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PrismaClient } from "./client.js";
+import type { PrismaClient } from "./client.js";
+import { createDb } from "./client.js";
 import { eventsAfter } from "./events.js";
 import type { HistoryScope } from "./history-retrieval.js";
 import { readHistory } from "./history-retrieval.js";
 import { storeToolResultHistory, TOOL_RESULT_HISTORY_MAX_BYTES } from "./tool-result-history.js";
 
-const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
+const databaseUrl = process.env.DATABASE_URL;
+const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(databaseUrl);
 
 describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
+  const suffix = randomUUID();
+  const organizationId = `tool-result-org-${suffix}`;
+  const sourceId = `tool-result-source-${suffix}`;
+  const peerId = `tool-result-peer-${suffix}`;
+  const groupId = `tool-result-group-${suffix}`;
   let pool: Pool;
   let prisma: PrismaClient;
+  let seeded = false;
   const scope = {
-    spaceId: "space",
-    userId: "owner",
-    threadId: "thread",
-    botId: "bot",
-    activeRunId: "run",
+    spaceId: `tool-result-space-${suffix}`,
+    userId: `tool-result-owner-${suffix}`,
+    threadId: `tool-result-thread-${suffix}`,
+    botId: `tool-result-bot-${suffix}`,
+    activeRunId: `tool-result-run-${suffix}`,
   };
   beforeAll(async () => {
-    // Temporary synthetic tables shadow product tables; no existing data is inspected.
-    pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: "pg_temp" }) });
-    await pool.query(`
-      CREATE TEMP TABLE bots (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
-      CREATE TEMP TABLE threads (id text PRIMARY KEY, "spaceId" text, "userId" text, "botId" text, "groupId" text, "nextEventSeq" integer DEFAULT 0);
-      CREATE TEMP TABLE chat_groups (id text PRIMARY KEY, "spaceId" text, "userId" text, "archivedAt" timestamptz);
-      CREATE TEMP TABLE chat_group_members ("groupId" text, "botId" text);
-      CREATE TEMP TABLE messages (id text PRIMARY KEY, "threadId" text, seq integer, role text, "runId" text, blocks jsonb);
-      CREATE TEMP TABLE runs (id text PRIMARY KEY, "spaceId" text, "userId" text, "threadId" text, "botId" text, "sourceMessageId" text, status text, "startedAt" timestamptz, "firstResponseAt" timestamptz, "leaseOwner" text, "leaseFence" integer NOT NULL DEFAULT 0);
-      CREATE TEMP TABLE events (id text PRIMARY KEY, "spaceId" text, "threadId" text, "botId" text, seq integer, type text, payload jsonb, "toolResult" jsonb, "runId" text, "createdAt" timestamptz DEFAULT now());
-      INSERT INTO bots VALUES ('bot','space','owner',NULL), ('peer','space','owner',NULL);
-      INSERT INTO threads (id,"spaceId","userId","botId") VALUES ('thread','space','owner','bot');
-      INSERT INTO messages VALUES ('source','thread',1,'user',NULL,'[{"kind":"channel_message","channelId":"channel-a","text":"Read synthetic items"}]');
-      INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('run','space','owner','thread','bot','source','running',now());
-    `);
+    // Prisma addresses each model's schema explicitly. Use real tables in the
+    // per-suite harness database and remove only the synthetic organization.
+    const url = new URL(databaseUrl!);
+    const database = url.pathname.slice(1);
+    if (
+      !["postgres:", "postgresql:"].includes(url.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      Number(url.port) <= 1024 ||
+      ["host", "port", "dbname", "database"].some((key) => url.searchParams.has(key)) ||
+      !/^integration_(0|[1-9][0-9]*)$/.test(database) ||
+      database !== process.env.VERIFY_ISOLATED_DATABASE
+    )
+      throw new Error("Tool result history tests require an isolated harness database");
+    ({ pool, prisma } = createDb(databaseUrl!, { poolMax: 1 }));
+    const identity = await pool.query<{ name: string }>("SELECT current_database() AS name");
+    expect(identity.rows[0]?.name).toBe(database);
+    await prisma.$transaction(async (tx) => {
+      await tx.user.create({
+        data: {
+          id: scope.userId,
+          name: "Tool result fixture",
+          email: `tool-result-${suffix}@example.test`,
+        },
+      });
+      await tx.organization.create({
+        data: {
+          id: organizationId,
+          slug: organizationId,
+          name: "Tool result fixture",
+          createdAt: new Date(),
+          spaces: { create: { id: scope.spaceId, name: "Tool result fixture" } },
+        },
+      });
+      await tx.bot.createMany({
+        data: [scope.botId, peerId].map((id) => ({
+          id,
+          spaceId: scope.spaceId,
+          userId: scope.userId,
+          name: "Tool result fixture",
+          color: "ink",
+        })),
+      });
+      await tx.thread.create({
+        data: {
+          id: scope.threadId,
+          spaceId: scope.spaceId,
+          userId: scope.userId,
+          botId: scope.botId,
+        },
+      });
+      await tx.message.create({
+        data: {
+          id: sourceId,
+          threadId: scope.threadId,
+          seq: 1,
+          role: "user",
+          blocks: [
+            { kind: "channel_message", channelId: "channel-a", text: "Read synthetic items" },
+          ],
+        },
+      });
+      await createRun(tx, scope, sourceId);
+    });
+    seeded = true;
   });
   afterAll(async () => {
-    await prisma?.$disconnect();
-    await pool?.end();
+    try {
+      if (seeded)
+        await prisma.$transaction([
+          prisma.organization.delete({ where: { id: organizationId } }),
+          prisma.user.delete({ where: { id: scope.userId } }),
+        ]);
+    } finally {
+      await prisma?.$disconnect();
+      await pool?.end();
+    }
   });
+  async function createRun(
+    db: Pick<PrismaClient, "task" | "run">,
+    { activeRunId, spaceId, userId, threadId, botId }: typeof scope,
+    sourceMessageId?: string,
+  ) {
+    const task = await db.task.create({
+      data: { spaceId, userId, threadId, botId, prompt: "Tool result fixture", status: "running" },
+    });
+    await db.run.create({
+      data: {
+        id: activeRunId,
+        spaceId,
+        userId,
+        threadId,
+        botId,
+        taskId: task.id,
+        sourceMessageId,
+        status: "running",
+        trigger: "user",
+        startedAt: new Date(),
+      },
+    });
+  }
   const store = (text: string, target = scope) =>
     storeToolResultHistory(prisma, target, { name: "connector.read", executionId: "call", text });
   async function read(
@@ -93,7 +181,7 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
   it("does not issue a reference for over-cap results or mismatched run ownership", async () => {
     expect(await store(JSON.stringify("x".repeat(TOOL_RESULT_HISTORY_MAX_BYTES)))).toBeUndefined();
     expect(await store("{}", { ...scope, userId: "foreign" })).toBeUndefined();
-    expect(await store("{}", { ...scope, botId: "peer" })).toBeUndefined();
+    expect(await store("{}", { ...scope, botId: peerId })).toBeUndefined();
   });
   it("rejects missing or changed view hashes before returning a continuation body", async () => {
     const id = (await store(JSON.stringify({ body: "source ".repeat(1000) })))!.arguments
@@ -117,52 +205,79 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
       { ...scope, userId: "foreign" },
       { ...scope, spaceId: "foreign" },
       { ...scope, threadId: "foreign" },
-      { ...scope, botId: "peer" },
+      { ...scope, botId: peerId },
       { ...scope, channelId: "channel-b" },
     ])
       expect((await read(id, target)).toolResult).toBeNull();
     expect((await read(id, { ...scope, channelId: "channel-a" })).toolResult?.text).toContain(
       "scope-canary",
     );
-    await pool.query(`UPDATE bots SET "archivedAt" = now() WHERE id = 'bot'`);
+    await prisma.bot.update({ where: { id: scope.botId }, data: { archivedAt: new Date() } });
     expect((await read(id)).toolResult).toBeNull();
-    await pool.query(`UPDATE bots SET "archivedAt" = NULL WHERE id = 'bot'`);
-    await pool.query(`DELETE FROM events WHERE id = $1`, [id]);
+    await prisma.bot.update({ where: { id: scope.botId }, data: { archivedAt: null } });
+    await prisma.event.delete({ where: { id } });
     expect((await read(id)).toolResult).toBeNull();
   });
   it("rechecks group membership and never retrieves another bot's private result", async () => {
-    await pool.query(`INSERT INTO chat_groups VALUES ('group','space','owner',NULL);
-      INSERT INTO chat_group_members VALUES ('group','bot'), ('group','peer');
-      INSERT INTO threads (id,"spaceId","userId","groupId") VALUES ('group-thread','space','owner','group');
-      INSERT INTO messages VALUES ('group-source','group-thread',1,'user',NULL,'[{"kind":"text","text":"group input"}]');
-      INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('group-run','space','owner','group-thread','bot','group-source','running',now());`);
-    const groupScope = { ...scope, threadId: "group-thread", activeRunId: "group-run" };
+    const groupScope = {
+      ...scope,
+      threadId: `tool-result-group-thread-${suffix}`,
+      activeRunId: `tool-result-group-run-${suffix}`,
+    };
+    await prisma.$transaction(async (tx) => {
+      await tx.chatGroup.create({
+        data: {
+          id: groupId,
+          spaceId: scope.spaceId,
+          userId: scope.userId,
+          name: "Tool result group",
+          members: { create: [scope.botId, peerId].map((botId) => ({ botId })) },
+        },
+      });
+      await tx.thread.create({
+        data: { id: groupScope.threadId, spaceId: scope.spaceId, userId: scope.userId, groupId },
+      });
+      const source = await tx.message.create({
+        data: {
+          threadId: groupScope.threadId,
+          seq: 1,
+          role: "user",
+          blocks: [{ kind: "text", text: "group input" }],
+        },
+      });
+      await createRun(tx, groupScope, source.id);
+    });
     const id = (await store('{"value":"group-canary"}', groupScope))!.arguments.toolResultId;
     expect((await read(id, groupScope)).toolResult?.text).toContain("group-canary");
-    expect((await read(id, { ...groupScope, botId: "peer" })).toolResult).toBeNull();
-    await pool.query(
-      `DELETE FROM chat_group_members WHERE "groupId" = 'group' AND "botId" = 'bot'`,
-    );
+    expect((await read(id, { ...groupScope, botId: peerId })).toolResult).toBeNull();
+    await prisma.chatGroupMember.delete({
+      where: { groupId_botId: { groupId, botId: scope.botId } },
+    });
     expect((await read(id, groupScope)).toolResult).toBeNull();
-    await pool.query(
-      `INSERT INTO chat_group_members VALUES ('group','bot'); UPDATE chat_groups SET "archivedAt" = now() WHERE id = 'group'`,
-    );
+    await prisma.chatGroup.update({
+      where: { id: groupId },
+      data: { archivedAt: new Date(), members: { create: { botId: scope.botId } } },
+    });
     expect((await read(id, groupScope)).toolResult).toBeNull();
   });
   it("requires a surviving background output except for the server-owned active run", async () => {
-    await pool.query(
-      `INSERT INTO runs (id,"spaceId","userId","threadId","botId","sourceMessageId",status,"startedAt") VALUES ('background','space','owner','thread','bot',NULL,'running',now());`,
-    );
-    const activeScope = { ...scope, activeRunId: "background" };
+    const activeScope = { ...scope, activeRunId: `tool-result-background-${suffix}` };
+    await createRun(prisma, activeScope);
     const id = (await store('{"value":"background-canary"}', activeScope))!.arguments.toolResultId;
     expect((await read(id, activeScope)).toolResult?.text).toContain("background-canary");
     expect((await read(id)).toolResult).toBeNull();
     expect((await read(id, { ...activeScope, channelId: "channel-a" })).toolResult).toBeNull();
-    await pool.query(
-      `INSERT INTO messages VALUES ('background-output','thread',2,'bot','background','[{"kind":"text","text":"done"}]')`,
-    );
+    const output = await prisma.message.create({
+      data: {
+        threadId: scope.threadId,
+        seq: 2,
+        role: "bot",
+        runId: activeScope.activeRunId,
+        blocks: [{ kind: "text", text: "done" }],
+      },
+    });
     expect((await read(id)).toolResult?.text).toContain("background-canary");
-    await pool.query(`DELETE FROM messages WHERE id = 'background-output'`);
+    await prisma.message.delete({ where: { id: output.id } });
     expect((await read(id)).toolResult).toBeNull();
   });
   it("rolls back private results and event sequence on storage cancellation", async () => {
@@ -206,8 +321,13 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
     const before = await pool.query('SELECT "nextEventSeq" FROM threads WHERE id = $1', [
       scope.threadId,
     ]);
-    await pool.query(`CREATE FUNCTION pg_temp.slow_tool_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$;
-      CREATE TRIGGER slow_tool_result BEFORE INSERT ON events FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_tool_result();`);
+    const slowWrite = `tool_result_slow_${suffix.replaceAll("-", "")}`;
+    await pool.query(`
+      CREATE FUNCTION public.${slowWrite}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$;
+      CREATE TRIGGER ${slowWrite} BEFORE INSERT ON public.events FOR EACH ROW
+        WHEN (NEW."threadId" = ${escapeLiteral(scope.threadId)})
+        EXECUTE FUNCTION public.${slowWrite}();`);
     try {
       await expect(
         storeToolResultHistory(prisma, scope, {
@@ -218,7 +338,7 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
       ).rejects.toThrow();
     } finally {
       await pool.query(
-        "DROP TRIGGER slow_tool_result ON events; DROP FUNCTION pg_temp.slow_tool_result()",
+        `DROP TRIGGER ${slowWrite} ON public.events; DROP FUNCTION public.${slowWrite}()`,
       );
     }
     expect(
@@ -234,9 +354,17 @@ describe.skipIf(!enabled).sequential("tool result history (PostgreSQL)", () => {
     ).toEqual(before.rows);
   });
 
-  it("does not read a result after its source message has been cleared", async () => {
+  it("does not read a historical result after its source message has been cleared", async () => {
     const id = (await store('{"value":"clear-canary"}'))!.arguments.toolResultId;
-    await pool.query(`DELETE FROM messages WHERE id = 'source'`);
-    expect((await read(id)).toolResult).toBeNull();
+    const historicalScope = { ...scope, activeRunId: undefined };
+    expect((await read(id, historicalScope)).toolResult?.text).toContain("clear-canary");
+    await prisma.message.delete({ where: { id: sourceId } });
+    expect(
+      await prisma.run.findUnique({
+        where: { id: scope.activeRunId },
+        select: { sourceMessageId: true },
+      }),
+    ).toEqual({ sourceMessageId: null });
+    expect((await read(id, historicalScope)).toolResult).toBeNull();
   });
 });

@@ -51,6 +51,8 @@ async function main() {
     "packages/adapters/src/native-connectors/remaining-lifecycle.postgres.test.ts";
   const serviceStartupSuite = "packages/adapters/src/service-startup.postgres.test.ts";
   const databaseRestoreSuite = "packages/testkit/src/database-restore.postgres.test.ts";
+  const privatePagesMigrationSuite =
+    "packages/testkit/src/private-pages-migration.postgres.test.ts";
   const suites = [
     "packages/testkit/src/pi-offline.postgres.test.ts",
     "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
@@ -115,6 +117,7 @@ async function main() {
     "apps/api/src/control-plane-metadata.postgres.test.ts",
     serviceStartupSuite,
     databaseRestoreSuite,
+    privatePagesMigrationSuite,
     "packages/db/src/scripted-state-failure.postgres.test.ts",
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",
@@ -247,6 +250,7 @@ async function main() {
           suite === "apps/api/src/row-security-policies.postgres.test.ts" ||
           suite === "apps/api/src/control-plane-metadata.postgres.test.ts" ||
           suite === databaseRestoreSuite ||
+          suite === privatePagesMigrationSuite ||
           suite === serviceStartupSuite ||
           suite === "apps/api/src/health-app.postgres.test.ts";
         if (dualDeployment)
@@ -260,6 +264,7 @@ async function main() {
               DATABASE_URL: suiteUrl.toString(),
               DATABASE_MIGRATION_URL: suiteUrl.toString(),
               REALTIME_DATABASE_URL: suiteUrl.toString(),
+              VERIFY_ISOLATED_DATABASE: database,
               VERIFY_POSTGRES_CONTAINER_ID: suite === databaseRestoreSuite ? container.getId() : "",
               DEPLOYMENT_TRANSFER_PEER_DATABASE_URL: dualDeployment ? peerUrl.toString() : "",
               VERIFY_NATIVE_REMAINING_LIFECYCLE:

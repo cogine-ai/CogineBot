@@ -38,12 +38,15 @@ async function main(): Promise<void> {
   const { prisma, pool } = createDb(urls.url, { poolMax: 1, rowSecurity: true });
   try {
     if (command === "verify") {
-      const status = await verifyRuntimeDatabase(prisma);
+      // Recovery uses the candidate image to check the database before it
+      // restarts the prior image. The Pages migration may have rolled back.
+      const options = { allowPrePages: true };
+      const status = await verifyRuntimeDatabase(prisma, options);
       if (status.problems.includes("runtime-not-prepared"))
         throw new Error("Runtime role preparation failed");
       const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim();
       if (realtimeUrl && realtimeUrl !== urls.url)
-        await verifyRealtimeDatabase(realtimeUrl, status.connectionEnforced, true);
+        await verifyRealtimeDatabase(realtimeUrl, status.connectionEnforced, true, options);
       process.stdout.write(
         status.connectionEnforced
           ? "Runtime database validation: row-level isolation verified.\n"
