@@ -2,7 +2,7 @@
 
 import type { PageSummary } from "@rakazo/contracts";
 import type { ReactNode } from "react";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -257,9 +257,16 @@ it("drops an old next-batch reply when a new search takes over, then starts its 
 
 async function mutationView(pageId?: string) {
   let visible = true;
+  let scopeKey = "owner-1:space-1:bot-1";
+  let spaceId = "space-1";
+  let instance = 0;
+  let mounts = 0;
   let binding!: ReturnType<typeof usePagesForChat>;
   let mutation!: ReturnType<typeof usePrivatePageMutation<{ pageId: string; title: string }>>;
   function Probe() {
+    useEffect(() => {
+      mounts += 1;
+    }, []);
     mutation = usePrivatePageMutation(
       (input: { pageId: string; title: string }) => reads.rename(input),
       pageId,
@@ -267,8 +274,10 @@ async function mutationView(pageId?: string) {
     return null;
   }
   function Owner() {
-    binding = usePagesForChat("owner-1:space-1:bot-1", "space-1");
-    return <PagesProvider value={binding}>{visible ? <Probe /> : null}</PagesProvider>;
+    binding = usePagesForChat(scopeKey, spaceId);
+    return (
+      <PagesProvider value={binding}>{visible ? <Probe key={instance} /> : null}</PagesProvider>
+    );
   }
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
@@ -283,6 +292,17 @@ async function mutationView(pageId?: string) {
   return {
     binding: () => binding,
     mutation: () => mutation,
+    mounts: () => mounts,
+    switchScope: (key: string, space: string, replace = false) => {
+      scopeKey = key;
+      spaceId = space;
+      if (replace) instance += 1;
+      root.render(
+        <MemoryRouter>
+          <Owner />
+        </MemoryRouter>,
+      );
+    },
     hide: () => {
       visible = false;
       root.render(
@@ -356,6 +376,7 @@ it("does not reconcile a lost reply or issue another mutation after its account 
   synchronizeRpcSession("authenticated", "owner-2", "session-2");
   await act(async () => reject(new Error("reply lost")));
   expect(store.revision()).toBe(revision);
+  expect(view.mutation().isPending).toBe(false);
   expect(view.mutation().isError).toBe(false);
   await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Stale" }));
   expect(reads.rename).toHaveBeenCalledTimes(1);
@@ -501,6 +522,7 @@ it("does not revive old mutation callbacks after the same account and session re
   await act(async () => reply.reject(new Error("old reply lost")));
   expect(store.isCurrent()).toBe(false);
   expect(store.revision()).toBe(revision);
+  expect(view.mutation().isPending).toBe(false);
   expect(view.mutation().isError).toBe(false);
   await expect(
     view.mutation().mutateAsync({ pageId: "page-1", title: "Stale" }),
@@ -508,4 +530,81 @@ it("does not revive old mutation callbacks after the same account and session re
     name: "AbortError",
   });
   expect(reads.rename).toHaveBeenCalledTimes(1);
+});
+
+it.each([false, true])(
+  "settles local pending when selection scope dies without remount (failed=%s)",
+  async (failed) => {
+    const reply = renameReply();
+    reads.rename.mockReturnValueOnce(reply.promise);
+    const view = await mutationView("page-1");
+    const store = view.binding().store;
+    await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Rename" }));
+    const revision = store.revision();
+    selectSpace("space-2");
+    expect(store.isCurrent()).toBe(false);
+    await act(async () => {
+      if (failed) reply.reject(new Error("old selection reply lost"));
+      else reply.resolve({ ok: true });
+    });
+    expect(view.mounts()).toBe(1);
+    expect(view.mutation().isPending).toBe(false);
+    expect(view.mutation().isError).toBe(false);
+    expect(store.revision()).toBe(revision);
+  },
+);
+
+it.each([false, true])(
+  "keeps the reused hook's active count and new-scope error owner (old settles first=%s)",
+  async (oldFirst) => {
+    const oldReply = renameReply();
+    const newReply = renameReply();
+    reads.rename.mockReturnValueOnce(oldReply.promise).mockReturnValueOnce(newReply.promise);
+    const view = await mutationView("page-1");
+    const oldStore = view.binding().store;
+    await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Old scope" }));
+    const oldRevision = oldStore.revision();
+    selectSpace("space-2");
+    // Stress reuse of the hook itself; production reader keys normally remount on a Space change.
+    await act(async () => view.switchScope("owner-1:space-1:bot-1", "space-2"));
+    const currentStore = view.binding().store;
+    expect(view.mounts()).toBe(1);
+    expect(oldStore.isCurrent()).toBe(false);
+    expect(currentStore.isCurrent()).toBe(true);
+    await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Current scope" }));
+    const currentRevision = currentStore.revision();
+    const finishOld = () => oldReply.reject(new Error("stale failure"));
+    const finishCurrent = () => newReply.reject(new Error("current failure"));
+    await act(async () => (oldFirst ? finishOld() : finishCurrent()));
+    expect(view.mutation().isPending).toBe(true);
+    expect(view.mutation().isError).toBe(!oldFirst);
+    expect(oldStore.revision()).toBe(oldRevision);
+    await act(async () => (oldFirst ? finishCurrent() : finishOld()));
+    expect(view.mutation().isPending).toBe(false);
+    expect(view.mutation().isError).toBe(true);
+    expect(oldStore.revision()).toBe(oldRevision);
+    expect(currentStore.revision()).toBe(currentRevision + 1);
+  },
+);
+
+it("keeps a replacement reader's pending state independent of an old owner's completion", async () => {
+  const oldReply = renameReply();
+  const newReply = renameReply();
+  reads.rename.mockReturnValueOnce(oldReply.promise).mockReturnValueOnce(newReply.promise);
+  const view = await mutationView("page-1");
+  const oldStore = view.binding().store;
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Previous owner" }));
+  const revision = oldStore.revision();
+  synchronizeRpcSession("authenticated", "owner-2", "session-2");
+  await act(async () => view.switchScope("owner-2:space-1:bot-1", "space-1", true));
+  expect(view.mounts()).toBe(2);
+  expect(view.mutation().isPending).toBe(false);
+  await act(async () => view.mutation().mutate({ pageId: "page-1", title: "Current owner" }));
+  await act(async () => oldReply.reject(new Error("previous owner reply lost")));
+  expect(view.mutation().isPending).toBe(true);
+  expect(view.mutation().isError).toBe(false);
+  expect(oldStore.revision()).toBe(revision);
+  await act(async () => newReply.resolve({ ok: true }));
+  expect(view.mutation().isPending).toBe(false);
+  expect(view.mutation().isError).toBe(false);
 });

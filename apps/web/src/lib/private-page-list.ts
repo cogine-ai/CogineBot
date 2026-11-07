@@ -129,14 +129,12 @@ export function usePrivatePageMutation<T>(call: (input: T) => Promise<unknown>, 
       throw error;
     } finally {
       const pending = --active.current > 0;
-      if (pages.store.isCurrent()) {
-        // Every call settles its cache; only the latest attempt owns the visible error.
-        setState((previous) => ({
-          pending,
-          error: started === latest.current ? failed : previous.error,
-        }));
-        pages.store.invalidate(pageId);
-      }
+      // Pending belongs to this hook; error feedback and cache writes still belong to its scope.
+      setState((previous) => ({
+        pending,
+        error: pages.store.isCurrent() && started === latest.current ? failed : previous.error,
+      }));
+      if (pages.store.isCurrent()) pages.store.invalidate(pageId);
     }
   };
   return {
