@@ -4,6 +4,7 @@ import { IdentifierRole } from "sucrase/dist/parser/tokenizer/index.js";
 import { TokenType } from "sucrase/dist/parser/tokenizer/types.js";
 
 type Tokens = ReturnType<typeof parse>["tokens"];
+type Binding = { declarationIndex: number; initializedAt: number | undefined };
 
 type LexicalScope = {
   start: number;
@@ -13,7 +14,7 @@ type LexicalScope = {
   guarded: boolean;
   forVar: boolean;
   returnAt?: number;
-  bindings: Map<string, number | null>;
+  bindings: Map<string, Binding>;
 };
 
 export function identifierName(spelling: string): string {
@@ -105,11 +106,20 @@ export function createComponentScope({ tokens, scopes }: ReturnType<typeof parse
       // A class's name is available in its own body, including static members.
       const initialized =
         tokens[index - 1]?.type === TokenType._class ? index : initializedAt.get(index);
-      binding.bindings.set(
-        identifierName(source.slice(token.start, token.end)),
-        initialized ?? null,
-      );
+      binding.bindings.set(identifierName(source.slice(token.start, token.end)), {
+        declarationIndex: index,
+        initializedAt: initialized,
+      });
     }
+  }
+
+  function bindingAt(name: string, tokenIndex: number): Binding | undefined {
+    const identifier = identifierName(name);
+    for (let scope = scopesAt[tokenIndex]; scope; scope = scope.parent) {
+      const binding = scope.bindings.get(identifier);
+      if (binding !== undefined) return binding;
+    }
+    return undefined;
   }
 
   return {
@@ -126,21 +136,20 @@ export function createComponentScope({ tokens, scopes }: ReturnType<typeof parse
       );
       if (read === undefined) return false;
       const identifier = identifierName(name);
-      let initialization: number | null | undefined;
+      let binding: Binding | undefined;
       for (let scope = current; scope; scope = scope.parent) {
         if (scope.returnAt !== undefined && read > scope.returnAt) return false;
-        if (initialization === undefined) initialization = scope.bindings.get(identifier);
+        binding ??= scope.bindings.get(identifier);
         // An outer declaration can initialize before an inner function is invoked.
         if (scope.deferred) break;
       }
-      return initialization != null && tokenIndex < initialization;
+      return binding?.initializedAt !== undefined && tokenIndex < binding.initializedAt;
     },
     has(name: string, tokenIndex: number): boolean {
-      const identifier = identifierName(name);
-      for (let scope = scopesAt[tokenIndex]; scope; scope = scope.parent) {
-        if (scope.bindings.has(identifier)) return true;
-      }
-      return false;
+      return bindingAt(name, tokenIndex) !== undefined;
+    },
+    declarationIndex(name: string, tokenIndex: number): number | undefined {
+      return bindingAt(name, tokenIndex)?.declarationIndex;
     },
   };
 }

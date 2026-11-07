@@ -1,13 +1,38 @@
 import { transform } from "sucrase";
+import { parse } from "sucrase/dist/parser/index.js";
+import { TokenType } from "sucrase/dist/parser/tokenizer/types.js";
+import { identifierName } from "./component-scope.js";
 
 /** Page JSX to a CommonJS body. The save check compiles once and keeps the viewer code. */
-export function compilePageSource(source: string): string {
-  return transform(source, {
+export function compilePageSource(
+  source: string,
+  { tokens } = parse(source, true, false, false),
+): string {
+  const jsx = tokens.some((token) => token.type === TokenType.jsxTagStart);
+  let reactFactory: string | undefined;
+  if (jsx) {
+    const names = new Set<string>();
+    for (const token of tokens) {
+      if (token.type === TokenType.name || token.type === TokenType.jsxName)
+        names.add(identifierName(source.slice(token.start, token.end)));
+    }
+    reactFactory = "__pageKitReact";
+    for (let suffix = 1; names.has(reactFactory); suffix++)
+      reactFactory = `__pageKitReact${suffix}`;
+  }
+  const { code } = transform(source, {
     transforms: ["jsx", "imports"],
     jsxRuntime: "classic",
+    ...(reactFactory && {
+      jsxPragma: `${reactFactory}.createElement`,
+      jsxFragmentPragma: `${reactFactory}.Fragment`,
+    }),
     production: true,
     filePath: "page.jsx",
-  }).code;
+  });
+  // Capture the viewer's React outside the author's lexical scope. Explicit React reads
+  // and imports keep their original meaning; only the compiler's factory uses this alias.
+  return reactFactory ? `((${reactFactory})=>{${code}\n})(React);` : code;
 }
 
 const SOURCES_PRAGMA = /^\uFEFF?\s*\/\*(?!\*)[ \t]*page-sources[ \t]*\r?\n([\s\S]*?)\*\//;

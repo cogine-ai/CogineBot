@@ -19,6 +19,8 @@ import {
   PAGE_KIT_MODULE,
   PAGE_MODULES,
 } from "./components.js";
+import { isPageComponent } from "./page-component.js";
+import { createReactElementCallLookup } from "./react-element-call.js";
 import { selfRenderingKitNames, selfRenderingMessage } from "./shadow.js";
 
 export { PAGE_KIT_GUIDE } from "./guide.js";
@@ -40,6 +42,8 @@ const KIT_LIST = (PAGE_KIT_COMPONENTS as readonly string[]).join(", ");
 const HTML_ENTITY = /&(?:lt|gt|amp|quot|apos|nbsp|#39|#x27);/;
 
 const GIVEN: ReadonlySet<string> = new Set(PAGE_GLOBALS);
+// Explicit factory calls can read the viewer's own browser globals as well.
+const VIEWER_GLOBALS: ReadonlySet<string> = new Set(["globalThis", "window", "self", "document"]);
 const DECLARATION_ROLES: ReadonlySet<IdentifierRole | null> = new Set([
   IdentifierRole.TopLevelDeclaration,
   IdentifierRole.FunctionScopedDeclaration,
@@ -75,6 +79,8 @@ export function checkPageSource(source: string): PageSourceCheck {
   const errors: string[] = [];
   const warnings: string[] = [];
   const scope = createComponentScope(parsed, source);
+  const reactElementArgument = createReactElementCallLookup(parsed, source, scope);
+  const directElementComponents = new Set<number>();
   const componentErrors = new Map<string, string>();
   const checkComponent = (name: string, index: number, line: number) => {
     if (componentErrors.has(name)) return;
@@ -167,35 +173,33 @@ export function checkPageSource(source: string): PageSourceCheck {
       );
     } else if (token.type === TokenType.jsxName && token.identifierRole === IdentifierRole.Access) {
       checkComponent(text, index, line);
-    } else if (
-      // Compiled pages call React.createElement(Name, ...) where JSX would write <Name>.
-      token.type === TokenType.name &&
-      text === "createElement" &&
-      tokens[index + 1]?.type === TokenType.parenL &&
-      tokens[index + 2]?.type === TokenType.name
-    ) {
-      const argument = tokens[index + 2]!;
-      const name = identifierName(source.slice(argument.start, argument.end));
-      const next = tokens[index + 3]?.type;
-      const member =
-        next === TokenType.dot || next === TokenType.questionDot || next === TokenType.bracketL;
-      const receiver = tokens[index - 2];
-      const receiverAccess = tokens[index - 1]?.type;
-      const reactMember =
-        member &&
-        receiver &&
-        (receiverAccess === TokenType.dot || receiverAccess === TokenType.questionDot) &&
-        source.slice(receiver.start, receiver.end) === "React";
-      if (reactMember || (!member && /^[A-Z]/.test(name))) {
-        checkComponent(name, index + 2, lineOf(argument.start));
+    } else if (token.type === TokenType.name) {
+      // React's factory uses the same element and component names as JSX.
+      const argumentIndex = reactElementArgument(index);
+      if (argumentIndex !== undefined && tokens[argumentIndex]?.type === TokenType.name) {
+        const argument = tokens[argumentIndex]!;
+        const name = identifierName(source.slice(argument.start, argument.end));
+        const next = tokens[argumentIndex + 1]?.type;
+        const direct = next === TokenType.comma || next === TokenType.parenR;
+        const member = !direct && isPlainMemberArgument(tokens, argumentIndex);
+        if (direct) directElementComponents.add(argumentIndex);
+        if (
+          (member && (!VIEWER_GLOBALS.has(name) || scope.has(name, argumentIndex))) ||
+          (direct && /^[A-Z]/.test(name))
+        ) {
+          checkComponent(name, argumentIndex, lineOf(argument.start));
+        }
+        return;
       }
-    } else if (
-      // Static names passed to createElement name the same elements as JSX.
-      token.type === TokenType.name &&
-      text === "createElement" &&
-      tokens[index + 1]?.type === TokenType.parenL
-    ) {
-      const name = staticElementName(tokens, index + 2, source);
+      // Keep the existing literal-tag guard for factories reached through an
+      // assignment or destructuring, which is outside import binding lookup.
+      const staticArgumentIndex =
+        argumentIndex ??
+        (text === "createElement" && tokens[index + 1]?.type === TokenType.parenL
+          ? index + 2
+          : undefined);
+      if (staticArgumentIndex === undefined) return;
+      const name = staticElementName(tokens, staticArgumentIndex, source);
       if (name === undefined) return;
       const element = name.toLowerCase();
       if (BLOCKED_ELEMENTS.has(element) && !blocked.has(element)) {
@@ -214,7 +218,12 @@ export function checkPageSource(source: string): PageSourceCheck {
       `line ${lineOf(start)}: rename the module binding \`${name}\`; the viewer uses this name.`,
     );
   }
-  for (const { name, start } of selfRenderingKitNames(tokens, source)) {
+  for (const { name, start } of selfRenderingKitNames(
+    parsed,
+    source,
+    directElementComponents,
+    scope,
+  )) {
     errors.push(`line ${lineOf(start)}: ${selfRenderingMessage(name)}`);
   }
   errors.push(...componentErrors.values());
@@ -230,7 +239,7 @@ export function checkPageSource(source: string): PageSourceCheck {
   let compiled: string;
   try {
     declaredSources(source);
-    compiled = compilePageSource(source);
+    compiled = compilePageSource(source, parsed);
   } catch (error) {
     return { ok: false, errors: [syntaxErrorText(error)] };
   }
@@ -348,6 +357,32 @@ const BLOCKED_ELEMENTS: ReadonlyMap<string, string> = new Map([
   ["foreignobject", "draw with SVG shapes and text instead."],
 ]);
 
+/** Recognize a property chain used as the whole argument, not a call or expression. */
+function isPlainMemberArgument(tokens: Tokens, start: number): boolean {
+  let index = start + 1;
+  for (;;) {
+    const optional = tokens[index]?.type === TokenType.questionDot;
+    const access = tokens[index + (optional ? 1 : 0)]?.type;
+    if (tokens[index]?.type === TokenType.dot || (optional && access === TokenType.name)) {
+      if (tokens[index + 1]?.type !== TokenType.name) return false;
+      index += 2;
+    } else if (access === TokenType.bracketL) {
+      const bracket = index + (optional ? 1 : 0);
+      const key = tokens[bracket + 1]?.type;
+      if (
+        (key !== TokenType.name && key !== TokenType.string && key !== TokenType.num) ||
+        tokens[bracket + 2]?.type !== TokenType.bracketR
+      )
+        return false;
+      index = bracket + 3;
+    } else {
+      break;
+    }
+  }
+  const end = tokens[index]?.type;
+  return index > start + 1 && (end === TokenType.comma || end === TokenType.parenR);
+}
+
 function staticElementName(tokens: Tokens, start: number, source: string): string | undefined {
   let index = start;
   while (tokens[index]?.type === TokenType.parenL) index += 1;
@@ -438,9 +473,16 @@ function importProblem(tokens: Tokens, start: number, source: string): string | 
   if (from === "react") {
     // The viewer supplies the same React package. Default imports also have compiler interop.
     const unknown = names.filter((name) => name !== "default" && !Object.hasOwn(React, name));
-    return unknown.length
-      ? `${unknown.join(", ")} ${unknown.length > 1 ? "are" : "is"} not exported by React.`
-      : undefined;
+    if (unknown.length)
+      return `${unknown.join(", ")} ${unknown.length > 1 ? "are" : "is"} not exported by React.`;
+    const name = names[0];
+    if (
+      tokens[start]?.type === TokenType._export &&
+      name !== undefined &&
+      !isPageComponent(name === "default" ? React : React[name as keyof typeof React])
+    )
+      return `${name} is not a React component; export a component that renders it instead.`;
+    return undefined;
   }
   if (hasDefault) return `"${PAGE_KIT_MODULE}" has no default export; import components by name.`;
   const unknown = names.filter(

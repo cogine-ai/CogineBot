@@ -1,6 +1,16 @@
 import { expect, it } from "vitest";
 import { checkPageSource } from "./validate.js";
 
+it.each([
+  'const R = React; export default () => R.createElement("iframe");',
+  'const { createElement } = React; export default () => createElement("iframe");',
+])("retains static tag validation for an indirect React factory: %s", (source) => {
+  expect(checkPageSource(source)).toEqual({
+    ok: false,
+    errors: [expect.stringContaining("<iframe> is not allowed")],
+  });
+});
+
 const page = (tag: string) =>
   `const suffix = "-card";\nexport default () => React.createElement(${tag});`;
 

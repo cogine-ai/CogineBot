@@ -33,6 +33,26 @@ it.each([
     "Own steps",
   ],
   [
+    "JSX next to a different module binding named React",
+    "const React = { label: 'Independent JSX' }; export default () => <>{React.label}</>;",
+    "Independent JSX",
+  ],
+  [
+    "JSX with a React import and locally shadowed compiler alias",
+    String.raw`import React from "react";
+      const \u005f_pageKitReact = "Escaped binding";
+      export default function App({React = "Local prop"}) {
+        const __pageKitReact1 = "Local alias";
+        return <p>{\u005f_pageKitReact}: {React}: {__pageKitReact1}</p>;
+      }`,
+    "Escaped binding: Local prop: Local alias",
+  ],
+  [
+    "React imported explicitly with a fragment and JSX",
+    'import * as React from "react"; export default () => <React.Fragment><p>Explicit React</p></React.Fragment>;',
+    "Explicit React",
+  ],
+  [
     "a memoized default component",
     "export default React.memo(function App() { return <p>Memoized page</p>; });",
     "Memoized page",

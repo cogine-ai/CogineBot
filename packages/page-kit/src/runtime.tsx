@@ -1,4 +1,3 @@
-import type { ComponentType, ExoticComponent } from "react";
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -13,19 +12,12 @@ import { ErrorBoundary, ErrorPanel, ErrorTitle } from "./kit/boundary.js";
 import { helpers, kit } from "./kit/index.js";
 import { PageLanguage } from "./kit/labels.js";
 import { PAGE_STYLES } from "./kit/styles.js";
+import { isPageComponent, type PageComponent } from "./page-component.js";
 
 /** What the host's boot script passes to `RakazoPage.mount`; `code` comes from `pageViewerCode`. */
 type PageBoot = { code: string; theme: "light" | "dark"; errorTitle: string; lang?: string };
 
-type PageComponent = ComponentType | ExoticComponent;
 type PageFactory = (exports: { default?: unknown }, ...globals: unknown[]) => void;
-
-// React tags its memo, forwardRef, and lazy components, which are not callable functions.
-const COMPONENT_WRAPPERS: ReadonlySet<unknown> = new Set([
-  Symbol.for("react.memo"),
-  Symbol.for("react.forward_ref"),
-  Symbol.for("react.lazy"),
-]);
 
 declare global {
   interface Window {
@@ -63,14 +55,10 @@ function loadPage(code: string): PageComponent {
     ...PAGE_KIT_COMPONENTS.map((name) => kit[name]),
   );
   const component = exports.default;
-  const wrapper =
-    component && typeof component === "object" && "$$typeof" in component
-      ? component.$$typeof
-      : undefined;
-  if (typeof component !== "function" && !COMPONENT_WRAPPERS.has(wrapper)) {
+  if (!isPageComponent(component)) {
     throw new Error("The page has no default export component.");
   }
-  return component as PageComponent;
+  return component;
 }
 
 const HOOKS: Record<(typeof PAGE_HOOKS)[number], unknown> = {

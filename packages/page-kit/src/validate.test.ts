@@ -233,6 +233,11 @@ describe("checkPageSource", () => {
     ["export { Widget as default, }\nfrom 'missing-module';", 'only "react" and "rakazo/page"'],
     ["export { Missing as default } from 'rakazo/page';", "Missing is not in the kit"],
     ["export { Banana as default } from 'react';", "Banana is not exported by React"],
+    ["export { Fragment as default } from 'react';", "Fragment is not a React component"],
+    ["export { Activity as default } from 'react';", "Activity is not a React component"],
+    ["export { Children as default } from 'react';", "Children is not a React component"],
+    ["export { version as default } from 'react';", "version is not a React component"],
+    ["export { default as default } from 'react';", "default is not a React component"],
   ])("checks the module of a default re-export: %s", (source, diagnostic) => {
     const checked = checkPageSource(source);
     expect(checked).toEqual({
@@ -248,6 +253,51 @@ describe("checkPageSource", () => {
     "const App = () => <Text />;\nexport { App as default, };",
     "const App = () => <Text />;\nconst from = () => {};\nexport { App as default };\nfrom();",
   ])("accepts an available default re-export or local export list: %s", (source) => {
+    expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
+  });
+
+  it.each([
+    'import { createElement } from "react"; export default () => createElement(missing.Card);',
+    'import { createElement as h } from "react"; export default () => h(missing.Card);',
+    'import * as R from "react"; export default () => R.createElement(missing.Card);',
+    'import { createElement as h } from "react"; export default () => h(missing?.["Card"]);',
+  ])("checks the component root for an imported React factory: %s", (source) => {
+    expect(checkPageSource(source)).toEqual({
+      ok: false,
+      errors: [expect.stringContaining("<missing> is not a kit component")],
+    });
+  });
+
+  it.each([
+    'import {createElement as h} from "react"; const Label = () => null; export default () => h(Array.isArray([]) ? Label : "div");',
+    'import {createElement as h} from "react"; globalThis.Label = () => null; export default () => h(globalThis.Label);',
+  ])("keeps computed arguments and explicit browser globals: %s", (source) => {
+    expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
+  });
+
+  it("applies tag and self-rendering checks to the actual React factory binding", () => {
+    expect(
+      checkPageSource(
+        'import {createElement as h} from "react"; export default () => h(`iframe`);',
+      ),
+    ).toEqual({ ok: false, errors: [expect.stringContaining("<iframe> is not allowed")] });
+    expect(
+      checkPageSource(
+        'import {createElement as h} from "react"; export default function Table() { return h(Table); }',
+      ),
+    ).toEqual({ ok: false, errors: [expect.stringContaining("renders itself forever")] });
+    expect(
+      checkPageSource(
+        "const createElement = (_value) => null; export default function Table() { return createElement(Table); }",
+      ),
+    ).toEqual({ ok: true, code: expect.any(String) });
+  });
+
+  it.each([
+    'import { createElement as h } from "react"; function Table(){ return null; } export default () => h(Table);',
+    'import { createElement as h } from "react"; export default function Table(){ function Inner({Table}) { return h(Table); } return h(Inner, {Table: () => h("p", null, "OK")}); }',
+    "function Table(){ return null; } export default () => <Table />;",
+  ])("keeps legitimate uses of a local kit-name component: %s", (source) => {
     expect(checkPageSource(source)).toEqual({ ok: true, code: expect.any(String) });
   });
 

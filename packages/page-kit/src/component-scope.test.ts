@@ -99,6 +99,8 @@ describe("component lexical scope", () => {
   it.each([
     ["const preview = <Tile />; const Tile = () => null;", [true]],
     ["const preview = React.createElement(Tile); let Tile;", [true]],
+    ["const preview = React?.createElement(Tile); let Tile;", [false]],
+    ["const preview = React.createElement?.(Tile); let Tile;", [false]],
     ["const preview = (<Tile />); class Tile {}", [true]],
     ["const preview = <Tile />, Tile = () => null;", [true]],
     ["const Tile = <Tile />;", [true]],
