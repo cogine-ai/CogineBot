@@ -204,7 +204,7 @@ async function runRoutine(
       }),
     },
     routine: { findUnique: vi.fn(async () => ({ notify: false, nextRunAt: null })) },
-    event: { count: vi.fn(async () => 0) },
+    event: { count: vi.fn(async () => 0), findMany: vi.fn(async () => []) },
     bot: {
       findUnique: vi.fn(
         async ({ where, select }: { where: { id: string }; select?: { name?: boolean } }) =>
