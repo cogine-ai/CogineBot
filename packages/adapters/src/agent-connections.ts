@@ -120,21 +120,20 @@ async function requestConnection(
   const claimConnection = () =>
     deps.prisma.$transaction(async (tx) => {
       if (existing) {
-        const locked = await tx.$queryRaw<Array<{ status: string }>>`
-          SELECT status FROM agent_connections WHERE id = ${existing.id} FOR UPDATE
+        const locked = await tx.$queryRaw<Array<{ status: string; requestVersion: number }>>`
+          SELECT status, "requestVersion" FROM agent_connections WHERE id = ${existing.id} FOR UPDATE
         `;
         const status = locked[0]?.status;
         if (status === "approved" || status === "pending") {
           return { ok: true as const, status };
         }
-        // Only reopen the status we observed. A concurrent revoke of a declined
-        // row would show up here as revoked and must win.
-        if (status !== existing.status) {
+        // A close followed by a reopen can leave the same status on a newer request.
+        if (status !== existing.status || locked[0]?.requestVersion !== existing.requestVersion) {
           return { ok: false as const, error: "connection changed; try again" };
         }
         await tx.agentConnection.update({
           where: { id: existing.id },
-          data: { status: "pending" },
+          data: { status: "pending", requestVersion: { increment: 1 } },
         });
       } else {
         try {
@@ -190,6 +189,38 @@ async function requestConnection(
   return { ok: true, status: "pending" };
 }
 
+/** Capture the exact request and requester shown on the owner's approval card. */
+export function prepareAgentConnectionResponse(
+  prisma: PrismaClient,
+  targetBotId: string,
+  accept: boolean,
+) {
+  return runAsSystem("prepare an agent connection response for its target bot", async () => {
+    const pending = await prisma.agentConnection.findFirst({
+      where: { targetBotId, status: "pending" },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true, requestVersion: true, requesterBotId: true },
+    });
+    if (!pending) return null;
+    const [requester, identity] = await Promise.all([
+      prisma.bot.findUnique({ where: { id: pending.requesterBotId }, select: { name: true } }),
+      prisma.messagingIdentity.findUnique({
+        where: { botId: pending.requesterBotId },
+        select: { address: true, provider: true },
+      }),
+    ]);
+    if (!requester || !identity) return null;
+    return {
+      accept,
+      connection_id: pending.id,
+      connection_version: pending.requestVersion,
+      requester_name: requester.name,
+      requester_address: identity.address,
+      requester_provider: identity.provider,
+    };
+  });
+}
+
 /** The target bot answers a pending request on its owner's instruction. */
 export function respondAgentConnection(
   ...args: Parameters<typeof respondToConnection>
@@ -201,21 +232,45 @@ export function respondAgentConnection(
 
 async function respondToConnection(
   deps: AgentConnectionDeps,
-  _run: ConnectionRun,
+  run: ConnectionRun,
   sender: { id: string; name: string },
-  input: { accept: boolean },
+  input: { accept: boolean; connectionId: string; connectionVersion: number },
 ): Promise<Result> {
+  if (
+    sender.id !== run.botId ||
+    typeof input.accept !== "boolean" ||
+    !input.connectionId ||
+    !Number.isInteger(input.connectionVersion) ||
+    input.connectionVersion < 1 ||
+    input.connectionVersion > 2_147_483_647
+  )
+    return { ok: false, error: "no pending connection request" };
+  const target = await deps.prisma.bot.findUnique({
+    where: { id: run.botId, userId: run.userId, spaceId: run.spaceId, archivedAt: null },
+    select: { id: true },
+  });
+  if (!target) return { ok: false, error: "no pending connection request" };
   const pending = await deps.prisma.agentConnection.findFirst({
-    where: { targetBotId: sender.id, status: "pending" },
-    orderBy: { updatedAt: "desc" },
+    where: {
+      targetBotId: target.id,
+      status: "pending",
+      id: input.connectionId,
+      requestVersion: input.connectionVersion,
+    },
+    select: { id: true },
   });
   if (!pending) return { ok: false, error: "no pending connection request" };
   const status = input.accept ? "approved" : "declined";
   const { count } = await deps.prisma.agentConnection.updateMany({
-    where: { id: pending.id, status: "pending" },
-    data: { status },
+    where: {
+      id: pending.id,
+      targetBotId: target.id,
+      status: "pending",
+      requestVersion: input.connectionVersion,
+    },
+    data: { status, responseVersion: input.connectionVersion },
   });
-  // A revoke landing between the read and this write wins; never overwrite it.
+  // A revoke or reopen between the read and this write wins.
   if (count === 0) return { ok: false, error: "connection request is no longer pending" };
   return { ok: true, status };
 }

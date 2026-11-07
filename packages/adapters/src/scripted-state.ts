@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ScriptedRuntimeState, ScriptedTurn } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { AGENT_CONNECTION_RESPONSE_TOOL } from "@rakazo/core";
 import { isToolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { Prisma } from "@rakazo/db";
 
@@ -228,7 +229,7 @@ export interface ScriptedOutputState {
 
 export interface StoredScriptedState {
   kind: "scripted-state";
-  version: 2;
+  version: 2 | 3;
   runId: string;
   attemptId: string;
   fence: number;
@@ -250,7 +251,11 @@ export interface StoredScriptedState {
 export function sealScriptedState(
   value: Omit<StoredScriptedState, "digest" | "pause">,
 ): StoredScriptedState {
-  return { ...value, digest: scriptedStateDigest(value) };
+  // Earlier workers can replay an approved receipt while ignoring its connection version.
+  // A connection's pending state must be readable only by workers that enforce the binding.
+  const version = value.pendingEffect?.kind === AGENT_CONNECTION_RESPONSE_TOOL ? 3 : 2;
+  const versioned = { ...value, version } as const;
+  return { ...versioned, digest: scriptedStateDigest(versioned) };
 }
 
 export function scriptedStateJson(value: StoredScriptedState): Prisma.InputJsonObject {
@@ -280,7 +285,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       throw new Error();
     if (
       value.kind !== "scripted-state" ||
-      value.version !== 2 ||
+      (value.version !== 2 && value.version !== 3) ||
       value.runId !== runId ||
       typeof value.attemptId !== "string" ||
       !value.attemptId ||
@@ -355,6 +360,15 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       )
         throw new Error();
     }
+    if (
+      value.version === 3 &&
+      (!object(value.pendingEffect) ||
+        value.pendingEffect.kind !== AGENT_CONNECTION_RESPONSE_TOOL ||
+        runtime.cursor.phase !== "tool" ||
+        runtime.script[runtime.cursor.turn]?.toolCalls?.[runtime.cursor.tool]?.name !==
+          AGENT_CONNECTION_RESPONSE_TOOL)
+    )
+      throw new Error();
     if (value.pause !== undefined) {
       const pause = value.pause;
       if (

@@ -1393,50 +1393,79 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     const listed = await call("messaging/connections/list");
     expect(listed.status).toBe(200);
     const connections = (await listed.json()).json as Array<Record<string, unknown>>;
-    expect(connections.find(({ id }) => id === incoming)).toMatchObject({
+    const displayed = connections.find(({ id }) => id === incoming);
+    expect(displayed).toMatchObject({
       peerBotName: "Remote fixture",
       peerOwnerLabel: "Policy",
       incoming: true,
       status: "pending",
+      requestVersion: 1,
     });
+    expect(displayed).not.toHaveProperty("responseVersion");
+    expect(displayed).not.toHaveProperty("revocationVersion");
     expect(connections.find(({ id }) => id === outgoing)).toMatchObject({
       peerBotName: "agent",
       peerOwnerLabel: "owner",
       incoming: false,
       status: "pending",
+      requestVersion: 1,
     });
     expect(connections.some(({ id }) => id === unrelated)).toBe(false);
+    const respond = (connectionId: string, requestVersion: number) =>
+      call("messaging/connections/respond", { connectionId, requestVersion, accept: true });
+    const revoke = (connectionId: string, requestVersion: number) =>
+      call("messaging/connections/revoke", { connectionId, requestVersion });
+    expect((await respond(unrelated, 1)).status).toBe(404);
+    expect((await respond(outgoing, 1)).status).toBe(404);
+
+    // Reopen the same row after rendering v1 and before either RPC starts.
+    await owner.prisma.agentConnection.update({
+      where: { id: incoming },
+      data: { status: "revoked", revocationVersion: 1 },
+    });
+    await owner.prisma.agentConnection.update({
+      where: { id: incoming },
+      data: { status: "pending" },
+    });
+    // A rolled-back API would read v2 and try to revoke it without version proof.
+    // It only cancels the invitation if the status update actually affected a row.
+    await expect(
+      owner.prisma.agentConnection.updateMany({
+        where: { id: incoming, status: "pending" },
+        data: { status: "revoked" },
+      }),
+    ).resolves.toEqual({ count: 0 });
+    expect((await respond(incoming, 1)).status).toBe(404);
+    expect((await revoke(incoming, 1)).status).toBe(404);
+    expect(enqueueObservations).toEqual([]);
     expect(
-      (await call("messaging/connections/respond", { connectionId: unrelated, accept: true }))
-        .status,
-    ).toBe(404);
+      await owner.prisma.agentConnection.findUniqueOrThrow({ where: { id: incoming } }),
+    ).toMatchObject({
+      status: "pending",
+      requestVersion: 2,
+      responseVersion: null,
+      revocationVersion: null,
+    });
     expect(
-      (await call("messaging/connections/respond", { connectionId: outgoing, accept: true }))
-        .status,
-    ).toBe(404);
-    expect(
-      (await call("messaging/connections/respond", { connectionId: incoming, accept: true }))
-        .status,
-    ).toBe(200);
+      await owner.prisma.messagingOutbound.findUnique({ where: { idempotencyKey: inviteKey } }),
+    ).not.toBeNull();
+
+    expect((await respond(incoming, 2)).status).toBe(200);
     expect(enqueueObservations).toEqual([{ status: "approved", confirmed: true }]);
+    expect(
+      await owner.prisma.agentConnection.findUniqueOrThrow({ where: { id: incoming } }),
+    ).toMatchObject({ requestVersion: 2, responseVersion: 2 });
     const confirmation = await owner.prisma.messagingOutbound.findUniqueOrThrow({
       where: { idempotencyKey: confirmationKey },
     });
     expect(confirmation.identityId).toBe(peerIdentity);
-    expect(
-      (await call("messaging/connections/respond", { connectionId: incoming, accept: true }))
-        .status,
-    ).toBe(404);
+    expect((await respond(incoming, 2)).status).toBe(404);
     expect(enqueueObservations).toHaveLength(1);
-    expect((await call("messaging/connections/revoke", { connectionId: unrelated })).status).toBe(
-      404,
-    );
-    expect((await call("messaging/connections/revoke", { connectionId: incoming })).status).toBe(
-      200,
-    );
+    expect((await revoke(unrelated, 1)).status).toBe(404);
+    expect((await revoke(incoming, 2)).status).toBe(200);
     expect(
       await owner.prisma.agentConnection.findUnique({ where: { id: incoming } }),
-    ).toMatchObject({ status: "revoked" });
+    ).toMatchObject({ status: "revoked", responseVersion: 2, revocationVersion: 2 });
     expect(
       await owner.prisma.messagingOutbound.findUnique({ where: { idempotencyKey: inviteKey } }),
     ).toBeNull();

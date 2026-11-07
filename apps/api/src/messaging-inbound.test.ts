@@ -744,7 +744,10 @@ describe("createMessagingInboundHandler owner commands", () => {
     );
   });
 
-  it("approves a pending agent connection on YES and messages both owners", async () => {
+  it.each([
+    { content: "YES", status: "approved", notified: ["mi-1", "mi-9"] },
+    { content: "NO", status: "declined", notified: ["mi-1"] },
+  ])("records the answered request version for $content", async ({ content, status, notified }) => {
     const deps = createDeps();
     deps.prisma.agentConnection = {
       findFirst: vi.fn(async () => ({
@@ -752,6 +755,7 @@ describe("createMessagingInboundHandler owner commands", () => {
         requesterBotId: "bot-9",
         targetBotId: "bot-1",
         status: "pending",
+        requestVersion: 2,
         updatedAt: new Date("2026-08-28T00:00:00.000Z"),
       })),
       update: vi.fn(async () => ({})),
@@ -786,19 +790,19 @@ describe("createMessagingInboundHandler owner commands", () => {
       },
     );
     const handle = createMessagingInboundHandler(deps);
-    await handle({ ...dmEvent, content: "YES" });
+    await handle({ ...dmEvent, content });
 
     expect(deps.prisma.agentConnection.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "ac-1", status: "pending" },
-        data: { status: "approved" },
+        where: { id: "ac-1", targetBotId: "bot-1", status: "pending", requestVersion: 2 },
+        data: { status, responseVersion: 2 },
       }),
     );
+    expect(deps.outboundRows).toHaveLength(notified.length);
     expect(deps.outboundRows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "dm", identityId: "mi-1" }),
-        expect.objectContaining({ kind: "dm", identityId: "mi-9" }),
-      ]),
+      expect.arrayContaining(
+        notified.map((identityId) => expect.objectContaining({ kind: "dm", identityId })),
+      ),
     );
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
   });
@@ -1121,43 +1125,57 @@ describe("createMessagingInboundHandler owner-command status races", () => {
     expect(deps.sendUserMessage).toHaveBeenCalled();
   });
 
-  it("does not let YES overwrite a concurrently revoked agent connection", async () => {
-    const deps = createDeps();
-    const state = {
-      id: "ac-7",
-      requesterBotId: "bot-9",
-      targetBotId: "bot-1",
-      status: "pending",
-      updatedAt: new Date("2026-08-28T00:00:00.000Z"),
-    };
-    const connectionModel = deps.prisma.agentConnection as unknown as Record<string, unknown>;
-    connectionModel.findFirst = vi.fn(async ({ where }: { where?: { status?: string } }) => {
-      if (where?.status === "pending" && state.status === "pending") {
-        const snapshot = { ...state };
-        // Interleaved: the requester revokes between the read and the write.
-        state.status = "revoked";
-        return snapshot;
-      }
-      return null;
-    });
-    connectionModel.update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-      Object.assign(state, data);
-      return state;
-    });
-    connectionModel.updateMany = vi.fn(
-      async ({ where, data }: { where: { status?: string }; data: Record<string, unknown> }) => {
-        if (where.status && state.status !== where.status) return { count: 0 };
+  it.each([
+    { status: "revoked", requestVersion: 1 },
+    { status: "pending", requestVersion: 2 },
+  ])(
+    "does not apply a response when the request changes to $status v$requestVersion",
+    async (next) => {
+      const deps = createDeps();
+      const state = {
+        id: "ac-7",
+        requesterBotId: "bot-9",
+        targetBotId: "bot-1",
+        status: "pending",
+        requestVersion: 1,
+        responseVersion: null,
+        updatedAt: new Date("2026-08-28T00:00:00.000Z"),
+      };
+      const connectionModel = deps.prisma.agentConnection as unknown as Record<string, unknown>;
+      connectionModel.findFirst = vi.fn(async ({ where }: { where?: { status?: string } }) => {
+        if (where?.status === "pending" && state.status === "pending") {
+          const snapshot = { ...state };
+          Object.assign(state, next);
+          return snapshot;
+        }
+        return null;
+      });
+      connectionModel.update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(state, data);
-        return { count: 1 };
-      },
-    );
-    const handle = createMessagingInboundHandler(deps);
-    await handle({ ...dmEvent, content: "YES" });
+        return state;
+      });
+      connectionModel.updateMany = vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { status: string; requestVersion: number };
+          data: Record<string, unknown>;
+        }) => {
+          if (state.status !== where.status || state.requestVersion !== where.requestVersion)
+            return { count: 0 };
+          Object.assign(state, data);
+          return { count: 1 };
+        },
+      );
+      const handle = createMessagingInboundHandler(deps);
+      await handle({ ...dmEvent, content: "YES" });
 
-    expect(state.status).toBe("revoked");
-    expect(deps.outboundRows).toHaveLength(0);
-    expect(deps.sendUserMessage).toHaveBeenCalled();
-  });
+      expect(state).toMatchObject({ ...next, responseVersion: null });
+      expect(deps.outboundRows).toHaveLength(0);
+      expect(deps.sendUserMessage).toHaveBeenCalled();
+    },
+  );
 
   it("does not let an in-flight LEAVE overwrite a membership that was re-invited", async () => {
     const rejoined = {
@@ -1259,6 +1277,7 @@ describe("createMessagingInboundHandler confirmation atomicity", () => {
         requesterBotId: "bot-9",
         targetBotId: "bot-1",
         status: "pending",
+        requestVersion: 1,
         updatedAt: new Date("2026-08-28T00:00:00.000Z"),
       })),
       update: vi.fn(async () => ({})),

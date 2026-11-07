@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   connectAgent,
   messageConnectedAgent,
+  prepareAgentConnectionResponse,
   respondAgentConnection,
 } from "./agent-connections.js";
 
@@ -34,6 +35,7 @@ function createDeps(
     sourceHop?: number;
     /** Simulates a revoke landing between the pre-check and the transaction. */
     connectionRevokedInsideTx?: boolean;
+    lockedRequestVersion?: number;
     /** Simulates a revoke landing after the in-transaction approval read. */
     connectionRevokedAfterReadInsideTx?: boolean;
     sourceCollaborationAllowed?: boolean;
@@ -46,6 +48,7 @@ function createDeps(
     runCreate: [] as unknown[],
     taskCreate: [] as unknown[],
   };
+  const connection = overrides.connection ? { requestVersion: 1, ...overrides.connection } : null;
   const txMock = {
     space: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
@@ -102,13 +105,19 @@ function createDeps(
       if (overrides.connectionRevokedInsideTx || overrides.connectionRevokedAfterReadInsideTx) {
         return [{ status: "revoked", requesterBotId: "bot-1", targetBotId: "bot-2" }];
       }
-      if (overrides.connection && typeof overrides.connection === "object") {
-        return [{ requesterBotId: "bot-1", targetBotId: "bot-2", ...overrides.connection }];
+      if (connection) {
+        return [
+          {
+            requesterBotId: "bot-1",
+            targetBotId: "bot-2",
+            ...connection,
+            requestVersion: overrides.lockedRequestVersion ?? connection.requestVersion,
+          },
+        ];
       }
       return [{ status: "approved", requesterBotId: "bot-1", targetBotId: "bot-2" }];
     }),
   };
-  const connection = overrides.connection === undefined ? null : overrides.connection;
   const prisma = {
     messagingIdentity: {
       findUnique: vi.fn(
@@ -136,32 +145,52 @@ function createDeps(
       ),
     },
     bot: {
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-        where.id === "bot-2"
-          ? {
-              id: "bot-2",
-              name: "Helper",
-              spaceId: "ws-2",
-              userId: "user-2",
-              archivedAt: null,
-              thread: { id: "thread-2" },
-            }
-          : { id: "bot-1", name: "Assistant", spaceId: "ws-1", userId: "user-1" },
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string; userId?: string; spaceId?: string } }) => {
+          const second = where.id === "bot-2";
+          const bot = {
+            id: where.id,
+            name: second ? "Helper" : "Assistant",
+            spaceId: second ? "ws-2" : "ws-1",
+            userId: second ? "user-2" : "user-1",
+            archivedAt: null,
+            thread: second ? { id: "thread-2" } : undefined,
+          };
+          if (where.userId !== undefined && where.userId !== bot.userId) return null;
+          if (where.spaceId !== undefined && where.spaceId !== bot.spaceId) return null;
+          return bot;
+        },
       ),
     },
     agentConnection: {
       findUnique: vi.fn(async () => connection),
-      findFirst: vi.fn(async ({ where }: { where?: { status?: string } }) => {
-        if (where?.status === "approved") {
-          return connection && (connection as { status?: string }).status === "approved"
-            ? connection
-            : null;
-        }
-        return overrides.pendingConnection === undefined ? null : overrides.pendingConnection;
-      }),
+      findFirst: vi.fn(
+        async ({
+          where,
+        }: {
+          where?: { status?: string; id?: string; targetBotId?: string; requestVersion?: number };
+        }) => {
+          if (where?.status === "approved") {
+            return connection && (connection as { status?: string }).status === "approved"
+              ? connection
+              : null;
+          }
+          const pending = overrides.pendingConnection;
+          if (
+            !pending ||
+            (where?.id !== undefined && pending.id !== where.id) ||
+            (where?.targetBotId !== undefined && pending.targetBotId !== where.targetBotId) ||
+            (where?.requestVersion !== undefined &&
+              (pending.requestVersion ?? 1) !== where.requestVersion)
+          )
+            return null;
+          return { requestVersion: 1, ...pending };
+        },
+      ),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: "ac-1",
         status: "pending",
+        requestVersion: 1,
         ...data,
       })),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: unknown }) => ({
@@ -284,7 +313,7 @@ describe("connectAgent", () => {
     expect(reinvite).toEqual(expect.objectContaining({ ok: true, status: "pending" }));
     expect(declined.prisma.agentConnection.update).toHaveBeenCalledWith({
       where: { id: "ac-1" },
-      data: { status: "pending" },
+      data: { status: "pending", requestVersion: { increment: 1 } },
     });
     expect(declined.outboundRows).toEqual([
       expect.objectContaining({ kind: "dm", identityId: "mi-2" }),
@@ -310,32 +339,122 @@ describe("connectAgent", () => {
     expect(deps.outboundRows).toHaveLength(0);
     expect(deps.prisma.agentConnection.update).not.toHaveBeenCalled();
   });
+
+  it("does not reopen the same closed status on a newer request version", async () => {
+    const deps = createDeps({
+      connection: { id: "ac-1", status: "declined", requestVersion: 1 },
+      lockedRequestVersion: 2,
+    });
+    await expect(connectAgent(deps, run, sender, { address: "+15552222222" })).resolves.toEqual({
+      ok: false,
+      error: "connection changed; try again",
+    });
+    expect(deps.prisma.agentConnection.update).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toHaveLength(0);
+  });
 });
 
 describe("respondAgentConnection", () => {
-  it("approves a pending connection addressed to the current bot", async () => {
+  it.each([
+    { accept: true, status: "approved" },
+    { accept: false, status: "declined" },
+  ])("sets $status on the observed request for the current bot", async ({ accept, status }) => {
     const deps = createDeps({
       pendingConnection: {
         id: "ac-1",
         requesterBotId: "bot-2",
         targetBotId: "bot-1",
         status: "pending",
+        requestVersion: 2,
       },
     });
-    const result = await respondAgentConnection(deps, run, sender, { accept: true });
+    const result = await respondAgentConnection(deps, run, sender, {
+      accept,
+      connectionId: "ac-1",
+      connectionVersion: 2,
+    });
 
-    expect(result).toEqual(expect.objectContaining({ ok: true, status: "approved" }));
+    expect(result).toEqual(expect.objectContaining({ ok: true, status }));
     expect(deps.prisma.agentConnection.updateMany).toHaveBeenCalledWith({
-      where: { id: "ac-1", status: "pending" },
-      data: { status: "approved" },
+      where: { id: "ac-1", targetBotId: "bot-1", status: "pending", requestVersion: 2 },
+      data: { status, responseVersion: 2 },
     });
   });
 
   it("fails when nothing is pending", async () => {
     const deps = createDeps();
-    const result = await respondAgentConnection(deps, run, sender, { accept: false });
+    const result = await respondAgentConnection(deps, run, sender, {
+      accept: false,
+      connectionId: "ac-1",
+      connectionVersion: 1,
+    });
     expect(result).toEqual(expect.objectContaining({ ok: false }));
   });
+
+  it("captures the requester and does not apply an old approval to a reopened request", async () => {
+    const pending = {
+      id: "ac-1",
+      requesterBotId: "bot-2",
+      targetBotId: "bot-1",
+      status: "pending",
+      requestVersion: 1,
+    };
+    const deps = createDeps({ pendingConnection: pending });
+    const prepared = await prepareAgentConnectionResponse(deps.prisma, sender.id, true);
+    expect(prepared).toMatchObject({
+      connection_id: "ac-1",
+      connection_version: 1,
+      requester_name: "Helper",
+      requester_address: "+15552222222",
+    });
+    pending.requestVersion = 2;
+    expect(
+      await respondAgentConnection(deps, run, sender, {
+        accept: true,
+        connectionId: prepared!.connection_id,
+        connectionVersion: prepared!.connection_version,
+      }),
+    ).toMatchObject({ ok: false });
+    expect(deps.prisma.agentConnection.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not reselect another pending request or a target-less legacy approval", async () => {
+    const deps = createDeps({
+      pendingConnection: {
+        id: "ac-new",
+        targetBotId: "bot-1",
+        requesterBotId: "bot-2",
+        status: "pending",
+        requestVersion: 1,
+      },
+    });
+    for (const input of [
+      { connectionId: "ac-old", connectionVersion: 1 },
+      { connectionId: "", connectionVersion: 0 },
+    ])
+      expect(
+        await respondAgentConnection(deps, run, sender, { accept: true, ...input }),
+      ).toMatchObject({ ok: false });
+    expect(deps.prisma.agentConnection.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([{ botId: "bot-2" }, { userId: "user-2" }, { spaceId: "ws-2" }])(
+    "rejects a mismatched Run scope %j",
+    async (scope) => {
+      const deps = createDeps({
+        pendingConnection: { id: "ac-1", targetBotId: "bot-1", status: "pending" },
+      });
+      await expect(
+        respondAgentConnection(deps, { ...run, ...scope }, sender, {
+          accept: true,
+          connectionId: "ac-1",
+          connectionVersion: 1,
+        }),
+      ).resolves.toMatchObject({ ok: false });
+      expect(deps.prisma.agentConnection.findFirst).not.toHaveBeenCalled();
+      expect(deps.prisma.agentConnection.updateMany).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("messageConnectedAgent", () => {
@@ -480,7 +599,11 @@ describe("agent connection status races", () => {
         return { count: 1 };
       },
     );
-    const result = await respondAgentConnection(deps, run, sender, { accept: true });
+    const result = await respondAgentConnection(deps, run, sender, {
+      accept: true,
+      connectionId: "ac-1",
+      connectionVersion: 1,
+    });
 
     expect(result).toEqual(expect.objectContaining({ ok: false }));
     expect(state.status).toBe("revoked");

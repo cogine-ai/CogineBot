@@ -37,6 +37,27 @@ test("routine destination approval shows each site without an Always action", as
   await expect(page.getByText("Denied", { exact: true })).toBeVisible();
 });
 
+test("connection approval shows the requester and allows only a one-time decision", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=connection-approval");
+  await expect(page.locator("main")).toContainText("Approve connection with “Atlas”?");
+  await expect(page.getByText("Slack: U-DEMO-ATLAS", { exact: true })).toBeVisible();
+  const allow = page.getByRole("button", { name: "Allow once", exact: true });
+  await expect(allow).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deny", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Always allow/ })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "agent-connection-approval");
+  await allow.click();
+  await expect(page.getByText("Allowed once", { exact: true })).toBeVisible();
+});
+
+test("connection approval displays a URL-like requester as literal text", async ({ page }) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=connection-approval-literal");
+  await expect(page.getByText("`Atlas` https://example.test/demo", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link")).toHaveCount(0);
+});
+
 test("actions run by default while optional confirmations live in Space settings", async ({
   page,
 }, testInfo) => {

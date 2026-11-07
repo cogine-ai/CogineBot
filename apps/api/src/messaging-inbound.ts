@@ -417,10 +417,18 @@ async function applyOwnerCommand(
     // The claim holds the connection row lock through commit, so a revoke
     // can never interleave with the confirmation writes.
     const { count } = await tx.agentConnection.updateMany({
-      where: { id: target.connection.id, status: "pending" },
-      data: { status: approved ? "approved" : "declined" },
+      where: {
+        id: target.connection.id,
+        targetBotId: identity.botId,
+        status: "pending",
+        requestVersion: target.connection.requestVersion,
+      },
+      data: {
+        status: approved ? "approved" : "declined",
+        responseVersion: target.connection.requestVersion,
+      },
     });
-    // Revoked or answered elsewhere since the read: not ours to write.
+    // The observed request was answered, revoked, or reopened.
     if (count === 0) return false;
     await writeConfirmation(
       tx,

@@ -16,7 +16,7 @@ import {
   getCurrentSystemPrompt,
 } from "@earendil-works/pi-ai";
 import type { AgentRuntime } from "@rakazo/adapter-kit";
-import { ComposioEmulator, FakeSandboxProvider } from "@rakazo/adapters";
+import { ComposioEmulator, FakeSandboxProvider, MessagingTeamChatEmulator } from "@rakazo/adapters";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadMessage } from "@rakazo/db";
@@ -24,7 +24,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
 import { FakeWebProvider } from "../../adapters/src/fake-web.js";
 import { modelsForRequest, PiAgentRuntime } from "../../adapters/src/pi-runtime.js";
-import type { TurnCheckpoint } from "../../adapters/src/turn-checkpoint.js";
+import { readConnectionApprovalCheckpoint } from "../../adapters/src/run-turn-state.js";
+import { restoreTurnCheckpoint, type TurnCheckpoint } from "../../adapters/src/turn-checkpoint.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 
@@ -103,6 +104,8 @@ async function fixture(
   steps: ModelStep[],
   options: {
     prompt?: string;
+    chatLinked?: boolean;
+    withoutTurnCapture?: boolean;
     afterEffectCreate?: (effect: CreatedEffect) => Promise<void>;
     releaseEffectBarrier?: () => void;
   } = {},
@@ -144,6 +147,7 @@ async function fixture(
   const forwarder: AgentRuntime = {
     describe: () => activeRuntime.describe(),
     run(request, context) {
+      if (options.withoutTurnCapture) request.onCheckpoint = undefined;
       runtimeRequests.push({
         generation,
         runId: request.runId,
@@ -253,6 +257,9 @@ async function fixture(
       wakeupDriver: "memory",
       signupsEnabled: "true",
       composio: new ComposioEmulator(),
+      ...(options.chatLinked
+        ? { messaging: new MessagingTeamChatEmulator({ provider: "slack" }) }
+        : {}),
       encryptionKey: "synthetic-checkpoint-pg-encryption-key",
     });
     const app = handles;
@@ -267,10 +274,14 @@ async function fixture(
     });
     expect(signup.status).toBeLessThan(400);
     const cookie = sessionCookieHeader(signup);
-    async function rpc<T>(procedure: string, input: unknown = {}): Promise<T> {
+    async function rpc<T>(
+      procedure: string,
+      input: unknown = {},
+      actorCookie = cookie,
+    ): Promise<T> {
       const result = await app.app.request(`/rpc/${procedure}`, {
         method: "POST",
-        headers: { "content-type": "application/json", origin, cookie },
+        headers: { "content-type": "application/json", origin, cookie: actorCookie },
         body: JSON.stringify({ json: input }),
       });
       const body = (await result.json()) as { json: T; error?: { message: string } };
@@ -314,6 +325,17 @@ async function fixture(
     await discardBotIntroRun(app, cookie, bot.id);
     await app.awaitIdle?.();
     expect(providerRequests).toHaveLength(0);
+    if (options.chatLinked) {
+      await app.prisma.messagingIdentity.create({
+        data: {
+          userId: me.userId,
+          spaceId: me.spaceId,
+          botId: bot.id,
+          provider: "slack",
+          address: `U-${randomUUID()}`,
+        },
+      });
+    }
     const thread = await app.prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
     const history = await createThreadMessage(app.prisma, {
       threadId: thread.id,
@@ -326,6 +348,19 @@ async function fixture(
     });
     expect(published).toContain(sent.runId);
     const key = JSON.stringify(["runtime_checkpoint", sent.runId]);
+    const checkpointRow = async () => {
+      const row = await app.prisma.externalEffect.findUniqueOrThrow({
+        where: { idempotencyKey: key },
+      });
+      expect(row).toMatchObject({
+        runId: sent.runId,
+        spaceId: me.spaceId,
+        kind: "runtime_checkpoint",
+        status: "runtime_checkpoint",
+      });
+      expect(typeof row.result).toBe("string");
+      return row;
+    };
     return {
       app,
       bot,
@@ -341,6 +376,7 @@ async function fixture(
       providerRequests,
       runtimeRequests,
       actualExecutions,
+      checkpointRow,
       get reservations() {
         return reservations;
       },
@@ -382,16 +418,7 @@ async function fixture(
         });
       },
       async checkpoint() {
-        const row = await app.prisma.externalEffect.findUniqueOrThrow({
-          where: { idempotencyKey: key },
-        });
-        expect(row).toMatchObject({
-          runId: sent.runId,
-          spaceId: me.spaceId,
-          kind: "runtime_checkpoint",
-          status: "runtime_checkpoint",
-        });
-        expect(typeof row.result).toBe("string");
+        const row = await checkpointRow();
         return { row, saved: JSON.parse(String(row.result)) as TurnCheckpoint };
       },
       async clientSnapshot() {
@@ -863,6 +890,296 @@ describe.skipIf(!enabled)("Pi trusted-site approval", () => {
       }
     }
   }, 45_000);
+});
+
+describe.skipIf(!enabled)("Pi connection approval after a checkpoint", () => {
+  it.each<{
+    name: string;
+    accept: boolean;
+    decision: "allow" | "deny";
+    reopened: boolean;
+    interrupted?: "completed" | "executing";
+    withoutTurnCapture?: boolean;
+  }>([
+    { name: "approves the shown request", accept: true, decision: "allow", reopened: false },
+    { name: "declines the shown request", accept: false, decision: "allow", reopened: false },
+    {
+      name: "leaves both requests pending on Deny",
+      accept: true,
+      decision: "deny",
+      reopened: false,
+    },
+    { name: "leaves a reopened request pending", accept: true, decision: "allow", reopened: true },
+    {
+      name: "returns the completed receipt without repeating it",
+      accept: true,
+      decision: "allow",
+      reopened: true,
+      interrupted: "completed",
+    },
+    {
+      name: "leaves both requests pending if the earlier execution has an unknown outcome",
+      accept: true,
+      decision: "allow",
+      reopened: false,
+      interrupted: "executing",
+    },
+    {
+      name: "replays the exact Allow receipt without a transcript",
+      accept: true,
+      decision: "allow",
+      reopened: false,
+      withoutTurnCapture: true,
+    },
+    {
+      name: "does not restage a denied request without a transcript",
+      accept: true,
+      decision: "deny",
+      reopened: false,
+      withoutTurnCapture: true,
+    },
+  ])(
+    "$name when a newer request arrives",
+    async ({ accept, decision, reopened, interrupted, withoutTurnCapture }) => {
+      const callId = "reply-to-shown-connection";
+      const replayCallId = withoutTurnCapture ? "recover-shown-connection" : callId;
+      const steps: ModelStep[] = [
+        () => [
+          call(callId, "use_tool", { name: "respond_agent_connection", arguments: { accept } }),
+        ],
+      ];
+      if (withoutTurnCapture) {
+        steps.push((context) => {
+          expect(JSON.stringify(context.messages)).not.toContain("connection_version");
+          // A reconstituted model call is not authority to change the approved decision.
+          return [
+            call(replayCallId, "use_tool", {
+              name: "respond_agent_connection",
+              arguments: { accept: !accept },
+            }),
+          ];
+        });
+      }
+      steps.push((context) => {
+        const result = toolResult(context, replayCallId);
+        const content = result.content
+          .map((part) => (part.type === "text" ? part.text : ""))
+          .join("");
+        if (decision === "deny") {
+          expect(content).toMatch(/denied/i);
+        } else if (interrupted === "completed") {
+          expect(JSON.parse(content)).toEqual({ ok: true, status: "approved" });
+        } else if (interrupted === "executing") {
+          expect(JSON.parse(content)).toMatchObject({ uncertain: true });
+        } else if (reopened) {
+          expect(content).toMatch(
+            /no pending connection request|connection request is no longer pending/i,
+          );
+        } else {
+          expect(JSON.parse(content)).toMatchObject({
+            ok: true,
+            status: accept ? "approved" : "declined",
+          });
+        }
+        return [{ type: "text", text: "The connection request was handled." }];
+      });
+      const f = await fixture(steps, {
+        chatLinked: true,
+        withoutTurnCapture,
+        prompt: accept ? "Accept the connection request." : "Decline the connection request.",
+      });
+      const { prisma } = f.app;
+      const runId = f.sent.runId;
+      try {
+        const foreignSignup = await f.app.app.request("/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin },
+          body: JSON.stringify({
+            email: `requester-${randomUUID()}@example.test`,
+            password: "password12",
+            name: "Requester fixture",
+          }),
+        });
+        expect(foreignSignup.status).toBeLessThan(400);
+        const foreignCookie = sessionCookieHeader(foreignSignup);
+        const foreign = await f.rpc<{ userId: string; spaceId: string }>("me", {}, foreignCookie);
+        expect(foreign.spaceId).not.toBe(f.me.spaceId);
+        const scope = { spaceId: foreign.spaceId, userId: foreign.userId };
+        async function requestConnection(name: string, updatedAt: Date) {
+          const requester = await prisma.bot.create({ data: { ...scope, name, color: "blue" } });
+          const address = `U-${randomUUID()}`;
+          await prisma.messagingIdentity.create({
+            data: { ...scope, botId: requester.id, provider: "slack", address },
+          });
+          const request = await prisma.agentConnection.create({
+            data: {
+              requesterBotId: requester.id,
+              targetBotId: f.bot.id,
+              status: "pending",
+              updatedAt,
+            },
+          });
+          return { request, address };
+        }
+        const shown = await requestConnection("Atlas", new Date("2026-01-01T00:00:00Z"));
+        async function approvalCards() {
+          const messages = await prisma.message.findMany({ where: { runId, role: "bot" } });
+          return messages.flatMap((message) =>
+            MessageBlockSchema.array()
+              .parse(message.blocks)
+              .flatMap((block) =>
+                block.kind === "ask" && block.approvalEffectId ? [{ message, block }] : [],
+              ),
+          );
+        }
+        await f.continueRun("connection-approval-first-worker");
+        const cards = await approvalCards();
+        expect(cards).toHaveLength(1);
+        const card = cards[0]!;
+        expect(card.block).toMatchObject({
+          text: `${accept ? "Approve" : "Decline"} connection with “\` Atlas \`”?`,
+          detail: `Slack: ${shown.address}`,
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Allow once" },
+            { id: "deny", label: "Deny" },
+          ],
+        });
+        const effectId = card.block.approvalEffectId!;
+        const expectedRequest = {
+          accept,
+          connection_id: shown.request.id,
+          connection_version: 1,
+          requester_name: "Atlas",
+          requester_address: shown.address,
+          requester_provider: "slack",
+        };
+        expect(
+          await prisma.externalEffect.findUniqueOrThrow({ where: { id: effectId } }),
+        ).toMatchObject({
+          runId,
+          spaceId: f.me.spaceId,
+          kind: "respond_agent_connection",
+          status: "intended",
+          request: expectedRequest,
+        });
+        const row = await f.checkpointRow();
+        const saved = readConnectionApprovalCheckpoint(String(row.result));
+        expect(saved?.effectKey).toBe(
+          (await prisma.externalEffect.findUniqueOrThrow({ where: { id: effectId } }))
+            .idempotencyKey,
+        );
+        // Older application images call the ordinary parser on the stored bytes.
+        expect(() => restoreTurnCheckpoint(String(row.result), model)).toThrow(
+          "Unsupported turn checkpoint",
+        );
+        if (withoutTurnCapture) {
+          expect(saved?.transcript).toBeUndefined();
+        } else {
+          expect(restoreTurnCheckpoint(saved!.transcript!, model).pendingToolCallId).toBe(callId);
+        }
+        const snapshot = await f.clientSnapshot();
+        expect(snapshot).not.toContain(shown.request.id);
+        expect(snapshot).not.toContain("connection_version");
+        const newer = await requestConnection("Beacon", new Date("2026-01-01T00:00:02Z"));
+        if (reopened) {
+          await prisma.agentConnection.update({
+            where: { id: shown.request.id },
+            data: { requestVersion: { increment: 1 }, updatedAt: new Date("2026-01-01T00:00:01Z") },
+          });
+        }
+        const answer = { botId: f.bot.id, runId, messageId: card.message.id, answer: decision };
+        if (accept && decision === "allow" && !reopened && !interrupted && !withoutTurnCapture) {
+          await expect(f.rpc("threads/answer", { ...answer, answer: "always" })).rejects.toThrow();
+          await expect(f.rpc("threads/answer", answer, foreignCookie)).rejects.toThrow();
+          expect(await prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+            status: "waiting_input",
+            leaseFence: 1,
+          });
+          expect(
+            await prisma.externalEffect.findUniqueOrThrow({ where: { id: effectId } }),
+          ).toMatchObject({
+            status: "intended",
+          });
+        }
+        await f.restartRuntime();
+        await f.rpc("threads/answer", answer);
+        if (interrupted) {
+          // Simulate a worker that claimed this exact effect before exiting. The
+          // completed case models approval followed by a revoke and reopen.
+          await prisma.externalEffect.update({
+            where: { id: effectId, status: "approved" },
+            data: {
+              status: interrupted,
+              ...(interrupted === "completed" ? { result: { ok: true, status: "approved" } } : {}),
+            },
+          });
+        }
+        await f.continueRun("connection-approval-resume-worker");
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({
+          status: "completed",
+          leaseFence: 2,
+        });
+        expect(f.providerRequests.map(({ generation }) => generation)).toEqual(
+          withoutTurnCapture ? [1, 2, 2] : [1, 2],
+        );
+        expect(f.runtimeRequests.filter((request) => request.runId === runId)[1]).toMatchObject({
+          generation: 2,
+          checkpoint: saved?.transcript,
+        });
+        const calls = f.actualExecutions.filter(
+          (execution) => execution.runId === runId && execution.name === "respond_agent_connection",
+        );
+        expect(calls.map(({ generation }) => generation)).toEqual([1, 2]);
+        if (withoutTurnCapture) {
+          expect(calls[0]?.executionId).not.toBe(calls[1]?.executionId);
+        } else {
+          expect(calls[0]?.executionId).toBe(calls[1]?.executionId);
+        }
+        expect(await approvalCards()).toHaveLength(1);
+        expect(
+          await prisma.externalEffect.findMany({
+            where: { runId, kind: "respond_agent_connection" },
+          }),
+        ).toEqual([
+          expect.objectContaining({
+            id: effectId,
+            request: expectedRequest,
+            status:
+              decision === "deny"
+                ? "denied"
+                : interrupted === "executing"
+                  ? "uncertain"
+                  : "completed",
+          }),
+        ]);
+        expect(
+          await prisma.agentConnection.findUniqueOrThrow({ where: { id: shown.request.id } }),
+        ).toMatchObject({
+          status:
+            reopened || decision === "deny" || interrupted === "executing"
+              ? "pending"
+              : accept
+                ? "approved"
+                : "declined",
+          requestVersion: reopened ? 2 : 1,
+        });
+        expect(
+          await prisma.agentConnection.findUniqueOrThrow({ where: { id: newer.request.id } }),
+        ).toMatchObject({
+          status: "pending",
+          requestVersion: 1,
+        });
+      } finally {
+        try {
+          await f.rpc("threads/stop", { botId: f.bot.id });
+        } finally {
+          await f.close();
+        }
+      }
+    },
+    45_000,
+  );
 });
 
 describe.skipIf(!enabled)("parallel Pi approval checkpoint ownership", () => {

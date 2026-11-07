@@ -221,6 +221,38 @@ describe("scripted continuation state", () => {
 });
 
 describe("stored scripted continuation envelope", () => {
+  it("seals a pending connection response in the guarded format and leaves other receipts on v2", () => {
+    const { digest: _digest, pause: _pause, ...ordinary } = storedFixture();
+    const request = { accept: true, connection_id: "request-1", connection_version: 1 };
+    const kind = "respond_agent_connection";
+    const binding = {
+      id: "connection-effect",
+      kind,
+      idempotencyKey: approvalEffectKey(RUN_ID, kind, request),
+      requestDigest: scriptedStateDigest(request),
+    };
+    const script = ordinary.state.script.map((turn, index) =>
+      index === ordinary.state.cursor.turn
+        ? { ...turn, toolCalls: [{ name: kind, args: { accept: true } }] }
+        : turn,
+    );
+    const state = sealScriptedState({
+      ...ordinary,
+      state: { ...ordinary.state, script, scriptDigest: scriptedStateDigest(script) },
+      pendingEffect: binding,
+    });
+
+    expect(state.version).toBe(3);
+    expect(parseStoredScriptedState(scriptedStateJson(state), RUN_ID)).toEqual(state);
+    expect(() => parseStoredScriptedState(reseal({ ...ordinary, version: 3 }), RUN_ID)).toThrow(
+      ERROR,
+    );
+    expect(() =>
+      parseStoredScriptedState(reseal({ ...ordinary, version: 3, pendingEffect: binding }), RUN_ID),
+    ).toThrow(ERROR);
+    expect(sealScriptedState({ ...ordinary, pendingEffect: undefined }).version).toBe(2);
+  });
+
   it("round-trips normalized occurrence keys, legacy consumed IDs and a pending effect", () => {
     const value = storedFixture();
     const reordered = reverseObjectKeys(scriptedStateJson(value));

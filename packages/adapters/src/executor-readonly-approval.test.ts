@@ -17,6 +17,7 @@ import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/a
 import type { ClaimedSteeringMessage, ThreadEvents } from "@rakazo/db";
 import * as DbModule from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as AgentConnections from "./agent-connections.js";
 import { isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
@@ -32,6 +33,7 @@ import { compileOpenApiDocument } from "./openapi-import.js";
 import { serializeModelSecret } from "./pi-oauth.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
 import * as RunMessagesModule from "./run-messages.js";
+import { readConnectionApprovalCheckpoint } from "./run-turn-state.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
@@ -115,6 +117,7 @@ function fixture({
   outsideSteering = false,
   webProvider,
   sandboxProvider,
+  messagingIdentity = false,
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -146,6 +149,7 @@ function fixture({
   outsideSteering?: boolean;
   webProvider?: WebProvider;
   sandboxProvider?: Partial<SandboxProvider>;
+  messagingIdentity?: boolean;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -515,6 +519,7 @@ function fixture({
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
     web: webProvider,
+    ...(messagingIdentity ? { messaging: { hasIdentity: async () => true } } : {}),
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
@@ -559,6 +564,262 @@ function fixture({
     },
   };
 }
+
+describe("bound agent connection approval", () => {
+  const name = "respond_agent_connection";
+  const captured = {
+    accept: true,
+    connection_id: "request-1",
+    connection_version: 1,
+    requester_name: "Peer Bot",
+    requester_address: "+15550001111",
+    requester_provider: "sendblue",
+  };
+
+  function connectionFixture() {
+    return fixture({
+      name,
+      builtin: true,
+      messagingIdentity: true,
+      autoReview: true,
+      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: name }],
+    });
+  }
+
+  it("shows the captured requester and replays the approved decision without selecting again", async () => {
+    const f = connectionFixture();
+    const prepare = vi
+      .spyOn(AgentConnections, "prepareAgentConnectionResponse")
+      .mockResolvedValue(captured);
+    const respond = vi
+      .spyOn(AgentConnections, "respondAgentConnection")
+      .mockResolvedValue({ ok: true, status: "approved" });
+    try {
+      f.setCalls([
+        {
+          args: { accept: true, connection_id: "model-chosen", connection_version: 99 },
+          executionId: "request",
+        },
+      ]);
+      await f.run();
+      expect(respond).not.toHaveBeenCalled();
+      const approvals = f.effects.filter((effect) => effect.kind === name);
+      expect(approvals).toHaveLength(1);
+      const approval = approvals[0]!;
+      expect(approval).toMatchObject({ status: "intended", request: captured });
+      expect(
+        readConnectionApprovalCheckpoint(
+          String(f.effects.find((effect) => effect.kind === "runtime_checkpoint")?.result),
+        ),
+      ).toEqual({ effectKey: approval.idempotencyKey, transcript: undefined });
+      expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          blocks: [
+            expect.objectContaining({
+              approvalEffectId: approval.id,
+              text: "Approve connection with “` Peer Bot `”?",
+              detail: "iMessage: +15550001111",
+              actions: [
+                { id: "allow", label: "Allow once" },
+                { id: "deny", label: "Deny" },
+              ],
+            }),
+          ],
+        }),
+      );
+      approval.status = "approved";
+      f.setCalls([
+        {
+          args: { accept: false, connection_id: "newest-request", connection_version: 2 },
+          executionId: "resume",
+        },
+      ]);
+      await f.run();
+      expect(prepare).toHaveBeenCalledExactlyOnceWith(f.prisma, f.runRecord.botId, true);
+      expect(respond).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ id: f.runRecord.botId }),
+        { accept: true, connectionId: "request-1", connectionVersion: 1 },
+      );
+      expect(f.effects.filter((effect) => effect.kind === name)).toEqual([approval]);
+      expect(approval.status).toBe("completed");
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    } finally {
+      prepare.mockRestore();
+      respond.mockRestore();
+    }
+  });
+
+  it.each([
+    { status: "denied", expected: { error: expect.stringMatching(/user denied/) } },
+    { status: "executing", expected: { uncertain: true } },
+    { status: "completed", expected: { ok: true, status: "approved" } },
+  ])(
+    "reuses a helper's marker-only $status receipt without selecting a newer request",
+    async ({ status, expected }) => {
+      const f = connectionFixture();
+      const prepare = vi
+        .spyOn(AgentConnections, "prepareAgentConnectionResponse")
+        .mockResolvedValueOnce(captured)
+        .mockResolvedValue({ ...captured, connection_id: "newer-request" });
+      const respond = vi.spyOn(AgentConnections, "respondAgentConnection");
+      try {
+        f.setCalls([
+          {
+            args: { accept: true },
+            executionId: JSON.stringify(["pi-tool", "helper", "response"]),
+          },
+        ]);
+        await f.run();
+        const approval = f.effects.find((effect) => effect.kind === name)!;
+        const checkpoint = f.effects.find((effect) => effect.kind === "runtime_checkpoint")!;
+        expect(readConnectionApprovalCheckpoint(String(checkpoint.result))).toEqual({
+          effectKey: approval.idempotencyKey,
+          transcript: undefined,
+        });
+        expect(() =>
+          restoreTurnCheckpoint(String(checkpoint.result), {
+            provider: "scripted",
+            id: "scripted",
+          }),
+        ).toThrow("Unsupported turn checkpoint");
+        approval.status = status;
+        if (status === "completed") approval.result = { ok: true, status: "approved" };
+        f.setCalls([{ args: { accept: false }, executionId: "resume-after-helper" }]);
+        await f.run();
+        expect(f.results.at(-1)).toMatchObject(expected);
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(respond).not.toHaveBeenCalled();
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        expect(f.effects.filter((effect) => effect.kind === name)).toEqual([approval]);
+      } finally {
+        prepare.mockRestore();
+        respond.mockRestore();
+      }
+    },
+  );
+
+  it("fails closed on an old approval without a request version", async () => {
+    const f = connectionFixture();
+    const request = { accept: true };
+    f.effects.push({
+      id: "old-approval",
+      kind: name,
+      request,
+      status: "approved",
+      idempotencyKey: approvalEffectKey(f.runRecord.id, name, request),
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+    });
+    const prepare = vi.spyOn(AgentConnections, "prepareAgentConnectionResponse");
+    const respond = vi.spyOn(AgentConnections, "respondAgentConnection");
+    try {
+      f.setCalls([{ args: request, executionId: "resume-old" }]);
+      await f.run("failed");
+      expect(f.results).toEqual([{ error: "connection request is no longer pending" }]);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      respond.mockRestore();
+    }
+  });
+
+  it("does not substitute a same-tool queue head for the receipt in the restored checkpoint", async () => {
+    const f = connectionFixture();
+    const pendingToolCallId = "restored-response";
+    const executionId = JSON.stringify(["pi-tool", "main", pendingToolCallId]);
+    const scope = { runId: f.runRecord.id, spaceId: f.runRecord.spaceId };
+    const fingerprint = approvalEffectKey(scope.runId, name, captured);
+    const other = { ...captured, connection_id: "other-request" };
+    const checkpoint: TurnCheckpoint = {
+      version: 1,
+      provider: "scripted",
+      model: "scripted",
+      systemPrompt: "Synthetic connection approval",
+      pendingToolCallId,
+      effectOccurrences: [{ executionId, fingerprint, occurrence: 1 }],
+      messages: [
+        { role: "user", content: "Accept the connection request", timestamp: 1 },
+        {
+          role: "assistant",
+          api: "openai-completions",
+          provider: "scripted",
+          model: "scripted",
+          content: [
+            {
+              type: "toolCall",
+              id: pendingToolCallId,
+              name: "use_tool",
+              arguments: { name, arguments: { accept: true } },
+            },
+          ],
+          stopReason: "toolUse",
+          timestamp: 1,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+      ],
+    };
+    f.effects.push(
+      {
+        ...scope,
+        id: "other-approval",
+        kind: name,
+        request: other,
+        status: "approved",
+        idempotencyKey: approvalEffectKey(scope.runId, name, other),
+      },
+      {
+        ...scope,
+        id: "expected-approval",
+        kind: name,
+        request: captured,
+        status: "approved",
+        idempotencyKey: `${fingerprint}:1`,
+      },
+      {
+        ...scope,
+        id: "connection-checkpoint",
+        kind: "runtime_checkpoint",
+        status: "runtime_checkpoint",
+        idempotencyKey: JSON.stringify(["runtime_checkpoint", scope.runId]),
+        request: {},
+        result: JSON.stringify(checkpoint),
+      },
+    );
+    const prepare = vi.spyOn(AgentConnections, "prepareAgentConnectionResponse");
+    const respond = vi.spyOn(AgentConnections, "respondAgentConnection");
+    try {
+      f.setCalls([
+        { args: { accept: true }, executionId },
+        { args: { accept: true }, executionId: "model-retry" },
+      ]);
+      await f.run("failed");
+      expect(f.results).toEqual([
+        { error: "connection request is no longer pending" },
+        { error: "connection request is no longer pending" },
+      ]);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(
+        f.effects.filter((effect) => effect.kind === name).map((effect) => effect.status),
+      ).toEqual(["approved", "approved"]);
+    } finally {
+      prepare.mockRestore();
+      respond.mockRestore();
+    }
+  });
+});
 
 describe("group peer dispatch across runtime modes", () => {
   function groupPeerFixture({

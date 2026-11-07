@@ -1,5 +1,10 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { redactSecrets, SITE_SENDING_TOOLS } from "@rakazo/core";
+import {
+  messagingProviderName,
+  redactSecrets,
+  SITE_SENDING_TOOLS,
+  sanitizeMessagingLabel,
+} from "@rakazo/core";
 import { urlSite } from "@rakazo/core/egress";
 
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
@@ -31,6 +36,38 @@ export function buildApprovalAskBlock(
   secrets: string[],
   options?: { reviewReason?: string; allowSiteAlways?: boolean; routineSiteDetail?: string },
 ): MessageBlock {
+  if (toolName === "respond_agent_connection") {
+    const label =
+      redactSecrets(
+        sanitizeMessagingLabel(redactSecrets(String(args.requester_name ?? ""), secrets))
+          .replace(/\p{Bidi_Control}/gu, "")
+          .trim(),
+        secrets,
+      ) || "agent";
+    // The requester controls the label. Keep it literal, including URLs and backticks.
+    const delimiter = "`".repeat(
+      1 + Math.max(0, ...(label.match(/`+/g) ?? []).map((run) => run.length)),
+    );
+    const name = `${delimiter} ${label} ${delimiter}`;
+    const verb = args.accept === true ? "Approve" : "Decline";
+    const provider = messagingProviderName(String(args.requester_provider ?? ""));
+    const address = String(args.requester_address ?? "");
+    const detail = redactSecrets(`${provider}: ${address}`, secrets).replace(
+      /[\r\n\p{Bidi_Control}]/gu,
+      " ",
+    );
+    return {
+      kind: "ask",
+      approvalEffectId: effectId,
+      text: truncate(`${verb} connection with “${name}”?`, MAX_APPROVAL_SUMMARY_LENGTH),
+      detail: truncate(redactSecrets(detail, secrets), MAX_APPROVAL_DETAIL_LENGTH),
+      status: "pending",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    };
+  }
   const siteSending = SITE_SENDING_TOOLS.has(toolName);
   const destination = siteSending && typeof args.url === "string" ? args.url : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
