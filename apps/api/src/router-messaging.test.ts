@@ -54,6 +54,7 @@ function messagingDeps(
           requesterBotId: "bot-9",
           targetBotId: "bot-1",
           status: "pending",
+          requestVersion: 1,
         }
       : overrides.connection;
   // One user can hold several memberships in the same channel (one per linked
@@ -582,7 +583,7 @@ describe("messaging.connections", () => {
     });
     expect(prisma.agentConnection.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "ac-1", status: "pending" },
+        where: { id: "ac-1", targetBotId: "bot-1", status: "pending", requestVersion: 1 },
         data: { status: "approved" },
       }),
     );
@@ -792,80 +793,112 @@ describe("messaging.connections", () => {
     ]);
   });
 
-  it("does not let a stale revoke overwrite a newer pending re-request", async () => {
-    const { handler, actor, prisma } = messagingDeps({
-      connection: {
-        id: "ac-stale",
-        requesterBotId: "bot-1",
-        targetBotId: "bot-9",
-        status: "approved",
-      },
-    });
-    const state = { status: "approved" };
-    const connectionModel = prisma.agentConnection as unknown as Record<string, unknown>;
-    connectionModel.findFirst = vi.fn(async () => {
-      const snapshot = {
-        id: "ac-stale",
-        requesterBotId: "bot-1",
-        targetBotId: "bot-9",
-        status: state.status,
+  it.each(["approved", "pending"])(
+    "does not let a stale revoke of %s v1 overwrite a newer pending request",
+    async (status) => {
+      const { handler, actor, prisma, outboundRows } = messagingDeps({
+        connection: {
+          id: "ac-stale",
+          requesterBotId: "bot-1",
+          targetBotId: "bot-9",
+          status,
+        },
+      });
+      const state = { status, requestVersion: 1 };
+      const invite = {
+        idempotencyKey: "connect:bot-1:bot-9",
+        kind: "dm",
+        status: "pending",
+        body: "new request invite",
       };
-      // Interleaved: a new request flips the row back to pending after the read.
-      state.status = "pending";
-      return snapshot;
-    });
-    connectionModel.updateMany = vi.fn(
-      async ({ where, data }: { where: { status?: string }; data: Record<string, unknown> }) => {
-        if (where.status && state.status !== where.status) return { count: 0 };
-        Object.assign(state, data);
-        return { count: 1 };
-      },
-    );
-    const response = await call(handler, actor, "messaging/connections/revoke", {
-      connectionId: "ac-stale",
-    });
+      const connectionModel = prisma.agentConnection as unknown as Record<string, unknown>;
+      connectionModel.findFirst = vi.fn(async () => {
+        const snapshot = {
+          id: "ac-stale",
+          requesterBotId: "bot-1",
+          targetBotId: "bot-9",
+          ...state,
+        };
+        Object.assign(state, { status: "pending", requestVersion: 2 });
+        outboundRows.push(invite);
+        return snapshot;
+      });
+      connectionModel.updateMany = vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { status?: string; requestVersion?: number };
+          data: Record<string, unknown>;
+        }) => {
+          if (
+            (where.status && state.status !== where.status) ||
+            (where.requestVersion !== undefined && state.requestVersion !== where.requestVersion)
+          )
+            return { count: 0 };
+          Object.assign(state, data);
+          return { count: 1 };
+        },
+      );
+      const response = await call(handler, actor, "messaging/connections/revoke", {
+        connectionId: "ac-stale",
+      });
 
-    expect(state.status).toBe("pending");
-    expect(response.status).toBeGreaterThanOrEqual(400);
-  });
+      expect(state).toEqual({ status: "pending", requestVersion: 2 });
+      expect(outboundRows).toEqual([invite]);
+      expect(response.status).toBe(404);
+    },
+  );
 });
 
 describe("messaging status-write races", () => {
-  it("does not overwrite a concurrent revoke when responding to a connection", async () => {
-    const { handler, actor, prisma, outboundRows } = messagingDeps();
-    const state = { status: "pending" };
-    const connectionModel = prisma.agentConnection as unknown as Record<string, unknown>;
-    connectionModel.findFirst = vi.fn(async () => {
-      const snapshot = {
-        id: "ac-1",
-        requesterBotId: "bot-9",
-        targetBotId: "bot-1",
-        status: state.status,
-      };
-      // Interleaved: the requester revokes between the read and the write.
-      state.status = "revoked";
-      return snapshot;
-    });
-    connectionModel.update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-      Object.assign(state, data);
-      return state;
-    });
-    connectionModel.updateMany = vi.fn(
-      async ({ where, data }: { where: { status?: string }; data: Record<string, unknown> }) => {
-        if (where.status && state.status !== where.status) return { count: 0 };
+  it.each([
+    { status: "revoked", requestVersion: 1 },
+    { status: "pending", requestVersion: 2 },
+  ])(
+    "does not apply a response when the request changes to $status v$requestVersion",
+    async (next) => {
+      const { handler, actor, prisma, outboundRows } = messagingDeps();
+      const state = { status: "pending", requestVersion: 1 };
+      const connectionModel = prisma.agentConnection as unknown as Record<string, unknown>;
+      connectionModel.findFirst = vi.fn(async () => {
+        const snapshot = {
+          id: "ac-1",
+          requesterBotId: "bot-9",
+          targetBotId: "bot-1",
+          ...state,
+        };
+        Object.assign(state, next);
+        return snapshot;
+      });
+      connectionModel.update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(state, data);
-        return { count: 1 };
-      },
-    );
-    const response = await call(handler, actor, "messaging/connections/respond", {
-      connectionId: "ac-1",
-      accept: true,
-    });
+        return state;
+      });
+      connectionModel.updateMany = vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { status: string; requestVersion: number };
+          data: Record<string, unknown>;
+        }) => {
+          if (state.status !== where.status || state.requestVersion !== where.requestVersion)
+            return { count: 0 };
+          Object.assign(state, data);
+          return { count: 1 };
+        },
+      );
+      const response = await call(handler, actor, "messaging/connections/respond", {
+        connectionId: "ac-1",
+        accept: true,
+      });
 
-    expect(state.status).toBe("revoked");
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(outboundRows).toHaveLength(0);
-  });
+      expect(state).toMatchObject(next);
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(outboundRows).toHaveLength(0);
+    },
+  );
 
   it("does not overwrite a concurrent leave when responding to a channel invite", async () => {
     const { handler, actor, prisma } = messagingDeps();

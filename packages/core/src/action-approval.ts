@@ -36,7 +36,8 @@ const APPROVAL_REQUIRED_BUILTIN_TOOLS = new Set([
   "cloud_agent_reply",
   "cloud_agent_cancel",
 ]);
-const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set(["create_space"]);
+export const AGENT_CONNECTION_RESPONSE_TOOL = "respond_agent_connection";
+const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set(["create_space", AGENT_CONNECTION_RESPONSE_TOOL]);
 
 const UNATTENDED_SAFE_BUILTIN_TOOLS = new Set([
   "browser_snapshot",

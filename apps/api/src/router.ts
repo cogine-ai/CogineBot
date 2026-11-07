@@ -6855,11 +6855,16 @@ export function createRouter(deps: RouterDeps) {
                 // revoke either beats it or waits — it can never interleave with
                 // the confirmation write below.
                 const { count } = await tx.agentConnection.updateMany({
-                  where: { id: connection.id, status: "pending" },
+                  where: {
+                    id: connection.id,
+                    targetBotId: connection.targetBotId,
+                    status: "pending",
+                    requestVersion: connection.requestVersion,
+                  },
                   data: { status: input.accept ? "approved" : "declined" },
                 });
                 if (count === 0) {
-                  // Lost a race with revoke: approval must never overwrite it.
+                  // The observed request was closed or reopened.
                   throw new ORPCError("NOT_FOUND");
                 }
                 const row = await tx.agentConnection.findUniqueOrThrow({
@@ -6923,7 +6928,11 @@ export function createRouter(deps: RouterDeps) {
             () =>
               deps.prisma.$transaction(async (tx) => {
                 const { count } = await tx.agentConnection.updateMany({
-                  where: { id: connection.id, status: connection.status },
+                  where: {
+                    id: connection.id,
+                    status: connection.status,
+                    requestVersion: connection.requestVersion,
+                  },
                   data: { status: "revoked" },
                 });
                 if (count === 0) throw new ORPCError("NOT_FOUND");

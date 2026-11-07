@@ -2,6 +2,31 @@ import { describe, expect, it } from "vitest";
 import { buildApprovalAskBlock } from "./approval-ask.js";
 
 describe("buildApprovalAskBlock", () => {
+  it("keeps a declined connection's requester readable without letting the label format the card", () => {
+    const block = buildApprovalAskBlock(
+      "effect-connection",
+      "respond_agent_connection",
+      {
+        accept: false,
+        requester_name: "`https://example.test` Peer*Bot\nfixture_secret",
+        requester_address: "fixture_secret\npeer@example.test",
+        requester_provider: "slack",
+      },
+      ["fixture_secret"],
+    );
+
+    expect(block).toMatchObject({
+      kind: "ask",
+      approvalEffectId: "effect-connection",
+      text: "Decline connection with “`` `https://example.test` Peer*Bot redacted ``”?",
+      detail: "Slack: [redacted] peer@example.test",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+  });
+
   it("binds the approval to its effect and redacts secrets", () => {
     const block = buildApprovalAskBlock(
       "effect-1",

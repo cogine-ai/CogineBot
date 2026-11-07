@@ -191,36 +191,47 @@ function RoutineShot() {
   );
 }
 
-function ApprovalShot({ variant }: { variant: "default" | "site" | "routine" }) {
+function ApprovalShot({
+  variant,
+  connectionLabel = "` Atlas `",
+}: {
+  variant: "default" | "site" | "routine" | "connection";
+  connectionLabel?: string;
+}) {
   const [answer, setAnswer] = useState<string>();
   const site = variant === "site" ? "example.com" : undefined;
   const routine = variant === "routine";
+  const connection = variant === "connection";
+  const text = {
+    default: "Review before sending a reply from the demo inbox.",
+    site: "Review before opening the report.",
+    routine: "Allow this Routine to use these sites each time it runs?",
+    connection: `Approve connection with “${connectionLabel}”?`,
+  }[variant];
+  const detail = {
+    default: "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
+    site: "url: https://docs.example.com/report",
+    routine: "example.net\nexample.org",
+    connection: "Slack: U-DEMO-ATLAS",
+  }[variant];
   return (
     <main data-ready="true" className="mx-auto max-w-[760px] bg-background p-8 text-foreground">
       <AskCard
         canAnswer
         onAnswer={async (value) => {
-          if (site || routine) setAnswer(value);
+          if (variant !== "default") setAnswer(value);
         }}
         block={{
           kind: "ask",
           approvalEffectId: "effect-demo",
-          text: routine
-            ? "Allow this Routine to use these sites each time it runs?"
-            : site
-              ? "Review before opening the report."
-              : "Review before sending a reply from the demo inbox.",
-          detail: routine
-            ? "example.net\nexample.org"
-            : site
-              ? `url: https://docs.${site}/report`
-              : "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
+          text,
+          detail,
           site,
           status: answer ? "answered" : "pending",
           answer,
           actions: [
             { id: "allow", label: "Allow once" },
-            ...(routine ? [] : [{ id: "always", label: "Always allow this tool" }]),
+            ...(routine || connection ? [] : [{ id: "always", label: "Always allow this tool" }]),
             { id: "deny", label: "Deny" },
           ],
         }}
@@ -532,6 +543,13 @@ void bootstrapI18n("en").then(() => {
       <ModelShot />
     ) : view === "routine" ? (
       <RoutineShot />
+    ) : view === "connection-approval" ? (
+      <ApprovalShot variant="connection" />
+    ) : view === "connection-approval-literal" ? (
+      <ApprovalShot
+        variant="connection"
+        connectionLabel="`` `Atlas` https://example.test/demo ``"
+      />
     ) : view === "approval" || view === "site-approval" || view === "routine-approval" ? (
       <ApprovalShot
         variant={

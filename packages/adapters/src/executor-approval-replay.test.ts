@@ -21,6 +21,32 @@ import {
 } from "./lazy-tool-catalog.js";
 
 describe("executor approval replay", () => {
+  it("resumes a deferred connection response with only the public decision argument", () => {
+    const continuation = buildApprovalContinuation(
+      [
+        {
+          kind: "respond_agent_connection",
+          request: {
+            accept: false,
+            connection_id: "private-request",
+            connection_version: 2,
+            requester_name: "Peer Bot",
+            requester_address: "peer@example.test",
+            requester_provider: "slack",
+          },
+        },
+      ],
+      JSON.stringify,
+    );
+
+    expect(continuation).toContain(
+      'use_tool: {"name":"respond_agent_connection","arguments":{"accept":false}}',
+    );
+    expect(continuation).not.toMatch(
+      /private-request|Peer Bot|peer@example\.test|connection_version/,
+    );
+  });
+
   it("uses the same account-specific native ID for bound catalog and direct continuations", () => {
     const route = {
       connectorId: "native",

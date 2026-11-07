@@ -1,4 +1,5 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
+import { AGENT_CONNECTION_RESPONSE_TOOL } from "@rakazo/core";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
@@ -10,9 +11,28 @@ import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-che
 
 export type TurnEffectOccurrence = NonNullable<TurnCheckpoint["effectOccurrences"]>[number];
 
+const CONNECTION_APPROVAL_CHECKPOINT = "connection-approval-v1:";
+
+export function readConnectionApprovalCheckpoint(blob: string) {
+  if (!blob.startsWith(CONNECTION_APPROVAL_CHECKPOINT)) return undefined;
+  const value: unknown = JSON.parse(blob.slice(CONNECTION_APPROVAL_CHECKPOINT.length));
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Unsupported connection approval checkpoint");
+  const { effectKey, transcript } = value as Record<string, unknown>;
+  if (
+    typeof effectKey !== "string" ||
+    !effectKey ||
+    (transcript !== undefined && typeof transcript !== "string")
+  ) {
+    throw new Error("Unsupported connection approval checkpoint");
+  }
+  return { effectKey, transcript };
+}
+
 export interface RunTurnCheckpointState {
   blob?: string;
   stored: boolean;
+  connectionApprovalEffectKey?: string;
   ownInstructionsBaseline?: string;
   counts: Map<string, number>;
   occurrences: TurnEffectOccurrence[];
@@ -31,16 +51,20 @@ export function createRunTurnCheckpointState(input: {
   instructionsBaseline: string;
   counts?: Map<string, number>;
 }): RunTurnCheckpointState {
+  const connectionApproval =
+    input.blob === undefined ? undefined : readConnectionApprovalCheckpoint(input.blob);
+  const transcript = connectionApproval ? connectionApproval.transcript : input.blob;
   const state: RunTurnCheckpointState = {
-    blob: input.blob,
+    blob: transcript,
     stored: input.blob !== undefined,
+    connectionApprovalEffectKey: connectionApproval?.effectKey,
     ownInstructionsBaseline: input.instructionsBaseline,
     counts: input.counts ?? new Map(),
     occurrences: [],
     pendingCaptures: new Map(),
   };
-  if (input.blob === undefined) return state;
-  const saved = restoreTurnCheckpoint(input.blob, input.model);
+  if (transcript === undefined) return state;
+  const saved = restoreTurnCheckpoint(transcript, input.model);
   state.pendingExecutionId = JSON.stringify(["pi-tool", "main", saved.pendingToolCallId]);
   const unresolved = new Set(unresolvedTurnCheckpointCalls(saved.messages));
   if (![...unresolved].some((call) => call.id === saved.pendingToolCallId))
@@ -66,6 +90,8 @@ export function createRunTurnCheckpointState(input: {
     if (call.id === saved.pendingToolCallId)
       state.pendingToolName = realTool(tool, call.arguments)!.name;
   }
+  if (connectionApproval && state.pendingToolName !== AGENT_CONNECTION_RESPONSE_TOOL)
+    throw new Error("Unsupported connection approval checkpoint");
   if (saved.effectOccurrences) {
     state.occurrences.push(...saved.effectOccurrences);
     const pendingExecutionId = JSON.stringify(["pi-tool", "main", saved.pendingToolCallId]);
@@ -139,8 +165,11 @@ export async function persistRunTurnCheckpoint(
   state: RunTurnCheckpointState,
   executionId?: string,
   pendingSecretEffectId?: string,
+  connectionApprovalEffectKey?: string,
 ): Promise<void> {
   const capture = executionId ? state.pendingCaptures.get(executionId) : undefined;
+  const connectionCheckpoint = (transcript?: string) =>
+    `${CONNECTION_APPROVAL_CHECKPOINT}${JSON.stringify({ effectKey: connectionApprovalEffectKey, transcript })}`;
   if (capture) {
     const saved = JSON.parse(capture());
     saved.effectOccurrences = state.occurrences;
@@ -150,9 +179,16 @@ export async function persistRunTurnCheckpoint(
       run,
       leaseOwner,
       leaseFence,
-      JSON.stringify(saved),
+      connectionApprovalEffectKey
+        ? connectionCheckpoint(JSON.stringify(saved))
+        : JSON.stringify(saved),
       pendingSecretEffectId,
     );
+    state.stored = true;
+  } else if (connectionApprovalEffectKey) {
+    // A helper cannot capture a top-level transcript. Keep its exact receipt and
+    // refuse older executors, whose restore reader cannot resume this checkpoint.
+    await saveRunTurnCheckpoint(prisma, run, leaseOwner, leaseFence, connectionCheckpoint());
     state.stored = true;
   } else if (pendingSecretEffectId !== undefined) {
     await saveRunTurnCheckpoint(

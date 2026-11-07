@@ -1505,6 +1505,7 @@ model AgentConnection {
   requesterBotId String
   targetBotId    String
   status         String
+  requestVersion Int      @default(1)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

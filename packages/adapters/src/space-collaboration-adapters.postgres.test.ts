@@ -9,8 +9,13 @@ import {
   createThreadEvents,
   updateSpaceCollaborationForMember,
 } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { messageConnectedAgent } from "./agent-connections.js";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  connectAgent,
+  messageConnectedAgent,
+  prepareAgentConnectionResponse,
+  respondAgentConnection,
+} from "./agent-connections.js";
 import { messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import { spawnBot } from "./child-bots.js";
 import type { ExecutorDeps } from "./executor.js";
@@ -35,9 +40,17 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
   let prisma: PrismaClient;
   const spaces: string[] = [];
   const bots: string[] = [];
+  const connectionInvites = new Set<string>();
   beforeAll(() => {
     db = createDb(databaseUrl!);
     prisma = db.prisma;
+  });
+  afterEach(async () => {
+    if (!connectionInvites.size) return;
+    await prisma.messagingOutbound.deleteMany({
+      where: { idempotencyKey: { in: [...connectionInvites] } },
+    });
+    connectionInvites.clear();
   });
   afterAll(async () => {
     if (!db) return;
@@ -182,7 +195,7 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
     };
   }
 
-  async function connect(
+  async function linkConnectionPeers(
     left: Awaited<ReturnType<typeof fixture>>,
     right: Awaited<ReturnType<typeof fixture>>,
   ) {
@@ -204,6 +217,14 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
         userId: right.spaceId,
       },
     });
+    return { source, target };
+  }
+
+  async function connect(
+    left: Awaited<ReturnType<typeof fixture>>,
+    right: Awaited<ReturnType<typeof fixture>>,
+  ) {
+    const { source, target } = await linkConnectionPeers(left, right);
     const connection = await prisma.agentConnection.create({
       data: {
         requesterBotId: source.botId,
@@ -219,6 +240,153 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       });
     return { source, target, connection, send };
   }
+
+  it("keeps a reopened connection pending when an older response was already in flight", async () => {
+    const left = await fixture();
+    const right = await fixture();
+    const { target } = await linkConnectionPeers(left, right);
+    const inviteKey = `connect:${left.sender.bot.id}:${target.botId}`;
+    connectionInvites.add(inviteKey);
+    const ask = () =>
+      connectAgent(left.deps, left.run, left.sender.bot, { address: target.address });
+    const readConnection = () =>
+      prisma.agentConnection.findUniqueOrThrow({
+        where: {
+          requesterBotId_targetBotId: {
+            requesterBotId: left.sender.bot.id,
+            targetBotId: right.sender.bot.id,
+          },
+        },
+      });
+    const readInvite = () =>
+      prisma.messagingOutbound.findUniqueOrThrow({
+        where: { idempotencyKey: inviteKey },
+      });
+
+    await expect(ask()).resolves.toEqual({ ok: true, status: "pending" });
+    const first = await readConnection();
+    expect(first).toMatchObject({ status: "pending", requestVersion: 1 });
+    const firstInvite = await readInvite();
+    await expect(ask()).resolves.toEqual({ ok: true, status: "pending" });
+    expect(await readConnection()).toMatchObject({ id: first.id, requestVersion: 1 });
+    expect(await readInvite()).toMatchObject({ id: firstInvite.id });
+
+    const snapshot = await prepareAgentConnectionResponse(prisma, right.sender.bot.id, true);
+    expect(snapshot).toEqual({
+      accept: true,
+      connection_id: first.id,
+      connection_version: 1,
+      requester_name: left.sender.bot.name,
+      requester_address: `source-${left.spaceId}`,
+      requester_provider: "fixture",
+    });
+    const observed = deferred();
+    const release = deferred();
+    const pausedClient = prisma.$extends({
+      query: {
+        agentConnection: {
+          async findFirst({ args, query }) {
+            const result = await query(args);
+            if (args.where?.id === first.id) {
+              observed.resolve();
+              await release.promise;
+            }
+            return result;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const initialResponse = { connectionId: first.id, connectionVersion: 1 };
+    const stale = respondAgentConnection(
+      { ...right.deps, prisma: pausedClient },
+      right.run,
+      right.sender.bot,
+      { ...initialResponse, accept: true },
+    );
+    try {
+      await Promise.race([
+        observed.promise,
+        stale.then(() => {
+          throw new Error("Expected the response to read the observed request");
+        }),
+      ]);
+      await expect(
+        respondAgentConnection(right.deps, right.run, right.sender.bot, {
+          ...initialResponse,
+          accept: false,
+        }),
+      ).resolves.toEqual({ ok: true, status: "declined" });
+      expect(await readConnection()).toMatchObject({
+        id: first.id,
+        status: "declined",
+        requestVersion: 1,
+      });
+      await expect(ask()).resolves.toEqual({ ok: true, status: "pending" });
+    } finally {
+      release.resolve();
+    }
+
+    await expect(stale).resolves.toMatchObject({ ok: false });
+    expect(await readConnection()).toMatchObject({
+      id: first.id,
+      status: "pending",
+      requestVersion: 2,
+    });
+    const secondInvite = await readInvite();
+    expect(secondInvite.id).not.toBe(firstInvite.id);
+    await expect(ask()).resolves.toEqual({ ok: true, status: "pending" });
+    expect(await readConnection()).toMatchObject({ id: first.id, requestVersion: 2 });
+    expect(await readInvite()).toMatchObject({ id: secondInvite.id });
+
+    await expect(
+      respondAgentConnection(right.deps, right.run, right.sender.bot, {
+        ...initialResponse,
+        connectionVersion: 2,
+        accept: true,
+      }),
+    ).resolves.toEqual({ ok: true, status: "approved" });
+  });
+
+  it("advances the connection version on a status-only reopen from a previous release", async () => {
+    const left = await fixture();
+    const right = await fixture();
+    const { target } = await linkConnectionPeers(left, right);
+    connectionInvites.add(`connect:${left.sender.bot.id}:${target.botId}`);
+    await expect(
+      connectAgent(left.deps, left.run, left.sender.bot, { address: target.address }),
+    ).resolves.toEqual({ ok: true, status: "pending" });
+    const connection = await prisma.agentConnection.findFirstOrThrow({
+      where: { requesterBotId: left.sender.bot.id, targetBotId: right.sender.bot.id },
+    });
+    expect(connection.requestVersion).toBe(1);
+
+    // The previous application image only wrote status and updatedAt.
+    await prisma.agentConnection.update({
+      where: { id: connection.id },
+      data: { status: "revoked" },
+    });
+    await prisma.agentConnection.update({
+      where: { id: connection.id },
+      data: { status: "pending" },
+    });
+    await prisma.agentConnection.update({
+      where: { id: connection.id },
+      data: { status: "pending" },
+    });
+    await expect(
+      respondAgentConnection(right.deps, right.run, right.sender.bot, {
+        accept: true,
+        connectionId: connection.id,
+        connectionVersion: connection.requestVersion,
+      }),
+    ).resolves.toMatchObject({ ok: false });
+    expect(
+      await prisma.agentConnection.findUniqueOrThrow({ where: { id: connection.id } }),
+    ).toMatchObject({
+      status: "pending",
+      requestVersion: 2,
+    });
+  });
 
   it("refuses delivery when the Space policy is disabled without creating messages or runs", async () => {
     const f = await fixture();
