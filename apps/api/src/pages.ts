@@ -1,6 +1,7 @@
+import { ORPCError } from "@orpc/server";
 import type { Actor, PageDetail, PageSummary } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { IsolationError, Prisma } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 
 const DEFAULT_LIST_LIMIT = 30;
 
@@ -40,7 +41,7 @@ async function stillThere<T>(write: Promise<T>): Promise<T> {
     return await write;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      throw new IsolationError();
+      throw new ORPCError("NOT_FOUND", { message: "This page isn't available" });
     }
     throw error;
   }
@@ -49,9 +50,9 @@ async function stillThere<T>(write: Promise<T>): Promise<T> {
 async function requirePage(prisma: PrismaClient, actor: Actor, pageId: string) {
   const row = await prisma.page.findFirst({
     where: { id: pageId, spaceId: actor.spaceId, userId: actor.userId },
-    select: { ...summarySelect, shareSecretId: true },
+    select: summarySelect,
   });
-  if (!row) throw new IsolationError();
+  if (!row) throw new ORPCError("NOT_FOUND", { message: "This page isn't available" });
   return row;
 }
 
@@ -142,7 +143,7 @@ export async function getPage(
       select: { name: true, image: true },
     }),
   ]);
-  if (!stored) throw new IsolationError();
+  if (!stored) throw new ORPCError("NOT_FOUND", { message: "This page isn't available" });
   return {
     ...pageSummary(row),
     version,

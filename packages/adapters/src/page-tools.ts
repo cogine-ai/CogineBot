@@ -199,7 +199,7 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
       problems: check.errors.map((problem) => redactSecrets(problem, ctx.secrets)),
     };
   }
-  // A page can be shared by link, so it never stores a value this run keeps secret.
+  // Saved Page source and compiled output must not persist values this run keeps secret.
   if (containsSecret([source, check.code], ctx.secrets)) {
     return {
       error: "The page contains a secret value; nothing was saved. Remove it and save again.",
