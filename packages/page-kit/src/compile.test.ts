@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { pageViewerCode } from "./compile.js";
+import { useSource } from "./kit/theme.js";
+import { checkPageSource } from "./validate.js";
 
 /** Runs viewer code the way the runtime's factory does, with only `exports` and `require`. */
 function run(code: string) {
@@ -31,10 +33,28 @@ describe("pageViewerCode", () => {
 
   it("turns a page it cannot run into code that throws the reason", () => {
     const badSources = pageViewerCode("/* page-sources\n{oops}\n*/\nexport default 1;");
+    const nonObjectSources = pageViewerCode("/* page-sources\n[]\n*/\nexport default 1;");
     const badSyntax = pageViewerCode("export default function App( {");
     expect(() => run(badSources)).toThrow(
       "The page-sources comment at the top of the page is not valid JSON.",
     );
+    expect(() => run(nonObjectSources)).toThrow(
+      "The page-sources comment at the top of the page must contain a JSON object keyed by source id.",
+    );
     expect(() => run(badSyntax)).toThrow(/Unexpected token/);
+  });
+
+  it("preserves source ids and nested snapshot keys as JSON data in saved viewer code", () => {
+    const source =
+      '/* page-sources\n{"__proto__":{"snapshot":{"__proto__":{"units":2},"note":"<tag>\\n\\"quoted\\""}}}\n*/\n' +
+      'const JSON = "page local";\nexport default function App() { return JSON; }';
+    const checked = checkPageSource(source);
+    if (!checked.ok) throw new Error(checked.errors.join("\n"));
+    expect(run(checked.code).default!()).toBe("page local");
+
+    const snapshot = useSource("__proto__").value as Record<string, unknown>;
+    expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(snapshot, "__proto__")?.value).toEqual({ units: 2 });
+    expect(snapshot.note).toBe('<tag>\n"quoted"');
   });
 });

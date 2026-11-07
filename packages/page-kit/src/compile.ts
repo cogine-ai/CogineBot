@@ -19,15 +19,20 @@ const SOURCES_PRAGMA = /^\uFEFF?\s*\/\*(?!\*)[ \t]*page-sources[ \t]*\r?\n([\s\S
 export function declaredSources(source: string): string {
   const match = SOURCES_PRAGMA.exec(source);
   if (!match) return "";
+  const json = match[1]!;
   let declared: unknown;
   try {
-    declared = JSON.parse(match[1]!);
+    declared = JSON.parse(json);
   } catch {
     throw new Error("The page-sources comment at the top of the page is not valid JSON.");
   }
-  return declared && typeof declared === "object" && !Array.isArray(declared)
-    ? `globalThis.__rakazoPageSources=${JSON.stringify(declared)};`
-    : "";
+  if (declared === null || typeof declared !== "object" || Array.isArray(declared)) {
+    throw new Error(
+      "The page-sources comment at the top of the page must contain a JSON object keyed by source id.",
+    );
+  }
+  // Parse the embedded JSON as data so "__proto__" stays an own key, not a prototype setter.
+  return `globalThis.__rakazoPageSources=globalThis.JSON.parse(${JSON.stringify(json.trim())});`;
 }
 
 /**

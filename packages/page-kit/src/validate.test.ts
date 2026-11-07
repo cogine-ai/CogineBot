@@ -291,6 +291,29 @@ describe("checkPageSource", () => {
     ).toBe(false);
   });
 
+  it.each(["[]", '[{"snapshot":1}]', "null", "true", "42", '"sales"'])(
+    "rejects a page-sources header with non-object JSON: %s",
+    (value) => {
+      expect(
+        checkPageSource(
+          `/* page-sources\n${value}\n*/\nexport default function App(){return <Page title="x"/>}`,
+        ),
+      ).toEqual({
+        ok: false,
+        errors: [
+          "The page-sources comment at the top of the page must contain a JSON object keyed by source id.",
+        ],
+      });
+    },
+  );
+
+  it.each(["{}", '{"sales":{"snapshot":[1,2]}}'])("accepts a page-sources object: %s", (value) => {
+    const checked = checkPageSource(
+      `/* page-sources\n${value}\n*/\nexport default function App(){return <Page title="x"/>}`,
+    );
+    expect(checked.ok).toBe(true);
+  });
+
   it("accepts the chart and data components as reference pages write them", () => {
     const source = `export default function App() {
   return (
