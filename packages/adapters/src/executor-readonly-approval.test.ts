@@ -901,6 +901,106 @@ describe("real Pi runtime control approval", () => {
     );
   }
 
+  async function runWithSlowToolAudit(
+    f: ReturnType<typeof fixture>,
+    name: string,
+    ordered: string[],
+  ) {
+    let signalAudit!: () => void;
+    let signalPause!: () => void;
+    let finishAudit!: () => void;
+    const auditEntered = new Promise<void>((resolve) => {
+      signalAudit = resolve;
+    });
+    const pauseEntered = new Promise<void>((resolve) => {
+      signalPause = resolve;
+    });
+    const auditRelease = new Promise<void>((resolve) => {
+      finishAudit = resolve;
+    });
+    f.append.mockImplementation(async (event) => {
+      if (event.type !== "agent.tool.called" || event.payload?.name !== name) return;
+      signalAudit();
+      await auditRelease;
+      ordered.push("audit");
+    });
+    const pause = f.pauseRunForInput.getMockImplementation()!;
+    f.pauseRunForInput.mockImplementation(async (input) => {
+      ordered.push("pause");
+      signalPause();
+      return pause(input);
+    });
+    const running = f.run();
+    try {
+      await Promise.race([auditEntered, pauseEntered, running]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      finishAudit();
+    }
+    await running;
+    expect(ordered).toEqual(["narration", "audit", "pause"]);
+  }
+
+  it.each([false, true])(
+    "persists real Pi protected-input audit before a pause (explicit approval=%s)",
+    async (requiresApproval) => {
+      const narration = "I need a credential before continuing.";
+      const args = {
+        label: "Save a command credential",
+        purpose: "api_key",
+        name: "service-key",
+        auth: { type: "command" },
+      };
+      const fetcher = vi
+        .fn(async () => sse())
+        .mockImplementationOnce(async () => sse({ name: "request_secret", args }, narration));
+      vi.stubGlobal("fetch", fetcher);
+      vi.stubEnv("PI_DEFAULT_PROVIDER", "openrouter");
+      vi.stubEnv("OPENROUTER_API_KEY", "synthetic-control-key");
+      const ordered: string[] = [];
+      const publication = vi
+        .spyOn(RunMessagesModule, "publishMessage")
+        .mockImplementation(async (_deps, _run, _role, blocks) => {
+          if (blocks.some((block) => block.kind === "text" && block.text === narration)) {
+            ordered.push("narration");
+          }
+          return null;
+        });
+      try {
+        const f = fixture({
+          builtin: true,
+          deploymentModelKey: "synthetic-control-key",
+          rules: requiresApproval
+            ? [{ effect: "require_approval", matchKind: "tool", matchValue: "request_secret" }]
+            : [],
+        });
+        f.prisma.deploymentSettings.findUnique.mockResolvedValue({
+          defaultModelProvider: "openrouter",
+          defaultModelId: "openai/gpt-5.6-luna",
+        });
+        Object.assign(f.prisma, { usageRecord: { createMany: vi.fn(async () => ({ count: 1 })) } });
+        const pi = new PiAgentRuntime();
+        f.runtimeRun.mockImplementation(async function* (request, context) {
+          yield* pi.run({ ...request, claimSteering: undefined }, context);
+        });
+        await runWithSlowToolAudit(f, "request_secret", ordered);
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        expect(fetcher).toHaveBeenCalledOnce();
+        const effect = f.effects.find((row) => row.kind === "request_secret");
+        expect(effect).toMatchObject({ status: "intended" });
+        expect(f.pauseRunForInput.mock.calls[0]![0].blocks).toMatchObject([
+          requiresApproval
+            ? { kind: "ask", approvalEffectId: effect!.id }
+            : { kind: "ask", text: args.label, input: "secret", purpose: args.purpose },
+        ]);
+      } finally {
+        publication.mockRestore();
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it.each(["ask", "secret", "approval", "takeover", "takeover-skipped"] as const)(
     "continues a paused child %s in the main conversation without repeating delegation",
     async (mode) => {
@@ -1326,7 +1426,7 @@ describe("real Pi runtime control approval", () => {
         "pending-search",
         undefined,
         {
-          beforeApprovalPause: () => {
+          beforeInputPause: () => {
             enter();
             return consumed;
           },
@@ -1449,45 +1549,13 @@ describe("real Pi runtime control approval", () => {
         });
         if (decision === "approved") {
           const ordered: string[] = [];
-          let signalAudit!: () => void;
-          let signalPause!: () => void;
-          let finishAudit!: () => void;
-          const auditEntered = new Promise<void>((resolve) => {
-            signalAudit = resolve;
-          });
-          const pauseEntered = new Promise<void>((resolve) => {
-            signalPause = resolve;
-          });
-          const auditRelease = new Promise<void>((resolve) => {
-            finishAudit = resolve;
-          });
           publication.mockImplementation(async (_deps, _run, _role, blocks) => {
             if (blocks.some((block) => block.kind === "text" && block.text === narration)) {
               ordered.push("narration");
             }
             return null;
           });
-          f.append.mockImplementation(async (event) => {
-            if (event.type !== "agent.tool.called" || event.payload?.name !== name) return;
-            signalAudit();
-            await auditRelease;
-            ordered.push("audit");
-          });
-          const pause = f.pauseRunForInput.getMockImplementation()!;
-          f.pauseRunForInput.mockImplementation(async (input) => {
-            ordered.push("approval");
-            signalPause();
-            return pause(input);
-          });
-          const running = f.run();
-          try {
-            await Promise.race([auditEntered, pauseEntered, running]);
-            await new Promise<void>((resolve) => setImmediate(resolve));
-          } finally {
-            finishAudit();
-          }
-          await running;
-          expect(ordered).toEqual(["narration", "audit", "approval"]);
+          await runWithSlowToolAudit(f, name, ordered);
         } else {
           await f.run();
         }

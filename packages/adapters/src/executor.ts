@@ -4729,7 +4729,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let pauseRequest: Promise<unknown> | undefined;
         const requestPause = async <T>(
           show: () => Promise<T>,
+          beforeInputPause?: () => Promise<void>,
         ): Promise<{ owned: true; result: T } | { owned: false }> => {
+          if (beforeInputPause) {
+            // An earlier queued interaction can itself acquire the shared pause.
+            await beforeInputPause();
+            context.signal.throwIfAborted();
+          }
           if (pauseRequest) {
             await pauseRequest;
             return { owned: false };
@@ -5641,12 +5647,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           const requestApproval = async () => {
-            if (observer?.beforeApprovalPause) {
-              // An earlier queued interaction can itself acquire the shared pause.
-              await observer.beforeApprovalPause();
-              context.signal.throwIfAborted();
-            }
-            const pause = await requestPause(showApprovalCard);
+            const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForApproval();
           };
 
@@ -7144,7 +7145,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return settleUncertainEffect(deps.prisma, recordedForAsk.effect.id, "request_secret");
             }
-            const pause = await requestPause(async () => {
+            const showSecretCard = async () => {
               if (!(await renewRunLease(deps, runId, workerId, fence))) {
                 return pauseForSecret();
               }
@@ -7188,7 +7189,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 threadId: thread.id,
               });
               return pauseForSecret();
-            });
+            };
+            const pause = await requestPause(showSecretCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForSecret();
           }
           if (name === "request_takeover") {
