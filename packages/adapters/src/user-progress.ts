@@ -1,14 +1,66 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { isToolActivityBlock } from "@rakazo/core";
+import { isToolActivityBlock, protectedContinuationLength, redactSecrets } from "@rakazo/core";
 
 /** Keep mid-turn progress beats short; prefer a few high-signal updates. */
 export const USER_PROGRESS_MESSAGE_MAX_LENGTH = 500;
+export const MID_TURN_PROGRESS_MIN_TURN_AGE_MS = 60_000;
+export const MID_TURN_PROGRESS_MAX_PER_RUN = 3;
+export const NARRATION_STATUS_MAX_LENGTH = 60;
+
+/** Ordinary durable progress shares one budget across tools and narration. */
+export function midTurnProgressBudgetAllows(publishedCount: number, turnAgeMs: number): boolean {
+  return (
+    !midTurnProgressBudgetUsed(publishedCount) && turnAgeMs >= MID_TURN_PROGRESS_MIN_TURN_AGE_MS
+  );
+}
+
+export function midTurnProgressBudgetUsed(publishedCount: number): boolean {
+  return publishedCount >= MID_TURN_PROGRESS_MAX_PER_RUN;
+}
+
+function shortenProgressText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const prefix = text.slice(0, limit - 1);
+  const lastCodeUnit = prefix.charCodeAt(prefix.length - 1);
+  const completePrefix =
+    lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? prefix.slice(0, -1) : prefix;
+  return `${completePrefix.trimEnd()}…`;
+}
+
+/** Collapse narration to one line, with the ellipsis inside the cap. */
+export function narrationStatusLine(text: string, secrets: string[] = []): string {
+  const line = redactSecrets(text.replace(/\s+/g, " ").trim(), secrets);
+  return shortenProgressText(line, NARRATION_STATUS_MAX_LENGTH);
+}
+
+/** Hide the continuation of a known secret split across narration and the final reply. */
+export function redactReplyAfterProgress(
+  text: string,
+  blocks: MessageBlock[],
+  preceding: readonly string[],
+  secrets: string[],
+): { text: string; blocks: MessageBlock[] } {
+  if (!text || preceding.every((context) => !context)) return { text, blocks };
+  const length = Math.max(0, ...secrets.map((secret) => secret.length));
+  const covered = protectedContinuationLength(text.slice(0, length), preceding, secrets);
+  if (covered === 0) return { text, blocks };
+
+  let remaining = covered;
+  let marker = "[redacted]";
+  return {
+    text: marker + text.slice(covered),
+    blocks: blocks.map((block) => {
+      if (block.kind !== "text" || remaining === 0 || !block.text) return block;
+      const safeText = marker + block.text.slice(remaining);
+      remaining = Math.max(0, remaining - block.text.length);
+      marker = "";
+      return { ...block, text: safeText };
+    }),
+  };
+}
 
 export function clampUserProgressMessage(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-  if (trimmed.length <= USER_PROGRESS_MESSAGE_MAX_LENGTH) return trimmed;
-  return `${trimmed.slice(0, USER_PROGRESS_MESSAGE_MAX_LENGTH - 1).trimEnd()}…`;
+  return shortenProgressText(text.trim(), USER_PROGRESS_MESSAGE_MAX_LENGTH);
 }
 
 /**
@@ -22,8 +74,11 @@ export function isProgressMessageTruncated(text: string): boolean {
 }
 
 /** Preserve the message's source labels without guessing who sent it. */
-export function midTaskMessagePrompt(text: string): string {
-  return `A message arrived while you were working:\n\n${text}\n\nTake it into account and continue the task.`;
+export function midTaskMessagePrompt(text: string, canMessageUser = false): string {
+  const next = canMessageUser
+    ? "If it asks something or changes the plan, answer briefly with message_user, then continue the task."
+    : "Take it into account and continue the task.";
+  return `A message arrived while you were working:\n\n${text}\n\n${next}`;
 }
 
 /**

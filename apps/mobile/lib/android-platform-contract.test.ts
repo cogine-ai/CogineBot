@@ -239,10 +239,11 @@ describe("Android mobile platform contract", () => {
     expect(thread).toContain("inGroup && workingGroupBots.length > 0 ?");
     expect(thread).toContain("workingGroupBots.length - index");
     expect(thread).toContain("agents working");
-    // Visible chrome is avatar-only; copy stays on accessibilityLabel.
+    // Keep the generic working copy accessible and show only an explicit narration note.
     expect(thread).toMatch(
-      /accessibilityLabel=\{\s*workingGroupBots\.length === 1[\s\S]*agents working/,
+      /accessibilityLabel=\{\s*workingNarrationStatus \?\?\s*\(workingGroupBots\.length === 1[\s\S]*agents working/,
     );
+    expect(thread).toContain("<WorkingIndicator label={workingNarrationStatus} />");
     expect(thread).not.toMatch(
       /workingGroupBots\.length === 1\s*\?[\s\S]*<Text[^>]*>\s*\{t\("\{name\} is working"/,
     );

@@ -1,4 +1,9 @@
-import type { AgentRunRequest, AgentToolCompletion, ConnectorTool } from "@rakazo/adapter-kit";
+import type {
+  AgentRunRequest,
+  AgentRuntimeEvent,
+  AgentToolCompletion,
+  ConnectorTool,
+} from "@rakazo/adapter-kit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakeAgentState = vi.hoisted(() => ({
@@ -467,8 +472,9 @@ describe("Pi connector tool dispatch", () => {
           ];
     });
     const runtime = new PiAgentRuntime();
+    const events: AgentRuntimeEvent[] = [];
 
-    for await (const _event of runtime.run(
+    for await (const event of runtime.run(
       {
         botId: "b",
         threadId: "t",
@@ -482,11 +488,12 @@ describe("Pi connector tool dispatch", () => {
       },
       { signal: new AbortController().signal },
     )) {
-      // Exhaust the runtime event stream.
+      events.push(event);
     }
 
     expect(claimSteering).toHaveBeenNthCalledWith(1, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(2, []);
+    expect(claimSteering).toHaveBeenNthCalledWith(2, [], { liveProgressReset: true });
+    expect(events.filter((event) => event.type === "steered")).toEqual([{ type: "steered" }]);
     expect(fakeAgentState.preparedMessages).toEqual([
       expect.objectContaining({
         role: "user",
@@ -543,8 +550,8 @@ describe("Pi connector tool dispatch", () => {
     }
 
     expect(claimSteering).toHaveBeenNthCalledWith(1, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(2, []);
-    expect(claimSteering).toHaveBeenNthCalledWith(3, ["steering-1"]);
+    expect(claimSteering).toHaveBeenNthCalledWith(2, [], { liveProgressReset: true });
+    expect(claimSteering).toHaveBeenNthCalledWith(3, ["steering-1"], { liveProgressReset: true });
     expect(fakeAgentState.preparedMessages).toEqual([
       expect.objectContaining({
         content:

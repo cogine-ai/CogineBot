@@ -25,6 +25,19 @@ describe("collaboration transcript markers", () => {
     expect(html).not.toContain("{peer}");
   });
 
+  it("shows the short narration status in the existing working row", () => {
+    const html = renderToString(
+      <ActiveBotGlyph
+        bots={[{ botId: "research", color: "#14B8A6", status: "running" }]}
+        label="Research is working"
+        narrationStatus="Checking the totals."
+      />,
+    );
+    expect(html).toContain('role="status"');
+    expect(html).toContain(">Checking the totals.</span>");
+    expect(html).not.toContain('class="sr-only"');
+  });
+
   it("selects companion activity from the existing active run status", () => {
     const html = renderToString(
       <ActiveBotGlyph

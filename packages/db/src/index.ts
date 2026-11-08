@@ -62,6 +62,7 @@ export {
   describeRowSecurityPolicies,
   ROW_SECURITY_POLICIES,
 } from "./row-security-policies.js";
+export { loadRunProgressReset } from "./run-progress.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";
 export * from "./scope.js";

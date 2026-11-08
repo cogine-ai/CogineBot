@@ -1,8 +1,13 @@
 import { I18nProvider } from "@lingui/react";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
-import { isToolActivityBlock, withLiveStreamingProgress } from "@rakazo/core";
+import {
+  isToolActivityBlock,
+  liveNarrationStatusLine,
+  withLiveStreamingProgress,
+} from "@rakazo/core";
 import { DEFAULT_GROK_BOT_COLOR } from "@rakazo/ui-web";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ActiveBotGlyph } from "../../src/components/ai/CollaborationMarker";
 import { bootstrapI18n, i18n } from "../../src/lib/i18n";
@@ -15,6 +20,7 @@ const params = new URLSearchParams(location.search);
 const view = params.get("view") === "settings" ? "settings" : "thread";
 const streamResponses = params.get("stream") !== "off";
 const phase = params.get("phase") === "done" ? "done" : "live";
+const showNarration = params.get("narration") === "on";
 
 const USER_TEXT = "What's the capital of Portugal?";
 const LIVE_TOKENS = "Lisbon is the cap";
@@ -46,8 +52,33 @@ function emptySnapshot(): ThreadSnapshot {
   };
 }
 
+function settleTurn(snapshot: ThreadSnapshot | null, stop: boolean): ThreadSnapshot | null {
+  if (!snapshot) return snapshot;
+  if (stop)
+    return reduceThreadSnapshot(
+      snapshot,
+      productEvent(snapshot.cursor + 1, { type: "run.cancelled" }),
+    );
+  const withReply = reduceThreadSnapshot(
+    snapshot,
+    productEvent(snapshot.cursor + 1, {
+      type: "thread.message.created",
+      payload: {
+        messageId: "bot-final",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [{ kind: "text", text: COMPLETE_TEXT }],
+      },
+    }),
+  );
+  return reduceThreadSnapshot(
+    withReply,
+    productEvent(snapshot.cursor + 2, { type: "run.completed" }),
+  );
+}
+
 /** Same thread.progress / message.created path the chat shell uses. */
-function reduceComparableTurn(stream: boolean, turn: "live" | "done"): ThreadSnapshot {
+function reduceComparableTurn(turn: "live" | "done"): ThreadSnapshot {
   let snapshot = reduceThreadSnapshot(
     emptySnapshot(),
     productEvent(1, {
@@ -78,28 +109,27 @@ function reduceComparableTurn(stream: boolean, turn: "live" | "done"): ThreadSna
       payload: { text: LIVE_TOKENS, streaming: true },
     }),
   );
-  if (turn === "done") {
+  if (showNarration) {
     snapshot = reduceThreadSnapshot(
       snapshot,
       productEvent(5, {
-        type: "thread.message.created",
         payload: {
-          messageId: "bot-final",
-          messageSeq: 1,
-          role: "bot",
-          blocks: [{ kind: "text", text: COMPLETE_TEXT }],
+          reset: true,
+          text: "I’m looking up Portugal’s capital.",
+          activity: true,
+          narrationStatus: true,
         },
       }),
     );
-    snapshot = reduceThreadSnapshot(snapshot, productEvent(6, { type: "run.completed" }));
   }
-  return withLiveStreamingProgress(snapshot, stream) ?? emptySnapshot();
+  return (turn === "done" ? settleTurn(snapshot, false) : snapshot) ?? emptySnapshot();
 }
 
 function fixtureNote(): string {
   if (view === "settings") {
     return `Fixture: Settings overlay · Stream replies ${streamResponses ? "on" : "off"}`;
   }
+  if (showNarration) return "Fixture: thread reducer · short mid-turn status";
   if (!streamResponses && phase === "live") {
     return "Fixture: thread reducer · Stream replies off · mid-turn (no live tokens)";
   }
@@ -113,7 +143,9 @@ function MessageRow({ message }: { message: ThreadMessage }) {
   const narration = message.blocks.filter(
     (block) => (block.kind === "text" || block.kind === "progress") && !isToolActivityBlock(block),
   );
-  const activity = message.blocks.filter((block) => isToolActivityBlock(block));
+  const activity = message.blocks.filter(
+    (block) => isToolActivityBlock(block) && !(block.kind === "progress" && block.narrationStatus),
+  );
   if (message.role === "user") {
     const text = narration
       .filter((block) => block.kind === "text")
@@ -166,8 +198,16 @@ function MessageRow({ message }: { message: ThreadMessage }) {
   );
 }
 
-function ThreadFixture({ snapshot }: { snapshot: ThreadSnapshot }) {
+function ThreadFixture() {
+  const [rawSnapshot, setRawSnapshot] = useState<ThreadSnapshot | null>(() =>
+    reduceComparableTurn(phase),
+  );
+  const snapshot = withLiveStreamingProgress(rawSnapshot, streamResponses) ?? emptySnapshot();
   const running = snapshot.run?.status === "running";
+  const narrationStatus = liveNarrationStatusLine(
+    snapshot.messages,
+    running && snapshot.run ? [snapshot.run.id] : [],
+  );
   const hasLiveProgressText = snapshot.messages.some(
     (message) =>
       message.id.startsWith("progress:") &&
@@ -188,9 +228,26 @@ function ThreadFixture({ snapshot }: { snapshot: ThreadSnapshot }) {
           <ActiveBotGlyph
             bots={[{ botId: "bot-1", name: "Chief", color: DEFAULT_GROK_BOT_COLOR }]}
             label="Chief is working"
+            narrationStatus={narrationStatus}
           />
         ) : null}
       </div>
+      {showNarration && running ? (
+        <div className="mt-4 flex gap-4 text-sm">
+          <button
+            type="button"
+            onClick={() => setRawSnapshot((current) => settleTurn(current, false))}
+          >
+            Finish reply
+          </button>
+          <button
+            type="button"
+            onClick={() => setRawSnapshot((current) => settleTurn(current, true))}
+          >
+            Stop
+          </button>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -218,11 +275,7 @@ void bootstrapI18n("en").then(() => {
   setResponseStreamingPreference(streamResponses ? "on" : "off");
   createRoot(document.getElementById("root")!).render(
     <I18nProvider i18n={i18n}>
-      {view === "settings" ? (
-        <SettingsFixture />
-      ) : (
-        <ThreadFixture snapshot={reduceComparableTurn(streamResponses, phase)} />
-      )}
+      {view === "settings" ? <SettingsFixture /> : <ThreadFixture />}
     </I18nProvider>,
   );
 });

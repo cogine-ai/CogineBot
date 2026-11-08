@@ -360,7 +360,7 @@ describe("Pi runtime transcript sent to a provider that binds thinking to its co
     expect(transcript).not.toContain("The person sent this");
     expect(transcript).toContain("Shell command finished.");
     expect(transcript).toContain("Finished original command");
-    expect(claim.mock.calls.slice(2)).toContainEqual([["steering-1"]]);
+    expect(claim.mock.calls.slice(2)).toContainEqual([["steering-1"], { liveProgressReset: true }]);
   });
 
   it("keeps a helper's sent transcript stable through its own tool steps", async () => {

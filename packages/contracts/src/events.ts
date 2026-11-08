@@ -182,8 +182,10 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("progress"),
     text: z.string(),
-    /** Provider-generated tool status rather than assistant-authored narration. */
+    /** Activity shown outside the live reply bubble. */
     activity: z.literal(true).optional(),
+    /** A short narration note for the working row. Other activity stays hidden. */
+    narrationStatus: z.literal(true).optional(),
     pendingToolNames: z.array(z.string()).optional(),
   }),
   z.object({

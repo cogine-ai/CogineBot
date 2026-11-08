@@ -46,6 +46,7 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { reserveRunProgressResetInTransaction } from "./run-progress.js";
 import { isRunResponse, readRunTimingFields } from "./run-timing.js";
 import {
   clearRunTurnCheckpoints,
@@ -122,6 +123,8 @@ export interface ClaimSteeringInput {
   leaseOwner: string;
   leaseFence: number;
   seenIds: string[];
+  /** Only a Pi turn that is already running may grant a fresh owner progress budget. */
+  liveProgressReset?: true;
 }
 
 export interface ClaimedSteeringMessage {
@@ -131,6 +134,8 @@ export interface ClaimedSteeringMessage {
   blocks: MessageBlock[];
   /** This claimed message was authored by the authenticated owner of this run. */
   ownerInput?: true;
+  /** A new progress window was committed atomically with this live claim. */
+  progressResetAt?: Date;
 }
 
 export interface FinalizeRunResult {
@@ -646,88 +651,124 @@ export async function claimSteering(
   prisma: PrismaClient,
   input: ClaimSteeringInput,
 ): Promise<ClaimedSteeringMessage[]> {
-  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
-    const run = await tx.run.findFirst({
-      where: {
-        id: input.runId,
-        threadId: input.threadId,
-        botId: input.botId,
-        status: "running",
-        leaseOwner: input.leaseOwner,
-        leaseFence: input.leaseFence,
-      },
-      select: {
-        id: true,
-        trigger: true,
-        taskId: true,
-        spaceId: true,
-        userId: true,
-        sourceMessage: { select: { blocks: true } },
-      },
-    });
-    if (!run || run.trigger === "created") return [];
-    const channelId =
-      run.trigger === "messaging"
-        ? messagingChannelId(run.sourceMessage?.blocks as MessageBlock[] | undefined)
-        : undefined;
-    const directMessage = run.trigger === "messaging" && !channelId;
-    // Pending rows from another chat stay for their own continuation.
-    const pendingWhere = directMessage
-      ? { runId: null, originTrigger: "messaging" }
-      : channelId
-        ? { runId: null }
-        : { runId: null, originTrigger: null };
-    const steering = await tx.steeringMessage.findMany({
-      where: {
-        botId: input.botId,
-        id: input.seenIds.length ? { notIn: input.seenIds } : undefined,
-        // A routine or webhook turn only takes steering addressed to it; pending user messages
-        // wait for the conversational continuation that starts once it finishes.
-        OR: isConversationalRun(run.trigger)
-          ? [pendingWhere, { runId: input.runId }]
-          : [{ runId: input.runId }],
-        message: {
+  const claim = () =>
+    prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
+      const run = await tx.run.findFirst({
+        where: {
+          id: input.runId,
           threadId: input.threadId,
-          // Private follow-ups remain unclaimed for the existing private continuation.
-          ...(channelId
-            ? { blocks: { array_contains: [{ kind: "channel_message", channelId }] } }
-            : directMessage
-              ? { NOT: { blocks: { array_contains: [{ kind: "channel_message" }] } } }
-              : {}),
+          botId: input.botId,
+          status: "running",
+          leaseOwner: input.leaseOwner,
+          leaseFence: input.leaseFence,
         },
-      },
-      include: { message: { select: { blocks: true, role: true, authorUserId: true } } },
-      orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
+        select: {
+          id: true,
+          trigger: true,
+          taskId: true,
+          spaceId: true,
+          userId: true,
+          sourceMessageId: true,
+          sourceMessage: { select: { blocks: true } },
+        },
+      });
+      if (!run || run.trigger === "created") return [];
+      const channelId =
+        run.trigger === "messaging"
+          ? messagingChannelId(run.sourceMessage?.blocks as MessageBlock[] | undefined)
+          : undefined;
+      const directMessage = run.trigger === "messaging" && !channelId;
+      // Pending rows from another chat stay for their own continuation.
+      const pendingWhere = directMessage
+        ? { runId: null, originTrigger: "messaging" }
+        : channelId
+          ? { runId: null }
+          : { runId: null, originTrigger: null };
+      const steering = await tx.steeringMessage.findMany({
+        where: {
+          botId: input.botId,
+          id: input.seenIds.length ? { notIn: input.seenIds } : undefined,
+          // A routine or webhook turn only takes steering addressed to it; pending user messages
+          // wait for the conversational continuation that starts once it finishes.
+          OR: isConversationalRun(run.trigger)
+            ? [pendingWhere, { runId: input.runId }]
+            : [{ runId: input.runId }],
+          message: {
+            threadId: input.threadId,
+            // Private follow-ups remain unclaimed for the existing private continuation.
+            ...(channelId
+              ? { blocks: { array_contains: [{ kind: "channel_message", channelId }] } }
+              : directMessage
+                ? { NOT: { blocks: { array_contains: [{ kind: "channel_message" }] } } }
+                : {}),
+          },
+        },
+        include: {
+          message: { select: { blocks: true, role: true, authorUserId: true, clientNonce: true } },
+        },
+        orderBy: [{ message: { seq: "asc" } }, { id: "asc" }],
+      });
+      if (steering.length === 0) return [];
+      const claimed: ClaimedSteeringMessage[] = steering.map((item) => {
+        const blocks = item.message.blocks as MessageBlock[];
+        return {
+          id: item.id,
+          messageId: item.messageId,
+          text: blocksToAgentHistoryText(blocks),
+          blocks,
+          ...(item.userId === run.userId &&
+          item.message.role === "user" &&
+          item.message.authorUserId === run.userId &&
+          item.originTrigger === null &&
+          !blocks.some((block) => block.kind === "channel_message")
+            ? { ownerInput: true as const }
+            : {}),
+        };
+      });
+      const resetIndex = input.liveProgressReset
+        ? steering.findLastIndex(
+            (item, index) =>
+              claimed[index]?.ownerInput &&
+              (item.claimedAt === null || item.runId === null) &&
+              item.messageId !== run.sourceMessageId &&
+              !item.message.clientNonce?.startsWith("messaging:"),
+          )
+        : -1;
+      const resetCandidate = claimed[resetIndex];
+      if (resetCandidate) {
+        // Fence the claim before task writes, in the same order as cancellation.
+        const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM public.runs
+          WHERE id = ${input.runId} AND status = 'running'
+            AND "leaseOwner" = ${input.leaseOwner} AND "leaseFence" = ${input.leaseFence}
+          FOR UPDATE
+        `;
+        if (!locked) return [];
+      }
+      const selections = steering.map((item) => item.connectionIds ?? []);
+      await updateTaskConnectionSelection(tx, run, run.taskId, selections);
+      const now = new Date();
+      // A failed run can release a row without clearing its old claim timestamp.
+      await tx.steeringMessage.updateMany({
+        where: {
+          id: { in: steering.map((item) => item.id) },
+          OR: [{ claimedAt: null }, { runId: null }],
+        },
+        data: { runId: input.runId, claimedAt: now },
+      });
+      if (resetCandidate) {
+        const reset = await reserveRunProgressResetInTransaction(tx, {
+          ...input,
+          spaceId: run.spaceId,
+          steeringId: resetCandidate.id,
+          now,
+        });
+        if (reset) resetCandidate.progressResetAt = reset.startedAt;
+      }
+      return claimed;
     });
-    if (steering.length === 0) return [];
-    const selections = steering.map((item) => item.connectionIds ?? []);
-    await updateTaskConnectionSelection(tx, run, run.taskId, selections);
-    // A failed run can release a row without clearing its old claim timestamp.
-    await tx.steeringMessage.updateMany({
-      where: {
-        id: { in: steering.map((item) => item.id) },
-        OR: [{ claimedAt: null }, { runId: null }],
-      },
-      data: { runId: input.runId, claimedAt: new Date() },
-    });
-    return steering.map((item) => {
-      const blocks = item.message.blocks as MessageBlock[];
-      return {
-        id: item.id,
-        messageId: item.messageId,
-        text: blocksToAgentHistoryText(blocks),
-        blocks,
-        ...(item.userId === run.userId &&
-        item.message.role === "user" &&
-        item.message.authorUserId === run.userId &&
-        item.originTrigger === null &&
-        !blocks.some((block) => block.kind === "channel_message")
-          ? { ownerInput: true as const }
-          : {}),
-      };
-    });
-  });
+  return withTransactionRetry(claim);
 }
 
 async function findPendingAsk(
