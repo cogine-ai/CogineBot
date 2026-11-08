@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BackgroundJobHandlers } from "@rakazo/adapter-kit";
 import { messagingDeliverJob } from "@rakazo/adapter-kit";
-import type { Pool } from "@rakazo/db";
+import { EncryptedSecretStore, withSecretPersistence } from "@rakazo/adapters";
+import { pageShareTokenFromSlug, SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
+import type { Pool, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
@@ -22,6 +24,8 @@ import {
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { setPageShare } from "../../../apps/api/src/page-shares.js";
+import { mountSharedPages } from "../../../apps/api/src/shared-pages.js";
 import {
   GraphileJobPublisher,
   GraphileJobWorkerHost,
@@ -57,6 +61,11 @@ const { Client, escapeIdentifier } = createRequire(
   Client: new (options: { connectionString: string }) => Client;
   escapeIdentifier: (value: string) => string;
 };
+type SharedPagesApp = Parameters<typeof mountSharedPages>[0];
+const { Hono } = createRequire(new URL("../../../apps/api/package.json", import.meta.url))(
+  "hono",
+) as { Hono: new () => SharedPagesApp };
+const pageShareFence = new URL("../../../scripts/restore-page-share-fence.sql", import.meta.url);
 
 function isolatedTarget(url: string) {
   const target = new Client({ connectionString: url });
@@ -172,6 +181,44 @@ postgres("custom archive recovery into a different cluster and database identity
   let tocPath: string;
   let archive: Buffer;
   let restored = false;
+  let archivedShareToken: string;
+  let archivedShareSecretId: string;
+  let ordinaryCiphertext: string;
+  const pageTitle = "Synthetic restored Page a";
+  const secrets = new EncryptedSecretStore(randomBytes(32).toString("hex"));
+  const actor = {
+    userId: id("user-a"),
+    spaceId: id("space-a"),
+    email: `a-${suffix}@example.test`,
+    isDeploymentOwner: false,
+  };
+
+  function sharing(prisma: PrismaClient) {
+    const anonymous = new Hono();
+    mountSharedPages(anonymous, prisma, { enabled: true });
+    const deps = {
+      prisma: withSecretPersistence(prisma, secrets),
+      secrets,
+      env: { webOrigin: "https://pages.example.test" },
+      pageSharingEnabled: true,
+    };
+    return {
+      read: (token: string) => anonymous.request(`${SHARED_PAGE_PATH_PREFIX}${token}`),
+      publish: () =>
+        runAsTenant(actor, () =>
+          setPageShare(deps, actor, {
+            pageId: id("page-a"),
+            visibility: "link",
+            expectedTitle: pageTitle,
+            expectedVersion: 2,
+          }),
+        ),
+      revoke: () =>
+        runAsTenant(actor, () =>
+          setPageShare(deps, actor, { pageId: id("page-a"), visibility: "private" }),
+        ),
+    };
+  }
 
   async function tool(
     endpoint: Endpoint,
@@ -262,6 +309,7 @@ postgres("custom archive recovery into a different cluster and database identity
       new URL("../../../scripts/restore-transfer-fence.sql", import.meta.url),
       "utf8",
     );
+    const pages = await readFile(pageShareFence, "utf8");
     await successful(
       tool(
         target,
@@ -272,7 +320,7 @@ postgres("custom archive recovery into a different cluster and database identity
           "--single-transaction",
           "--file=-",
           "--command",
-          `${authority}\n${transfer}`,
+          `${authority}\n${transfer}${pages}`,
         ],
         sql,
       ),
@@ -460,6 +508,7 @@ postgres("custom archive recovery into a different cluster and database identity
         },
       });
       const title = `Synthetic restored Page ${name}`;
+      const currentVersion = name === "a" ? 2 : 1;
       await sourceOwner.prisma.page.create({
         data: {
           id: id(`page-${name}`),
@@ -467,14 +516,15 @@ postgres("custom archive recovery into a different cluster and database identity
           spaceId,
           botId: id(`bot-${name}`),
           title,
+          currentVersion,
           versions: {
-            create: {
-              id: id(`page-version-${name}`),
-              version: 1,
+            create: Array.from({ length: currentVersion }, (_, index) => ({
+              id: id(`page-version-${name}-${index + 1}`),
+              version: index + 1,
               title,
-              source: `source-${name}`,
-              code: `code-${name}`,
-            },
+              source: `source-${name}-${index + 1}`,
+              code: `code-${name}-${index + 1}`,
+            })),
           },
         },
       });
@@ -490,15 +540,45 @@ postgres("custom archive recovery into a different cluster and database identity
     const publisher = new GraphileJobPublisher(sourceRuntime.pool);
     try {
       await publisher.enqueue(messagingDeliverJob(id("persisted-job")));
+      const ordinary = await secrets.put(
+        "synthetic ordinary credential",
+        {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          operationId: id("ordinary-secret"),
+          traceId: id("ordinary-secret"),
+          signal: new AbortController().signal,
+        },
+        { recordId: id("ordinary-secret") },
+      );
+      ordinaryCiphertext = ordinary.ciphertext;
+      await sourceOwner.prisma.secret.create({
+        data: {
+          id: id("ordinary-secret"),
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          kind: "mcp",
+          ciphertext: ordinaryCiphertext,
+        },
+      });
+      const sourceShare = sharing(sourceRuntime.prisma);
+      const published = await sourceShare.publish();
+      archivedShareToken = pageShareTokenFromSlug(new URL(published.shareUrl!).pathname)!;
+      archivedShareSecretId = published.generation!;
+      const live = await sourceShare.read(archivedShareToken);
+      expect(live.status).toBe(200);
+      expect(await live.json()).toMatchObject({ title: pageTitle, version: 2, code: "code-a-2" });
+      archive = await successful(
+        tool(source, "pg_dump", ["--format=custom", "--no-owner", "--no-privileges"]),
+      );
+      expect(archive.subarray(0, 5).toString()).toBe("PGDMP");
+      await sourceShare.revoke();
+      expect((await sourceShare.read(archivedShareToken)).status).toBe(404);
     } finally {
       await publisher.close();
       await sourceRuntime.prisma.$disconnect();
       await sourceRuntime.pool.end();
     }
-    archive = await successful(
-      tool(source, "pg_dump", ["--format=custom", "--no-owner", "--no-privileges"]),
-    );
-    expect(archive.subarray(0, 5).toString()).toBe("PGDMP");
   }, 180_000);
 
   async function dropRole(client: Client, role: string) {
@@ -583,6 +663,96 @@ postgres("custom archive recovery into a different cluster and database identity
       ).rows,
     ).toEqual([{ messages: null, queue: null, keys: null }]);
   }, 120_000);
+
+  it("supports archives with no Pages, private-only Pages and links predating share revisions", async () => {
+    const fence = await readFile(pageShareFence, "utf8");
+    await targetWork(async (client) => {
+      await client.query("BEGIN");
+      try {
+        await client.query(fence);
+        await client.query(`
+          CREATE SCHEMA cogine_pages;
+          CREATE TABLE cogine_pages.pages (
+            id text PRIMARY KEY, "userId" text, "spaceId" text, visibility text
+          );
+          INSERT INTO cogine_pages.pages VALUES
+            ('private', 'owner', 'space', 'private');
+        `);
+        await client.query(fence);
+        expect((await client.query("SELECT visibility FROM cogine_pages.pages")).rows).toEqual([
+          { visibility: "private" },
+        ]);
+
+        await client.query(`
+          CREATE TABLE public.secrets (
+            id text PRIMARY KEY, "userId" text, "spaceId" text, kind text
+          );
+          INSERT INTO public.secrets VALUES
+            ('linked', 'owner', 'space', 'page_share'),
+            ('other-scope', 'owner', 'another-space', 'page_share'),
+            ('ordinary', 'owner', 'space', 'mcp'),
+            ('orphan', 'owner', 'space', 'page_share');
+          ALTER TABLE cogine_pages.pages
+            ADD COLUMN "shareTokenHash" text,
+            ADD COLUMN "shareSecretId" text REFERENCES public.secrets(id) ON DELETE SET NULL;
+          INSERT INTO cogine_pages.pages VALUES
+            ('shared', 'owner', 'space', 'link', 'hash', 'linked'),
+            ('foreign-ref', 'owner', 'space', 'link', 'foreign-hash', 'other-scope'),
+            ('ordinary-ref', 'owner', 'space', 'private', NULL, 'ordinary'),
+            ('hash-only', 'owner', 'space', 'private', 'orphan-hash', NULL);
+        `);
+        await client.query(fence);
+        expect(
+          (
+            await client.query(`
+              SELECT id, visibility, "shareTokenHash", "shareSecretId"
+              FROM cogine_pages.pages ORDER BY id
+            `)
+          ).rows,
+        ).toEqual(
+          ["foreign-ref", "hash-only", "ordinary-ref", "private", "shared"].map((id) => ({
+            id,
+            visibility: "private",
+            shareTokenHash: null,
+            shareSecretId: null,
+          })),
+        );
+        expect((await client.query("SELECT id FROM public.secrets ORDER BY id")).rows).toEqual(
+          ["ordinary", "orphan", "other-scope"].map((id) => ({ id })),
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    });
+  });
+
+  it("rolls back the entire import if a Page archive contains an incomplete share schema", async () => {
+    const result = await tool(
+      target,
+      "psql",
+      [
+        "-X",
+        "--set=ON_ERROR_STOP=on",
+        "--single-transaction",
+        "--file=-",
+        "--command",
+        await readFile(pageShareFence, "utf8"),
+      ],
+      Buffer.from(`
+        CREATE SCHEMA cogine_pages;
+        CREATE TABLE cogine_pages.pages (id text PRIMARY KEY, "shareTokenHash" text);
+      `),
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("incomplete share schema");
+    expect(
+      (
+        await targetWork((client) =>
+          client.query("SELECT to_regnamespace('cogine_pages') AS schema"),
+        )
+      ).rows,
+    ).toEqual([{ schema: null }]);
+  });
 
   it("refuses foreign default table privileges before any restored application table is committed", async () => {
     const migrationOwner = await targetWork(
@@ -683,6 +853,8 @@ postgres("custom archive recovery into a different cluster and database identity
     const publisher = new GraphileJobPublisher(runtime.pool);
     const host = new GraphileJobWorkerHost(runtime.pool, { concurrency: 1, pollInterval: 25 });
     try {
+      const targetShare = sharing(runtime.prisma);
+      expect((await targetShare.read(archivedShareToken)).status).toBe(404);
       for (const name of ["a", "b"])
         await runAsTenant(
           { userId: id(`user-${name}`), spaceId: id(`space-${name}`) },
@@ -705,26 +877,57 @@ postgres("custom archive recovery into a different cluster and database identity
               await runtime.prisma.page.findMany({
                 select: {
                   id: true,
+                  title: true,
+                  botId: true,
+                  currentVersion: true,
                   visibility: true,
-                  versions: { select: { id: true, version: true, source: true, code: true } },
+                  shareRevision: true,
+                  shareTokenHash: true,
+                  shareSecretId: true,
+                  versions: {
+                    orderBy: { version: "asc" },
+                    select: { id: true, version: true, source: true, code: true },
+                  },
                 },
               }),
             ).toEqual([
               {
                 id: id(`page-${name}`),
+                title: `Synthetic restored Page ${name}`,
+                botId: id(`bot-${name}`),
+                currentVersion: name === "a" ? 2 : 1,
                 visibility: "private",
-                versions: [
-                  {
-                    id: id(`page-version-${name}`),
-                    version: 1,
-                    source: `source-${name}`,
-                    code: `code-${name}`,
-                  },
-                ],
+                shareRevision: name === "a" ? 1 : 0,
+                shareTokenHash: null,
+                shareSecretId: null,
+                versions: Array.from({ length: name === "a" ? 2 : 1 }, (_, index) => ({
+                  id: id(`page-version-${name}-${index + 1}`),
+                  version: index + 1,
+                  source: `source-${name}-${index + 1}`,
+                  code: `code-${name}-${index + 1}`,
+                })),
               },
             ]);
           },
         );
+      await runAsTenant(actor, async () => {
+        expect(
+          await runtime.prisma.secret.findUnique({ where: { id: archivedShareSecretId } }),
+        ).toBeNull();
+        const ordinary = await runtime.prisma.secret.findUniqueOrThrow({
+          where: { id: id("ordinary-secret") },
+        });
+        expect(ordinary.ciphertext).toBe(ordinaryCiphertext);
+        expect(await secrets.load(ordinary.ciphertext, ordinary.id)).toBe(
+          "synthetic ordinary credential",
+        );
+      });
+      const published = await targetShare.publish();
+      const freshToken = pageShareTokenFromSlug(new URL(published.shareUrl!).pathname)!;
+      expect(published.generation).not.toBe(archivedShareSecretId);
+      expect(freshToken).not.toBe(archivedShareToken);
+      expect((await targetShare.read(freshToken)).status).toBe(200);
+      expect((await targetShare.read(archivedShareToken)).status).toBe(404);
       expect((await runtime.pool.query("SELECT id FROM public.messages")).rows).toEqual([]);
       expect((await runtime.pool.query("SELECT id FROM cogine_pages.page_versions")).rows).toEqual(
         [],

@@ -73,6 +73,7 @@ function fixture() {
     "scripts/backup.sh",
     "scripts/restore.sh",
     "scripts/restore-transfer-fence.sql",
+    "scripts/restore-page-share-fence.sql",
     "infra/compose/backup-prod.sh",
   ]) {
     let source = readFileSync(path.join(repoRoot, script), "utf8");
@@ -106,6 +107,10 @@ if (args[0] === "inspect") {
 } else if (args.some(arg => arg.includes("exec psql "))) {
   fs.writeFileSync(process.env.SQL_INPUT, fs.readFileSync(0));
   if (process.env.FAIL_TRANSFER_FENCE === "1") { console.error("ERROR: transfer write revocation failed"); process.exit(3); }
+  if (process.env.FAIL_PAGE_SHARE_FENCE === "1" && args.at(-1).includes("restore_page_share_fence")) {
+    console.error("ERROR: Page link revocation failed");
+    process.exit(3);
+  }
   if (process.env.FAIL_SQL === "1") { console.error("ERROR: relation example already exists"); process.exit(3); }
 } else if (args.includes("run")) {
   if (args.at(-1) === "fence") process.stdout.write("DO $test_authority$ BEGIN NULL; END; $test_authority$;\\n");
@@ -526,6 +531,14 @@ describe("development restore failures", () => {
       expect(command!.join(" ").indexOf("--command")).toBeGreaterThan(
         command!.join(" ").indexOf("--file=-"),
       );
+      expect(command?.at(-1)).toBe(
+        [
+          "DO $test_authority$ BEGIN NULL; END; $test_authority$;",
+          ...["restore-transfer-fence.sql", "restore-page-share-fence.sql"].map((file) =>
+            readFileSync(path.join(repoRoot, "scripts", file), "utf8").trimEnd(),
+          ),
+        ].join("\n"),
+      );
       expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe(
         fail ? "current home" : "backed-up home",
       );
@@ -535,13 +548,16 @@ describe("development restore failures", () => {
     },
   );
 
-  it("does not restore files or start services when restored transfer revocation fails", () => {
+  it.each([
+    ["FAIL_TRANSFER_FENCE", "transfer write revocation"],
+    ["FAIL_PAGE_SHARE_FENCE", "Page link revocation"],
+  ])("does not restore files or start services after %s", (failure, revocation) => {
     const f = restoreFixture();
     const result = f.run("scripts/restore.sh", [path.join(f.checkout, "backups/example")], {
-      FAIL_TRANSFER_FENCE: "1",
+      [failure]: "1",
     });
     expect(result.status).toBe(3);
-    expect(result.stderr).toContain("transfer write revocation failed");
+    expect(result.stderr).toContain(`${revocation} failed`);
     expect(readFileSync(path.join(f.checkout, "data/home.txt"), "utf8")).toBe("current home");
     expect(f.commands().some((args) => args.slice(-2).join(" ") === "up -d")).toBe(false);
     expect(result.stdout).not.toContain("Restore complete");

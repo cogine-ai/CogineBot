@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:?usage: restore.sh backups/<stamp>}"
-restore_fence_sql="$(cat "$ROOT/scripts/restore-transfer-fence.sql")"
+restore_fence_sql="$(cat "$ROOT/scripts/restore-transfer-fence.sql" "$ROOT/scripts/restore-page-share-fence.sql")"
 compose=(docker compose -f "$ROOT/infra/compose/docker-compose.yml")
 # Compose resolves its default env file relative to the compose file, not the
 # repo root; point it at the root .env when one exists (vars may also come
