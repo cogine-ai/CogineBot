@@ -2782,7 +2782,7 @@ describe("Pi provider-reported budget recovery", () => {
     })}`;
   }
 
-  it("isolates a learned cap from another credential for the same model", async () => {
+  it("corrects a backup within the shared budget without carrying the primary cap", async () => {
     const { target, input } = router();
     const backup = {
       ...input.model,
@@ -2798,19 +2798,26 @@ describe("Pi provider-reported budget recovery", () => {
       .mockImplementationOnce(() =>
         stream(target, message(target, [], "error", creditLimit(256, 128))),
       )
+      .mockImplementationOnce(() =>
+        stream(target, message(target, [], "error", creditLimit(768, 192))),
+      )
       .mockImplementation(() =>
         stream(target, message(target, [{ type: "text", text: "Backup answered." }], "stop")),
       );
     const events = await run(input);
     expect(events.at(-1)).toEqual({ type: "done", text: "Backup answered." });
     expect(providerState.stream.mock.calls.map(([, , options]) => options.maxTokens)).toEqual([
-      1_024, 256, 768,
+      1_024, 256, 768, 192,
     ]);
     expect(providerState.stream.mock.calls.map(([, , options]) => options.apiKey)).toEqual([
       "fake-budget-primary",
       "fake-budget-primary",
       "fake-budget-backup",
+      "fake-budget-backup",
     ]);
+    expect(
+      providerState.stream.mock.calls.slice(1).map(([, , options]) => options.maxRetries),
+    ).toEqual([0, 0, 0]);
     expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(
       target.provider,
       target.id,

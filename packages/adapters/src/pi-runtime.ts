@@ -3306,6 +3306,7 @@ function fallbackAwareModelStream(
     let firstRetryableError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     let signatureRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     let sizingRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
+    // Keep SDK retries disabled once this completion starts sharing the outer allowance.
     let usedBudgetCorrection = false;
     let nextCorrection: PiBudgetCorrection | undefined;
     let firstBackupAttempt = false;
@@ -3417,7 +3418,7 @@ function fallbackAwareModelStream(
             const recoveryAllowed = providerBudget && !blocksModelRecovery(errorFacts(event.error));
             if (
               recoveryAllowed &&
-              !usedBudgetCorrection &&
+              !sizingRetryError &&
               retries < MODEL_PROVIDER_RETRY_DELAYS_MS.length &&
               Date.now() - startedAt < timeoutMs
             ) {
