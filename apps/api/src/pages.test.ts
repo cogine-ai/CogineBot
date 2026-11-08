@@ -34,7 +34,7 @@ function knownError(code: string) {
   });
 }
 
-function pageRpcFixture() {
+function pageRpcFixture(shareSecretId: string | null = null) {
   let current = { ...row } as typeof row | null;
   const matches = (where: Prisma.PageWhereInput) =>
     current &&
@@ -64,12 +64,17 @@ function pageRpcFixture() {
     delete: vi.fn(async ({ where }: { where: Prisma.PageWhereInput }) => {
       if (!matches(where)) throw knownError("P2025");
       current = null;
-      return { id: row.id };
+      return { shareSecretId };
     }),
   };
   const pageVersion = { findUnique: vi.fn().mockResolvedValue({ code: "stored-code" }) };
   const user = { findUnique: vi.fn().mockResolvedValue({ name: "Owner", image: null }) };
-  const prisma = { page, pageVersion, user } as unknown as PrismaClient;
+  const secret = { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) };
+  const tx = { page, pageVersion, user, secret };
+  const prisma = {
+    ...tx,
+    $transaction: (callback: (value: typeof tx) => unknown) => callback(tx),
+  } as unknown as PrismaClient;
   const handler = new RPCHandler(
     createRouter({
       prisma,
@@ -88,7 +93,7 @@ function pageRpcFixture() {
     if (!response) throw new Error("The test RPC did not resolve");
     return { status: response.status, body: (await response.json()).json };
   }
-  return { prisma, page, pageVersion, call };
+  return { prisma, page, pageVersion, secret, call };
 }
 
 describe("private Pages library", () => {
@@ -278,8 +283,25 @@ describe("private Pages RPC", () => {
     expect((await f.call("pin", { pageId: row.id, pinned: true })).body.pinned).toBe(true);
     expect(f.page.findFirst).toHaveBeenCalledOnce();
     expect(await f.call("remove", { pageId: row.id })).toEqual({ status: 200, body: { ok: true } });
-    expect(f.page.delete).toHaveBeenCalledWith({ where: ownedPage, select: { id: true } });
+    expect(f.page.delete).toHaveBeenCalledWith({
+      where: ownedPage,
+      select: { shareSecretId: true },
+    });
+    expect(f.secret.deleteMany).not.toHaveBeenCalled();
     expect((await f.call("remove", { pageId: row.id })).status).toBe(404);
+  });
+
+  it("retires only the share secret attached to the actually deleted owner Page", async () => {
+    const f = pageRpcFixture("token-on-deleted-row");
+    expect(await f.call("remove", { pageId: row.id })).toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(f.secret.deleteMany).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "token-on-deleted-row", ...owner, kind: "page_share" },
+    });
+    expect((await f.call("remove", { pageId: row.id })).status).toBe(404);
+    expect(f.secret.deleteMany).toHaveBeenCalledOnce();
   });
 
   it("rejects anonymous, malformed cursor, and out-of-range version before accessing rows", async () => {

@@ -421,9 +421,9 @@ describe("archiveGroup", () => {
       computer: { updateMany: clear },
     } as unknown as PrismaClient);
 
-    await repos.releaseArchivedRunLeases([]);
+    await repos.releaseCancelledRunLeases([]);
     expect(expire).not.toHaveBeenCalled();
-    await repos.releaseArchivedRunLeases(["run-1"]);
+    await repos.releaseCancelledRunLeases(["run-1"]);
     expect(expire).toHaveBeenCalledWith({
       where: { runId: { in: ["run-1"] } },
       data: { expiresAt: new Date(0) },
@@ -496,7 +496,7 @@ describe("archiveGroup", () => {
     expect(leaseUpdateMany).not.toHaveBeenCalled();
     expect(computerUpdateMany).not.toHaveBeenCalled();
 
-    await repos.releaseArchivedRunLeases(archived.cancelledRunIds);
+    await repos.releaseCancelledRunLeases(archived.cancelledRunIds);
     expect(leaseUpdateMany).toHaveBeenCalledWith({
       where: { runId: { in: ["run-1", "run-stale"] } },
       data: { expiresAt: new Date(0) },

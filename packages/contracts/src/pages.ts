@@ -20,6 +20,39 @@ export type PageVisibility = z.infer<typeof PageVisibilitySchema>;
 /** Page queries send these identifiers directly to PostgreSQL text filters. */
 export const PageInputIdSchema = Id.refine((id) => !id.includes("\0"));
 
+export const PageShareInputSchema = z.strictObject({
+  pageId: PageInputIdSchema,
+  visibility: z.enum(["private", "link"]),
+});
+export type PageShareInput = z.infer<typeof PageShareInputSchema>;
+
+/** Sharing state is separate from the ordinary private Page and card response. */
+export const PageShareStateSchema = z.discriminatedUnion("visibility", [
+  z.strictObject({ visibility: z.literal("private"), shareUrl: z.null() }),
+  z.strictObject({ visibility: z.literal("link"), shareUrl: z.url() }),
+]);
+export type PageShareState = z.infer<typeof PageShareStateSchema>;
+
+/** 32 random bytes as base64url. */
+const PAGE_SHARE_TOKEN_LENGTH = 43;
+
+/** The readable title prefix is decorative. Only the last 43 characters are the token. */
+export function pageShareUrl(webOrigin: string, title: string, token: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/, "");
+  return new URL(`/p/${slug ? `${slug}-` : ""}${token}`, webOrigin).href;
+}
+
+export function pageShareTokenFromSlug(segment: string): string | null {
+  const token = segment.slice(-PAGE_SHARE_TOKEN_LENGTH);
+  return token.length === PAGE_SHARE_TOKEN_LENGTH && /^[A-Za-z0-9_-]+$/.test(token) ? token : null;
+}
+
 /**
  * A page title is one line: control characters and line breaks fold into single spaces, since
  * the title sits in pills, chips and `[title](page:id)` links that a break would cut.

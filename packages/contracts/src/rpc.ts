@@ -178,6 +178,8 @@ import {
   PageDetailSchema,
   PageInputIdSchema,
   PageReplyContextSchema,
+  PageShareInputSchema,
+  PageShareStateSchema,
   PageSummarySchema,
   PageTitleSchema,
   PageVersionSchema,
@@ -1144,6 +1146,8 @@ export const appContract = {
         }),
       )
       .output(PageDetailSchema),
+    getShare: oc.input(z.strictObject({ pageId: PageInputIdSchema })).output(PageShareStateSchema),
+    setShare: oc.input(PageShareInputSchema).output(PageShareStateSchema),
     rename: oc
       .input(z.strictObject({ pageId: PageInputIdSchema, title: PageTitleSchema }))
       .output(PageSummarySchema),

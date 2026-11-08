@@ -4,6 +4,8 @@ import { GROUP_MEMBER_MAX, GROUP_MEMBER_MIN } from "@rakazo/contracts";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
+import { deletePageShareSecrets } from "./page-shares.js";
+import { runAsSystemInTransaction } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
 import {
@@ -282,7 +284,7 @@ async function snapshotRunTeardownTargets(
   return { leasedRunIds, targets };
 }
 
-async function resumeArchivedGroupTeardown(tx: Prisma.TransactionClient, threadId: string) {
+async function archivedGroupTeardown(tx: Prisma.TransactionClient, threadId: string) {
   const cancelled = await tx.run.findMany({
     where: { threadId, status: "cancelled" },
     select: { id: true },
@@ -294,7 +296,6 @@ async function resumeArchivedGroupTeardown(tx: Prisma.TransactionClient, threadI
     new Date(0),
     true,
   );
-  if (leasedRunIds.length === 0) throw new IsolationError();
   return { cancelledRunIds: leasedRunIds, computers: targets };
 }
 
@@ -581,7 +582,11 @@ export function createGroupRepos(prisma: PrismaClient) {
           select: { archivedAt: true, thread: { select: { id: true } } },
         });
         if (!current?.thread) throw new IsolationError();
-        if (current.archivedAt) return resumeArchivedGroupTeardown(tx, current.thread.id);
+        if (current.archivedAt) {
+          const pending = await archivedGroupTeardown(tx, current.thread.id);
+          if (pending.cancelledRunIds.length === 0) throw new IsolationError();
+          return pending;
+        }
 
         const activeRuns = await tx.run.findMany({
           where: {
@@ -612,8 +617,8 @@ export function createGroupRepos(prisma: PrismaClient) {
       });
     },
 
-    /** After an archive's teardown: expire the cancelled runs' leases and legacy columns. */
-    async releaseArchivedRunLeases(runIds: string[]) {
+    /** After group teardown: expire the cancelled runs' leases and legacy columns. */
+    async releaseCancelledRunLeases(runIds: string[]) {
       if (runIds.length === 0) return;
       await expireComputerExecutionLeases(prisma, { runId: { in: runIds } });
       await prisma.computer.updateMany({
@@ -642,14 +647,49 @@ export function createGroupRepos(prisma: PrismaClient) {
           select: {
             artifacts: { select: { storageKey: true } },
             members: { orderBy: groupMemberOrderBy, take: 1, select: { botId: true } },
+            thread: { select: { id: true } },
           },
         });
         const contextBotId = group?.members[0]?.botId;
         if (!contextBotId) throw new IsolationError();
+        // Run and event rows cascade, but computer leases can survive the group.
+        let cancelledRunIds: string[] = [];
+        let computers: RunTeardownTarget[] = [];
+        if (group.thread) {
+          const threadId = group.thread.id;
+          // Match the thread lock used by ordinary Run cancellation. Partition one snapshot
+          // so a Run just cancelled by this delete is not also an earlier cleanup candidate.
+          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
+          const runs = await tx.run.findMany({
+            where: { threadId, status: { in: [...activeRunStatuses, "cancelled"] } },
+            select: { id: true, taskId: true, status: true },
+          });
+          const active = runs.filter((run) => run.status !== "cancelled");
+          const cancelled = await cancelRunsInTransaction(tx, active, new Date());
+          const runIds = cancelled.map((run) => run.id);
+          const { targets } = await snapshotRunTeardownTargets(tx, runIds);
+          // Restore clears archivedAt without settling a failed archive's leases.
+          // Recover only still-owned canonical leases and ignore stale legacy pointers.
+          const pending = await snapshotRunTeardownTargets(
+            tx,
+            runs.filter((run) => run.status === "cancelled").map((run) => run.id),
+            new Date(0),
+            true,
+          );
+          cancelledRunIds = [...runIds, ...pending.leasedRunIds];
+          computers = [...targets, ...pending.targets];
+        }
+        // The parent lock verified this owner's group. The cascade includes every Page in it,
+        // even rows the group owner cannot read under the Page owner policy.
+        await runAsSystemInTransaction(tx, "revoke Page links for a deleted group", () =>
+          deletePageShareSecrets(tx, { groupId, spaceId: actor.spaceId }),
+        );
         await tx.chatGroup.delete({ where: { id: groupId } });
         return {
           contextBotId,
           artifactStorageKeys: group.artifacts.map((artifact) => artifact.storageKey),
+          cancelledRunIds,
+          computers,
         };
       });
     },

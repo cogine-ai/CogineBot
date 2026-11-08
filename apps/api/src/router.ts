@@ -317,6 +317,7 @@ import {
   startOnboarding,
 } from "./onboarding.js";
 import { createOpenApiImportService } from "./openapi-import.js";
+import { getPageShare, setPageShare } from "./page-shares.js";
 import {
   getPage,
   listPages,
@@ -664,6 +665,8 @@ function mcpAssignmentDto(row: {
 
 export interface RouterDeps {
   deploymentTransfer?: ReturnType<typeof createDeploymentTransferService>;
+  /** Supplied only when this deployment can serve links and guard every Page writer. */
+  pageSharingEnabled?: boolean;
   /** Offline public GitHub acquisition boundary for repositories and fixed registries. */
   pluginRead?: PluginRead;
   openApiPreviewKey?: string;
@@ -971,6 +974,44 @@ export function createRouter(deps: RouterDeps) {
     ((scope: { userId: string; spaceId: string }, secretId: string, provider: string) =>
       kickModelCredentialRefresh(deps.prisma, deps.secrets, scope, secretId, provider));
   const groupRepos = createGroupRepos(deps.prisma);
+  async function stopCancelledGroupRuns(
+    actor: Actor,
+    teardown: Awaited<ReturnType<typeof groupRepos.archiveGroup>>,
+    screenOptions?: { onlyIfRunning: true },
+  ) {
+    await Promise.all(
+      teardown.cancelledRunIds.map((runId) =>
+        deps.jobs.cancel(runJobKey(runId)).catch(() => undefined),
+      ),
+    );
+    await Promise.all(
+      teardown.computers.map(async (computer) => {
+        if (!computer.providerRef) return;
+        const context = {
+          operationId: "stop",
+          traceId: "stop",
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId: computer.botId,
+          runId: computer.runId,
+          screenLeaseId: screenLeaseIdForRun(
+            { runId: computer.runId, fence: computer.fence },
+            computer.runId,
+          ),
+          cancelRunWork: true,
+          signal: new AbortController().signal,
+        };
+        const ref = toComputerRef(computer);
+        await cancelComputerRunWork(deps.sandbox, ref, computer.id, computer.runId, context);
+        const released = screenOptions
+          ? deps.sandbox.releaseScreen?.(ref, context, screenOptions)
+          : deps.sandbox.releaseScreen?.(ref, context);
+        await released?.catch(() => undefined);
+      }),
+    );
+    // Keep the old leases until teardown finishes so another run cannot claim these screens.
+    await groupRepos.releaseCancelledRunLeases(teardown.cancelledRunIds);
+  }
   const taughtSkills = createTaughtSkillsService({
     prisma: deps.prisma,
     events: deps.events,
@@ -2466,42 +2507,7 @@ export function createRouter(deps: RouterDeps) {
       }),
       archive: authed.groups.archive.handler(async ({ context, input }) => {
         const archived = await groupRepos.archiveGroup(context.actor, input.groupId);
-        await Promise.all(
-          archived.cancelledRunIds.map((runId) =>
-            deps.jobs.cancel(runJobKey(runId)).catch(() => undefined),
-          ),
-        );
-        await Promise.all(
-          archived.computers.map(async (computer) => {
-            if (!computer.providerRef) return;
-            const adapterContext = {
-              operationId: "stop",
-              traceId: "stop",
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-              botId: computer.botId,
-              runId: computer.runId,
-              screenLeaseId: screenLeaseIdForRun(
-                { runId: computer.runId, fence: computer.fence },
-                computer.runId,
-              ),
-              cancelRunWork: true,
-              signal: new AbortController().signal,
-            };
-            const ref = toComputerRef(computer);
-            await cancelComputerRunWork(
-              deps.sandbox,
-              ref,
-              computer.id,
-              computer.runId,
-              adapterContext,
-            );
-            await deps.sandbox.releaseScreen?.(ref, adapterContext).catch(() => undefined);
-          }),
-        );
-        // Expire the leases only after teardown: while they were live, no other run could claim
-        // these screens.
-        await groupRepos.releaseArchivedRunLeases(archived.cancelledRunIds);
+        await stopCancelledGroupRuns(context.actor, archived);
         return { ok: true as const };
       }),
       restore: authed.groups.restore.handler(async ({ context, input }) => {
@@ -2510,17 +2516,28 @@ export function createRouter(deps: RouterDeps) {
       }),
       remove: authed.groups.remove.handler(async ({ context, input }) => {
         const removed = await groupRepos.removeGroup(context.actor, input.groupId);
-        const cleanup = await Promise.allSettled(
-          removed.artifactStorageKeys.map((storageKey) =>
-            deps.artifacts.remove(
-              storageKey,
-              computerContext(context.actor, removed.contextBotId, `group-remove:${input.groupId}`),
+        try {
+          // Some providers assign a screen per bot. Retained cleanup must not close
+          // a later Run's screen after this group and its Runs have been deleted.
+          await stopCancelledGroupRuns(context.actor, removed, { onlyIfRunning: true });
+        } finally {
+          // The group is already deleted. Sweep the captured objects even if lease teardown fails.
+          const cleanup = await Promise.allSettled(
+            removed.artifactStorageKeys.map(async (storageKey) =>
+              deps.artifacts.remove(
+                storageKey,
+                computerContext(
+                  context.actor,
+                  removed.contextBotId,
+                  `group-remove:${input.groupId}`,
+                ),
+              ),
             ),
-          ),
-        );
-        for (const result of cleanup) {
-          if (result.status === "rejected")
-            getLogger().error("group artifact cleanup", result.reason);
+          );
+          for (const result of cleanup) {
+            if (result.status === "rejected")
+              getLogger().error("group artifact cleanup", result.reason);
+          }
         }
         return { ok: true as const };
       }),
@@ -7205,6 +7222,12 @@ export function createRouter(deps: RouterDeps) {
       }),
       get: authed.pages.get.handler(({ context, input }) =>
         getPage(deps.prisma, context.actor, input),
+      ),
+      getShare: authed.pages.getShare.handler(({ context, input, signal }) =>
+        getPageShare(deps, context.actor, input.pageId, signal),
+      ),
+      setShare: authed.pages.setShare.handler(({ context, input, signal }) =>
+        setPageShare(deps, context.actor, input, signal),
       ),
       rename: authed.pages.rename.handler(({ context, input }) =>
         renamePage(deps.prisma, context.actor, input.pageId, input.title),

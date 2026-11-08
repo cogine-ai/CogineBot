@@ -1402,6 +1402,7 @@ model Secret {
   agentSecret       AgentSecret?
   nativeOAuthSessions NativeOAuthSession[]
   nativeOAuthGrants NativeOAuthGrant[]
+  pageShare         Page?
 
   @@index([userId, spaceId])
   @@map("secrets")
@@ -2080,6 +2081,9 @@ model Page {
   group          ChatGroup?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   title          String
   visibility     String        @default("private")
+  shareTokenHash String?       @unique
+  shareSecretId  String?       @unique
+  shareSecret    Secret?       @relation(fields: [shareSecretId], references: [id], onDelete: SetNull)
   pinnedAt       DateTime?
   currentVersion Int           @default(1)
   createdAt      DateTime      @default(now())

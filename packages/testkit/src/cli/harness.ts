@@ -54,6 +54,8 @@ async function main() {
   const privatePagesMigrationSuite =
     "packages/testkit/src/private-pages-migration.postgres.test.ts";
   const privatePagesSuite = "packages/testkit/src/pages.postgres.test.ts";
+  const pageShareSuite = "apps/api/src/page-shares.postgres.test.ts";
+  const pageDeletionSuite = "packages/testkit/src/page-deletion.postgres.test.ts";
   const suites = [
     "packages/testkit/src/pi-offline.postgres.test.ts",
     "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
@@ -120,6 +122,8 @@ async function main() {
     databaseRestoreSuite,
     privatePagesMigrationSuite,
     privatePagesSuite,
+    pageShareSuite,
+    pageDeletionSuite,
     "packages/db/src/scripted-state-failure.postgres.test.ts",
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",
@@ -254,6 +258,8 @@ async function main() {
           suite === databaseRestoreSuite ||
           suite === privatePagesMigrationSuite ||
           suite === privatePagesSuite ||
+          suite === pageShareSuite ||
+          suite === pageDeletionSuite ||
           suite === serviceStartupSuite ||
           suite === "apps/api/src/health-app.postgres.test.ts";
         if (dualDeployment)
