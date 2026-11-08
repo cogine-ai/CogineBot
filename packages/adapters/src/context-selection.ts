@@ -12,6 +12,7 @@ import {
   truncatePlainText,
   VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
 } from "@rakazo/core";
+import { SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import type { VerbatimMcpServers } from "./verbatim-mcp-result.js";
 import {
   copyMcpToolResultRoute,
@@ -53,6 +54,8 @@ export interface ContextSelectionOptions {
   cacheWarmth?: "likely-warm" | "likely-cold" | "unknown";
   /** Keep tool protocol intact while shortening oversized result bodies. */
   truncateToolResults?: boolean;
+  /** Page source and guide are exact; omit them only against the full input budget. */
+  pageToolResults?: "preserve" | "omit";
   /** Trusted configured servers whose results must remain whole. */
   verbatimMcpServers?: VerbatimMcpServers;
   /** Extra provider capacity checks apply only when adding optional complete groups. */
@@ -823,6 +826,50 @@ export function protectedContextIndexes(
   );
 }
 
+export function isPageToolCall(call: ReturnType<typeof toolCallIdentity>): boolean {
+  return (
+    call.name === SAVE_PAGE_TOOL ||
+    (call.name === "use_tool" &&
+      call.arguments !== null &&
+      typeof call.arguments === "object" &&
+      "name" in call.arguments &&
+      call.arguments.name === SAVE_PAGE_TOOL)
+  );
+}
+
+function pageResultOmission(serialized: string): string | undefined {
+  let result: unknown;
+  try {
+    result = JSON.parse(serialized);
+  } catch {
+    return;
+  }
+  if (result === null || typeof result !== "object") return;
+  if (
+    "source" in result &&
+    typeof result.source === "string" &&
+    "pageId" in result &&
+    typeof result.pageId === "string" &&
+    "version" in result &&
+    typeof result.version === "number"
+  ) {
+    return JSON.stringify({
+      contextTruncated: true,
+      error:
+        "The Page source does not fit this model context. Use a model with a larger context window before editing this Page.",
+      pageId: result.pageId,
+      version: result.version,
+    });
+  }
+  if ("guide" in result && typeof result.guide === "string") {
+    return JSON.stringify({
+      contextTruncated: true,
+      error:
+        "The Page Kit guide does not fit this model context. Use a model with a larger context window before building a Page.",
+    });
+  }
+}
+
 /** Cheap selection only. No clock event or strategy calls a model or creates a summary. */
 export function selectContext<T extends ContextMessage>(
   messages: readonly T[],
@@ -880,6 +927,13 @@ export function selectContext<T extends ContextMessage>(
     if (options.truncateToolResults !== false) {
       let shortenedCount = 0;
       let keptVerbatimWhole = false;
+      const messageTokens = (value: T) =>
+        estimateContextTokens(
+          providerContextPrefix("", [], [value]).messages[0],
+          options.budget.imageTokens,
+        );
+      const pageOmissions: { index: number; result: T; saved: number; originalTokens: number }[] =
+        [];
       const shortened = messages.map((message, index) => {
         if (!protectedGroupIndexes.has(index) || message.role !== "toolResult") return message;
         const parts = Array.isArray(message.content) ? message.content : undefined;
@@ -907,9 +961,29 @@ export function selectContext<T extends ContextMessage>(
             )
           : undefined;
         const call = toolCallIdentity(nativeCall, message.toolName);
-        if (isVerbatimMcpResult(mcpToolResultRoute(message.content), options.verbatimMcpServers)) {
+        const route = mcpToolResultRoute(message.content);
+        if (isVerbatimMcpResult(route, options.verbatimMcpServers)) {
           keptVerbatimWhole = true;
           return message;
+        }
+        if (options.pageToolResults && route?.connectorId !== "mcp" && isPageToolCall(call)) {
+          const omission = pageResultOmission(serialized);
+          if (omission) {
+            if (options.pageToolResults === "omit") {
+              const result = {
+                ...message,
+                content: [{ type: "text", text: omission }, ...images],
+              };
+              const originalTokens = messageTokens(message);
+              pageOmissions.push({
+                index,
+                result,
+                originalTokens,
+                saved: originalTokens - messageTokens(result),
+              });
+            }
+            return message;
+          }
         }
         const size = Math.max(
           128,
@@ -938,12 +1012,45 @@ export function selectContext<T extends ContextMessage>(
           }),
         } as T;
       });
+      if (pageOmissions.length) {
+        const requiredNonResultTokens = [...protectedGroupIndexes].reduce((total, index) => {
+          const message = messages[index]!;
+          return total + (message.role === "toolResult" ? 0 : messageTokens(message));
+        }, 0);
+        const impossible = pageOmissions.filter(
+          ({ originalTokens, saved }) =>
+            saved > 0 && originalTokens + requiredNonResultTokens > available,
+        );
+        if (impossible.length) {
+          // An individually unsendable Page should not also cost the model unrelated tool evidence.
+          const fitted = [...messages];
+          for (const { index, result } of impossible) fitted[index] = result;
+          const retry = selectContext(fitted, options);
+          return { ...retry, truncatedToolResults: retry.truncatedToolResults + impossible.length };
+        }
+      }
       if (shortenedCount) {
         const retry = selectContext(shortened, options);
         return {
           ...retry,
           truncatedToolResults: Math.max(retry.truncatedToolResults, shortenedCount),
         };
+      }
+      if (pageOmissions.length) {
+        // Shrink ordinary evidence first, then omit as few exact Page bodies as the budget needs.
+        let excess = used - available;
+        let omitted = 0;
+        for (const { index, result, saved } of pageOmissions.sort((a, b) => b.saved - a.saved)) {
+          if (saved <= 0) break;
+          shortened[index] = result;
+          omitted += 1;
+          excess -= saved;
+          if (excess <= 0) break;
+        }
+        if (omitted) {
+          const retry = selectContext(shortened, options);
+          return { ...retry, truncatedToolResults: retry.truncatedToolResults + omitted };
+        }
       }
       if (keptVerbatimWhole) {
         // Throws the generic error when shortening the kept results would not make it fit either.

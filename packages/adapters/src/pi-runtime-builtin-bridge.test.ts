@@ -460,6 +460,65 @@ describe("real Pi built-in discovery and execution", () => {
     expect(execute.mock.calls[0]?.slice(0, 2)).toEqual([page.name, { help: true }]);
   });
 
+  it.each([
+    { contextWindow: 8192, fits: false },
+    { contextWindow: 65536, fits: true },
+  ])(
+    "sends complete deferred Page results or an omission at $contextWindow tokens",
+    async ({ contextWindow, fits }) => {
+      const pageTool = builtin("save_page");
+      const page = {
+        pageId: "page-1",
+        version: 2,
+        title: "Weekly report",
+        source: `export default function Page() { return <main>${"Page content ".repeat(3800)}</main>; }`,
+      };
+      const guide = { guide: PAGE_KIT_GUIDE };
+      provider.stream
+        .mockImplementationOnce(() =>
+          response([
+            call("read-page", USE_TOOL, {
+              name: pageTool.name,
+              arguments: { pageId: page.pageId },
+            }),
+            call("guide", USE_TOOL, { name: pageTool.name, arguments: { help: true } }),
+          ]),
+        )
+        .mockImplementationOnce(() => response());
+      const executeTool = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async (_name, args) =>
+        args.help ? guide : page,
+      );
+      const storeToolResult = vi.fn<NonNullable<AgentRunRequest["storeToolResult"]>>();
+      await consume(
+        request([pageTool], {
+          contextStrategy: "retrieval",
+          model: { provider: model.provider, id: model.id, apiKey: "fixture", contextWindow },
+          executeTool,
+          storeToolResult,
+        }),
+      );
+      expect(provider.stream).toHaveBeenCalledTimes(2);
+      const sent = provider.stream.mock.calls[1]?.[1] as TranscriptContext;
+      expect(payload(sent, "guide")).toEqual(guide);
+      if (fits) expect(payload(sent, "read-page")).toEqual(page);
+      else {
+        const omitted = payload(sent, "read-page");
+        expect(omitted).toEqual({
+          contextTruncated: true,
+          error: expect.stringContaining("larger context window"),
+          pageId: page.pageId,
+          version: page.version,
+        });
+        expect(omitted).not.toHaveProperty("source");
+      }
+      expect(executeTool.mock.calls.map(([name, args]) => [name, args])).toEqual([
+        [pageTool.name, { pageId: page.pageId }],
+        [pageTool.name, { help: true }],
+      ]);
+      expect(storeToolResult).not.toHaveBeenCalled();
+    },
+  );
+
   it("preserves the current bot-creation fields through the real deferred wrapper", async () => {
     provider.stream
       .mockImplementationOnce(() =>

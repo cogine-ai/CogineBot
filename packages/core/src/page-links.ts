@@ -114,11 +114,14 @@ function codeSkips(text: string): Int32Array {
   const starts: number[] = [];
   const ends: number[] = [];
   const fences: boolean[] = [];
+  const runLines: number[] = [];
   // Only a fence line with nothing but spaces after it can close a block; text after it opens one.
   const closes: boolean[] = [];
   let lineStart = 0;
+  let runLineStart = 0;
   for (let at = 0; at < text.length; at++) {
     const char = text.charCodeAt(at);
+    if (char === 10 || char === 13) runLineStart = at + 1;
     if (char === 10) lineStart = at + 1;
     if ((char !== 96 && char !== 126) || text.charCodeAt(at - 1) === char) continue;
     let end = at + 1;
@@ -129,6 +132,7 @@ function codeSkips(text: string): Int32Array {
     starts.push(at);
     ends.push(end);
     fences.push(fence);
+    runLines.push(runLineStart);
     let rest = end;
     if (fence) while (text[rest] === " " || text[rest] === "\t") rest++;
     const after = text.charCodeAt(rest);
@@ -141,10 +145,11 @@ function codeSkips(text: string): Int32Array {
   const laterFences: Record<string, number[]> = { "`": [], "~": [] };
   const fenceLength = (index: number) => ends[index]! - starts[index]!;
   for (let index = starts.length - 1; index >= 0; index--) {
+    const start = starts[index]!;
     const length = ends[index]! - starts[index]!;
     let closer = -1;
     if (fences[index]) {
-      const later = laterFences[text[starts[index]!]!]!;
+      const later = laterFences[text[start]!]!;
       if (closes[index]) {
         while (later.length && fenceLength(later.at(-1)!) < length) later.pop();
         closer = later.at(-1) ?? -1;
@@ -162,9 +167,15 @@ function codeSkips(text: string): Int32Array {
         closer = low > 0 ? later[low - 1]! : -1;
       }
     } else closer = nextOfLength.get(length) ?? -1;
+    // Outside code, an escape can leave a shorter opener. Pair that suffix on the same line,
+    // where it cannot cross a Markdown block boundary. Inside code the full run can still close.
+    if (length > 1 && text.charCodeAt(start) === 96 && text.charCodeAt(start - 1) === 92) {
+      const suffixCloser = nextOfLength.get(length - 1);
+      const sameLine = suffixCloser !== undefined && runLines[suffixCloser] === runLines[index];
+      skipTo[start + 1] = ends[sameLine ? suffixCloser : index]!;
+    }
     nextOfLength.set(length, index);
-    skipTo[starts[index]!] =
-      closer >= 0 ? ends[closer]! : fences[index] ? text.length : ends[index]!;
+    skipTo[start] = closer >= 0 ? ends[closer]! : fences[index] ? text.length : ends[index]!;
   }
   return skipTo;
 }
@@ -188,7 +199,7 @@ export function pageLinksAsTitles(
       continue;
     }
     if (char === "`" || char === "~") {
-      // A backtick or tilde after an escape, inside a run or not opening a fence, is plain text.
+      // Only the precomputed positions can start a code span or fence.
       at = skips?.[at] || at + 1;
       continue;
     }

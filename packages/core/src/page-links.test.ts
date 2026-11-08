@@ -30,6 +30,73 @@ describe("external Page text projection", () => {
     ).toBe(`${fence}md\r\n[example](page:code)\r\n${fence} \r\nPlan`);
   });
 
+  it.each([
+    { slashes: 1, opener: 2, closer: 1, code: true },
+    { slashes: 3, opener: 3, closer: 2, code: true },
+    { slashes: 2, opener: 2, closer: 2, code: true },
+    { slashes: 1, opener: 1, closer: 1, code: false },
+    { slashes: 2, opener: 2, closer: 1, code: false },
+    { slashes: 1, opener: 2, closer: 2, code: false },
+  ])(
+    "handles $slashes escape characters before $opener ticks and $closer closing ticks",
+    ({ slashes, opener, closer, code }) => {
+      const start = "\\".repeat(slashes) + "`".repeat(opener);
+      const end = "`".repeat(closer);
+      const reference = "[Plan](page:live)";
+      expect(pageLinksAsTitles(`${start}${reference}${end}`)).toBe(
+        `${start}${code ? reference : "Plan"}${end}`,
+      );
+    },
+  );
+
+  it("keeps backslashes literal inside a code span and matches only the full closing run", () => {
+    const source = "`[Code](page:inside) \\`` still code \\` then [Plan](page:live)";
+    expect(pageLinksAsTitles(source)).toBe("`[Code](page:inside) \\`` still code \\` then Plan");
+    expect(pageLinksAsTitles("`[Plan](page:live) \\`")).toBe("`[Plan](page:live) \\`");
+  });
+
+  it.each(["\n\n`close", "\r\n  \r\n`close", "\r\r`close"])(
+    "leaves an escaped-run opener unmatched across an empty paragraph line",
+    (ending) => {
+      const start = "\\``";
+      expect(pageLinksAsTitles(`${start}[Plan](page:live)${ending}`)).toBe(`${start}Plan${ending}`);
+    },
+  );
+
+  it.each(["```", "~~~"])("does not pair an escaped-run opener with a %s fence", (fence) => {
+    const start = "\\````";
+    expect(pageLinksAsTitles(`${start}[Plan](page:live)\n${fence}\n`)).toBe(
+      `${start}Plan\n${fence}\n`,
+    );
+  });
+
+  it.each(["# heading", "> quote", "- list", "1. list"])(
+    "does not pair an escaped-run opener with a closer inside %s",
+    (block) => {
+      const start = "\\``";
+      const ending = `\n${block} \``;
+      expect(pageLinksAsTitles(`${start}[Plan](page:live)${ending}`)).toBe(`${start}Plan${ending}`);
+    },
+  );
+
+  it("keeps an external Page title when the other reference is only escaped-run code", () => {
+    const [reply] = projectExternalPageMessages([
+      {
+        blocks: [
+          { kind: "text", text: "\\``[Plan](page:live)` then \\`[Next](page:next)" },
+          { kind: "page", pageId: "live", title: "Plan" },
+          { kind: "page", pageId: "next", title: "Next" },
+        ],
+      },
+    ]);
+    expect(reply?.text).toBe("\\``[Plan](private page)` then \\`Next\nPlan");
+  });
+
+  it("handles many unmatched escaped-run suffixes without losing real Page links", () => {
+    const example = "\\``[Plan](page:live) ";
+    expect(pageLinksAsTitles(example.repeat(20_000))).toBe("\\``Plan ".repeat(20_000));
+  });
+
   it("accepts a long malformed label without swallowing the next valid link", () => {
     const malformed = "[".repeat(100_000);
     expect(pageLinksAsTitles(`${malformed}[Plan](page:live)`)).toBe(`${malformed}Plan`);
