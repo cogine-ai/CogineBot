@@ -103,7 +103,7 @@ fi
 "${compose[@]}" exec -T postgres pg_restore --no-owner --no-privileges --use-list "${PG_STAGE}/restore.toc" --file=- "${PG_STAGE}/archive" > "${STAGE}/restore.sql"
 "${compose[@]}" run --rm --no-deps migrate pnpm --filter @rakazo/api run db:restore prepare
 authority_fence_sql="$("${compose[@]}" run --rm --no-deps migrate pnpm --silent --filter @rakazo/api run db:restore fence)"
-restore_fence_sql="${authority_fence_sql}"$'\n'"$(cat "${PROJECT_DIR}/scripts/restore-transfer-fence.sql")"
+restore_fence_sql="${authority_fence_sql}"$'\n'"$(cat "${PROJECT_DIR}/scripts/restore-transfer-fence.sql" "${PROJECT_DIR}/scripts/restore-page-share-fence.sql")"
 "${compose[@]}" exec -T postgres sh -c \
   'exec psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" --set=ON_ERROR_STOP=on --single-transaction --file=- --command "$1"' \
   restore "${restore_fence_sql}" < "${STAGE}/restore.sql"

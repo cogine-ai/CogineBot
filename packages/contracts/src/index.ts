@@ -30,6 +30,7 @@ export * from "./native-remaining-profiles.js";
 export * from "./native-slack-events.js";
 export * from "./openai-compatible-ui.js";
 export * from "./openapi-import.js";
+export * from "./page-transfer.js";
 export * from "./pages.js";
 export * from "./plugins.js";
 export * from "./reactions.js";

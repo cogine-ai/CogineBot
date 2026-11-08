@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { routineWakeupJob } from "@rakazo/adapter-kit";
 import { ComposioEmulator } from "@rakazo/adapters";
 import type { Actor, ModelCredential } from "@rakazo/contracts";
 import { callClientNonce } from "@rakazo/core";
@@ -236,7 +237,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     if (failures.length) throw new AggregateError(failures, "Pages fixture cleanup failed");
   });
 
-  it.each(["allow", "deny", "rotated", "marker-only denial", "TeamChat"] as const)(
+  it.each(["allow", "deny", "rotated", "marker-only denial", "TeamChat", "Routine"] as const)(
     "binds a real Pi public update to its reviewed change and one outcome (%s)",
     async (outcome) => {
       const pageId = randomUUID();
@@ -244,6 +245,11 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
       const markerOnly = outcome === "marker-only denial";
       const denied = outcome === "deny" || markerOnly;
       const teamChat = outcome === "TeamChat";
+      const routine = outcome === "Routine";
+      const allowed = outcome === "allow" || routine;
+      const prompt = routine
+        ? `Update the shared inventory page with pageId ${pageId}. Stay silent after saving.`
+        : "Update the shared inventory page.";
       const callId = markerOnly ? "recover-page" : "update-page";
       const toolArgs = { name: "save_page", arguments: args };
       const fixtureKey = "offline-page-approval-key";
@@ -257,6 +263,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
                   function: expect.objectContaining({ name: "use_tool" }),
                 }),
               );
+              if (routine) expect(JSON.stringify(request.messages)).toContain(prompt);
             },
             response: {
               type: "tool",
@@ -296,7 +303,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
               );
               expect(result).toHaveLength(1);
               const body = JSON.parse(String(result[0]?.content));
-              if (outcome === "allow") expect(body).toMatchObject({ pageId, version: 2 });
+              if (allowed) expect(body).toMatchObject({ pageId, version: 2 });
               else if (teamChat)
                 expect(body).toMatchObject({
                   error: "This shared Page update needs approval in the owner's chat.",
@@ -307,7 +314,10 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
                 /candidateDigest|baseTitleDigest|requestKind/,
               );
             },
-            response: { type: "text", text: "Finished checking the update." },
+            response: {
+              type: "text",
+              text: routine ? "NO_RESPONSE" : "Finished checking the update.",
+            },
           },
         ],
       });
@@ -382,9 +392,25 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
             effect: "always_allow",
           },
         });
-        const prompt = "Update the shared inventory page.";
         let runId: string;
-        if (teamChat) {
+        if (routine) {
+          const clock = new Date();
+          const { id: routineId } = await rpc<{ id: string }>("routines/create", {
+            botId: bot.id,
+            name: "Refresh shared inventory",
+            prompt,
+            crons: [`${clock.getUTCMinutes()} ${(clock.getUTCHours() + 6) % 24} * * *`],
+            timezone: "UTC",
+            active: true,
+          });
+          const dueAt = new Date(clock.getTime() - 1_000);
+          await db.routine.update({ where: { id: routineId }, data: { nextRunAt: dueAt } });
+          await handles.jobs.enqueue(routineWakeupJob(routineId, dueAt));
+          await handles.awaitIdle!();
+          const run = await db.run.findFirstOrThrow({ where: { routineId } });
+          expect(run).toMatchObject({ botId: bot.id, userId, trigger: "routine" });
+          runId = run.id;
+        } else if (teamChat) {
           const chat = new TeamChatBridge({
             prisma: handles.prisma,
             events: createThreadEvents(handles.prisma),
@@ -454,6 +480,9 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
         }
         await waitForStatus("waiting_input");
         expect(model.requests).toHaveLength(1);
+        expect(await db.page.findUniqueOrThrow({ where: { id: pageId } })).toMatchObject({
+          currentVersion: 1,
+        });
         const effect = await db.externalEffect.findFirstOrThrow({
           where: { runId, kind: "save_page", status: "intended" },
         });
@@ -531,6 +560,29 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           request: effect.request,
           status: denied ? "denied" : "completed",
         });
+        if (routine) {
+          const messages = await db.message.findMany({
+            where: { runId, role: "bot" },
+            select: { id: true, blocks: true },
+          });
+          expect(messages).toEqual([
+            {
+              id: card.id,
+              blocks: [
+                expect.objectContaining({
+                  kind: "ask",
+                  approvalEffectId: effect.id,
+                  status: "answered",
+                  answer: "allow",
+                }),
+              ],
+            },
+          ]);
+          expect(await db.page.findUniqueOrThrow({ where: { id: pageId } })).toMatchObject({
+            currentVersion: 2,
+            visibility: "link",
+          });
+        }
         expect(
           await db.pageVersion.findMany({
             where: { pageId },
@@ -539,7 +591,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           }),
         ).toEqual([
           { source: source("Original value") },
-          ...(outcome === "allow" ? [{ source: source("Reviewed value") }] : []),
+          ...(allowed ? [{ source: source("Reviewed value") }] : []),
         ]);
       } finally {
         try {
@@ -726,6 +778,148 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
       } finally {
         held.mockRestore();
       }
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    }
+  }, 45_000);
+
+  it("updates a scheduled Page in place and respects failure, pause, and deletion", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "cogine-routine-page-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: runtimeUrl!,
+        realtimeDatabaseUrl: runtimeUrl!,
+        authUrl: appOrigin,
+        webOrigin: appOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "scripted",
+        defaultProvider: "scripted",
+        defaultModel: "scripted",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        composio: new ComposioEmulator(),
+        encryptionKey: "offline-routine-page-encryption-key",
+      });
+      stop = handles.stop;
+      const { cookie, rpc } = await pageAppSession(handles);
+      const { id: botId } = await rpc<{ id: string }>("bots/create", {
+        name: "Scheduled Page fixture",
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, botId);
+      const db = admin();
+      const { userId, thread } = await db.bot.findUniqueOrThrow({
+        where: { id: botId },
+        include: { thread: true },
+      });
+      const savePrompt = (args: Record<string, unknown>) =>
+        `call save_page with ${JSON.stringify(args)}\nthen say NO_RESPONSE`;
+      const clock = new Date();
+      const { id: routineId } = await rpc<{ id: string }>("routines/create", {
+        botId,
+        name: "Refresh inventory",
+        prompt: savePrompt({ title: "Inventory", source: source("Original value") }),
+        crons: [`${clock.getUTCMinutes()} ${(clock.getUTCHours() + 6) % 24} * * *`],
+        timezone: "UTC",
+        active: true,
+      });
+      const observedRunIds: string[] = [];
+      const makeDue = async () => {
+        // Advance only the due timestamp; real queue and worker code handle the occurrence.
+        const dueAt = new Date(clock.getTime() - 1_000 + observedRunIds.length);
+        await db.routine.update({ where: { id: routineId }, data: { nextRunAt: dueAt } });
+        return dueAt;
+      };
+      const deliver = async (dueAt: Date) => {
+        await handles.jobs.enqueue(routineWakeupJob(routineId, dueAt));
+        await handles.awaitIdle!();
+      };
+      const fire = async () => {
+        await deliver(await makeDue());
+        const runs = await db.run.findMany({
+          where: { routineId, id: { notIn: observedRunIds } },
+        });
+        expect(runs).toHaveLength(1);
+        const run = runs[0]!;
+        expect(run).toMatchObject({
+          botId,
+          userId,
+          threadId: thread!.id,
+          trigger: "routine",
+          status: "completed",
+        });
+        observedRunIds.push(run.id);
+        return run.id;
+      };
+      const messages = (runId: string) =>
+        db.message.findMany({ where: { runId }, select: { blocks: true } });
+      const expectSaveError = async (runId: string, error: string) => {
+        const completions = await db.event.findMany({
+          where: { runId, type: "agent.tool.completed" },
+          select: { payload: true },
+        });
+        expect(completions.map((event) => event.payload)).toEqual([
+          expect.objectContaining({ name: "save_page", outcome: "error", error }),
+        ]);
+      };
+
+      const firstRun = await fire();
+      const { id: pageId } = await db.page.findFirstOrThrow({ where: { botId } });
+      expect(await messages(firstRun)).toEqual([
+        { blocks: [{ kind: "page", pageId, title: "Inventory", version: 1 }] },
+      ]);
+
+      const update = (args: Record<string, unknown>) =>
+        rpc("routines/update", { routineId, prompt: savePrompt({ pageId, ...args }) });
+      await update({ edits: [{ find: "Original value", replace: "Current value" }] });
+      expect(await messages(await fire())).toEqual([]);
+      const expectedVersions = [
+        { version: 1, source: source("Original value") },
+        { version: 2, source: source("Current value") },
+      ];
+      const versions = () =>
+        db.pageVersion.findMany({
+          where: { pageId },
+          orderBy: { version: "asc" },
+          select: { version: true, source: true },
+        });
+      expect(await versions()).toEqual(expectedVersions);
+
+      await update({ source: "this is invalid JSX" });
+      const failedRun = await fire();
+      await expectSaveError(failedRun, "The page has problems; nothing was saved.");
+      expect(await messages(failedRun)).toEqual([]);
+      expect(await versions()).toEqual(expectedVersions);
+
+      // Deliver a stale wakeup for an occurrence that was due before the owner paused.
+      const pausedDueAt = await makeDue();
+      await update({ source: source("Must never be saved while paused") });
+      await expect(rpc("routines/update", { routineId, active: false })).resolves.toMatchObject({
+        active: false,
+        nextRunAt: null,
+      });
+      await deliver(pausedDueAt);
+      expect(await db.run.count({ where: { routineId } })).toBe(observedRunIds.length);
+      expect(await versions()).toEqual(expectedVersions);
+      expect(await db.page.findMany({ where: { botId } })).toMatchObject([
+        { id: pageId, currentVersion: 2 },
+      ]);
+
+      await expect(rpc("pages/remove", { pageId })).resolves.toEqual({ ok: true });
+      await update({ title: "Inventory", source: source("Must never be recreated") });
+      await rpc("routines/update", { routineId, active: true });
+      const missingRun = await fire();
+      await expectSaveError(missingRun, "No page with that pageId belongs to this bot or chat.");
+      expect(await messages(missingRun)).toEqual([]);
+      expect(await db.page.count({ where: { botId } })).toBe(0);
+      expect(await versions()).toEqual([]);
     } finally {
       try {
         await stop?.();

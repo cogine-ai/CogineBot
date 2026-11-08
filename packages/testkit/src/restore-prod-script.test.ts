@@ -67,6 +67,7 @@ function fixture(supervisor = false) {
     "infra/compose/restore-prod.sh",
     "infra/compose/docker-compose.prod.yml",
     "scripts/restore-transfer-fence.sql",
+    "scripts/restore-page-share-fence.sql",
   ])
     write(path.join(checkout, file), readFileSync(path.join(repoRoot, file)));
   write(path.join(checkout, ".env"), "POSTGRES_PASSWORD=synthetic-owner-password\n");
@@ -344,7 +345,12 @@ describe("production restore shell lifecycle", () => {
         'exec psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" --set=ON_ERROR_STOP=on --single-transaction --file=- --command "$1"',
       );
       expect(loader.args.at(-1)).toBe(
-        `${authoritySql.trimEnd()}\n${readFileSync(path.join(repoRoot, "scripts/restore-transfer-fence.sql"), "utf8").trimEnd()}`,
+        [
+          authoritySql.trimEnd(),
+          ...["restore-transfer-fence.sql", "restore-page-share-fence.sql"].map((file) =>
+            readFileSync(path.join(repoRoot, "scripts", file), "utf8").trimEnd(),
+          ),
+        ].join("\n"),
       );
       expect(readFileSync(path.join(f.appdata, "home.txt"), "utf8")).toBe("restored home 合成 α");
       expect(existsSync(path.join(f.appdata, "current-only.txt"))).toBe(false);

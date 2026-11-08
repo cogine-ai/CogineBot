@@ -1082,6 +1082,11 @@ other client sessions in the target database. Files are published and runtime
 services started only after these checks succeed; the previous data directory is
 retained under the reported rollback path. Failures leave writers stopped.
 
+Restore makes pages with archived sharing links private before the database
+import commits. Owners can publish fresh links after recovery. Page IDs, version
+history, and ordinary credentials are retained. Restore clears the archived Page
+link credentials from the database without contacting an external secret store.
+
 Verification accepts either a wholly unprotected legacy database or the complete
 registered row-security state for the selected connection. Partial policy states
 are refused. It does not activate policies or certify a whole deployment. A connection loss during COMMIT requires inspecting the database before retrying;
@@ -1098,8 +1103,9 @@ listener credential at the same trusted restore endpoint. The check does not inf
 cluster identity from equal database names or silently omit listener credentials.
 
 For other restore tooling, preserve the same stopped-writer and authorization
-checks. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery)
-for the transfer fence that must remain in the import transaction.
+checks. Apply both the [credential transfer fence](deployment-transfer.md#deployment-requirements-and-recovery)
+and the [Page sharing fence](../scripts/restore-page-share-fence.sql) inside the
+database import transaction.
 
 ## Upgrade
 
