@@ -584,8 +584,9 @@ for (const role of ["owner", "member"] as const) {
       await expect(page.getByTestId("create-new-space")).toBeVisible();
       if (contextGesture === "pointer") await switcher.click({ button: "right" });
       else {
-        await switcher.focus();
-        await page.keyboard.press(contextGesture);
+        // Keyboard opening can move focus into the picker after its contents appear.
+        await expect(page.getByRole("button", { name: "Personal", exact: true })).toBeFocused();
+        await switcher.press(contextGesture);
       }
       await expect(page.getByTestId("create-new-space")).toHaveCount(0);
       const settingsAction = page.getByRole("menuitem", { name: "Settings", exact: true });

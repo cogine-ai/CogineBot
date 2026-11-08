@@ -31,6 +31,7 @@ import {
 } from "./computer-workspace.js";
 import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
+import { withAbort } from "./web-ssrf.js";
 
 const E2B_WORKSPACE = "/home/user/rakazo-home";
 const E2B_BROWSER_PROFILES = `${E2B_WORKSPACE}/.browser-profiles`;
@@ -326,7 +327,15 @@ export class E2BSandboxProvider implements SandboxProvider {
     request: CommandRequest,
     context: AdapterContext,
   ): AsyncIterable<ProcessEvent> {
-    const desktop = await this.box(computer);
+    // Cancellation checks the live sandbox without joining an execution connection that can resume it.
+    const desktop = context.cancelRunWork
+      ? await this.attachRunningBox(computer, context.signal)
+      : await this.box(computer);
+    if (context.cancelRunWork) context.signal.throwIfAborted();
+    if (!desktop) {
+      yield { type: "exit", code: 0 };
+      return;
+    }
     const cmd = sandboxCommandArgv(request).map(shellQuote).join(" ");
     const timeoutMs = boundedSandboxCommandTimeoutMs(request.timeoutMs);
     try {
@@ -531,13 +540,7 @@ export class E2BSandboxProvider implements SandboxProvider {
     options?: { onlyIfRunning?: boolean },
   ): Promise<void> {
     if (!options?.onlyIfRunning) return this.desktops.releaseScreen(computer, context);
-    if (!this.sdk.attachRunning) {
-      throw new Error("E2B SDK cannot attach a retained computer without resuming it");
-    }
-    const desktop = await this.sdk.attachRunning(computer.providerRef || computer.id, {
-      apiKey: this.apiKey,
-      signal: context.signal,
-    });
+    const desktop = await this.attachRunningBox(computer, context.signal);
     if (!desktop) return;
     return this.desktops.releaseScreen(
       computer,
@@ -551,11 +554,23 @@ export class E2BSandboxProvider implements SandboxProvider {
           portStart: 6100,
         }),
         run: async (_computer, command, cleanupContext) => {
+          cleanupContext.signal.throwIfAborted();
           const result = await this.runSetupCommand(desktop, command, cleanupContext.signal);
           return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
         },
       },
       { preserveActiveControl: true },
+    );
+  }
+
+  private async attachRunningBox(computer: ComputerRef, signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (!this.sdk.attachRunning) {
+      throw new Error("E2B SDK cannot attach a retained computer without resuming it");
+    }
+    return withAbort(
+      this.sdk.attachRunning(computer.providerRef || computer.id, { apiKey: this.apiKey, signal }),
+      signal,
     );
   }
 

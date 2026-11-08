@@ -33,6 +33,7 @@ import {
   createCloudAgentConnection,
   createConnectorStack,
   createDeploymentTransferPeer,
+  createGroupRunTeardownRecovery,
   createJobReconciler,
   createMessagingContextLoader,
   createMessagingTeamChatSender,
@@ -613,6 +614,7 @@ async function buildApp(
         notifications,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+        reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
         reconcileNativeEvents: () => nativeEvents.reconcile(),
       })
     : undefined;

@@ -19,6 +19,13 @@ export { verifyRealtimeDatabase, verifyRuntimeDatabase } from "./database-runtim
 export * from "./events.js";
 export * from "./expire-stuck-run.js";
 export * from "./external-conversations.js";
+export type { GroupRunTeardownKey, PendingGroupRunTeardown } from "./group-run-teardowns.js";
+export {
+  completeGroupRunTeardownProviderPhase,
+  finishPendingGroupRunTeardown,
+  listPendingGroupRunTeardowns,
+  loadPendingGroupRunTeardown,
+} from "./group-run-teardowns.js";
 export * from "./groups.js";
 export * from "./history-retrieval.js";
 export * from "./memory-config.js";

@@ -66,6 +66,27 @@ function deferred() {
 }
 
 describe("createJobReconciler", () => {
+  it("continues recovering queued Runs while one group teardown pass is in flight", async () => {
+    const pending = deferred();
+    const reconcileGroupRunTeardowns = vi.fn(() => pending.promise);
+    const { jobs, enqueue } = publisher();
+    const reconciler = createJobReconciler({
+      prisma: fakePrisma([{ id: "run-waiting", status: "queued", updatedAt: new Date() }]),
+      jobs,
+      reconcileGroupRunTeardowns,
+    });
+
+    try {
+      await reconciler.reconcileOnce();
+      await reconciler.reconcileOnce();
+      expect(reconcileGroupRunTeardowns).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
+    } finally {
+      pending.resolve();
+      await reconciler.stop();
+    }
+  });
+
   it("leaves queued resource waits untouched and recovers them after release", async () => {
     const run = {
       id: "run-waiting",

@@ -1245,6 +1245,8 @@ model Computer {
   executionBotId          String?
   executionLeaseExpiresAt DateTime?
   executionFence          Int                      @default(0)
+  /// Written and scanned by the scoped teardown SQL, without loading it in normal Computer queries.
+  pendingGroupRunTeardowns Json?                    @ignore
   screenUrl               String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt

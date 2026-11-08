@@ -4,6 +4,8 @@ import { GROUP_MEMBER_MAX, GROUP_MEMBER_MIN } from "@rakazo/contracts";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
+import type { GroupRunTeardownKey } from "./group-run-teardowns.js";
+import { recordGroupRunTeardowns } from "./group-run-teardowns.js";
 import { deletePageShareSecrets } from "./page-shares.js";
 import { runAsSystemInTransaction } from "./row-security.js";
 import { IsolationError } from "./scope.js";
@@ -16,6 +18,7 @@ import {
   previewFromBlocks,
   SIDEBAR_PREVIEW_MESSAGE_WINDOW,
 } from "./thread-listing.js";
+import { withTransactionRetry } from "./transaction-retry.js";
 
 // Member writes preserve input order; unique IDs keep every read deterministic on a tie.
 export const groupMemberOrderBy = [
@@ -640,58 +643,57 @@ export function createGroupRepos(prisma: PrismaClient) {
     },
 
     async removeGroup(actor: Actor, groupId: string) {
-      return prisma.$transaction(async (tx) => {
-        await lockOwnedGroup(tx, actor, groupId);
-        const group = await tx.chatGroup.findUnique({
-          where: { id: groupId },
-          select: {
-            artifacts: { select: { storageKey: true } },
-            members: { orderBy: groupMemberOrderBy, take: 1, select: { botId: true } },
-            thread: { select: { id: true } },
-          },
-        });
-        const contextBotId = group?.members[0]?.botId;
-        if (!contextBotId) throw new IsolationError();
-        // Run and event rows cascade, but computer leases can survive the group.
-        let cancelledRunIds: string[] = [];
-        let computers: RunTeardownTarget[] = [];
-        if (group.thread) {
-          const threadId = group.thread.id;
-          // Match the thread lock used by ordinary Run cancellation. Partition one snapshot
-          // so a Run just cancelled by this delete is not also an earlier cleanup candidate.
-          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
-          const runs = await tx.run.findMany({
-            where: { threadId, status: { in: [...activeRunStatuses, "cancelled"] } },
-            select: { id: true, taskId: true, status: true },
+      return withTransactionRetry(() =>
+        prisma.$transaction(async (tx) => {
+          await lockOwnedGroup(tx, actor, groupId);
+          const group = await tx.chatGroup.findUnique({
+            where: { id: groupId },
+            select: {
+              artifacts: { select: { storageKey: true } },
+              members: { orderBy: groupMemberOrderBy, take: 1, select: { botId: true } },
+              thread: { select: { id: true } },
+            },
           });
-          const active = runs.filter((run) => run.status !== "cancelled");
-          const cancelled = await cancelRunsInTransaction(tx, active, new Date());
-          const runIds = cancelled.map((run) => run.id);
-          const { targets } = await snapshotRunTeardownTargets(tx, runIds);
-          // Restore clears archivedAt without settling a failed archive's leases.
-          // Recover only still-owned canonical leases and ignore stale legacy pointers.
-          const pending = await snapshotRunTeardownTargets(
-            tx,
-            runs.filter((run) => run.status === "cancelled").map((run) => run.id),
-            new Date(0),
-            true,
+          const contextBotId = group?.members[0]?.botId;
+          if (!contextBotId) throw new IsolationError();
+          // Run and event rows cascade, but computer leases can survive the group.
+          let cancelledRunIds: string[] = [];
+          let teardowns: GroupRunTeardownKey[] = [];
+          if (group.thread) {
+            const threadId = group.thread.id;
+            // Match the thread lock used by ordinary Run cancellation. Partition one snapshot
+            // so a Run just cancelled by this delete is not also an earlier cleanup candidate.
+            await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
+            const runs = await tx.run.findMany({
+              where: { threadId, status: { in: [...activeRunStatuses, "cancelled"] } },
+              select: { id: true, botId: true, taskId: true, status: true },
+            });
+            const active = runs.filter((run) => run.status !== "cancelled");
+            const cancelled = await cancelRunsInTransaction(tx, active, new Date());
+            const runIds = cancelled.map((run) => run.id);
+            const pending = await recordGroupRunTeardowns(
+              tx,
+              { spaceId: actor.spaceId, userId: actor.userId },
+              cancelled,
+              runs.filter((run) => run.status === "cancelled"),
+            );
+            cancelledRunIds = [...new Set([...runIds, ...pending.leasedRunIds])];
+            teardowns = pending.keys;
+          }
+          // The parent lock verified this owner's group. The cascade includes every Page in it,
+          // even rows the group owner cannot read under the Page owner policy.
+          await runAsSystemInTransaction(tx, "revoke Page links for a deleted group", () =>
+            deletePageShareSecrets(tx, { groupId, spaceId: actor.spaceId }),
           );
-          cancelledRunIds = [...runIds, ...pending.leasedRunIds];
-          computers = [...targets, ...pending.targets];
-        }
-        // The parent lock verified this owner's group. The cascade includes every Page in it,
-        // even rows the group owner cannot read under the Page owner policy.
-        await runAsSystemInTransaction(tx, "revoke Page links for a deleted group", () =>
-          deletePageShareSecrets(tx, { groupId, spaceId: actor.spaceId }),
-        );
-        await tx.chatGroup.delete({ where: { id: groupId } });
-        return {
-          contextBotId,
-          artifactStorageKeys: group.artifacts.map((artifact) => artifact.storageKey),
-          cancelledRunIds,
-          computers,
-        };
-      });
+          await tx.chatGroup.delete({ where: { id: groupId } });
+          return {
+            contextBotId,
+            artifactStorageKeys: group.artifacts.map((artifact) => artifact.storageKey),
+            cancelledRunIds,
+            teardowns,
+          };
+        }),
+      );
     },
 
     mapGroup,

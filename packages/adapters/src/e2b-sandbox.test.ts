@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { FileNotFoundError, Sandbox, SandboxNotFoundError, TimeoutError } from "@e2b/desktop";
 import { describe, expect, it, vi } from "vitest";
+import { cancelComputerRunWorkArgv } from "./computer-idle.js";
 import { shouldSkipPortableWorkspaceFile } from "./computer-workspace.js";
 import type { E2BSandboxSdk } from "./e2b-sandbox.js";
 import { E2BSandboxProvider, isSandboxGoneError, keepingAwake } from "./e2b-sandbox.js";
@@ -458,6 +459,79 @@ describe("E2B computer backend", () => {
       expect(requests[1]?.token).toBe("test-envd-token");
       expect(requests[1]?.body).toContain("run-a:2");
     });
+  });
+
+  it.each(["running", "paused", "gone"])(
+    "cancels Run work without resuming a %s sandbox",
+    async (state) => {
+      await withRetainedE2BServer({ state }, async (requests, backend) => {
+        const events = await runCancellation(backend);
+        expect(events).toEqual([{ type: "exit", code: 0 }]);
+        const paths = requests.map(({ method, path }) => `${method} ${path}`);
+        if (state === "running") {
+          expect(paths).toEqual(["GET /sandboxes/existing", "POST /process.Process/Start"]);
+          expect(requests[1]?.body).toContain("computer-a");
+          expect(requests[1]?.body).toContain("run-a");
+        } else {
+          expect(paths).toEqual(["GET /sandboxes/existing"]);
+        }
+      });
+    },
+  );
+
+  it("aborts the SDK's cancellation lookup before dispatching an envd command", async () => {
+    let lookupStarted!: (lookup: { closed: Promise<void> }) => void;
+    const lookup = new Promise<{ closed: Promise<void> }>((resolve) => {
+      lookupStarted = resolve;
+    });
+    await withRetainedE2BServer(
+      { holdLookup: (closed) => lookupStarted({ closed }) },
+      async (requests, backend) => {
+        const controller = new AbortController();
+        const cleanup = runCancellation(backend, controller.signal);
+        const { closed } = await Promise.race([
+          lookup,
+          cleanup.then(() => {
+            throw new Error("Expected a running-state lookup");
+          }),
+        ]);
+        const deadline = new DOMException("Synthetic cleanup deadline", "TimeoutError");
+        controller.abort(deadline);
+        await expect(cleanup).rejects.toBe(deadline);
+        await closed;
+        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          "GET /sandboxes/existing",
+        ]);
+      },
+    );
+  });
+
+  it("does not dispatch a cleanup command from an attachment that resolves after cancellation", async () => {
+    const controller = new AbortController();
+    let finishAttachment!: (desktop: Sandbox) => void;
+    const attachment = new Promise<Sandbox>((resolve) => {
+      finishAttachment = resolve;
+    });
+    const run = vi.fn();
+    const sdk: E2BSandboxSdk = {
+      attachRunning: vi.fn(() => attachment),
+      connect: vi.fn(),
+      create: vi.fn(),
+      pause: vi.fn(),
+    };
+    const backend = new E2BSandboxProvider("test-key", sdk);
+    const cleanup = runCancellation(backend, controller.signal);
+    const deadline = new DOMException("Synthetic cleanup deadline", "TimeoutError");
+    controller.abort(deadline);
+    await expect(cleanup).rejects.toBe(deadline);
+    finishAttachment({ sandboxId: "existing", commands: { run } } as unknown as Sandbox);
+    await attachment;
+    expect(sdk.attachRunning).toHaveBeenCalledExactlyOnceWith("existing", {
+      apiKey: "test-key",
+      signal: controller.signal,
+    });
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it.each(["paused", "gone"])(
@@ -1290,6 +1364,18 @@ describe("E2B computer backend", () => {
   });
 });
 
+async function runCancellation(backend: E2BSandboxProvider, signal = context.signal) {
+  const events = [];
+  for await (const event of backend.execute(
+    { id: "computer-a", providerRef: "existing", kind: "e2b", botId: "home" },
+    { argv: cancelComputerRunWorkArgv("computer-a", "run-a"), timeoutMs: 15_000 },
+    { ...context, runId: "run-a", cancelRunWork: true, signal },
+  )) {
+    events.push(event);
+  }
+  return events;
+}
+
 interface RetainedE2BRequest {
   method: string;
   path: string;
@@ -1298,7 +1384,13 @@ interface RetainedE2BRequest {
 }
 
 async function withRetainedE2BServer(
-  options: { state?: string; autoResume?: boolean; execFails?: boolean; lookupStatus?: number },
+  options: {
+    state?: string;
+    autoResume?: boolean;
+    execFails?: boolean;
+    lookupStatus?: number;
+    holdLookup?: (closed: Promise<void>) => void;
+  },
   check: (requests: RetainedE2BRequest[], backend: E2BSandboxProvider) => Promise<void>,
 ): Promise<void> {
   const requests: RetainedE2BRequest[] = [];
@@ -1317,6 +1409,10 @@ async function withRetainedE2BServer(
             : undefined,
       });
       if (request.method === "GET" && request.url === "/sandboxes/existing") {
+        if (options.holdLookup) {
+          options.holdLookup(new Promise((resolve) => response.once("close", resolve)));
+          return;
+        }
         response.writeHead(options.lookupStatus ?? (options.state === "gone" ? 404 : 200), {
           "content-type": "application/json",
           "retry-after": "0",

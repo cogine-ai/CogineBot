@@ -1011,7 +1011,12 @@ app.delete("/computers/:id/screen", async (c) => {
         // A newer human grant can arrive after the executor's database check.
         // Control version alone is historical; current authority lives in the token.
         const slot = assigned?.get(screenId);
-        if (onlyIfRunning && (slot?.controlled || slot?.controlToken)) return;
+        if (onlyIfRunning) {
+          if (slot?.controlled || slot?.controlToken) return;
+          // Deferred cancellation cannot attribute an unregistered browser to
+          // the old Run. Ordinary handback can still revoke known transports.
+          if (cancelRunWork && (!slot || (screenLeaseId && !slot.leaseId))) return;
+        }
         const index = assigned
           ? releaseAssignedScreen(assigned, screenId, screenLeaseId)
           : undefined;

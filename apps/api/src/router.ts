@@ -48,7 +48,6 @@ import {
   CHATGPT_PLAN_PROVIDER_ID,
   CodexCatalogCache,
   ComputerBusyError,
-  cancelComputerRunWork,
   canUsePlatformModel,
   checkpointAndRecordComputerWorkspace,
   clearInactiveUserComputerControl,
@@ -61,6 +60,7 @@ import {
   computerUpdateView,
   createDeploymentTransferPeer,
   createFaviconResolver,
+  createGroupRunTeardownRecovery,
   createPluginMarketplace,
   createTicket,
   createVoiceProvider,
@@ -125,6 +125,7 @@ import {
   screenLeaseIdForRun,
   scriptedCatalogEntry,
   serializeModelSecret,
+  stopCancelledGroupComputer,
   storeBotSecret,
   takeoverLeaseMs,
   toComputerRef,
@@ -974,10 +975,10 @@ export function createRouter(deps: RouterDeps) {
     ((scope: { userId: string; spaceId: string }, secretId: string, provider: string) =>
       kickModelCredentialRefresh(deps.prisma, deps.secrets, scope, secretId, provider));
   const groupRepos = createGroupRepos(deps.prisma);
+  const groupRunTeardown = createGroupRunTeardownRecovery(deps);
   async function stopCancelledGroupRuns(
     actor: Actor,
     teardown: Awaited<ReturnType<typeof groupRepos.archiveGroup>>,
-    screenOptions?: { onlyIfRunning: true },
   ) {
     await Promise.all(
       teardown.cancelledRunIds.map((runId) =>
@@ -985,29 +986,9 @@ export function createRouter(deps: RouterDeps) {
       ),
     );
     await Promise.all(
-      teardown.computers.map(async (computer) => {
-        if (!computer.providerRef) return;
-        const context = {
-          operationId: "stop",
-          traceId: "stop",
-          spaceId: actor.spaceId,
-          userId: actor.userId,
-          botId: computer.botId,
-          runId: computer.runId,
-          screenLeaseId: screenLeaseIdForRun(
-            { runId: computer.runId, fence: computer.fence },
-            computer.runId,
-          ),
-          cancelRunWork: true,
-          signal: new AbortController().signal,
-        };
-        const ref = toComputerRef(computer);
-        await cancelComputerRunWork(deps.sandbox, ref, computer.id, computer.runId, context);
-        const released = screenOptions
-          ? deps.sandbox.releaseScreen?.(ref, context, screenOptions)
-          : deps.sandbox.releaseScreen?.(ref, context);
-        await released?.catch(() => undefined);
-      }),
+      teardown.computers.map((computer) =>
+        stopCancelledGroupComputer(deps.sandbox, actor, computer).catch(() => undefined),
+      ),
     );
     // Keep the old leases until teardown finishes so another run cannot claim these screens.
     await groupRepos.releaseCancelledRunLeases(teardown.cancelledRunIds);
@@ -2517,9 +2498,20 @@ export function createRouter(deps: RouterDeps) {
       remove: authed.groups.remove.handler(async ({ context, input }) => {
         const removed = await groupRepos.removeGroup(context.actor, input.groupId);
         try {
-          // Some providers assign a screen per bot. Retained cleanup must not close
-          // a later Run's screen after this group and its Runs have been deleted.
-          await stopCancelledGroupRuns(context.actor, removed, { onlyIfRunning: true });
+          await Promise.all(
+            removed.cancelledRunIds.map((runId) =>
+              deps.jobs.cancel(runJobKey(runId)).catch(() => undefined),
+            ),
+          );
+          let failure: { error: unknown } | undefined;
+          for (const key of removed.teardowns) {
+            try {
+              await groupRunTeardown.settle(key);
+            } catch (error) {
+              failure ??= { error };
+            }
+          }
+          if (failure) throw failure.error;
         } finally {
           // The group is already deleted. Sweep the captured objects even if lease teardown fails.
           const cleanup = await Promise.allSettled(
