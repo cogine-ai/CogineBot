@@ -514,6 +514,8 @@ export const DEFAULT_CONTEXT_STRATEGY: AgentContextStrategy = "retrieval";
 export interface AgentRunRequest {
   /** Awaited producer-side accounting, independent of event-consumer cancellation. */
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
+  /** Consume one Run-wide model output recovery before dispatching it. */
+  reserveSelfRecovery?: () => Promise<boolean>;
   contextStrategy?: AgentContextStrategy;
   /** Trusted runtime input; restored context must use bounded selection even in current mode. */
   contextRestored?: boolean;
@@ -523,7 +525,7 @@ export interface AgentRunRequest {
   turnCheckpoint?: string;
   /** Captures are persisted only when the matching execution actually pauses. */
   onCheckpoint?: (capture: () => string, executionId: string) => void | Promise<void>;
-  /** Live known secrets for private Page transcript storage. */
+  /** Live known secrets for sanitizing runtime output and private Page transcripts. */
   pageToolSecrets?: () => string[];
   /** Canonicalize fresh scripted call inputs, then recheck them before durable checkpoints. */
   prepareScriptedToolArgs?: (

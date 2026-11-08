@@ -13,6 +13,7 @@ import type {
   ModelsSimpleStreamOptions,
   ModelThinkingLevel,
   ProviderHeaders,
+  ThinkingLevelMap,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, Type, validateToolArguments } from "@earendil-works/pi-ai";
@@ -33,7 +34,13 @@ import type {
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
 import { canonicalPiProviderId, usableModelId } from "@rakazo/contracts";
-import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
+import {
+  abortableDelay,
+  createStreamingRedactor,
+  MISSING_TOOL_FINAL_RESPONSE_ERROR,
+  redactSecrets,
+} from "@rakazo/core";
+import { MAX_SELF_RECOVERIES_PER_RUN } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult, uncertainEffectResult } from "./approval-effect.js";
 import { automated, automatedToolMessages } from "./automated-messages.js";
@@ -73,6 +80,7 @@ import {
   MODEL_CONTEXT_FRAMING_TOKENS,
   maxFallbackInputTokens,
 } from "./model-context.js";
+import { ModelOutputRecoveryError, redactInterruptedOutput } from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
@@ -84,7 +92,11 @@ import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
-import { applyPiModelCompatibility } from "./pi-model-compat.js";
+import {
+  acceptedReasoningEfforts,
+  applyPiModelCompatibility,
+  defaultOffReasoningEffort,
+} from "./pi-model-compat.js";
 import { codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -92,6 +104,13 @@ import {
   registerOpenAiCompatibleRuntime,
 } from "./pi-openai-compatible-provider.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
+import type { LengthRecovery } from "./pi-output-recovery.js";
+import {
+  CUT_REPLY_CONTINUATION_PROMPT,
+  cutReplyAtLimitPrompt,
+  lengthRecovery,
+  ReplyJoin,
+} from "./pi-output-recovery.js";
 import {
   clipToolResultContent,
   clipToolResultText,
@@ -124,6 +143,7 @@ import {
   serializeTurnCheckpoint,
   unresolvedTurnCheckpointCalls,
 } from "./turn-checkpoint.js";
+import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 import { midTaskMessagePrompt } from "./user-progress.js";
 import {
   isVerbatimMcpResult,
@@ -152,6 +172,9 @@ function catalogModels(): Models {
   return catalogModelsCache;
 }
 const MAX_PARALLEL_SUBAGENTS = 4;
+const MODEL_PARTIAL_FAILURE_ERROR = "The model failed after writing a response.";
+const MODEL_OUTPUT_CUT_ERROR = "The model hit its output limit before finishing its reply.";
+const MODEL_OUTPUT_LIMIT_ERROR = "The model hit its output limit before writing a response.";
 const MODEL_PROVIDER_RETRY_DELAYS_MS = [2_000, 8_000, 20_000] as const;
 // Some OpenAI-compatible models return EOS immediately after a tool result
 // instead of taking another assistant turn. A bounded internal follow-up keeps
@@ -304,6 +327,14 @@ export class PiAgentRuntime implements AgentRuntime {
         }
         const { models, model, apiKey } = selectedModel;
         const toolDefs = request.tools;
+        let localSelfRecoveries = 0;
+        const reserveSelfRecovery =
+          request.reserveSelfRecovery ??
+          (async () => {
+            if (localSelfRecoveries >= MAX_SELF_RECOVERIES_PER_RUN) return false;
+            localSelfRecoveries += 1;
+            return true;
+          });
         const nestedAgents = new Set<Agent>();
         const completionModel = modelForCompletion(model, request.model.maxTokens);
         trackedBudget = toolCallBudgetFor(request.runId);
@@ -311,6 +342,7 @@ export class PiAgentRuntime implements AgentRuntime {
           config: request.model,
           models,
           model: completionModel,
+          cardMaxTokens: cardOutputCeiling(model),
           apiKey,
           credentials: selectedModel.credentials,
         };
@@ -321,6 +353,7 @@ export class PiAgentRuntime implements AgentRuntime {
           onContextDecision: this.onContextDecision,
           modelCallObserver: this.modelCallObserver,
           request,
+          reserveSelfRecovery,
           activeModel: initialModelTarget,
           models,
           model: completionModel,
@@ -466,6 +499,8 @@ export class PiAgentRuntime implements AgentRuntime {
         };
         // The idle watchdog may clone a terminal message, preserving its content array.
         const providerFailures = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
+        const completedBudgets = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
+        const cutReplies = new WeakMap<AssistantMessage["content"], CutReplyReason>();
         const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
@@ -474,6 +509,10 @@ export class PiAgentRuntime implements AgentRuntime {
           request: contextRequest,
           getActive: () => activeStreamTarget,
           signal,
+          reserveSelfRecovery,
+          canRecover: () => !host.pausePending && !("error" in host.controlFailure),
+          cutReplies,
+          completedBudget: (message) => completedBudgets.get(message.content),
           providerFailureBudget: (message) => providerFailures.get(message.content),
           isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
           attempted: new Set<string>(),
@@ -507,6 +546,8 @@ export class PiAgentRuntime implements AgentRuntime {
                     imageTokens: createPiImageTokenEstimator(target.model),
                     onProviderError: (message, budget) =>
                       providerFailures.set(message.content, budget),
+                    onProviderDone: (message, budget) =>
+                      completedBudgets.set(message.content, budget),
                     requestDeadline,
                     budgetCorrection: correction,
                     onRequestDeadlineExceeded: (message) =>
@@ -560,6 +601,7 @@ export class PiAgentRuntime implements AgentRuntime {
             ? async () => activeStreamTarget.credentials?.accessToken ?? activeStreamTarget.apiKey
             : async () => apiKey,
           finishTurn: async (turn, turnSignal) => {
+            if (fallbackState.nextRecovery) return;
             await deliverFinishedShells(
               (text) => {
                 agent.followUp({
@@ -574,7 +616,7 @@ export class PiAgentRuntime implements AgentRuntime {
             );
           },
           prepareNextTurnWithContext: async () => {
-            if (!request.claimSteering) return undefined;
+            if (fallbackState.nextRecovery || !request.claimSteering) return undefined;
             // Apply the previous turn's queued writes before the claim can reset the budget.
             await queue.waitForConsumer(signal);
             signal.throwIfAborted();
@@ -680,12 +722,25 @@ export class PiAgentRuntime implements AgentRuntime {
         let toolCalls = 0;
         let toolActivityShowing = false;
         let silentToolContinuations = 0;
+        let truncatedToolBatch = false;
+        let joinedMessage = false;
+        let lastRecoveryKind: CutReplyReason | undefined;
+        let join: ActiveReplyJoin | undefined;
+        const emitReply = (text: string) => {
+          if (!text) return;
+          streamed += text;
+          queue.push({ type: "text", text });
+        };
         let toolWorkPendingFinal = false;
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
         let streamedBeforePendingFinal = 0;
         agent.subscribe(async (event) => {
-          if (event.type === "tool_execution_end" && !event.result.terminate) {
+          if (
+            event.type === "tool_execution_end" &&
+            !truncatedToolBatch &&
+            !event.result.terminate
+          ) {
             finishedCalls.set(event.toolCallId, {
               role: "toolResult",
               toolCallId: event.toolCallId,
@@ -700,6 +755,7 @@ export class PiAgentRuntime implements AgentRuntime {
             await piSession?.appendMessage(sanitizeRecorded(event.message));
           }
           if (event.type === "tool_execution_start") {
+            if (truncatedToolBatch) return;
             finishedCalls.delete(event.toolCallId);
             if (host.toolCallBudget.exceeded) return;
             toolCalls += 1;
@@ -716,6 +772,8 @@ export class PiAgentRuntime implements AgentRuntime {
             host.modelResponses = (host.modelResponses ?? 0) + 1;
             finishedCalls.clear();
             currentMessageStreamed = "";
+            truncatedToolBatch = false;
+            joinedMessage = false;
           }
           if (
             event.type === "message_update" &&
@@ -728,9 +786,8 @@ export class PiAgentRuntime implements AgentRuntime {
                 toolActivityShowing = false;
                 queue.push({ type: "progress", text: "", activity: true });
               }
-              streamed += delta;
               currentMessageStreamed += delta;
-              queue.push({ type: "text", text: delta });
+              emitReply(join ? join.output.append(delta) : delta);
             }
           }
           if (event.type === "turn_end") {
@@ -738,6 +795,13 @@ export class PiAgentRuntime implements AgentRuntime {
               event.message.role === "assistant" ? assistantText(event.message) : "";
             const hasToolCalls = messageHasToolCall(event.message);
             const hasToolResults = event.toolResults.length > 0;
+            if (joinedMessage || fallbackState.nextRecovery || truncatedToolBatch) {
+              if (!hasToolCalls && streamed.slice(streamedBeforePendingFinal).trim()) {
+                toolWorkPendingFinal = false;
+                silentToolContinuations = 0;
+              }
+              return;
+            }
 
             // Text in a turn that also contains a tool call is narration, not a final
             // response. Keep the run alive until a later text-only turn answers the user.
@@ -782,18 +846,41 @@ export class PiAgentRuntime implements AgentRuntime {
             const continued =
               streamedThisMessage.length > 0 && text.startsWith(streamedThisMessage);
             const textToEmit = continued ? text.slice(streamedThisMessage.length) : text;
-            const sincePendingFinal = streamed.slice(streamedBeforePendingFinal);
-            const alreadyEmitted =
-              !continued &&
-              (streamedThisMessage.includes(text) || sincePendingFinal.endsWith(text));
-            if (textToEmit && !hasCalls && !alreadyEmitted) {
-              streamed += textToEmit;
-              queue.push({ type: "text", text: textToEmit });
-            } else if (text && !streamed) {
-              streamed = text;
-              queue.push({ type: "text", text });
+            truncatedToolBatch = hasCalls && event.message.stopReason === "length";
+            const previousJoin = join;
+            joinedMessage = previousJoin !== undefined;
+            if (previousJoin) {
+              emitReply(previousJoin.output.finish(text, streamedThisMessage));
+            } else {
+              const sincePendingFinal = streamed.slice(streamedBeforePendingFinal);
+              const alreadyEmitted =
+                !continued &&
+                (streamedThisMessage.includes(text) || sincePendingFinal.endsWith(text));
+              if (textToEmit && !hasCalls && !alreadyEmitted) {
+                emitReply(textToEmit);
+              } else if (text && !streamed) {
+                emitReply(text);
+              }
             }
-            if (canMessageUser && hasCalls && (text || streamedThisMessage)) {
+            const cut = cutReplies.get(event.message.content);
+            if (previousJoin || cut) {
+              lastRecoveryKind = cut ?? lastRecoveryKind;
+              join = await continueCutReply(
+                agent,
+                fallbackState,
+                event.message,
+                previousJoin,
+                streamed,
+                text || streamedThisMessage,
+              );
+              if (join) lastRecoveryKind = join.kind;
+            }
+            if (
+              canMessageUser &&
+              hasCalls &&
+              !truncatedToolBatch &&
+              (text || streamedThisMessage)
+            ) {
               // Admit parallel tools as before, after the shared narration is available.
               await queue.waitForConsumer(signal);
             }
@@ -959,11 +1046,26 @@ export class PiAgentRuntime implements AgentRuntime {
         // length stop and any failure that never landed on state.
         const providerFailure =
           !budgetExceeded && terminalMessage ? providerFailureText(terminalMessage) : undefined;
-        const error = agent.state.errorMessage || providerFailure;
+        const error =
+          agent.state.errorMessage ||
+          providerFailure ||
+          (fallbackState.outputRecoveryFailed
+            ? lastRecoveryKind === "connection"
+              ? MODEL_PARTIAL_FAILURE_ERROR
+              : MODEL_OUTPUT_CUT_ERROR
+            : undefined);
         if (error && !budgetExceeded && (!host.pausePending || signal.aborted)) {
-          throw new Error(sanitizeProviderError(activeStreamTarget.model.provider, error));
+          const message = sanitizeProviderError(activeStreamTarget.model.provider, error);
+          if (!signal.aborted && (lastRecoveryKind || fallbackState.outputRecoveryFailed))
+            throw new ModelOutputRecoveryError(message);
+          throw new Error(message);
         }
-        if (!budgetExceeded && terminalMessage && !messageHasToolCall(terminalMessage)) {
+        if (
+          !budgetExceeded &&
+          terminalMessage &&
+          !joinedMessage &&
+          !messageHasToolCall(terminalMessage)
+        ) {
           const terminalText = assistantText(terminalMessage);
           const sincePendingFinal = streamed.slice(streamedBeforePendingFinal);
           if (terminalText.trim() && !sincePendingFinal.includes(terminalText)) {
@@ -1012,7 +1114,11 @@ export class PiAgentRuntime implements AgentRuntime {
         queue.push(streamed.trim() ? { type: "done", text: streamed } : { type: "done" });
       } catch (error) {
         const message = sanitizeError(error instanceof Error ? error.message : String(error));
-        queue.fail(new Error(message));
+        queue.fail(
+          error instanceof ModelOutputRecoveryError
+            ? new ModelOutputRecoveryError(message)
+            : new Error(message),
+        );
       } finally {
         queue.close();
         if (trackedBudget) {
@@ -2035,6 +2141,10 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       config: requestModel,
       models: selectedModel.models,
       model: subagentModel,
+      cardMaxTokens:
+        "cardMaxTokens" in selectedModel
+          ? selectedModel.cardMaxTokens
+          : cardOutputCeiling(selectedModel.model),
       apiKey: selectedModel.apiKey,
       credentials: selectedModel.credentials,
     },
@@ -2065,11 +2175,18 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   );
   let nested!: Agent;
   const providerFailures = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
+  const completedBudgets = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
+  const cutReplies = new WeakMap<AssistantMessage["content"], CutReplyReason>();
   const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
   const retryState: FallbackStreamState = {
     request: { ...host.request, model: requestModel, fallbackModels: [] },
     getActive: () => nestedHost.activeModel,
     signal: host.signal,
+    reserveSelfRecovery: host.reserveSelfRecovery,
+    canRecover: () =>
+      !host.pausePending && !nestedHost.pausePending && !("error" in host.controlFailure),
+    cutReplies,
+    completedBudget: (message) => completedBudgets.get(message.content),
     attempted: new Set(),
     nextIndex: 0,
     onSwitch: async () => undefined,
@@ -2080,8 +2197,8 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
         target.models,
         target.model,
         ctx,
-        withCloudflareGatewayAuth(requestModel, options),
-        requestModel.maxTokens,
+        withCloudflareGatewayAuth(target.config, options),
+        target.config.maxTokens,
         () => selectedModel.credentials?.accessToken ?? selectedModel.apiKey,
         (preparedOptions) =>
           observedPiStream(
@@ -2107,6 +2224,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
               imageTokens: createPiImageTokenEstimator(target.model),
               recordUsage: host.request.onUsage,
               onProviderError: (message, budget) => providerFailures.set(message.content, budget),
+              onProviderDone: (message, budget) => completedBudgets.set(message.content, budget),
               requestDeadline,
               budgetCorrection: correction,
               onRequestDeadlineExceeded: (message) => requestDeadlineFailures.add(message.content),
@@ -2128,6 +2246,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   };
   nested = new Agent({
     finishTurn: async (turn, turnSignal) => {
+      if (retryState.nextRecovery) return;
       await deliverFinishedShells(
         (text) => {
           nested.followUp({
@@ -2171,10 +2290,35 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   host.nestedAgents.add(nested);
 
   let streamed = "";
+  let currentMessageStreamed = "";
   let lastPush = 0;
-  nested.subscribe((event) => {
+  let truncatedToolBatch = false;
+  let join: ActiveReplyJoin | undefined;
+  let lastRecoveryKind: CutReplyReason | undefined;
+  const helperSecrets = () => host.request.pageToolSecrets?.() ?? [];
+  const redactHelper = (text: string) => redactSecrets(text, helperSecrets());
+  const emitReply = (text: string) => {
+    if (!text) return;
+    streamed += text;
+    const now = Date.now();
+    if (now - lastPush < 80) return;
+    lastPush = now;
+    host.queue.push({
+      type: "subagent",
+      agentId,
+      name,
+      task,
+      status: "running",
+      progress: createStreamingRedactor(helperSecrets()).push(streamed).slice(-800),
+    });
+  };
+  nested.subscribe(async (event) => {
+    if (event.type === "message_start" && event.message.role === "assistant") {
+      currentMessageStreamed = "";
+      truncatedToolBatch = false;
+    }
     if (event.type === "tool_execution_start") {
-      if (host.toolCallBudget.exceeded) return;
+      if (truncatedToolBatch || host.toolCallBudget.exceeded) return;
       const toolName = "toolName" in event && event.toolName ? String(event.toolName) : "a tool";
       host.queue.push({
         type: "subagent",
@@ -2187,25 +2331,36 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     }
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta;
-      if (delta) {
-        streamed += delta;
-        const now = Date.now();
-        if (now - lastPush >= 80) {
-          lastPush = now;
-          host.queue.push({
-            type: "subagent",
-            agentId,
-            name,
-            task,
-            status: "running",
-            progress: streamed.slice(-800),
-          });
-        }
-      }
+      currentMessageStreamed += delta;
+      emitReply(join ? join.output.append(delta) : delta);
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
+      truncatedToolBatch =
+        event.message.stopReason === "length" && messageHasToolCall(event.message);
       const text = assistantText(event.message);
-      if (text && !streamed) streamed = text;
+      const cut = cutReplies.get(event.message.content);
+      if (join) {
+        emitReply(join.output.finish(text, currentMessageStreamed));
+      } else if (
+        (cut || retryState.outputRecoveryFailed) &&
+        text.startsWith(currentMessageStreamed)
+      ) {
+        emitReply(text.slice(currentMessageStreamed.length));
+      } else if (text && !streamed) {
+        streamed = text;
+      }
+      if (join || cut) {
+        lastRecoveryKind = cut ?? lastRecoveryKind;
+        join = await continueCutReply(
+          nested,
+          retryState,
+          event.message,
+          join,
+          streamed,
+          text || currentMessageStreamed,
+        );
+        if (join) lastRecoveryKind = join.kind;
+      }
     }
   });
 
@@ -2240,18 +2395,30 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     // Shared-budget abort leaves errorMessage on the nested agent; surface it as a
     // completed stop rather than a failed subagent chip.
     const budgetExceeded = host.toolCallBudget.exceeded;
-    const error = nested.state.errorMessage || providerFailureText(nested.state.messages.at(-1));
+    const error =
+      nested.state.errorMessage ||
+      providerFailureText(nested.state.messages.at(-1)) ||
+      (retryState.outputRecoveryFailed
+        ? lastRecoveryKind === "connection"
+          ? MODEL_PARTIAL_FAILURE_ERROR
+          : MODEL_OUTPUT_CUT_ERROR
+        : undefined);
     if (error && !budgetExceeded) {
-      const message = sanitizeProviderError(subagentModel.provider, error);
+      const message = sanitizeProviderError(subagentModel.provider, redactHelper(error));
+      const partial =
+        !host.signal.aborted && (lastRecoveryKind || retryState.outputRecoveryFailed)
+          ? clipToolResultText(redactInterruptedOutput(streamed, helperSecrets()).trim(), 8_000)
+          : "";
+      const failure = `Subagent failed: ${message}`;
       host.queue.push({
         type: "subagent",
         agentId,
         name,
         task,
         status: "failed",
-        result: message,
+        result: partial ? `${partial}\n\n${failure}` : message,
       });
-      return `Subagent failed: ${message}`;
+      return partial ? `${failure}\n\n${partial}` : failure;
     }
     const budgetMessage = budgetExceeded
       ? toolCallBudgetExceededMessage(host.toolCallBudget.limit)
@@ -2260,7 +2427,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       budgetMessage && streamed.trim()
         ? `${streamed.trim()}\n\n${budgetMessage}`
         : budgetMessage || streamed || assistantText(nested.state.messages.at(-1)) || "done.";
-    const clipped = clipToolResultText(result, 12_000);
+    const clipped = clipToolResultText(redactHelper(result), 12_000);
     host.queue.push({
       type: "subagent",
       agentId,
@@ -2713,7 +2880,7 @@ export function providerFailureText(message: unknown): string | undefined {
   const text = assistantText(message).trim();
   if (stopReason === "error") {
     if (errorMessage) return errorMessage;
-    if (text) return "The model failed after writing a response.";
+    if (text) return MODEL_PARTIAL_FAILURE_ERROR;
     return "The model failed before writing a response.";
   }
   if (stopReason === "length" && !text) {
@@ -2800,6 +2967,7 @@ interface ToolHost {
   modelCallObserver?: ModelCallObserver;
   queue: EventQueue;
   request: AgentRunRequest;
+  reserveSelfRecovery: () => Promise<boolean>;
   activeModel: RuntimeModelTarget;
   models: Models;
   model: Model<Api>;
@@ -2898,14 +3066,26 @@ function modelForCompletion(model: Model<Api>, configuredMaxTokens?: number): Mo
   return { ...model, maxTokens };
 }
 
+function cardOutputCeiling(model: Model<Api>): number | undefined {
+  return model.provider === OPENAI_COMPATIBLE_PROVIDER_ID ? undefined : model.maxTokens;
+}
+
 interface RuntimeModelTarget {
   config: AgentRunRequest["model"];
   models: Models;
   model: Model<Api>;
+  cardMaxTokens?: number;
   apiKey?: string;
   credentials?: PiRuntimeCredentialStore;
   providerContextWindow?: number;
 }
+
+type CutReplyReason = "connection" | "limit";
+type PendingOutputRecovery = {
+  kind: CutReplyReason | "tool";
+  deadline: number;
+  settings?: LengthRecovery;
+};
 
 interface FallbackStreamState {
   request: AgentRunRequest;
@@ -2914,10 +3094,17 @@ interface FallbackStreamState {
   attempted: Set<string>;
   nextIndex: number;
   onSwitch(target: RuntimeModelTarget): Promise<void>;
+  reserveSelfRecovery(): Promise<boolean>;
+  canRecover(): boolean;
+  cutReplies: WeakMap<AssistantMessage["content"], CutReplyReason>;
+  nextRecovery?: PendingOutputRecovery;
+  outputRecoveryFailed?: boolean;
+  completedBudget(message: AssistantMessage): PiDispatchBudget | undefined;
   providerFailureBudget(message: AssistantMessage): PiDispatchBudget | undefined;
   isRequestDeadlineExceeded(message: AssistantMessage): boolean;
   /** Runtime-only limits bound to the resolved connection, including distinct same-model credentials. */
   budgetTargets?: WeakMap<RuntimeModelTarget, RuntimeModelTarget>;
+  thinkingLevels?: WeakMap<RuntimeModelTarget, ThinkingLevelMap>;
   /** A rejected signature is stripped for subsequent completions in this run. */
   dropThinkingBlocks?: boolean;
   /** Thinking written before a model switch belongs to the previous target. */
@@ -2929,6 +3116,71 @@ interface FallbackStreamState {
     requestDeadline?: number,
     correction?: PiBudgetCorrection,
   ): AssistantMessageEventStream;
+}
+
+type ActiveReplyJoin = {
+  kind: CutReplyReason;
+  recovery: PendingOutputRecovery;
+  start: number;
+  output: ReplyJoin;
+};
+
+async function reserveOutputRecovery(
+  state: FallbackStreamState,
+  signal: AbortSignal,
+  deadline: number,
+): Promise<boolean> {
+  const eligible = () => state.canRecover() && !signal.aborted && Date.now() < deadline;
+  return eligible() && (await state.reserveSelfRecovery()) && eligible();
+}
+
+async function continueCutReply(
+  agent: Agent,
+  state: FallbackStreamState,
+  message: AssistantMessage,
+  previous: ActiveReplyJoin | undefined,
+  streamed: string,
+  text: string,
+): Promise<ActiveReplyJoin | undefined> {
+  let recovery = state.cutReplies.has(message.content) ? state.nextRecovery : undefined;
+  const added = previous ? streamed.slice(previous.start) : text;
+  const tail = added || previous?.output.tail || text;
+  if (
+    !recovery &&
+    previous &&
+    message.stopReason === "stop" &&
+    !messageHasToolCall(message) &&
+    !added.trim() &&
+    !state.signal.aborted
+  ) {
+    if (
+      previous.kind === "limit" &&
+      (await reserveOutputRecovery(state, state.signal, previous.recovery.deadline))
+    ) {
+      recovery = previous.recovery;
+      state.nextRecovery = recovery;
+    } else if (!state.signal.aborted) {
+      state.outputRecoveryFailed = true;
+    }
+  }
+  if (!recovery || recovery.kind === "tool") return;
+  if (state.signal.aborted || !state.canRecover() || Date.now() >= recovery.deadline) {
+    state.nextRecovery = undefined;
+    if (!state.signal.aborted) state.outputRecoveryFailed = true;
+    return;
+  }
+  agent.followUp({
+    role: "user",
+    content:
+      recovery.kind === "limit" ? cutReplyAtLimitPrompt(tail) : CUT_REPLY_CONTINUATION_PROMPT,
+    timestamp: Date.now(),
+  });
+  return {
+    kind: recovery.kind,
+    recovery,
+    start: streamed.length,
+    output: new ReplyJoin(tail, recovery.kind === "limit"),
+  };
 }
 
 function errorFacts(value: unknown) {
@@ -2957,6 +3209,8 @@ function errorFacts(value: unknown) {
   };
   visit(value, 0);
   for (const detail of text) {
+    const mistralStatus = /^Mistral API error \(([45]\d{2})\):/i.exec(detail)?.[1];
+    if (mistralStatus) statuses.add(Number(mistralStatus));
     for (const match of detail.matchAll(
       /(?:\b(?:http(?:\s+status(?:\s+code)?)?|status(?:\s+code)?|error\s+code)\s*[:=]?\s*|^\s*)([45]\d{2})\b/gi,
     )) {
@@ -3004,6 +3258,13 @@ export function isRetryableProviderUnavailable(error: unknown): boolean {
     )
   )
     return false;
+  // Some fetch implementations quote an invalid credential header in their diagnostic.
+  if (
+    /\bheaders\.append: "[\s\S]*" is an invalid header value\.|\bcannot convert argument to a bytestring because\b/.test(
+      text,
+    )
+  )
+    return false;
   if (statuses.has(402)) {
     return /quota|billing|credit|payment limit|insufficient funds/.test(text);
   }
@@ -3013,7 +3274,7 @@ export function isRetryableProviderUnavailable(error: unknown): boolean {
   )
     return true;
   if ([...statuses].some((status) => status >= 400 && status < 600)) return false;
-  return /rate.?limit|too many requests|quota|overload|capacity|temporarily unavailable|service unavailable|retry[- ](?:after|delay)|server error|upstream error|gateway timeout|timed? out|timeout|connection (?:error|reset|refused)|network error|max retries exceeded|stream ended without finish_reason/.test(
+  return /rate.?limit|too many requests|quota|overload|capacity|temporarily unavailable|service unavailable|retry[- ](?:after|delay)|server error|upstream error|gateway timeout|timed? out|timeout|connection (?:error|reset|refused)|network[ _]error|max retries exceeded|stream ended without finish_reason|incomplete json segment at the end|\bterminated\b|fetch failed|socket hang up|econnreset|econnrefused|etimedout|websocket closed/.test(
     text,
   );
 }
@@ -3024,7 +3285,7 @@ function canRetrySameModel(error: unknown): boolean {
   // cannot replenish funds. Early timeouts may still have request budget left.
   return (
     !statuses.has(402) &&
-    !/codex stream idle timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
+    !/(?:codex|model) stream idle timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
       text,
     )
   );
@@ -3186,12 +3447,39 @@ function fallbackAwareModelStream(
   const output = new AssistantMessageEventStream();
   let lastPartial: AssistantMessage | undefined;
   const signal = options?.signal ? AbortSignal.any([state.signal, options.signal]) : state.signal;
+  const inherited = state.nextRecovery;
+  state.nextRecovery = undefined;
+  const textOnly = inherited !== undefined && inherited.kind !== "tool";
+  const executedCalls = new Set(
+    inherited?.kind === "tool"
+      ? context.messages.flatMap((message) =>
+          message.role === "assistant" && message.stopReason !== "length"
+            ? message.content.flatMap((part) => (part.type === "toolCall" ? [part.id] : []))
+            : [],
+        )
+      : [],
+  );
   const requestContext = (switching = false) => {
-    if (state.dropThinkingBlocks) return withoutThinkingBlocks(context);
+    // Pi has already folded tool definitions into system-message deltas.
+    const contextForAttempt = textOnly
+      ? {
+          ...context,
+          tools: [],
+          messages: context.messages.map((message) => {
+            if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved))
+              return message;
+            const { toolsAdded: _added, toolsRemoved: _removed, ...instructions } = message;
+            return instructions;
+          }),
+        }
+      : context;
+    if (state.dropThinkingBlocks) return withoutThinkingBlocks(contextForAttempt);
     const before = switching ? context.messages.length : state.messagesBeforeSwitch;
-    if (!before) return context;
-    const messages = withoutThinkingFrom(context.messages, 0, before);
-    return messages === context.messages ? context : { ...context, messages };
+    if (!before) return contextForAttempt;
+    const messages = withoutThinkingFrom(contextForAttempt.messages, 0, before);
+    return messages === contextForAttempt.messages
+      ? contextForAttempt
+      : { ...contextForAttempt, messages };
   };
   const signalAborted = () => signal.aborted;
   const finishWithThrownError = (target: RuntimeModelTarget, error: unknown) => {
@@ -3274,6 +3562,7 @@ function fallbackAwareModelStream(
           config,
           models: resolved.models,
           model: modelForCompletion(resolved.model, config.maxTokens),
+          cardMaxTokens: cardOutputCeiling(resolved.model),
           apiKey: resolved.apiKey,
           credentials: resolved.credentials,
         };
@@ -3301,33 +3590,98 @@ function fallbackAwareModelStream(
     let retries = 0;
     // Same-model retries and backoff share the original completion budget.
     // Explicit backups retain their existing header and post-header idle bounds.
-    const startedAt = Date.now();
-    const timeoutMs = options?.timeoutMs ?? MODEL_STREAM_TIMEOUT_MS;
+    const initialDeadline =
+      inherited?.deadline ?? Date.now() + (options?.timeoutMs ?? MODEL_STREAM_TIMEOUT_MS);
+    let deadline = initialDeadline;
+    let retriedIdle = false;
+    let outputSettings = inherited?.settings;
+    let lengthRecovered = false;
+    const reserve = () => reserveOutputRecovery(state, signal, deadline);
+    const failOutput = (message: AssistantMessage, errorMessage: string) => {
+      state.outputRecoveryFailed = true;
+      const failure: AssistantMessage = {
+        ...message,
+        content: message.content.filter((part) => part.type === "text"),
+        stopReason: "error",
+        errorMessage,
+      };
+      output.push({ type: "error", reason: "error", error: failure });
+      output.end(failure);
+    };
+    const cutReply = (
+      message: AssistantMessage,
+      kind: CutReplyReason,
+      settings?: LengthRecovery,
+    ) => {
+      const cut: AssistantMessage = {
+        ...message,
+        errorMessage: undefined,
+        content: message.content.filter((part) => part.type === "text"),
+        stopReason: "stop",
+      };
+      state.cutReplies.set(cut.content, kind);
+      state.nextRecovery = { kind, deadline, settings };
+      output.push({ type: "done", reason: "stop", message: cut });
+      output.end(cut);
+    };
     let firstRetryableError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     let signatureRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     let sizingRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     // Keep SDK retries disabled once this completion starts sharing the outer allowance.
-    let usedBudgetCorrection = false;
+    let usedRequestCorrection = false;
     let nextCorrection: PiBudgetCorrection | undefined;
     let firstBackupAttempt = false;
     while (!signalAborted()) {
-      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      const remainingMs = deadline - Date.now();
       const budgetError = sizingRetryError ?? firstRetryableError ?? signatureRetryError;
       const sharesDeadline =
-        !firstBackupAttempt && (retries > 0 || signatureRetryError !== undefined);
+        !firstBackupAttempt &&
+        (inherited !== undefined ||
+          lengthRecovered ||
+          retries > 0 ||
+          signatureRetryError !== undefined);
       firstBackupAttempt = false;
-      if (sharesDeadline && budgetError && remainingMs <= 0) {
-        output.push(budgetError);
-        output.end(budgetError.error);
+      if (sharesDeadline && remainingMs <= 0) {
+        if (budgetError) {
+          output.push(budgetError);
+          output.end(budgetError.error);
+        } else {
+          finishWithThrownError(state.getActive(), new Error("Model request timed out"));
+        }
         return;
       }
       const attemptOptions = sharesDeadline ? { ...options, timeoutMs: remainingMs } : options;
       const target = state.getActive();
-      const effectiveTarget = state.budgetTargets?.get(target) ?? target;
+      const limitedTarget = state.budgetTargets?.get(target);
+      const effectiveTarget = limitedTarget ?? target;
+      const thinkingLevelMap = state.thinkingLevels?.get(target);
+      const model = thinkingLevelMap
+        ? { ...effectiveTarget.model, thinkingLevelMap }
+        : effectiveTarget.model;
+      const requestedOutput = outputSettings?.maxTokens;
+      const recoveryOutput =
+        requestedOutput === undefined
+          ? undefined
+          : Math.min(requestedOutput, limitedTarget?.model.maxTokens ?? requestedOutput);
+      const dispatchTarget =
+        recoveryOutput === undefined
+          ? { ...effectiveTarget, model }
+          : {
+              ...effectiveTarget,
+              config: { ...target.config, maxTokens: recoveryOutput },
+              model: { ...model, maxTokens: recoveryOutput },
+            };
+      const preferredThinking = outputSettings?.thinkingLevel ?? target.config.thinkingLevel;
+      const thinkingLevel =
+        thinkingLevelMap && preferredThinking === "off"
+          ? "off"
+          : thinkingLevelFor(model, preferredThinking);
       const correction = nextCorrection;
       nextCorrection = undefined;
       lastPartial = undefined;
       let sawPartialOutput = false;
+      let sawTextOutput = false;
+      let sawToolOutput = false;
       let restart = false;
       let stream: AssistantMessageEventStream;
       const authorizationAbort = new AbortController();
@@ -3364,17 +3718,20 @@ function fallbackAwareModelStream(
           authorizationTimer.unref?.();
         }
         const apiKey = target.credentials?.accessToken ?? target.apiKey;
-        const thinkingLevel = target.model.reasoning
-          ? thinkingLevelFor(target.model, target.config.thinkingLevel)
-          : "off";
         const reasoning = thinkingLevel === "off" ? undefined : thinkingLevel;
         // The outer loop reauthorizes retries. SDK-internal retries would bypass that boundary.
-        const authorizedOptions =
-          target.config.authorize || usedBudgetCorrection
-            ? { ...attemptOptions, maxRetries: 0 }
-            : attemptOptions;
+        const authorizedOptions = {
+          ...attemptOptions,
+          ...((thinkingLevelMap || outputSettings?.thinkingLevel) && { reasoning }),
+          ...((target.config.authorize ||
+            usedRequestCorrection ||
+            inherited ||
+            lengthRecovered) && {
+            maxRetries: 0,
+          }),
+        };
         stream = state.stream(
-          effectiveTarget,
+          dispatchTarget,
           requestContext(),
           state.request.fallbackModels?.length
             ? {
@@ -3387,7 +3744,7 @@ function fallbackAwareModelStream(
                 ...authorizedOptions,
                 signal: AbortSignal.any([signal, authorizationAbort.signal]),
               },
-          sharesDeadline ? startedAt + timeoutMs : undefined,
+          sharesDeadline ? deadline : undefined,
           correction,
         );
       } catch (error) {
@@ -3408,18 +3765,69 @@ function fallbackAwareModelStream(
               }
             }
             let terminalEvent = event;
+            const failureFacts = errorFacts(event.error);
+            const activeFailure = event.reason === "error" && !signalAborted();
+            const providerFailure = activeFailure
+              ? state.providerFailureBudget(event.error)
+              : undefined;
+            const idle = activeFailure && isModelStreamIdleTimeout(event.error);
+            const toolOutput = sawToolOutput || messageHasToolCall(event.error);
+            const textOutput = sawTextOutput || Boolean(assistantText(event.error));
+            const retryable = isRetryableProviderUnavailable(event.error);
+            const canRetry = canRetrySameModel(event.error);
             const providerBudget =
-              !sawPartialOutput &&
-              !assistantHasPartialOutput(event.error) &&
-              event.reason === "error" &&
-              !signalAborted()
-                ? state.providerFailureBudget(event.error)
+              !sawPartialOutput && !assistantHasPartialOutput(event.error)
+                ? providerFailure
                 : undefined;
-            const recoveryAllowed = providerBudget && !blocksModelRecovery(errorFacts(event.error));
+            const recoveryAllowed = providerBudget && !blocksModelRecovery(failureFacts);
+            if (
+              idle &&
+              !toolOutput &&
+              !inherited &&
+              !lengthRecovered &&
+              retries === 0 &&
+              !signatureRetryError
+            ) {
+              // The post-header watchdog can fire after the original header window.
+              // Charge the idle interval once against the same dispatch's time budget.
+              deadline = initialDeadline + MODEL_STREAM_IDLE_TIMEOUT_MS;
+            }
+            if (
+              recoveryAllowed &&
+              !thinkingLevelMap &&
+              model.reasoning &&
+              retries < MODEL_PROVIDER_RETRY_DELAYS_MS.length &&
+              Date.now() < deadline
+            ) {
+              const accepted = acceptedReasoningEfforts(model, event.error.errorMessage);
+              if (accepted) {
+                const narrowed = { ...model, thinkingLevelMap: accepted };
+                const nextLevel =
+                  thinkingLevel === "off" ? "off" : thinkingLevelFor(narrowed, thinkingLevel);
+                const wireEffort = (candidate: Model<Api>, level: ModelThinkingLevel) => {
+                  const mapped = candidate.thinkingLevelMap?.[level];
+                  return mapped === undefined
+                    ? level === "off"
+                      ? defaultOffReasoningEffort(candidate)
+                      : level
+                    : (mapped ?? undefined);
+                };
+                if (wireEffort(model, thinkingLevel) !== wireEffort(narrowed, nextLevel)) {
+                  state.thinkingLevels ??= new WeakMap();
+                  state.thinkingLevels.set(target, accepted);
+                  retries += 1;
+                  usedRequestCorrection = true;
+                  firstRetryableError ??= event;
+                  buffered = [];
+                  restart = true;
+                  break;
+                }
+              }
+            }
             if (
               recoveryAllowed &&
               retries < MODEL_PROVIDER_RETRY_DELAYS_MS.length &&
-              Date.now() - startedAt < timeoutMs
+              Date.now() < deadline
             ) {
               const { provider, maxTokens } = effectiveTarget.model;
               const contextWindow =
@@ -3455,7 +3863,7 @@ function fallbackAwareModelStream(
                 });
                 // Budget correction uses the same completion retry allowance and deadline.
                 retries += 1;
-                usedBudgetCorrection = true;
+                usedRequestCorrection = true;
                 sizingRetryError = event;
                 nextCorrection = {
                   previous: providerBudget,
@@ -3473,9 +3881,9 @@ function fallbackAwareModelStream(
             }
             if (
               recoveryAllowed &&
-              canRetrySameModel(event.error) &&
+              canRetry &&
               !state.dropThinkingBlocks &&
-              Date.now() - startedAt < timeoutMs &&
+              Date.now() < deadline &&
               isThinkingSignatureMismatch(event.error.errorMessage)
             ) {
               signatureRetryError = event;
@@ -3484,8 +3892,12 @@ function fallbackAwareModelStream(
               restart = true;
               break;
             }
-            if (providerBudget && isRetryableProviderUnavailable(event.error)) {
-              const next = await resolveNext(target);
+            if (
+              !toolOutput &&
+              !textOutput &&
+              (idle || (retryable && (providerBudget || (providerFailure && canRetry))))
+            ) {
+              const next = inherited ? undefined : await resolveNext(target);
               if (authorizationError) throw authorizationError;
               if (failIfAborted(target)) return;
               if (next) {
@@ -3498,19 +3910,25 @@ function fallbackAwareModelStream(
                 firstRetryableError = undefined;
                 signatureRetryError = undefined;
                 sizingRetryError = undefined;
+                outputSettings = undefined;
                 buffered = [];
                 restart = true;
                 break;
               }
-              if (canRetrySameModel(event.error)) {
+              if (canRetry || idle) {
                 firstRetryableError ??= event;
-                const delay = MODEL_PROVIDER_RETRY_DELAYS_MS[retries];
-                if (delay !== undefined && Date.now() - startedAt + delay < timeoutMs) {
+                const delay = idle
+                  ? retriedIdle
+                    ? undefined
+                    : MODEL_PROVIDER_RETRY_DELAYS_MS[0]
+                  : MODEL_PROVIDER_RETRY_DELAYS_MS[retries];
+                if (delay !== undefined && Date.now() + delay < deadline) {
                   retries += 1;
+                  retriedIdle ||= idle;
                   await abortableDelay(delay, signal);
                   if (authorizationError) throw authorizationError;
                   if (failIfAborted(target)) return;
-                  if (Date.now() - startedAt < timeoutMs) {
+                  if (Date.now() < deadline) {
                     buffered = [];
                     restart = true;
                     break;
@@ -3518,6 +3936,25 @@ function fallbackAwareModelStream(
                 }
                 terminalEvent = firstRetryableError;
               }
+            }
+            const partial = assistantText(event.error) ? event.error : lastPartial;
+            const transientCut =
+              idle || (providerFailure && !failureFacts.statuses.has(429) && retryable && canRetry);
+            if (
+              partial &&
+              assistantText(lastPartial).trim() &&
+              assistantText(partial).trim() &&
+              !toolOutput &&
+              !messageHasToolCall(partial) &&
+              transientCut
+            ) {
+              if (!inherited && (await reserve())) {
+                if (authorizationError) throw authorizationError;
+                for (const pending of buffered) output.push(pending);
+                cutReply(partial, "connection");
+                return;
+              }
+              if (!signalAborted()) state.outputRecoveryFailed = true;
             }
             for (const pending of buffered) output.push(pending);
             buffered = [];
@@ -3530,22 +3967,111 @@ function fallbackAwareModelStream(
             return;
           }
           if (event.type === "done") {
+            const message = event.message;
+            const hasCalls = messageHasToolCall(message);
+            if (failIfAborted(target)) return;
+            if (
+              hasCalls &&
+              (textOnly ||
+                (message.stopReason !== "length" &&
+                  message.content.some(
+                    (part) => part.type === "toolCall" && executedCalls.has(part.id),
+                  )))
+            ) {
+              failOutput(
+                message,
+                inherited?.kind === "connection"
+                  ? MODEL_PARTIAL_FAILURE_ERROR
+                  : MODEL_OUTPUT_CUT_ERROR,
+              );
+              return;
+            }
+            const text = assistantText(message).trim();
+            if (
+              (!hasCalls && sawToolOutput && message.stopReason === "length") ||
+              (inherited?.kind === "tool" &&
+                message.stopReason === "stop" &&
+                !hasCalls &&
+                !text &&
+                !sawTextOutput)
+            ) {
+              failOutput(message, text ? MODEL_OUTPUT_CUT_ERROR : MODEL_OUTPUT_LIMIT_ERROR);
+              return;
+            }
+            if (message.stopReason === "length" && !message.errorMessage) {
+              const sent = state.completedBudget(message);
+              const settings =
+                sent &&
+                lengthRecovery(
+                  model,
+                  {
+                    contextWindow: effectiveTarget.providerContextWindow ?? model.contextWindow,
+                    ceiling: Math.min(
+                      target.cardMaxTokens ?? Number.POSITIVE_INFINITY,
+                      limitedTarget?.model.maxTokens ?? Number.POSITIVE_INFINITY,
+                    ),
+                    configured:
+                      target.config.maxTokens !== undefined ||
+                      options?.maxTokens !== undefined ||
+                      operatorMaxTokens(target.model) !== undefined,
+                  },
+                  sent.maxOutputTokens,
+                  thinkingLevel,
+                );
+              const nextSettings = settings ? { ...outputSettings, ...settings } : outputSettings;
+              if (hasCalls) {
+                if (!sent || !(await reserve())) {
+                  if (failIfAborted(target)) return;
+                  failOutput(message, text ? MODEL_OUTPUT_CUT_ERROR : MODEL_OUTPUT_LIMIT_ERROR);
+                  return;
+                }
+                if (authorizationError) throw authorizationError;
+                // Pi emits failed results for all calls in a truncated batch without executing them.
+                state.nextRecovery = { kind: "tool", deadline, settings: nextSettings };
+              } else if (text) {
+                if (!sent || !(await reserve())) {
+                  if (failIfAborted(target)) return;
+                  failOutput(message, MODEL_OUTPUT_CUT_ERROR);
+                  return;
+                }
+                if (authorizationError) throw authorizationError;
+                for (const pending of buffered) output.push(pending);
+                cutReply(message, "limit", nextSettings);
+                return;
+              } else if (!lengthRecovered && settings && (await reserve())) {
+                if (authorizationError) throw authorizationError;
+                lengthRecovered = true;
+                outputSettings = nextSettings;
+                buffered = [];
+                restart = true;
+                break;
+              }
+            }
             for (const pending of buffered) output.push(pending);
             buffered = [];
             output.push(event);
-            output.end(event.message);
+            output.end(message);
             return;
           }
+          sawToolOutput ||=
+            event.type === "toolcall_start" ||
+            event.type === "toolcall_delta" ||
+            event.type === "toolcall_end" ||
+            messageHasToolCall(event.partial);
+          sawTextOutput ||=
+            (event.type === "text_delta" && Boolean(event.delta)) ||
+            (event.type === "text_end" && Boolean(event.content)) ||
+            Boolean(assistantText(event.partial));
           lastPartial = {
             ...event.partial,
             content: event.partial.content.map((part) => ({ ...part })),
           };
-          if (eventHasPartialOutput(event)) {
-            sawPartialOutput = true;
+          sawPartialOutput ||= eventHasPartialOutput(event);
+          // A failed attempt that only thought must not leave an assistant message
+          // in Pi's transcript when a transient retry succeeds.
+          if (sawTextOutput || sawToolOutput) {
             for (const pending of buffered) output.push(pending);
             buffered = [];
-            output.push(event);
-          } else if (sawPartialOutput) {
             output.push(event);
           } else {
             buffered.push(event);
@@ -3642,8 +4168,15 @@ export function isCodexModel(model: Pick<Model<Api>, "api" | "provider">): boole
   return model.provider === "openai-codex" || model.api === "openai-codex-responses";
 }
 
-/** Abort reason recorded when a Codex stream goes silent past the idle bound. */
-export const CODEX_STREAM_IDLE_TIMEOUT_MESSAGE = "Codex stream idle timeout";
+/** Abort reason recorded when a model stream goes silent past the idle bound. */
+export const MODEL_STREAM_IDLE_TIMEOUT_MESSAGE = "Model stream idle timeout";
+
+const idleTimeoutMessages = new WeakSet<AssistantMessage>();
+
+/** Identify a terminal message created by the local watchdog, independent of provider text. */
+export function isModelStreamIdleTimeout(message: AssistantMessage): boolean {
+  return idleTimeoutMessages.has(message);
+}
 
 export interface StreamIdleWatchdog {
   /** Composed abort signal to hand to the provider request. */
@@ -3667,14 +4200,14 @@ export interface StreamIdleWatchdog {
  * Arming only on a successful response — not at stream creation, and not on
  * retryable error headers — keeps each attempt's time-to-headers inside its
  * own `timeoutMs` budget and each retry backoff outside the idle bound. A
- * non-2xx body is bounded separately by `boundRetryableErrorBody`: pi reads it
+ * non-2xx body is bounded separately by `boundModelErrorBody`: pi reads it
  * with `response.text()` after the header timeout is gone, and failing that
  * read lets the attempt retry, whereas aborting this signal would also cancel
  * the backoff. pi reports any signal abort as a generic "Request was aborted",
  * so when the watchdog fired the wrapper relabels the terminal error as an
  * idle timeout rather than a caller abort.
  */
-export function codexStreamIdleWatchdog(
+export function modelStreamIdleWatchdog(
   upstream: AbortSignal | undefined,
   idleTimeoutMs: number = MODEL_STREAM_IDLE_TIMEOUT_MS,
 ): StreamIdleWatchdog {
@@ -3683,17 +4216,13 @@ export function codexStreamIdleWatchdog(
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const onUpstreamAbort = () => controller.abort(upstream?.reason);
-  if (upstream?.aborted) controller.abort(upstream.reason);
-  else upstream?.addEventListener("abort", onUpstreamAbort, { once: true });
-
   const arm = () => {
     if (disposed || controller.signal.aborted) return;
     timer = setTimeout(() => {
       timer = undefined;
       if (controller.signal.aborted) return;
       timedOut = true;
-      controller.abort(new Error(CODEX_STREAM_IDLE_TIMEOUT_MESSAGE));
+      controller.abort(new Error(MODEL_STREAM_IDLE_TIMEOUT_MESSAGE));
     }, idleTimeoutMs);
     timer.unref?.();
   };
@@ -3705,6 +4234,13 @@ export function codexStreamIdleWatchdog(
     upstream?.removeEventListener("abort", onUpstreamAbort);
   };
 
+  const onUpstreamAbort = () => {
+    controller.abort(upstream?.reason);
+    dispose();
+  };
+  if (upstream?.aborted) onUpstreamAbort();
+  else upstream?.addEventListener("abort", onUpstreamAbort, { once: true });
+
   // Nothing arms the timer before a successful response's headers land: the
   // pre-headers window is bounded per attempt by timeoutMs and retry backoff
   // by maxRetryDelayMs, so idle budget must not burn there and a retry always
@@ -3715,14 +4251,17 @@ export function codexStreamIdleWatchdog(
     arm();
   };
 
-  const describeTimeout = (message: AssistantMessage): AssistantMessage =>
-    timedOut && message.stopReason === "aborted"
-      ? {
-          ...message,
-          stopReason: "error",
-          errorMessage: CODEX_STREAM_IDLE_TIMEOUT_MESSAGE,
-        }
-      : message;
+  const describeTimeout = (message: AssistantMessage): AssistantMessage => {
+    if (!timedOut || message.stopReason !== "aborted") return message;
+    // Preserve content identity for the observer's provider-failure attribution.
+    const timeout: AssistantMessage = {
+      ...message,
+      stopReason: "error",
+      errorMessage: MODEL_STREAM_IDLE_TIMEOUT_MESSAGE,
+    };
+    idleTimeoutMessages.add(timeout);
+    return timeout;
+  };
 
   const rewrite = (event: AssistantMessageEvent): AssistantMessageEvent => {
     if (event.type !== "error") return event;
@@ -3756,44 +4295,74 @@ export function codexStreamIdleWatchdog(
 }
 
 /**
- * Fails a non-2xx body that stays open. The shared idle watchdog stays
- * unarmed: aborting it would skip pi's retry backoff, and a thrown read error
- * is retried like any other transport failure.
+ * Bounds a non-2xx body without arming the shared watchdog. A retryable
+ * response can fail like a transport read; a permanent rejection keeps its
+ * known HTTP status even when the diagnostic body cannot finish.
  */
-function boundRetryableErrorBody(response: Response, idleTimeoutMs: number): Response {
+function boundModelErrorBody(
+  response: Response,
+  idleTimeoutMs: number,
+  signal: AbortSignal,
+): Response {
   if (response.ok || response.body == null) return response;
+  // Some providers construct their status-bearing error only after response.text().
+  // A broken permanent response body must not replace that status with a timeout.
+  const keepHttpStatus = response.status < 500 && ![408, 409, 425, 429].includes(response.status);
+  const bodyDeadline = Date.now() + idleTimeoutMs;
   const reader = response.body.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  let cancelled = false;
   const clear = () => {
     if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
     timer = undefined;
+    onAbort = undefined;
   };
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      const aborted = new Promise<{ kind: "abort" }>((resolve) => {
+        onAbort = () => resolve({ kind: "abort" });
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
       const read = reader.read().then(
         (chunk) => ({ kind: "chunk" as const, chunk }),
         (error: unknown) => ({ kind: "error" as const, error }),
       );
       const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
-        timer = setTimeout(() => resolve({ kind: "timeout" }), idleTimeoutMs);
-        timer.unref?.();
+        const remainingMs = bodyDeadline - Date.now();
+        if (remainingMs <= 0) resolve({ kind: "timeout" });
+        else {
+          timer = setTimeout(() => resolve({ kind: "timeout" }), remainingMs);
+          timer.unref?.();
+        }
       });
-      const outcome = await Promise.race([read, timeout]);
+      const outcome = await Promise.race([aborted, timeout, read]);
       clear();
+      if (cancelled) return;
+      if (outcome.kind === "abort" || signal.aborted) {
+        void reader.cancel(signal.reason).catch(() => undefined);
+        controller.error(signal.reason);
+        return;
+      }
       if (outcome.kind === "timeout") {
-        const error = new Error(CODEX_STREAM_IDLE_TIMEOUT_MESSAGE);
+        const error = new Error(MODEL_STREAM_IDLE_TIMEOUT_MESSAGE);
         void reader.cancel(error).catch(() => undefined);
-        controller.error(error);
+        if (keepHttpStatus) controller.close();
+        else controller.error(error);
         return;
       }
       if (outcome.kind === "error") {
-        controller.error(outcome.error);
+        if (keepHttpStatus) controller.close();
+        else controller.error(outcome.error);
         return;
       }
       if (outcome.chunk.done) controller.close();
       else controller.enqueue(outcome.chunk.value);
     },
     cancel(reason) {
+      cancelled = true;
       clear();
       return reader.cancel(reason);
     },
@@ -3808,15 +4377,30 @@ function boundRetryableErrorBody(response: Response, idleTimeoutMs: number): Res
   });
 }
 
-function codexRequestFetch(
+function modelRequestFetch(
   fetchImpl: ModelsSimpleStreamOptions["fetch"],
   idleTimeoutMs: number,
+  signal: AbortSignal,
 ): NonNullable<ModelsSimpleStreamOptions["fetch"]> {
   return async (input, init) => {
-    const response = fetchImpl ? await fetchImpl(input, init) : await globalThis.fetch(input, init);
-    return boundRetryableErrorBody(response, idleTimeoutMs);
+    // The compatible provider attaches its package Agent after installing this wrapper.
+    const transport =
+      init && "dispatcher" in init
+        ? fetchPairedWithDispatcher(fetchImpl)
+        : (fetchImpl ?? globalThis.fetch);
+    const response = await transport(input, init);
+    const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    return boundModelErrorBody(
+      response,
+      idleTimeoutMs,
+      requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
+    );
   };
 }
+
+// These SDKs reject a fetch override other than globalThis.fetch. Their start event
+// arrives after the response is opened and arms the same idle watchdog.
+const APIS_WITHOUT_CUSTOM_FETCH = new Set<Api>(["google-generative-ai", "google-vertex"]);
 
 export function reliableModelStream(
   models: Models,
@@ -3828,23 +4412,22 @@ export function reliableModelStream(
   runStream?: (options: ModelsSimpleStreamOptions) => AssistantMessageEventStream,
   cacheRetention?: ModelsSimpleStreamOptions["cacheRetention"],
 ): AssistantMessageEventStream {
-  const watchdog = isCodexModel(model) ? codexStreamIdleWatchdog(options?.signal) : undefined;
+  const watchdog = modelStreamIdleWatchdog(options?.signal);
   try {
     const preparedOptions = reliableStreamOptions(
       model,
-      watchdog
-        ? {
-            ...options,
-            signal: watchdog.signal,
-            fetch: codexRequestFetch(options?.fetch, MODEL_STREAM_IDLE_TIMEOUT_MS),
-            // Only a 2xx arms the shared watchdog. Error bodies are bounded by
-            // the fetch wrapper, and a caller-supplied hook still sees every status.
-            onResponse: (response, requestModel) => {
-              if (response.status >= 200 && response.status < 300) watchdog.ping();
-              return options?.onResponse?.(response, requestModel);
-            },
-          }
-        : options,
+      {
+        ...options,
+        signal: watchdog.signal,
+        fetch: APIS_WITHOUT_CUSTOM_FETCH.has(model.api)
+          ? options?.fetch
+          : modelRequestFetch(options?.fetch, MODEL_STREAM_IDLE_TIMEOUT_MS, watchdog.signal),
+        // Error bodies are bounded separately. A caller's hook still sees every status.
+        onResponse: (response, requestModel) => {
+          if (response.status >= 200 && response.status < 300) watchdog.ping();
+          return options?.onResponse?.(response, requestModel);
+        },
+      },
       configuredMaxTokens,
       accessToken,
       cacheRetention,
@@ -3852,9 +4435,9 @@ export function reliableModelStream(
     const stream = runStream
       ? runStream(preparedOptions)
       : models.streamSimple(model, context, preparedOptions);
-    return watchdog ? watchdog.wrap(stream) : stream;
+    return watchdog.wrap(stream);
   } catch (error) {
-    watchdog?.dispose();
+    watchdog.dispose();
     throw error;
   }
 }

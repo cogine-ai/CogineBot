@@ -543,16 +543,22 @@ describe("real Pi against an offline model HTTP endpoint", () => {
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
 
-  it("rejects an interrupted SSE response without emitting successful completion", async () => {
+  it("rejects an interrupted SSE response when no recovery can be reserved", async () => {
     const server = await startModelEmulator({
       steps: [{ expect() {}, response: { type: "disconnect", text: "Working" } }],
     });
     cleanups.push(() => server.close());
     const events: AgentRuntimeEvent[] = [];
     await expect(
-      collect(new PiAgentRuntime().run(runRequest(server.model)), events),
+      collect(
+        new PiAgentRuntime().run(
+          runRequest(server.model, { reserveSelfRecovery: async () => false }),
+        ),
+        events,
+      ),
     ).rejects.toThrow();
     server.assertComplete();
+    expect(events).toContainEqual({ type: "text", text: "Working" });
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
 

@@ -67,6 +67,12 @@ export function acceptedReasoningEfforts(
     levels[level] = effort !== null && accepted.has(effort) ? effort : null;
   }
   if (Object.values(levels).every((effort) => effort === null)) return undefined;
-  if (typeof current.off === "string" && accepted.has(current.off)) levels.off = current.off;
+  const off = current.off === undefined ? defaultOffReasoningEffort(model) : current.off;
+  if (typeof off === "string" && accepted.has(off)) levels.off = off;
+  else if (defaultOffReasoningEffort(model) !== undefined) levels.off = null;
   return levels;
+}
+
+export function defaultOffReasoningEffort(model: Model<Api>): string | undefined {
+  return model.api === "openai-completions" && model.provider === "openrouter" ? "none" : undefined;
 }

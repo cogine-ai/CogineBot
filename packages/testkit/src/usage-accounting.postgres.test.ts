@@ -47,7 +47,11 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
         },
         { expect: () => {}, response: { type: "text", text: "Fixture inspected." }, usage },
         { expect: () => {}, response: { type: "text", text: "Done." }, usage },
-        { expect: () => {}, response: { type: "disconnect", text: "Partial result." }, usage },
+        {
+          expect: () => {},
+          response: { type: "text", text: "Partial result.", finishReason: "content_filter" },
+          usage,
+        },
         {
           expect: () => {},
           response: { type: "hold", text: "Still working.", onOpen: openedCancellation },
@@ -244,6 +248,9 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
       });
       expect(rows).toHaveLength(7);
       expect(new Set(rows.map((row) => row.callId)).size).toBe(7);
+      const failedCalls = rows.filter((row) => row.parentRunId === failed.runId);
+      expect(failedCalls).toHaveLength(1);
+      expect(failedCalls[0]).toMatchObject({ runId: failed.runId, operationKind: "answer" });
       const delivered = rows[0]!;
       const replayEvent = {
         type: "usage" as const,
