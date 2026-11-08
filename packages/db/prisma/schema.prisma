@@ -679,6 +679,7 @@ model Thread {
   historyCompactedUpToSeq     Int?
   historyCompactionSummary    String?    @db.Text
   historyCompactionGeneration Int        @default(0)
+  historyCompactionRetryAfterSeq Int?
   unread                      Boolean    @default(false)
   messages                    Message[]
   events                      Event[]

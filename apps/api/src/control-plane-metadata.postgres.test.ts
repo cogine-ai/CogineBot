@@ -18,7 +18,10 @@ import {
 } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "../../../packages/adapters/src/executor.js";
-import { compactHistory } from "../../../packages/adapters/src/history-compaction.js";
+import {
+  compactHistory,
+  MAX_COMPACTED_SUMMARY_CHARS,
+} from "../../../packages/adapters/src/history-compaction.js";
 import { createRunSandbox } from "../../../packages/adapters/src/host-aware-sandbox.js";
 import {
   IntegrationProviderSettings,
@@ -390,50 +393,77 @@ postgres("control-plane metadata with complete row policies", () => {
     expect(requests[0]!.model).toMatchObject({ provider: "local", id: "metadata-model" });
   });
 
-  it("uses persisted compaction defaults and commits the summary in tenant scope", async () => {
+  it("defers an oversized summary and retries at the committed message threshold in tenant scope", async () => {
     const botId = id("compaction-bot");
     const threadId = id("compaction-thread");
     await owner.prisma.bot.create({
       data: { id: botId, userId: userA, spaceId: spaceA, name: "Synthetic", color: "ink" },
     });
     await owner.prisma.thread.create({
-      data: { id: threadId, userId: userA, spaceId: spaceA, botId, nextMessageSeq: 100 },
+      data: { id: threadId, userId: userA, spaceId: spaceA, botId },
     });
-    await owner.prisma.message.createMany({
-      data: Array.from({ length: 100 }, (_, seq) => ({
-        threadId,
-        seq,
-        role: "user",
-        blocks: [{ kind: "text", text: `Synthetic message ${seq}` }],
-      })),
-    });
+    const appendMessages = (from: number, nextMessageSeq: number) =>
+      owner.prisma.$transaction([
+        owner.prisma.message.createMany({
+          data: Array.from({ length: nextMessageSeq - from }, (_, index) => ({
+            threadId,
+            seq: from + index,
+            role: "user",
+            blocks: [{ kind: "text", text: `Synthetic message ${from + index}` }],
+          })),
+        }),
+        owner.prisma.thread.update({ where: { id: threadId }, data: { nextMessageSeq } }),
+      ]);
+    await appendMessages(0, 100);
     const requests: AgentRunRequest[] = [];
     const agent = {
       describe: () => ({ capabilities: { compaction: true } }),
       async *run(request: AgentRunRequest) {
         assertTenant();
         requests.push(request);
-        yield { type: "done", text: "Synthetic compacted summary" };
+        if (requests.length === 1) {
+          await appendMessages(100, 101);
+          yield { type: "done", text: "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1) };
+        } else {
+          yield { type: "done", text: "Synthetic compacted summary" };
+        }
       },
     } as unknown as AgentRuntime;
+    const deps = {
+      prisma: runtime.prisma,
+      runtime: agent,
+      jobs: { enqueue: vi.fn(), cancel: vi.fn(), close: vi.fn() },
+      memoryProviders: { resolve: async () => null },
+    } as Parameters<typeof compactHistory>[0];
+    const readThread = () => runtime.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
     await inTenant(async () => {
-      await compactHistory(
-        {
-          prisma: runtime.prisma,
-          runtime: agent,
-          jobs: { enqueue: vi.fn(), cancel: vi.fn(), close: vi.fn() },
-          memoryProviders: { resolve: async () => null },
-        } as Parameters<typeof compactHistory>[0],
-        threadId,
-      );
-      assertTenant();
-      expect(await runtime.prisma.thread.findUnique({ where: { id: threadId } })).toMatchObject({
-        historyCompactedUpToSeq: 49,
-        historyCompactionSummary: "Synthetic compacted summary",
+      expect(await readThread()).toMatchObject({ historyCompactionRetryAfterSeq: null });
+      await compactHistory(deps, threadId);
+      expect(await readThread()).toMatchObject({
+        historyCompactedUpToSeq: null,
+        historyCompactionSummary: null,
+        historyCompactionRetryAfterSeq: 151,
       });
     });
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.model).toMatchObject({ provider: "local", id: "metadata-model" });
+
+    await appendMessages(101, 150);
+    await inTenant(() => compactHistory(deps, threadId));
+    expect(requests).toHaveLength(1);
+
+    await appendMessages(150, 151);
+    await inTenant(async () => {
+      await compactHistory(deps, threadId);
+      assertTenant();
+      expect(await readThread()).toMatchObject({
+        historyCompactedUpToSeq: 49,
+        historyCompactionSummary: "Synthetic compacted summary",
+        historyCompactionRetryAfterSeq: null,
+      });
+    });
+    expect(requests).toHaveLength(2);
+    for (const request of requests)
+      expect(request.model).toMatchObject({ provider: "local", id: "metadata-model" });
   });
 
   it("keeps provider authentication and secrets in tenant scope while persisting and rechecking global metadata", async () => {

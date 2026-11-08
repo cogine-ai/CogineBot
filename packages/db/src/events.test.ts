@@ -3903,7 +3903,7 @@ describe("claimSteering", () => {
 });
 
 describe("clearThread", () => {
-  it("releases the computer execution lease without dropping the computer", async () => {
+  it.each([0, 42])("clears history at sequence %i", async (nextMessageSeq) => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
@@ -3911,7 +3911,7 @@ describe("clearThread", () => {
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq: 42, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({ nextMessageSeq, historyCompactionGeneration: 0 })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {
@@ -3958,8 +3958,9 @@ describe("clearThread", () => {
     expect(tx.thread.update).toHaveBeenCalledWith({
       where: { id: "thread-1" },
       data: {
-        historyCompactedUpToSeq: 41,
+        ...(nextMessageSeq > 0 ? { historyCompactedUpToSeq: nextMessageSeq - 1 } : {}),
         historyCompactionSummary: null,
+        historyCompactionRetryAfterSeq: null,
         historyCompactionGeneration: { increment: 1 },
       },
     });

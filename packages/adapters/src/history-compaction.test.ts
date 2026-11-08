@@ -43,6 +43,13 @@ describe("shouldEnqueueCompaction", () => {
     expect(shouldEnqueueCompaction(150, 50, 50, 50)).toBe(false);
     expect(shouldEnqueueCompaction(151, 50, 50, 50)).toBe(true);
   });
+
+  it("keeps the existing backlog requirement and waits for the retry sequence", () => {
+    expect(shouldEnqueueCompaction(200, 49, 50, 50, 201)).toBe(false);
+    expect(shouldEnqueueCompaction(201, 49, 50, 50, 201)).toBe(true);
+    expect(shouldEnqueueCompaction(201, 151, 50, 50, 201)).toBe(false);
+    expect(shouldEnqueueCompaction(150, 49, 50, 50, null)).toBe(true);
+  });
 });
 
 describe("nextCompactionBatchRange", () => {
@@ -268,6 +275,7 @@ function compactionHarness(
     historyCompactedUpToSeq: options.historyCompactedUpToSeq ?? (null as number | null),
     historyCompactionSummary: options.historyCompactionSummary ?? (null as string | null),
     historyCompactionGeneration: options.historyCompactionGeneration ?? 0,
+    historyCompactionRetryAfterSeq: null as number | null,
   };
   const memoryConfig =
     options.memoryConfig === undefined
@@ -278,25 +286,57 @@ function compactionHarness(
           }
       : options.memoryConfig;
   const prisma = {
+    $queryRaw: vi.fn(
+      async (
+        _sql: TemplateStringsArray,
+        batchSize: number,
+        id: string,
+        cursor: number | null,
+        generation: number,
+        summary: string | null,
+        retryAfterSeq: number | null,
+      ) => {
+        if (
+          thread.id !== id ||
+          thread.historyCompactedUpToSeq !== cursor ||
+          thread.historyCompactionGeneration !== generation ||
+          thread.historyCompactionSummary !== summary ||
+          thread.historyCompactionRetryAfterSeq !== retryAfterSeq
+        ) {
+          return [];
+        }
+        thread.historyCompactionRetryAfterSeq = thread.nextMessageSeq + batchSize;
+        return [{ historyCompactionRetryAfterSeq: thread.historyCompactionRetryAfterSeq }];
+      },
+    ),
     thread: {
-      findUniqueOrThrow: vi.fn(async () => thread),
+      findUniqueOrThrow: vi.fn(async () => ({ ...thread })),
       updateMany: vi.fn(
         async (args: {
           where: {
             id: string;
             historyCompactedUpToSeq: number | null;
             historyCompactionGeneration: number;
+            historyCompactionSummary: string | null;
+            historyCompactionRetryAfterSeq: number | null;
           };
-          data: { historyCompactedUpToSeq: number; historyCompactionSummary: string };
+          data: {
+            historyCompactedUpToSeq: number;
+            historyCompactionSummary: string;
+            historyCompactionRetryAfterSeq: number | null;
+          };
         }) => {
           if (
             thread.historyCompactedUpToSeq !== args.where.historyCompactedUpToSeq ||
-            thread.historyCompactionGeneration !== args.where.historyCompactionGeneration
+            thread.historyCompactionGeneration !== args.where.historyCompactionGeneration ||
+            thread.historyCompactionSummary !== args.where.historyCompactionSummary ||
+            thread.historyCompactionRetryAfterSeq !== args.where.historyCompactionRetryAfterSeq
           ) {
             return { count: 0 };
           }
           thread.historyCompactedUpToSeq = args.data.historyCompactedUpToSeq;
           thread.historyCompactionSummary = args.data.historyCompactionSummary;
+          thread.historyCompactionRetryAfterSeq = args.data.historyCompactionRetryAfterSeq;
           return { count: 1 };
         },
       ),
@@ -484,6 +524,7 @@ describe("compactHistory", () => {
     expect(harness.runtime.run).toHaveBeenCalledOnce();
     const [request] = harness.runtime.run.mock.calls[0]!;
     expect(request.instructions).toContain("Current date and time");
+    expect(request.instructions).toContain("Keep the summary under 20000 characters");
     expect(request.tools).toEqual([]);
     expect(request.model).toEqual({
       provider: "openrouter",
@@ -513,10 +554,13 @@ describe("compactHistory", () => {
         id: "thread-1",
         historyCompactedUpToSeq: null,
         historyCompactionGeneration: 0,
+        historyCompactionSummary: null,
+        historyCompactionRetryAfterSeq: null,
       },
       data: {
         historyCompactedUpToSeq: 49,
         historyCompactionSummary: "Summary of 50 messages.",
+        historyCompactionRetryAfterSeq: null,
       },
     });
   });
@@ -975,11 +1019,37 @@ describe("compactHistory", () => {
     expect(harness.thread.historyCompactedUpToSeq).toBeLessThan(49);
   });
 
-  it("keeps the cursor unchanged when the summary exceeds the safe context budget", async () => {
-    const harness = compactionHarness({ deploymentModelKey: "openrouter-key" });
-    harness.runtime.run.mockImplementation(async function* () {
-      yield { type: "done", text: "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1) };
+  it("waits for a full new batch after an oversized summary, then clears the retry threshold on success", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "openrouter-key",
+      historyCompactedUpToSeq: 49,
+      historyCompactionSummary: "Earlier summary.",
+      messages: Array.from({ length: 150 }, (_, seq) => ({
+        seq,
+        role: "user",
+        blocks: [{ kind: "text", text: `message ${seq}` }],
+      })),
     });
+    const addMessagesThrough = (nextMessageSeq: number) => {
+      for (let seq = harness.thread.nextMessageSeq; seq < nextMessageSeq; seq += 1) {
+        harness.messages.push({
+          seq,
+          role: "user",
+          blocks: [{ kind: "text", text: `message ${seq}` }],
+        });
+      }
+      harness.thread.nextMessageSeq = nextMessageSeq;
+    };
+    const fittingSummary = "x".repeat(MAX_COMPACTED_SUMMARY_CHARS);
+    harness.runtime.run
+      .mockImplementationOnce(async function* () {
+        // A message appended during the model call counts before the new retry window.
+        addMessagesThrough(151);
+        yield { type: "done", text: `${fittingSummary}x` };
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: "done", text: fittingSummary };
+      });
     const sink = installCompactionLogger();
 
     try {
@@ -988,17 +1058,102 @@ describe("compactHistory", () => {
       silenceLogger();
     }
 
-    expect(harness.prisma.thread.updateMany).not.toHaveBeenCalled();
-    expect(harness.thread.historyCompactedUpToSeq).toBeNull();
+    expect(harness.thread.historyCompactedUpToSeq).toBe(49);
+    expect(harness.thread.historyCompactionSummary).toBe("Earlier summary.");
+    expect(harness.thread.historyCompactionRetryAfterSeq).toBe(201);
+    expect(harness.saveMemory).not.toHaveBeenCalled();
+    expect(harness.jobs.enqueue).not.toHaveBeenCalled();
     expect(sink.events).toContainEqual(
       expect.objectContaining({
-        level: "error",
-        message: "history.compact failed permanently",
+        level: "warn",
+        message: "history.compact summary too large; retry deferred",
         "thread.id": "thread-1",
-        "history.compact.reason": "summary_too_large",
-        "history.compact.retryable": false,
+        "history.compact.retry_after_seq": 201,
       }),
     );
+
+    addMessagesThrough(200);
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.runtime.run).toHaveBeenCalledOnce();
+
+    addMessagesThrough(201);
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.runtime.run).toHaveBeenCalledTimes(2);
+    expect(harness.thread.historyCompactedUpToSeq).toBe(99);
+    expect(harness.thread.historyCompactionSummary).toBe(fittingSummary);
+    expect(harness.thread.historyCompactionRetryAfterSeq).toBeNull();
+    expect(harness.saveMemory).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a legacy summary committed at the same cursor when a stale worker defers", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "openrouter-key",
+      historyCompactedUpToSeq: 49,
+      historyCompactionSummary: " \n ",
+    });
+    harness.runtime.run
+      .mockImplementationOnce(async function* () {
+        await compactHistory(harness.deps, "thread-1");
+        yield { type: "done", text: "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1) };
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: "done", text: "Winning legacy summary." };
+      });
+
+    await compactHistory(harness.deps, "thread-1");
+
+    expect(harness.thread.historyCompactedUpToSeq).toBe(49);
+    expect(harness.thread.historyCompactionSummary).toBe("Winning legacy summary.");
+    expect(harness.thread.historyCompactionRetryAfterSeq).toBeNull();
+    expect(harness.saveMemory).toHaveBeenCalledOnce();
+  });
+
+  it.each(["valid", "oversized"] as const)(
+    "does not replace a winning retry threshold with an already running %s result",
+    async (staleOutcome) => {
+      const harness = compactionHarness({ deploymentModelKey: "openrouter-key" });
+      const oversized = "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1);
+      harness.runtime.run
+        .mockImplementationOnce(async function* () {
+          await compactHistory(harness.deps, "thread-1");
+          harness.messages.push({ seq: 50, role: "user", blocks: [{ kind: "text", text: "New" }] });
+          harness.thread.nextMessageSeq = 51;
+          yield {
+            type: "done",
+            text: staleOutcome === "valid" ? "Stale valid summary." : oversized,
+          };
+        })
+        .mockImplementationOnce(async function* () {
+          yield { type: "done", text: oversized };
+        });
+
+      await compactHistory(harness.deps, "thread-1");
+
+      expect(harness.thread.historyCompactionRetryAfterSeq).toBe(100);
+      expect(harness.thread.historyCompactedUpToSeq).toBeNull();
+      expect(harness.thread.historyCompactionSummary).toBeNull();
+      expect(harness.saveMemory).not.toHaveBeenCalled();
+      expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not persist an oversized result after clear changes the generation at the same cursor", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "openrouter-key",
+      historyCompactedUpToSeq: 49,
+    });
+    harness.runtime.run.mockImplementationOnce(async function* () {
+      harness.messages.length = 0;
+      harness.thread.historyCompactionGeneration = 1;
+      yield { type: "done", text: "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1) };
+    });
+
+    await compactHistory(harness.deps, "thread-1");
+
+    expect(harness.thread.historyCompactedUpToSeq).toBe(49);
+    expect(harness.thread.historyCompactionSummary).toBeNull();
+    expect(harness.thread.historyCompactionRetryAfterSeq).toBeNull();
+    expect(harness.saveMemory).not.toHaveBeenCalled();
   });
 
   it("re-enqueues itself while a full batch of backlog still remains", async () => {
@@ -1018,6 +1173,34 @@ describe("compactHistory", () => {
     await compactHistory(harness.deps, "thread-1");
 
     expect(harness.prisma.thread.updateMany).toHaveBeenCalledOnce();
+    expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("does not re-enqueue when a newer worker defers during the optional memory save", async () => {
+    const harness = compactionHarness({
+      deploymentModelKey: "openrouter-key",
+      messages: Array.from({ length: 150 }, (_, seq) => ({
+        seq,
+        role: "user",
+        blocks: [{ kind: "text", text: `message ${seq}` }],
+      })),
+    });
+    harness.runtime.run
+      .mockImplementationOnce(async function* () {
+        yield { type: "done", text: "First batch summary." };
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: "done", text: "x".repeat(MAX_COMPACTED_SUMMARY_CHARS + 1) };
+      });
+    harness.saveMemory.mockImplementationOnce(async () => {
+      await compactHistory(harness.deps, "thread-1");
+      return { ok: true, value: undefined };
+    });
+
+    await compactHistory(harness.deps, "thread-1");
+
+    expect(harness.thread.historyCompactedUpToSeq).toBe(49);
+    expect(harness.thread.historyCompactionRetryAfterSeq).toBe(200);
     expect(harness.jobs.enqueue).not.toHaveBeenCalled();
   });
 

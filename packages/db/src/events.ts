@@ -357,27 +357,18 @@ export async function clearThread(
     });
     await tx.message.deleteMany({ where: { threadId: input.threadId } });
     await tx.event.deleteMany({ where: { threadId: input.threadId } });
-    if (thread.nextMessageSeq > 0) {
-      // nextMessageSeq is not reset, so mark every deleted message as already compacted.
-      // Leaving the cursor behind would let compaction re-summarize deleted history (or, reset
-      // to null, immediately re-fire on the fresh conversation).
-      await tx.thread.update({
-        where: { id: input.threadId },
-        data: {
-          historyCompactedUpToSeq: thread.nextMessageSeq - 1,
-          historyCompactionSummary: null,
-          historyCompactionGeneration: { increment: 1 },
-        },
-      });
-    } else {
-      await tx.thread.update({
-        where: { id: input.threadId },
-        data: {
-          historyCompactionSummary: null,
-          historyCompactionGeneration: { increment: 1 },
-        },
-      });
-    }
+    // nextMessageSeq stays monotonic. Skip deleted history and clear its retry marker.
+    await tx.thread.update({
+      where: { id: input.threadId },
+      data: {
+        ...(thread.nextMessageSeq > 0
+          ? { historyCompactedUpToSeq: thread.nextMessageSeq - 1 }
+          : {}),
+        historyCompactionSummary: null,
+        historyCompactionGeneration: { increment: 1 },
+        historyCompactionRetryAfterSeq: null,
+      },
+    });
     if (input.groupId) {
       await tx.chatGroup.update({ where: { id: input.groupId }, data: { updatedAt: now } });
     } else {
