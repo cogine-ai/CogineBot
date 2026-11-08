@@ -3613,28 +3613,42 @@ describe("Pi current-call output recovery", () => {
     );
   });
 
-  it("does not release a known secret prefix when a helper fails before its suffix arrives", async () => {
-    const input = request();
-    input.pageToolSecrets = () => ["private-fixture-split-token"];
-    input.reserveSelfRecovery = vi.fn(async () => false);
-    providerState.stream
-      .mockImplementationOnce(delegate(input))
-      .mockImplementationOnce(() => disconnected("Visible text. private-fixture-split-"))
-      .mockImplementationOnce(() => reply("Parent handled the failure."));
+  it.each(["p", "pr", "pri", "private-fixture-split-"])(
+    "keeps the withheld prefix %s out of the failed helper card and parent context",
+    async (prefix) => {
+      const input = request();
+      input.pageToolSecrets = () => ["private-fixture-split-token"];
+      input.reserveSelfRecovery = vi.fn(async () => false);
+      providerState.stream
+        .mockImplementationOnce(delegate(input))
+        .mockImplementationOnce(() => disconnected(`Visible text. ${prefix}`))
+        .mockImplementationOnce(() => reply("Parent handled the failure."));
 
-    const events = await run(input);
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "subagent",
-        status: "failed",
-        result: expect.stringContaining("Visible text. [redacted]"),
-      }),
-    );
-    expect(JSON.stringify(events)).not.toContain("private-fixture-");
-    expect(JSON.stringify(providerState.stream.mock.calls[2]![1])).not.toContain(
-      "private-fixture-",
-    );
-  });
+      const events = await run(input);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "subagent",
+          status: "failed",
+          result: "Visible text. [redacted]\n\nSubagent failed: Stream ended without finish_reason",
+        }),
+      );
+      expect(JSON.stringify(events)).not.toContain(`Visible text. ${prefix}`);
+      const parent = providerState.stream.mock.calls[2]![1] as Context;
+      expect(parent.messages).toContainEqual(
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "helper-once",
+          details: {
+            result:
+              "Subagent failed: Stream ended without finish_reason\n\nVisible text. [redacted]",
+          },
+        }),
+      );
+      expect(JSON.stringify(parent)).not.toContain(`Visible text. ${prefix}`);
+      expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+      expect(providerState.stream).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it("does not execute a helper tool emitted during its text-only continuation", async () => {
     const input = request();

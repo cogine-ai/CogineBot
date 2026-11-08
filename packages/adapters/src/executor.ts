@@ -9723,13 +9723,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             !isBackgroundRunTrigger(run.trigger) &&
             !isExactNoResponse(assembled)
           ) {
-            const boundary = redactReplyAfterProgress(
-              assembled,
-              [],
-              precedingProgress(),
-              runSecrets,
-            );
-            const text = redactInterruptedOutput(boundary.text, runSecrets).trim();
+            const text = redactInterruptedOutput(assembled, runSecrets, precedingProgress()).trim();
             if (text && !containsSecret(text, runSecrets)) partialText = text;
           }
           await settleRunFailure(message, bot, partialText);

@@ -107,6 +107,7 @@ async function fixture(
     chatLinked?: boolean;
     withoutTurnCapture?: boolean;
     outputLengthSteps?: number[];
+    deploymentModelKey?: string;
     afterEffectCreate?: (effect: CreatedEffect) => Promise<void>;
     releaseEffectBarrier?: () => void;
   } = {},
@@ -256,6 +257,7 @@ async function fixture(
       defaultProvider: model.provider,
       defaultModel: model.id,
       deploymentModelConfigured: true,
+      ...(options.deploymentModelKey ? { deploymentModelKey: options.deploymentModelKey } : {}),
       wakeupDriver: "memory",
       signupsEnabled: "true",
       composio: new ComposioEmulator(),
@@ -492,6 +494,42 @@ function pausedBatch(context: TranscriptContext): AssistantMessage["content"] {
 }
 
 describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => {
+  it.each([1, 2, 3])(
+    "masks a %i-character credential prefix in a stored cut answer",
+    async (length) => {
+      const ordinary = "The report remains saved. Next detail:";
+      const prefix = fixtureKey.slice(0, length);
+      const raw = `${ordinary} ${prefix}`;
+      const masked = `${ordinary} [redacted]`;
+      const f = await fixture([() => [{ type: "text", text: raw }]], {
+        outputLengthSteps: [0],
+        deploymentModelKey: fixtureKey,
+      });
+      try {
+        await f.app.prisma.run.update({
+          where: { id: f.sent.runId },
+          data: { selfRecoveries: 3 },
+        });
+        await f.continueRun("recovery-redaction-worker");
+        expect(
+          await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } }),
+        ).toMatchObject({ status: "failed", selfRecoveries: 3 });
+        expect(
+          await f.app.prisma.message.findMany({
+            where: { runId: f.sent.runId, role: "bot" },
+            select: { blocks: true },
+          }),
+        ).toEqual([{ blocks: [{ kind: "text", text: masked }] }]);
+        const snapshot = await f.clientSnapshot();
+        expect(snapshot).toContain(masked);
+        expect(snapshot).not.toContain(raw);
+        expect(f.providerRequests).toHaveLength(1);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it("keeps the model recovery limit across an interaction resume and stores the cut answer once", async () => {
     const partial = "The remaining file was saved, but";
     const truncatedCall = "truncated-write-must-not-run";
