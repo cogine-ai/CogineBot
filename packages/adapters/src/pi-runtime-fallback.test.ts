@@ -62,7 +62,11 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 }));
 
 import { estimateModelContextTokens } from "./model-context.js";
-import { ModelOutputRecoveryError, TransientModelError } from "./model-output-recovery.js";
+import {
+  ModelOutputRecoveryError,
+  ModelQuotaWaitError,
+  TransientModelError,
+} from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import { isRetryableProviderUnavailable, PiAgentRuntime } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS } from "./pi-runtime-limits.js";
@@ -431,6 +435,224 @@ describe("Pi runtime completion recovery", () => {
     const failure = run(request());
     await expect(failure).rejects.toThrow("HTTP 429 rate limit");
     await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
+  });
+
+  it("defers a verified 429 before retrying or changing the selected connection", async () => {
+    const now = Date.UTC(2026, 10, 9, 9);
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    providerState.stream.mockImplementation((target: typeof primary, _context, options) => {
+      void options.onResponse({ status: 429, headers: { "retry-after": "7200" } }, target);
+      expect(options.maxRetries).toBe(0);
+      return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+    });
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.model.modelCredentialId = "connection";
+    input.model.quotaConnectionRevision = 2;
+    const failure = run(input);
+    await expect(failure).rejects.toBeInstanceOf(ModelQuotaWaitError);
+    await expect(failure).rejects.toMatchObject({
+      until: new Date(now + 7_200_000),
+      target: {
+        provider: primary.provider,
+        modelId: primary.id,
+        modelCredentialId: "connection",
+        connectionRevision: 2,
+        costOwner: "user",
+        endpointDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it("claims the exact resumed target once before dispatch and keeps immediate retries on it", async () => {
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.model.modelCredentialId = "connection";
+    input.model.quotaConnectionRevision = 2;
+    providerState.stream.mockImplementationOnce((target: typeof primary, _context, options) => {
+      void options.onResponse({ status: 429, headers: { "retry-after": "60" } }, target);
+      return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+    });
+    const wait = await run(input).catch((error: unknown) => error);
+    if (!(wait instanceof ModelQuotaWaitError)) throw wait;
+    const claim = vi.fn(async () => undefined);
+    input.quotaResume = { target: wait.target, claim };
+    providerState.stream.mockClear();
+    providerState.stream
+      .mockImplementationOnce((target: typeof primary) => {
+        expect(claim).toHaveBeenCalledOnce();
+        return stream(target, message(target, [], "error", "HTTP 503 unavailable"));
+      })
+      .mockImplementationOnce((target: typeof primary) =>
+        stream(target, message(target, [{ type: "text", text: "Recovered." }], "stop")),
+      );
+    expect((await run(input)).at(-1)).toEqual({ type: "done", text: "Recovered." });
+    expect(claim).toHaveBeenCalledOnce();
+    expect(providerState.stream.mock.calls.map(([target]) => target.id)).toEqual([
+      primary.id,
+      primary.id,
+    ]);
+  });
+
+  it("does not dispatch or select a backup when the quota resume claim is refused", async () => {
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.model.modelCredentialId = "connection";
+    input.model.quotaConnectionRevision = 2;
+    providerState.stream.mockImplementationOnce((target: typeof primary, _context, options) => {
+      void options.onResponse({ status: 429, headers: { "retry-after": "60" } }, target);
+      return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+    });
+    const wait = await run(input).catch((error: unknown) => error);
+    if (!(wait instanceof ModelQuotaWaitError)) throw wait;
+    const claim = vi.fn(async () => {
+      throw new Error("Model limit recovery is no longer available.");
+    });
+    input.quotaResume = { target: wait.target, claim };
+    providerState.stream.mockClear();
+    const failure = run(input);
+    await expect(failure).rejects.toThrow("Model limit recovery is no longer available.");
+    await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
+    expect(claim).toHaveBeenCalledOnce();
+    expect(providerState.stream).not.toHaveBeenCalled();
+  });
+
+  it("keeps backup provenance when the same connection hits quota again after resume", async () => {
+    const choice = { provider: backupA.provider, id: backupA.id, modelCredentialId: "backup" };
+    const backup = { ...choice, apiKey: "backup-key", quotaConnectionRevision: 3 };
+    const input = request([choice]);
+    input.resolveFallbackModel = async () => backup;
+    const quotaRefusal = (
+      target: typeof primary,
+      _context: unknown,
+      options: {
+        onResponse: (
+          response: { status: number; headers: Record<string, string> },
+          model: typeof primary,
+        ) => unknown;
+      },
+    ) => {
+      void options.onResponse({ status: 429, headers: { "retry-after": "60" } }, target);
+      return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+    };
+    providerState.stream
+      .mockImplementationOnce((target: typeof primary) =>
+        stream(target, message(target, [], "error", "HTTP 503 unavailable")),
+      )
+      .mockImplementationOnce(quotaRefusal);
+    const wait = await run(input).catch((error: unknown) => error);
+    if (!(wait instanceof ModelQuotaWaitError)) throw wait;
+    expect(wait.target).toMatchObject({
+      backup: true,
+      provider: backup.provider,
+      modelId: backup.id,
+      modelCredentialId: backup.modelCredentialId,
+    });
+    const claim = vi.fn(async () => undefined);
+    providerState.stream.mockClear().mockImplementationOnce(quotaRefusal);
+    const resumed = request();
+    resumed.model = backup;
+    resumed.quotaResume = { target: wait.target, claim };
+    await expect(run(resumed)).rejects.toMatchObject({ target: wait.target });
+    expect(claim).toHaveBeenCalledOnce();
+    expect(providerState.stream.mock.calls.map(([target]) => target.id)).toEqual([backup.id]);
+  });
+
+  it.each(["endpoint", "credential revision", "deployment key"] as const)(
+    "rejects a changed %s before claiming or calling the resumed model",
+    async (changed) => {
+      const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+      const deployment = changed === "deployment key";
+      input.model.modelCredentialId = deployment ? null : "connection";
+      input.model.quotaConnectionRevision = deployment ? null : 2;
+      providerState.stream.mockImplementationOnce((target: typeof primary, _context, options) => {
+        void options.onResponse({ status: 429, headers: { "retry-after": "60" } }, target);
+        return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+      });
+      const wait = await run(input).catch((error: unknown) => error);
+      if (!(wait instanceof ModelQuotaWaitError)) throw wait;
+      expect(JSON.stringify(wait)).not.toContain(input.model.apiKey);
+      const claim = vi.fn(async () => undefined);
+      input.quotaResume = { target: wait.target, claim };
+      if (changed === "endpoint") {
+        providerState.models.set(`${primary.provider}/${primary.id}`, {
+          ...primary,
+          baseUrl: "https://other.invalid/v1",
+        });
+      }
+      if (changed === "credential revision") input.model.quotaConnectionRevision = 3;
+      if (deployment) input.model.apiKey = "rotated-deployment-key";
+      providerState.stream.mockClear();
+      await expect(run(input)).rejects.toThrow(
+        "The model connection changed before the quota retry.",
+      );
+      expect(claim).not.toHaveBeenCalled();
+      expect(providerState.stream).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: 503, header: "7200" },
+    { status: 429, header: "eventually" },
+    { status: 429, header: "86401" },
+    { status: 200, header: "7200" },
+    { status: undefined, header: "7200" },
+  ])(
+    "preserves backup selection when quota waiting is unavailable ($status/$header)",
+    async ({ status, header }) => {
+      const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+      input.model.modelCredentialId = "connection";
+      input.model.quotaConnectionRevision = 2;
+      providerState.stream.mockImplementation((target: typeof primary, _context, options) => {
+        if (target.id === backupA.id)
+          return stream(target, message(target, [{ type: "text", text: "Backup." }], "stop"));
+        if (status !== undefined)
+          void options.onResponse({ status, headers: { "retry-after": header } }, target);
+        return stream(
+          target,
+          message(
+            target,
+            [],
+            "error",
+            `429 {"error":{"metadata":{"headers":{"Retry-After":"${header}"}}}}`,
+          ),
+        );
+      });
+      expect((await run(input)).at(-1)).toEqual({ type: "done", text: "Backup." });
+      expect(providerState.stream.mock.calls.map(([target]) => target.id)).toEqual([
+        primary.id,
+        backupA.id,
+      ]);
+    },
+  );
+
+  it("does not defer or switch targets on a later 429 after a tool has started", async () => {
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.model.modelCredentialId = "connection";
+    input.model.quotaConnectionRevision = 2;
+    providerState.stream
+      .mockImplementationOnce((target: typeof primary) =>
+        stream(
+          target,
+          message(
+            target,
+            [{ type: "toolCall", id: "once", name: "write_effect", arguments: { value: "once" } }],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation((target: typeof primary, _context, options) => {
+        void options.onResponse({ status: 429, headers: { "retry-after": "7200" } }, target);
+        return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+      });
+    const failure = run(input);
+    await expect(failure).rejects.toThrow("HTTP 429 rate limit");
+    await expect(failure).rejects.not.toBeInstanceOf(ModelQuotaWaitError);
+    await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(providerState.stream.mock.calls.map(([target]) => target.id)).toEqual([
+      primary.id,
+      primary.id,
+    ]);
   });
 
   it("starts a fresh completion budget after one completed tool without replaying it", async () => {

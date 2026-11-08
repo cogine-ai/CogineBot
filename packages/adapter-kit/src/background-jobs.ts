@@ -20,7 +20,10 @@ const payloadSchemas = {
   "native.discord.signal": NativeDiscordSignalJobSchema,
   "native.slack.signal": NativeSlackSignalJobSchema,
   "native.slack.lifecycle": NativeSlackLifecycleJobSchema,
-  "run.continue": z.object({ runId: z.string().min(1) }),
+  "run.continue": z.object({
+    runId: z.string().min(1),
+    quotaWaitRevision: z.number().int().positive().optional(),
+  }),
   "routine.wakeup": z.object({
     routineId: z.string().min(1),
     scheduledFor: z.string().datetime({ offset: true }),
@@ -87,6 +90,20 @@ export function runContinueJob(runId: string): BackgroundJob {
     name: "run.continue",
     payload: { runId },
     replaceKey: runJobKey(runId),
+  };
+}
+
+export function runQuotaResumeJob(
+  runId: string,
+  revision: number,
+  availableAt: Date,
+): BackgroundJob {
+  return {
+    name: "run.continue",
+    payload: { runId, quotaWaitRevision: revision },
+    replaceKey: `${runJobKey(runId)}:quota:${revision}`,
+    availableAt,
+    keepExisting: true,
   };
 }
 

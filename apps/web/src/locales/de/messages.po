@@ -3479,6 +3479,10 @@ msgstr "Modell \"{modelId}\" wurde nicht aufgelistet."
 msgid "Model id"
 msgstr "Modell-ID"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "Modelllimit erreicht. Fortsetzung um {time}."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "Modelloptionen"
@@ -5649,6 +5653,11 @@ msgstr "Warten auf Verbindung"
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"
 msgstr ""
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting for model limit"
+msgstr "Warten auf Modellkontingent"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"

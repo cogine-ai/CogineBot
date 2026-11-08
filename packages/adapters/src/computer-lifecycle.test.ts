@@ -1874,7 +1874,9 @@ describe("computer execution leases", () => {
     expect(client.run.updateManyAndReturn).toHaveBeenCalledWith({
       where: {
         id: { in: ["run-1"] },
-        status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+        status: {
+          in: ["queued", "leased", "running", "waiting_input", "waiting_takeover", "waiting_limit"],
+        },
       },
       data: {
         status: "cancelled",

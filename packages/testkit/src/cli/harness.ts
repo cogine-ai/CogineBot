@@ -100,6 +100,7 @@ async function main() {
     "packages/adapters/src/scripted-file.postgres.test.ts",
     "apps/api/src/routine-runs.postgres.test.ts",
     "apps/api/src/routine-silence.postgres.test.ts",
+    "apps/api/src/quota-wait.postgres.test.ts",
     "packages/testkit/src/thread-message-sequence.postgres.test.ts",
     "apps/api/src/artifacts.postgres.test.ts",
     "apps/api/src/board-app.postgres.test.ts",

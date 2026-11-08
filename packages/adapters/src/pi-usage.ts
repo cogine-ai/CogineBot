@@ -24,6 +24,11 @@ import { estimateModelContextTokens } from "./model-context.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
 import { effectivePiOutputTokens, finalPiOutputPayload } from "./pi-output-budget.js";
 import { MODEL_BUDGET_UNCHANGED_ERROR } from "./pi-runtime-limits.js";
+import {
+  providerErrorQuotaResetAt,
+  providerResetAt,
+  providerRetryAfterAt,
+} from "./provider-quota-reset.js";
 import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 /** Pi initializes absent usage to zero. Only raw numeric fields can prove reported zero. */
@@ -236,6 +241,7 @@ export type PiDispatchBudget = {
   inputTokens: number;
   maxOutputTokens: number;
   providerRetryAfterMs?: number;
+  providerQuotaResetAt?: number;
 };
 
 export type PiBudgetCorrection = {
@@ -301,9 +307,31 @@ export function observedPiStream(
     let providerError: unknown;
     let providerThrew = false;
     let dispatchBudget: (() => PiDispatchBudget) | undefined;
-    let providerRetryAfterMs: number | undefined;
-    const failedBudget = (budget: PiDispatchBudget): PiDispatchBudget =>
-      providerRetryAfterMs === undefined ? budget : { ...budget, providerRetryAfterMs };
+    let providerResponse:
+      | {
+          status: number;
+          receivedAt: number;
+          retryAfterMs?: number;
+          quotaResetAt?: number;
+        }
+      | undefined;
+    let observedFetchResponse = false;
+    const failedBudget = (
+      message: AssistantMessage,
+      budget: PiDispatchBudget,
+    ): PiDispatchBudget => {
+      const receivedAt = providerResponse?.receivedAt ?? Date.now();
+      const retryAfterMs = providerResponse?.retryAfterMs;
+      const quotaResetAt = Math.max(
+        providerResponse?.quotaResetAt ?? 0,
+        providerErrorQuotaResetAt(message.errorMessage, providerResponse?.status, receivedAt) ?? 0,
+      );
+      return {
+        ...budget,
+        ...(retryAfterMs === undefined ? {} : { providerRetryAfterMs: retryAfterMs }),
+        ...(quotaResetAt ? { providerQuotaResetAt: quotaResetAt } : {}),
+      };
+    };
     let requestDeadlineError: Error | undefined;
     let deadlineController: AbortController | undefined;
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -322,14 +350,33 @@ export function observedPiStream(
       deadlineTimer = undefined;
       deadlineActive = false;
     };
-    const observeResponse = (status: number, retryAfter: string | null | undefined) => {
+    const observeResponse = (
+      status: number,
+      retryAfter: string | null | undefined,
+      rateLimitReset: string | null | undefined,
+    ) => {
       if (status >= 200 && status < 300) clearDeadline();
-      providerRetryAfterMs = undefined;
-      if (status !== 429 && status !== 503) return;
+      const receivedAt = Date.now();
       const value = retryAfter?.trim();
-      if (!value) return;
-      const delay = /^\d+$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - Date.now();
-      if (Number.isFinite(delay) && delay > 0) providerRetryAfterMs = delay;
+      const delay =
+        (status === 429 || status === 503) && value
+          ? /^\d+$/.test(value)
+            ? Number(value) * 1_000
+            : Date.parse(value) - receivedAt
+          : 0;
+      const quotaResetAt =
+        status === 429
+          ? Math.max(
+              providerRetryAfterAt(retryAfter, receivedAt) ?? 0,
+              providerResetAt(rateLimitReset, receivedAt) ?? 0,
+            ) || undefined
+          : undefined;
+      providerResponse = {
+        status,
+        receivedAt,
+        retryAfterMs: Number.isFinite(delay) && delay > 0 ? delay : undefined,
+        quotaResetAt,
+      };
     };
     const expireDeadline = () => {
       requestDeadlineError ??= new Error("Model request deadline expired before headers");
@@ -414,7 +461,13 @@ export function observedPiStream(
         ...(deadlineController || hooks?.onProviderError
           ? {
               onResponse: (response, requestModel) => {
-                observeResponse(response.status, response.headers["retry-after"]);
+                // The transport already captured the relative delay at header receipt.
+                if (!observedFetchResponse)
+                  observeResponse(
+                    response.status,
+                    response.headers["retry-after"],
+                    response.headers["x-ratelimit-reset"],
+                  );
                 return options?.onResponse?.(response, requestModel);
               },
             }
@@ -461,8 +514,15 @@ export function observedPiStream(
                     ? async (input, init) => {
                         checkDeadline();
                         requestDispatched = true;
+                        providerResponse = undefined;
+                        observedFetchResponse = false;
                         const response = await usageFetch(input, init);
-                        observeResponse(response.status, response.headers.get("retry-after"));
+                        observeResponse(
+                          response.status,
+                          response.headers.get("retry-after"),
+                          response.headers.get("x-ratelimit-reset"),
+                        );
+                        observedFetchResponse = true;
                         return response;
                       }
                     : usageFetch,
@@ -543,7 +603,7 @@ export function observedPiStream(
             }
           }
           if (event.type === "error")
-            hooks?.onProviderError?.(event.error, failedBudget(measuredBudget()));
+            hooks?.onProviderError?.(event.error, failedBudget(event.error, measuredBudget()));
           if (event.type === "done" && hooks?.onProviderDone)
             hooks.onProviderDone(event.message, measuredBudget());
           stream.push(event);
@@ -609,7 +669,7 @@ export function observedPiStream(
         terminalError !== requestDeadlineError &&
         dispatchBudget
       )
-        hooks?.onProviderError?.(message, failedBudget(dispatchBudget()));
+        hooks?.onProviderError?.(message, failedBudget(message, dispatchBudget()));
       if (requestDeadlineError && terminalError === requestDeadlineError)
         hooks?.onRequestDeadlineExceeded?.(message);
       stream.push({ type: "error", reason: "error", error: message });

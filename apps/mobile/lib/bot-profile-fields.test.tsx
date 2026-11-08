@@ -729,7 +729,14 @@ describe("native profile fields", () => {
         compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
       }).outputText,
     )(...Object.values(dependencies));
-    for (const state of ["queued", "leased", "running", "waiting_input", "waiting_takeover"]) {
+    for (const state of [
+      "queued",
+      "leased",
+      "running",
+      "waiting_input",
+      "waiting_takeover",
+      "waiting_limit",
+    ]) {
       snapshot.run = { status: state };
       act(() => insert());
       expect(composer.current!.snapshot().promptText).toBe("");

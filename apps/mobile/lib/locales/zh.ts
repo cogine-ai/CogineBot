@@ -1,4 +1,6 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Model limit reached. Resuming at {time}.": "已达到模型额度上限。将于 {time} 继续。",
+  "Waiting for model limit": "等待模型额度恢复",
   "Use {count} characters or fewer": "最多输入 {count} 个字符",
   "Use a valid name": "请输入有效名称",
   "Always allow {site}": "始终允许 {site}",

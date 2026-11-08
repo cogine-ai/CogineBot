@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type {
@@ -33,7 +33,8 @@ import type {
   ModelCallObserver,
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
-import { canonicalPiProviderId, usableModelId } from "@rakazo/contracts";
+import type { RunQuotaTarget } from "@rakazo/contracts";
+import { canonicalPiProviderId, RUN_QUOTA_WAIT_MAX_MS, usableModelId } from "@rakazo/contracts";
 import {
   abortableDelay,
   createStreamingRedactor,
@@ -82,6 +83,7 @@ import {
 } from "./model-context.js";
 import {
   ModelOutputRecoveryError,
+  ModelQuotaWaitError,
   redactInterruptedOutput,
   TransientModelError,
 } from "./model-output-recovery.js";
@@ -322,6 +324,7 @@ export class PiAgentRuntime implements AgentRuntime {
       try {
         const selectedModel = resolveRuntimeModel(request.model);
         if (!selectedModel.model) {
+          if (request.quotaResume) throw new Error(MODEL_QUOTA_CONNECTION_CHANGED);
           queue.push({
             type: "text",
             text: `Unknown model ${selectedModel.provider}/${selectedModel.modelId}`,
@@ -349,7 +352,28 @@ export class PiAgentRuntime implements AgentRuntime {
           cardMaxTokens: cardOutputCeiling(model),
           apiKey,
           credentials: selectedModel.credentials,
+          quotaBackup: request.quotaResume?.target.backup,
         };
+        const quotaResume = request.quotaResume;
+        let quotaResumeAdmission: Promise<void> | undefined;
+        const admitQuotaResume = quotaResume
+          ? async (modelTarget: RuntimeModelTarget) => {
+              const target = quotaTarget(modelTarget);
+              if (!target || !sameQuotaTarget(target, quotaResume.target)) {
+                throw new Error(MODEL_QUOTA_CONNECTION_CHANGED);
+              }
+              quotaResumeAdmission ??= quotaResume.claim();
+              await quotaResumeAdmission;
+            }
+          : undefined;
+        if (quotaResume?.humanResume && admitQuotaResume) {
+          // Restoring a human checkpoint can execute an approved tool before opening the model.
+          signal.throwIfAborted();
+          await request.model.authorize?.();
+          signal.throwIfAborted();
+          await admitQuotaResume(initialModelTarget);
+          signal.throwIfAborted();
+        }
         const host: ToolHost = {
           modelFetch: this.modelFetch,
           queue,
@@ -507,7 +531,13 @@ export class PiAgentRuntime implements AgentRuntime {
         const cutReplies = new WeakMap<AssistantMessage["content"], CutReplyReason>();
         const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
         const transientTerminals = new WeakSet<AssistantMessage["content"]>();
-        const hasBackups = Boolean(request.fallbackModels?.length);
+        const quotaTerminals = new WeakMap<
+          AssistantMessage["content"],
+          { until: Date; target: RunQuotaTarget }
+        >();
+        let streamed = "";
+        let toolCalls = 0;
+        const hasBackups = !quotaResume && Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let activeStreamTarget = host.activeModel;
         const fallbackState: FallbackStreamState = {
@@ -518,6 +548,22 @@ export class PiAgentRuntime implements AgentRuntime {
           canRecover: () => !host.pausePending && !("error" in host.controlFailure),
           cutReplies,
           transientTerminals,
+          handleQuotaRefusal: (message, modelTarget, resetAt) => {
+            const target = quotaTarget(modelTarget);
+            if (!target || (!quotaResume && resetAt > Date.now() + RUN_QUOTA_WAIT_MAX_MS))
+              return false;
+            // A completed tool or visible reply rules out replaying the run or switching targets.
+            if (
+              !streamed &&
+              !toolCalls &&
+              !host.pausePending &&
+              !("error" in host.controlFailure)
+            ) {
+              quotaTerminals.set(message.content, { until: new Date(resetAt), target });
+            }
+            return true;
+          },
+          admitQuotaResume,
           completedBudget: (message) => completedBudgets.get(message.content),
           providerFailureBudget: (message) => providerFailures.get(message.content),
           isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
@@ -723,9 +769,7 @@ export class PiAgentRuntime implements AgentRuntime {
         }
         signal.addEventListener("abort", onAbort);
 
-        let streamed = "";
         let currentMessageStreamed = "";
-        let toolCalls = 0;
         let toolActivityShowing = false;
         let silentToolContinuations = 0;
         let truncatedToolBatch = false;
@@ -1064,6 +1108,11 @@ export class PiAgentRuntime implements AgentRuntime {
           const message = sanitizeProviderError(activeStreamTarget.model.provider, error);
           if (!signal.aborted && (lastRecoveryKind || fallbackState.outputRecoveryFailed))
             throw new ModelOutputRecoveryError(message);
+          const quotaWait =
+            !signal.aborted && !streamed && !toolCalls && terminalMessage?.role === "assistant"
+              ? quotaTerminals.get(terminalMessage.content)
+              : undefined;
+          if (quotaWait) throw new ModelQuotaWaitError(message, quotaWait.until, quotaWait.target);
           if (
             !signal.aborted &&
             !streamed &&
@@ -1129,11 +1178,13 @@ export class PiAgentRuntime implements AgentRuntime {
       } catch (error) {
         const message = sanitizeError(error instanceof Error ? error.message : String(error));
         queue.fail(
-          error instanceof ModelOutputRecoveryError
-            ? new ModelOutputRecoveryError(message)
-            : error instanceof TransientModelError
-              ? new TransientModelError(message)
-              : new Error(message),
+          error instanceof ModelQuotaWaitError
+            ? new ModelQuotaWaitError(message, error.until, error.target)
+            : error instanceof ModelOutputRecoveryError
+              ? new ModelOutputRecoveryError(message)
+              : error instanceof TransientModelError
+                ? new TransientModelError(message)
+                : new Error(message),
         );
       } finally {
         queue.close();
@@ -3094,6 +3145,80 @@ interface RuntimeModelTarget {
   apiKey?: string;
   credentials?: PiRuntimeCredentialStore;
   providerContextWindow?: number;
+  quotaBackup?: true;
+}
+
+const MODEL_QUOTA_CONNECTION_CHANGED = "The model connection changed before the quota retry.";
+
+function quotaTarget({
+  config,
+  model,
+  apiKey,
+  quotaBackup,
+}: RuntimeModelTarget): RunQuotaTarget | undefined {
+  const { modelCredentialId, quotaConnectionRevision } = config;
+  if (
+    modelCredentialId === undefined ||
+    quotaConnectionRevision === undefined ||
+    model.provider !== canonicalPiProviderId(config.provider) ||
+    model.id !== config.id ||
+    // The SDK picks these routes from ambient credentials or refreshed token routing.
+    model.provider === "amazon-bedrock" ||
+    model.provider === "google-vertex" ||
+    (model.provider === "github-copilot" && config.oauth !== undefined) ||
+    (modelCredentialId === null
+      ? quotaConnectionRevision !== null || !apiKey
+      : !modelCredentialId ||
+        quotaConnectionRevision === null ||
+        !Number.isSafeInteger(quotaConnectionRevision) ||
+        quotaConnectionRevision < 1)
+  ) {
+    return undefined;
+  }
+  // Azure's SDK route also depends on the operator's endpoint and deployment mapping.
+  const azureRoute =
+    model.provider === "azure"
+      ? [
+          process.env.AZURE_OPENAI_BASE_URL,
+          process.env.AZURE_OPENAI_RESOURCE_NAME,
+          process.env.AZURE_OPENAI_API_VERSION,
+          process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP,
+        ]
+      : undefined;
+  const route = JSON.stringify([
+    model.baseUrl,
+    model.api,
+    config.accountId,
+    config.gatewayId,
+    azureRoute,
+  ]);
+  // The deployment key has no connection revision. Bind its current value without storing it.
+  const endpointDigest = (
+    modelCredentialId === null && apiKey ? createHmac("sha256", apiKey) : createHash("sha256")
+  )
+    .update(route)
+    .digest("hex");
+  return {
+    provider: config.provider,
+    modelId: model.id,
+    modelCredentialId,
+    connectionRevision: quotaConnectionRevision,
+    endpointDigest,
+    costOwner: modelCredentialId === null ? "deployment" : "user",
+    ...(quotaBackup ? { backup: quotaBackup } : {}),
+  };
+}
+
+function sameQuotaTarget(left: RunQuotaTarget, right: RunQuotaTarget): boolean {
+  return (
+    left.provider === right.provider &&
+    left.modelId === right.modelId &&
+    left.modelCredentialId === right.modelCredentialId &&
+    left.connectionRevision === right.connectionRevision &&
+    left.endpointDigest === right.endpointDigest &&
+    left.costOwner === right.costOwner &&
+    left.backup === right.backup
+  );
 }
 
 type CutReplyReason = "connection" | "limit";
@@ -3114,6 +3239,12 @@ interface FallbackStreamState {
   canRecover(): boolean;
   cutReplies: WeakMap<AssistantMessage["content"], CutReplyReason>;
   transientTerminals?: WeakSet<AssistantMessage["content"]>;
+  handleQuotaRefusal?(
+    message: AssistantMessage,
+    target: RuntimeModelTarget,
+    resetAt: number,
+  ): boolean;
+  admitQuotaResume?(target: RuntimeModelTarget): Promise<void>;
   nextRecovery?: PendingOutputRecovery;
   outputRecoveryFailed?: boolean;
   completedBudget(message: AssistantMessage): PiDispatchBudget | undefined;
@@ -3322,6 +3453,7 @@ function isTransientRoutineFailure(error: AssistantMessage, budget: PiDispatchBu
   if (
     resetInMs > 60 * 60_000 ||
     (budget.providerRetryAfterMs ?? 0) > 60 * 60_000 ||
+    (budget.providerQuotaResetAt ?? 0) - now > 60 * 60_000 ||
     /\b(?:daily|weekly|monthly|per[- ]day|5[- ]hour|subscription|out of budget|retry[- ](?:in|after)[^\n]*hours?)\b/.test(
       text,
     ) ||
@@ -3564,6 +3696,7 @@ function fallbackAwareModelStream(
   const resolveNext = async (
     current: RuntimeModelTarget,
   ): Promise<RuntimeModelTarget | undefined> => {
+    if (state.request.quotaResume) return undefined;
     const choices = state.request.fallbackModels ?? [];
     while (state.nextIndex < choices.length && !signalAborted()) {
       const choice = choices[state.nextIndex++];
@@ -3614,6 +3747,7 @@ function fallbackAwareModelStream(
           cardMaxTokens: cardOutputCeiling(resolved.model),
           apiKey: resolved.apiKey,
           credentials: resolved.credentials,
+          quotaBackup: true,
         };
         if (
           !fallbackSupportsContext(
@@ -3763,6 +3897,8 @@ function fallbackAwareModelStream(
         signal.throwIfAborted();
         await target.config.authorize?.();
         signal.throwIfAborted();
+        await state.admitQuotaResume?.(dispatchTarget);
+        signal.throwIfAborted();
         if (target.config.authorize) {
           const authorize = target.config.authorize;
           signal.addEventListener("abort", closeAuthorization, { once: true });
@@ -3789,6 +3925,7 @@ function fallbackAwareModelStream(
           ...attemptOptions,
           ...((thinkingLevelMap || outputSettings?.thinkingLevel) && { reasoning }),
           ...((target.config.authorize ||
+            (target.config.quotaConnectionRevision !== undefined && quotaTarget(dispatchTarget)) ||
             usedRequestCorrection ||
             inherited ||
             lengthRecovered) && {
@@ -3847,6 +3984,21 @@ function fallbackAwareModelStream(
                 ? providerFailure
                 : undefined;
             const recoveryAllowed = providerBudget && !blocksModelRecovery(failureFacts);
+            const resetAt = providerFailure?.providerQuotaResetAt;
+            if (
+              resetAt !== undefined &&
+              resetAt > Date.now() &&
+              !textOutput &&
+              !toolOutput &&
+              !inherited &&
+              !lengthRecovered &&
+              !blocksModelRecovery(failureFacts) &&
+              [...failureFacts.statuses].every((status) => status === 429) &&
+              state.handleQuotaRefusal?.(event.error, dispatchTarget, resetAt)
+            ) {
+              finishWithErrorEvent(event, false);
+              return;
+            }
             const transient =
               !sawPartialOutput &&
               !assistantHasPartialOutput(event.error) &&

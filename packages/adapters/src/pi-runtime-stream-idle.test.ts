@@ -718,6 +718,7 @@ it("stops an actual SDK error-body read without waiting for idle or resolving a 
 });
 
 it("keeps Retry-After from an actual OpenAI-compatible SDK error response", async () => {
+  const beganAt = Date.now();
   const fetcher = vi.fn(async () =>
     Response.json(
       { error: { message: "Rate limit reached" } },
@@ -740,6 +741,45 @@ it("keeps Retry-After from an actual OpenAI-compatible SDK error response", asyn
   expect(fetcher).toHaveBeenCalledOnce();
   expect(onProviderError).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ errorMessage: expect.stringContaining("Rate limit reached") }),
-    expect.objectContaining({ providerRetryAfterMs: 7_200_000 }),
+    expect.objectContaining({
+      providerRetryAfterMs: 7_200_000,
+      providerQuotaResetAt: expect.any(Number),
+    }),
+  );
+  const resetAt = onProviderError.mock.calls[0]?.[1].providerQuotaResetAt;
+  expect(resetAt).toBeGreaterThanOrEqual(beganAt + 7_200_000);
+  expect(resetAt).toBeLessThanOrEqual(Date.now() + 7_200_000);
+});
+
+it("recognizes a future reset mirrored in a verified gateway 429 body", async () => {
+  const resetAt = Math.ceil((Date.now() + 7_200_000) / 1_000) * 1_000;
+  const fetcher = vi.fn(async () =>
+    Response.json(
+      {
+        error: {
+          message: "Rate limit reached",
+          metadata: { headers: { "X-RateLimit-Reset": String(resetAt / 1_000) } },
+        },
+      },
+      { status: 429 },
+    ),
+  );
+  const onProviderError = vi.fn();
+  const sdkStream = observedPiStream(
+    builtinModels(),
+    httpModel("openai-completions", "openrouter"),
+    { messages: [{ role: "user", content: "Fixture", timestamp: 0 }] },
+    { apiKey: "fixture-key", fetch: fetcher, maxRetries: 0 },
+    () => undefined,
+    undefined,
+    undefined,
+    { onProviderError },
+  );
+
+  expect(await sdkStream.result()).toMatchObject({ stopReason: "error" });
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(onProviderError).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ errorMessage: expect.stringContaining("Rate limit reached") }),
+    expect.objectContaining({ providerQuotaResetAt: resetAt }),
   );
 });

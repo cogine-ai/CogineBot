@@ -7,7 +7,7 @@ export function rosterHasUndismissedRunError(
   return Boolean(runErrorId && !dismissedRunErrorIds.has(runErrorId));
 }
 
-/** Short sidebar label while a bot is queued, starting, or running. Null keeps the message preview. */
+/** Short sidebar label while a bot has pending or running work. Null keeps the message preview. */
 export function rosterWorkStatusLabel(status: string): string | null {
   switch (status) {
     case "queued":
@@ -16,6 +16,8 @@ export function rosterWorkStatusLabel(status: string): string | null {
       return t`Starting…`;
     case "running":
       return t`Working…`;
+    case "waiting_limit":
+      return t`Waiting for model limit`;
     default:
       return null;
   }

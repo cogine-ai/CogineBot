@@ -18,6 +18,7 @@ import type {
 import {
   accountSecuritySchema,
   authCapabilitiesSchema,
+  IsoDate,
   legacyAccountSecurity,
   legacyAuthCapabilitiesSchema,
 } from "@rakazo/contracts";
@@ -1328,6 +1329,14 @@ export type MobileGroup = Pick<
 export type MobileSpace = Space;
 export type MobileSpaceNavigation = SpaceNavigation;
 
+type MobileRun = {
+  id: string;
+  botId?: string;
+  status: string;
+  error?: string | null;
+  quotaWaitUntil?: string;
+};
+
 export type MobileSnapshot = {
   botId?: string;
   groupId?: string;
@@ -1337,8 +1346,8 @@ export type MobileSnapshot = {
   observedClearSeq?: number;
   messages: MobileMessage[];
   olderCursor: number | null;
-  run: { id: string; botId?: string; status: string; error?: string | null } | null;
-  activeRuns?: Array<{ id: string; botId?: string; status: string }>;
+  run: MobileRun | null;
+  activeRuns?: MobileRun[];
   members?: MobileGroup["members"];
   computer?: {
     state: string;
@@ -1685,6 +1694,56 @@ export function applyMobileThreadEvent(
       event.seq ?? cursor,
     );
   }
+  if (event.type === "run.waiting_limit") {
+    const until = IsoDate.safeParse(event.payload?.until);
+    const runId = event.runId;
+    if (!runId || !until.success) return { ...prev, cursor };
+    const primary = prev.run;
+    const keepPrimary =
+      primary &&
+      primary.id !== runId &&
+      (prev.groupId || primary.status === "waiting_input" || primary.status === "waiting_takeover");
+    const previousRuns = prev.activeRuns ?? (prev.run ? [prev.run] : []);
+    const known = previousRuns.find((candidate) => candidate.id === runId);
+    const waiting: MobileRun = {
+      ...known,
+      id: runId,
+      ...(event.botId ? { botId: event.botId } : {}),
+      status: "waiting_limit",
+      error: null,
+      quotaWaitUntil: until.data,
+    };
+    const otherRuns = previousRuns.filter(
+      (candidate) => candidate.id !== runId && isActive(candidate.status as RunStatus),
+    );
+    if (keepPrimary && !otherRuns.some((candidate) => candidate.id === primary.id)) {
+      otherRuns.unshift(primary);
+    }
+    const activeRuns =
+      prev.groupId || keepPrimary ? [...otherRuns, waiting] : [waiting, ...otherRuns];
+    return {
+      ...prev,
+      cursor,
+      messages: prev.messages.filter((message) => message.id !== progressMessageId(event)),
+      run: keepPrimary ? primary : waiting,
+      activeRuns,
+    };
+  }
+  if (event.type === "run.started" && event.runId) {
+    // Other starts are still reconciled through the existing snapshot flow.
+    const runId = event.runId;
+    const isResuming = (run: MobileRun | null): boolean =>
+      run?.id === runId && run.status === "waiting_limit";
+    if (!isResuming(prev.run) && !prev.activeRuns?.some(isResuming)) return original;
+    const resume = (run: MobileRun): MobileRun =>
+      isResuming(run) ? { ...run, status: "running", quotaWaitUntil: undefined } : run;
+    return {
+      ...prev,
+      cursor,
+      run: prev.run ? resume(prev.run) : prev.run,
+      activeRuns: prev.activeRuns?.map(resume),
+    };
+  }
   if (event.type === "run.waiting_input" || event.type === "computer.takeover.requested") {
     const status = event.type === "run.waiting_input" ? "waiting_input" : "waiting_takeover";
     const progressId = progressMessageId(event);
@@ -1782,7 +1841,7 @@ export function applyMobileThreadEvent(
       // A failed run stays in run so the thread can say why it stopped (see reduceThreadSnapshot).
       run:
         endedRun && failure
-          ? { ...endedRun, status: "failed", error: failure }
+          ? { ...endedRun, status: "failed", error: failure, quotaWaitUntil: undefined }
           : primaryEnded
             ? (activeRuns?.[0] ?? null)
             : prev.run,

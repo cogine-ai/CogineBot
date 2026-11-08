@@ -171,6 +171,7 @@ import {
   ACTIVE_RUN_STATUSES,
   AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
+  COMPUTER_ACTIVE_RUN_STATUSES,
   callClientNonce,
   canonicalApprovalSite,
   clampCatalogThinkingLevel,
@@ -180,6 +181,7 @@ import {
   isOneShotRoutineCrons,
   nextCronDateAcrossStrict,
   resolveGroupTargetBotIds,
+  THREAD_HIDDEN_RUN_TRIGGERS,
 } from "@rakazo/core";
 import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
@@ -1924,14 +1926,13 @@ export function createRouter(deps: RouterDeps) {
           | Awaited<ReturnType<typeof deps.prisma.userModelCredential.findMany>>
           | undefined;
         const validateRemoval = async (tx: Prisma.TransactionClient) => {
-          if (input.provider === CHATGPT_PLAN_PROVIDER_ID) {
-            await tx.$queryRaw(Prisma.sql`
-              SELECT id FROM user_model_credentials
-              WHERE "userId" = ${context.actor.userId} AND provider = ${input.provider}
-                ${input.credentialId ? Prisma.sql`AND id = ${input.credentialId}` : Prisma.empty}
-              ORDER BY id FOR UPDATE
-            `);
-          }
+          // The quota admission also locks the exact credential before spending the wait.
+          await tx.$queryRaw(Prisma.sql`
+            SELECT id FROM user_model_credentials
+            WHERE "userId" = ${context.actor.userId} AND provider = ${input.provider}
+              ${input.credentialId ? Prisma.sql`AND id = ${input.credentialId}` : Prisma.empty}
+            ORDER BY id FOR UPDATE
+          `);
           const existing = await tx.userModelCredential.findMany({
             where: {
               userId: context.actor.userId,
@@ -1950,6 +1951,7 @@ export function createRouter(deps: RouterDeps) {
               tx,
               context.actor.userId,
               credential.id,
+              { includeQuotaWaits: false },
             );
             await refuseAccountModelReferences(
               tx,
@@ -2277,7 +2279,7 @@ export function createRouter(deps: RouterDeps) {
         if (claimed.count !== 1) throw new ORPCError("CONFLICT");
         try {
           const active = await deps.prisma.run.findFirst({
-            where: { botId: bot.id, status: { in: [...ACTIVE_RUN_STATUSES] } },
+            where: { botId: bot.id, status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] } },
             select: { id: true },
           });
           if (active) {
@@ -2820,8 +2822,9 @@ export function createRouter(deps: RouterDeps) {
               threadId: target.threadId,
               botId,
               status: { in: [...ACTIVE_RUN_STATUSES] },
+              NOT: { status: "waiting_limit", trigger: { in: [...THREAD_HIDDEN_RUN_TRIGGERS] } },
             },
-            select: { id: true },
+            select: { id: true, status: true },
           });
           let run: { id: string } | null = null;
           if (!active) {
@@ -2855,7 +2858,7 @@ export function createRouter(deps: RouterDeps) {
                 messageId: message.id,
                 botId,
                 userId: context.actor.userId,
-                runId: active.id,
+                runId: active.status === "waiting_limit" ? null : active.id,
               },
             });
             await tx.message.update({ where: { id: message.id }, data: { runId: active.id } });
@@ -3091,7 +3094,7 @@ export function createRouter(deps: RouterDeps) {
         const otherRun = await deps.prisma.run.findFirst({
           where: {
             botId: { not: bot.id },
-            status: { in: [...ACTIVE_RUN_STATUSES] },
+            status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
             bot: { computerId: bot.computer.id },
           },
           select: { id: true },

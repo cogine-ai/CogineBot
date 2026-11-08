@@ -1,6 +1,6 @@
 import { computerSupportsTerminal, computerSupportsUpdate } from "@rakazo/adapters";
 import type { ComputerStatus } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
+import { COMPUTER_ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
 /** Mirrors computer.takeover: an execution lease blocks user control unless a takeover is pending. */
@@ -16,7 +16,8 @@ export function executionBlocksUserTakeover(input: {
   const now = input.now ?? Date.now();
   const leaseActive = Boolean(input.leaseExpiresAt && input.leaseExpiresAt.getTime() > now);
   const runActive = Boolean(
-    input.runStatus && (ACTIVE_RUN_STATUSES as readonly string[]).includes(input.runStatus),
+    input.runStatus &&
+      (COMPUTER_ACTIVE_RUN_STATUSES as readonly string[]).includes(input.runStatus),
   );
   return leaseActive || runActive;
 }

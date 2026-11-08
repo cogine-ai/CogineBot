@@ -1,4 +1,6 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Model limit reached. Resuming at {time}.": "Modelllimit erreicht. Fortsetzung um {time}.",
+  "Waiting for model limit": "Warten auf Modellkontingent",
   "Use {count} characters or fewer": "Verwende höchstens {count} Zeichen",
   "Use a valid name": "Verwende einen gültigen Namen",
   "Always allow {site}": "{site} immer erlauben",

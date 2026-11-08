@@ -25,7 +25,7 @@ export class RunStarter {
   private readonly executions = new RunExecutionHost();
   private readonly inFlight = new Set<string>();
   /** Runs made due again while this process was still finishing them. */
-  private readonly dueAgain = new Set<string>();
+  private readonly dueAgain = new Map<string, number | undefined>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private handlers: BackgroundJobHandlers | undefined;
   private stopping = false;
@@ -46,21 +46,23 @@ export class RunStarter {
   }
 
   /** Starts a run created or woken in this process, or hands it to another process. */
-  start(runId: string, at?: Date): void {
+  start(runId: string, at?: Date, quotaWaitRevision?: number): void {
     const delay = at ? at.getTime() - Date.now() : 0;
     if (delay <= 0) {
-      void this.begin(runId, true);
+      void this.begin(runId, true, quotaWaitRevision);
       return;
     }
     // Recovery starts a future run on time if this process is leaving.
     if (!this.accepting) return;
-    clearTimeout(this.timers.get(runId));
+    const timerKey =
+      quotaWaitRevision === undefined ? runId : `${runId}:quota:${quotaWaitRevision}`;
+    clearTimeout(this.timers.get(timerKey));
     const timer = setTimeout(() => {
-      this.timers.delete(runId);
-      void this.begin(runId, true);
+      this.timers.delete(timerKey);
+      void this.begin(runId, true, quotaWaitRevision);
     }, delay);
     timer.unref?.();
-    this.timers.set(runId, timer);
+    this.timers.set(timerKey, timer);
   }
 
   /** Starts a run another process handed over or recovery found; never hands it on again. */
@@ -87,27 +89,28 @@ export class RunStarter {
     });
   }
 
-  private async begin(runId: string, local: boolean): Promise<void> {
+  private async begin(runId: string, local: boolean, quotaWaitRevision?: number): Promise<void> {
     if (this.inFlight.has(runId)) {
-      if (local) this.dueAgain.add(runId);
+      if (local) this.dueAgain.set(runId, quotaWaitRevision);
       return;
     }
     const handlers = this.handlers;
     if (!handlers || !this.accepting) {
-      if (local) this.handOff(runId);
+      if (local && quotaWaitRevision === undefined) this.handOff(runId);
       return;
     }
     this.inFlight.add(runId);
+    const payload = quotaWaitRevision === undefined ? { runId } : { runId, quotaWaitRevision };
     let admitted = false;
     try {
       admitted = await this.executions.execute(
         (execution) =>
           runCorrelatedJob({
             name: "run.continue",
-            payload: { runId },
+            payload,
             run: () =>
               runAsSystem("run dispatch", () =>
-                dispatchBackgroundJob(handlers, "run.continue", { runId }, execution).finally(() =>
+                dispatchBackgroundJob(handlers, "run.continue", payload, execution).finally(() =>
                   this.finished(runId),
                 ),
               ),
@@ -123,12 +126,13 @@ export class RunStarter {
     if (admitted) return;
     this.inFlight.delete(runId);
     this.dueAgain.delete(runId);
-    if (local) this.handOff(runId);
+    if (local && quotaWaitRevision === undefined) this.handOff(runId);
   }
 
   private finished(runId: string): void {
     this.inFlight.delete(runId);
-    if (this.dueAgain.delete(runId)) void this.begin(runId, true);
+    const revision = this.dueAgain.get(runId);
+    if (this.dueAgain.delete(runId)) void this.begin(runId, true, revision);
   }
 }
 
@@ -142,6 +146,10 @@ export class RunJobPublisher implements JobPublisher {
 
   async enqueue(job: BackgroundJob): Promise<void> {
     if (job.name !== "run.continue") return this.background.enqueue(job);
+    if (job.payload.quotaWaitRevision !== undefined) {
+      this.starter.start(job.payload.runId, job.availableAt, job.payload.quotaWaitRevision);
+      return;
+    }
     // A delivery is only a hint: the writer commits human wakes and retry schedules.
     await this.prisma.run.updateMany({
       where: {
@@ -367,7 +375,10 @@ export class RunWorkerHost implements JobWorkerHost {
         OR: [
           { status: "queued", AND: [due] },
           { status: { in: ["leased", "running"] }, leaseExpiresAt: { lte: now } },
-          { status: { in: ["waiting_input", "waiting_takeover"] }, wakeAt: { lte: now } },
+          {
+            status: { in: ["waiting_input", "waiting_takeover", "waiting_limit"] },
+            wakeAt: { lte: now },
+          },
         ],
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -377,6 +388,7 @@ export class RunWorkerHost implements JobWorkerHost {
         createdAt: true,
         botId: true,
         status: true,
+        quotaWait: true,
         bot: { select: { computerId: true } },
       },
     });

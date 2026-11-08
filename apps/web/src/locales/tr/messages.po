@@ -3479,6 +3479,10 @@ msgstr "\"{modelId}\" modeli listelenmedi."
 msgid "Model id"
 msgstr "Model kimliği"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "Model sınırına ulaşıldı. {time} saatinde devam edilecek."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "Model seçenekleri"
@@ -5649,6 +5653,11 @@ msgstr "Bağlantı bekleniyor"
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for first signed event"
 msgstr ""
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting for model limit"
+msgstr "Model sınırının sıfırlanması bekleniyor"
 
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"

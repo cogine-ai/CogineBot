@@ -1067,7 +1067,16 @@ export class TeamChatBridge {
             where: {
               id: cancelledRunId,
               spaceId: message.externalConversation.spaceId,
-              status: { in: ["queued", "running", "leased", "waiting_input", "waiting_takeover"] },
+              status: {
+                in: [
+                  "queued",
+                  "running",
+                  "leased",
+                  "waiting_input",
+                  "waiting_takeover",
+                  "waiting_limit",
+                ],
+              },
             },
             data: {
               status: "cancelled",

@@ -337,7 +337,14 @@ describe("model reference ownership and visibility", () => {
             {
               run: {
                 status: {
-                  in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"],
+                  in: [
+                    "queued",
+                    "leased",
+                    "running",
+                    "waiting_input",
+                    "waiting_takeover",
+                    "waiting_limit",
+                  ],
                 },
               },
             },

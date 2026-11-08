@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -884,6 +885,51 @@ describe("real Pi turn checkpoint producer and recovery", () => {
     ).rejects.toThrow("Unsupported turn checkpoint");
     expect(execute).not.toHaveBeenCalled();
     expect(provider.stream).not.toHaveBeenCalled();
+  });
+
+  it("admits a quota-bound human continuation before restoring its approved tool", async () => {
+    const captured = await capturedApproval();
+    const endpointDigest = createHash("sha256")
+      .update(JSON.stringify([model.baseUrl, model.api, null, null, null]))
+      .digest("hex");
+    const target = {
+      provider: model.provider,
+      modelId: model.id,
+      modelCredentialId: "approved-connection",
+      connectionRevision: 2,
+      endpointDigest,
+      costOwner: "user" as const,
+    };
+    const claim = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("Route revoked"));
+    const executeTool = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => {
+      expect(claim).toHaveBeenCalledOnce();
+      return { receipt: "Approved write" };
+    });
+    const claimSteering = vi.fn(async () => []);
+    const resumed = {
+      ...captured.input,
+      model: {
+        ...captured.input.model,
+        modelCredentialId: target.modelCredentialId,
+        quotaConnectionRevision: target.connectionRevision,
+      },
+      turnCheckpoint: captured.blob,
+      quotaResume: { target, claim, humanResume: true as const },
+      executeTool,
+      claimSteering,
+    };
+    provider.stream.mockReset().mockImplementation(() => response());
+    await expect(consume(resumed)).rejects.toThrow("Route revoked");
+    expect(claim).toHaveBeenCalledOnce();
+    expect(claimSteering).not.toHaveBeenCalled();
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(provider.stream).not.toHaveBeenCalled();
+
+    claim.mockClear().mockResolvedValue(undefined);
+    await expect(consume(resumed)).resolves.toBeDefined();
+    expect(claim).toHaveBeenCalledOnce();
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(provider.stream).toHaveBeenCalledOnce();
   });
 
   it("refuses a removed pending tool without replaying the original prompt", async () => {

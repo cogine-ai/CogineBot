@@ -1,5 +1,5 @@
 import type { BackgroundJobHandlers, JobPublisher } from "@rakazo/adapter-kit";
-import { runContinueJob } from "@rakazo/adapter-kit";
+import { runContinueJob, runQuotaResumeJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
@@ -107,7 +107,7 @@ describe("durable direct run wakeups", () => {
   });
 
   it.each(
-    (["waiting_input", "waiting_takeover"] as const).flatMap((status) =>
+    (["waiting_input", "waiting_takeover", "waiting_limit"] as const).flatMap((status) =>
       (["null", "due", "future"] as const).map((schedule) => ({ status, schedule })),
     ),
   )(
@@ -145,6 +145,26 @@ describe("durable direct run wakeups", () => {
       }
     },
   );
+
+  it("carries the wait revision through direct scheduling without rewriting wakeAt", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const until = new Date(Date.now() + 1_000);
+    const handler = vi.fn(async () => undefined);
+    f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
+    try {
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, until));
+      expect(f.updateMany).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(handler).toHaveBeenCalledExactlyOnceWith(
+        { runId: "limited", quotaWaitRevision: 2 },
+        expect.objectContaining({ onRunStarted: expect.any(Function) }),
+      );
+    } finally {
+      await f.starter.stop();
+    }
+  });
 
   it.each(["due", "future"] as const)(
     "preserves a queued %s schedule when ordinary or explicit hints arrive late",

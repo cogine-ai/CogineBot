@@ -143,6 +143,15 @@ describe("thread message pages", () => {
     ).toBe(false);
   });
 
+  it("keeps automatic quota waits for private runs off the open thread", () => {
+    const event = {
+      type: "run.waiting_limit",
+      payload: { until: "2026-11-09T10:00:00.000Z" },
+    };
+    expect(shouldForwardPeerThreadEvent(event)).toBe(false);
+    expect(shouldForwardBackgroundThreadEvent(event)).toBe(false);
+  });
+
   it("caches background-run classification for live events", async () => {
     const findUnique = vi.fn(async () => ({ trigger: "tickets" }));
     const prisma = { run: { findUnique } } as unknown as PrismaClient;
