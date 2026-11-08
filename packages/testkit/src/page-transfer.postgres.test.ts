@@ -303,12 +303,53 @@ postgres("Page transfer processing (isolated PostgreSQL)", () => {
     },
   );
 
+  it.each(["revoked", "recreated"] as const)(
+    "fails the export when membership is %s before the final page batch",
+    async (change) => {
+      const { scope } = await account();
+      const pages = Array.from({ length: 33 }, (_, index) => ({
+        ...scope,
+        id: `page-${scope.spaceId}-${String(index).padStart(2, "0")}`,
+        title: "Page cursor fixture",
+      }));
+      await admin().page.createMany({ data: pages });
+      await admin().pageVersion.createMany({
+        data: pages.map(({ id, title }) => ({
+          pageId: id,
+          title,
+          version: 1,
+          source: portableVersion.source,
+          code: "fixture",
+        })),
+      });
+      const stream = exportPageRecords(client(), scope);
+      for (const page of pages.slice(0, 32)) {
+        await expect(stream.next()).resolves.toMatchObject({
+          value: { type: "page", id: page.id },
+          done: false,
+        });
+        await expect(stream.next()).resolves.toMatchObject({
+          value: { type: "page_version", pageId: page.id, version: 1 },
+          done: false,
+        });
+      }
+      const membership = await admin().spaceMember.delete({ where: { spaceId_userId: scope } });
+      if (change === "recreated") {
+        await admin().spaceMember.create({ data: { ...membership, id: randomUUID() } });
+      }
+      await expect(stream.next()).rejects.toBeInstanceOf(IsolationError);
+    },
+  );
+
   it("round-trips private Pages, fresh IDs, authorized mappings and safe history", async () => {
     const source = (await account()).scope;
     const { actor, scope } = await account();
     const from = await associations(source);
     const to = await associations(scope);
-    const oldSource = `export const legacy = 1; ${tsx("Kept for history")}`;
+    const detachedId = randomUUID();
+    const chatLiteral = `[Other report](page:${detachedId})`;
+    const oldSource = `export const legacy = 1; ${tsx(`Kept for history ${chatLiteral}`)}`;
+    const currentSource = tsx(`Current text ${chatLiteral} [Outside](page:outside-records)`);
     const secret = await admin().secret.create({
       data: { ...source, kind: PAGE_SHARE_SECRET_KIND, ciphertext: "fixture-existing-grant" },
     });
@@ -338,7 +379,7 @@ postgres("Page transfer processing (isolated PostgreSQL)", () => {
             {
               version: 3,
               title: "Latest",
-              source: tsx("Current text"),
+              source: currentSource,
               code: "wrong-latest-code",
               createdAt: when,
             },
@@ -350,6 +391,7 @@ postgres("Page transfer processing (isolated PostgreSQL)", () => {
     const detached = await admin().page.create({
       data: {
         ...source,
+        id: detachedId,
         title: "Missing target association",
         botId: (await associations(source)).botId,
         versions: {
@@ -398,7 +440,7 @@ postgres("Page transfer processing (isolated PostgreSQL)", () => {
     });
     expect(imported.versions).toMatchObject([
       { version: 1, title: "Historical", source: oldSource, createdAt: new Date(when) },
-      { version: 3, title: "Latest", source: tsx("Current text"), createdAt: new Date(when) },
+      { version: 3, title: "Latest", source: currentSource, createdAt: new Date(when) },
     ]);
     for (const original of oldPage.versions) {
       const newId = result.versionIds.get(original.id);
@@ -414,8 +456,9 @@ postgres("Page transfer processing (isolated PostgreSQL)", () => {
     });
     await expect(detail()).resolves.toMatchObject({
       version: 3,
-      code: expect.stringContaining("Current text"),
+      code: expect.stringContaining(`${chatLiteral} [Outside](page:outside-records)`),
     });
+    expect(result.pageIds.get(detached.id)).not.toBe(detachedId);
     await expect(
       admin().page.findUnique({ where: { id: result.pageIds.get(detached.id)! } }),
     ).resolves.toMatchObject({ botId: null, groupId: null });

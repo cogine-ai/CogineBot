@@ -29,14 +29,20 @@ export async function* exportPageRecords(
   scope: PageTransferScope,
 ): AsyncGenerator<PageTransferRecord> {
   const owner = { userId: scope.userId, spaceId: scope.spaceId };
-  const membership = await runAsTenant(owner, () =>
-    prisma.spaceMember.findUnique({
-      where: { spaceId_userId: owner },
-      select: { id: true },
-    }),
-  );
+  const readMembership = () =>
+    runAsTenant(owner, () =>
+      prisma.spaceMember.findUnique({
+        where: { spaceId_userId: owner },
+        select: { id: true },
+      }),
+    );
+  const membership = await readMembership();
   if (!membership) throw new IsolationError();
-  const ownedPage = { ...owner, space: { memberships: { some: { userId: owner.userId } } } };
+  // A new membership must not resume a stream started under the previous grant.
+  const ownedPage = {
+    ...owner,
+    space: { memberships: { some: { id: membership.id, userId: owner.userId } } },
+  };
   const association = { id: true, spaceId: true, userId: true } as const;
   const ownId = (ref: (PageTransferScope & { id: string }) | null) =>
     ref?.spaceId === owner.spaceId && ref.userId === owner.userId ? ref.id : null;
@@ -103,9 +109,11 @@ export async function* exportPageRecords(
     if (pages.length < PAGE_BATCH) break;
     cursor = pages.at(-1)!.id;
   }
+  // An empty final batch can also mean that membership was lost between reads.
+  if ((await readMembership())?.id !== membership.id) throw new IsolationError();
 }
 
-/** Remap only real Page links, preserving their exact labels, escapes, and surrounding text. */
+/** Remap Page links in chat Markdown. Page JSX is transferred verbatim. */
 export function remapTransferredPageLinks(text: string, pageIds: ReadonlyMap<string, string>) {
   if (!pageIds.size || !text.includes("(page:")) return text;
   let updated = "";
@@ -120,6 +128,7 @@ export function remapTransferredPageLinks(text: string, pageIds: ReadonlyMap<str
   return updated + text.slice(cursor);
 }
 
+/** Resolve the record graph and compile historical source before opening the destination transaction. */
 function preparePageImport(input: readonly unknown[], target: PageTransferTarget) {
   const recordIds = new Set<string>();
   const pages: PageRecord[] = [];
