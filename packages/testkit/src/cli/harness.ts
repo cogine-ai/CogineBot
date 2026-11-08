@@ -54,6 +54,7 @@ async function main() {
   const privatePagesMigrationSuite =
     "packages/testkit/src/private-pages-migration.postgres.test.ts";
   const privatePagesSuite = "packages/testkit/src/pages.postgres.test.ts";
+  const pageTransferSuite = "packages/testkit/src/page-transfer.postgres.test.ts";
   const pageShareSuite = "apps/api/src/page-shares.postgres.test.ts";
   const pageDeletionSuite = "packages/testkit/src/page-deletion.postgres.test.ts";
   const suites = [
@@ -122,6 +123,7 @@ async function main() {
     databaseRestoreSuite,
     privatePagesMigrationSuite,
     privatePagesSuite,
+    pageTransferSuite,
     pageShareSuite,
     pageDeletionSuite,
     "packages/db/src/scripted-state-failure.postgres.test.ts",
@@ -258,6 +260,7 @@ async function main() {
           suite === databaseRestoreSuite ||
           suite === privatePagesMigrationSuite ||
           suite === privatePagesSuite ||
+          suite === pageTransferSuite ||
           suite === pageShareSuite ||
           suite === pageDeletionSuite ||
           suite === serviceStartupSuite ||
