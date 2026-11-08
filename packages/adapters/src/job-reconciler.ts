@@ -135,9 +135,64 @@ export function createJobReconciler(
   let lastCompletedAt = Date.now();
   let stuckCursor: Cursor | undefined;
   let runCursor: Cursor | undefined;
+  let routineRetryCursor: Cursor | undefined;
+  let routineRetryScanDeadline: Date | undefined;
   let routineCursor: Cursor | undefined;
   let controlCursor: ControlCursor | undefined;
   let controlScanDeadline: Date | undefined;
+
+  const reconcileRoutineRetries = async (now: Date) => {
+    // Finish the due cohort before admitting newly due work. A failed publication
+    // stays in the database and will be tried again when the cursor wraps.
+    routineRetryScanDeadline ??= now;
+    const replaceLockedBefore = new Date(now.getTime() - ABANDONED_QUEUED_LOCK_MS);
+    for (let page = 0; page < maxPagesPerPass; page += 1) {
+      if (page > 0) await setImmediate();
+      if (stopping) return false;
+      if (page > 0 && deps.leadership && !(await deps.leadership.tryAcquire())) return false;
+      const cursor = routineRetryCursor;
+      const retries: Array<{ id: string; routineRetryAt: Date | null }> | undefined =
+        await deps.prisma.run
+          .findMany({
+            where: {
+              status: "failed",
+              routineRetryAt: { lte: routineRetryScanDeadline },
+              ...(cursor
+                ? {
+                    OR: [
+                      { routineRetryAt: { gt: cursor.at } },
+                      { routineRetryAt: cursor.at, id: { gt: cursor.id } },
+                    ],
+                  }
+                : {}),
+            },
+            orderBy: [{ routineRetryAt: "asc" }, { id: "asc" }],
+            take: batchSize,
+            select: { id: true, routineRetryAt: true },
+          })
+          .catch((error) => {
+            getLogger().error("routine retry scan reconciliation", error);
+            return undefined;
+          });
+      if (!retries) return true;
+      await publishAll(
+        retries.flatMap(({ id, routineRetryAt }) =>
+          routineRetryAt
+            ? [deps.jobs.enqueue({ ...routineRetryJob(id, routineRetryAt), replaceLockedBefore })]
+            : [],
+        ),
+      ).catch((error) => getLogger().error("routine retry publication reconciliation", error));
+
+      const last = retries.at(-1);
+      if (retries.length < batchSize || !last?.routineRetryAt) {
+        routineRetryCursor = undefined;
+        routineRetryScanDeadline = undefined;
+        return true;
+      }
+      routineRetryCursor = { at: last.routineRetryAt, id: last.id };
+    }
+    return true;
+  };
 
   const reconcileOnce = async () => {
     if (reconciling) return reconciling;
@@ -178,6 +233,7 @@ export function createJobReconciler(
       } catch (error) {
         getLogger().error("stuck work reconciliation", error);
       }
+      if (!(await reconcileRoutineRetries(now))) return;
       const runCursorFilter = runCursor
         ? {
             OR: [
@@ -197,7 +253,6 @@ export function createJobReconciler(
                     status: { in: ["leased", "running"] },
                     leaseExpiresAt: { lte: now },
                   },
-                  { status: "failed", routineRetryAt: { lte: now } },
                 ],
               },
               ...(runCursorFilter ? [runCursorFilter] : []),
@@ -209,7 +264,6 @@ export function createJobReconciler(
             id: true,
             status: true,
             updatedAt: true,
-            routineRetryAt: true,
             botId: true,
             bot: { select: { computerId: true } },
           },
@@ -342,11 +396,10 @@ export function createJobReconciler(
       // A locked job whose worker died is never unlocked, so it is replaced: any lock
       // for a run whose lease expired, and for a queued run only a lock older than
       // a lease, since a live worker finishing a failed attempt still holds it.
-      const recoverableRuns = runs.filter((run) => run.status !== "failed");
-      const blockers = await findRunRecoveryBlockers(deps.prisma, recoverableRuns, now);
+      const blockers = await findRunRecoveryBlockers(deps.prisma, runs, now);
       const abandonedQueuedLockAt = new Date(now.getTime() - ABANDONED_QUEUED_LOCK_MS);
       await publishAll([
-        ...recoverableRuns
+        ...runs
           .filter((run) => !blockers.has(run.id))
           .map((run) =>
             deps.jobs.enqueue({
@@ -355,16 +408,6 @@ export function createJobReconciler(
               replaceLockedBefore: run.status === "queued" ? abandonedQueuedLockAt : now,
             }),
           ),
-        ...runs.flatMap((run) =>
-          run.status === "failed" && run.routineRetryAt
-            ? [
-                deps.jobs.enqueue({
-                  ...routineRetryJob(run.id, run.routineRetryAt),
-                  replaceLockedBefore: abandonedQueuedLockAt,
-                }),
-              ]
-            : [],
-        ),
         ...(dueOutbound ? [deps.jobs.enqueue(messagingDeliverJob())] : []),
         ...unmirroredMessagingRuns.map((run) => deps.jobs.enqueue(messagingDeliverJob(run.id))),
       ]);

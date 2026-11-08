@@ -6,7 +6,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { stuckWorkStatusMessages } from "@rakazo/core";
-import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { Pool, Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { returnBotMessageOutcome } from "./bot-messages.js";
@@ -36,7 +36,6 @@ function fakePrisma(
     status?: string;
     updatedAt: Date;
     wakeAt?: Date | null;
-    routineRetryAt?: Date;
     botId?: string;
     bot?: { computerId: string | null };
   }> = [],
@@ -58,6 +57,44 @@ function fakePrisma(
   } as unknown as PrismaClient;
 }
 
+function retryScanPrisma(
+  runs: Array<{ id: string; updatedAt: Date; status: "queued" | "failed"; routineRetryAt?: Date }>,
+  prisma = fakePrisma(),
+) {
+  const findMany = async ({ where = {}, take }: Prisma.RunFindManyArgs = {}) => {
+    const filters = Array.isArray(where.AND) ? where.AND : [];
+    const ordinary = filters[0]?.OR?.some((filter) => filter.status === "queued");
+    const retry =
+      where.status === "failed"
+        ? where
+        : filters[0]?.OR?.find((filter) => filter.status === "failed");
+    if (!ordinary && !retry) return [];
+    const limit = retry?.routineRetryAt;
+    const dueThrough = limit && typeof limit === "object" && "lte" in limit ? limit.lte : undefined;
+    const cursor = (ordinary ? filters[1] : where)?.OR?.[1];
+    const column = ordinary ? "updatedAt" : "routineRetryAt";
+    const cursorAt = cursor?.[column];
+    const lowerId = typeof cursor?.id === "object" ? cursor.id.gt : undefined;
+    const cursorId = typeof lowerId === "string" ? lowerId : "";
+    return runs
+      .filter((run) => {
+        if (run.status === "queued") return ordinary;
+        return run.routineRetryAt && dueThrough instanceof Date && run.routineRetryAt <= dueThrough;
+      })
+      .filter((run) => {
+        const at = run[column];
+        return (
+          !(cursorAt instanceof Date) ||
+          (at && (at > cursorAt || (at.getTime() === cursorAt.getTime() && run.id > cursorId)))
+        );
+      })
+      .sort((a, b) => a[column]!.getTime() - b[column]!.getTime() || a.id.localeCompare(b.id))
+      .slice(0, take);
+  };
+  vi.mocked(prisma.run.findMany).mockImplementation(findMany as typeof prisma.run.findMany);
+  return prisma;
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -67,6 +104,119 @@ function deferred() {
 }
 
 describe("createJobReconciler", () => {
+  it("recovers a retry that became due behind a full ordinary Run cursor", async () => {
+    const startedAt = new Date("2026-11-01T12:00:00.000Z");
+    const retryAt = new Date(startedAt.getTime() + 1);
+    const prisma = retryScanPrisma([
+      { id: "queued-a", status: "queued", updatedAt: startedAt },
+      { id: "queued-b", status: "queued", updatedAt: retryAt },
+      {
+        id: "failed-before-the-cursor",
+        status: "failed",
+        updatedAt: new Date(retryAt.getTime() - 12 * 60_000),
+        routineRetryAt: retryAt,
+      },
+    ]);
+    const { jobs, enqueue } = publisher();
+    const reconciler = createJobReconciler({ prisma, jobs }, { batchSize: 1, maxPagesPerPass: 1 });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(startedAt);
+      await reconciler.reconcileOnce();
+      expect(enqueue.mock.calls.map(([job]) => job.replaceKey)).toEqual(["run:queued-a"]);
+
+      enqueue.mockClear();
+      vi.setSystemTime(retryAt);
+      await reconciler.reconcileOnce();
+      expect(enqueue.mock.calls.map(([job]) => job.replaceKey)).toEqual(
+        expect.arrayContaining(["run:queued-b", "routine.retry:failed-before-the-cursor"]),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("paginates due retries across publication failures and preserves the scan cutoff", async () => {
+    const at = new Date("2026-11-01T12:00:00.000Z");
+    const next = new Date(at.getTime() + 1);
+    const prisma = retryScanPrisma(
+      ["a", "b", "c", "d"].map((id) => ({
+        id,
+        status: "failed",
+        updatedAt: new Date(at.getTime() - 12 * 60_000),
+        routineRetryAt: id === "d" ? next : at,
+      })),
+    );
+    const { jobs, enqueue } = publisher();
+    enqueue.mockImplementation(async (job) => {
+      if (job.replaceKey === "routine.retry:a") throw new Error("publication unavailable");
+    });
+    const reconciler = createJobReconciler({ prisma, jobs }, { batchSize: 2, maxPagesPerPass: 1 });
+    const published = () => enqueue.mock.calls.map(([job]) => job.replaceKey);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(at);
+      await reconciler.reconcileOnce();
+      expect(published()).toEqual(["routine.retry:a", "routine.retry:b"]);
+
+      enqueue.mockClear();
+      vi.setSystemTime(next);
+      await reconciler.reconcileOnce();
+      expect(published()).toEqual(["routine.retry:c"]);
+
+      enqueue.mockClear();
+      await reconciler.reconcileOnce();
+      expect(published()).toEqual(["routine.retry:a", "routine.retry:b"]);
+
+      enqueue.mockClear();
+      await reconciler.reconcileOnce();
+      expect(published()).toEqual(["routine.retry:c", "routine.retry:d"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes due retries independently of ordinary Run publication errors", async () => {
+    const at = new Date();
+    const prisma = retryScanPrisma([
+      { id: "queued", status: "queued", updatedAt: at },
+      { id: "failed", status: "failed", updatedAt: at, routineRetryAt: at },
+    ]);
+    const { jobs, enqueue } = publisher();
+    enqueue.mockImplementation(async (job) => {
+      if (job.name === "run.continue") throw new Error("ordinary publication unavailable");
+    });
+
+    await expect(createJobReconciler({ prisma, jobs }).reconcileOnce()).rejects.toThrow(
+      "ordinary publication unavailable",
+    );
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ replaceKey: "routine.retry:failed" }),
+    );
+  });
+
+  it("stops the entire pass if leadership is lost between retry pages", async () => {
+    const at = new Date();
+    const prisma = retryScanPrisma([
+      { id: "queued", status: "queued", updatedAt: at },
+      { id: "failed-a", status: "failed", updatedAt: at, routineRetryAt: at },
+      { id: "failed-b", status: "failed", updatedAt: at, routineRetryAt: at },
+    ]);
+    const { jobs, enqueue } = publisher();
+    const leadership = {
+      tryAcquire: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+      release: vi.fn(async () => undefined),
+    };
+
+    await createJobReconciler(
+      { prisma, jobs, leadership },
+      { batchSize: 1, maxPagesPerPass: 2 },
+    ).reconcileOnce();
+
+    expect(enqueue.mock.calls.map(([job]) => job.replaceKey)).toEqual(["routine.retry:failed-a"]);
+    expect(leadership.tryAcquire).toHaveBeenCalledTimes(2);
+  });
+
   it("continues recovering queued Runs while one group teardown pass is in flight", async () => {
     const pending = deferred();
     const reconcileGroupRunTeardowns = vi.fn(() => pending.promise);
@@ -194,8 +344,8 @@ describe("createJobReconciler", () => {
     expect(new Set(enqueue.mock.calls.map(([job]) => job.replaceKey)).size).toBe(1_000);
     expect(findMany).toHaveBeenCalledTimes(10);
     expect(prisma.computer.findMany).toHaveBeenCalledOnce();
-    // Stuck-work, legacy-run, and unmirrored-messaging scans run once each.
-    expect(prisma.run.findMany).toHaveBeenCalledTimes(3);
+    // Stuck-work, due retries, ordinary Runs, and unmirrored messaging each scan once.
+    expect(prisma.run.findMany).toHaveBeenCalledTimes(4);
     expect(prisma.messagingOutbound.findFirst).toHaveBeenCalledOnce();
     expect(auxiliary).toHaveBeenCalledOnce();
   });
@@ -337,10 +487,12 @@ describe("createJobReconciler", () => {
 
   it("restores a completed messaging run that was not durably mirrored", async () => {
     const prisma = fakePrisma();
-    vi.mocked(prisma.run.findMany)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ id: "run-unmirrored" }] as never);
+    vi.mocked(prisma.run.findMany).mockImplementation((async ({
+      where,
+    }: Prisma.RunFindManyArgs = {}) =>
+      where?.trigger === "messaging"
+        ? [{ id: "run-unmirrored" }]
+        : []) as typeof prisma.run.findMany);
     const { jobs, enqueue } = publisher();
 
     await createJobReconciler({ prisma, jobs }).reconcileOnce();
@@ -366,21 +518,24 @@ describe("createJobReconciler", () => {
     const scheduledFor = new Date(Date.now() + 30_000);
     const retryAt = new Date(Date.now() - 30_000);
     const controlExpiresAt = new Date(Date.now() + 15_000);
-    const prisma = fakePrisma(
+    const prisma = retryScanPrisma(
       [
-        { id: "run-1", updatedAt: new Date() },
+        { id: "run-1", status: "queued", updatedAt: new Date() },
         { id: "failed-1", status: "failed", updatedAt: new Date(), routineRetryAt: retryAt },
       ],
-      [{ id: "routine-1", nextRunAt: scheduledFor }],
-      [
-        {
-          id: "computer-1",
-          controlBotId: "bot-1",
-          controlLeaseId: "lease-1",
-          controlLeaseExpiresAt: controlExpiresAt,
-          updatedAt: new Date(),
-        },
-      ],
+      fakePrisma(
+        [],
+        [{ id: "routine-1", nextRunAt: scheduledFor }],
+        [
+          {
+            id: "computer-1",
+            controlBotId: "bot-1",
+            controlLeaseId: "lease-1",
+            controlLeaseExpiresAt: controlExpiresAt,
+            updatedAt: new Date(),
+          },
+        ],
+      ),
     );
     const { jobs, enqueue } = publisher();
     const reconciler = createJobReconciler({ prisma, jobs });
@@ -553,7 +708,7 @@ describe("createJobReconciler", () => {
     const runPages = [runs.slice(0, 2), runs.slice(2, 4), runs.slice(4)];
     let runPage = 0;
     const runFindMany = vi.fn(async (args: { where?: Record<string, unknown> } = {}) => {
-      if (args.where?.messagingMirroredAt === null) return [];
+      if (args.where?.messagingMirroredAt === null || args.where?.status === "failed") return [];
       // The stuck-work scan is the only run query that looks at takeover waits.
       if (JSON.stringify(args.where).includes("waiting_takeover")) return [];
       return runPages[runPage++] ?? [];
@@ -590,17 +745,19 @@ describe("createJobReconciler", () => {
       "run:run-5",
       "routine:routine-5",
     ]);
-    expect(runFindMany.mock.calls[4]?.[0]).toMatchObject({
-      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-      where: {
-        AND: [
-          expect.anything(),
-          {
-            OR: [{ updatedAt: { gt: at } }, { updatedAt: at, id: { gt: "run-2" } }],
-          },
-        ],
-      },
-    });
+    expect(runFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        where: {
+          AND: [
+            expect.anything(),
+            {
+              OR: [{ updatedAt: { gt: at } }, { updatedAt: at, id: { gt: "run-2" } }],
+            },
+          ],
+        },
+      }),
+    );
     expect(routineFindMany.mock.calls[1]?.[0]).toMatchObject({
       orderBy: [{ nextRunAt: "asc" }, { id: "asc" }],
       where: {
@@ -682,8 +839,7 @@ describe("createJobReconciler", () => {
     await reconciler.reconcileOnce();
     await reconciler.reconcileOnce();
 
-    expect(runFindMany).toHaveBeenNthCalledWith(
-      4,
+    expect(runFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         where: {
