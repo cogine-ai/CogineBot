@@ -1528,7 +1528,9 @@ export function createRouter(deps: RouterDeps) {
           if (!credential) throw new ORPCError("NOT_FOUND");
         }
         const [references, memberships] = await Promise.all([
-          listModelConnectionReferences(deps.prisma, context.actor.userId, input.credentialId),
+          listModelConnectionReferences(deps.prisma, context.actor.userId, input.credentialId, {
+            includeQuotaWaits: false,
+          }),
           deps.prisma.spaceMember.findMany({
             where: { userId: context.actor.userId },
             select: { spaceId: true },

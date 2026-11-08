@@ -1008,14 +1008,19 @@ function Thread({
     const seen = new Set<string>();
     const working = snap?.activeRuns ?? (snap?.run ? [snap.run] : []);
     return working.flatMap((run) => {
-      if (!run.botId || seen.has(run.botId) || !isWorkingStatus(run.status)) return [];
+      if (
+        run.status === "waiting_limit" ||
+        !run.botId ||
+        seen.has(run.botId) ||
+        !isWorkingStatus(run.status)
+      )
+        return [];
       const member = snap?.members?.find((candidate) => candidate.botId === run.botId);
       if (!member) return [];
       seen.add(run.botId);
       return [{ ...member, status: run.status }];
     });
   }, [inGroup, snap?.activeRuns, snap?.members, snap?.run]);
-  const executingGroupBots = workingGroupBots.filter((bot) => bot.status !== "waiting_limit");
   const quotaWaits = (snap?.activeRuns ?? (snap?.run ? [snap.run] : [])).flatMap((run) => {
     if (run.status !== "waiting_limit" || !run.quotaWaitUntil) return [];
     const bot = inGroup ? snap?.members?.find((member) => member.botId === run.botId) : currentBot;
@@ -1030,9 +1035,9 @@ function Thread({
       },
     ];
   });
-  const working = inGroup
-    ? workingGroupBots.length > 0
-    : isWorkingStatus(currentBotStatus) || quotaWaits.length > 0;
+  const working =
+    (inGroup ? workingGroupBots.length > 0 : isWorkingStatus(currentBotStatus)) ||
+    quotaWaits.length > 0;
 
   const [stopReplyAnnouncements, observeReplyEvent] = useReplyAnnouncements(
     JSON.stringify([ownerUserId, sessionEpoch, profileScope, snap?.threadId]),
@@ -2791,13 +2796,13 @@ function Thread({
         />
         <WorkingIndicator label={workingNarrationStatus} />
       </View>
-    ) : inGroup && executingGroupBots.length > 0 ? (
+    ) : inGroup && workingGroupBots.length > 0 ? (
       <View
         accessibilityLabel={
           workingNarrationStatus ??
-          (executingGroupBots.length === 1
-            ? t("{name} is working", { name: executingGroupBots[0]?.name ?? t("Agent") })
-            : t("{count} agents working", { count: executingGroupBots.length }))
+          (workingGroupBots.length === 1
+            ? t("{name} is working", { name: workingGroupBots[0]?.name ?? t("Agent") })
+            : t("{count} agents working", { count: workingGroupBots.length }))
         }
         accessibilityRole="text"
         style={{
@@ -2808,12 +2813,12 @@ function Thread({
         }}
       >
         <View style={{ flexDirection: "row", paddingRight: 8 }}>
-          {executingGroupBots.map((bot, index) => (
+          {workingGroupBots.map((bot, index) => (
             <View
               key={bot.botId}
               style={{
                 marginLeft: index === 0 ? 0 : -8,
-                zIndex: executingGroupBots.length - index,
+                zIndex: workingGroupBots.length - index,
               }}
             >
               <BotAvatar color={bot.color} identity={bot.botId} size={28} status={bot.status} />

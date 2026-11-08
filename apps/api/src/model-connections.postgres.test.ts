@@ -1320,6 +1320,12 @@ describePostgres("model connection HTTP acceptance", () => {
         credentialId: credential.id,
         expectedRevision: credential.connectionRevision,
       });
+    const references = () =>
+      rpc<{ references: Array<{ kind: string; id: string }> }>(cookie, "models/references", {
+        credentialId: credential.id,
+      });
+    const activeReferences = (await references()).references;
+    expect(activeReferences).toContainEqual(expect.objectContaining({ kind: "run", id: run.id }));
     expect((await remove()).status).toBe(400);
     const beganAt = new Date();
     const until = new Date(beganAt.getTime() + 60_000);
@@ -1345,6 +1351,9 @@ describePostgres("model connection HTTP acceptance", () => {
         },
       },
     });
+    expect((await references()).references).toEqual(
+      activeReferences.filter((reference) => reference.kind !== "run" || reference.id !== run.id),
+    );
     expect((await remove()).status).toBe(200);
     expect(
       await handles.prisma.userModelCredential.findUnique({ where: { id: credential.id } }),
