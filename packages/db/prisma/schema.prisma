@@ -805,6 +805,7 @@ model Run {
   leaseExpiresAt       DateTime?
   checkpoint           String?
   scriptedState        Json?
+  selfRecoveries       Int              @default(0)
   clientNonce          String?
   sourceMessageId      String?
   sourceMessage        Message?         @relation("RunSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)

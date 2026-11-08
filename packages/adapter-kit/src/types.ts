@@ -514,6 +514,8 @@ export const DEFAULT_CONTEXT_STRATEGY: AgentContextStrategy = "retrieval";
 export interface AgentRunRequest {
   /** Awaited producer-side accounting, independent of event-consumer cancellation. */
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
+  /** Consume one Run-wide model output recovery before dispatching it. */
+  reserveSelfRecovery?: () => Promise<boolean>;
   contextStrategy?: AgentContextStrategy;
   /** Trusted runtime input; restored context must use bounded selection even in current mode. */
   contextRestored?: boolean;

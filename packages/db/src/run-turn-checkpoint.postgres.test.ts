@@ -4,10 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { claimSteering, finalizeRun } from "./events.js";
+import { appendEventInTransaction, claimSteering, finalizeRun } from "./events.js";
 import { expireStuckRun } from "./expire-stuck-run.js";
 import { createThreadMessage } from "./messages.js";
 import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
+import { reserveRunSelfRecovery } from "./run-self-recovery.js";
 import {
   clearRunTurnCheckpoints,
   dropRunTurnCheckpoint,
@@ -108,6 +109,92 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       blocks: [],
     };
   }
+
+  it("shares three output recovery slots across concurrent calls and successor leases", async () => {
+    const f = await seed();
+    const input = { runId: f.run.id, spaceId, leaseOwner: "worker", leaseFence: 7 };
+    expect(f.run.selfRecoveries).toBe(0);
+    for (const invalid of [
+      { spaceId: otherSpaceId },
+      { leaseOwner: "other-worker" },
+      { leaseFence: 6 },
+      { now: f.run.leaseExpiresAt! },
+    ]) {
+      await expect(reserveRunSelfRecovery(prisma, { ...input, ...invalid })).resolves.toBe(false);
+    }
+    await expect(reserveRunSelfRecovery(prisma, input)).resolves.toBe(true);
+    await saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "fixture");
+    await dropRunTurnCheckpoint(prisma, f.run, "worker", 7);
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { leaseOwner: "successor", leaseFence: 8 },
+    });
+    await expect(reserveRunSelfRecovery(prisma, input)).resolves.toBe(false);
+    const successor = { ...input, leaseOwner: "successor", leaseFence: 8 };
+    const reservations = await Promise.all(
+      Array.from({ length: 5 }, () => reserveRunSelfRecovery(prisma, successor)),
+    );
+    expect(reservations.filter(Boolean)).toHaveLength(2);
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      selfRecoveries: 3,
+    });
+    const stopped = await seed();
+    await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [stopped.run], new Date()));
+    await expect(reserveRunSelfRecovery(prisma, { ...input, runId: stopped.run.id })).resolves.toBe(
+      false,
+    );
+  });
+
+  it("commits partial output and failure once, with no write by a stale or cancelled worker", async () => {
+    const f = await seed();
+    await prisma.$transaction((tx) =>
+      appendEventInTransaction(tx, {
+        spaceId,
+        botId,
+        threadId: f.thread.id,
+        runId: f.run.id,
+        type: "thread.progress",
+        payload: { text: "Already shown fragment.", streaming: true },
+      }),
+    );
+    const input = {
+      ...finishInput(f),
+      outcome: "failed" as const,
+      error: "Output recovery limit",
+      partialText: "Already shown fragment.\0\uD83D",
+    };
+    await expect(finalizeRun(prisma, { ...input, leaseFence: 6 })).resolves.toBe(false);
+    await expect(prisma.message.count({ where: { runId: f.run.id } })).resolves.toBe(0);
+    const results = await Promise.all([finalizeRun(prisma, input), finalizeRun(prisma, input)]);
+    expect(results.filter(Boolean)).toEqual([{ continuationRunId: null }]);
+    const messages = await prisma.message.findMany({ where: { runId: f.run.id } });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "bot",
+      blocks: [{ kind: "text", text: "Already shown fragment.\uFFFD\uFFFD" }],
+    });
+    const events = await prisma.event.findMany({
+      where: { runId: f.run.id },
+      orderBy: { seq: "asc" },
+    });
+    expect(events.map(({ type }) => type)).toEqual(["thread.message.created", "run.failed"]);
+    expect(events[1]!.payload).toEqual({ error: input.error });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "failed",
+      error: input.error,
+    });
+    const stopped = await seed();
+    await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [stopped.run], new Date()));
+    await expect(
+      finalizeRun(prisma, {
+        ...finishInput(stopped),
+        outcome: "failed",
+        error: input.error,
+        partialText: input.partialText,
+      }),
+    ).resolves.toBe(false);
+    await expect(prisma.message.count({ where: { runId: stopped.run.id } })).resolves.toBe(0);
+  });
 
   const resetClock = Date.parse("2026-10-20T12:00:00.000Z");
   const resetTime = (offsetMs: number) => new Date(resetClock + offsetMs);

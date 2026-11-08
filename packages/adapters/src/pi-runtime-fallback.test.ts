@@ -6,6 +6,7 @@ import type {
   Context,
   CredentialStore,
   Model,
+  ToolCall,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
@@ -61,6 +62,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 }));
 
 import { estimateModelContextTokens } from "./model-context.js";
+import { ModelOutputRecoveryError } from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import { isRetryableProviderUnavailable, PiAgentRuntime } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS } from "./pi-runtime-limits.js";
@@ -544,7 +546,7 @@ describe("Pi runtime completion recovery", () => {
     },
   );
 
-  it.each(["text", "thinking", "toolCall"])(
+  it.each(["text", "toolCall"])(
     "does not retry after a %s event even if the error loses its content",
     async (kind) => {
       const failure = message(primary, [], "error", "Stream ended without finish_reason");
@@ -553,8 +555,6 @@ describe("Pi runtime completion recovery", () => {
         const partial = message(primary, [], "stop");
         result.push({ type: "start", partial });
         if (kind === "toolCall") result.push({ type: "toolcall_start", contentIndex: 0, partial });
-        else if (kind === "thinking")
-          result.push({ type: "thinking_delta", contentIndex: 0, delta: "partial", partial });
         else result.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial });
         result.push({ type: "error", reason: "error", error: failure });
         result.end(failure);
@@ -1007,12 +1007,10 @@ describe("Pi runtime ordered model fallback", () => {
     const appendMessage = vi.fn(async () => undefined);
     vi.spyOn(PiJsonlSessionRecorder.prototype, "start").mockResolvedValue({ appendMessage });
     const events: AgentRuntimeEvent[] = [];
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.reserveSelfRecovery = async () => false;
     await expect(
-      run(
-        request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]),
-        events,
-        new PiAgentRuntime({ sessionRoot: "fixture-sessions" }),
-      ),
+      run(input, events, new PiAgentRuntime({ sessionRoot: "fixture-sessions" })),
     ).rejects.toThrow(/503 timeout/);
     expect(providerState.stream).toHaveBeenCalledTimes(1);
     expect(appendMessage).toHaveBeenCalledWith(
@@ -1776,59 +1774,36 @@ describe("Pi runtime ordered model fallback", () => {
     expect(backupImageCounts.at(-1)).toBe(1);
   });
 
-  it.each([
-    {
-      label: "thinking",
-      content: [{ type: "thinking" as const, thinking: "terminal reasoning" }],
-    },
-    {
-      label: "tool call",
-      content: [
-        {
-          type: "toolCall" as const,
-          id: "terminal-call",
-          name: "write_effect",
-          arguments: { value: "must not execute" },
-        },
-      ],
-    },
-  ])(
-    "does not switch when the terminal error contains partial $label without deltas",
-    async ({ content, label }) => {
+  it.each(["thinking", "tool call"] as const)(
+    "retries a transient terminal $0 cut only when no text or tool was exposed",
+    async (kind) => {
+      const content: AssistantMessage["content"] =
+        kind === "thinking"
+          ? [{ type: "thinking", thinking: "terminal reasoning" }]
+          : [
+              {
+                type: "toolCall",
+                id: "terminal-call",
+                name: "write_effect",
+                arguments: { value: "must not execute" },
+              },
+            ];
       const failure = message(primary, content, "error", "429 rate_limit_error");
       providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
         target.provider === primary.provider
           ? stream(target, failure)
-          : stream(target, message(target, [{ type: "text", text: "must not run" }], "stop")),
+          : stream(target, message(target, [{ type: "text", text: "Backup answered." }], "stop")),
       );
       const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
-      const events: Array<{ type: string; text?: string }> = [];
-      const runtime = new PiAgentRuntime();
-      const consume = async () => {
-        for await (const event of runtime.run(input, {
-          operationId: "operation",
-          traceId: "trace",
-          spaceId: "space",
-          userId: "user",
-          signal: new AbortController().signal,
-        })) {
-          events.push(event);
-        }
-      };
 
-      await expect(consume()).rejects.toThrow(/429 rate_limit_error/);
-
-      expect(providerState.stream).toHaveBeenCalledTimes(1);
-      if (label === "text") {
-        expect(events).toContainEqual(
-          expect.objectContaining({ type: "text", text: "terminal partial" }),
-        );
+      if (kind === "thinking") {
+        expect(await run(input)).toContainEqual({ type: "text", text: "Backup answered." });
+        expect(providerState.stream).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(run(input)).rejects.toThrow("429 rate_limit_error");
+        expect(providerState.stream).toHaveBeenCalledOnce();
       }
       expect(input.executeTool).not.toHaveBeenCalled();
-      expect(events).not.toContainEqual(
-        expect.objectContaining({ type: "text", text: "must not run" }),
-      );
-      expect(label).toBeTruthy();
     },
   );
 
@@ -3283,5 +3258,372 @@ describe("Pi runtime corrective dispatch deadlines", () => {
     expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
       "run_subagent",
     ]);
+  });
+});
+
+describe("Pi current-call output recovery", () => {
+  const cut = "The result is ready";
+  const finished = "The result is ready for review.";
+  const part = (text: string) => ({ type: "text" as const, text });
+  const write = (id: string, value?: string): ToolCall => ({
+    type: "toolCall",
+    id,
+    name: "write_effect",
+    arguments: value === undefined ? {} : { value },
+  });
+  const visible = (events: AgentRuntimeEvent[]) =>
+    events
+      .filter((event) => event.type === "text")
+      .map((event) => event.text)
+      .join("");
+  const reply = (text: string, stopReason: AssistantMessage["stopReason"] = "stop") =>
+    stream(primary, message(primary, [part(text)], stopReason));
+
+  function disconnected(text: string, error = "Stream ended without finish_reason", tool = false) {
+    const result = new AssistantMessageEventStream();
+    const partial = message(primary, [part(text)], "stop");
+    const terminal = message(primary, [], "error", error);
+    result.push({ type: "start", partial: { ...partial, content: [] } });
+    result.push({ type: "text_delta", contentIndex: 0, delta: text, partial });
+    if (tool) result.push({ type: "toolcall_start", contentIndex: 1, partial });
+    result.push({ type: "error", reason: "error", error: terminal });
+    result.end(terminal);
+    return result;
+  }
+
+  it.each(["connection", "limit"] as const)(
+    "joins a %s cut with terminal-only continuation text after one completed tool",
+    async (kind) => {
+      const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+      input.resolveFallbackModel = vi.fn();
+      input.reserveSelfRecovery = vi.fn(async () => true);
+      providerState.stream
+        .mockImplementationOnce(() =>
+          stream(primary, message(primary, [write("complete", "once")], "toolUse")),
+        )
+        .mockImplementationOnce(() =>
+          kind === "connection" ? disconnected(cut) : reply(cut, "length"),
+        )
+        .mockImplementationOnce(() => reply("ready for review."));
+      const events = await run(input);
+
+      expect(events.at(-1)).toEqual({ type: "done", text: finished });
+      expect(visible(events)).toBe(finished);
+      expect(input.executeTool).toHaveBeenCalledOnce();
+      expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+      expect(input.resolveFallbackModel).not.toHaveBeenCalled();
+      const context = providerState.stream.mock.calls[2]![1] as Context;
+      expect(context.tools).toEqual([]);
+      expect(context.messages).toContainEqual(
+        expect.objectContaining({ role: "toolResult", toolCallId: "complete" }),
+      );
+      expect(JSON.stringify(context.messages.at(-1))).toContain("Automated message");
+    },
+  );
+
+  it("keeps a partial reply and refuses a tool emitted during text-only recovery", async () => {
+    const input = request();
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("complete", "once")], "toolUse")),
+      )
+      .mockImplementationOnce(() => disconnected(cut))
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("complete", "once")], "toolUse")),
+      );
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(input, events)).rejects.toBeInstanceOf(ModelOutputRecoveryError);
+    expect(visible(events)).toBe(cut);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { error: "401 invalid api key", tool: false },
+    { error: "429 rate limit", tool: false },
+    { error: "503 connection reset", tool: true },
+  ])("does not continue after $error with pending tool output=$tool", async ({ error, tool }) => {
+    const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream.mockImplementationOnce(() => disconnected(cut, error, tool));
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(input, events)).rejects.toThrow(error);
+    expect(visible(events)).toBe(cut);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
+  });
+
+  it("uses the single post-header time allowance for a genuine idle text continuation", async () => {
+    vi.useFakeTimers();
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream
+      .mockImplementationOnce((_target, _ctx, options) => {
+        const result = new AssistantMessageEventStream();
+        const partial = message(primary, [part(cut)], "stop");
+        options.onResponse(new Response(null, { status: 200 }), primary);
+        result.push({ type: "start", partial: { ...partial, content: [] } });
+        result.push({ type: "text_delta", contentIndex: 0, delta: cut, partial });
+        options.signal.addEventListener("abort", () => {
+          const aborted = message(primary, partial.content, "aborted", "aborted");
+          result.push({ type: "error", reason: "aborted", error: aborted });
+          result.end(aborted);
+        });
+        return result;
+      })
+      .mockImplementationOnce(() => reply("ready for review."));
+    const outcome = run(input);
+    await vi.advanceTimersByTimeAsync(MODEL_STREAM_IDLE_TIMEOUT_MS + 1);
+
+    expect(visible(await outcome)).toBe(finished);
+    expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+    const options = providerState.stream.mock.calls[1]![2];
+    expect(options.timeoutMs).toBeLessThanOrEqual(120_000);
+    expect(options.timeoutMs).toBeGreaterThan(0);
+    expect(options.maxRetries).toBe(0);
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an interrupted thinking-only call without exposing private reasoning", async () => {
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream
+      .mockImplementationOnce(() => {
+        const result = new AssistantMessageEventStream();
+        const partial = message(primary, [{ type: "thinking", thinking: "private" }], "stop");
+        const failure = message(primary, [], "error", "Stream ended without finish_reason");
+        result.push({ type: "start", partial });
+        result.push({ type: "thinking_delta", contentIndex: 0, delta: "private", partial });
+        result.push({ type: "error", reason: "error", error: failure });
+        result.end(failure);
+        return result;
+      })
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("completed-after-retry", "once")], "toolUse")),
+      )
+      .mockImplementationOnce(() => reply("Done."));
+    expect(visible(await run(input))).toBe("Done.");
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    const finalContext = providerState.stream.mock.calls[2]![1] as Context;
+    expect(JSON.stringify(finalContext.messages)).not.toContain("private");
+    expect(finalContext.messages).toContainEqual(
+      expect.objectContaining({
+        role: "toolResult",
+        toolCallId: "completed-after-retry",
+      }),
+    );
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
+    expect(providerState.delay).toHaveBeenCalledOnce();
+  });
+
+  it("shares the original deadline while claiming recovery and does not dispatch after expiry", async () => {
+    const input = request();
+    let time = 100;
+    vi.spyOn(Date, "now").mockImplementation(() => time);
+    input.reserveSelfRecovery = vi.fn(async () => {
+      time += 120_001;
+      return true;
+    });
+    providerState.stream.mockImplementationOnce(() => disconnected(cut));
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(input, events)).rejects.toThrow("Stream ended without finish_reason");
+    expect(visible(events)).toBe(cut);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+  });
+
+  it("honors Stop while claiming a recovery slot", async () => {
+    const controller = new AbortController();
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => {
+      controller.abort();
+      return true;
+    });
+    providerState.stream.mockImplementationOnce(() => disconnected(cut));
+    async function consume() {
+      for await (const _event of new PiAgentRuntime().run(input, { signal: controller.signal })) {
+        // Drain the exact turn.
+      }
+    }
+
+    await expect(consume()).rejects.toThrow();
+    expect(controller.signal.aborted).toBe(true);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+  });
+
+  it("fails the fourth truncation and keeps each distinct visible segment", async () => {
+    const input = request();
+    let attempts = 0;
+    providerState.stream.mockImplementation(() => reply(`Segment ${++attempts}. `, "length"));
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(input, events)).rejects.toThrow("before finishing its reply");
+    expect(visible(events)).toBe("Segment 1. Segment 2. Segment 3. Segment 4. ");
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not accept a repeated-only length continuation as a completed reply", async () => {
+    providerState.stream
+      .mockImplementationOnce(() => reply(cut, "length"))
+      .mockImplementation(() => reply(cut));
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(request(), events)).rejects.toThrow("before finishing its reply");
+    expect(visible(events)).toBe(cut);
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+  });
+
+  it("regenerates a truncated tool batch in Pi without executing any of its original calls", async () => {
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("old-a", "never"), write("old-b")], "length")),
+      )
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("new-a", "once")], "toolUse")),
+      )
+      .mockImplementationOnce(() => reply("Saved once."));
+
+    const events = await run(input);
+
+    expect(visible(events)).toBe("Saved once.");
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(input.executeTool).toHaveBeenCalledWith(
+      "write_effect",
+      { value: "once" },
+      JSON.stringify(["pi-tool", "main", "new-a"]),
+      undefined,
+      expect.anything(),
+    );
+    expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+    const retry = providerState.stream.mock.calls[1]![1] as Context;
+    expect(retry.messages.filter((item) => item.role === "toolResult")).toEqual([
+      expect.objectContaining({ toolCallId: "old-a", isError: true }),
+      expect.objectContaining({ toolCallId: "old-b", isError: true }),
+    ]);
+  });
+
+  it("fails if a truncated tool regeneration ends without a new call or reply", async () => {
+    const input = request();
+    providerState.stream
+      .mockImplementationOnce(() => stream(primary, message(primary, [write("cut")], "length")))
+      .mockImplementationOnce(() => reply(""));
+    await expect(run(input)).rejects.toThrow("before writing a response");
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not continue a length stop when tool events outlive a lost terminal tool block", async () => {
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream.mockImplementationOnce(() => {
+      const result = new AssistantMessageEventStream();
+      const terminal = message(primary, [part(cut)], "length");
+      result.push({ type: "start", partial: { ...terminal, content: [] } });
+      result.push({ type: "toolcall_start", contentIndex: 1, partial: terminal });
+      result.push({ type: "done", reason: "length", message: terminal });
+      result.end(terminal);
+      return result;
+    });
+    const events: AgentRuntimeEvent[] = [];
+    await expect(run(input, events)).rejects.toThrow("before finishing its reply");
+    expect(visible(events)).toBe(cut);
+    expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
+    expect(input.executeTool).not.toHaveBeenCalled();
+    expect(providerState.stream).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a completed call ID repeated during tool regeneration", async () => {
+    const input = request();
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("complete", "once")], "toolUse")),
+      )
+      .mockImplementationOnce(() => stream(primary, message(primary, [write("cut")], "length")))
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("complete", "once")], "toolUse")),
+      );
+
+    await expect(run(input)).rejects.toThrow("before finishing its reply");
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+  });
+
+  it("repeats a thinking-only length stop with less thinking and the same operator cap", async () => {
+    const target = {
+      ...primary,
+      reasoning: true,
+      thinkingLevelMap: { low: "low", medium: "medium", high: "high" },
+    };
+    providerState.models.set(`${primary.provider}/${primary.id}`, target);
+    const input = request();
+    input.model = { ...input.model, maxTokens: 1024, thinkingLevel: "high" };
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(target, message(target, [{ type: "thinking", thinking: "not visible" }], "length")),
+      )
+      .mockImplementationOnce(() => stream(target, message(target, [part("Done.")], "stop")));
+
+    const events = await run(input);
+    expect(visible(events)).toBe("Done.");
+    expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+    expect(
+      providerState.stream.mock.calls.map(([, , options]) => [
+        options.maxTokens,
+        options.reasoning,
+      ]),
+    ).toEqual([
+      [1024, "high"],
+      [1024, "medium"],
+    ]);
+  });
+
+  it("does not resend a reasoning effort when the listed set already accepts it", async () => {
+    const target = { ...primary, reasoning: true, thinkingLevelMap: { low: "low", high: "high" } };
+    providerState.models.set(`${primary.provider}/${primary.id}`, target);
+    const input = request();
+    input.model.thinkingLevel = "high";
+    providerState.stream.mockImplementation(() =>
+      stream(
+        target,
+        message(target, [], "error", "400 reasoning_effort must be one of low, high."),
+      ),
+    );
+
+    await expect(run(input)).rejects.toThrow("reasoning_effort must be one of low, high");
+    expect(providerState.stream).toHaveBeenCalledOnce();
+  });
+
+  it("narrows an explicitly rejected reasoning effort once in the existing retry loop", async () => {
+    const target = {
+      ...primary,
+      reasoning: true,
+      thinkingLevelMap: { low: "low", medium: "medium", high: "high" },
+    };
+    providerState.models.set(`${primary.provider}/${primary.id}`, target);
+    const input = request();
+    input.model.thinkingLevel = "high";
+    input.reserveSelfRecovery = vi.fn(async () => true);
+    providerState.stream
+      .mockImplementationOnce(() =>
+        stream(
+          target,
+          message(target, [], "error", "400 reasoning_effort must be one of low, medium."),
+        ),
+      )
+      .mockImplementationOnce(() => stream(target, message(target, [part("Done.")], "stop")));
+
+    expect(visible(await run(input))).toBe("Done.");
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.reasoning)).toEqual([
+      "high",
+      "medium",
+    ]);
+    expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
   });
 });

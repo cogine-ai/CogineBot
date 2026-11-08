@@ -160,7 +160,7 @@ export type FinalizeRunInput = FinalizeRunBase &
         blocks: MessageBlock[];
         markUnread?: boolean;
       }
-    | { outcome: "failed"; error: string }
+    | { outcome: "failed"; error: string; partialText?: string }
   );
 
 export interface PauseRunForInput {
@@ -1948,33 +1948,36 @@ async function finalizeRunOnce(
 
     let completedMessageId: string | undefined;
     let firstResponse = false;
-    if (input.outcome === "completed") {
-      const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
-      if (completedBlocks.length > 0) {
-        const message = await createThreadMessageInTransaction(tx, {
-          threadId: input.threadId,
-          role: "bot",
-          blocks: completedBlocks,
-          botId: input.botId,
-          runId: input.runId,
-          markUnread: input.markUnread,
-        });
-        completedMessageId = message.id;
-        const response = await appendEventInTransaction(tx, {
-          spaceId: input.spaceId,
-          threadId: input.threadId,
-          botId: input.botId,
-          type: "thread.message.created",
-          runId: input.runId,
-          payload: {
-            messageId: message.id,
-            messageSeq: message.seq,
-            role: "bot",
-            blocks: completedBlocks,
-          },
-        });
-        firstResponse = response.firstResponse;
-      }
+    const blocks: MessageBlock[] =
+      input.outcome === "completed"
+        ? completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now)
+        : input.partialText?.trim()
+          ? [
+              {
+                kind: "text",
+                text: sanitizeJsonValue(input.partialText.replaceAll("\0", "\uFFFD")),
+              },
+            ]
+          : [];
+    if (blocks.length > 0) {
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: input.threadId,
+        role: "bot",
+        blocks,
+        botId: input.botId,
+        runId: input.runId,
+        markUnread: input.outcome === "completed" ? input.markUnread : false,
+      });
+      if (input.outcome === "completed") completedMessageId = message.id;
+      const response = await appendEventInTransaction(tx, {
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        type: "thread.message.created",
+        runId: input.runId,
+        payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks },
+      });
+      firstResponse = response.firstResponse;
     }
     const lastEvent = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,

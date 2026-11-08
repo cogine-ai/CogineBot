@@ -263,6 +263,7 @@ export function observedPiStream(
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
     /** Provider failures only; excludes context, reservations and usage settlement. */
     onProviderError?: (message: AssistantMessage, budget: PiDispatchBudget) => void;
+    onProviderDone?: (message: AssistantMessage, budget: PiDispatchBudget) => void;
     budgetCorrection?: PiBudgetCorrection;
     /** Corrective attempts share a deadline across context preparation and reservation. */
     requestDeadline?: number;
@@ -524,6 +525,8 @@ export function observedPiStream(
             }
           }
           if (event.type === "error") hooks?.onProviderError?.(event.error, measuredBudget());
+          if (event.type === "done" && hooks?.onProviderDone)
+            hooks.onProviderDone(event.message, measuredBudget());
           stream.push(event);
         }
       } finally {

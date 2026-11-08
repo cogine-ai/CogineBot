@@ -53,7 +53,7 @@ const model: Model<"openai-completions"> = {
   maxTokens: 1_024,
 };
 
-function response(content: AssistantMessage["content"], activeModel: Model<Api>) {
+function response(content: AssistantMessage["content"], activeModel: Model<Api>, cut = false) {
   const hasCalls = content.some((part) => part.type === "toolCall");
   const message: AssistantMessage = {
     role: "assistant",
@@ -69,7 +69,7 @@ function response(content: AssistantMessage["content"], activeModel: Model<Api>)
       totalTokens: 50,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-    stopReason: hasCalls ? "toolUse" : "stop",
+    stopReason: cut ? "length" : hasCalls ? "toolUse" : "stop",
     timestamp: 1,
   };
   const stream = createAssistantMessageEventStream();
@@ -79,7 +79,7 @@ function response(content: AssistantMessage["content"], activeModel: Model<Api>)
     stream.push({ type: "toolcall_start", contentIndex, partial: message });
     stream.push({ type: "toolcall_end", contentIndex, toolCall: part, partial: message });
   }
-  stream.push({ type: "done", reason: hasCalls ? "toolUse" : "stop", message });
+  stream.push({ type: "done", reason: message.stopReason, message });
   stream.end(message);
   return stream;
 }
@@ -106,6 +106,7 @@ async function fixture(
     prompt?: string;
     chatLinked?: boolean;
     withoutTurnCapture?: boolean;
+    outputLengthSteps?: number[];
     afterEffectCreate?: (effect: CreatedEffect) => Promise<void>;
     releaseEffectBarrier?: () => void;
   } = {},
@@ -172,13 +173,14 @@ async function fixture(
     abort: (runId) => activeRuntime.abort(runId),
   };
   const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
-    const step = steps[providerRequests.length];
+    const index = providerRequests.length;
+    const step = steps[index];
     providerRequests.push({ generation, context: structuredClone(context) });
     try {
       expect(activeModel.id).toBe(model.id);
       expect(activeModel.provider).toBe(model.provider);
       if (!step) throw new Error("Unexpected additional checkpoint model request");
-      return response(step(context), activeModel);
+      return response(step(context), activeModel, options.outputLengthSteps?.includes(index));
     } catch (error) {
       providerFailures.push(error);
       throw error;
@@ -490,6 +492,83 @@ function pausedBatch(context: TranscriptContext): AssistantMessage["content"] {
 }
 
 describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => {
+  it("keeps the model recovery limit across an interaction resume and stores the cut answer once", async () => {
+    const partial = "The remaining file was saved, but";
+    const truncatedCall = "truncated-write-must-not-run";
+    const f = await fixture(
+      [
+        () => [call(truncatedCall, "write_file", { path: "never-write.txt", content: "wrong" })],
+        (context) => {
+          expect(toolResult(context, truncatedCall).isError).toBe(true);
+          return pausedBatch(context);
+        },
+        (context) => {
+          expect(
+            context.messages
+              .filter((message) => message.role === "toolResult")
+              .map((message) => message.toolCallId),
+          ).toEqual([
+            truncatedCall,
+            "first-write",
+            "schedule-barrier",
+            "pending-question",
+            "tail-write",
+          ]);
+          return [{ type: "text", text: partial }];
+        },
+      ],
+      { outputLengthSteps: [0, 2] },
+    );
+    try {
+      await f.app.prisma.run.update({
+        where: { id: f.sent.runId },
+        data: { selfRecoveries: 2, startedAt: new Date(Date.now() - 60_000) },
+      });
+      await f.continueRun("recovery-first-worker");
+      expect(
+        await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } }),
+      ).toMatchObject({
+        status: "waiting_input",
+        selfRecoveries: 3,
+        leaseFence: 1,
+      });
+      expect(await f.clientSnapshot()).toContain(beforeText);
+      expect(f.mainWrites()).toHaveLength(1);
+
+      await f.restartRuntime();
+      await f.answer();
+      await f.continueRun("recovery-resume-worker");
+      expect(
+        await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } }),
+      ).toMatchObject({
+        status: "failed",
+        selfRecoveries: 3,
+        leaseFence: 2,
+      });
+      expect(f.providerRequests.map(({ generation }) => generation)).toEqual([1, 1, 2]);
+      expect(f.reservations).toBe(3);
+      expect(f.mainWrites().map(([, file]) => file.path)).toEqual([
+        expect.stringContaining(firstPath),
+        expect.stringContaining(tailPath),
+      ]);
+      expect(
+        await f.app.prisma.message.count({
+          where: {
+            runId: f.sent.runId,
+            role: "bot",
+            blocks: { equals: [{ kind: "text", text: partial }] },
+          },
+        }),
+      ).toBe(1);
+      expect(await f.clientSnapshot()).toContain(partial);
+      expect(
+        await f.app.prisma.externalEffect.findUnique({ where: { idempotencyKey: f.key } }),
+      ).toBeNull();
+    } finally {
+      await f.close();
+    }
+  });
+
   it("resumes the same run in a fresh Pi instance without replaying completed effects or losing the sequential tail", async () => {
     const f = await fixture([
       pausedBatch,

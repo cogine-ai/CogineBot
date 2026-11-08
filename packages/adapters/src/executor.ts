@@ -165,6 +165,7 @@ import {
   readHistory,
   readRunTimingFields,
   recordUsage,
+  reserveRunSelfRecovery,
   retireModelCredential,
   runAsSystem,
   SpaceLimitError,
@@ -357,6 +358,7 @@ import {
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
+import { ModelOutputRecoveryError } from "./model-output-recovery.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -3959,7 +3961,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
       };
 
       const runSecrets = [...deps.secrets];
-      const settleRunFailure = async (message: string, knownBot?: { id: string; name: string }) => {
+      const settleRunFailure = async (
+        message: string,
+        knownBot?: { id: string; name: string },
+        partialText?: string,
+      ) => {
         const failed = await deps.events.finalizeRun({
           spaceId: run.spaceId,
           threadId: run.threadId,
@@ -3971,6 +3977,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           leaseFence: fence,
           outcome: "failed",
           error: message,
+          ...(partialText ? { partialText } : {}),
         });
         if (!failed) return;
         stopHeartbeatAfterCompletion();
@@ -8917,6 +8924,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ...(scripted
                 ? {}
                 : {
+                    reserveSelfRecovery: async () => {
+                      context.signal.throwIfAborted();
+                      const reserved = await reserveRunSelfRecovery(deps.prisma, {
+                        runId,
+                        spaceId: run.spaceId,
+                        leaseOwner: workerId,
+                        leaseFence: fence,
+                      });
+                      context.signal.throwIfAborted();
+                      return reserved;
+                    },
                     pageToolSecrets: () => runSecrets,
                     turnCheckpoint: turnState.blob,
                     ...(!heldForTakeover &&
@@ -9698,7 +9716,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error instanceof Error ? error.message : String(error),
             runSecrets,
           );
-          await settleRunFailure(message, bot);
+          let partialText: string | undefined;
+          if (
+            error instanceof ModelOutputRecoveryError &&
+            !handedOff &&
+            !isBackgroundRunTrigger(run.trigger) &&
+            !isExactNoResponse(assembled)
+          ) {
+            const boundary = redactReplyAfterProgress(
+              assembled,
+              [],
+              precedingProgress(),
+              runSecrets,
+            );
+            const text = redactSecrets(boundary.text, runSecrets).trim();
+            if (text && !containsSecret(text, runSecrets)) partialText = text;
+          }
+          await settleRunFailure(message, bot, partialText);
         }
       } catch (setupError) {
         if (deps.shutdownSignal?.aborted || setupError instanceof RunHistoryWriteError) return;
