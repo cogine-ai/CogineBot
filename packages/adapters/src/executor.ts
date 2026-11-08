@@ -9534,6 +9534,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               select: {
                 nextMessageSeq: true,
                 historyCompactedUpToSeq: true,
+                historyCompactionRetryAfterSeq: true,
               },
             });
             if (
@@ -9543,6 +9544,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 updatedThread.historyCompactedUpToSeq,
                 HISTORY_WINDOW_SIZE,
                 COMPACTION_BATCH_SIZE,
+                updatedThread.historyCompactionRetryAfterSeq,
               )
             ) {
               await deps.jobs.enqueue(historyCompactJob(thread.id));

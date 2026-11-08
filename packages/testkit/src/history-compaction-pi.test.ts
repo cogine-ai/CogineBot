@@ -37,6 +37,7 @@ describe("history compaction with real Pi", () => {
       historyCompactedUpToSeq: 49,
       historyCompactionGeneration: 0,
       historyCompactionSummary: "Earlier decisions.",
+      historyCompactionRetryAfterSeq: null,
     };
     const updateMany = vi.fn(
       async (args: {
@@ -102,8 +103,14 @@ describe("history compaction with real Pi", () => {
         id: thread.id,
         historyCompactedUpToSeq: 49,
         historyCompactionGeneration: 0,
+        historyCompactionSummary: "Earlier decisions.",
+        historyCompactionRetryAfterSeq: null,
       },
-      data: { historyCompactedUpToSeq: 50, historyCompactionSummary: summary },
+      data: {
+        historyCompactedUpToSeq: 50,
+        historyCompactionSummary: summary,
+        historyCompactionRetryAfterSeq: null,
+      },
     });
     expect(memoryProviders.resolve).toHaveBeenCalledOnce();
     expect(jobs.enqueue).not.toHaveBeenCalled();
