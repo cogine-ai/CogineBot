@@ -79,7 +79,7 @@ const scheduleCreateProperties = {
   prompt: {
     type: "string",
     description:
-      "Concrete steps for when the schedule fires: name the connected plugin tools to call (e.g. GITHUB_LIST_RELEASES for owner/repo), what to extract, and how to report. Prefer plugin tools over computer browser or web search for app data.",
+      "Concrete steps for when the schedule fires: name the connected plugin tools to call (e.g. GITHUB_LIST_RELEASES for owner/repo), what to extract, and how to report. Prefer plugin tools over computer browser or web search for app data. Each run starts without earlier chat messages. To refresh an existing Page, include its exact pageId and the save_page update steps. If the Page is gone, report the failure and end that run.",
   },
   timezone: { type: "string", description: "IANA timezone (default UTC)." },
 };
