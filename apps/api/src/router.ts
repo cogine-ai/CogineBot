@@ -2503,16 +2503,15 @@ export function createRouter(deps: RouterDeps) {
               deps.jobs.cancel(runJobKey(runId)).catch(() => undefined),
             ),
           );
-          let failure: PromiseRejectedResult | undefined;
-          // Each provider phase holds one database connection. Leave room for
-          // unrelated API work and for the final lease writes.
-          for (let index = 0; index < removed.teardowns.length; index += 2) {
-            const teardown = await Promise.allSettled(
-              removed.teardowns.slice(index, index + 2).map(groupRunTeardown.settle),
-            );
-            failure ??= teardown.find((result) => result.status === "rejected");
+          let failure: { error: unknown } | undefined;
+          for (const key of removed.teardowns) {
+            try {
+              await groupRunTeardown.settle(key);
+            } catch (error) {
+              failure ??= { error };
+            }
           }
-          if (failure) throw failure.reason;
+          if (failure) throw failure.error;
         } finally {
           // The group is already deleted. Sweep the captured objects even if lease teardown fails.
           const cleanup = await Promise.allSettled(

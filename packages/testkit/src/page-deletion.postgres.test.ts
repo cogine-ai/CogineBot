@@ -14,6 +14,7 @@ import type { Actor } from "@rakazo/contracts";
 import type { Prisma } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
+  completeGroupRunTeardownProviderPhase,
   createDb,
   createGroupRepos,
   PAGE_SHARE_SECRET_KIND,
@@ -356,44 +357,50 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         storageKey: id,
       })),
     });
-    const task = await admin().task.create({
-      data: {
-        ...scopeOf(own.actor),
-        botId: first.id,
-        threadId: chat.threadId,
-        prompt: "fixture",
-        status: "running",
-      },
-    });
-    const run = await admin().run.create({
-      data: {
-        ...scopeOf(own.actor),
-        botId: first.id,
-        threadId: chat.threadId,
-        taskId: task.id,
-        status: "waiting_takeover",
-        trigger: "user",
-      },
-    });
-    const computer = await admin().computer.create({
-      data: {
-        ...scopeOf(own.actor),
-        scopeKey: `fixture:${run.id}`,
-        homeKey: `fixture-${run.id}`,
-        kind: "fake",
-        providerRef: `fixture-${run.id}`,
-        state: "running",
-      },
-    });
-    const lease = await admin().computerExecutionLease.create({
-      data: {
-        computerId: computer.id,
-        botId: first.id,
-        runId: run.id,
-        fence: 1,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    });
+    async function seedTakeover(threadId: string) {
+      const task = await admin().task.create({
+        data: {
+          ...scopeOf(own.actor),
+          botId: first.id,
+          threadId,
+          prompt: "fixture",
+          status: "running",
+        },
+      });
+      const run = await admin().run.create({
+        data: {
+          ...scopeOf(own.actor),
+          botId: first.id,
+          threadId,
+          taskId: task.id,
+          status: "waiting_takeover",
+          trigger: "user",
+        },
+      });
+      const computer = await admin().computer.create({
+        data: {
+          ...scopeOf(own.actor),
+          scopeKey: `fixture:${run.id}`,
+          homeKey: `fixture-${run.id}`,
+          kind: "fake",
+          providerRef: `fixture-${run.id}`,
+          state: "running",
+        },
+      });
+      const lease = await admin().computerExecutionLease.create({
+        data: {
+          computerId: computer.id,
+          botId: first.id,
+          runId: run.id,
+          fence: 1,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      });
+      return { run, computer, lease };
+    }
+    const { run, computer, lease } = await seedTakeover(chat.threadId);
+    const parallelChat = await group(own, "Parallel terminal group", [first.id, second.id]);
+    const deferred = await seedTakeover(parallelChat.threadId);
     const removeFile = LocalArtifactStore.prototype.remove;
     const artifactCleanup = vi
       .spyOn(LocalArtifactStore.prototype, "remove")
@@ -409,16 +416,21 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
     const screenGate = new Promise<void>((resolve) => {
       allowScreenRelease = resolve;
     });
+    const execute = vi.spyOn(handles!.sandbox, "execute");
     const releaseScreen = handles!.sandbox.releaseScreen!.bind(handles!.sandbox);
     const screenRelease = vi
       .spyOn(handles!.sandbox, "releaseScreen")
       .mockImplementation(async (...args) => {
-        screenEntered();
-        await screenGate;
+        if (args[1].runId === run.id) {
+          screenEntered();
+          await screenGate;
+        }
         await releaseScreen(...args);
       });
     failLeaseRunId = run.id;
     const removing = raw(own.cookie, "groups/remove", { groupId: chat.id });
+    let removingParallel: Promise<Response> | undefined;
+    let parallelSettled = false;
     try {
       await Promise.race([
         entered,
@@ -426,32 +438,96 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
           throw new Error("No screen teardown");
         }),
       ]);
-      const concurrent = createGroupRunTeardownRecovery({
-        prisma: runtime!.prisma,
-        sandbox: handles!.sandbox,
-      });
-      await concurrent.reconcile();
+      // A separate process can bypass the local slot, but cannot enter the same
+      // exact marker's provider phase while the foreground owns its advisory lock.
+      const sameMarkerProvider = vi.fn(async () => undefined);
+      const sameMarker = await runAsTenant(scopeOf(own.actor), () =>
+        completeGroupRunTeardownProviderPhase(
+          runtime!.prisma,
+          { computerId: computer.id, runId: run.id, ...scopeOf(own.actor) },
+          sameMarkerProvider,
+        ),
+      );
+      expect(sameMarker).toBeNull();
+      expect(sameMarkerProvider).not.toHaveBeenCalled();
+
+      removingParallel = raw(own.cookie, "groups/remove", { groupId: parallelChat.id });
+      const recordParallelSettlement = () => {
+        parallelSettled = true;
+      };
+      void removingParallel.then(recordParallelSettlement, recordParallelSettlement);
+      await expect
+        .poll(() => admin().chatGroup.findUnique({ where: { id: parallelChat.id } }), {
+          timeout: 5_000,
+        })
+        .toBeNull();
       expect(screenRelease).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalledWith(
+        expect.objectContaining({ providerRef: deferred.computer.providerRef }),
+        expect.anything(),
+        expect.objectContaining({ runId: deferred.run.id }),
+      );
       expect(
         await admin().computerExecutionLease.findUniqueOrThrow({ where: { id: lease.id } }),
       ).toMatchObject({ expiresAt: lease.expiresAt });
+      expect(
+        await admin().computerExecutionLease.findUniqueOrThrow({
+          where: { id: deferred.lease.id },
+        }),
+      ).toMatchObject({ expiresAt: deferred.lease.expiresAt });
+      await expect(rpc(own.cookie, "bots/list")).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: first.id })]),
+      );
+      expect(parallelSettled).toBe(false);
+
       allowScreenRelease();
-      const removed = await removing;
+      const [removed, removedParallel] = await Promise.all([removing, removingParallel]);
+      expect(removedParallel.status).toBe(200);
+      expect(await removedParallel.json()).toMatchObject({ json: { ok: true } });
       expect(removed.status).toBe(429);
       expect((await removed.json()).json).toMatchObject({
         code: "TOO_MANY_REQUESTS",
         message: leaseFailure.message,
       });
-      expect(screenRelease).toHaveBeenCalledExactlyOnceWith(
+      expect(screenRelease).toHaveBeenCalledTimes(2);
+      expect(screenRelease).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({ providerRef: computer.providerRef }),
         expect.objectContaining({ runId: run.id, screenLeaseId: `${run.id}:1` }),
         { onlyIfRunning: true },
       );
+      expect(screenRelease).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ providerRef: deferred.computer.providerRef }),
+        expect.objectContaining({ runId: deferred.run.id, screenLeaseId: `${deferred.run.id}:1` }),
+        { onlyIfRunning: true },
+      );
+      expect(
+        execute.mock.calls.filter(([, , operation]) => operation.runId === deferred.run.id),
+      ).toEqual([
+        [
+          expect.objectContaining({ providerRef: deferred.computer.providerRef }),
+          expect.objectContaining({
+            argv: expect.arrayContaining([deferred.computer.id, deferred.run.id]),
+          }),
+          expect.objectContaining({
+            runId: deferred.run.id,
+            screenLeaseId: `${deferred.run.id}:1`,
+          }),
+        ],
+      ]);
+      expect(
+        await admin().computerExecutionLease.findUniqueOrThrow({
+          where: { id: deferred.lease.id },
+        }),
+      ).toMatchObject({ runId: deferred.run.id, fence: 1, expiresAt: new Date(0) });
     } finally {
       allowScreenRelease();
       await removing.catch(() => undefined);
+      await removingParallel?.catch(() => undefined);
       failLeaseRunId = undefined;
       artifactCleanup.mockRestore();
+      execute.mockRestore();
       screenRelease.mockRestore();
     }
     expect(await admin().chatGroup.findUnique({ where: { id: chat.id } })).toBeNull();

@@ -13,6 +13,10 @@ import { screenLeaseIdForRun, toComputerRef } from "./computer-lifecycle.js";
 
 type Sandbox = Pick<SandboxProvider, "execute" | "releaseScreen">;
 
+// The API route and the in-process reconciler share the runtime pool.
+// Foreground callers wait here before opening a database transaction.
+let teardownInFlight: Promise<void> | undefined;
+
 export async function stopCancelledGroupComputer(
   sandbox: Sandbox,
   owner: { spaceId: string; userId: string },
@@ -47,15 +51,17 @@ export async function stopCancelledGroupComputer(
 }
 
 export function createGroupRunTeardownRecovery(deps: { prisma: PrismaClient; sandbox: Sandbox }) {
-  const limit = 2;
   let after: Pick<GroupRunTeardownKey, "computerId" | "runId"> | undefined;
-  const settle = (key: GroupRunTeardownKey, eager: boolean) =>
-    runAsTenant(key, async () => {
+  const settle = async (key: GroupRunTeardownKey, eager: boolean) => {
+    while (teardownInFlight) {
+      if (!eager) return false;
+      await teardownInFlight.catch(() => undefined);
+    }
+    const cleanup = runAsTenant(key, async () => {
       const pending = await completeGroupRunTeardownProviderPhase(
         deps.prisma,
         key,
         async (work) => {
-          if (!work.providerCleanup) return;
           // Generic shell exec can start a stopped provider. A restarted cleanup
           // may only revisit the old screen through the provider's no-wake path.
           await stopCancelledGroupComputer(
@@ -73,18 +79,31 @@ export function createGroupRunTeardownRecovery(deps: { prisma: PrismaClient; san
       );
       if (pending) await finishPendingGroupRunTeardown(deps.prisma, key, pending);
     });
+    teardownInFlight = cleanup;
+    try {
+      await cleanup;
+      return true;
+    } finally {
+      teardownInFlight = undefined;
+    }
+  };
   return {
     settle: (key: GroupRunTeardownKey) => settle(key, true),
     async reconcile() {
-      const pending = await runAsSystem("find pending group run teardowns", () =>
-        listPendingGroupRunTeardowns(deps.prisma, { after, limit }),
+      if (teardownInFlight) return;
+      const [pending] = await runAsSystem("find pending group run teardowns", () =>
+        listPendingGroupRunTeardowns(deps.prisma, { after, limit: 1 }),
       );
-      after = pending.length === limit ? pending.at(-1) : undefined;
-      const results = await Promise.allSettled(pending.map((key) => settle(key, false)));
-      for (const result of results) {
-        if (result.status === "rejected")
-          getLogger().error("group run teardown retry", result.reason);
+      if (!pending) {
+        after = undefined;
+        return;
       }
+      try {
+        if (!(await settle(pending, false))) return;
+      } catch (error) {
+        getLogger().error("group run teardown retry", error);
+      }
+      after = pending;
     },
   };
 }
