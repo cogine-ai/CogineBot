@@ -784,6 +784,119 @@ describe("runtime context policy", () => {
     const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "current" });
     expect(policy.prepareContext(context, model)).toBe(context);
   });
+  it("bounds diagnostic context for a learned request window without losing the live tool group", () => {
+    const { request, context } = fixture(120);
+    request.contextStrategy = "current";
+    request.model.contextWindow = 32_768;
+    context.tools = [
+      { name: "shell", description: "Read the requested file", parameters: { type: "object" } },
+    ];
+    const live = context.messages.at(-1)!;
+    const calls = ["first", "second"].map((id) => ({
+      type: "toolCall" as const,
+      id,
+      name: "shell",
+      arguments: {},
+    }));
+    const thinking = {
+      type: "thinking" as const,
+      thinking: "Read both sources",
+      thinkingSignature: "prior-conversation-signature",
+    };
+    context.messages.push(
+      fauxAssistantMessage([thinking, ...calls]),
+      ...calls.map(({ id }) => ({
+        role: "toolResult" as const,
+        toolCallId: id,
+        toolName: "shell",
+        content: [{ type: "text" as const, text: `Result ${id}` }],
+        isError: false,
+        timestamp: 101,
+      })),
+    );
+    const nominal = { ...model, contextWindow: 32_768, maxTokens: 256 };
+    const policy = createRuntimeContextPolicy(request);
+    const first = policy.prepareContext(context, nominal);
+    expect(first.messages).toHaveLength(124);
+    expect(first.messages.at(-3)?.content).toContainEqual(thinking);
+
+    const narrow = { ...nominal, contextWindow: 2048 };
+    const next = policy.prepareContext(context, narrow, { contextWindow: 2048 });
+    expect(next.messages.length).toBeLessThan(first.messages.length);
+    expect(next.systemPrompt).toBe("Stable instructions");
+    expect(next.tools).toEqual(context.tools);
+    expect(next.messages.at(-4)).toEqual(live);
+    expect(next.messages.at(-3)?.content).toEqual(calls);
+    expect(next.messages.slice(-2)).toMatchObject([
+      { role: "toolResult", toolCallId: "first" },
+      { role: "toolResult", toolCallId: "second" },
+    ]);
+    expect(policy.getDecision()!.estimatedInputTokens).toBeLessThanOrEqual(1792);
+    expect(request.model.contextWindow).toBe(32_768);
+    expect(context.messages.at(-3)?.content).toContainEqual(thinking);
+  });
+  it("keeps the quoted input on an output-only correction when cache warmth expires", () => {
+    let now = 0;
+    const tracker = new ContextCacheTracker(() => now);
+    const { request, context } = fixture(280);
+    request.model.cacheCapabilities = { scope: "account", retentionMs: 60 };
+    enableHistoryRetrieval(request);
+    const warm = createRuntimeContextPolicy({ ...request, contextStrategy: "current" }, undefined, {
+      cacheTracker: tracker,
+    });
+    warm.prepareContext(context, model);
+    warm.onUsage({ inputTokens: 1, outputTokens: 1 });
+
+    const policy = createRuntimeContextPolicy(request, undefined, { cacheTracker: tracker });
+    const rejectedInput = policy.prepareContext(context, model);
+    expect(rejectedInput.messages).toHaveLength(context.messages.length);
+    expect(policy.getDecision()!.predictedCache).toBe("likely-warm");
+    policy.onUsage(null);
+    now = 61;
+
+    const lowerOutput = { ...model, maxTokens: 1024 };
+    const corrected = policy.prepareContext(context, lowerOutput, { preserveInput: true });
+    expect(corrected).toEqual(rejectedInput);
+    expect(policy.getDecision()!.predictedCache).toBe("likely-cold");
+    policy.onUsage({ inputTokens: 1, outputTokens: 1, cacheReadTokens: 12 });
+    expect(policy.getDecision()!.observedReuse).toBe(true);
+
+    const followUp = { role: "user" as const, content: "A new message arrived", timestamp: 62 };
+    const changed = { ...context, messages: [...context.messages, followUp] };
+    expect(() => policy.prepareContext(changed, lowerOutput, { preserveInput: true })).toThrow(
+      "leaves no smaller request to send",
+    );
+    expect(policy.prepareContext(changed, lowerOutput).messages.at(-1)).toEqual(followUp);
+  });
+  it.each(["system", "tool schema", "current user"] as const)(
+    "refuses a learned window too small for the required %s",
+    (required) => {
+      const { request, context } = fixture(0);
+      request.contextStrategy = "current";
+      const policy = createRuntimeContextPolicy(request);
+      const previous = policy.prepareContext(context, model);
+      const previousDecision = policy.getDecision();
+      const content = "Required instructions for this request. ".repeat(800);
+      const oversized: Context =
+        required === "system"
+          ? { ...context, systemPrompt: content }
+          : required === "tool schema"
+            ? {
+                ...context,
+                tools: [
+                  { name: "required_tool", description: content, parameters: { type: "object" } },
+                ],
+              }
+            : { ...context, messages: [{ role: "user", content, timestamp: 100 }] };
+
+      const narrow = { ...model, contextWindow: 2048, maxTokens: 256 };
+      expect(() => policy.prepareContext(oversized, narrow, { contextWindow: 2048 })).toThrow(
+        ContextBudgetError,
+      );
+      expect(policy.getDecision()).toEqual(previousDecision);
+      expect(policy.prepareContext(context, model, { preserveInput: true })).toEqual(previous);
+    },
+  );
   it.each(["retrieval", "snapshots"] as const)(
     "keeps Pi transcript instructions and tools through %s history selection",
     (strategy) => {

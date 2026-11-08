@@ -23,6 +23,7 @@ import { modelConnectionStreamErrorMessage } from "./model-connection-errors.js"
 import { estimateModelContextTokens } from "./model-context.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
 import { effectivePiOutputTokens, finalPiOutputPayload } from "./pi-output-budget.js";
+import { MODEL_BUDGET_UNCHANGED_ERROR } from "./pi-runtime-limits.js";
 import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 /** Pi initializes absent usage to zero. Only raw numeric fields can prove reported zero. */
@@ -231,6 +232,16 @@ function usageOperationKind(
 }
 
 /** Guard and account every actual model invocation, including tools, failures and subagents. */
+export type PiDispatchBudget = {
+  inputTokens: number;
+  maxOutputTokens: number;
+};
+
+export type PiBudgetCorrection = {
+  previous: PiDispatchBudget;
+  preserveInput: boolean;
+};
+
 export function observedPiStream(
   models: Models,
   model: Model<Api>,
@@ -251,7 +262,8 @@ export function observedPiStream(
     onUsage?: (usage: AgentUsage) => void;
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
     /** Provider failures only; excludes context, reservations and usage settlement. */
-    onProviderError?: (message: AssistantMessage) => void;
+    onProviderError?: (message: AssistantMessage, budget: PiDispatchBudget) => void;
+    budgetCorrection?: PiBudgetCorrection;
     /** Corrective attempts share a deadline across context preparation and reservation. */
     requestDeadline?: number;
     onRequestDeadlineExceeded?: (message: AssistantMessage) => void;
@@ -286,6 +298,7 @@ export function observedPiStream(
     let partialMessage: AssistantMessage | undefined;
     let providerError: unknown;
     let providerThrew = false;
+    let dispatchBudget: (() => PiDispatchBudget) | undefined;
     let requestDeadlineError: Error | undefined;
     let deadlineController: AbortController | undefined;
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -328,11 +341,26 @@ export function observedPiStream(
         options?.maxTokens ?? model.maxTokens,
       );
       const maxOutputTokens = effectiveMaxTokens ?? options?.maxTokens ?? model.maxTokens;
+      let inputTokens: number | undefined;
+      const measuredBudget = () => {
+        inputTokens ??= estimateModelContextTokens(preparedContext, hooks?.imageTokens);
+        return { inputTokens, maxOutputTokens };
+      };
+      dispatchBudget = measuredBudget;
+      if (hooks?.budgetCorrection) {
+        const { previous, preserveInput } = hooks.budgetCorrection;
+        const measured = measuredBudget();
+        const reduced = preserveInput
+          ? measured.inputTokens === previous.inputTokens &&
+            measured.maxOutputTokens < previous.maxOutputTokens
+          : measured.inputTokens < previous.inputTokens;
+        if (!reduced) throw new Error(MODEL_BUDGET_UNCHANGED_ERROR);
+      }
       reservation = observer
         ? await observer.beforeCall({
             provider: model.provider,
             modelId: model.id,
-            inputTokensEstimate: estimateModelContextTokens(preparedContext, hooks?.imageTokens),
+            inputTokensEstimate: measuredBudget().inputTokens,
             maxOutputTokens,
             cacheWriteRetention: requestedPiCacheWriteRetention(model, cacheRetention),
           })
@@ -493,7 +521,7 @@ export function observedPiStream(
               await observer.afterCall(reservation, normalized);
             }
           }
-          if (event.type === "error") hooks?.onProviderError?.(event.error);
+          if (event.type === "error") hooks?.onProviderError?.(event.error, measuredBudget());
           stream.push(event);
         }
       } finally {
@@ -554,9 +582,10 @@ export function observedPiStream(
       if (
         providerThrew &&
         terminalError === providerError &&
-        terminalError !== requestDeadlineError
+        terminalError !== requestDeadlineError &&
+        dispatchBudget
       )
-        hooks?.onProviderError?.(message);
+        hooks?.onProviderError?.(message, dispatchBudget());
       if (requestDeadlineError && terminalError === requestDeadlineError)
         hooks?.onRequestDeadlineExceeded?.(message);
       stream.push({ type: "error", reason: "error", error: message });

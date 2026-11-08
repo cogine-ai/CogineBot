@@ -29,6 +29,7 @@ import { SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   effectiveOutputReserve,
+  MODEL_BUDGET_UNCHANGED_ERROR,
   operatorMaxTokens,
   resolveCompletionMaxTokens,
 } from "./pi-runtime-limits.js";
@@ -111,6 +112,8 @@ interface SentTranscript {
   source: string[];
   messages: Message[];
   projection: ProjectionEntry[];
+  input: Context;
+  cacheRequest: CacheRequest;
   truncatedToolResults: number;
   /** Size of the transcript at the last rebuild, and calls appended to it since. */
   rebuiltTokens: number;
@@ -139,6 +142,16 @@ export interface RuntimeContextDecision {
   droppedMessages: number;
   truncatedToolResults: number;
   observedReuse: boolean | null;
+}
+export interface RuntimeContextAttemptOptions {
+  /** A provider-reported ceiling for this attempt, never a model catalog update. */
+  contextWindow?: number;
+  /** Keep the previous input for an output-only correction when its source is unchanged. */
+  preserveInput?: boolean;
+}
+interface AttemptWindow {
+  contextWindow: number;
+  enforce: boolean;
 }
 /** Applies one shared free context policy immediately before every model call.
  * Original history is untrusted evidence. Only in-memory hashes track cache timing.
@@ -177,6 +190,8 @@ export function createRuntimeContextPolicy(
       model.baseUrl,
       Object.entries(model.headers ?? {}).sort(([left], [right]) => left.localeCompare(right)),
     ]);
+  const cacheConnectionId = (model: Model<Api>) =>
+    createHash("sha256").update(connectionIdentity(model)).digest("hex");
   const projectionScope = (model: Model<Api>) =>
     createHash("sha256")
       .update(JSON.stringify([accountScope, connectionIdentity(model), model.id]))
@@ -186,8 +201,7 @@ export function createRuntimeContextPolicy(
   let decision: RuntimeContextDecision | undefined;
   let metadataPresent = false;
   let warnedOutputClamp = false;
-  function outputReserve(model: Model<Api>): number {
-    const contextWindow = request.model.contextWindow ?? model.contextWindow;
+  function outputReserve(model: Model<Api>, contextWindow: number): number {
     const configuredMaxTokens = resolveCompletionMaxTokens(
       model.maxTokens,
       request.model.maxTokens,
@@ -303,12 +317,13 @@ export function createRuntimeContextPolicy(
   function rebuild(
     source: Context,
     model: Model<Api>,
-    modelWindow = request.model.contextWindow ?? model.contextWindow,
+    window: AttemptWindow,
+    modelWindow = window.contextWindow,
   ): Prepared {
     metadataPresent = source.messages.some((message) =>
       Boolean((message as Message & OriginalMetadata).rakazoHistory),
     );
-    const ctx = pruned(source);
+    const ctx = pruned(source, window.enforce);
     const occurrences = new Map<string, number>();
     const resultSources = new WeakMap<Message, { key: string; original: Message }>();
     for (const [index, original] of source.messages.entries()) {
@@ -352,7 +367,7 @@ export function createRuntimeContextPolicy(
     );
     const cacheRequest: CacheRequest = cache.stamp({
       accountScope,
-      connectionId: createHash("sha256").update(connectionIdentity(model)).digest("hex"),
+      connectionId: cacheConnectionId(model),
       modelId: model.id,
       prefix: fullPrefix,
       prefixTokens: estimateContextTokens(fullPrefix, options.imageTokens),
@@ -379,7 +394,7 @@ export function createRuntimeContextPolicy(
         }
       }
     }
-    if (strategy === "current") {
+    if (strategy === "current" && !window.enforce) {
       return {
         context: ctx,
         cacheRequest,
@@ -419,7 +434,7 @@ export function createRuntimeContextPolicy(
         ? [index]
         : [],
     );
-    const reserve = outputReserve(model);
+    const reserve = outputReserve(model, window.contextWindow);
     const fixed =
       estimateContextTokens(ctx.systemPrompt ?? "") +
       estimateContextTokens(ctx.tools ?? []) +
@@ -428,10 +443,7 @@ export function createRuntimeContextPolicy(
     // Recent history and navigation have their own bounds. Active tool progress
     // uses the model budget, less the headroom a window-forced rebuild leaves.
     // Apply the safety margin to the actual window, not an already tighter headroom override.
-    const actualWindow = request.model.contextWindow ?? model.contextWindow;
-    const contextWindow = options.reserveFallbackMargin
-      ? Math.min(modelWindow, reserve + maxFallbackInputTokens(actualWindow, reserve))
-      : modelWindow;
+    const contextWindow = Math.min(modelWindow, reserve + inputLimit(window, reserve));
     let navigationMessage = projected?.navigation;
     let catalogIds = projected?.catalogIds ?? [];
     const budget = {
@@ -640,7 +652,7 @@ export function createRuntimeContextPolicy(
         budget,
         strategy,
         protectedIndexes,
-        pageToolResults: modelWindow === actualWindow ? "omit" : "preserve",
+        pageToolResults: modelWindow === window.contextWindow ? "omit" : "preserve",
         verbatimMcpServers: request.verbatimMcpServers,
         cacheWarmth: predictedCache,
         recentExchanges:
@@ -750,13 +762,14 @@ export function createRuntimeContextPolicy(
     };
   }
   /** Removes what only a rebuild may drop: stale page state and screenshots over the budget. */
-  function pruned(ctx: Context): Context {
+  function pruned(ctx: Context, enforce: boolean): Context {
     const preserved = verbatimMcpToolResultIndexes(ctx.messages, request.verbatimMcpServers);
     let current = ctx.messages.findIndex(
       (message) => message.role === "user" && !original(message),
     );
     if (current < 0) current = ctx.messages.findLastIndex((message) => message.role === "user");
-    const diagnostic = request.contextStrategy === "current" && request.contextRestored !== true;
+    const diagnostic =
+      request.contextStrategy === "current" && request.contextRestored !== true && !enforce;
     const protectedIndexes = ctx.messages.flatMap((message, index) =>
       diagnostic || message.role === "system" || (index >= current && message.role === "user")
         ? [index]
@@ -774,7 +787,7 @@ export function createRuntimeContextPolicy(
   function commit(
     context: Context,
     built: Prepared,
-    projection: ProjectionEntry[],
+    transcript: Omit<SentTranscript, "input" | "cacheRequest">,
     model: Model<Api>,
     fields: Partial<Pick<RuntimeContextDecision, "droppedMessages" | "truncatedToolResults">> = {},
   ): Context {
@@ -786,13 +799,17 @@ export function createRuntimeContextPolicy(
     );
     const prefixTokens = estimateContextTokens(prefix, options.imageTokens);
     pending = { ...built.cacheRequest, prefix, prefixTokens };
-    pendingProjection = { scope: projectionScope(model), entries: projection };
+    pendingProjection = { scope: projectionScope(model), entries: transcript.projection };
     decision = {
       ...built.decision,
       ...fields,
       predictedCache: cache.predict(pending),
       estimatedInputTokens: prefixTokens + MODEL_CONTEXT_FRAMING_TOKENS,
     };
+    // Retain the actual labelled input, independently of a caller growing its source array.
+    const input = { ...prepared, messages: [...prepared.messages] };
+    if (prepared !== context) rawContexts.set(input, { ...context, messages: transcript.messages });
+    sent = { ...transcript, input, cacheRequest: pending };
     return prepared;
   }
   function assertImageLimit(messages: Message[]): void {
@@ -816,22 +833,33 @@ export function createRuntimeContextPolicy(
       images: messages.reduce((count, message) => count + imagePartCount(message), 0),
     };
   }
-  /** Reject an unsendable fallback before committing its transcript or reserving usage. */
-  function assertFallbackInputLimit(ctx: Context, messages: Message[], model: Model<Api>) {
-    if (!options.reserveFallbackMargin) return;
-    const available = maxFallbackInputTokens(
-      request.model.contextWindow ?? model.contextWindow,
-      outputReserve(model),
-    );
+  function inputLimit(window: AttemptWindow, reserve: number): number {
+    return options.reserveFallbackMargin
+      ? maxFallbackInputTokens(window.contextWindow, reserve)
+      : window.contextWindow - reserve;
+  }
+  /** Enforce a learned or fallback limit on the final labelled input before committing it. */
+  function assertInputLimit(
+    ctx: Context,
+    messages: Message[],
+    model: Model<Api>,
+    window: AttemptWindow,
+  ) {
+    if (!window.enforce && !options.reserveFallbackMargin) return;
+    const available = inputLimit(window, outputReserve(model, window.contextWindow));
     const tokens = measure(ctx, messages).tokens + MODEL_CONTEXT_FRAMING_TOKENS;
     if (tokens > available) throw new ContextBudgetError(tokens, available);
   }
   /** A rebuild that leaves part of the window free, or none when the run needs all of it. */
-  function rebuildWithHeadroom(ctx: Context, model: Model<Api>): Prepared | undefined {
-    const window = request.model.contextWindow ?? model.contextWindow;
-    const reserve = outputReserve(model);
+  function rebuildWithHeadroom(
+    ctx: Context,
+    model: Model<Api>,
+    window: AttemptWindow,
+  ): Prepared | undefined {
+    const reserve = outputReserve(model, window.contextWindow);
     try {
-      return rebuild(ctx, model, reserve + Math.floor((window - reserve) * (1 - REBUILD_HEADROOM)));
+      const headroom = Math.floor((window.contextWindow - reserve) * (1 - REBUILD_HEADROOM));
+      return rebuild(ctx, model, window, reserve + headroom);
     } catch (error) {
       if (error instanceof ContextBudgetError) return undefined;
       throw error;
@@ -853,51 +881,81 @@ export function createRuntimeContextPolicy(
      * that fixes a limit the appended transcript breaks (the model's window or image limit) or
      * when rebuildPaysOff; thinking from the first rewritten message on is then dropped.
      */
-    prepareContext(ctx: Context, model: Model<Api>): Context {
+    prepareContext(
+      ctx: Context,
+      model: Model<Api>,
+      attempt?: RuntimeContextAttemptOptions,
+    ): Context {
       ctx = rawContexts.get(ctx) ?? ctx;
-      let built = rebuild(ctx, model);
+      const nominalWindow = request.model.contextWindow ?? model.contextWindow;
+      const reportedWindow = attempt?.contextWindow;
+      const enforce =
+        reportedWindow !== undefined &&
+        Number.isSafeInteger(reportedWindow) &&
+        reportedWindow > 0 &&
+        reportedWindow <= nominalWindow;
+      const window = {
+        contextWindow: enforce ? Math.min(model.contextWindow, reportedWindow) : nominalWindow,
+        enforce,
+      };
       const head = createHash("sha256")
         .update(JSON.stringify([ctx.systemPrompt ?? "", ctx.tools ?? []]))
         .digest("hex");
-      const source = ctx.messages.map(hash);
+      const source = ctx.messages.map(attempt?.preserveInput ? messageHash : hash);
       const previous = sent;
-      const appended =
+      const sameSourcePrefix =
         previous?.head === head &&
         previous.source.length <= source.length &&
-        previous.source.every((value, index) => source[index] === value)
+        previous.source.every((value, index) => source[index] === value);
+      if (attempt?.preserveInput) {
+        if (
+          !previous ||
+          !decision ||
+          !sameSourcePrefix ||
+          previous.source.length !== source.length ||
+          previous.cacheRequest.connectionId !== cacheConnectionId(model) ||
+          previous.cacheRequest.modelId !== model.id
+        )
+          throw new Error(MODEL_BUDGET_UNCHANGED_ERROR);
+        assertImageLimit(previous.input.messages);
+        assertInputLimit(ctx, previous.messages, model, window);
+        pending = cache.stamp(previous.cacheRequest);
+        pendingProjection = { scope: projectionScope(model), entries: previous.projection };
+        decision = { ...decision, predictedCache: cache.predict(pending), observedReuse: null };
+        return previous.input;
+      }
+      let built = rebuild(ctx, model, window);
+      const appended =
+        previous && sameSourcePrefix
           ? [...previous.messages, ...ctx.messages.slice(previous.source.length)]
           : undefined;
       let append = false;
       if (previous && appended) {
-        const window = request.model.contextWindow ?? model.contextWindow;
-        const reserve = outputReserve(model);
-        const available = options.reserveFallbackMargin
-          ? maxFallbackInputTokens(window, reserve)
-          : window - reserve;
+        const reserve = outputReserve(model, window.contextWindow);
+        const available = inputLimit(window, reserve);
         const imageLimit = normalizedImageLimit(request.model.maxImagesPerPrompt);
         const overTokens = (size: Size) => size.tokens + MODEL_CONTEXT_FRAMING_TOKENS > available;
         const overImages = (size: Size) => imageLimit !== undefined && size.images > imageLimit;
         const kept = measure(ctx, appended);
         const fresh = measure(ctx, built.context.messages);
-        const desiredOutput = outputReserve(model);
         const keptOutput =
           built.sdkOutputCap === undefined
             ? undefined
-            : effectivePiOutputTokens(
-                model,
-                modelView({ ...ctx, messages: appended }),
-                desiredOutput,
-              );
+            : effectivePiOutputTokens(model, modelView({ ...ctx, messages: appended }), reserve);
         const sdkWindowPressure =
           keptOutput !== undefined &&
-          keptOutput < desiredOutput &&
+          keptOutput < reserve &&
           built.sdkOutputCap !== undefined &&
           built.sdkOutputCap > keptOutput;
         // Each limit is enforced on its own: a rebuild that fixes the image count is still
         // taken when the text stays too large for the window, and the other way round.
         if (overTokens(kept) && !overTokens(fresh))
-          built = rebuildWithHeadroom(ctx, model) ?? built;
-        else if (!(overImages(kept) && !overImages(fresh)) && !sdkWindowPressure)
+          built = rebuildWithHeadroom(ctx, model, window) ?? built;
+        else if (
+          !(enforce && overTokens(kept)) &&
+          !(overImages(kept) && !overImages(fresh)) &&
+          !sdkWindowPressure
+        )
           append =
             overTokens(kept) ||
             overImages(kept) ||
@@ -909,18 +967,17 @@ export function createRuntimeContextPolicy(
           ...ctx.messages.slice(previous.source.length).map((message) => ({ hash: hash(message) })),
         ];
         assertImageLimit(appended);
-        assertFallbackInputLimit(ctx, appended, model);
-        sent = {
-          ...previous,
-          source,
-          messages: appended,
-          projection,
-          appends: previous.appends + 1,
-        };
-        return commit({ ...ctx, messages: appended }, built, projection, model, {
-          droppedMessages: Math.max(0, ctx.messages.length - appended.length),
-          truncatedToolResults: previous.truncatedToolResults,
-        });
+        assertInputLimit(ctx, appended, model, window);
+        return commit(
+          { ...ctx, messages: appended },
+          built,
+          { ...previous, source, messages: appended, projection, appends: previous.appends + 1 },
+          model,
+          {
+            droppedMessages: Math.max(0, ctx.messages.length - appended.length),
+            truncatedToolResults: previous.truncatedToolResults,
+          },
+        );
       }
       const messages = previous
         ? withoutThinkingFrom(
@@ -931,7 +988,7 @@ export function createRuntimeContextPolicy(
           )
         : built.context.messages;
       assertImageLimit(messages);
-      assertFallbackInputLimit(ctx, messages, model);
+      assertInputLimit(ctx, messages, model, window);
       const projection = messages.map((message) => ({
         hash: hash(message),
         ...(message === built.navigation?.message
@@ -947,20 +1004,19 @@ export function createRuntimeContextPolicy(
           shortenedResults.set(original.key, message);
         }
       }
-      sent = {
-        head,
-        source,
-        // A copy, so a caller that later grows the array it passed in cannot change the record.
-        messages: [...messages],
-        projection,
-        truncatedToolResults: built.decision.truncatedToolResults,
-        rebuiltTokens: measure(ctx, messages).tokens,
-        appends: 0,
-      };
       return commit(
         messages === built.context.messages ? built.context : { ...built.context, messages },
         built,
-        projection,
+        {
+          head,
+          source,
+          // A copy, so a caller that later grows the array it passed in cannot change the record.
+          messages: [...messages],
+          projection,
+          truncatedToolResults: built.decision.truncatedToolResults,
+          rebuiltTokens: measure(ctx, messages).tokens,
+          appends: 0,
+        },
         model,
       );
     },

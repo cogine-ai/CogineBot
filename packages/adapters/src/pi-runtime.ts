@@ -66,6 +66,7 @@ import {
 } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
+import { groqRequestContextWindow } from "./groq-request-budget.js";
 import {
   estimateModelContextTokens,
   fallbackContextSafetyMargin,
@@ -77,6 +78,7 @@ import {
   normalizeOpenAiToolParameters,
   openAiToolParametersNeedNormalization,
 } from "./openai-tool-parameters.js";
+import { affordableOpenRouterOutput } from "./openrouter-output-budget.js";
 import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
@@ -93,6 +95,7 @@ import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   clipToolResultContent,
   clipToolResultText,
+  effectiveOutputReserve,
   MODEL_STREAM_IDLE_TIMEOUT_MS,
   MODEL_STREAM_TIMEOUT_MS,
   modelStreamMaxRetries,
@@ -102,7 +105,9 @@ import {
 } from "./pi-runtime-limits.js";
 import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
+import type { PiBudgetCorrection, PiDispatchBudget } from "./pi-usage.js";
 import { observedPiStream } from "./pi-usage.js";
+import { reportedContextWindow } from "./reported-context-window.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-context.js";
 import { SCHEDULE_TOOL_NAMES } from "./schedule-tools.js";
@@ -433,13 +438,20 @@ export class PiAgentRuntime implements AgentRuntime {
           imageTokens: createPiImageTokenEstimator(initialModelTarget.model),
         });
         let sentContext: { context: Context; sourceLength: number } | undefined;
-        const prepareContext = (ctx: Context, target: Model<Api>) => {
-          const prepared = contextPolicy.prepareContext(ctx, target);
+        const prepareContext = (
+          ctx: Context,
+          model: Model<Api>,
+          target: RuntimeModelTarget,
+          correction?: PiBudgetCorrection,
+        ) => {
+          const prepared = contextPolicy.prepareContext(ctx, model, {
+            contextWindow: target.providerContextWindow,
+            preserveInput: correction?.preserveInput,
+          });
           sentContext = { context: prepared, sourceLength: ctx.messages.length };
           return prepared;
         };
         const usageHooks = {
-          prepareContext,
           recordUsage: request.onUsage,
           onUsage: (usage: AgentUsage) => {
             contextPolicy.onUsage(usage);
@@ -453,7 +465,7 @@ export class PiAgentRuntime implements AgentRuntime {
           },
         };
         // The idle watchdog may clone a terminal message, preserving its content array.
-        const providerFailures = new WeakSet<AssistantMessage["content"]>();
+        const providerFailures = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
         const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
@@ -462,11 +474,11 @@ export class PiAgentRuntime implements AgentRuntime {
           request: contextRequest,
           getActive: () => activeStreamTarget,
           signal,
-          isProviderFailure: (message) => providerFailures.has(message.content),
+          providerFailureBudget: (message) => providerFailures.get(message.content),
           isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
           attempted: new Set<string>(),
           nextIndex: 0,
-          stream: (target, ctx, options, requestDeadline) =>
+          stream: (target, ctx, options, requestDeadline, correction) =>
             reliableModelStream(
               target.models,
               target.model,
@@ -490,10 +502,13 @@ export class PiAgentRuntime implements AgentRuntime {
                   },
                   {
                     ...usageHooks,
-                    prepareContext,
+                    prepareContext: (input, model) =>
+                      prepareContext(input, model, target, correction),
                     imageTokens: createPiImageTokenEstimator(target.model),
-                    onProviderError: (message) => providerFailures.add(message.content),
+                    onProviderError: (message, budget) =>
+                      providerFailures.set(message.content, budget),
                     requestDeadline,
+                    budgetCorrection: correction,
                     onRequestDeadlineExceeded: (message) =>
                       requestDeadlineFailures.add(message.content),
                   },
@@ -2049,7 +2064,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     },
   );
   let nested!: Agent;
-  const providerFailures = new WeakSet<AssistantMessage["content"]>();
+  const providerFailures = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
   const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
   const retryState: FallbackStreamState = {
     request: { ...host.request, model: requestModel, fallbackModels: [] },
@@ -2058,9 +2073,9 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     attempted: new Set(),
     nextIndex: 0,
     onSwitch: async () => undefined,
-    isProviderFailure: (message) => providerFailures.has(message.content),
+    providerFailureBudget: (message) => providerFailures.get(message.content),
     isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
-    stream: (target, ctx, options, requestDeadline) =>
+    stream: (target, ctx, options, requestDeadline, correction) =>
       reliableModelStream(
         target.models,
         target.model,
@@ -2084,11 +2099,16 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
                 : { modelCredentialId: target.config.modelCredentialId }),
             },
             {
-              prepareContext: contextPolicy.prepareContext,
+              prepareContext: (input, model) =>
+                contextPolicy.prepareContext(input, model, {
+                  contextWindow: target.providerContextWindow,
+                  preserveInput: correction?.preserveInput,
+                }),
               imageTokens: createPiImageTokenEstimator(target.model),
               recordUsage: host.request.onUsage,
-              onProviderError: (message) => providerFailures.add(message.content),
+              onProviderError: (message, budget) => providerFailures.set(message.content, budget),
               requestDeadline,
+              budgetCorrection: correction,
               onRequestDeadlineExceeded: (message) => requestDeadlineFailures.add(message.content),
               onUsage: (usage) => {
                 contextPolicy.onUsage(usage);
@@ -2884,6 +2904,7 @@ interface RuntimeModelTarget {
   model: Model<Api>;
   apiKey?: string;
   credentials?: PiRuntimeCredentialStore;
+  providerContextWindow?: number;
 }
 
 interface FallbackStreamState {
@@ -2893,8 +2914,10 @@ interface FallbackStreamState {
   attempted: Set<string>;
   nextIndex: number;
   onSwitch(target: RuntimeModelTarget): Promise<void>;
-  isProviderFailure(message: AssistantMessage): boolean;
+  providerFailureBudget(message: AssistantMessage): PiDispatchBudget | undefined;
   isRequestDeadlineExceeded(message: AssistantMessage): boolean;
+  /** Runtime-only limits bound to the resolved connection, including distinct same-model credentials. */
+  budgetTargets?: WeakMap<RuntimeModelTarget, RuntimeModelTarget>;
   /** A rejected signature is stripped for subsequent completions in this run. */
   dropThinkingBlocks?: boolean;
   /** Thinking written before a model switch belongs to the previous target. */
@@ -2904,6 +2927,7 @@ interface FallbackStreamState {
     context: TranscriptContext,
     options: ModelsSimpleStreamOptions | undefined,
     requestDeadline?: number,
+    correction?: PiBudgetCorrection,
   ): AssistantMessageEventStream;
 }
 
@@ -3281,17 +3305,26 @@ function fallbackAwareModelStream(
     const timeoutMs = options?.timeoutMs ?? MODEL_STREAM_TIMEOUT_MS;
     let firstRetryableError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
     let signatureRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
+    let sizingRetryError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
+    let usedBudgetCorrection = false;
+    let nextCorrection: PiBudgetCorrection | undefined;
+    let firstBackupAttempt = false;
     while (!signalAborted()) {
       const remainingMs = timeoutMs - (Date.now() - startedAt);
-      const budgetError = firstRetryableError ?? signatureRetryError;
-      if (budgetError && remainingMs <= 0) {
+      const budgetError = sizingRetryError ?? firstRetryableError ?? signatureRetryError;
+      const sharesDeadline =
+        !firstBackupAttempt && (retries > 0 || signatureRetryError !== undefined);
+      firstBackupAttempt = false;
+      if (sharesDeadline && budgetError && remainingMs <= 0) {
         output.push(budgetError);
         output.end(budgetError.error);
         return;
       }
-      const attemptOptions =
-        retries > 0 || signatureRetryError ? { ...options, timeoutMs: remainingMs } : options;
+      const attemptOptions = sharesDeadline ? { ...options, timeoutMs: remainingMs } : options;
       const target = state.getActive();
+      const effectiveTarget = state.budgetTargets?.get(target) ?? target;
+      const correction = nextCorrection;
+      nextCorrection = undefined;
       lastPartial = undefined;
       let sawPartialOutput = false;
       let restart = false;
@@ -3335,11 +3368,12 @@ function fallbackAwareModelStream(
           : "off";
         const reasoning = thinkingLevel === "off" ? undefined : thinkingLevel;
         // The outer loop reauthorizes retries. SDK-internal retries would bypass that boundary.
-        const authorizedOptions = target.config.authorize
-          ? { ...attemptOptions, maxRetries: 0 }
-          : attemptOptions;
+        const authorizedOptions =
+          target.config.authorize || usedBudgetCorrection
+            ? { ...attemptOptions, maxRetries: 0 }
+            : attemptOptions;
         stream = state.stream(
-          target,
+          effectiveTarget,
           requestContext(),
           state.request.fallbackModels?.length
             ? {
@@ -3352,7 +3386,8 @@ function fallbackAwareModelStream(
                 ...authorizedOptions,
                 signal: AbortSignal.any([signal, authorizationAbort.signal]),
               },
-          retries > 0 || signatureRetryError ? startedAt + timeoutMs : undefined,
+          sharesDeadline ? startedAt + timeoutMs : undefined,
+          correction,
         );
       } catch (error) {
         closeAuthorization();
@@ -3365,7 +3400,6 @@ function fallbackAwareModelStream(
           if (event.type === "error") {
             if (state.isRequestDeadlineExceeded(event.error)) {
               if (failIfAborted(target)) return;
-              const budgetError = firstRetryableError ?? signatureRetryError;
               if (budgetError) {
                 output.push(budgetError);
                 output.end(budgetError.error);
@@ -3373,14 +3407,62 @@ function fallbackAwareModelStream(
               }
             }
             let terminalEvent = event;
-            const hasTerminalPartialOutput = assistantHasPartialOutput(event.error);
-            if (
+            const providerBudget =
               !sawPartialOutput &&
-              !hasTerminalPartialOutput &&
+              !assistantHasPartialOutput(event.error) &&
               event.reason === "error" &&
-              !signalAborted() &&
-              state.isProviderFailure(event.error) &&
-              !blocksModelRecovery(errorFacts(event.error)) &&
+              !signalAborted()
+                ? state.providerFailureBudget(event.error)
+                : undefined;
+            const recoveryAllowed = providerBudget && !blocksModelRecovery(errorFacts(event.error));
+            if (
+              recoveryAllowed &&
+              !usedBudgetCorrection &&
+              retries < MODEL_PROVIDER_RETRY_DELAYS_MS.length &&
+              Date.now() - startedAt < timeoutMs
+            ) {
+              const { provider, maxTokens } = effectiveTarget.model;
+              const contextWindow =
+                effectiveTarget.providerContextWindow ?? effectiveTarget.model.contextWindow;
+              const error = event.error.errorMessage;
+              const reportedWindow =
+                groqRequestContextWindow(provider, error, contextWindow) ??
+                reportedContextWindow(provider, error, contextWindow);
+              const affordableOutput = affordableOpenRouterOutput(
+                provider,
+                error,
+                providerBudget.maxOutputTokens,
+              );
+              if (reportedWindow !== undefined || affordableOutput !== undefined) {
+                state.budgetTargets ??= new WeakMap();
+                state.budgetTargets.set(target, {
+                  ...effectiveTarget,
+                  providerContextWindow: reportedWindow ?? effectiveTarget.providerContextWindow,
+                  model: {
+                    ...effectiveTarget.model,
+                    // The selector enforces the learned window. Keep the SDK's nominal
+                    // model window so it does not subtract its safety margin again.
+                    maxTokens:
+                      reportedWindow === undefined
+                        ? (affordableOutput ?? maxTokens)
+                        : effectiveOutputReserve(reportedWindow, maxTokens),
+                  },
+                });
+                // Budget correction uses the same completion retry allowance and deadline.
+                retries += 1;
+                usedBudgetCorrection = true;
+                sizingRetryError = event;
+                nextCorrection = {
+                  previous: providerBudget,
+                  preserveInput: affordableOutput !== undefined,
+                };
+                buffered = [];
+                restart = true;
+                break;
+              }
+            }
+            if (
+              recoveryAllowed &&
               canRetrySameModel(event.error) &&
               !state.dropThinkingBlocks &&
               Date.now() - startedAt < timeoutMs &&
@@ -3392,14 +3474,7 @@ function fallbackAwareModelStream(
               restart = true;
               break;
             }
-            if (
-              !sawPartialOutput &&
-              !hasTerminalPartialOutput &&
-              event.reason === "error" &&
-              !signalAborted() &&
-              state.isProviderFailure(event.error) &&
-              isRetryableProviderUnavailable(event.error)
-            ) {
+            if (providerBudget && isRetryableProviderUnavailable(event.error)) {
               const next = await resolveNext(target);
               if (authorizationError) throw authorizationError;
               if (failIfAborted(target)) return;
@@ -3409,7 +3484,10 @@ function fallbackAwareModelStream(
                 if (authorizationError) throw authorizationError;
                 if (failIfAborted(target)) return;
                 // A backup retains its configured first-attempt header window.
+                firstBackupAttempt = true;
+                firstRetryableError = undefined;
                 signatureRetryError = undefined;
+                sizingRetryError = undefined;
                 buffered = [];
                 restart = true;
                 break;

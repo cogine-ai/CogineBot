@@ -2755,6 +2755,242 @@ describe("Pi runtime thinking blocks bound to a different conversation", () => {
   });
 });
 
+describe("Pi provider-reported budget recovery", () => {
+  function router() {
+    const target = model("openrouter", "synthetic-budget-target", 32_768);
+    providerState.models.set(
+      `${target.provider}/${target.id}`,
+      target as unknown as Record<string, unknown>,
+    );
+    const input = request();
+    input.model = {
+      provider: target.provider,
+      id: target.id,
+      apiKey: "fake-budget-primary",
+      modelCredentialId: "budget-primary",
+      maxTokens: 1_024,
+    };
+    return { target, input };
+  }
+
+  function creditLimit(requested = 1_024, affordable = 256, context?: string) {
+    return `402 ${JSON.stringify({
+      error: {
+        message: `This request requires more credits, or fewer max_tokens. You requested up to ${requested} tokens, but can only afford ${affordable}.`,
+        metadata: { limit_source: "openrouter_credits", context },
+      },
+    })}`;
+  }
+
+  it("isolates a learned cap from another credential for the same model", async () => {
+    const { target, input } = router();
+    const backup = {
+      ...input.model,
+      apiKey: "fake-budget-backup",
+      modelCredentialId: "budget-backup",
+      maxTokens: 768,
+    };
+    input.fallbackModels = [backup];
+    input.resolveFallbackModel = vi.fn(async () => backup);
+    input.onModelChange = vi.fn();
+    providerState.stream
+      .mockImplementationOnce(() => stream(target, message(target, [], "error", creditLimit())))
+      .mockImplementationOnce(() =>
+        stream(target, message(target, [], "error", creditLimit(256, 128))),
+      )
+      .mockImplementation(() =>
+        stream(target, message(target, [{ type: "text", text: "Backup answered." }], "stop")),
+      );
+    const events = await run(input);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Backup answered." });
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.maxTokens)).toEqual([
+      1_024, 256, 768,
+    ]);
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.apiKey)).toEqual([
+      "fake-budget-primary",
+      "fake-budget-primary",
+      "fake-budget-backup",
+    ]);
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(
+      target.provider,
+      target.id,
+      "budget-backup",
+    );
+    expect(providerState.delay).not.toHaveBeenCalled();
+    expect(target.maxTokens).toBe(4_096);
+    expect(input.model.maxTokens).toBe(1_024);
+  });
+
+  it("charges a corrective attempt to the shared completion retry allowance", async () => {
+    const { target, input } = router();
+    providerState.stream
+      .mockImplementationOnce(() => stream(target, message(target, [], "error", creditLimit())))
+      .mockImplementation(() =>
+        stream(target, message(target, [], "error", "503 service unavailable")),
+      );
+    await expect(run(input)).rejects.toThrow("503 service unavailable");
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.maxTokens)).toEqual([
+      1_024, 256, 256, 256,
+    ]);
+    expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([8_000, 20_000]);
+  });
+
+  it("uses the learned cap on the next completion without replaying the tool", async () => {
+    const { target, input } = router();
+    input.onModelChange = vi.fn();
+    providerState.stream
+      .mockImplementationOnce(() => stream(target, message(target, [], "error", creditLimit())))
+      .mockImplementationOnce(() =>
+        stream(
+          target,
+          message(
+            target,
+            [
+              {
+                type: "toolCall",
+                id: "bounded-effect-once",
+                name: "write_effect",
+                arguments: { value: "once" },
+              },
+            ],
+            "toolUse",
+          ),
+        ),
+      )
+      .mockImplementation(() =>
+        stream(target, message(target, [{ type: "text", text: "Result saved." }], "stop")),
+      );
+    const events = await run(input);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Result saved." });
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(input.onModelChange).not.toHaveBeenCalled();
+    expect(providerState.stream.mock.calls.map(([, , options]) => options.maxTokens)).toEqual([
+      1_024, 256, 256,
+    ]);
+    expect((providerState.stream.mock.calls[2]![1] as Context).messages).toContainEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "bounded-effect-once" }),
+    );
+  });
+
+  it("honors Stop while settling the rejected request before another dispatch", async () => {
+    const { target, input } = router();
+    const controller = new AbortController();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = new PiAgentRuntime({
+      modelCallObserver: {
+        beforeCall: vi.fn(async () => "first-reservation"),
+        afterCall: vi.fn(async () => {
+          controller.abort();
+        }),
+      },
+    });
+    providerState.stream.mockImplementation(() =>
+      stream(target, message(target, [], "error", creditLimit())),
+    );
+    async function consume() {
+      for await (const event of runtime.run(input, { signal: controller.signal }))
+        events.push(event);
+    }
+    await expect(consume()).rejects.toThrow("can only afford 256");
+    expect(controller.signal.aborted).toBe(true);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === "done")).toBe(false);
+  });
+
+  it("reauthorizes a corrective request and respects revocation before dispatch", async () => {
+    const { target, input } = router();
+    input.model.authorize = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(new Error("Model connection authorization denied"));
+    providerState.stream.mockImplementation(() =>
+      stream(target, message(target, [], "error", creditLimit())),
+    );
+    await expect(run(input)).rejects.toThrow("Model connection authorization denied");
+    expect(input.model.authorize).toHaveBeenCalledTimes(2);
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original provider error when budget correction runs out of time", async () => {
+    const { target, input } = router();
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.stream.mockImplementation(() =>
+      stream(target, message(target, [], "error", creditLimit())),
+    );
+    const beforeCall = vi
+      .fn()
+      .mockResolvedValueOnce("first-reservation")
+      .mockImplementationOnce(async () => {
+        await Promise.resolve();
+        now += 120_000;
+        return "corrective-reservation";
+      });
+    const afterCall = vi.fn(async () => undefined);
+    await expect(
+      run(input, [], new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } })),
+    ).rejects.toThrow("can only afford 256");
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(afterCall.mock.calls[1]).toEqual(["corrective-reservation", null]);
+  });
+
+  it.each([
+    { label: "provider authorization refusal", detail: "authorization denied" },
+    { label: "partial assistant output", partial: true },
+    { label: "local reservation failure", reservation: true },
+  ])("does not correct the budget after $label", async ({ detail, partial, reservation }) => {
+    const { target, input } = router();
+    const rejection = creditLimit(1_024, 256, detail);
+    const content: AssistantMessage["content"] = partial
+      ? [{ type: "thinking", thinking: "Existing private work" }]
+      : [];
+    providerState.stream.mockImplementation(() =>
+      stream(target, message(target, content, "error", rejection)),
+    );
+    const observer = reservation
+      ? {
+          beforeCall: vi.fn(async () => {
+            throw new Error(rejection);
+          }),
+          afterCall: vi.fn(async () => undefined),
+        }
+      : undefined;
+    await expect(
+      run(input, [], new PiAgentRuntime({ modelCallObserver: observer })),
+    ).rejects.toThrow("can only afford 256");
+    expect(providerState.stream).toHaveBeenCalledTimes(reservation ? 0 : 1);
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
+
+  it.each([30_000, 4_000])(
+    "does not dispatch when a reported window of %s cannot shrink the input",
+    async (window) => {
+      const target = model("openai-compatible", "synthetic-window-target", 32_768);
+      providerState.models.set(
+        `${target.provider}/${target.id}`,
+        target as unknown as Record<string, unknown>,
+      );
+      const input = request();
+      input.model = {
+        provider: target.provider,
+        id: target.id,
+        apiKey: "fake-window-key",
+        maxTokens: 1_024,
+      };
+      providerState.stream.mockImplementation(() =>
+        stream(
+          target,
+          message(target, [], "error", `400 maximum context length is ${window} tokens`),
+        ),
+      );
+      await expect(run(input)).rejects.toThrow("leaves no smaller request to send");
+      expect(providerState.stream).toHaveBeenCalledOnce();
+      expect(providerState.delay).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("Pi runtime corrective dispatch deadlines", () => {
   const failures = [
     { label: "availability", message: "Connection error.", waitMs: 90_000 },

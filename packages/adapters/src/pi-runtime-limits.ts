@@ -128,6 +128,9 @@ export function billedPromptTokens(usage: {
  */
 export const REASONING_MODEL_MAX_TOKENS = 32_768;
 
+export const MODEL_BUDGET_UNCHANGED_ERROR =
+  "The provider's request limit leaves no smaller request to send.";
+
 /** Leave at least three quarters of the window for input; token limits are positive integers. */
 export function effectiveOutputReserve(contextWindow: number, maxTokens: number): number {
   return Math.min(maxTokens, Math.max(1, Math.floor(contextWindow / 4)));
