@@ -48,7 +48,12 @@ describe("Page sharing RPC availability", () => {
       body: { visibility: "link", publishingEnabled: false, shareUrl: null, generation: null },
     });
     expect(
-      await f.call("setShare", { ...page, visibility: "link", expectedVersion: 1 }),
+      await f.call("setShare", {
+        ...page,
+        visibility: "link",
+        expectedVersion: 1,
+        expectedTitle: "Weekly plan",
+      }),
     ).toMatchObject({
       status: 404,
       body: { code: "NOT_FOUND", message: "Page sharing is unavailable" },
@@ -66,12 +71,16 @@ describe("Page sharing RPC availability", () => {
         pageId: "page",
         visibility: "link",
         expectedVersion: 1,
+        expectedTitle: "Weekly plan",
         shareTokenHash: "input",
       }),
     ).toMatchObject({ status: 400 });
     expect(await f.call("setShare", { pageId: "page", visibility: "link" })).toMatchObject({
       status: 400,
     });
+    expect(
+      await f.call("setShare", { pageId: "page", visibility: "link", expectedVersion: 1 }),
+    ).toMatchObject({ status: 400 });
     expect(await f.call("getShare", { pageId: "page\0bad" })).toMatchObject({ status: 400 });
     expect(f.findFirst).not.toHaveBeenCalled();
     expect(f.put).not.toHaveBeenCalled();
@@ -80,7 +89,12 @@ describe("Page sharing RPC availability", () => {
   it("uses the authenticated owner and Space to check the target before staging a token", async () => {
     const f = fixture(true);
     expect(
-      await f.call("setShare", { pageId: "page", visibility: "link", expectedVersion: 1 }),
+      await f.call("setShare", {
+        pageId: "page",
+        visibility: "link",
+        expectedVersion: 1,
+        expectedTitle: "Weekly plan",
+      }),
     ).toMatchObject({
       status: 404,
       body: { code: "NOT_FOUND", message: "This page isn't available" },

@@ -117,20 +117,28 @@ export function takePageReply(
   return { text, page };
 }
 
-let pageShareView: { id: string; pageId: string; version: number; scope: string } | null = null;
+let pageShareView: {
+  id: string;
+  pageId: string;
+  page: Pick<PageDetail, "title" | "version">;
+  scope: string;
+} | null = null;
 
-/** A share route may manage any owned Page, but only a real viewer can confirm its version. */
-export function offerPageShareView(id: string, pageId: string, version: number) {
-  pageShareView = { id, pageId, version, scope: pageScopeKey() };
+/** Only a rendered viewer can confirm the Page title and version for publication. */
+export function offerPageShareView(
+  id: string,
+  { id: pageId, title, version }: Pick<PageDetail, "id" | "title" | "version">,
+) {
+  pageShareView = { id, pageId, page: { title, version }, scope: pageScopeKey() };
 }
 
-export function viewedPageShareVersion(pageId: string | undefined, id: string | undefined) {
+export function viewedPageShare(pageId: string | undefined, id: string | undefined) {
   if (
     pageShareView?.id === id &&
     pageShareView?.pageId === pageId &&
     pageShareView?.scope === pageScopeKey()
   )
-    return pageShareView.version;
+    return pageShareView.page;
 }
 
 export function clearPageShareView(id: string | undefined) {

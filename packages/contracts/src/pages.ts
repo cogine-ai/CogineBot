@@ -112,6 +112,7 @@ export const PageShareInputSchema = z.discriminatedUnion("visibility", [
     pageId: PageInputIdSchema,
     visibility: z.literal("link"),
     expectedVersion: PageVersionSchema,
+    expectedTitle: PageTitleSchema,
   }),
 ]);
 export type PageShareInput = z.infer<typeof PageShareInputSchema>;

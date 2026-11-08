@@ -27,6 +27,8 @@ const postgres =
     ? describe.sequential
     : describe.skip;
 const origin = "https://pages.example.test";
+const pageTitle = "Weekly plan";
+const initialShare = { visibility: "link", expectedVersion: 1, expectedTitle: pageTitle } as const;
 const privateShare = {
   status: 200,
   body: { visibility: "private", publishingEnabled: true, shareUrl: null, generation: null },
@@ -83,10 +85,10 @@ function liveLink(response: {
   return share;
 }
 
-function tokenFromLink(shareUrl: string): string {
+function tokenFromLink(shareUrl: string, slug = "weekly-plan"): string {
   const url = new URL(shareUrl);
   expect(url.origin).toBe(origin);
-  expect(url.pathname).toMatch(/^\/p\/weekly-plan-[A-Za-z0-9_-]{43}$/);
+  expect(url.pathname).toMatch(new RegExp(`^/p/${slug}-[A-Za-z0-9_-]{43}$`));
   expect(url.search).toBe("");
   expect(url.hash).toBe("");
   return url.pathname.slice(-43);
@@ -205,7 +207,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       isDeploymentOwner: true,
     };
     const otherSpace: Actor = { ...actor, spaceId: `other-${id}` };
-    const title = "Weekly plan";
+    const title = pageTitle;
     await db.user.createMany({
       data: [actor, guest].map(({ userId, email }) => ({ id: userId, email, name: "Page owner" })),
     });
@@ -274,7 +276,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     const anonymous = new Hono();
     mountSharedPages(anonymous, runtime!.prisma, { enabled: true });
     async function call(
-      proc: "get" | "getShare" | "setShare" | "remove",
+      proc: "get" | "getShare" | "setShare" | "remove" | "rename",
       input: Record<string, unknown> = {},
       requestActor: Actor | null = actor,
       sharingEnabled = true,
@@ -319,7 +321,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("keeps sharing dormant by default and only lets the active Page owner manage the link", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     expect(await f.call("setShare", enable, f.actor, false)).toMatchObject({ status: 404 });
     expect(await f.call("getShare", {}, f.actor, false)).toEqual(dormant("private"));
     expect(await f.call("setShare", enable, null)).toMatchObject({ status: 401 });
@@ -367,10 +369,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       await release.promise;
       return staged;
     });
-    const calls = [
-      f.call("setShare", { visibility: "link", expectedVersion: 1 }),
-      f.call("setShare", { visibility: "link", expectedVersion: 1 }),
-    ];
+    const calls = [f.call("setShare", initialShare), f.call("setShare", initialShare)];
     let link: ReturnType<typeof liveLink>;
     try {
       await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(2), { timeout: 5000 });
@@ -410,7 +409,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     expect(f.vault.records.size).toBe(0);
     expect(await f.call("getShare")).toEqual(privateShare);
 
-    const reopened = liveLink(await f.call("setShare", { visibility: "link", expectedVersion: 1 }));
+    const reopened = liveLink(await f.call("setShare", initialShare));
     expect(tokenFromLink(reopened.shareUrl)).not.toBe(tokenFromLink(link.shareUrl));
     expect(reopened.generation).not.toBe(link.generation);
     expect(await f.row()).toMatchObject({
@@ -432,7 +431,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       await release.promise;
       return stored;
     });
-    const priorVersion = { visibility: "link", expectedVersion: 1 };
+    const priorVersion = initialShare;
     const pending = f.call("setShare", priorVersion);
     try {
       await staged.promise;
@@ -445,7 +444,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       expect(await f.call("setShare", priorVersion)).toMatchObject({ status: 409 });
       expect(f.vault.store.put).toHaveBeenCalledTimes(1);
       expect(
-        liveLink(await f.call("setShare", { visibility: "link", expectedVersion: 2 })).generation,
+        liveLink(await f.call("setShare", { ...initialShare, expectedVersion: 2 })).generation,
       ).toBeTruthy();
       expect(await f.row()).toMatchObject({ currentVersion: 2, visibility: "link" });
     } finally {
@@ -456,7 +455,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("reads only the current shared version under RLS and requires the owner's live share secret", async () => {
     const f = await setup();
-    const link = liveLink(await f.call("setShare", { visibility: "link", expectedVersion: 1 }));
+    const link = liveLink(await f.call("setShare", initialShare));
     const token = tokenFromLink(link.shareUrl);
     const original = await f.row();
     f.vault.store.load.mockClear();
@@ -499,7 +498,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     expect(f.vault.store.load).not.toHaveBeenCalled();
     expect(await f.call("setShare", { visibility: "private" })).toEqual(privateShare);
     expect((await f.readPublic(token)).status).toBe(404);
-    const reopened = liveLink(await f.call("setShare", { visibility: "link", expectedVersion: 2 }));
+    const reopened = liveLink(await f.call("setShare", { ...initialShare, expectedVersion: 2 }));
     const currentToken = tokenFromLink(reopened.shareUrl);
     expect((await f.readPublic(token)).status).toBe(404);
     expect((await f.readPublic(currentToken)).status).toBe(200);
@@ -507,9 +506,61 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     expect((await f.readPublic(currentToken)).status).toBe(404);
   });
 
+  it("requires the confirmed title when first sharing and retains direct owner renames", async () => {
+    const f = await setup();
+    const staged = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const stored = await put(...args);
+      staged.resolve();
+      await release.promise;
+      return stored;
+    });
+
+    const pending = f.call("setShare", initialShare);
+    const title = "Confirmed plan";
+    try {
+      await staged.promise;
+      expect(await f.call("rename", { title })).toMatchObject({
+        status: 200,
+        body: { title, currentVersion: 1 },
+      });
+      release.resolve();
+      expect(await pending).toMatchObject({ status: 409 });
+      expect(await f.call("setShare", initialShare)).toMatchObject({ status: 409 });
+      expect(f.vault.store.put).toHaveBeenCalledTimes(1);
+      expect(await f.call("getShare")).toEqual(privateShare);
+      expect(await f.secrets()).toEqual([]);
+      expect(f.vault.records.size).toBe(0);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+
+    const link = liveLink(await f.call("setShare", { ...initialShare, expectedTitle: title }));
+    const token = tokenFromLink(link.shareUrl, "confirmed-plan");
+    expect(await (await f.readPublic(token)).json()).toMatchObject({
+      title,
+      code: "fixture code",
+      version: 1,
+    });
+    const renamed = "Owner renamed the plan";
+    expect(await f.call("rename", { title: renamed }, f.guest)).toMatchObject({ status: 404 });
+    expect(await f.call("rename", { title: renamed })).toMatchObject({ status: 200 });
+    const current = await f.row();
+    expect(current.shareSecretId).toBe(link.generation);
+    expect(await (await f.readPublic(token)).json()).toEqual({
+      title: renamed,
+      code: "fixture code",
+      version: 1,
+      updatedAt: current.updatedAt.toISOString(),
+    });
+  });
+
   it("keeps a live token on provider outage and rotates a proven missing or mismatched token", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     const original = liveLink(await f.call("setShare", enable));
     const originalRow = await f.row();
     f.vault.store.load
@@ -547,7 +598,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("rejects a former link read when its vault load races revocation and replacement", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     const original = liveLink(await f.call("setShare", enable));
     const release = Promise.withResolvers<void>();
     const load = f.vault.store.load.getMockImplementation()!;
@@ -577,7 +628,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("does not re-enable a revoked link when a repair token was already staged", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     const original = liveLink(await f.call("setShare", enable));
     const release = Promise.withResolvers<void>();
     const put = f.vault.store.put.getMockImplementation()!;
@@ -605,7 +656,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("does not publish an old confirmation after another window shares and then revokes", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     const release = Promise.withResolvers<void>();
     const put = f.vault.store.put.getMockImplementation()!;
     const original = await f.row();
@@ -639,7 +690,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("does not return a new generation to a losing concurrent share after readback is delayed", async () => {
     const f = await setup();
-    const enable = { visibility: "link", expectedVersion: 1 };
+    const enable = initialShare;
     const releasePut = Promise.withResolvers<void>();
     const releaseCleanup = Promise.withResolvers<void>();
     const put = f.vault.store.put.getMockImplementation()!;
@@ -686,7 +737,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       await release.promise;
       return staged;
     });
-    const pending = f.call("setShare", { visibility: "link", expectedVersion: 1 });
+    const pending = f.call("setShare", initialShare);
     try {
       await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(1), {
         timeout: 5000,

@@ -217,7 +217,7 @@ export default function PageScreen() {
               )
                 return;
               const viewId = uuid.v4();
-              offerPageShareView(viewId, loaded.page.id, loaded.page.version);
+              offerPageShareView(viewId, loaded.page);
               router.push({ pathname: "/page-share", params: { pageId: loaded.page.id, viewId } });
             }}
           />

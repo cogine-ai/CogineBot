@@ -10,6 +10,7 @@ type PreparedPageShare = {
   botId: string | null;
   groupId: string | null;
   expectedVersion: number;
+  expectedTitle: string;
   expectedShareRevision: number;
   tokenHash: string;
   secret: { id: string; ciphertext: string };
@@ -44,6 +45,7 @@ export async function swapPageShare(
               botId: true,
               groupId: true,
               currentVersion: true,
+              title: true,
               shareRevision: true,
               visibility: true,
               shareTokenHash: true,
@@ -51,13 +53,14 @@ export async function swapPageShare(
             },
           });
           if (!row) throw new IsolationError();
-          const { currentVersion, ...current } = row;
-          // A staged token cannot publish an unseen version or cross a Bot/group detachment.
+          const { currentVersion, title, ...current } = row;
+          // A staged token cannot publish an unseen title or version or cross a detachment.
           if (
             next &&
             (next.botId !== current.botId ||
               next.groupId !== current.groupId ||
-              next.expectedVersion !== currentVersion)
+              next.expectedVersion !== currentVersion ||
+              next.expectedTitle !== title)
           ) {
             throw new PageShareConflictError();
           }
@@ -96,7 +99,7 @@ export async function swapPageShare(
             });
           }
           const moved = await tx.page.updateMany({
-            where: { ...page, ...current, ...(next ? { currentVersion } : {}) },
+            where: { ...page, ...current, ...(next ? { currentVersion, title } : {}) },
             data: next
               ? {
                   visibility: "link",

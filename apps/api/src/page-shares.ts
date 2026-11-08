@@ -137,7 +137,9 @@ export async function setPageShare(
     }
 
     const row = await requireOwnedShare(prisma, actor, pageId);
-    if (row.currentVersion !== input.expectedVersion) throw sharingConflict();
+    if (row.currentVersion !== input.expectedVersion || row.title !== input.expectedTitle) {
+      throw sharingConflict();
+    }
     const existing = await readLink(deps, actor, row, signal);
     if (existing) {
       return { visibility, publishingEnabled: true, ...existing };
@@ -158,6 +160,7 @@ export async function setPageShare(
           botId: row.botId,
           groupId: row.groupId,
           expectedVersion: input.expectedVersion,
+          expectedTitle: input.expectedTitle,
           expectedShareRevision: row.shareRevision,
           unreadable: row.shareSecretId,
         }),

@@ -57,6 +57,14 @@ const exec = Object.getOwnPropertyDescriptor(document, "execCommand");
 let root: Root;
 let state: PageShareState;
 
+async function render(detail: PageDetail, open = true) {
+  await act(async () => {
+    root.render(
+      <PageShareControl page={detail} open={open} onOpenChange={() => {}} compact drawn />,
+    );
+  });
+}
+
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -71,9 +79,7 @@ beforeEach(async () => {
     return state;
   });
   root = createRoot(document.body.appendChild(document.createElement("div")));
-  await act(async () => {
-    root.render(<PageShareControl page={page} open onOpenChange={() => {}} compact drawn />);
-  });
+  await render(page);
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -129,4 +135,34 @@ it("ignores late copied feedback after reissue and copies the newly verified lin
   await act(async () => button("Copy link")!.click());
   expect(writeText).toHaveBeenLastCalledWith(replacement.shareUrl);
   expect(button("Copied")).toBeDefined();
+});
+
+it("requires fresh consent for a renamed page even when the version did not change", async () => {
+  await render(page, false);
+  state = privatePage;
+  const unshared = { ...page, sharedByLink: undefined };
+  await render(unshared);
+  await act(async () => radio("link").click());
+  const dialog = () => document.querySelector('[role="alertdialog"]')!;
+  const renamed = { ...unshared, title: "Renamed plan" };
+  await render(renamed);
+  const stale = button("Share", dialog())!;
+  expect(stale.disabled).toBe(true);
+  expect(dialog().textContent).toContain(unshared.title);
+  await act(async () => stale.click());
+  expect(owner.store.client.pages.setShare).not.toHaveBeenCalled();
+
+  await act(async () => button("Cancel", dialog())!.click());
+  await act(async () => radio("link").click());
+  expect(dialog().textContent).toContain(renamed.title);
+  await act(async () => button("Share", dialog())!.click());
+  expect(owner.store.client.pages.setShare).toHaveBeenCalledExactlyOnceWith(
+    {
+      pageId: renamed.id,
+      visibility: "link",
+      expectedVersion: renamed.version,
+      expectedTitle: renamed.title,
+    },
+    { signal: expect.any(AbortSignal) },
+  );
 });

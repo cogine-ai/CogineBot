@@ -45,7 +45,7 @@ const {
   removePage,
   pinPage,
   takePageReply,
-  viewedPageShareVersion,
+  viewedPageShare,
 } = await import("./pages");
 const page = (id: string, version: number): PageDetail => ({
   id,
@@ -112,20 +112,20 @@ it("rejects a late origin-availability result across a Space generation change",
   await expect(result).rejects.toThrow("Page scope changed");
 });
 
-it("keeps the viewed publication version bound to its exact Page, route and scope", () => {
-  offerPageShareView("opened", "page-1", 7);
-  expect(viewedPageShareVersion("page-1", "opened")).toBe(7);
-  expect(viewedPageShareVersion("page-1", "invented")).toBeUndefined();
-  expect(viewedPageShareVersion("page-2", "opened")).toBeUndefined();
+it("keeps the reviewed publication title and version bound to its exact Page, route and scope", () => {
+  offerPageShareView("opened", { id: "page-1", title: "Original title", version: 7 });
+  expect(viewedPageShare("page-1", "opened")).toEqual({ title: "Original title", version: 7 });
+  expect(viewedPageShare("page-1", "invented")).toBeUndefined();
+  expect(viewedPageShare("page-2", "opened")).toBeUndefined();
 
   clearPageShareView("invented");
-  expect(viewedPageShareVersion("page-1", "opened")).toBe(7);
+  expect(viewedPageShare("page-1", "opened")).toEqual({ title: "Original title", version: 7 });
   clearPageShareView("opened");
-  expect(viewedPageShareVersion("page-1", "opened")).toBeUndefined();
+  expect(viewedPageShare("page-1", "opened")).toBeUndefined();
 
-  offerPageShareView("reopened", "page-1", 8);
+  offerPageShareView("reopened", { id: "page-1", title: "New title", version: 8 });
   host.generation += 2;
-  expect(viewedPageShareVersion("page-1", "reopened")).toBeUndefined();
+  expect(viewedPageShare("page-1", "reopened")).toBeUndefined();
 });
 
 it("stops an expired owner-share intent before transport and ignores a late owner response", async () => {

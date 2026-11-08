@@ -28,7 +28,7 @@ import {
   pageScopeKey,
   privatePageRpc,
   subscribePageScope,
-  viewedPageShareVersion,
+  viewedPageShare,
 } from "../lib/pages";
 
 type Visibility = PageShareState["visibility"];
@@ -229,35 +229,40 @@ function PageShareSheet({
     }
   }
 
-  const viewedVersion = viewedPageShareVersion(pageId, viewId);
-  const mayPublish =
+  const viewed = viewedPageShare(pageId, viewId);
+  const reviewed =
     loaded.status === "ready" &&
     !requiresReview &&
-    viewedVersion === loaded.page.version &&
-    loaded.page.version === loaded.page.currentVersion;
+    viewed?.version === loaded.page.version &&
+    viewed.title === loaded.page.title &&
+    loaded.page.version === loaded.page.currentVersion
+      ? viewed
+      : undefined;
 
   function choose(visibility: Visibility) {
     if (!pageId || loaded.status !== "ready" || loaded.share?.visibility === visibility) return;
-    if (
-      visibility === "link" &&
-      (!loaded.share?.publishingEnabled || !mayPublish || !viewedVersion)
-    )
-      return;
+    const input: PageShareInput | null =
+      visibility === "private"
+        ? { pageId, visibility }
+        : reviewed && loaded.share?.publishingEnabled
+          ? { pageId, visibility, expectedVersion: reviewed.version, expectedTitle: reviewed.title }
+          : null;
+    if (!input) return;
     const active = begin(visibility);
     if (!active) return;
-    const input: PageShareInput =
-      visibility === "link"
-        ? { pageId, visibility, expectedVersion: viewedVersion! }
-        : { pageId, visibility };
     let submitted = false;
     const submit = () => {
       if (submitted || !active.current()) return;
-      if (
-        input.visibility === "link" &&
-        viewedPageShareVersion(pageId, viewId) !== input.expectedVersion
-      ) {
-        active.finish();
-        return;
+      if (input.visibility === "link") {
+        const currentView = viewedPageShare(pageId, viewId);
+        if (
+          currentLoaded.current !== loaded ||
+          currentView?.version !== input.expectedVersion ||
+          currentView.title !== input.expectedTitle
+        ) {
+          active.finish();
+          return;
+        }
       }
       submitted = true;
       void save(input, active.current, loaded).finally(active.finish);
@@ -265,14 +270,18 @@ function PageShareSheet({
     const cancel = () => {
       if (!submitted) active.finish();
     };
-    if (visibility === "private") {
+    if (input.visibility === "private") {
       submit();
     } else {
+      const audience = t(
+        "Anyone with the link can view version {version} and future approved updates.",
+        {
+          version: input.expectedVersion,
+        },
+      );
       Alert.alert(
         t("Share this page?"),
-        t("Anyone with the link can view version {version} and future approved updates.", {
-          version: viewedVersion!,
-        }),
+        `${input.expectedTitle}\n\n${audience}`,
         [
           { text: t("Cancel"), style: "cancel", onPress: cancel },
           { text: t("Share"), onPress: submit },
@@ -396,7 +405,7 @@ function PageShareSheet({
         <SettingsRow
           accessibilityRole="radio"
           accessibilityState={{ checked: shown === "link" }}
-          disabled={pending !== null || !loaded.share?.publishingEnabled || !mayPublish}
+          disabled={pending !== null || !loaded.share?.publishingEnabled || !reviewed}
           title={t("Anyone with the link")}
           detail={
             loaded.share?.publishingEnabled === false
@@ -409,7 +418,7 @@ function PageShareSheet({
           trailing={checked("link")}
           onPress={() => choose("link")}
         />
-        {loaded.share?.publishingEnabled && loaded.share.visibility === "private" && !mayPublish ? (
+        {loaded.share?.publishingEnabled && loaded.share.visibility === "private" && !reviewed ? (
           <SettingsRow
             accessibilityRole="button"
             title={t("Open current version")}

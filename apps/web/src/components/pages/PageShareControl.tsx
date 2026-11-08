@@ -57,7 +57,9 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
   const [state, setState] = useState<PageShareState>();
   const [pending, setPending] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [confirmVersion, setConfirmVersion] = useState<number | null>(null);
+  const [confirmation, setConfirmation] = useState<Pick<PageDetail, "version" | "title"> | null>(
+    null,
+  );
   const lifetime = useRef<AbortController | null>(null);
   const busy = useRef(true);
   const pendingTab = useRef<Window | null>(null);
@@ -66,6 +68,13 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
   const pageId = page.id;
   const visibility = state?.visibility ?? (page.sharedByLink ? "link" : null);
   const publishingEnabled = state?.publishingEnabled === true;
+  const confirmVersion = confirmation?.version;
+  const canConfirm =
+    !pending &&
+    drawn &&
+    publishingEnabled &&
+    confirmation?.version === page.version &&
+    confirmation.title === page.title;
   const shareUrl =
     publishingEnabled && state?.visibility === "link" && state.generation
       ? usablePageShareUrl(state.shareUrl)
@@ -257,7 +266,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
           }
           disabled={!publishingEnabled || !drawn}
           checked={visibility === "link"}
-          onSelect={() => setConfirmVersion(page.version)}
+          onSelect={() => setConfirmation({ version: page.version, title: page.title })}
         />
       </fieldset>
       {shareUrl ? (
@@ -303,9 +312,9 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
         </div>
       ) : null}
       <AlertDialog
-        open={confirmVersion !== null}
+        open={confirmation !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirmVersion(null);
+          if (!open) setConfirmation(null);
         }}
       >
         <AlertDialogContent finalFocus={title}>
@@ -314,6 +323,9 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
               <Trans>Share this page?</Trans>
             </AlertDialogTitle>
             <AlertDialogDescription>
+              <span dir="auto" className="mb-1 block wrap-anywhere font-medium text-foreground">
+                {confirmation?.title}
+              </span>
               <Trans>
                 Anyone with the link can view version {confirmVersion} and future approved updates.
               </Trans>
@@ -324,12 +336,16 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
               <Trans>Cancel</Trans>
             </AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending || !drawn || !publishingEnabled || confirmVersion !== page.version}
+              disabled={!canConfirm}
               onClick={() => {
-                if (drawn && publishingEnabled && confirmVersion === page.version) {
-                  setConfirmVersion(null);
-                  changeVisibility({ pageId, visibility: "link", expectedVersion: confirmVersion });
-                }
+                if (!canConfirm || !confirmation) return;
+                setConfirmation(null);
+                changeVisibility({
+                  pageId,
+                  visibility: "link",
+                  expectedVersion: confirmation.version,
+                  expectedTitle: confirmation.title,
+                });
               }}
             >
               <Trans>Share</Trans>

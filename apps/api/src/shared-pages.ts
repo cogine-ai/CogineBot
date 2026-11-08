@@ -42,6 +42,7 @@ export function sharedPageLogRoute(path: string, c: Context) {
 
 async function readSharedPage(prisma: Pick<PrismaClient, "$queryRaw">, token: string) {
   const hash = createHash("sha256").update(token).digest("hex");
+  // The owner's direct rename updates the live title. Versioned writes supply the content.
   const [row] = await runAsSystem(
     "read an authorized shared Page",
     () => prisma.$queryRaw<PublicPageRow[]>`

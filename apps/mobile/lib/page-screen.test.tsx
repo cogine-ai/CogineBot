@@ -8,7 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import PageScreen from "../app/page";
 import type { PageFrame } from "../components/pages/page-frame";
-import { takePageReply, viewedPageShareVersion } from "./pages";
+import { takePageReply, viewedPageShare } from "./pages";
 
 const host = vi.hoisted(() => ({
   frame: undefined as ComponentProps<typeof PageFrame> | undefined,
@@ -167,9 +167,10 @@ const rendered = () => container.querySelector('[data-testid="page-frame"]');
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
 
-it("opens sharing with the actual version displayed by this viewer", async () => {
+it("opens sharing with the actual title and version displayed by this viewer", async () => {
   host.rpc.mockImplementation(async (proc: string) => {
-    if (proc === "pages/get") return detail({ version: 7, currentVersion: 7 });
+    if (proc === "pages/get")
+      return detail({ title: "Original title", version: 7, currentVersion: 7 });
     if (proc === "bots/list") return [{ id: "bot-1" }];
     throw new Error(`Unexpected procedure ${proc}`);
   });
@@ -185,8 +186,11 @@ it("opens sharing with the actual version displayed by this viewer", async () =>
     pathname: "/page-share",
     params: { pageId: "page-1", viewId: "synthetic-native-view" },
   });
-  expect(viewedPageShareVersion("page-1", "synthetic-native-view")).toBe(7);
-  expect(viewedPageShareVersion("page-1", "external-view")).toBeUndefined();
+  expect(viewedPageShare("page-1", "synthetic-native-view")).toEqual({
+    title: "Original title",
+    version: 7,
+  });
+  expect(viewedPageShare("page-1", "external-view")).toBeUndefined();
 });
 
 it.each([

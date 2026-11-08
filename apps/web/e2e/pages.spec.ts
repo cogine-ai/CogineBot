@@ -206,6 +206,7 @@ test("a Page owner shares and revokes a read-only link", async ({ browser, page 
   await expect(privateChoice).toBeChecked();
   await expect(share.getByRole("button", { name: "Copy link" })).toHaveCount(0);
   await linkChoice.click();
+  await expect(confirmation).toContainText(title);
   await expect(confirmation).toContainText("view version 1 and future approved updates");
   await captureScreenshot(page, testInfo, "page-share-confirm-version");
   await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -319,6 +320,7 @@ test("a Page owner shares and revokes a read-only link", async ({ browser, page 
       pageId,
       visibility: "link",
       expectedVersion: 1,
+      expectedTitle: title,
     });
     const copyButton = share.getByRole("button", { name: /^(Copy link|Copied)$/ });
     await copyButton.click();

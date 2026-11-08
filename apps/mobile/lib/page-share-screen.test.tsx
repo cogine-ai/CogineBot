@@ -13,6 +13,7 @@ type DialogButton = { text: string; onPress?: () => void };
 const host = vi.hoisted(() => ({
   pageId: "page-1",
   version: 1 as number | undefined,
+  viewedTitle: "Plan",
   viewId: "native-view" as string | undefined,
   space: "space-a",
   scope: 1,
@@ -111,8 +112,10 @@ vi.mock("../components/pages/page-load-failure", () => ({
 vi.mock("./pages", () => ({
   clearPageShareView: vi.fn(),
   getLatestPage: host.getPage,
-  viewedPageShareVersion: (pageId: string, viewId: string) =>
-    pageId === host.pageId && viewId === "native-view" ? host.version : undefined,
+  viewedPageShare: (pageId: string, viewId: string) =>
+    pageId === host.pageId && viewId === "native-view" && host.version !== undefined
+      ? { title: host.viewedTitle, version: host.version }
+      : undefined,
   pageReadFailure: (error: { code?: string } | null) =>
     error?.code === "NOT_FOUND" || error?.code === "FORBIDDEN" ? "deleted" : "failed",
   privatePageRpc: host.request,
@@ -151,6 +154,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host.pageId = "page-1";
   host.version = 1;
+  host.viewedTitle = "Plan";
   host.viewId = "native-view";
   host.space = "space-a";
   host.scope += 1;
@@ -199,11 +203,14 @@ const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
 const press = (label: string) => act(async () => button(label)!.click());
 
-it("publishes only after explicit confirmation and binds the version shown by the native viewer", async () => {
+it("publishes only after explicit confirmation and binds the title and version shown by the native viewer", async () => {
   await show();
   expect(button("Only you")?.getAttribute("data-checked")).toBe("true");
   await press("Anyone with the link");
   expect(host.alert).toHaveBeenCalledOnce();
+  expect(host.alert.mock.calls[0]?.[1]).toBe(
+    "Plan\n\nAnyone with the link can view version 1 and future approved updates.",
+  );
   expect(host.request.mock.calls.map(([proc]) => proc)).toEqual(["pages/getShare"]);
   const confirm = host.alert.mock.calls[0]![2].find(({ text }) => text === "Share");
   expect(confirm?.onPress).toBeTypeOf("function");
@@ -217,7 +224,7 @@ it("publishes only after explicit confirmation and binds the version shown by th
   await act(async () => response.resolve(linked));
   expect(host.request).toHaveBeenCalledWith(
     "pages/setShare",
-    { pageId: "page-1", visibility: "link", expectedVersion: 1 },
+    { pageId: "page-1", visibility: "link", expectedVersion: 1, expectedTitle: "Plan" },
     expect.any(Function),
   );
   expect(button("Copy link")).not.toBeNull();
@@ -280,6 +287,31 @@ it.each([
     pathname: "/page",
     params: { pageId: "page-1" },
   });
+});
+
+it("requires reviewing a renamed Page even when its saved version has not changed", async () => {
+  host.getPage.mockResolvedValueOnce({
+    title: "Renamed plan",
+    owner: { name: "Owner", image: null },
+    version: 1,
+    currentVersion: 1,
+  });
+  await show();
+  expect(container.textContent).toContain("Renamed plan");
+  expect(button("Anyone with the link")?.disabled).toBe(true);
+  await press("Anyone with the link");
+  expect(host.alert).not.toHaveBeenCalled();
+  expect(button("Open current version")).not.toBeNull();
+});
+
+it("rejects a stale title in an already open confirmation", async () => {
+  await show();
+  await press("Anyone with the link");
+  const confirm = host.alert.mock.calls[0]![2].find(({ text }) => text === "Share");
+  host.viewedTitle = "Renamed plan";
+  await act(async () => confirm?.onPress?.());
+  expect(host.request.mock.calls.map(([procedure]) => procedure)).toEqual(["pages/getShare"]);
+  expect(button("Open current version")).not.toBeNull();
 });
 
 it("rereads after a version conflict and requires reviewing the current version again", async () => {
