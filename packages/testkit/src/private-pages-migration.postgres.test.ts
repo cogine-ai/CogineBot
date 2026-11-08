@@ -23,6 +23,7 @@ const postgres =
     : describe.skip;
 const migration = "20261108000000_private_pages";
 const shareMigration = "20261108010000_page_share_links";
+const shareRevisionMigration = "20261108090000_page_share_revision";
 const databasePackage = new URL("../../db/", import.meta.url);
 const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
@@ -88,9 +89,9 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     await owner!.pool.query("DROP SCHEMA cogine_pages CASCADE");
     const removed = await owner!.pool.query(
       "DELETE FROM public._prisma_migrations WHERE migration_name = ANY($1::text[]) AND finished_at IS NOT NULL",
-      [[migration, shareMigration]],
+      [[migration, shareMigration, shareRevisionMigration]],
     );
-    expect(removed.rowCount).toBe(2);
+    expect(removed.rowCount).toBe(3);
     expect(await namespace()).toBe(false);
   }
 
@@ -389,13 +390,14 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
       },
     });
     await pool.query(
-      `ALTER TABLE cogine_pages.pages DROP COLUMN "shareTokenHash", DROP COLUMN "shareSecretId"`,
+      `ALTER TABLE cogine_pages.pages
+       DROP COLUMN "shareTokenHash", DROP COLUMN "shareSecretId", DROP COLUMN "shareRevision"`,
     );
     const removed = await pool.query(
-      "DELETE FROM public._prisma_migrations WHERE migration_name = $1 AND finished_at IS NOT NULL",
-      [shareMigration],
+      "DELETE FROM public._prisma_migrations WHERE migration_name = ANY($1::text[]) AND finished_at IS NOT NULL",
+      [[shareMigration, shareRevisionMigration]],
     );
-    expect(removed.rowCount).toBe(1);
+    expect(removed.rowCount).toBe(2);
     await pool.query(
       `INSERT INTO cogine_pages.pages (id,"spaceId","userId",title,"updatedAt")
        VALUES ($1,$2,$3,'Original private Page',CURRENT_TIMESTAMP)`,
@@ -413,7 +415,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
         await pool.query(
           `SELECT column_name, is_nullable FROM information_schema.columns
            WHERE table_schema = 'cogine_pages' AND table_name = 'pages'
-             AND column_name IN ('shareSecretId', 'shareTokenHash')
+             AND column_name IN ('shareRevision', 'shareSecretId', 'shareTokenHash')
            ORDER BY column_name`,
         )
       ).rows;
@@ -457,6 +459,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     await deploy();
 
     expect(await columns()).toEqual([
+      { column_name: "shareRevision", is_nullable: "NO" },
       { column_name: "shareSecretId", is_nullable: "YES" },
       { column_name: "shareTokenHash", is_nullable: "YES" },
     ]);
@@ -466,7 +469,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     await expect(verify()).resolves.toMatchObject({ connectionEnforced: true });
     const select = {
       where: { id: pageId },
-      select: { visibility: true, shareTokenHash: true, shareSecretId: true },
+      select: { visibility: true, shareTokenHash: true, shareSecretId: true, shareRevision: true },
     } as const;
     await expect(runtime!.prisma.page.findFirst(select)).resolves.toBeNull();
     await expect(
@@ -474,7 +477,12 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
         { userId, spaceId, email: `${userId}@example.test`, isDeploymentOwner: false },
         () => runtime!.prisma.page.findFirst(select),
       ),
-    ).resolves.toEqual({ visibility: "private", shareTokenHash: null, shareSecretId: null });
+    ).resolves.toEqual({
+      visibility: "private",
+      shareTokenHash: null,
+      shareSecretId: null,
+      shareRevision: 0,
+    });
   }, 150_000);
 
   async function rejectsForeignGrant(
