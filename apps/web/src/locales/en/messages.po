@@ -2879,6 +2879,10 @@ msgstr "Hang up first, then enter the code on screen."
 msgid "Hang up, then enter the code on screen."
 msgstr "Hang up, then enter the code on screen."
 
+#: src/lib/call-session.ts
+msgid "Hang up, then review the changes in chat."
+msgstr "Hang up, then review the changes in chat."
+
 #: src/pages/RoutineEditor.tsx
 msgid "header"
 msgstr "header"

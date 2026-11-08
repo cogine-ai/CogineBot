@@ -367,6 +367,109 @@ describe("run turn checkpoint state", () => {
 });
 
 describe("persist run turn checkpoint", () => {
+  it("restores a shared Page approval for the exact pending bridged occurrence", async () => {
+    const f = storage();
+    const tools = [builtin("save_page")];
+    const pageArgs = { pageId: "page-1", title: "Reviewed title" };
+    const current = state(undefined, { tools });
+    const pending = execution("pending");
+    claimTurnEffectOccurrence(current, run.id, "save_page", pageArgs, execution("earlier"));
+    claimTurnEffectOccurrence(current, run.id, "save_page", pageArgs, pending);
+    const binding = {
+      effectKey: toolEffectIdempotencyKey(run.id, "save_page", pageArgs, 1),
+      requestDigest: "b".repeat(64),
+    };
+    current.pendingCaptures.set(pending, () =>
+      JSON.stringify(
+        checkpoint({
+          messages: [
+            assistant([call("pending", USE_TOOL, { name: "save_page", arguments: pageArgs })]),
+          ],
+        }),
+      ),
+    );
+
+    await persistRunTurnCheckpoint(
+      f.prisma,
+      run,
+      "worker",
+      7,
+      current,
+      pending,
+      undefined,
+      undefined,
+      [],
+      binding,
+    );
+
+    const blob = f.client.externalEffect.upsert.mock.calls[0]![0].update.result;
+    expect(() => JSON.parse(blob)).toThrow();
+    const restored = state(blob, { tools });
+    expect(restored.sharedPageApproval).toEqual(binding);
+    expect(restored.pendingExecutionId).toBe(pending);
+    expect(restored.pendingToolName).toBe("save_page");
+    expect(JSON.parse(restored.blob!).messages).toEqual([
+      assistant([call("pending", USE_TOOL, { name: "save_page", arguments: pageArgs })]),
+    ]);
+    const prefix = "shared-page-approval-v1:";
+    const saved = JSON.parse(blob.slice(prefix.length));
+    expect(() =>
+      state(`${prefix}${JSON.stringify({ ...saved, effectKey: binding.effectKey.slice(0, -2) })}`, {
+        tools,
+      }),
+    ).toThrow("Unsupported shared Page approval checkpoint");
+    expect(() =>
+      state(`${prefix}${JSON.stringify({ ...saved, transcript: "" })}`, { tools }),
+    ).toThrow("Unsupported turn checkpoint");
+  });
+
+  it("persists a helper shared Page approval only against its assigned effect key", async () => {
+    const f = storage();
+    const tools = [builtin("save_page")];
+    const pageArgs = { pageId: "page-1", title: "Reviewed title" };
+    const current = state(undefined, { tools });
+    const helperExecution = JSON.stringify(["pi-tool", "helper-1", "pending"]);
+    const effectKey = toolEffectIdempotencyKey(run.id, "save_page", pageArgs);
+    const binding = { effectKey, requestDigest: "c".repeat(64) };
+    claimTurnEffectOccurrence(current, run.id, "save_page", pageArgs, helperExecution);
+
+    await expect(
+      persistRunTurnCheckpoint(
+        f.prisma,
+        run,
+        "worker",
+        7,
+        current,
+        helperExecution,
+        undefined,
+        undefined,
+        [],
+        { ...binding, effectKey: `${effectKey}:1` },
+      ),
+    ).rejects.toThrow("Unsupported shared Page approval checkpoint");
+    expect(f.client.externalEffect.upsert).not.toHaveBeenCalled();
+
+    await persistRunTurnCheckpoint(
+      f.prisma,
+      run,
+      "worker",
+      7,
+      current,
+      helperExecution,
+      undefined,
+      undefined,
+      [],
+      binding,
+    );
+    const blob = f.client.externalEffect.upsert.mock.calls[0]![0].update.result;
+    expect(() => JSON.parse(blob)).toThrow();
+    expect(state(blob, { tools })).toMatchObject({
+      stored: true,
+      blob: undefined,
+      sharedPageApproval: binding,
+    });
+  });
+
   it("keeps canonical Page calls and discards rejected Page inputs and protected result data", async () => {
     const f = storage();
     const secret = 'fixture-"protected"-value';

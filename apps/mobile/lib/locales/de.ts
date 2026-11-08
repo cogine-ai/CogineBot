@@ -973,6 +973,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not speak that.": "Das konnte nicht vorgelesen werden.",
   "Could not transcribe that.": "Das konnte nicht transkribiert werden.",
   "Hang up": "Auflegen",
+  "Hang up, then review the changes in chat.": "Lege auf und prüfe die Änderungen im Chat.",
   "Hide transcript": "Transkript ausblenden",
   Mute: "Stummschalten",
   "On a call with {name}": "Im Gespräch mit {name}",

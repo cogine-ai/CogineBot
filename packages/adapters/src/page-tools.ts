@@ -1,13 +1,25 @@
-import type { MessageBlock } from "@rakazo/contracts";
-import { PAGE_TITLE_MAX_LENGTH, PageTitleSchema, PageVersionSchema } from "@rakazo/contracts";
+import type { MessageBlock, SharedPageUpdateRequest } from "@rakazo/contracts";
+import { PAGE_TITLE_MAX_LENGTH, PageVersionSchema } from "@rakazo/contracts";
 import { containsSecret, isBackgroundRunTrigger, redactSecrets } from "@rakazo/core";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient, RunLease } from "@rakazo/db";
 import { assertRunCanWriteHistory, withTransactionRetry } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { checkPageSource, PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
+import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { z } from "zod";
-import { MAX_PAGE_EDITS, pageToolSecretError } from "./page-tool-request.js";
+import {
+  compilePageCandidate,
+  loadToolPage,
+  matchesSharedPageCandidate,
+  pageChangedResult,
+  pageToolScope,
+  protectedSharedPageResult,
+  readPageToolInput,
+  redactPageTitle,
+  sharedPageGeneration,
+  sharedPageUpdateRequest,
+} from "./page-share-update.js";
+import { pageToolSecretError } from "./page-tool-request.js";
 import { persistMessageInTransaction } from "./run-messages.js";
 
 export interface PageToolContext {
@@ -18,6 +30,7 @@ export interface PageToolContext {
   state: { tainted: boolean };
   secrets: string[];
   effect?: { id: string };
+  approvedSharedPageRequest?: SharedPageUpdateRequest;
   lease: RunLease;
   notify?: (threadId: string, eventSeq: number, firstResponseRunId?: string) => Promise<void>;
 }
@@ -30,55 +43,13 @@ const PageSaveReceiptSchema = z.strictObject({
     title: z.string().min(1).max(PAGE_TITLE_MAX_LENGTH),
   }),
   cardEventSeq: z.number().int().nonnegative().nullable(),
+  sharedByLink: z.literal(true).optional(),
   warnings: z.array(z.string()).optional(),
 });
 type PageSaveReceipt = z.infer<typeof PageSaveReceiptSchema>;
 
-function argumentGiven(value: unknown): boolean {
-  if (value === undefined || value === null) return false;
-  return typeof value !== "string" || value.trim().length > 0;
-}
-
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
-}
-
-type PageEdit = { find: string; replace: string };
-
-/** All edits or none: each `find` must occur exactly once in the result of the edits before it. */
-function applyPageEdits(
-  source: string,
-  edits: readonly PageEdit[],
-): { ok: true; source: string } | { ok: false; error: string } {
-  let next = source;
-  for (const [index, edit] of edits.entries()) {
-    const label = `Edit ${index + 1}`;
-    if (!edit.find) return { ok: false, error: `${label}: find is empty.` };
-    const at = next.indexOf(edit.find);
-    if (at === -1) return { ok: false, error: `${label}: find text was not found in the page.` };
-    if (next.indexOf(edit.find, at + 1) !== -1) {
-      return {
-        ok: false,
-        error: `${label}: find text occurs more than once; include more surrounding text.`,
-      };
-    }
-    next = next.slice(0, at) + edit.replace + next.slice(at + edit.find.length);
-  }
-  return { ok: true, source: next };
-}
-
-function parseEdits(value: unknown): PageEdit[] | string {
-  if (!Array.isArray(value) || value.length === 0) return "edits must be a non-empty list.";
-  if (value.length > MAX_PAGE_EDITS) return `Send at most ${MAX_PAGE_EDITS} edits at once.`;
-  const edits: PageEdit[] = [];
-  for (const [index, item] of value.entries()) {
-    const edit = item as Partial<PageEdit> | null;
-    if (typeof edit?.find !== "string" || typeof edit.replace !== "string") {
-      return `Edit ${index + 1}: needs find and replace strings.`;
-    }
-    edits.push({ find: edit.find, replace: edit.replace });
-  }
-  return edits;
 }
 
 function pageEffectScope(ctx: PageToolContext) {
@@ -94,7 +65,7 @@ function pageEffectScope(ctx: PageToolContext) {
 
 class InvalidPageSaveReceipt extends Error {}
 
-async function readPageSaveReceipt(
+async function readPageExecution(
   ctx: PageToolContext,
   args: Record<string, unknown>,
   prisma: Pick<PrismaClient, "externalEffect">,
@@ -104,16 +75,16 @@ async function readPageSaveReceipt(
     where: { ...pageEffectScope(ctx), ...(status ? { status } : {}) },
     select: { request: true, result: true },
   });
-  const request = stableJsonValue(args);
-  if (!effect || stableJsonValue(effect.request) !== request) {
+  const bound = sharedPageUpdateRequest(effect?.request);
+  if (!effect || stableJsonValue(bound?.args ?? effect.request) !== stableJsonValue(args)) {
     throw new InvalidPageSaveReceipt("Stored page execution does not match this run and request.");
   }
-  if (effect.result === null) return undefined;
+  if (effect.result === null) return { bound };
   const receipt = PageSaveReceiptSchema.safeParse(effect.result);
   if (!receipt.success) {
     throw new InvalidPageSaveReceipt("Stored page execution has no valid save receipt.");
   }
-  return receipt.data;
+  return { bound, receipt: receipt.data };
 }
 
 /** An earlier worker can settle the same receipt while this attempt is recovering it. */
@@ -126,7 +97,9 @@ export async function readCompletedPageToolResult(
     where: { ...pageEffectScope(ctx), status: "completed" },
     select: { request: true, result: true },
   });
-  if (!stored || stableJsonValue(stored.request) !== stableJsonValue(args)) return undefined;
+  if (!stored) return undefined;
+  const request = sharedPageUpdateRequest(stored.request)?.args ?? stored.request;
+  if (stableJsonValue(request) !== stableJsonValue(args)) return undefined;
   return stored.result ?? undefined;
 }
 
@@ -137,7 +110,7 @@ export async function recoverSavedPageFromTool(
 ) {
   let receipt: PageSaveReceipt | undefined;
   try {
-    receipt = await readPageSaveReceipt(ctx, args, ctx.deps.prisma, "executing");
+    receipt = (await readPageExecution(ctx, args, ctx.deps.prisma, "executing")).receipt;
   } catch (error) {
     // Missing, mismatched and malformed receipts retain the ordinary uncertain-effect gate.
     // A database read failure propagates: it cannot establish that replay is safe.
@@ -150,76 +123,59 @@ export async function recoverSavedPageFromTool(
 export async function savePageFromTool(ctx: PageToolContext, args: Record<string, unknown>) {
   const { deps, run, bot, thread } = ctx;
   if (args.help === true) return { guide: PAGE_KIT_GUIDE };
-  const pageId = argumentGiven(args.pageId) ? String(args.pageId) : undefined;
-  const hasSource = argumentGiven(args.source);
-  // Serializers send unused optional fields blank, an empty list included.
-  const hasEdits = Array.isArray(args.edits) ? args.edits.length > 0 : argumentGiven(args.edits);
-  if (hasSource && hasEdits) return { error: "Send either source or edits, not both." };
-  let title: string | undefined;
-  if (argumentGiven(args.title)) {
-    const parsed = PageTitleSchema.safeParse(args.title);
-    if (!parsed.success) return { error: "title must be 1 to 200 characters." };
-    title = parsed.data;
-  }
-  // Reads retain their source/taint contract. Recover writes before reading the page or
-  // applying edits: a later change or deletion must not turn this execution into another save.
-  const reading = pageId && !hasSource && !hasEdits && !title;
-  const previous = !reading ? await readPageSaveReceipt(ctx, args, deps.prisma) : undefined;
-  if (previous) return savedPageResult(ctx, previous);
+  const input = readPageToolInput(args);
+  if ("error" in input) return input;
+  const { pageId, source: providedSource, edits, title } = input;
+  // Recover writes before reading the page or applying edits: a later change or deletion
+  // must not turn this execution into another save.
+  const reading = pageId && providedSource === undefined && edits === undefined && !title;
+  const execution = reading ? undefined : await readPageExecution(ctx, args, deps.prisma);
+  if (execution?.receipt) return savedPageResult(ctx, execution.receipt);
+  const bound = execution?.bound;
+  const claimed = ctx.approvedSharedPageRequest;
+  if (stableJsonValue(bound ?? null) !== stableJsonValue(claimed ?? null))
+    return pageChangedResult();
 
-  // A bot reuses its personal pages across chats and routines. A group Page belongs to
-  // the current group, even when this bot made it; other contexts answer as for a missing page.
-  const reachable = thread.groupId
-    ? [{ botId: bot.id, groupId: null }, { groupId: thread.groupId }]
-    : [{ botId: bot.id, groupId: null }];
-  const pageScope = { spaceId: run.spaceId, userId: run.userId, OR: reachable };
-  const page = pageId
-    ? await deps.prisma.page.findFirst({
-        where: { id: pageId, ...pageScope },
-        select: {
-          id: true,
-          title: true,
-          currentVersion: true,
-          versions: { orderBy: { version: "desc" }, take: 1, select: { source: true } },
-        },
-      })
-    : null;
-  if (pageId && !page) return { error: "No page with that pageId belongs to this bot or chat." };
+  const pageScope = pageToolScope(ctx);
+  const page = pageId ? await loadToolPage(deps.prisma, pageScope, pageId) : null;
+  if (pageId && !page)
+    return bound
+      ? pageChangedResult()
+      : { error: "No page with that pageId belongs to this bot or chat." };
   const current = page?.versions[0]?.source ?? "";
 
-  if (page && !hasSource && !hasEdits && !title) {
-    // The stored source may hold outside text an earlier run put in the page, so reading it
-    // taints this run like any other outside content; saves only confirm this run's own write.
+  if (page && reading) {
+    // A stored source may hold outside text an earlier run put in the page.
     ctx.state.tainted = true;
     return {
       pageId: page.id,
       version: page.currentVersion,
       title: redactSecrets(page.title, ctx.secrets),
+      ...(sharedPageGeneration(page) ? { sharedByLink: true } : {}),
       source: redactSecrets(current, ctx.secrets),
     };
   }
-  if (!page && hasEdits) return { error: "edits need the pageId of the page to change." };
-  if (!page && !hasSource) return { error: "A new page needs source." };
+  if (!page && edits !== undefined)
+    return { error: "edits need the pageId of the page to change." };
+  if (!page && providedSource === undefined) return { error: "A new page needs source." };
   if (!page && !title) return { error: "A new page needs a title." };
+  if (!bound && page?.visibility === "link") {
+    return { error: "The shared page needs approval before it can be updated.", unchanged: true };
+  }
 
-  let source = hasSource ? String(args.source) : current;
-  if (hasEdits) {
-    const edits = parseEdits(args.edits);
-    if (typeof edits === "string") return { error: edits, unchanged: true };
-    const applied = applyPageEdits(current, edits);
-    if (!applied.ok) return { error: applied.error, unchanged: true };
-    source = applied.source;
+  const sharedContentProtected = () => page && containsSecret([page.title, current], ctx.secrets);
+  if (bound && sharedContentProtected()) return protectedSharedPageResult();
+  const candidate = compilePageCandidate(input, current, {
+    secrets: ctx.secrets,
+    shared: Boolean(bound),
+  });
+  if ("result" in candidate) return candidate.result;
+  const { source, code, warnings } = candidate;
+  const containsRunSecret = () => containsSecret([source, code], ctx.secrets);
+  const safeTitle = () => (title === undefined ? undefined : redactPageTitle(title, ctx.secrets));
+  if (bound && (!page || !matchesSharedPageCandidate(bound, page, candidate, safeTitle()))) {
+    return pageChangedResult();
   }
-  const check = checkPageSource(source);
-  if (!check.ok) {
-    return {
-      error: "The page has problems; nothing was saved.",
-      problems: check.errors.map((problem) => redactSecrets(problem, ctx.secrets)),
-    };
-  }
-  // Saved Page source and compiled output must not persist values this run keeps secret.
-  const containsRunSecret = () => containsSecret([source, check.code], ctx.secrets);
-  if (containsRunSecret()) return pageToolSecretError();
 
   const effectScope = pageEffectScope(ctx);
   let committed: { receipt: PageSaveReceipt; firstResponseRunId?: string };
@@ -237,18 +193,25 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
         if (locked.length !== 1) throw new Error("Page execution is no longer writable.");
         // The effect serializes retries and keeps the exact request bound to one receipt.
         const held = await tx.externalEffect.updateMany({
-          where: { ...effectScope, status: { in: ["intended", "executing"] } },
+          where: {
+            ...effectScope,
+            status: bound ? "executing" : { in: ["intended", "executing"] },
+          },
           data: { updatedAt: new Date() },
         });
         if (held.count !== 1) throw new Error("Page execution is no longer writable.");
-        const previous = await readPageSaveReceipt(ctx, args, tx);
-        if (previous) return { receipt: previous };
+        const currentExecution = await readPageExecution(ctx, args, tx);
+        if (currentExecution.receipt) return { receipt: currentExecution.receipt };
+        if (stableJsonValue(currentExecution.bound ?? null) !== stableJsonValue(bound ?? null)) {
+          throw new PageChangedError();
+        }
         const writer = await assertRunCanWriteHistory(tx, run.id, { lease: ctx.lease });
         if (writer?.status !== "running" || writer.leaseOwner !== ctx.lease.owner) {
           throw new Error("Page execution is no longer writable.");
         }
         if (containsRunSecret()) throw new PageContainsSecretError();
-        const safeTitle = title === undefined ? undefined : redactPageTitle(title, ctx.secrets);
+        if (bound && sharedContentProtected()) throw new ProtectedSharedPageError();
+        const nextRequestedTitle = safeTitle();
         let saved: PageSaveReceipt["saved"];
         if (!page) {
           const created = await tx.page.create({
@@ -257,33 +220,50 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
               userId: run.userId,
               botId: bot.id,
               groupId: thread.groupId,
-              title: safeTitle!,
-              versions: { create: { version: 1, title: safeTitle!, source, code: check.code } },
+              title: nextRequestedTitle!,
+              versions: { create: { version: 1, title: nextRequestedTitle!, source, code } },
             },
           });
           saved = { pageId: created.id, version: 1, title: created.title };
         } else {
           const version = page.currentVersion + 1;
           if (!PageVersionSchema.safeParse(version).success) throw new PageVersionLimitError();
-          // Conditional on the version this change was built from, so two saves never interleave.
-          // With no new title the page keeps its current one, even a rename made after the read.
+          if (bound && !matchesSharedPageCandidate(bound, page, candidate, nextRequestedTitle)) {
+            throw new PageChangedError();
+          }
+          // Sharing changes independently of the version. Fence both together, and fence the
+          // old title only if the approval explicitly showed its replacement.
           const moved = await tx.page.updateMany({
-            where: { id: page.id, currentVersion: page.currentVersion, ...pageScope },
-            data: { currentVersion: version, title: safeTitle, updatedAt: new Date() },
+            where: {
+              id: page.id,
+              currentVersion: page.currentVersion,
+              ...pageScope,
+              ...(bound
+                ? {
+                    visibility: "link",
+                    shareSecretId: page.shareSecretId,
+                    shareTokenHash: page.shareTokenHash,
+                    ...(nextRequestedTitle === undefined ? {} : { title: page.title }),
+                  }
+                : { visibility: "private", shareSecretId: null, shareTokenHash: null }),
+            },
+            data: { currentVersion: version, title: nextRequestedTitle, updatedAt: new Date() },
           });
           if (moved.count === 0) throw new PageChangedError();
           let nextTitle =
-            safeTitle ??
+            nextRequestedTitle ??
             (await tx.page.findUniqueOrThrow({ where: { id: page.id }, select: { title: true } }))
               .title;
           // A title saved before this run learned a secret is redacted before it is shown again.
           const kept = redactPageTitle(nextTitle, ctx.secrets);
           if (kept !== nextTitle) {
+            if (bound) throw new ProtectedSharedPageError();
             nextTitle = kept;
             await tx.page.update({ where: { id: page.id }, data: { title: kept } });
           }
+          if (bound && containsRunSecret()) throw new PageContainsSecretError();
           await tx.pageVersion.create({
-            data: { pageId: page.id, version, title: nextTitle, source, code: check.code },
+            data: { pageId: page.id, version, title: nextTitle, source, code },
           });
           saved = { pageId: page.id, version, title: nextTitle };
         }
@@ -308,8 +288,9 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
           kind: "page_save",
           saved,
           cardEventSeq: card?.eventSeq ?? null,
-          ...(check.warnings?.length
-            ? { warnings: check.warnings.map((warning) => redactSecrets(warning, ctx.secrets)) }
+          ...(bound ? { sharedByLink: true as const } : {}),
+          ...(warnings?.length
+            ? { warnings: warnings.map((warning) => redactSecrets(warning, ctx.secrets)) }
             : {}),
         };
         await tx.externalEffect.update({
@@ -321,13 +302,14 @@ export async function savePageFromTool(ctx: PageToolContext, args: Record<string
     );
   } catch (error) {
     if (error instanceof PageContainsSecretError) return pageToolSecretError();
+    if (error instanceof ProtectedSharedPageError) return protectedSharedPageResult();
     if (error instanceof PageVersionLimitError)
       return {
         error: "The page reached its version limit; save a new page instead.",
         unchanged: true,
       };
     if (error instanceof PageChangedError || isUniqueViolation(error)) {
-      return { error: "The page changed while saving; read it again and retry.", unchanged: true };
+      return pageChangedResult();
     }
     throw error;
   }
@@ -353,6 +335,7 @@ async function savedPageResult(
   const result = {
     ...saved,
     title,
+    ...(receipt.sharedByLink ? { sharedByLink: true as const } : {}),
     mention: redactSecrets(
       `Mention it in your reply as [${linkText}](page:${saved.pageId})`,
       ctx.secrets,
@@ -366,12 +349,7 @@ async function savedPageResult(
     : result;
 }
 
-function redactPageTitle(title: string, secrets: string[]): string {
-  return redactSecrets(title, secrets)
-    .slice(0, PAGE_TITLE_MAX_LENGTH)
-    .replace(/[\uD800-\uDBFF]$/, "");
-}
-
 class PageChangedError extends Error {}
 class PageContainsSecretError extends Error {}
+class ProtectedSharedPageError extends Error {}
 class PageVersionLimitError extends Error {}

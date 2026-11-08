@@ -86,6 +86,31 @@ export type PageTextContext = z.infer<typeof PageTextContextSchema>;
 
 export const PageVersionSchema = z.number().int().min(1).max(2_147_483_647);
 
+export const SHARED_PAGE_UPDATE_REQUEST_KIND = "shared_page_update";
+export const MAX_SHARED_PAGE_APPROVAL_DETAIL_LENGTH = 4_000;
+const pageApprovalDigest = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const SharedPageUpdateRequestSchema = z
+  .strictObject({
+    requestKind: z.literal(SHARED_PAGE_UPDATE_REQUEST_KIND),
+    args: z.record(z.string(), z.unknown()),
+    page: z.strictObject({
+      id: PageInputIdSchema,
+      version: PageVersionSchema,
+      generation: pageApprovalDigest,
+      candidateDigest: pageApprovalDigest,
+      title: z.string().min(1).max(PAGE_TITLE_MAX_LENGTH),
+      baseTitleDigest: pageApprovalDigest.optional(),
+    }),
+    detail: z.string().min(1).max(MAX_SHARED_PAGE_APPROVAL_DETAIL_LENGTH),
+  })
+  .refine((request) => request.args.pageId === request.page.id);
+export type SharedPageUpdateRequest = z.infer<typeof SharedPageUpdateRequestSchema>;
+
+export function sharedPageUpdateApprovalTitle(title: string): string {
+  return `Update shared page “${title}”?`;
+}
+
 export const PageSummarySchema = z.strictObject({
   id: Id,
   title: z.string().max(PAGE_TITLE_MAX_LENGTH),

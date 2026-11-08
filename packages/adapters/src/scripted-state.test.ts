@@ -253,6 +253,39 @@ describe("stored scripted continuation envelope", () => {
     expect(sealScriptedState({ ...ordinary, pendingEffect: undefined }).version).toBe(2);
   });
 
+  it("round-trips a shared Page update only at its exact scripted cursor and occurrence", () => {
+    const { digest: _digest, pause: _pause, ...ordinary } = storedFixture();
+    const args = { pageId: "page-1", title: "Reviewed title" };
+    const kind = "save_page";
+    const fingerprint = toolEffectIdempotencyKey(RUN_ID, kind, args);
+    const binding = {
+      id: "page-effect",
+      kind,
+      idempotencyKey: toolEffectIdempotencyKey(RUN_ID, kind, args, 2),
+      requestDigest: "a".repeat(64),
+      requestKind: "shared_page_update" as const,
+    };
+    const script = ordinary.state.script.map((turn, index) =>
+      index === ordinary.state.cursor.turn ? { ...turn, toolCalls: [{ name: kind, args }] } : turn,
+    );
+    const state = sealScriptedState({
+      ...ordinary,
+      state: { ...ordinary.state, script, scriptDigest: scriptedStateDigest(script) },
+      effectOccurrences: [...ordinary.effectOccurrences, [fingerprint, 2]],
+      pendingEffect: binding,
+    });
+
+    expect(state.version).toBe(4);
+    expect(parseStoredScriptedState(scriptedStateJson(state), RUN_ID)).toEqual(state);
+    expect(() => parseStoredScriptedState(reseal({ ...state, version: 2 }), RUN_ID)).toThrow(ERROR);
+    expect(() =>
+      parseStoredScriptedState(
+        reseal({ ...state, pendingEffect: { ...binding, idempotencyKey: fingerprint } }),
+        RUN_ID,
+      ),
+    ).toThrow(ERROR);
+  });
+
   it("round-trips normalized occurrence keys, legacy consumed IDs and a pending effect", () => {
     const value = storedFixture();
     const reordered = reverseObjectKeys(scriptedStateJson(value));

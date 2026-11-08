@@ -139,8 +139,12 @@ export function startCall(call: {
   unsubDictation = dictation.subscribe((heard) => {
     if (!state) return;
     if (heard.status === "listening") {
-      set({ heard: pendingSecretAsk(thread) ? "" : heard.transcript });
-      watchInterim(heard.transcript);
+      if (pendingScreenAsk(thread)) {
+        set({ heard: "" });
+      } else {
+        set({ heard: heard.transcript });
+        watchInterim(heard.transcript);
+      }
     } else clearInterim();
     if (heard.error) {
       if (heard.status === "idle") micOpen = false;
@@ -293,17 +297,19 @@ async function listen() {
   if (guardTimer) return;
   set({ phase: "listening", heard: "" });
   speaker.stop();
-  if (state.muted || pendingSecretAsk(thread)) {
+  const screenAsk = pendingScreenAsk(thread);
+  if (state.muted || screenAsk) {
     dictation.stop("cancel");
     micOpen = false;
+    if (screenAsk === "approval") set({ caption: reviewInChatPrompt() });
     return;
   }
   await openMic();
 }
 
-/** Starts dictation unless it is already running, muted, or waiting on a typed secret. */
+/** Starts dictation unless it is already running, muted, or waiting for on-screen input. */
 async function openMic() {
-  if (!state || micOpen || state.muted || pendingSecretAsk(thread)) return;
+  if (!state || micOpen || state.muted || pendingScreenAsk(thread)) return;
   micOpen = true;
   try {
     await dictation.listen({
@@ -343,8 +349,15 @@ async function handleTranscript(text: string) {
     void listen();
     return;
   }
-  if (pendingSecretAsk(thread)) {
-    set({ heard: "", caption: t`Hang up, then enter the code on screen.` });
+  const screenAsk = pendingScreenAsk(thread);
+  if (screenAsk) {
+    set({
+      heard: "",
+      caption:
+        screenAsk === "approval"
+          ? reviewInChatPrompt()
+          : t`Hang up, then enter the code on screen.`,
+    });
     return;
   }
   const { botId, exchanges } = state;
@@ -436,10 +449,12 @@ function reactToThread() {
   if (!state) return;
   // The bot already said goodbye: neither its marker nor the work it files after it is spoken.
   if (botEndedCall) return;
-  if (pendingSecretAsk(thread)) {
+  const screenAsk = pendingScreenAsk(thread);
+  if (screenAsk) {
     dictation.stop("cancel");
     micOpen = false;
-    set({ heard: "" });
+    if (screenAsk === "approval") set({ heard: "", caption: reviewInChatPrompt() });
+    else set({ heard: "" });
   }
   // A turn sent back to listening mid-flight must not drop the reply it is waiting for.
   if (state.phase === "listening" && !awaitingReply) return;
@@ -447,8 +462,9 @@ function reactToThread() {
   const messages = thread?.messages ?? [];
   const lastBot = [...messages].reverse().find((message) => message.role === "bot");
   if (lastBot && !spokenMessageIds.has(lastBot.id) && replyFinished(lastBot)) {
-    const text = speechFromBlocks(lastBot.blocks);
     const ask = lastBot.blocks.find((block) => block.kind === "ask" && block.status !== "answered");
+    const visualApproval = ask?.kind === "ask" && ask.reviewMode === "screen";
+    const text = visualApproval ? reviewInChatPrompt() : speechFromBlocks(lastBot.blocks);
     const secretAsk = ask && isSecretAskBlock(ask);
     if (text) {
       // Never spoken again, interrupted or not.
@@ -459,7 +475,7 @@ function reactToThread() {
       void speaker.speak(
         secretAsk
           ? `${text}. ${t`Hang up first, then enter the code on screen.`}`
-          : ask
+          : ask && !visualApproval
             ? `${text}. ${t`Say yes or no, or answer in a sentence.`}`
             : text,
         { botId, messageId: lastBot.id },
@@ -489,14 +505,20 @@ function runActive(snapshot: ThreadSnapshot | null) {
   return Boolean(snapshot?.run && RUN_ACTIVE.includes(snapshot.run.status));
 }
 
-function pendingSecretAsk(snapshot: ThreadSnapshot | null) {
+function reviewInChatPrompt() {
+  return t`Hang up, then review the changes in chat.`;
+}
+
+function pendingScreenAsk(snapshot: ThreadSnapshot | null): "secret" | "approval" | undefined {
   const askId = latestAskId(snapshot);
   const askMessage = snapshot?.messages.find((message) => message.id === askId);
-  return Boolean(
-    askMessage?.blocks.some(
-      (block) => block.kind === "ask" && isSecretAskBlock(block) && block.status !== "answered",
-    ),
+  const ask = askMessage?.blocks.find(
+    (block) => block.kind === "ask" && block.status !== "answered",
   );
+  if (ask?.kind !== "ask") return undefined;
+  if (ask.reviewMode === "screen") return "approval";
+  if (isSecretAskBlock(ask)) return "secret";
+  return undefined;
 }
 
 function latestAskId(snapshot: ThreadSnapshot | null): string | null {

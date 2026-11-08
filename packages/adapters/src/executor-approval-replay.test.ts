@@ -21,6 +21,37 @@ import {
 } from "./lazy-tool-catalog.js";
 
 describe("executor approval replay", () => {
+  it("projects a shared Page approval into model arguments without its private binding or diff", () => {
+    const args = { pageId: "page-1", edits: [{ find: "before", replace: "after" }] };
+    const request = {
+      requestKind: "shared_page_update",
+      args,
+      page: {
+        id: args.pageId,
+        version: 4,
+        generation: "a".repeat(64),
+        candidateDigest: "b".repeat(64),
+        title: "Private review title",
+      },
+      detail: "Private before/after diff",
+    };
+    const continuation = buildApprovalContinuation(
+      [{ kind: "save_page", request }],
+      JSON.stringify,
+    );
+    expect(continuation).toContain(
+      `use_tool: ${JSON.stringify({ name: "save_page", arguments: args })}`,
+    );
+    expect(continuation).not.toMatch(
+      /generation|candidateDigest|Private before\/after|Private review/,
+    );
+
+    const invalid = { ...request, page: { ...request.page, id: "different-page" } };
+    expect(
+      buildApprovalContinuation([{ kind: "save_page", request: invalid }], JSON.stringify),
+    ).toContain("The previously approved Page update could not be restored.");
+  });
+
   it("resumes a deferred connection response with only the public decision argument", () => {
     const continuation = buildApprovalContinuation(
       [

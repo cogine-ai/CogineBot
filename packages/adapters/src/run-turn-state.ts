@@ -1,11 +1,15 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { AGENT_CONNECTION_RESPONSE_TOOL } from "@rakazo/core";
-import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
+import {
+  isToolEffectIdempotencyKey,
+  toolEffectIdempotencyKey,
+} from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
 import { approvedEffectOccurrence } from "./approval-effect.js";
 import { FIND_TOOL, isDeferredTool, USE_TOOL } from "./builtin-tool-bridge.js";
 import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
+import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-checkpoint.js";
@@ -13,6 +17,17 @@ import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-che
 export type TurnEffectOccurrence = NonNullable<TurnCheckpoint["effectOccurrences"]>[number];
 
 const CONNECTION_APPROVAL_CHECKPOINT = "connection-approval-v1:";
+const SHARED_PAGE_APPROVAL_CHECKPOINT = "shared-page-approval-v1:";
+const REQUEST_DIGEST = /^[a-f0-9]{64}$/;
+
+export interface SharedPageApprovalCheckpointBinding {
+  effectKey: string;
+  requestDigest: string;
+}
+
+function assignedEffectKey({ fingerprint, occurrence }: TurnEffectOccurrence): string {
+  return occurrence ? `${fingerprint}:${occurrence}` : fingerprint;
+}
 
 export function readConnectionApprovalCheckpoint(blob: string) {
   if (!blob.startsWith(CONNECTION_APPROVAL_CHECKPOINT)) return undefined;
@@ -30,10 +45,35 @@ export function readConnectionApprovalCheckpoint(blob: string) {
   return { effectKey, transcript };
 }
 
+function readSharedPageApprovalCheckpoint(blob: string, runId: string) {
+  if (!blob.startsWith(SHARED_PAGE_APPROVAL_CHECKPOINT)) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(blob.slice(SHARED_PAGE_APPROVAL_CHECKPOINT.length));
+  } catch {
+    throw new Error("Unsupported shared Page approval checkpoint");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Unsupported shared Page approval checkpoint");
+  const { effectKey, requestDigest, transcript, ...extra } = value as Record<string, unknown>;
+  if (
+    Object.keys(extra).length ||
+    typeof effectKey !== "string" ||
+    !isToolEffectIdempotencyKey(effectKey, runId, SAVE_PAGE_TOOL) ||
+    typeof requestDigest !== "string" ||
+    !REQUEST_DIGEST.test(requestDigest) ||
+    (transcript !== undefined && typeof transcript !== "string")
+  ) {
+    throw new Error("Unsupported shared Page approval checkpoint");
+  }
+  return { binding: { effectKey, requestDigest }, transcript };
+}
+
 export interface RunTurnCheckpointState {
   blob?: string;
   stored: boolean;
   connectionApprovalEffectKey?: string;
+  sharedPageApproval?: SharedPageApprovalCheckpointBinding;
   ownInstructionsBaseline?: string;
   counts: Map<string, number>;
   occurrences: TurnEffectOccurrence[];
@@ -55,11 +95,17 @@ export function createRunTurnCheckpointState(input: {
 }): RunTurnCheckpointState {
   const connectionApproval =
     input.blob === undefined ? undefined : readConnectionApprovalCheckpoint(input.blob);
-  const transcript = connectionApproval ? connectionApproval.transcript : input.blob;
+  const sharedPageApproval =
+    input.blob === undefined
+      ? undefined
+      : readSharedPageApprovalCheckpoint(input.blob, input.runId);
+  const approval = connectionApproval ?? sharedPageApproval;
+  const transcript = approval ? approval.transcript : input.blob;
   const state: RunTurnCheckpointState = {
     blob: transcript,
     stored: input.blob !== undefined,
     connectionApprovalEffectKey: connectionApproval?.effectKey,
+    ...(sharedPageApproval ? { sharedPageApproval: sharedPageApproval.binding } : {}),
     ownInstructionsBaseline: input.instructionsBaseline,
     counts: input.counts ?? new Map(),
     occurrences: [],
@@ -85,13 +131,27 @@ export function createRunTurnCheckpointState(input: {
     tool.name === USE_TOOL && tool.route?.connectorId === "builtin";
   const realTool = (tool: ConnectorTool, args: Record<string, unknown>) =>
     isBridge(tool) ? (typeof args.name === "string" ? runnable.get(args.name) : undefined) : tool;
+  let pendingPageFingerprint: string | undefined;
   for (const call of unresolved) {
     if (saved.executionMode !== "sequential" && call.id !== saved.pendingToolCallId) continue;
     const tool = available.get(call.name);
     if (!tool || !realTool(tool, call.arguments))
       throw new Error("Pending checkpoint tool is no longer available");
-    if (call.id === saved.pendingToolCallId)
-      state.pendingToolName = realTool(tool, call.arguments)!.name;
+    if (call.id !== saved.pendingToolCallId) continue;
+    state.pendingToolName = realTool(tool, call.arguments)!.name;
+    if (sharedPageApproval && state.pendingToolName === SAVE_PAGE_TOOL && !call.argumentsError) {
+      const args = isBridge(tool) ? call.arguments.arguments : call.arguments;
+      if (args && typeof args === "object" && !Array.isArray(args)) {
+        const prepared = preparePageToolRequest(args as Record<string, unknown>, []);
+        if (prepared.ok && prepared.mode === "write") {
+          pendingPageFingerprint = toolEffectIdempotencyKey(
+            input.runId,
+            SAVE_PAGE_TOOL,
+            prepared.args,
+          );
+        }
+      }
+    }
   }
   if (connectionApproval && state.pendingToolName !== AGENT_CONNECTION_RESPONSE_TOOL)
     throw new Error("Unsupported connection approval checkpoint");
@@ -132,6 +192,18 @@ export function createRunTurnCheckpointState(input: {
       }
     }
   }
+  if (sharedPageApproval) {
+    const occurrence = state.restoredPending;
+    const binding = sharedPageApproval.binding;
+    if (
+      !occurrence ||
+      !pendingPageFingerprint ||
+      occurrence.fingerprint !== pendingPageFingerprint ||
+      binding.effectKey !== assignedEffectKey(occurrence)
+    ) {
+      throw new Error("Unsupported shared Page approval checkpoint");
+    }
+  }
   // The saved prompt owns this baseline; an older missing baseline stays unknown.
   state.ownInstructionsBaseline = saved.ownInstructionsBaseline;
   return state;
@@ -170,10 +242,29 @@ export async function persistRunTurnCheckpoint(
   pendingSecretEffectId?: string,
   connectionApprovalEffectKey?: string,
   runSecrets: string[] = [],
+  sharedPageApproval?: SharedPageApprovalCheckpointBinding,
 ): Promise<void> {
   const capture = executionId ? state.pendingCaptures.get(executionId) : undefined;
-  const connectionCheckpoint = (transcript?: string) =>
-    `${CONNECTION_APPROVAL_CHECKPOINT}${JSON.stringify({ effectKey: connectionApprovalEffectKey, transcript })}`;
+  if (sharedPageApproval && connectionApprovalEffectKey)
+    throw new Error("Only one approval can be bound to a turn checkpoint");
+  if (sharedPageApproval) {
+    const assigned = state.occurrences.findLast((entry) => entry.executionId === executionId);
+    if (
+      !assigned ||
+      assignedEffectKey(assigned) !== sharedPageApproval.effectKey ||
+      !isToolEffectIdempotencyKey(sharedPageApproval.effectKey, run.id, SAVE_PAGE_TOOL) ||
+      !REQUEST_DIGEST.test(sharedPageApproval.requestDigest)
+    ) {
+      throw new Error("Unsupported shared Page approval checkpoint");
+    }
+  }
+  const withApproval = (transcript?: string) => {
+    if (sharedPageApproval)
+      return `${SHARED_PAGE_APPROVAL_CHECKPOINT}${JSON.stringify({ ...sharedPageApproval, transcript })}`;
+    if (connectionApprovalEffectKey)
+      return `${CONNECTION_APPROVAL_CHECKPOINT}${JSON.stringify({ effectKey: connectionApprovalEffectKey, transcript })}`;
+    return transcript;
+  };
   if (capture) {
     const saved = JSON.parse(capture()) as TurnCheckpoint;
     saved.messages = saved.messages.map(
@@ -186,16 +277,14 @@ export async function persistRunTurnCheckpoint(
       run,
       leaseOwner,
       leaseFence,
-      connectionApprovalEffectKey
-        ? connectionCheckpoint(JSON.stringify(saved))
-        : JSON.stringify(saved),
+      withApproval(JSON.stringify(saved)),
       pendingSecretEffectId,
     );
     state.stored = true;
-  } else if (connectionApprovalEffectKey) {
+  } else if (sharedPageApproval || connectionApprovalEffectKey) {
     // A helper cannot capture a top-level transcript. Keep its exact receipt and
     // refuse older executors, whose restore reader cannot resume this checkpoint.
-    await saveRunTurnCheckpoint(prisma, run, leaseOwner, leaseFence, connectionCheckpoint());
+    await saveRunTurnCheckpoint(prisma, run, leaseOwner, leaseFence, withApproval());
     state.stored = true;
   } else if (pendingSecretEffectId !== undefined) {
     await saveRunTurnCheckpoint(

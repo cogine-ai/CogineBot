@@ -58,6 +58,25 @@ test("connection approval displays a URL-like requester as literal text", async 
   await expect(page.getByRole("link")).toHaveCount(0);
 });
 
+test("shared Page approval shows the exact before and after text and offers a one-time decision", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/e2e/fixtures/marketing-shots.html?view=shared-page-approval");
+  await expect(
+    page.getByText("Update shared page “Weekly report <Beta>”?", { exact: true }),
+  ).toBeVisible();
+  expect(await page.locator("pre").textContent()).toBe(
+    "- <Text>Planned: 4 workshops</Text>\n+ <Text>Confirmed: 4 workshops</Text>",
+  );
+  const allow = page.getByRole("button", { name: "Allow once", exact: true });
+  await expect(allow).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deny", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Always allow/ })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "shared-page-update-approval");
+  await allow.click();
+  await expect(page.getByText("Allowed once", { exact: true })).toBeVisible();
+});
+
 test("actions run by default while optional confirmations live in Space settings", async ({
   page,
 }, testInfo) => {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareSharedPageUpdate, sharedPageUpdateRequest } from "./page-share-update.js";
 import type { PageToolContext } from "./page-tools.js";
 
 import { recoverSavedPageFromTool, savePageFromTool } from "./page-tools.js";
@@ -61,7 +62,10 @@ function context(
               id: "page-1",
               title: "Plan",
               currentVersion: existing.currentVersion,
-              versions: [{ source: source("Plan") }],
+              visibility: "private",
+              shareSecretId: null,
+              shareTokenHash: null,
+              versions: [{ version: existing.currentVersion, source: source("Plan") }],
             }
           : null,
       ),
@@ -82,6 +86,36 @@ function context(
   } as unknown as PageToolContext;
   newPageCalls.set(ctx, pending.record);
   return ctx;
+}
+
+function linkedPage(sourceText = source("Plan")) {
+  const stored = {
+    id: "page-1",
+    title: "Plan",
+    visibility: "link",
+    shareSecretId: "secret-1",
+    shareTokenHash: "hash-1",
+    currentVersion: 1,
+    versions: [{ version: 1, source: sourceText }],
+  };
+  const page = {
+    updateMany: vi.fn(async (_input: { where: Record<string, unknown> }) => ({ count: 1 })),
+    update: vi.fn(),
+    findUniqueOrThrow: vi.fn(async () => ({ title: stored.title })),
+  };
+  const pageVersion = { create: vi.fn() };
+  const ctx = context({ page, pageVersion }, { currentVersion: 1 });
+  vi.mocked(ctx.deps.prisma.page.findFirst).mockImplementation((async () => ({
+    ...stored,
+  })) as never);
+  return { ctx, stored, page, pageVersion };
+}
+
+async function prepareLinkedUpdate(ctx: PageToolContext, args: Record<string, unknown>) {
+  const prepared = await prepareSharedPageUpdate(ctx, args);
+  if (!prepared || !("request" in prepared))
+    throw new Error("Expected a shared Page update request");
+  return prepared.request;
 }
 
 describe("save_page", () => {
@@ -229,7 +263,10 @@ describe("save_page", () => {
       groupId: scope.ownerGroup,
       title: "Plan",
       currentVersion: 1,
-      versions: [{ source: source("Plan") }],
+      visibility: "private",
+      shareSecretId: null,
+      shareTokenHash: null,
+      versions: [{ version: 1, source: source("Plan") }],
     };
     const update = vi.fn(async () => ({ count: 1 }));
     const version = vi.fn();
@@ -309,6 +346,284 @@ describe("save_page", () => {
       expect(version).toHaveBeenCalledOnce();
       expect(writeCard).toHaveBeenCalledTimes(scope.trigger === "routine" ? 0 : 1);
     }
+  });
+
+  it("does not let an ordinary receipt update a shared Page", async () => {
+    const pageVersion = { create: vi.fn() };
+    const page = {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findUniqueOrThrow: vi.fn(async () => ({ title: "Plan" })),
+    };
+    const ctx = context({ page, pageVersion }, { currentVersion: 1 });
+    vi.mocked(ctx.deps.prisma.page.findFirst).mockResolvedValue({
+      id: "page-1",
+      title: "Plan",
+      visibility: "link",
+      shareSecretId: "secret-1",
+      shareTokenHash: "hash-1",
+      currentVersion: 1,
+      versions: [{ version: 1, source: source("Plan") }],
+    } as never);
+
+    await expect(
+      saveNewPageCall(ctx, { pageId: "page-1", source: source("New") }),
+    ).resolves.toMatchObject({ unchanged: true });
+    expect(page.updateMany).not.toHaveBeenCalled();
+    expect(pageVersion.create).not.toHaveBeenCalled();
+    expect(writeCard).not.toHaveBeenCalled();
+  });
+
+  it("shows the exact changed text and before/after title with visible control characters", async () => {
+    const emoji = "🧪";
+    const adjacent = `${emoji}${"b".repeat(39)}`;
+    const previous = source(`Hidden ${adjacent}OLD${"a".repeat(39)}${emoji} rest`);
+    const { ctx } = linkedPage(previous);
+    const args = {
+      pageId: "page-1",
+      title: "New title",
+      edits: [{ find: "OLD", replace: "NEW\u202e" }],
+    };
+
+    const request = await prepareLinkedUpdate(ctx, args);
+    expect(sharedPageUpdateRequest(JSON.parse(JSON.stringify(request)))).toEqual(request);
+    expect(request.detail.split("\n")).toEqual([
+      "- Title: Plan",
+      "+ Title: New title",
+      `- …${adjacent}OLD${"a".repeat(39)}${emoji}…`,
+      `+ …${adjacent}NEW\\u{202e}${"a".repeat(39)}${emoji}…`,
+    ]);
+    expect(request.page).toMatchObject({
+      id: "page-1",
+      version: 1,
+      generation: expect.stringMatching(/^[a-f0-9]{64}$/),
+      candidateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      baseTitleDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(request)).not.toContain("secret-1");
+    expect(JSON.stringify(request)).not.toContain("hash-1");
+    expect(
+      sharedPageUpdateRequest({ ...request, args: { ...args, pageId: "another-page" } }),
+    ).toBeUndefined();
+    expect(
+      sharedPageUpdateRequest({ ...request, args: { ...args, approvedVersion: 1 } }),
+    ).toBeUndefined();
+    expect(
+      sharedPageUpdateRequest({
+        ...request,
+        page: { ...request.page, baseTitleDigest: undefined },
+      }),
+    ).toBeUndefined();
+    expect(ctx.deps.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses oversized real changes but keeps short edits on long lines reviewable", async () => {
+    const padding = "old-context ".repeat(400);
+    const { ctx } = linkedPage(source(`${padding}OLD${padding}`));
+    const short = await prepareLinkedUpdate(ctx, {
+      pageId: "page-1",
+      edits: [{ find: "OLD", replace: "NEW" }],
+    });
+    expect(short.detail).toContain("OLD");
+    expect(short.detail).toContain("NEW");
+    expect(short.detail.length).toBeLessThan(200);
+
+    const large = await prepareSharedPageUpdate(ctx, {
+      pageId: "page-1",
+      edits: [{ find: "OLD", replace: "NEW".repeat(1_400) }],
+    });
+    expect(large).toMatchObject({
+      result: { unchanged: true, error: expect.stringContaining("too long") },
+    });
+    expect(large).not.toHaveProperty("request");
+  });
+
+  it("never extracts a secret or its suffix from the previous shared source for a review", async () => {
+    const secret = "FAKE_PAGE_REVIEW_SECRET_8351".repeat(4);
+    const { ctx } = linkedPage(source(`${secret}OLD`));
+    ctx.secrets.push(secret);
+    const blocked = await prepareSharedPageUpdate(ctx, { pageId: "page-1", source: source("New") });
+    expect(blocked).toMatchObject({
+      result: { unchanged: true, error: expect.stringContaining("Turn off") },
+    });
+    expect(JSON.stringify(blocked)).not.toContain("SECRET_8351");
+    expect(blocked).not.toHaveProperty("request");
+  });
+
+  it("rejects a secret assembled by sequential edits before exposing compiler diagnostics", async () => {
+    const { ctx } = linkedPage();
+    const left = "FAKE_EDIT_FRAGMENT_";
+    const right = "SECRET_1431";
+    ctx.secrets.push(left + right);
+    const blocked = await prepareSharedPageUpdate(ctx, {
+      pageId: "page-1",
+      edits: [
+        { find: "const App", replace: `${left}App` },
+        { find: "App =", replace: `${right} =` },
+      ],
+    });
+    expect(blocked).toMatchObject({
+      result: { unchanged: true, error: expect.stringContaining("secret") },
+    });
+    expect(blocked).not.toHaveProperty("request");
+    expect(blocked).not.toHaveProperty("result.problems");
+  });
+
+  it("refuses candidate arguments that became sensitive after they were keyed", async () => {
+    const { ctx } = linkedPage();
+    const secret = "FAKE_LATE_CANDIDATE_SECRET_5441";
+    const changes = [{ title: secret }, { source: source(secret) }];
+    ctx.secrets.push(secret);
+
+    for (const change of changes) {
+      const blocked = await prepareSharedPageUpdate(ctx, { pageId: "page-1", ...change });
+      expect(blocked).toMatchObject({ result: { unchanged: true } });
+      expect(blocked).not.toHaveProperty("request");
+      expect(JSON.stringify(blocked)).not.toContain(secret);
+    }
+    expect(ctx.deps.prisma.page.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "missing claim",
+    "different claim",
+    "different candidate",
+    "rotated",
+    "revoked",
+    "version",
+    "renamed",
+  ])("refuses an approved update with a %s boundary", async (reason) => {
+    const { ctx, stored, page, pageVersion } = linkedPage();
+    const args = { pageId: "page-1", source: source("New"), title: "Renamed" };
+    let request = await prepareLinkedUpdate(ctx, args);
+    if (reason === "different candidate") {
+      request = { ...request, page: { ...request.page, candidateDigest: "0".repeat(64) } };
+    }
+    newPageCalls.get(ctx)!(request);
+    if (reason !== "missing claim") {
+      ctx.approvedSharedPageRequest =
+        reason === "different claim" ? { ...request, detail: "Different approval" } : request;
+    }
+    if (reason === "rotated") stored.shareTokenHash = "hash-2";
+    if (reason === "revoked") stored.visibility = "private";
+    if (reason === "version") {
+      stored.currentVersion = 2;
+      stored.versions = [{ version: 2, source: source("Another update") }];
+    }
+    if (reason === "renamed") stored.title = "Current title";
+
+    await expect(savePageFromTool(ctx, args)).resolves.toMatchObject({ unchanged: true });
+    expect(page.updateMany).not.toHaveBeenCalled();
+    expect(pageVersion.create).not.toHaveBeenCalled();
+    expect(ctx.deps.prisma.externalEffect.update).not.toHaveBeenCalled();
+    expect(writeCard).not.toHaveBeenCalled();
+  });
+
+  it("commits only the claimed Page, generation and explicit title, then recovers without another write", async () => {
+    const { ctx, page, pageVersion, stored } = linkedPage();
+    const args = { pageId: "page-1", edits: [{ find: "Hi", replace: "Hello" }], title: "Renamed" };
+    const request = await prepareLinkedUpdate(ctx, args);
+    newPageCalls.get(ctx)!(request);
+    ctx.approvedSharedPageRequest = request;
+
+    const saved = await savePageFromTool(ctx, args);
+    expect(saved).toMatchObject({
+      pageId: "page-1",
+      version: 2,
+      title: "Renamed",
+      sharedByLink: true,
+    });
+    expect(ctx.deps.prisma.externalEffect.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: "executing" }) }),
+    );
+    expect(page.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "page-1",
+        currentVersion: 1,
+        title: "Plan",
+        visibility: "link",
+        shareSecretId: "secret-1",
+        shareTokenHash: "hash-1",
+        spaceId: "space-1",
+        userId: "user-1",
+        OR: [{ botId: "bot-1", groupId: null }],
+      },
+      data: { currentVersion: 2, title: "Renamed", updatedAt: expect.any(Date) },
+    });
+    expect(pageVersion.create).toHaveBeenCalledWith({
+      data: {
+        pageId: "page-1",
+        version: 2,
+        title: "Renamed",
+        source: source("Plan").replace("Hi", "Hello"),
+        code: expect.stringContaining("Hello"),
+      },
+    });
+    stored.visibility = "private";
+    ctx.approvedSharedPageRequest = undefined;
+    await expect(recoverSavedPageFromTool(ctx, args)).resolves.toEqual(saved);
+    await expect(savePageFromTool(ctx, args)).resolves.toEqual(saved);
+    expect(page.updateMany).toHaveBeenCalledOnce();
+    expect(writeCard).toHaveBeenCalledOnce();
+    expect(writeCard.mock.calls[0]?.[3]).toEqual([
+      { kind: "page", pageId: "page-1", version: 2, title: "Renamed" },
+    ]);
+  });
+
+  it("keeps a concurrent title when the change omitted title, unless it now contains a secret", async () => {
+    const { ctx, page, pageVersion, stored } = linkedPage();
+    const args = { pageId: "page-1", source: source("New") };
+    const request = await prepareLinkedUpdate(ctx, args);
+    expect(request.page).not.toHaveProperty("baseTitleDigest");
+    expect(request.detail).not.toContain("Title:");
+    newPageCalls.get(ctx)!(request);
+    ctx.approvedSharedPageRequest = request;
+    page.updateMany.mockImplementationOnce(async ({ where }) => {
+      expect(where).not.toHaveProperty("title");
+      stored.title = "Concurrent rename";
+      return { count: 1 };
+    });
+
+    await expect(savePageFromTool(ctx, args)).resolves.toMatchObject({
+      title: "Concurrent rename",
+    });
+    expect(pageVersion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ title: "Concurrent rename" }),
+    });
+    expect(page.update).not.toHaveBeenCalled();
+
+    const secret = "FAKE_LATE_TITLE_SECRET_5441";
+    page.updateMany.mockImplementationOnce(async () => {
+      ctx.secrets.push(secret);
+      stored.title = secret;
+      return { count: 1 };
+    });
+    newPageCalls.get(ctx)!(request);
+    await expect(savePageFromTool(ctx, args)).resolves.toMatchObject({ unchanged: true });
+    expect(pageVersion.create).toHaveBeenCalledOnce();
+    expect(page.update).not.toHaveBeenCalled();
+    expect(writeCard).toHaveBeenCalledOnce();
+  });
+
+  it("requires the version and still-private link columns in the final CAS for a normal save", async () => {
+    const page = {
+      updateMany: vi.fn(async () => ({ count: 0 })),
+    };
+    const pageVersion = { create: vi.fn() };
+    const ctx = context({ page, pageVersion }, { currentVersion: 1 });
+    await expect(
+      saveNewPageCall(ctx, { pageId: "page-1", source: source("New") }),
+    ).resolves.toMatchObject({ unchanged: true });
+    expect(page.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        currentVersion: 1,
+        visibility: "private",
+        shareSecretId: null,
+        shareTokenHash: null,
+      }),
+      data: expect.any(Object),
+    });
+    expect(pageVersion.create).not.toHaveBeenCalled();
+    expect(writeCard).not.toHaveBeenCalled();
   });
 
   it("reports an uncommitted save when the card write fails", async () => {

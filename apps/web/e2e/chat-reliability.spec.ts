@@ -406,6 +406,115 @@ async function ready(page: Page) {
   await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
   await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
 }
+
+test("a voice-originated Page review stays actionable in chat after hanging up", async ({
+  page,
+}, testInfo) => {
+  const { state, errors } = await mockChat(page);
+  await controlledStream(page);
+  const waitingRun: NonNullable<ThreadSnapshot["run"]> = {
+    id: "run-page",
+    botId: "chief",
+    threadId: "thread-chief",
+    taskId: "task-page",
+    status: "waiting_input",
+    trigger: "user",
+    routineId: null,
+    modelProvider: null,
+    modelId: null,
+    error: null,
+    startedAt: stamp,
+    completedAt: null,
+    createdAt: stamp,
+  };
+  const detail = "- <Text>Planned: 4 workshops</Text>\n+ <Text>Confirmed: 4 workshops</Text>";
+  let decision: unknown;
+  const addCall = (data: ThreadSnapshot): ThreadSnapshot => {
+    const messages: ThreadMessage[] = [
+      {
+        id: "spoken-request",
+        role: "user",
+        callId: "call-report",
+        runId: waitingRun.id,
+        blocks: [{ kind: "text", text: "Update the workshop report" }],
+        threadId: data.threadId,
+        seq: 0,
+        createdAt: stamp,
+      },
+      {
+        id: "page-approval",
+        role: "bot",
+        runId: waitingRun.id,
+        blocks: [
+          {
+            kind: "ask",
+            reviewMode: "screen",
+            approvalEffectId: "effect-page",
+            text: "Update shared page “Workshop report”?",
+            detail,
+            ...(decision ? { status: "answered", answer: "allow" } : { status: "pending" }),
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ],
+          },
+        ],
+        threadId: data.threadId,
+        seq: 1,
+        createdAt: stamp,
+      },
+      {
+        id: "hangup-marker",
+        role: "bot",
+        runId: "run-wrap-up",
+        callId: "call-report",
+        blocks: [
+          { kind: "voice_call", callId: "call-report", title: "Workshop update", farewell: "" },
+        ],
+        threadId: data.threadId,
+        seq: 2,
+        createdAt: "2026-10-17T00:00:02.000Z",
+      },
+    ];
+    return {
+      ...data,
+      messages,
+      run: decision ? null : waitingRun,
+      activeRuns: decision ? [] : [waitingRun],
+      answerableApprovalMessageIds: decision ? [] : ["page-approval"],
+    };
+  };
+  state.bootstrap = (route, data) => json(route, { ...data, thread: addCall(data.thread!) });
+  state.thread = (route, data) => json(route, addCall(data));
+  await page.route("**/rpc/threads/answer", (route) => {
+    decision = route.request().postDataJSON().json;
+    return json(route, { ok: true });
+  });
+
+  await ready(page);
+  await expect(page.getByTestId("connection-status")).toHaveCount(0);
+  const call = page.getByTestId("voice-chat-card");
+  await expect(call).toHaveCount(1);
+  await expect(call.getByText("Workshop update", { exact: true })).toBeVisible();
+  const approval = page.locator('[data-message-id="page-approval"]');
+  await expect(approval).toBeVisible();
+  expect(await approval.locator("pre").textContent()).toBe(detail);
+  await expect(approval.getByRole("button", { name: "Deny", exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "shared-page-update-after-voice-call");
+  await call.getByRole("button", { name: /Voice chat/ }).click();
+  await expect(call.getByText("Update the workshop report", { exact: true })).toBeVisible();
+  await expect(call.locator('[data-message-id="page-approval"]')).toHaveCount(0);
+  await approval.getByRole("button", { name: "Allow once", exact: true }).click();
+  await expect(approval.getByText("Allowed once", { exact: true })).toBeVisible();
+  expect(decision).toEqual({
+    botId: "chief",
+    runId: waitingRun.id,
+    messageId: "page-approval",
+    answer: "allow",
+  });
+  expect(errors).toEqual([]);
+});
+
 async function painted(page: Page) {
   await page.evaluate(
     () =>

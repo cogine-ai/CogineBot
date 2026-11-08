@@ -1913,6 +1913,121 @@ describe("answerWaitingRunWithTextInTransaction", () => {
 });
 
 describe("answerRunInput", () => {
+  const sharedPageDetail = "- <Text>Before</Text>\n+ <Text>After</Text>";
+  const sharedPageRequest = {
+    requestKind: "shared_page_update",
+    args: { pageId: "page-1", edits: [{ find: "Before", replace: "After" }] },
+    page: {
+      id: "page-1",
+      version: 1,
+      generation: "a".repeat(64),
+      candidateDigest: "b".repeat(64),
+      title: "Report",
+    },
+    detail: sharedPageDetail,
+  };
+
+  it.each([
+    { scenario: "owner allows once", decision: "allow", status: "approved" },
+    { scenario: "owner denies", decision: "deny", status: "denied" },
+    { scenario: "another user tries to approve", userId: "another-user" },
+    { scenario: "voice approval", clientNonce: "call:call-1:turn-1" },
+    { scenario: "forged always action", decision: "always" },
+    { scenario: "missing visual mode", askOverride: { reviewMode: undefined } },
+    { scenario: "different title", askOverride: { text: "Update a different page?" } },
+    { scenario: "different diff", askOverride: { detail: "Another diff" } },
+    { scenario: "malformed stored request", requestOverride: { page: {} } },
+    { scenario: "mismatched stored page", requestOverride: { args: { pageId: "page-2" } } },
+    { scenario: "unbound visual card", kind: "destination.write" },
+  ])(
+    "requires an exact, on-screen shared Page decision when $scenario",
+    async ({
+      decision = "allow",
+      status,
+      userId = "user-1",
+      clientNonce,
+      askOverride,
+      requestOverride,
+      kind = "save_page",
+    }) => {
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+        message: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "message-1",
+            blocks: [
+              {
+                kind: "ask",
+                approvalEffectId: "effect-1",
+                reviewMode: "screen",
+                text: "Update shared page “Report”?",
+                detail: sharedPageDetail,
+                status: "pending",
+                actions: [
+                  { id: "allow", label: "Allow once" },
+                  { id: "deny", label: "Deny" },
+                  ...(decision === "always" ? [{ id: "always", label: "Always" }] : []),
+                ],
+                ...askOverride,
+              },
+            ],
+          }),
+          update: vi.fn().mockResolvedValue({ id: "message-1" }),
+        },
+        run: {
+          findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findUnique: vi.fn().mockResolvedValue({ userId: "user-1", status: "queued" }),
+        },
+        externalEffect: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "effect-1",
+            kind,
+            status: "intended",
+            request: { ...sharedPageRequest, ...requestOverride },
+          }),
+          update: vi.fn().mockResolvedValue({ id: "effect-1" }),
+        },
+        actionApprovalRule: { upsert: vi.fn() },
+        thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+        event: {
+          create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+            ...event(data.seq),
+            type: data.type,
+          })),
+        },
+      };
+      const prisma = {
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+
+      await expect(
+        answerRunInput(prisma, {
+          spaceId: "workspace-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          messageId: "message-1",
+          answeredByUserId: userId,
+          answer: decision,
+          clientNonce,
+        }),
+      ).resolves.toBe(Boolean(status));
+
+      expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+      if (status) {
+        expect(tx.externalEffect.update).toHaveBeenCalledExactlyOnceWith({
+          where: { id: "effect-1" },
+          data: { status },
+        });
+      } else {
+        expect(tx.run.updateMany).not.toHaveBeenCalled();
+        expect(tx.externalEffect.update).not.toHaveBeenCalled();
+        expect(tx.message.update).not.toHaveBeenCalled();
+        expect(tx.event.create).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("approves consequential actions without overwriting the task prompt", async () => {
     const fanout = new TestFanout();
     const tx = {

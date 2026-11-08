@@ -7,7 +7,7 @@ import {
   isCallBargeIn,
   isFarewell,
   isInterimCallBargeIn,
-  latestSpokenCallReply,
+  latestCallReply,
   spokenMemory,
 } from "@rakazo/core";
 import type { AudioRecorder } from "expo-audio";
@@ -79,7 +79,7 @@ export type CallDeps = {
   waitSound: (action: "preload" | "start" | "stop" | "release") => void;
   watch: (
     botId: string,
-    onReply: (messageId: string, text: string, runId?: string) => void,
+    onReply: (messageId: string, text: string, runId?: string, screenReview?: boolean) => void,
     onCallEnded: (ended: CallEnded) => void,
   ) => () => void;
 };
@@ -125,6 +125,7 @@ let consentBlocked = false;
 let botEndedCall = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 let spokenMessageId: string | null = null;
+let reviewInChat = false;
 let failures = 0;
 /** Counts the caller's turns, so a closing cue that ends late starts no waiting sound for a newer turn. */
 let turnSeq = 0;
@@ -264,6 +265,7 @@ export function endCall(): void {
   botEndedCall = false;
   callRunId = null;
   spokenMessageId = null;
+  reviewInChat = false;
   failures = 0;
   micOpen = false;
   opening = false;
@@ -304,14 +306,14 @@ async function listen(): Promise<void> {
     endCall();
     return;
   }
-  set({ phase: "listening", heard: "", caption: "" });
+  set({ phase: "listening", heard: "", caption: reviewInChat ? reviewInChatPrompt() : "" });
   if (state.muted) return;
   await openMic();
 }
 
-/** Opens one microphone session, unless one is already running or the call is muted. */
+/** Opens the microphone when the call can accept a spoken response. */
 async function openMic(): Promise<void> {
-  if (!state || micOpen || state.muted) return;
+  if (!state || micOpen || state.muted || reviewInChat) return;
   micOpen = true;
   const controller = new AbortController();
   turn = controller;
@@ -367,7 +369,7 @@ async function openMic(): Promise<void> {
 
 /** One finished turn: drop the reply leaking back, cut in over playback, or send it. */
 async function handleTranscript(raw: string): Promise<void> {
-  if (!state) return;
+  if (!state || reviewInChat) return;
   // The session stopped itself to deliver this.
   micOpen = false;
   failures = 0;
@@ -513,13 +515,24 @@ function clearInterim(): void {
   interimTimer = null;
 }
 
-function onReply(messageId: string, text: string, runId?: string): void {
+function onReply(messageId: string, text: string, runId?: string, screenReview = false): void {
   // Work the bot files after hanging up belongs in the thread, not in the caller's ear.
-  if (!state || switching || botEndedCall || messageId === spokenMessageId) return;
+  if (!state || switching || botEndedCall || reviewInChat || messageId === spokenMessageId) return;
   // A reply to something typed into the thread mid-call belongs on screen only.
   if (callRunId && runId && runId !== callRunId) return;
   spokenMessageId = messageId;
+  if (screenReview) {
+    reviewInChat = true;
+    turn?.abort();
+    turn = null;
+    micOpen = false;
+    set({ caption: text });
+  }
   speakAndListen(text);
+}
+
+function reviewInChatPrompt(): string {
+  return t("Hang up, then review the changes in chat.");
 }
 
 /** The bot on the line says it is handing over, then this call hangs up and the other bot rings. */
@@ -745,7 +758,7 @@ async function speakReply(botId: string, text: string): Promise<void> {
 /** Live feed for the bot on the call, independent of whichever thread is on screen. */
 function watchReplies(
   botId: string,
-  onNewReply: (messageId: string, text: string, runId?: string) => void,
+  onNewReply: Parameters<CallDeps["watch"]>[1],
   onEnded: (ended: CallEnded) => void,
 ): () => void {
   const controller = new AbortController();
@@ -755,6 +768,35 @@ function watchReplies(
     let lastSeen: string | null = null;
     let cursor = 0;
     let retry = FEED_RETRY_MIN_MS;
+    const publishReply = (current: MobileSnapshot, firstRead = false) => {
+      if (controller.signal.aborted) return;
+      const reply = latestCallReply(current.messages, watchedCallId);
+      if (!reply || reply.message.id === lastSeen) return;
+      const { message } = reply;
+      const run = current.run;
+      if (reply.kind === "screenReview") {
+        const waiting =
+          run?.id === message.runId
+            ? run
+            : current.activeRuns?.find((candidate) => candidate.id === message.runId);
+        if (waiting?.status !== "waiting_input") return;
+        lastSeen = message.id;
+        onNewReply(message.id, reviewInChatPrompt(), message.runId, true);
+        return;
+      }
+      if (firstRead) {
+        lastSeen = message.id;
+        return;
+      }
+      // Wait for the message's own run to settle so half-written blocks are never
+      // spoken; another run still working says nothing about this one.
+      const fromAnotherRun = Boolean(message.runId && message.runId !== run?.id);
+      if (!fromAnotherRun && run && ACTIVE_RUN_STATUSES.some((s) => s === run.status)) return;
+      const text = blockText(message).trim();
+      if (!text) return;
+      lastSeen = message.id;
+      onNewReply(message.id, text, message.runId);
+    };
     // The stream returns on an idle timeout as well as on a real failure, and a call
     // outlives both: pick it back up from the last seq until the caller hangs up. The
     // first snapshot is loaded in here too, so a failed load retries instead of
@@ -767,7 +809,7 @@ function watchReplies(
             { botId },
             { signal: controller.signal },
           );
-          lastSeen = latestSpokenCallReply(snapshot.messages, watchedCallId)?.id ?? null;
+          publishReply(snapshot, true);
           cursor = snapshot.cursor ?? 0;
         }
         await subscribeThread(
@@ -783,18 +825,7 @@ function watchReplies(
               return;
             }
             snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
-            if (!snapshot) return;
-            const message = latestSpokenCallReply(snapshot.messages, watchedCallId);
-            if (!message || message.id === lastSeen) return;
-            // Wait for the message's own run to settle so half-written blocks are never
-            // spoken; another run still working says nothing about this one.
-            const run = snapshot?.run;
-            const fromAnotherRun = Boolean(message.runId && message.runId !== run?.id);
-            if (!fromAnotherRun && run && ACTIVE_RUN_STATUSES.some((s) => s === run.status)) return;
-            const text = blockText(message).trim();
-            if (!text) return;
-            lastSeen = message.id;
-            onNewReply(message.id, text, message.runId);
+            if (snapshot) publishReply(snapshot);
           },
           controller.signal,
         );

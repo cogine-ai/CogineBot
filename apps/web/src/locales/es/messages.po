@@ -2879,6 +2879,10 @@ msgstr "Cuelga primero y luego ingresa el código en pantalla."
 msgid "Hang up, then enter the code on screen."
 msgstr "Cuelga y luego ingresa el código en pantalla."
 
+#: src/lib/call-session.ts
+msgid "Hang up, then review the changes in chat."
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "header"
 msgstr "Encabezado"
