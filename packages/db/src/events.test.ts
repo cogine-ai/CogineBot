@@ -3907,6 +3907,7 @@ describe("clearThread", () => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
+      $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
@@ -3916,6 +3917,7 @@ describe("clearThread", () => {
       },
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
+        updateMany: vi.fn(),
         updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
       },
       attempt: { updateMany: vi.fn() },
@@ -3946,6 +3948,15 @@ describe("clearThread", () => {
       where: { runId: { in: ["run-1"] } },
       data: { expiresAt: new Date(0) },
     });
+    expect(tx.run.updateMany).toHaveBeenCalledWith({
+      where: {
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        status: "failed",
+        routineRetryAt: { not: null },
+      },
+      data: { routineRetryAt: null },
+    });
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
       where: { executionRunId: { in: ["run-1"] } },
       data: {
@@ -3970,6 +3981,7 @@ describe("clearThread", () => {
   it("scopes group clear lease cleanup to cancelled run ids", async () => {
     const fanout = new TestFanout();
     const tx = {
+      $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
@@ -3978,6 +3990,7 @@ describe("clearThread", () => {
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {
+        updateMany: vi.fn(),
         findMany: vi.fn().mockResolvedValue([
           { id: "group-run-1", taskId: "task-1" },
           { id: "group-run-2", taskId: "task-2" },

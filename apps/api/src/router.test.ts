@@ -4342,6 +4342,7 @@ describe("routines.update", () => {
     botArchived: boolean,
     archivedBeforeWrite = false,
     model: Record<string, unknown> = {},
+    billing?: Pick<NonNullable<RouterDeps["billing"]>, "assertAccess">,
   ) {
     const savedRoutine = { ...routine, ...model };
     const update = vi.fn(
@@ -4407,6 +4408,7 @@ describe("routines.update", () => {
     const handler = new RPCHandler(
       createRouter({
         prisma,
+        billing,
         env: { sandboxProvider: "fake" },
         events: { append: vi.fn(async () => undefined) },
         jobs: { enqueue, cancel: vi.fn(async () => undefined) },
@@ -4480,6 +4482,24 @@ describe("routines.update", () => {
     const { response } = await call();
     expect(response.status).toBe(404);
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Routine edit when a concurrent rearm made the skipped billing check necessary", async () => {
+    const assertAccess = vi.fn(async () => undefined);
+    const { update, enqueue, call, findFirst } = fixture(
+      false,
+      false,
+      { active: true, nextRunAt: new Date(Date.now() + 60_000) },
+      { assertAccess },
+    );
+    findFirst.mockResolvedValueOnce(routine);
+
+    const { response } = await call({ active: undefined, runAt: undefined, name: "Renamed" });
+
+    expect(response.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(assertAccess).not.toHaveBeenCalled();
   });
 
   const ownModel = {

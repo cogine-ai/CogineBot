@@ -716,3 +716,30 @@ it("stops an actual SDK error-body read without waiting for idle or resolving a 
     vi.useRealTimers();
   }
 });
+
+it("keeps Retry-After from an actual OpenAI-compatible SDK error response", async () => {
+  const fetcher = vi.fn(async () =>
+    Response.json(
+      { error: { message: "Rate limit reached" } },
+      { status: 429, headers: { "Retry-After": "7200" } },
+    ),
+  );
+  const onProviderError = vi.fn();
+  const sdkStream = observedPiStream(
+    builtinModels(),
+    httpModel("openai-completions", "openrouter"),
+    { messages: [{ role: "user", content: "Fixture", timestamp: 0 }] },
+    { apiKey: "fixture-key", fetch: fetcher, maxRetries: 0 },
+    () => undefined,
+    undefined,
+    undefined,
+    { onProviderError },
+  );
+
+  expect(await sdkStream.result()).toMatchObject({ stopReason: "error" });
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(onProviderError).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ errorMessage: expect.stringContaining("Rate limit reached") }),
+    expect.objectContaining({ providerRetryAfterMs: 7_200_000 }),
+  );
+});

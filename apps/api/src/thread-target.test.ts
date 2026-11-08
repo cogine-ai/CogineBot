@@ -3797,6 +3797,7 @@ describe("stopThreadRuns", () => {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi.fn().mockResolvedValue([
           { id: "run-a", botId: "bot-a", spaceId: "workspace-1" },
           { id: "run-b", botId: "bot-b", spaceId: "workspace-1" },
@@ -3937,6 +3938,7 @@ describe("stopThreadRuns", () => {
         update: vi.fn().mockResolvedValue({ nextEventSeq: 5 }),
       },
       run: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi
           .fn()
           .mockResolvedValue([{ id: "run-a", botId: "bot-a", spaceId: "workspace-1" }]),
@@ -4047,6 +4049,7 @@ describe("stopThreadRuns", () => {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi.fn().mockResolvedValue([
           { id: "run-a", botId: "bot-a", spaceId: "workspace-1" },
           { id: "run-b", botId: "bot-b", spaceId: "workspace-1" },
@@ -4137,6 +4140,7 @@ describe("stopThreadRuns", () => {
       $queryRaw: vi.fn(),
       thread: { update: vi.fn() },
       run: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn(),
       },

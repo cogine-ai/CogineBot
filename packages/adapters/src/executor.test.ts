@@ -1591,10 +1591,18 @@ describe("createRunExecutor", () => {
 
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ bot: { archivedAt: null } }),
+        where: expect.objectContaining({
+          bot: { archivedAt: null },
+          crons: { equals: [ONCE_ROUTINE_CRON] },
+          timezone: "UTC",
+        }),
         data: expect.objectContaining({ active: false, nextRunAt: null }),
       }),
     );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "routine-1" },
+      data: { latestRunId: "run-1", autoCompletedRunId: "run-1" },
+    });
     expect(cancel).toHaveBeenCalledWith("routine:routine-1");
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
@@ -1783,7 +1791,7 @@ describe("createRunExecutor", () => {
 
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: "routine-1", active: true },
-      data: { active: false, nextRunAt: null },
+      data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
     });
     expect($transaction).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();

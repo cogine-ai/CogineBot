@@ -1,6 +1,11 @@
 import { setImmediate } from "node:timers/promises";
 import type { JobPublisher, NotificationProvider } from "@rakazo/adapter-kit";
-import { messagingDeliverJob, routineWakeupJob, runContinueJob } from "@rakazo/adapter-kit";
+import {
+  messagingDeliverJob,
+  routineRetryJob,
+  routineWakeupJob,
+  runContinueJob,
+} from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { normalizeRunError, stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -192,6 +197,7 @@ export function createJobReconciler(
                     status: { in: ["leased", "running"] },
                     leaseExpiresAt: { lte: now },
                   },
+                  { status: "failed", routineRetryAt: { lte: now } },
                 ],
               },
               ...(runCursorFilter ? [runCursorFilter] : []),
@@ -203,6 +209,7 @@ export function createJobReconciler(
             id: true,
             status: true,
             updatedAt: true,
+            routineRetryAt: true,
             botId: true,
             bot: { select: { computerId: true } },
           },
@@ -335,10 +342,11 @@ export function createJobReconciler(
       // A locked job whose worker died is never unlocked, so it is replaced: any lock
       // for a run whose lease expired, and for a queued run only a lock older than
       // a lease, since a live worker finishing a failed attempt still holds it.
-      const blockers = await findRunRecoveryBlockers(deps.prisma, runs, now);
+      const recoverableRuns = runs.filter((run) => run.status !== "failed");
+      const blockers = await findRunRecoveryBlockers(deps.prisma, recoverableRuns, now);
       const abandonedQueuedLockAt = new Date(now.getTime() - ABANDONED_QUEUED_LOCK_MS);
       await publishAll([
-        ...runs
+        ...recoverableRuns
           .filter((run) => !blockers.has(run.id))
           .map((run) =>
             deps.jobs.enqueue({
@@ -347,6 +355,16 @@ export function createJobReconciler(
               replaceLockedBefore: run.status === "queued" ? abandonedQueuedLockAt : now,
             }),
           ),
+        ...runs.flatMap((run) =>
+          run.status === "failed" && run.routineRetryAt
+            ? [
+                deps.jobs.enqueue({
+                  ...routineRetryJob(run.id, run.routineRetryAt),
+                  replaceLockedBefore: abandonedQueuedLockAt,
+                }),
+              ]
+            : [],
+        ),
         ...(dueOutbound ? [deps.jobs.enqueue(messagingDeliverJob())] : []),
         ...unmirroredMessagingRuns.map((run) => deps.jobs.enqueue(messagingDeliverJob(run.id))),
       ]);

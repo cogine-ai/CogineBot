@@ -80,7 +80,11 @@ import {
   MODEL_CONTEXT_FRAMING_TOKENS,
   maxFallbackInputTokens,
 } from "./model-context.js";
-import { ModelOutputRecoveryError, redactInterruptedOutput } from "./model-output-recovery.js";
+import {
+  ModelOutputRecoveryError,
+  redactInterruptedOutput,
+  TransientModelError,
+} from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
@@ -502,6 +506,7 @@ export class PiAgentRuntime implements AgentRuntime {
         const completedBudgets = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
         const cutReplies = new WeakMap<AssistantMessage["content"], CutReplyReason>();
         const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
+        const transientTerminals = new WeakSet<AssistantMessage["content"]>();
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let activeStreamTarget = host.activeModel;
@@ -512,6 +517,7 @@ export class PiAgentRuntime implements AgentRuntime {
           reserveSelfRecovery,
           canRecover: () => !host.pausePending && !("error" in host.controlFailure),
           cutReplies,
+          transientTerminals,
           completedBudget: (message) => completedBudgets.get(message.content),
           providerFailureBudget: (message) => providerFailures.get(message.content),
           isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
@@ -1058,6 +1064,14 @@ export class PiAgentRuntime implements AgentRuntime {
           const message = sanitizeProviderError(activeStreamTarget.model.provider, error);
           if (!signal.aborted && (lastRecoveryKind || fallbackState.outputRecoveryFailed))
             throw new ModelOutputRecoveryError(message);
+          if (
+            !signal.aborted &&
+            !streamed &&
+            !toolCalls &&
+            terminalMessage?.role === "assistant" &&
+            transientTerminals.has(terminalMessage.content)
+          )
+            throw new TransientModelError(message);
           throw new Error(message);
         }
         if (
@@ -1117,7 +1131,9 @@ export class PiAgentRuntime implements AgentRuntime {
         queue.fail(
           error instanceof ModelOutputRecoveryError
             ? new ModelOutputRecoveryError(message)
-            : new Error(message),
+            : error instanceof TransientModelError
+              ? new TransientModelError(message)
+              : new Error(message),
         );
       } finally {
         queue.close();
@@ -3097,6 +3113,7 @@ interface FallbackStreamState {
   reserveSelfRecovery(): Promise<boolean>;
   canRecover(): boolean;
   cutReplies: WeakMap<AssistantMessage["content"], CutReplyReason>;
+  transientTerminals?: WeakSet<AssistantMessage["content"]>;
   nextRecovery?: PendingOutputRecovery;
   outputRecoveryFailed?: boolean;
   completedBudget(message: AssistantMessage): PiDispatchBudget | undefined;
@@ -3288,6 +3305,38 @@ function canRetrySameModel(error: unknown): boolean {
     !/(?:codex|model) stream idle timeout|quota|billing|credit|payment|funds|(?:insufficient|low|empty|not enough|exhausted)[ _-]+balance|balance.*(?:insufficient|low|empty|exhausted)|(?:spend(?:ing)?|usage|budget)[ _-]+(?:limit|cap)/.test(
       text,
     )
+  );
+}
+
+function isTransientRoutineFailure(error: AssistantMessage, budget: PiDispatchBudget): boolean {
+  const { text, statuses } = errorFacts(error);
+  if ([...statuses].some((status) => status < 500 && status !== 408 && status !== 429))
+    return false;
+  const now = Date.now();
+  // Some gateways forward these headers only in their error body.
+  const resetEpoch = /\bx-ratelimit-reset\\?"?\s*[:=]\s*\\?"?(\d{10,13})(?!\d)/.exec(text)?.[1];
+  const retryAfter = /\bretry-after\\?"?\s*[:=]\s*\\?"?(\d+)(?![\d.])/.exec(text)?.[1];
+  const resetInMs = resetEpoch
+    ? Number(resetEpoch) * (resetEpoch.length > 10 ? 1 : 1_000) - now
+    : Number(retryAfter) * 1_000;
+  if (
+    resetInMs > 60 * 60_000 ||
+    (budget.providerRetryAfterMs ?? 0) > 60 * 60_000 ||
+    /\b(?:daily|weekly|monthly|per[- ]day|5[- ]hour|subscription|out of budget|retry[- ](?:in|after)[^\n]*hours?)\b/.test(
+      text,
+    ) ||
+    /insufficient[_ ](?:quota|funds|credits?|balance)|exceeded your current quota|quota exhausted|credit balance/.test(
+      text,
+    )
+  )
+    return false;
+  const shortWindow =
+    /\bper[- ](?:second|minute)\b|\b(?:rpm|tpm)\b|retry[- ]after[: ]+\d+(?:\.\d+)?\s*(?:seconds?|secs?|s)\b/.test(
+      text,
+    );
+  return (
+    isRetryableProviderUnavailable(error) &&
+    ((shortWindow && statuses.has(429)) || canRetrySameModel(error))
   );
 }
 
@@ -3588,6 +3637,8 @@ function fallbackAwareModelStream(
   const run = async () => {
     let buffered: AssistantMessageEvent[] = [];
     let retries = 0;
+    let earlierTargetsTransient = true;
+    const verifiedTransientFailures = new WeakSet<AssistantMessage>();
     // Same-model retries and backoff share the original completion budget.
     // Explicit backups retain their existing header and post-header idle bounds.
     const initialDeadline =
@@ -3597,6 +3648,21 @@ function fallbackAwareModelStream(
     let outputSettings = inherited?.settings;
     let lengthRecovered = false;
     const reserve = () => reserveOutputRecovery(state, signal, deadline);
+    const finishWithErrorEvent = (
+      terminal: Extract<AssistantMessageEvent, { type: "error" }>,
+      canClassify: boolean,
+    ) => {
+      if (
+        canClassify &&
+        earlierTargetsTransient &&
+        verifiedTransientFailures.has(terminal.error) &&
+        !inherited &&
+        !lengthRecovered
+      )
+        state.transientTerminals?.add(terminal.error.content);
+      output.push(terminal);
+      output.end(terminal.error);
+    };
     const failOutput = (message: AssistantMessage, errorMessage: string) => {
       state.outputRecoveryFailed = true;
       const failure: AssistantMessage = {
@@ -3643,8 +3709,7 @@ function fallbackAwareModelStream(
       firstBackupAttempt = false;
       if (sharesDeadline && remainingMs <= 0) {
         if (budgetError) {
-          output.push(budgetError);
-          output.end(budgetError.error);
+          finishWithErrorEvent(budgetError, true);
         } else {
           finishWithThrownError(state.getActive(), new Error("Model request timed out"));
         }
@@ -3759,8 +3824,10 @@ function fallbackAwareModelStream(
             if (state.isRequestDeadlineExceeded(event.error)) {
               if (failIfAborted(target)) return;
               if (budgetError) {
-                output.push(budgetError);
-                output.end(budgetError.error);
+                finishWithErrorEvent(
+                  budgetError,
+                  !sawPartialOutput && !assistantHasPartialOutput(event.error),
+                );
                 return;
               }
             }
@@ -3780,6 +3847,13 @@ function fallbackAwareModelStream(
                 ? providerFailure
                 : undefined;
             const recoveryAllowed = providerBudget && !blocksModelRecovery(failureFacts);
+            const transient =
+              !sawPartialOutput &&
+              !assistantHasPartialOutput(event.error) &&
+              (idle ||
+                (providerBudget !== undefined &&
+                  isTransientRoutineFailure(event.error, providerBudget)));
+            if (transient) verifiedTransientFailures.add(event.error);
             if (
               idle &&
               !toolOutput &&
@@ -3901,6 +3975,7 @@ function fallbackAwareModelStream(
               if (authorizationError) throw authorizationError;
               if (failIfAborted(target)) return;
               if (next) {
+                earlierTargetsTransient &&= transient;
                 state.messagesBeforeSwitch = context.messages.length;
                 await state.onSwitch(next);
                 if (authorizationError) throw authorizationError;
@@ -3962,8 +4037,7 @@ function fallbackAwareModelStream(
               sawPartialOutput && event.error.content.length === 0 && lastPartial
                 ? { ...event, error: { ...event.error, content: lastPartial.content } }
                 : terminalEvent;
-            output.push(terminal);
-            output.end(terminal.error);
+            finishWithErrorEvent(terminal, transient);
             return;
           }
           if (event.type === "done") {

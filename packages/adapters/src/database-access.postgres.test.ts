@@ -1381,6 +1381,7 @@ describePostgres("runtime role preparation (isolated PostgreSQL)", () => {
       "native.slack.lifecycle": noop,
       "run.continue": noop,
       "routine.wakeup": noop,
+      "routine.retry": noop,
       "computer.update": noop,
       "computer.sleep": noop,
       "computer.control-expire": noop,

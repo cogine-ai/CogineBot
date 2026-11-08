@@ -262,7 +262,7 @@ function unchanged(
   );
 }
 export async function listNativeRoutineTriggers(
-  prisma: PrismaClient,
+  prisma: Pick<Tx, "spaceMember" | "routine" | "$queryRaw">,
   scope: NativeEventScope,
   routineId: string,
 ): Promise<NativeRoutineTrigger[]> {
@@ -326,6 +326,17 @@ export async function requireNativeEventRoutineOwner(
   );
   if (rows.length !== 1) throw new NativeRoutineEventError("not_found", "Routine not found.");
 }
+
+async function revokeRoutineRunIdentity(tx: Tx, routineId: string): Promise<void> {
+  await tx.routine.updateMany({
+    where: {
+      id: routineId,
+      OR: [{ latestRunId: { not: null } }, { autoCompletedRunId: { not: null } }],
+    },
+    data: { latestRunId: null, autoCompletedRunId: null },
+  });
+}
+
 /** Resource proof is obtained before opening this short transaction, then exact authorization is checked again. */
 export async function saveNativeRoutineTrigger(
   prisma: PrismaClient,
@@ -369,6 +380,7 @@ export async function saveNativeRoutineTrigger(
       );
     }
     if (rows.length !== 1) throw conflict();
+    await revokeRoutineRunIdentity(tx, routineId);
     return dto(rows[0]!);
   });
 }
@@ -385,6 +397,7 @@ export async function removeNativeRoutineTrigger(
     );
     if (rows.length !== 1) throw conflict();
     await requireRoutineTrigger(tx, scope, input.routineId);
+    await revokeRoutineRunIdentity(tx, input.routineId);
   });
 }
 /** Existing create/update calls this after its ordinary Routine write, in the SAME transaction. */
@@ -422,6 +435,7 @@ export async function replaceNativeRoutineTriggersTx(
     );
   const retained = new Set<string>(),
     saved: NativeRoutineTrigger[] = [];
+  let changed = false;
   for (let i = 0; i < inputs.length; i++) {
     const input = inputs[i]!,
       proof = prepared[i]!.proof;
@@ -444,15 +458,20 @@ export async function replaceNativeRoutineTriggersTx(
           Prisma.sql`/*native-event:insert*/ INSERT INTO native_routine_triggers(id,"routineId","connectionId","authorizationRevision","grantId","authGeneration","configId","configRevision",kind,"resourceType","resourceId",spec,"armedAt","nextPollAt","updatedAt") VALUES(${id},${routineId},${proof.connectionId},${proof.authorizationRevision},${proof.grantId},${proof.authGeneration},${proof.configId},${proof.configRevision},${input.spec.kind},${resource.type},${resource.id},${json(input.spec)}::jsonb,${now},${now},${now}) RETURNING *`,
         );
     if (rows.length !== 1) throw conflict();
+    changed = true;
     retained.add(id);
     saved.push(dto(rows[0]!));
   }
-  for (const row of previous)
-    if (!retained.has(row.id))
+  for (const row of previous) {
+    if (!retained.has(row.id)) {
       await tx.$executeRaw(
         Prisma.sql`/*native-event:remove-omitted*/ DELETE FROM native_routine_triggers WHERE id=${row.id} AND "routineId"=${routineId} AND version=${row.version}`,
       );
+      changed = true;
+    }
+  }
   await requireRoutineTrigger(tx, scope, routineId);
+  if (changed) await revokeRoutineRunIdentity(tx, routineId);
   return saved;
 }
 export async function requireRoutineTrigger(
@@ -732,6 +751,34 @@ export function nativeEventRunNonce(
         : [event.eventIdentity];
   return `native-event:${row.id}:${row.version}:${createHash("sha256").update(json(key)).digest("hex")}`;
 }
+
+/** Recheck the exact trigger and account of an original native Run while its Routine is locked. */
+export async function verifyRoutineRetryNativeSource(
+  tx: Tx,
+  input: NativeEventScope & {
+    routineId: string;
+    clientNonce: string;
+    connectionIds: readonly string[];
+  },
+): Promise<boolean> {
+  const nonce = /^native-event:([^:]+):([1-9]\d*):[a-f0-9]{64}$/.exec(input.clientNonce);
+  if (!nonce || input.connectionIds.length !== 1) return false;
+  const row = await triggerRow(tx, input, nonce[1]!);
+  if (
+    !row ||
+    row.routineId !== input.routineId ||
+    String(row.version) !== nonce[2] ||
+    row.connectionId !== input.connectionIds[0]
+  ) {
+    return false;
+  }
+  const before = await workerSnapshot(tx, input, row.connectionId);
+  if (!before) return false;
+  await lockAuthorization(tx, input, before);
+  const current = await workerSnapshot(tx, input, row.connectionId);
+  return nativeConnectionMatches(current, input, proofFor(row, input));
+}
+
 /** Internal signed-delivery fence; never accepted from Routine/model input. */
 export interface NativeNotionHookClaimFence {
   id: string;
@@ -899,7 +946,7 @@ export async function claimNativeRoutineEvent(
       });
       await tx.routine.updateMany({
         where: { id: routine.id, userId: scope.userId, spaceId: scope.spaceId, active: true },
-        data: { lastRunAt: now },
+        data: { lastRunAt: now, latestRunId: run.id, autoCompletedRunId: null },
       });
       return { runId: run.id, taskId: task.id, routineId: routine.id, created: true };
     });

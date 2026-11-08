@@ -3983,11 +3983,10 @@ export function createRouter(deps: RouterDeps) {
           },
         });
         if (!existing) throw new ORPCError("NOT_FOUND");
-        const active = input.active ?? existing.active;
-        if (active) await deps.billing?.assertAccess(context.actor);
+        const needsBillingAdmission = input.active ?? existing.active;
+        if (needsBillingAdmission) await deps.billing?.assertAccess(context.actor);
         const bot = await repos.getBot(context.actor, existing.botId);
         const crons = input.crons ?? existing.crons;
-        const timezone = input.timezone ?? existing.timezone;
         const webhookEnabled = input.webhookEnabled ?? existing.webhookEnabled;
         const githubEnabled = input.githubEnabled ?? existing.githubEnabled;
         const messageProvider =
@@ -4021,55 +4020,6 @@ export function createRouter(deps: RouterDeps) {
             message: "A one-time schedule can't be combined with other schedules.",
           });
         }
-        if (active && isOneShotRoutineCrons(crons)) {
-          if (!isOneShotRoutineCrons(existing.crons)) {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "One-shot schedules must be created from chat.",
-            });
-          }
-          if (!existing.nextRunAt && existing.lastRunAt) {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "This one-shot already ran.",
-            });
-          }
-        }
-        const scheduleChanged =
-          (!existing.active && active) ||
-          (input.crons !== undefined &&
-            JSON.stringify(input.crons) !== JSON.stringify(existing.crons)) ||
-          (input.timezone !== undefined && input.timezone !== existing.timezone);
-        const recalculatedNextRunAt =
-          crons.length > 0 &&
-          !isOneShotRoutineCrons(crons) &&
-          (scheduleChanged || (active && !existing.nextRunAt))
-            ? nextRoutineDate(crons, timezone)
-            : null;
-        let armedOneShotAt: Date | null = null;
-        if (active && isOneShotRoutineCrons(crons) && !existing.nextRunAt && !existing.lastRunAt) {
-          if (!input.runAt) {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "Add a run time for this one-shot.",
-            });
-          }
-          const parsed = new Date(input.runAt);
-          if (!Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "Run time must be in the future.",
-            });
-          }
-          armedOneShotAt = parsed;
-        } else if (input.runAt !== undefined) {
-          throw new ORPCError("BAD_REQUEST", {
-            message: "A run time is only for one-shots that have not run yet.",
-          });
-        }
-        const nextRunAt = !active
-          ? null
-          : crons.length === 0
-            ? null
-            : isOneShotRoutineCrons(crons)
-              ? (armedOneShotAt ?? existing.nextRunAt)
-              : (recalculatedNextRunAt ?? existing.nextRunAt);
         const settingModel =
           input.modelProvider !== undefined ||
           input.modelId !== undefined ||
@@ -4086,22 +4036,70 @@ export function createRouter(deps: RouterDeps) {
             ? await prepareExistingModelAuth(deps, context.actor, existing, codexCatalog)
             : undefined;
         // Re-check the parent in the write itself so an archive that lands after the read wins.
-        const { row } = await withSerializableRetry(() =>
+        const { row, previous, scheduleChanged } = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
               const checkModel = settingModel || Boolean(input.thinkingLevel);
-              const current =
-                checkModel || input.prompt !== undefined
-                  ? await tx.routine.findFirst({
-                      where: {
-                        id: existing.id,
-                        userId: context.actor.userId,
-                        spaceId: context.actor.spaceId,
-                      },
-                    })
-                  : undefined;
-              if (current === null) throw new ORPCError("NOT_FOUND");
-              if (checkModel && current) {
+              const current = await tx.routine.findFirst({
+                where: {
+                  id: existing.id,
+                  userId: context.actor.userId,
+                  spaceId: context.actor.spaceId,
+                },
+              });
+              if (!current) throw new ORPCError("NOT_FOUND");
+              const active = input.active ?? current.active;
+              if (deps.billing && active && !needsBillingAdmission) {
+                throw new ORPCError("CONFLICT", {
+                  message: "Routine changed. Reload and try again.",
+                });
+              }
+              const crons = input.crons ?? current.crons;
+              const timezone = input.timezone ?? current.timezone;
+              const oneShot = isOneShotRoutineCrons(crons);
+              if (active && oneShot) {
+                if (!isOneShotRoutineCrons(current.crons)) {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "One-shot schedules must be created from chat.",
+                  });
+                }
+                if (!current.nextRunAt && current.lastRunAt) {
+                  throw new ORPCError("BAD_REQUEST", { message: "This one-shot already ran." });
+                }
+              }
+              const scheduleChanged =
+                (!current.active && active) ||
+                (input.crons !== undefined &&
+                  JSON.stringify(input.crons) !== JSON.stringify(current.crons)) ||
+                timezone !== current.timezone;
+              const recalculatedNextRunAt =
+                crons.length > 0 && !oneShot && (scheduleChanged || (active && !current.nextRunAt))
+                  ? nextRoutineDate(crons, timezone)
+                  : null;
+              let armedOneShotAt: Date | null = null;
+              if (active && oneShot && !current.nextRunAt && !current.lastRunAt) {
+                if (!input.runAt) {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Add a run time for this one-shot.",
+                  });
+                }
+                const parsed = new Date(input.runAt);
+                if (!Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Run time must be in the future.",
+                  });
+                }
+                armedOneShotAt = parsed;
+              } else if (input.runAt !== undefined) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "A run time is only for one-shots that have not run yet.",
+                });
+              }
+              const nextRunAt =
+                active && crons.length > 0
+                  ? (armedOneShotAt ?? recalculatedNextRunAt ?? current.nextRunAt)
+                  : null;
+              if (checkModel) {
                 const binding = settingModel
                   ? input
                   : {
@@ -4127,6 +4125,20 @@ export function createRouter(deps: RouterDeps) {
                 assertPreparedModelAuth(checked, preparedAuth);
                 assertBoundThinkingLevel(checked, input.thinkingLevel);
               }
+              const promptChanged = input.prompt !== undefined && input.prompt !== current.prompt;
+              const authorizationChanged =
+                promptChanged ||
+                (input.webhookEnabled ?? current.webhookEnabled) !== current.webhookEnabled ||
+                (input.githubEnabled ?? current.githubEnabled) !== current.githubEnabled ||
+                (input.messageProvider !== undefined &&
+                  input.messageProvider !== current.messageProvider) ||
+                (input.thinkingLevel !== undefined &&
+                  input.thinkingLevel !== current.thinkingLevel) ||
+                (settingModel &&
+                  ((input.modelProvider !== undefined &&
+                    input.modelProvider !== current.modelProvider) ||
+                    (input.modelId ?? null) !== current.modelId ||
+                    (input.modelCredentialId ?? null) !== current.modelCredentialId));
               const row = await tx.routine
                 .update({
                   where: { id: existing.id, bot: { archivedAt: null } },
@@ -4134,7 +4146,7 @@ export function createRouter(deps: RouterDeps) {
                     name: input.name,
                     prompt: input.prompt,
                     // Clients can submit the existing prompt on a metadata-only save.
-                    ...(input.prompt !== undefined && input.prompt !== current?.prompt
+                    ...(promptChanged
                       ? { authorizedInstructions: input.prompt, authorizedSites: [] }
                       : {}),
                     crons: input.crons,
@@ -4154,6 +4166,9 @@ export function createRouter(deps: RouterDeps) {
                     ...(input.thinkingLevel !== undefined
                       ? { thinkingLevel: input.thinkingLevel }
                       : {}),
+                    ...(input.active === false || scheduleChanged || authorizationChanged
+                      ? { latestRunId: null, autoCompletedRunId: null }
+                      : {}),
                     nextRunAt,
                   },
                 })
@@ -4164,10 +4179,7 @@ export function createRouter(deps: RouterDeps) {
               if (preparedNative !== undefined)
                 await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
               else await requireRoutineTrigger(tx, context.actor, row.id);
-              return {
-                row,
-                nativeTriggers: preparedNative === undefined ? existingNative : preparedNative,
-              };
+              return { row, previous: current, scheduleChanged };
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
@@ -4187,9 +4199,9 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         const scheduleNeedsSync =
-          existing.active !== row.active ||
+          previous.active !== row.active ||
           scheduleChanged ||
-          (!existing.nextRunAt && !!row.nextRunAt);
+          (!previous.nextRunAt && !!row.nextRunAt);
         if (scheduleNeedsSync) {
           if (row.active && row.nextRunAt) {
             await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
@@ -4197,7 +4209,7 @@ export function createRouter(deps: RouterDeps) {
             await deps.jobs.cancel(routineJobKey(row.id));
           }
         }
-        if (row.active && (preparedNative !== undefined || !existing.active))
+        if (row.active && (preparedNative !== undefined || !previous.active))
           for (const trigger of savedNative)
             await deps.jobs
               .enqueue(nativeSourceJob(trigger.id, trigger.version))
@@ -4225,12 +4237,6 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, routine.botId);
         if (!bot.thread) throw new IsolationError();
         const threadId = bot.thread.id;
-        const nativeTriggers = await listNativeRoutineTriggers(
-          deps.prisma,
-          context.actor,
-          routine.id,
-        );
-        const connectionIds = [...new Set(nativeTriggers.map((trigger) => trigger.connectionId))];
         const nonce = input.clientNonce ? `routine-test:${input.clientNonce}` : undefined;
         if (nonce) {
           const existing = await deps.prisma.run.findFirst({
@@ -4277,6 +4283,10 @@ export function createRouter(deps: RouterDeps) {
               if (credential.length !== 1)
                 throw new IsolationError("Model connection is unavailable.");
             }
+            const nativeTriggers = await listNativeRoutineTriggers(tx, context.actor, routine.id);
+            const connectionIds = [
+              ...new Set(nativeTriggers.map((trigger) => trigger.connectionId)),
+            ];
             const task = await tx.task.create({
               data: {
                 spaceId: context.actor.spaceId,
@@ -4290,7 +4300,7 @@ export function createRouter(deps: RouterDeps) {
                 connectionIds,
               },
             });
-            return tx.run.create({
+            const created = await tx.run.create({
               data: {
                 spaceId: context.actor.spaceId,
                 botId: bot.id,
@@ -4305,6 +4315,11 @@ export function createRouter(deps: RouterDeps) {
               },
               select: { id: true },
             });
+            await tx.routine.updateMany({
+              where: { id: routine.id },
+              data: { latestRunId: created.id, autoCompletedRunId: null },
+            });
+            return created;
           });
         } catch (error) {
           if (nonce) {

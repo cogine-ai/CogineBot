@@ -366,7 +366,7 @@ describe("schedule tool persistence", () => {
     expect(result).toEqual({ error: "Could not schedule the reminder. Try again." });
     expect(update).toHaveBeenCalledWith({
       where: { id: "routine-1" },
-      data: { active: false, nextRunAt: null },
+      data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
     });
   });
 

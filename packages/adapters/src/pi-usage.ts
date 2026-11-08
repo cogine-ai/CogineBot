@@ -235,6 +235,7 @@ function usageOperationKind(
 export type PiDispatchBudget = {
   inputTokens: number;
   maxOutputTokens: number;
+  providerRetryAfterMs?: number;
 };
 
 export type PiBudgetCorrection = {
@@ -300,6 +301,9 @@ export function observedPiStream(
     let providerError: unknown;
     let providerThrew = false;
     let dispatchBudget: (() => PiDispatchBudget) | undefined;
+    let providerRetryAfterMs: number | undefined;
+    const failedBudget = (budget: PiDispatchBudget): PiDispatchBudget =>
+      providerRetryAfterMs === undefined ? budget : { ...budget, providerRetryAfterMs };
     let requestDeadlineError: Error | undefined;
     let deadlineController: AbortController | undefined;
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -317,6 +321,15 @@ export function observedPiStream(
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
       deadlineTimer = undefined;
       deadlineActive = false;
+    };
+    const observeResponse = (status: number, retryAfter: string | null | undefined) => {
+      if (status >= 200 && status < 300) clearDeadline();
+      providerRetryAfterMs = undefined;
+      if (status !== 429 && status !== 503) return;
+      const value = retryAfter?.trim();
+      if (!value) return;
+      const delay = /^\d+$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - Date.now();
+      if (Number.isFinite(delay) && delay > 0) providerRetryAfterMs = delay;
     };
     const expireDeadline = () => {
       requestDeadlineError ??= new Error("Model request deadline expired before headers");
@@ -397,11 +410,15 @@ export function observedPiStream(
               signal: options?.signal
                 ? AbortSignal.any([options.signal, deadlineController!.signal])
                 : deadlineController!.signal,
-              onResponse: async (response, requestModel) => {
-                if (response.status >= 200 && response.status < 300) clearDeadline();
+            }),
+        ...(deadlineController || hooks?.onProviderError
+          ? {
+              onResponse: (response, requestModel) => {
+                observeResponse(response.status, response.headers["retry-after"]);
                 return options?.onResponse?.(response, requestModel);
               },
-            }),
+            }
+          : {}),
         onPayload: async (payload, requestModel) => {
           const original =
             payload && typeof payload === "object"
@@ -439,15 +456,16 @@ export function observedPiStream(
           collectRawUsage
             ? {
                 ...streamOptions,
-                fetch: deadlineController
-                  ? async (input, init) => {
-                      checkDeadline();
-                      requestDispatched = true;
-                      const response = await usageFetch(input, init);
-                      if (response.ok) clearDeadline();
-                      return response;
-                    }
-                  : usageFetch,
+                fetch:
+                  deadlineController || hooks?.onProviderError
+                    ? async (input, init) => {
+                        checkDeadline();
+                        requestDispatched = true;
+                        const response = await usageFetch(input, init);
+                        observeResponse(response.status, response.headers.get("retry-after"));
+                        return response;
+                      }
+                    : usageFetch,
               }
             : streamOptions,
         );
@@ -524,7 +542,8 @@ export function observedPiStream(
               await observer.afterCall(reservation, normalized);
             }
           }
-          if (event.type === "error") hooks?.onProviderError?.(event.error, measuredBudget());
+          if (event.type === "error")
+            hooks?.onProviderError?.(event.error, failedBudget(measuredBudget()));
           if (event.type === "done" && hooks?.onProviderDone)
             hooks.onProviderDone(event.message, measuredBudget());
           stream.push(event);
@@ -590,7 +609,7 @@ export function observedPiStream(
         terminalError !== requestDeadlineError &&
         dispatchBudget
       )
-        hooks?.onProviderError?.(message, dispatchBudget());
+        hooks?.onProviderError?.(message, failedBudget(dispatchBudget()));
       if (requestDeadlineError && terminalError === requestDeadlineError)
         hooks?.onRequestDeadlineExceeded?.(message);
       stream.push({ type: "error", reason: "error", error: message });

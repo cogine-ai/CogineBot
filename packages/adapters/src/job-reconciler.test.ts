@@ -36,6 +36,7 @@ function fakePrisma(
     status?: string;
     updatedAt: Date;
     wakeAt?: Date | null;
+    routineRetryAt?: Date;
     botId?: string;
     bot?: { computerId: string | null };
   }> = [],
@@ -361,11 +362,15 @@ describe("createJobReconciler", () => {
     });
   });
 
-  it("restores queued runs and near-due routines with stable replacement keys", async () => {
+  it("restores queued runs, due retries, and near-due routines with stable replacement keys", async () => {
     const scheduledFor = new Date(Date.now() + 30_000);
+    const retryAt = new Date(Date.now() - 30_000);
     const controlExpiresAt = new Date(Date.now() + 15_000);
     const prisma = fakePrisma(
-      [{ id: "run-1", updatedAt: new Date() }],
+      [
+        { id: "run-1", updatedAt: new Date() },
+        { id: "failed-1", status: "failed", updatedAt: new Date(), routineRetryAt: retryAt },
+      ],
       [{ id: "routine-1", nextRunAt: scheduledFor }],
       [
         {
@@ -395,6 +400,17 @@ describe("createJobReconciler", () => {
       availableAt: scheduledFor,
       replaceKey: "routine:routine-1",
     });
+    expect(enqueue).toHaveBeenCalledWith({
+      name: "routine.retry",
+      payload: { runId: "failed-1" },
+      availableAt: retryAt,
+      replaceKey: "routine.retry:failed-1",
+      keepExisting: true,
+      replaceLockedBefore: expect.any(Date),
+    });
+    expect(enqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "failed-1" } }),
+    );
     expect(enqueue).toHaveBeenCalledWith({
       name: "computer.control-expire",
       payload: { computerId: "computer-1", leaseId: "lease-1" },

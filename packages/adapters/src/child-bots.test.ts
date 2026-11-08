@@ -1829,7 +1829,7 @@ describe("archiveBot", () => {
 
     expect(disableRoutines).toHaveBeenCalledWith({
       where: { botId: "bot-1" },
-      data: { active: false, nextRunAt: null },
+      data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
     });
     expect(updateBot).toHaveBeenCalledWith({
       where: { id: "bot-1" },

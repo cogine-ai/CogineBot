@@ -34,6 +34,7 @@ import {
   nativeObservationMatches,
   replaceNativeRoutineTriggersTx,
   saveNativeRoutineTrigger,
+  verifyRoutineRetryNativeSource,
 } from "./store.js";
 import { NativeSourceJobPayloadSchema, nativeSourceJob } from "./worker.js";
 
@@ -322,6 +323,10 @@ test("replaces native triggers from a tenant while global metadata stays a narro
       assert.equal(saved.length, 1);
       assert.deepEqual(currentDbContext(), { kind: "tenant", ...scope });
       assert.equal(writes.filter((item) => item.table === "binding").length, 1);
+      assert.deepEqual(writes.find((item) => item.table === "routine")?.args.data, {
+        latestRunId: null,
+        autoCompletedRunId: null,
+      });
     }),
   );
 });
@@ -472,7 +477,35 @@ test("exact claim uses original Routine execution/model and account; cron is unt
   assert.equal(run.routineId, "routine-a");
   assert.equal(run.modelPinned, true);
   assert.equal(run.modelId, "synthetic-model");
-  assert.deepEqual(writes.find((item) => item.table === "routine")?.args.data, { lastRunAt: NOW });
+  assert.deepEqual(writes.find((item) => item.table === "routine")?.args.data, {
+    lastRunAt: NOW,
+    latestRunId: "run-a",
+    autoCompletedRunId: null,
+  });
+});
+test("native retry keeps the source trigger version and rechecks its connection grant", async () => {
+  const binding = row();
+  const input = {
+    ...scope,
+    routineId: binding.routineId,
+    clientNonce: nativeEventRunNonce(binding, event(binding)),
+    connectionIds: [binding.connectionId],
+  };
+  const valid = database({ binding });
+  assert.equal(
+    await valid.db.$transaction((tx) => verifyRoutineRetryNativeSource(tx, input)),
+    true,
+  );
+  const changed = database({ binding, second: snapshot({ authorizationRevision: "reconnected" }) });
+  assert.equal(
+    await changed.db.$transaction((tx) => verifyRoutineRetryNativeSource(tx, input)),
+    false,
+  );
+  const updated = database({ binding: { ...binding, version: binding.version + 1 } });
+  assert.equal(
+    await updated.db.$transaction((tx) => verifyRoutineRetryNativeSource(tx, input)),
+    false,
+  );
 });
 test("existing receipt does not create another Task or Run", async () => {
   const { db, writes } = database({ existingRun: { id: "existing-run", taskId: "existing-task" } });

@@ -51,13 +51,20 @@ describe("routine test run snapshot", () => {
       );
       const createRun = vi.fn(async () => ({ id: "test-run" }));
       const createTask = vi.fn(async () => ({ id: "test-task" }));
+      const updateRoutine = vi.fn(async () => ({ count: 1 }));
       const tx = {
         $queryRaw: vi
           .fn()
           .mockResolvedValueOnce([{ id: routine.id }])
-          .mockResolvedValueOnce([{ id: modelCredentialId }]),
+          .mockResolvedValueOnce([{ id: modelCredentialId }])
+          .mockResolvedValueOnce([]),
         task: { create: createTask },
-        routine: { findUnique: findCurrent },
+        routine: {
+          findFirst: vi.fn(async () => ({ id: routine.id })),
+          findUnique: findCurrent,
+          updateMany: updateRoutine,
+        },
+        spaceMember: { findUnique: vi.fn(async () => ({ id: "membership" })) },
         run: { create: createRun },
       };
       const prisma = {
@@ -96,6 +103,13 @@ describe("routine test run snapshot", () => {
 
       await expect(client.routines.testRun({ routineId: routine.id })).resolves.toEqual({
         runId: "test-run",
+      });
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+      expect(tx.$queryRaw).toHaveBeenCalledBefore(createTask);
+      expect(updateRoutine).toHaveBeenCalledExactlyOnceWith({
+        where: { id: routine.id },
+        data: { latestRunId: "test-run", autoCompletedRunId: null },
       });
       expect(createTask).toHaveBeenCalledWith(
         expect.objectContaining({

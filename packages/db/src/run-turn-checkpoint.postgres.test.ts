@@ -4,9 +4,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { appendEventInTransaction, claimSteering, finalizeRun } from "./events.js";
+import {
+  appendEventInTransaction,
+  beginRoutineRetryExecution,
+  claimSteering,
+  finalizeRun,
+} from "./events.js";
 import { expireStuckRun } from "./expire-stuck-run.js";
 import { createThreadMessage } from "./messages.js";
+import { claimRoutineRetry } from "./routine-retry.js";
 import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
 import { reserveRunSelfRecovery } from "./run-self-recovery.js";
 import {
@@ -53,6 +59,24 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
             { id: otherSpaceId, name: "Other checkpoint fixture" },
           ],
         },
+      },
+    });
+    await prisma.member.create({
+      data: {
+        id: "turn-checkpoint-member",
+        organizationId,
+        userId,
+        role: "owner",
+        createdAt: new Date(),
+      },
+    });
+    await prisma.spaceMember.create({
+      data: {
+        id: "turn-checkpoint-space-member",
+        organizationId,
+        spaceId,
+        userId,
+        createdAt: new Date(),
       },
     });
   });
@@ -109,6 +133,275 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       blocks: [],
     };
   }
+
+  async function seedRetry() {
+    const f = await seed();
+    const routine = await prisma.routine.create({
+      data: {
+        spaceId,
+        botId,
+        userId,
+        name: "Retry fixture",
+        prompt: "current instructions",
+        crons: ["0 * * * *"],
+        active: true,
+        latestRunId: f.run.id,
+      },
+    });
+    const taskSnapshot = {
+      prompt: "original expanded prompt",
+      routineInstructions: "authorized instructions",
+      routineSites: ["https://fixture.example"],
+      connectionIds: ["synthetic-selected-account"],
+    };
+    const pin = {
+      modelPinned: true,
+      modelProvider: "openai-compatible",
+      modelId: "synthetic-pinned-model",
+      modelCredentialId: "synthetic-pinned-credential",
+      thinkingLevel: "low",
+    };
+    await prisma.task.update({ where: { id: f.task.id }, data: taskSnapshot });
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { routineId: routine.id, trigger: "routine", ...pin },
+    });
+    const failure = {
+      ...finishInput(f),
+      outcome: "failed" as const,
+      error: "Provider unavailable",
+      retryRoutine: true,
+    };
+    return { ...f, routine, failure, taskSnapshot, pin };
+  }
+
+  it("commits one retry intent with the original failure and one scoped child after its deadline", async () => {
+    const f = await seedRetry();
+    await expect(finalizeRun(prisma, { ...f.failure, leaseFence: 6 })).resolves.toBe(false);
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "running",
+      routineRetryAt: null,
+    });
+    const terminal = await finalizeRun(prisma, f.failure);
+    const due = terminal === false ? undefined : terminal.routineRetryAt;
+    if (!due) throw new Error("Missing routine retry intent");
+    const source = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+    expect(source).toMatchObject({ status: "failed", routineRetryAt: due });
+    expect(due.getTime() - source.completedAt!.getTime()).toBe(12 * 60_000);
+    await expect(
+      claimRoutineRetry(prisma, f.run.id, new Date(due.getTime() - 1)),
+    ).resolves.toBeNull();
+    const claims = await Promise.all([
+      claimRoutineRetry(prisma, f.run.id, due),
+      claimRoutineRetry(prisma, f.run.id, due),
+    ]);
+    const childId = claims.find((claim) => claim !== null)?.runId;
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const children = await prisma.run.findMany({
+      where: { retryOfRunId: f.run.id },
+      include: { task: true },
+    });
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({
+      id: childId,
+      spaceId,
+      userId,
+      botId,
+      threadId: f.thread.id,
+      routineId: f.routine.id,
+      status: "queued",
+      trigger: "routine",
+      ...f.pin,
+      task: f.taskSnapshot,
+    });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "failed",
+      routineRetryAt: null,
+    });
+    const child = children[0]!;
+    await prisma.run.update({
+      where: { id: child.id },
+      data: {
+        status: "running",
+        leaseOwner: "retry-worker",
+        leaseFence: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const startedAt = new Date();
+    await expect(
+      beginRoutineRetryExecution(prisma, {
+        runId: child.id,
+        workerId: "retry-worker",
+        fence: 1,
+        startedAt,
+      }),
+    ).resolves.toEqual({ started: true });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: child.id } })).toMatchObject({
+      startedAt,
+    });
+  });
+
+  it("discards an already scheduled retry when the Bot has left the Group", async () => {
+    const f = await seedRetry();
+    const terminal = await finalizeRun(prisma, f.failure);
+    const due = terminal === false ? undefined : terminal.routineRetryAt;
+    if (!due) throw new Error("Missing routine retry intent");
+    await prisma.chatGroupMember.deleteMany({ where: { groupId: f.thread.groupId!, botId } });
+    await expect(claimRoutineRetry(prisma, f.run.id, due)).resolves.toBeNull();
+    expect(await prisma.run.count({ where: { retryOfRunId: f.run.id } })).toBe(0);
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "failed",
+      routineRetryAt: null,
+    });
+  });
+
+  it.each(["Routine pause", "Group membership loss"] as const)(
+    "cancels an unstarted retry after %s and continues only authorized human steering",
+    async (revocation) => {
+      const f = await seedRetry();
+      const terminal = await finalizeRun(prisma, f.failure);
+      const due = terminal === false ? undefined : terminal.routineRetryAt;
+      if (!due) throw new Error("Missing routine retry intent");
+      const child = await claimRoutineRetry(prisma, f.run.id, due);
+      if (!child) throw new Error("Missing routine retry Run");
+      await prisma.run.update({
+        where: { id: child.runId },
+        data: {
+          status: "running",
+          leaseOwner: "retry-worker",
+          leaseFence: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      const message = await createThreadMessage(prisma, {
+        threadId: f.thread.id,
+        role: "user",
+        blocks: [{ kind: "text", text: "Handle this message instead." }],
+      });
+      const pending = await prisma.steeringMessage.create({
+        data: { messageId: message.id, botId, userId },
+      });
+      const mayContinue = revocation === "Routine pause";
+      if (mayContinue) {
+        await prisma.routine.update({
+          where: { id: f.routine.id },
+          data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
+        });
+      } else {
+        await prisma.chatGroupMember.deleteMany({ where: { groupId: f.thread.groupId!, botId } });
+      }
+      const begin = { ...child, workerId: "retry-worker", fence: 1, startedAt: new Date() };
+      await expect(beginRoutineRetryExecution(prisma, { ...begin, fence: 0 })).resolves.toEqual({
+        started: false,
+      });
+      const result = await beginRoutineRetryExecution(prisma, begin);
+      expect(result).toEqual({
+        started: false,
+        cancellationSeq: expect.any(Number),
+        ...(mayContinue ? { continuationRunId: expect.any(String) } : {}),
+      });
+      expect(
+        await prisma.run.findUniqueOrThrow({ where: { id: child.runId }, include: { task: true } }),
+      ).toMatchObject({
+        status: "cancelled",
+        startedAt: null,
+        leaseOwner: null,
+        task: { status: "cancelled" },
+      });
+      expect(
+        await prisma.event.findMany({
+          where: { runId: child.runId },
+          select: { type: true, seq: true },
+        }),
+      ).toEqual([{ type: "run.cancelled", seq: result.cancellationSeq }]);
+      const followUps = await prisma.run.findMany({
+        where: { threadId: f.thread.id, trigger: "follow_up" },
+      });
+      expect(followUps).toHaveLength(mayContinue ? 1 : 0);
+      if (mayContinue) {
+        expect(followUps[0]).toMatchObject({
+          id: result.continuationRunId,
+          sourceMessageId: message.id,
+          status: "queued",
+        });
+      }
+      expect(
+        await prisma.steeringMessage.findUniqueOrThrow({ where: { id: pending.id } }),
+      ).toMatchObject({
+        runId: result.continuationRunId ?? null,
+        claimedAt: null,
+      });
+    },
+  );
+
+  it("keeps a human steering continuation instead of a background retry", async () => {
+    const f = await seedRetry();
+    const message = await createThreadMessage(prisma, {
+      threadId: f.thread.id,
+      role: "user",
+      blocks: [{ kind: "text", text: "Continue with my changes." }],
+    });
+    await prisma.steeringMessage.create({ data: { messageId: message.id, botId, userId } });
+    const terminal = await finalizeRun(prisma, f.failure);
+    expect(terminal).toEqual({ continuationRunId: expect.any(String) });
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "failed",
+      routineRetryAt: null,
+    });
+  });
+
+  it.each(["tool", "message", "effect", "steering"] as const)(
+    "vetoes a routine retry after prior %s",
+    async (prior) => {
+      const f = await seedRetry();
+      if (prior === "tool") {
+        await prisma.$transaction((tx) =>
+          appendEventInTransaction(tx, {
+            spaceId,
+            threadId: f.thread.id,
+            botId,
+            runId: f.run.id,
+            type: "agent.tool.called",
+            payload: { name: "schedule_list" },
+          }),
+        );
+      } else if (prior === "message") {
+        await createThreadMessage(prisma, {
+          threadId: f.thread.id,
+          runId: f.run.id,
+          botId,
+          role: "bot",
+          blocks: [{ kind: "text", text: "Already replied." }],
+        });
+      } else if (prior === "effect") {
+        await prisma.externalEffect.create({
+          data: {
+            spaceId,
+            runId: f.run.id,
+            kind: "synthetic_tool",
+            idempotencyKey: `${f.run.id}:fixture`,
+            status: "intended",
+            request: {},
+          },
+        });
+      } else {
+        const message = await createThreadMessage(prisma, {
+          threadId: f.thread.id,
+          role: "user",
+          blocks: [{ kind: "text", text: "Continue with these changes." }],
+        });
+        await prisma.steeringMessage.create({
+          data: { messageId: message.id, botId, userId, runId: f.run.id, claimedAt: new Date() },
+        });
+      }
+      expect(await finalizeRun(prisma, f.failure)).not.toHaveProperty("routineRetryAt");
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        status: "failed",
+        routineRetryAt: null,
+      });
+    },
+  );
 
   it("shares three output recovery slots across concurrent calls and successor leases", async () => {
     const f = await seed();
