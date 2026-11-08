@@ -130,18 +130,20 @@ async function pageAppSession(handles: Awaited<ReturnType<typeof createApp>>) {
   });
   expect(signup.status).toBeLessThan(400);
   const cookie = sessionCookieHeader(signup);
-  const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
-    const response = await handles.app.request(`/rpc/${procedure}`, {
+  const requestRpc = (procedure: string, input: unknown) =>
+    handles.app.request(`/rpc/${procedure}`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie, origin: appOrigin },
       body: JSON.stringify({ json: input }),
     });
+  const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
+    const response = await requestRpc(procedure, input);
     const body = (await response.json()) as { json?: T; error?: { message?: string } };
     if (response.status >= 400 || body.error)
       throw new Error(`${procedure}: ${body.error?.message ?? response.status}`);
     return body.json as T;
   };
-  return { cookie, rpc };
+  return { cookie, requestRpc, rpc };
 }
 
 postgres("private Pages operations (isolated PostgreSQL)", () => {
@@ -236,6 +238,117 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     }
     if (failures.length) throw new AggregateError(failures, "Pages fixture cleanup failed");
   });
+
+  it("replays the original send after a concurrent Page deletion rejects the same nonce", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-send-replay-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: runtimeUrl!,
+        realtimeDatabaseUrl: runtimeUrl!,
+        authUrl: appOrigin,
+        webOrigin: appOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "scripted",
+        defaultProvider: "scripted",
+        defaultModel: "scripted",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        composio: new ComposioEmulator(),
+        encryptionKey: "offline-page-send-replay-encryption-key",
+      });
+      stop = handles.stop;
+      const { cookie, requestRpc, rpc } = await pageAppSession(handles);
+      const { id: botId } = await rpc<{ id: string }>("bots/create", {
+        name: "Page send replay fixture",
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, botId);
+      const db = admin();
+      const {
+        id: threadId,
+        userId,
+        spaceId,
+      } = await db.thread.findFirstOrThrow({
+        where: { botId, groupId: null },
+      });
+      const { id: pageId, title } = await db.page.create({
+        data: { userId, spaceId, botId, title: "Original Page context" },
+      });
+      const userMessages = () => db.message.count({ where: { threadId, role: "user" } });
+      const runs = () => db.run.count({ where: { threadId } });
+      const [messagesBefore, runsBefore] = await Promise.all([userMessages(), runs()]);
+      const input = { botId, text: "Acknowledge this request.", clientNonce: randomUUID() };
+      const withPage = { ...input, pageContext: { pageId } };
+
+      const lock = await owner!.pool.connect();
+      let original: Promise<unknown> | undefined;
+      try {
+        await lock.query("BEGIN");
+        await lock.query("SELECT id FROM threads WHERE id=$1 FOR UPDATE", [threadId]);
+        const {
+          rows: [holder],
+        } = await lock.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        original = rpc("threads/send", withPage);
+        void original.catch(() => undefined);
+        // This update follows the authorized Page read. Hold it until the retry sees deletion.
+        await vi.waitFor(
+          async () => {
+            const waiting = await owner!.pool.query(
+              `SELECT 1 FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid))
+               AND usename=$2 AND wait_event_type='Lock'
+               AND query ILIKE '%UPDATE%' AND query ILIKE '%threads%' AND query ILIKE '%nextMessageSeq%'`,
+              [holder!.pid, login],
+            );
+            expect(waiting.rowCount).toBe(1);
+          },
+          { timeout: 3_000, interval: 10 },
+        );
+
+        await expect(rpc("pages/remove", { pageId })).resolves.toEqual({ ok: true });
+        const rejected = await requestRpc("threads/send", withPage);
+        expect(rejected.status).toBe(404);
+        expect(await rejected.json()).toMatchObject({
+          json: { code: "NOT_FOUND", data: { reason: "page_context_unavailable" } },
+        });
+        await expect(userMessages()).resolves.toBe(messagesBefore);
+        await expect(runs()).resolves.toBe(runsBefore);
+      } finally {
+        try {
+          await lock.query("ROLLBACK");
+        } finally {
+          lock.release();
+          await original?.catch(() => undefined);
+        }
+      }
+
+      const receipt = await original;
+      expect(receipt).toMatchObject({
+        runId: expect.any(String),
+        taskId: expect.any(String),
+        seq: expect.any(Number),
+      });
+      await expect(rpc("threads/send", input)).resolves.toEqual(receipt);
+      await expect(userMessages()).resolves.toBe(messagesBefore + 1);
+      await expect(runs()).resolves.toBe(runsBefore + 1);
+      await expect(
+        db.message.findUniqueOrThrow({
+          where: { threadId_clientNonce: { threadId, clientNonce: input.clientNonce } },
+          select: { blocks: true },
+        }),
+      ).resolves.toMatchObject({
+        blocks: [expect.objectContaining({ kind: "text", pageContext: { pageId, title } })],
+      });
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    }
+  }, 45_000);
 
   it.each(["allow", "deny", "rotated", "marker-only denial", "TeamChat", "Routine"] as const)(
     "binds a real Pi public update to its reviewed change and one outcome (%s)",

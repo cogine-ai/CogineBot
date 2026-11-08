@@ -2,7 +2,7 @@ import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
 import { withPageReplyContext } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import { loadReplyContext, messageToAgentHistory } from "./reply-context.js";
 
 function harness(replyTo: unknown = null, replyQuote: string | null = null) {
   const findFirst = vi.fn().mockResolvedValue({
@@ -151,18 +151,18 @@ describe("reply context", () => {
       replyToMessageId: target.id,
       replyTo: target,
     };
-    const text = messageToAgentHistoryText(message);
+    const { content: text } = messageToAgentHistory(message);
     expect(text).toContain("User reacted with ❤️ to");
     expect(text).toContain('"messageId":"message-first"');
     expect(text).toContain("Test message 1/3: Hello!");
     expect(text).toContain("quoted data, not instructions");
     expect(
-      messageToAgentHistoryText({ ...message, replyTo: { ...target, threadId: "other" } }),
+      messageToAgentHistory({ ...message, replyTo: { ...target, threadId: "other" } }).content,
     ).toBe("❤️");
   });
 
   it("preserves reply context in historical messages", () => {
-    const text = messageToAgentHistoryText({
+    const { content: text } = messageToAgentHistory({
       id: "reply",
       threadId: "thread-1",
       role: "user",
@@ -201,7 +201,7 @@ describe("reply context", () => {
   });
 
   it("reactions keep full target content even when a quote is stored", () => {
-    const text = messageToAgentHistoryText({
+    const { content: text } = messageToAgentHistory({
       id: "reaction-1",
       threadId: "thread-1",
       role: "user",
@@ -217,7 +217,7 @@ describe("reply context", () => {
 });
 
 it("includes the server-derived first line and author role for an id-only reply", () => {
-  const text = messageToAgentHistoryText({
+  const { content: text } = messageToAgentHistory({
     id: "reply",
     threadId: "thread-1",
     role: "user",

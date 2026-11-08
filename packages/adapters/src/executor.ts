@@ -328,6 +328,7 @@ import { TOOL_RESULT_HISTORY_MIN_LENGTH } from "./context-selection.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
+import type { CompactedHistoryMessage } from "./history-compaction.js";
 import {
   COMPACTION_BATCH_SIZE,
   formatCompactedSummary,
@@ -418,7 +419,7 @@ import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import {
   loadReplyContext,
-  messageToAgentHistoryText,
+  messageToAgentHistory,
   modelMessageBlocksText,
   pageInputContext,
   resolveReplyContext,
@@ -4294,19 +4295,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const discoveredPromise = deps.connector
           ? deps.connector.discoverTools(context)
           : Promise.resolve([]);
+        const pageHistoryIds = new Set<string>();
         const threadContext = threadContextForRun(
           run.trigger,
           {
-            messages: [...messages].reverse().map((m) => ({
-              id: m.id,
-              createdAt: m.createdAt?.toISOString(),
-              seq: m.seq,
-              role: (m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant") as
-                | "user"
-                | "assistant"
-                | "system",
-              content: messageToAgentHistoryText(m),
-            })),
+            messages: [...messages].reverse().map<CompactedHistoryMessage>((message) => {
+              const { content, includesPage } = messageToAgentHistory(message);
+              const role =
+                message.role === "user"
+                  ? "user"
+                  : message.role === "system"
+                    ? "system"
+                    : "assistant";
+              if (includesPage && role !== "system" && message.id !== run.sourceMessageId) {
+                pageHistoryIds.add(message.id);
+              }
+              return {
+                id: message.id,
+                createdAt: message.createdAt?.toISOString(),
+                seq: message.seq,
+                role,
+                content,
+              };
+            }),
             summary: thread.historyCompactionSummary,
             historyCompactedUpToSeq: thread.historyCompactedUpToSeq,
           },
@@ -5046,6 +5057,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           connectedProviders: connectedPlugins.map((plugin) => plugin.provider),
           catalogApprovalMarker: CATALOG_APPROVAL_TOOL,
         });
+        // Apply the Page trust boundary to the history selected for this run.
+        if (!scripted && history.some(({ id }) => id && pageHistoryIds.has(id))) {
+          trust.state.tainted = true;
+        }
         const searchResultUrls = new Set<string>();
         const verbatimMcpServers =
           !scripted &&
