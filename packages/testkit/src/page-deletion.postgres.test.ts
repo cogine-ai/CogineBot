@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import {
+  acquireComputerExecutionLease,
+  cancelComputerRunWorkArgv,
   createGroupRunTeardownRecovery,
   EncryptedSecretStore,
   LocalArtifactStore,
@@ -658,9 +660,14 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
     }
   });
 
-  it.each([false, true])(
-    "recovers a deletion interrupted before screen cleanup (successor: %s)",
-    async (hasSuccessor) => {
+  it.each([
+    { hasSuccessor: false, phase: "restart" },
+    { hasSuccessor: true, phase: "restart" },
+    { hasSuccessor: true, phase: "foreground" },
+    { hasSuccessor: true, phase: "timeout" },
+  ])(
+    "settles a committed deletion ($phase, successor: $hasSuccessor)",
+    async ({ hasSuccessor, phase }) => {
       const own = await account("Stale teardown");
       const first = await bot(own, "First");
       const second = await bot(own, "Second");
@@ -706,9 +713,12 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         },
       });
       // Stop at the committed delete boundary, before any process attempts the teardown.
-      await runAsTenant(scopeOf(own.actor), () =>
+      const removed = await runAsTenant(scopeOf(own.actor), () =>
         createGroupRepos(runtime!.prisma).removeGroup(own.actor, chat.id),
       );
+      expect(removed.teardowns).toEqual([
+        { computerId: computer.id, runId: run.id, ...scopeOf(own.actor) },
+      ]);
       expect(await admin().run.findUnique({ where: { id: run.id } })).toBeNull();
       const thread = await admin().thread.findFirstOrThrow({
         where: { botId: first.id, groupId: null },
@@ -716,6 +726,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
       const nextTask = await admin().task.create({
         data: { ...scope, threadId: thread.id, prompt: "Next", status: "running" },
       });
+      const workerId = "successor-worker";
       const successor = await admin().run.create({
         data: {
           ...scope,
@@ -723,20 +734,45 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
           taskId: nextTask.id,
           trigger: "user",
           status: "running",
+          leaseOwner: workerId,
+          leaseFence: 1,
+          leaseExpiresAt: expiresAt,
         },
       });
-      const current = hasSuccessor
-        ? await admin().computerExecutionLease.update({
-            where: { id: oldLease.id },
-            data: { runId: successor.id, fence: 4 },
-          })
-        : oldLease;
       if (hasSuccessor) {
-        await admin().computer.update({
-          where: { id: computer.id },
-          data: { executionRunId: successor.id, executionFence: 4 },
+        // Expire only the captured fixture lease, then use the real acquisition CAS.
+        await admin().computerExecutionLease.update({
+          where: { id: oldLease.id, runId: run.id, fence: 3 },
+          data: { expiresAt: new Date(Date.now() - 1_000) },
         });
+        await expect(
+          runAsTenant(scopeOf(own.actor), () =>
+            acquireComputerExecutionLease(runtime!.prisma, {
+              computerId: computer.id,
+              botId: first.id,
+              runId: successor.id,
+              workerId,
+              runFence: 1,
+            }),
+          ),
+        ).resolves.toMatchObject({ runId: successor.id, fence: 4 });
       }
+      const current = await admin().computerExecutionLease.findUniqueOrThrow({
+        where: { id: oldLease.id },
+      });
+      const assignedComputer = hasSuccessor
+        ? await admin().computer.update({
+            where: { id: computer.id },
+            data: {
+              executionRunId: successor.id,
+              executionFence: 4,
+              executionLeaseExpiresAt: current.expiresAt,
+            },
+          })
+        : computer;
+      const readPending = () => admin().$queryRaw`
+        SELECT "pendingGroupRunTeardowns" AS pending FROM computers WHERE id = ${computer.id}
+      `;
       const screenRelease = vi.spyOn(handles!.sandbox, "releaseScreen");
       const execute = vi.spyOn(handles!.sandbox, "execute");
       try {
@@ -744,7 +780,51 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
           prisma: runtime!.prisma,
           sandbox: handles!.sandbox,
         });
-        await restarted.reconcile();
+        if (phase === "restart") {
+          await restarted.reconcile();
+          expect(execute).not.toHaveBeenCalled();
+        } else {
+          if (phase === "timeout") {
+            const controller = new AbortController();
+            const timeoutError = new Error("Fixture group teardown timed out");
+            const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+            const mockTimeout = vi
+              .spyOn(AbortSignal, "timeout")
+              .mockImplementation((ms) =>
+                ms === 30_000 ? controller.signal : originalTimeout(ms),
+              );
+            execute.mockImplementationOnce(async function* () {
+              controller.abort(timeoutError);
+              yield { type: "exit", code: 130 };
+            });
+            try {
+              await expect(restarted.settle(removed.teardowns[0]!)).rejects.toThrow(
+                timeoutError.message,
+              );
+              await expect(readPending()).resolves.toEqual([
+                { pending: { [run.id]: expect.objectContaining({ providerDone: false }) } },
+              ]);
+              expect(
+                await admin().computerExecutionLease.findUnique({ where: { id: current.id } }),
+              ).toEqual(current);
+            } finally {
+              mockTimeout.mockRestore();
+            }
+            await restarted.reconcile();
+          } else {
+            await restarted.settle(removed.teardowns[0]!);
+          }
+          expect(execute).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ providerRef: computer.providerRef }),
+            { argv: cancelComputerRunWorkArgv(computer.id, run.id), timeoutMs: 15_000 },
+            expect.objectContaining({
+              botId: first.id,
+              runId: run.id,
+              screenLeaseId: `${run.id}:3`,
+              cancelRunWork: true,
+            }),
+          );
+        }
         if (hasSuccessor) expect(screenRelease).not.toHaveBeenCalled();
         else
           expect(screenRelease).toHaveBeenCalledExactlyOnceWith(
@@ -756,7 +836,6 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
             }),
             { onlyIfRunning: true },
           );
-        expect(execute).not.toHaveBeenCalled();
         expect(
           await admin().computerExecutionLease.findUnique({ where: { id: manualLease.id } }),
         ).toEqual(manualLease);
@@ -765,15 +844,10 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         });
         if (hasSuccessor) expect(settled).toEqual(current);
         else expect(settled).toMatchObject({ runId: run.id, fence: 3, expiresAt: new Date(0) });
-        expect(await admin().computer.findUnique({ where: { id: computer.id } })).toMatchObject({
-          executionRunId: hasSuccessor ? successor.id : null,
-          executionFence: hasSuccessor ? 4 : 3,
-        });
-        expect(
-          await admin().$queryRaw`
-        SELECT "pendingGroupRunTeardowns" AS pending FROM computers WHERE id = ${computer.id}
-      `,
-        ).toEqual([{ pending: null }]);
+        const storedComputer = await admin().computer.findUnique({ where: { id: computer.id } });
+        if (hasSuccessor) expect(storedComputer).toEqual(assignedComputer);
+        else expect(storedComputer).toMatchObject({ executionRunId: null, executionFence: 3 });
+        await expect(readPending()).resolves.toEqual([{ pending: null }]);
       } finally {
         screenRelease.mockRestore();
         execute.mockRestore();

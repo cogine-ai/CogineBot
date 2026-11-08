@@ -32,7 +32,8 @@ type TeardownComputer = {
 export type PendingGroupRunTeardown = {
   marker: GroupRunTeardownMarker;
   computer: TeardownComputer;
-  providerCleanup: boolean;
+  providerStillCurrent: boolean;
+  screenCleanup: boolean;
 };
 
 type ComputerOwner = {
@@ -230,16 +231,17 @@ export async function loadPendingGroupRunTeardown(
         row.executionBotId === marker.legacy.botId &&
         row.executionFence === marker.legacy.fence
       : row.currentRunId === key.runId && row.currentFence === marker.canonicalFence;
+  const providerStillCurrent =
+    providerRef !== null &&
+    providerRef === marker.providerRef &&
+    row.screenGeneration === marker.screenGeneration &&
+    row.state === "running" &&
+    row.maintenanceId === null;
   return {
     marker,
     computer: { id, homeKey, kind, providerRef },
-    providerCleanup:
-      stillOwns &&
-      providerRef !== null &&
-      providerRef === marker.providerRef &&
-      row.screenGeneration === marker.screenGeneration &&
-      row.state === "running" &&
-      row.maintenanceId === null,
+    providerStillCurrent,
+    screenCleanup: providerStillCurrent && stillOwns,
   };
 }
 
@@ -265,7 +267,7 @@ export async function completeGroupRunTeardownProviderPhase(
       if (!lock?.acquired) return null;
       const pending = await loadPendingGroupRunTeardown(tx, key);
       if (!pending || pending.marker.providerDone) return pending;
-      if (pending.providerCleanup) await perform(pending);
+      if (pending.providerStillCurrent) await perform(pending);
       const marker = { ...pending.marker, providerDone: true };
       const changed = await tx.$executeRaw(Prisma.sql`
         UPDATE public.computers SET "pendingGroupRunTeardowns" = jsonb_set(

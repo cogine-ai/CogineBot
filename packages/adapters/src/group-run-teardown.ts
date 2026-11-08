@@ -29,7 +29,7 @@ export async function stopCancelledGroupComputer(
     runId: string;
     fence: number;
   },
-  options?: { onlyIfRunning: true; screenOnly?: boolean },
+  cleanup?: "shell" | "screen" | "both",
 ) {
   if (!computer.providerRef) return;
   const context: AdapterContext = {
@@ -41,13 +41,18 @@ export async function stopCancelledGroupComputer(
     runId: computer.runId,
     screenLeaseId: screenLeaseIdForRun(computer, computer.runId),
     cancelRunWork: true,
-    signal: options ? AbortSignal.timeout(30_000) : new AbortController().signal,
+    signal: cleanup ? AbortSignal.timeout(30_000) : new AbortController().signal,
   };
   const ref = toComputerRef(computer);
-  if (!options?.screenOnly)
+  if (cleanup !== "screen") {
     await cancelComputerRunWork(sandbox, ref, computer.id, computer.runId, context);
-  if (options) await sandbox.releaseScreen?.(ref, context, { onlyIfRunning: true });
-  else await sandbox.releaseScreen?.(ref, context);
+    context.signal.throwIfAborted();
+  }
+  if (cleanup !== "shell") {
+    if (cleanup) await sandbox.releaseScreen?.(ref, context, { onlyIfRunning: true });
+    else await sandbox.releaseScreen?.(ref, context);
+    context.signal.throwIfAborted();
+  }
 }
 
 export function createGroupRunTeardownRecovery(deps: { prisma: PrismaClient; sandbox: Sandbox }) {
@@ -64,6 +69,9 @@ export function createGroupRunTeardownRecovery(deps: { prisma: PrismaClient; san
         async (work) => {
           // Generic shell exec can start a stopped provider. A restarted cleanup
           // may only revisit the old screen through the provider's no-wake path.
+          if (!eager && !work.screenCleanup) return;
+          // The shell command targets only the deleted Run. Screen release still
+          // requires its original lease even if the provider has not changed.
           await stopCancelledGroupComputer(
             deps.sandbox,
             { spaceId: key.spaceId, userId: work.marker.userId },
@@ -73,7 +81,7 @@ export function createGroupRunTeardownRecovery(deps: { prisma: PrismaClient; san
               runId: key.runId,
               fence: work.marker.canonicalFence ?? 0,
             },
-            { onlyIfRunning: true, screenOnly: !eager },
+            eager ? (work.screenCleanup ? "both" : "shell") : "screen",
           );
         },
       );
