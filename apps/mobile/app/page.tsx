@@ -1,8 +1,9 @@
 import type { PageDetail } from "@rakazo/contracts";
 import { tokensForAppearance } from "@rakazo/ui-tokens";
+import { uuid } from "expo-modules-core";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, AppState, Platform, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NativeActionButton } from "../components/native-action-button";
 import { PageFrame } from "../components/pages/page-frame";
@@ -16,6 +17,7 @@ import {
   getLatestPage,
   getPageReplyChat,
   offerPageReply,
+  offerPageShareView,
   pageScopeKey,
   subscribePageScope,
 } from "../lib/pages";
@@ -27,6 +29,7 @@ type Loaded =
       status: "ready";
       page: PageDetail;
       document: string;
+      drawKey: symbol;
       chat: Awaited<ReturnType<typeof getPageReplyChat>>;
       scope: string;
     };
@@ -48,6 +51,16 @@ export default function PageScreen() {
   const [state, setLoaded] = useState<Loaded>({ status: "loading", scope: documentKey });
   const loaded: Loaded =
     state.scope === documentKey ? state : { status: "loading", scope: documentKey };
+  const currentPage = useRef<Loaded | null>(null);
+  const drawnPage = useRef<symbol | null>(null);
+  const [drawn, setDrawn] = useState<symbol | null>(null);
+  useLayoutEffect(() => {
+    currentPage.current = loaded;
+    return () => {
+      currentPage.current = null;
+      drawnPage.current = null;
+    };
+  }, [loaded]);
   // iOS keeps the native glass button as it is; Android's bordered button becomes a card circle.
   const round =
     Platform.OS === "ios" ? undefined : [styles.round, { backgroundColor: tokens.card }];
@@ -72,7 +85,14 @@ export default function PageScreen() {
           { reply: false, lang: locale },
         );
         if (!active || scope !== pageScopeKey()) return;
-        setLoaded({ status: "ready", page, document, chat: null, scope: documentKey });
+        setLoaded({
+          status: "ready",
+          page,
+          document,
+          drawKey: Symbol(),
+          chat: null,
+          scope: documentKey,
+        });
         const chat = await chatRead;
         if (!chat || !active || scope !== pageScopeKey()) return;
         const interactive = await pageDocument(
@@ -85,7 +105,14 @@ export default function PageScreen() {
         if (!interactive || !active || scope !== pageScopeKey()) return;
         setLoaded((previous) =>
           previous.status === "ready" && previous.scope === documentKey
-            ? { status: "ready", page, document: interactive, chat, scope: documentKey }
+            ? {
+                status: "ready",
+                page,
+                document: interactive,
+                drawKey: Symbol(),
+                chat,
+                scope: documentKey,
+              }
             : previous,
         );
       })
@@ -133,14 +160,22 @@ export default function PageScreen() {
             ])}
             background={pageBackground}
             interactive
-            isCurrent={() => scope === pageScopeKey()}
+            isCurrent={() => currentPage.current === loaded && scope === pageScopeKey()}
+            onDrawnChange={(ready) => {
+              if (currentPage.current !== loaded || scope !== pageScopeKey()) return;
+              const next = ready ? loaded.drawKey : null;
+              drawnPage.current = next;
+              setDrawn(next);
+            }}
             onError={() => {
-              if (scope === pageScopeKey())
+              if (currentPage.current === loaded && scope === pageScopeKey()) {
+                drawnPage.current = null;
                 setLoaded({
                   status: "error",
                   error: new Error("Page viewer unavailable"),
                   scope: documentKey,
                 });
+              }
             }}
             onReply={loaded.chat ? offerReply : undefined}
           />
@@ -167,6 +202,26 @@ export default function PageScreen() {
           style={round}
           onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
         />
+        {loaded.status === "ready" && drawn === loaded.drawKey ? (
+          <NativeActionButton
+            accessibilityLabel={t("Share")}
+            icon={{ ios: "square.and.arrow.up", android: "share-outline", size: 20 }}
+            prominence="secondary"
+            style={round}
+            onPress={() => {
+              if (
+                drawnPage.current !== loaded.drawKey ||
+                scope !== pageScopeKey() ||
+                !navigation.isFocused() ||
+                AppState.currentState !== "active"
+              )
+                return;
+              const viewId = uuid.v4();
+              offerPageShareView(viewId, loaded.page.id, loaded.page.version);
+              router.push({ pathname: "/page-share", params: { pageId: loaded.page.id, viewId } });
+            }}
+          />
+        ) : null}
       </View>
     </View>
   );

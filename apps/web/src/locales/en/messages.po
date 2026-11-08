@@ -409,6 +409,7 @@ msgstr "Accounts that need attention are kept. Manage them individually."
 msgid "Action confirmations"
 msgstr "Action confirmations"
 
+#: src/components/pages/PagesList.tsx
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -1077,6 +1078,7 @@ msgstr "Callback URL"
 msgid "Can't reach the server."
 msgstr "Can't reach the server."
 
+#: src/components/pages/PageShareControl.tsx
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
@@ -1625,6 +1627,8 @@ msgstr "Continue with {0}"
 msgid "Continue with email"
 msgstr "Continue with email"
 
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/ComputersUnavailableHint.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -2291,6 +2295,7 @@ msgstr "Default ({0})"
 msgid "Default scope"
 msgstr "Default scope"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/BotContextMenu.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -3870,6 +3875,7 @@ msgstr "Only empty spaces can be deleted. Delete its bots and groups first."
 msgid "Only pages shared with this integration are available."
 msgstr "Only pages shared with this integration are available."
 
+#: src/components/pages/PagesList.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/pages/ScratchpadSection.tsx
 #: src/pages/Shell.tsx
@@ -3972,10 +3978,12 @@ msgstr "Other model…"
 msgid "Other sources stay connected. Operations already sent may still finish."
 msgstr "Other sources stay connected. Operations already sent may still finish."
 
+#: src/components/pages/PageShareControl.tsx
 #: src/pages/Board.tsx
 msgid "Owner"
 msgstr "Owner"
 
+#: src/components/pages/PageCard.tsx
 #: src/pages/RoutineNativeEvents.tsx
 msgid "Page"
 msgstr "Page"
@@ -4068,6 +4076,7 @@ msgstr "Pick a model from the catalog."
 msgid "Pick a model from the list or enter a model id served by this endpoint."
 msgstr "Pick a model from the list or enter a model id served by this endpoint."
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/BotContextMenu.tsx
 msgid "Pin"
 msgstr "Pin"
@@ -4374,6 +4383,7 @@ msgstr "Removed, but list refresh failed"
 msgid "Removing…"
 msgstr "Removing…"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/Shell.tsx
 msgid "Rename"
 msgstr "Rename"
@@ -4888,6 +4898,7 @@ msgstr "Show computer"
 msgid "Show list"
 msgstr "Show list"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Show more"
 msgstr "Show more"
@@ -5396,6 +5407,9 @@ msgstr "Trial"
 msgid "Trial ends {day}"
 msgstr "Trial ends {day}"
 
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
@@ -5449,6 +5463,7 @@ msgstr "Unlink"
 msgid "Unmute"
 msgstr "Unmute"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/BotContextMenu.tsx
 msgid "Unpin"
 msgstr "Unpin"
@@ -5757,6 +5772,7 @@ msgstr "year"
 msgid "Yesterday"
 msgstr "Yesterday"
 
+#: src/components/pages/PageShareControl.tsx
 #: src/pages/Shell.tsx
 msgid "You"
 msgstr "You"
@@ -7181,6 +7197,127 @@ msgstr "This page couldn't be shown."
 msgid "This page couldn't load"
 msgstr "This page couldn't load"
 
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/pages/PageViewHost.tsx
 msgid "This page isn't available"
 msgstr "This page isn't available"
+
+#: src/components/pages/PagesList.tsx
+msgid "· Shared"
+msgstr "· Shared"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Anyone with the link"
+msgstr "Anyone with the link"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Anyone with the link can view version {confirmVersion} and future approved updates."
+msgstr "Anyone with the link can view version {confirmVersion} and future approved updates."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Can view without signing in"
+msgstr "Can view without signing in"
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
+msgid "Copy link"
+msgstr "Copy link"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't change who can view this page. Try again."
+msgstr "Couldn't change who can view this page. Try again."
+
+#: src/components/pages/PageLinkCopy.tsx
+msgid "Couldn't copy. Select the link and copy it."
+msgstr "Couldn't copy. Select the link and copy it."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't load sharing settings. Try again."
+msgstr "Couldn't load sharing settings. Try again."
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Couldn't load this page. Try again."
+msgstr "Couldn't load this page. Try again."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't open the link. Copy it and open it in your browser."
+msgstr "Couldn't open the link. Copy it and open it in your browser."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't verify the page link. Try again."
+msgstr "Couldn't verify the page link. Try again."
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
+msgid "Link copied"
+msgstr "Link copied"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Only you"
+msgstr "Only you"
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Open CogineBot"
+msgstr "Open CogineBot"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Open link"
+msgstr "Open link"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared"
+msgstr "Page · Shared"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · {when}"
+msgstr "Page · Shared · {when}"
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · Updated below"
+msgstr "Page · Shared · Updated below"
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Page actions"
+msgstr "Page actions"
+
+#: src/components/pages/PageLinkCopy.tsx
+msgid "Page link"
+msgstr "Page link"
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PagesList.tsx
+msgid "Share"
+msgstr "Share"
+
+#: src/components/pages/PageShareControl.tsx
+#. placeholder {0}: page.title
+msgid "Share “{0}”"
+msgstr "Share “{0}”"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Share this page?"
+msgstr "Share this page?"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Share, link is on"
+msgstr "Share, link is on"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Sharing by link isn't available"
+msgstr "Sharing by link isn't available"
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "The owner may have turned off its link or deleted it."
+msgstr "The owner may have turned off its link or deleted it."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "The page link changed. Try again."
+msgstr "The page link changed. Try again."
+
+#: src/components/pages/PageShareControl.tsx
+msgid "The shared link stops working"
+msgstr "The shared link stops working"
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Who can open this page"
+msgstr "Who can open this page"

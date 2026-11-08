@@ -50,12 +50,24 @@ const source = (text: string) =>
   `export default function App() { return <Page title="Example"><Text>${text}</Text></Page>; }`;
 const appOrigin = "http://127.0.0.1:5173";
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
-const preparedShare = ({ botId, groupId }: { botId: string | null; groupId: string | null }) => {
+const preparedShare = ({
+  botId,
+  groupId,
+  currentVersion = 1,
+  shareRevision = 0,
+}: {
+  botId: string | null;
+  groupId: string | null;
+  currentVersion?: number;
+  shareRevision?: number;
+}) => {
   const id = randomUUID();
   const ciphertext = `sealed-fixture:${id}`;
   return {
     botId,
     groupId,
+    expectedVersion: currentVersion,
+    expectedShareRevision: shareRevision,
     tokenHash: createHash("sha256").update(id).digest("hex"),
     secret: { id, ref: ciphertext, ciphertext },
     unreadable: null,
@@ -480,7 +492,8 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
         if (outcome === "rotated") {
           await runAsTenant({ spaceId, userId }, async () => {
             await swapPageShare(client(), scope, pageId, null);
-            await swapPageShare(client(), scope, pageId, preparedShare(scope));
+            const unshared = await client().page.findUniqueOrThrow({ where: { id: pageId } });
+            await swapPageShare(client(), scope, pageId, preparedShare(unshared));
           });
         }
         if (markerOnly) {
@@ -1330,8 +1343,8 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           unreadable: randomUUID(),
         }),
       ),
-    ).resolves.toEqual({ kept: true });
-    const replacement = preparedShare(page);
+    ).resolves.toMatchObject({ kept: true, shareSecretId: winner.secret.id });
+    const replacement = preparedShare(await admin().page.findUniqueOrThrow(selector));
     await expect(
       tenant(() =>
         swapPageShare(client(), actor, page.id, { ...replacement, unreadable: winner.secret.id }),
@@ -1384,6 +1397,42 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     await expect(
       tenant(() => swapPageShare(client(), actor, page.id, preparedShare(retained))),
     ).resolves.toEqual({ kept: false });
+  });
+
+  it("compares the confirmed version again when committing the staged share", async () => {
+    const { actor, seed, tenant } = await setup();
+    const page = await seed("Version fence");
+    const next = preparedShare(page);
+    let advanced = false;
+    const duringShare = afterPageRead(client(), async () => {
+      if (advanced) return;
+      advanced = true;
+      await admin().page.update({
+        where: { id: page.id },
+        data: {
+          currentVersion: page.currentVersion + 1,
+          versions: {
+            create: {
+              version: page.currentVersion + 1,
+              title: page.title,
+              source: source("New content"),
+              code: "new version render",
+            },
+          },
+        },
+      });
+    });
+    await expect(
+      tenant(() => swapPageShare(duringShare, actor, page.id, next)),
+    ).rejects.toBeInstanceOf(PageShareConflictError);
+    expect(advanced).toBe(true);
+    expect(await admin().secret.findUnique({ where: { id: next.secret.id } })).toBeNull();
+    expect(await admin().page.findUnique({ where: { id: page.id } })).toMatchObject({
+      visibility: "private",
+      currentVersion: page.currentVersion + 1,
+      shareSecretId: null,
+      shareTokenHash: null,
+    });
   });
 
   it("scopes share changes and terminal revocation to the Page owner's token", async () => {

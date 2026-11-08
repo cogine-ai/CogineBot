@@ -23,6 +23,29 @@ export const RU_MESSAGES: Record<string, string> = {
   Deleted: "Удалена",
   Page: "Страница",
   Pages: "Страницы",
+  Shared: "Общий доступ",
+  "Share “{title}”": "Поделиться «{title}»",
+  Owner: "Владелец",
+  "Who can view": "Кто может просматривать",
+  "Only you": "Только вы",
+  "Anyone with the link": "Все, у кого есть ссылка",
+  "No sign-in needed": "Вход не требуется",
+  "Link sharing is unavailable": "Доступ по ссылке недоступен",
+  "Open current version": "Открыть текущую версию",
+  "Review the current version before sharing.":
+    "Перед отправкой ссылки просмотрите текущую версию.",
+  "Share this page?": "Поделиться этой страницей?",
+  "Anyone with the link can view version {version} and future approved updates.":
+    "Все, у кого есть ссылка, смогут просматривать версию {version} и будущие одобренные обновления.",
+  "Copy link": "Скопировать ссылку",
+  "Open in browser": "Открыть в браузере",
+  "Could not load page sharing.": "Не удалось загрузить настройки доступа.",
+  "Could not change who can view this page. Try again.":
+    "Не удалось изменить доступ к странице. Попробуйте ещё раз.",
+  "The page or its link changed. Try again.": "Страница или ссылка изменилась. Попробуйте ещё раз.",
+  "Could not copy the link.": "Не удалось скопировать ссылку.",
+  "Could not share the link.": "Не удалось поделиться ссылкой.",
+  "Could not open the link.": "Не удалось открыть ссылку.",
   "This model's context window is too small. Choose another model.":
     "Контекстное окно этой модели слишком мало. Выберите другую модель.",
   "This server's tool result does not fit the model. Choose another model.":

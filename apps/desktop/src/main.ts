@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopReachability, DesktopSetup } from "@rakazo/contracts";
+import { isSensitivePageShareDocumentPath } from "@rakazo/contracts";
 import { LOCAL_SETTINGS_PAGE } from "@rakazo/contracts/local-settings";
 import {
   app,
@@ -42,6 +43,7 @@ import {
   immutableRendererAsset,
   isRendererAssetMiss,
   isRendererViewerDocument,
+  rendererPageShareDocumentHeaders,
   rendererViewerDocumentHeaders,
 } from "./renderer-assets.js";
 import { installSessionPermissions } from "./session-permissions.js";
@@ -503,6 +505,8 @@ async function installBundledRenderer(
     const candidates = bundledRendererCandidates(root, request.url, webUrl.origin, acceptsHtml);
     if (!candidates) return forward();
     const viewerDocument = isRendererViewerDocument(root, candidates[0]);
+    const publicPageDocument =
+      acceptsHtml && isSensitivePageShareDocumentPath(new URL(request.url).pathname);
     for (const file of candidates) {
       let body: Buffer | null = null;
       try {
@@ -520,6 +524,7 @@ async function installBundledRenderer(
         "cache-control": immutableRendererAsset(file)
           ? "public, max-age=31536000, immutable"
           : "no-cache",
+        ...(publicPageDocument ? rendererPageShareDocumentHeaders : {}),
         "content-type": contentType(file),
         "x-content-type-options": "nosniff",
       });

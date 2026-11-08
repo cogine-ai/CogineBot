@@ -409,6 +409,7 @@ msgstr "확인이 필요한 계정은 유지됩니다. 개별적으로 관리하
 msgid "Action confirmations"
 msgstr "작업 실행 전 확인"
 
+#: src/components/pages/PagesList.tsx
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -1077,6 +1078,7 @@ msgstr ""
 msgid "Can't reach the server."
 msgstr "서버에 연결할 수 없습니다."
 
+#: src/components/pages/PageShareControl.tsx
 #: src/components/AskCard.tsx
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
@@ -1625,6 +1627,8 @@ msgstr "{0}(으)로 계속"
 msgid "Continue with email"
 msgstr "이메일로 계속하기"
 
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/ComputersUnavailableHint.tsx
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
@@ -2291,6 +2295,7 @@ msgstr "기본값 ({0})"
 msgid "Default scope"
 msgstr "기본 기억 범위"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/BotContextMenu.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -3870,6 +3875,7 @@ msgstr ""
 msgid "Only pages shared with this integration are available."
 msgstr ""
 
+#: src/components/pages/PagesList.tsx
 #: src/components/markdown-link-prompt.tsx
 #: src/pages/ScratchpadSection.tsx
 #: src/pages/Shell.tsx
@@ -3972,10 +3978,12 @@ msgstr "다른 모델 직접 입력…"
 msgid "Other sources stay connected. Operations already sent may still finish."
 msgstr "다른 소스는 연결을 유지합니다. 이미 전송된 작업은 완료될 수 있습니다."
 
+#: src/components/pages/PageShareControl.tsx
 #: src/pages/Board.tsx
 msgid "Owner"
 msgstr ""
 
+#: src/components/pages/PageCard.tsx
 #: src/pages/RoutineNativeEvents.tsx
 msgid "Page"
 msgstr ""
@@ -4068,6 +4076,7 @@ msgstr "모델 목록에서 모델을 선택하세요."
 msgid "Pick a model from the list or enter a model id served by this endpoint."
 msgstr "목록에서 모델을 선택하거나 이 엔드포인트가 제공하는 모델 ID를 입력하세요."
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/BotContextMenu.tsx
 msgid "Pin"
 msgstr "고정"
@@ -4374,6 +4383,7 @@ msgstr "삭제했지만 목록을 새로고침하지 못했습니다."
 msgid "Removing…"
 msgstr "삭제 중…"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/Shell.tsx
 msgid "Rename"
 msgstr ""
@@ -4888,6 +4898,7 @@ msgstr ""
 msgid "Show list"
 msgstr ""
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/PluginsOverlay.tsx
 msgid "Show more"
 msgstr "더 보기"
@@ -5396,6 +5407,9 @@ msgstr ""
 msgid "Trial ends {day}"
 msgstr ""
 
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PagesList.tsx
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/components/integrations/NativeApplicationSetup.tsx
 #: src/pages/ActivityList.tsx
@@ -5449,6 +5463,7 @@ msgstr "연결 해제"
 msgid "Unmute"
 msgstr "음소거 해제"
 
+#: src/components/pages/PagesList.tsx
 #: src/pages/BotContextMenu.tsx
 msgid "Unpin"
 msgstr "고정 해제"
@@ -5757,6 +5772,7 @@ msgstr ""
 msgid "Yesterday"
 msgstr "어제"
 
+#: src/components/pages/PageShareControl.tsx
 #: src/pages/Shell.tsx
 msgid "You"
 msgstr "나"
@@ -7181,6 +7197,127 @@ msgstr "이 페이지를 표시할 수 없습니다."
 msgid "This page couldn't load"
 msgstr "이 페이지를 불러오지 못했습니다"
 
+#: src/components/pages/PublicPageShell.tsx
 #: src/components/pages/PageViewHost.tsx
 msgid "This page isn't available"
 msgstr "이 페이지를 사용할 수 없습니다"
+
+#: src/components/pages/PagesList.tsx
+msgid "· Shared"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Anyone with the link"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Anyone with the link can view version {confirmVersion} and future approved updates."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Can view without signing in"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
+msgid "Copy link"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't change who can view this page. Try again."
+msgstr ""
+
+#: src/components/pages/PageLinkCopy.tsx
+msgid "Couldn't copy. Select the link and copy it."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't load sharing settings. Try again."
+msgstr ""
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Couldn't load this page. Try again."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't open the link. Copy it and open it in your browser."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Couldn't verify the page link. Try again."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PublicPageShell.tsx
+msgid "Link copied"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Only you"
+msgstr ""
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Open CogineBot"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Open link"
+msgstr ""
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared"
+msgstr ""
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · {when}"
+msgstr ""
+
+#: src/components/pages/PageCard.tsx
+msgid "Page · Shared · Updated below"
+msgstr ""
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "Page actions"
+msgstr ""
+
+#: src/components/pages/PageLinkCopy.tsx
+msgid "Page link"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+#: src/components/pages/PagesList.tsx
+msgid "Share"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+#. placeholder {0}: page.title
+msgid "Share “{0}”"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Share this page?"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Share, link is on"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Sharing by link isn't available"
+msgstr ""
+
+#: src/components/pages/PublicPageShell.tsx
+msgid "The owner may have turned off its link or deleted it."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "The page link changed. Try again."
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "The shared link stops working"
+msgstr ""
+
+#: src/components/pages/PageShareControl.tsx
+msgid "Who can open this page"
+msgstr ""

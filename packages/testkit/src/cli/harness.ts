@@ -325,6 +325,7 @@ async function main() {
     const handles = await createApp({
       databaseUrl,
       prisma: undefined,
+      pageSharingEnabled: true,
       composio: new ComposioEmulator(),
       pipedream,
       email,

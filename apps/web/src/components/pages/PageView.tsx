@@ -30,6 +30,7 @@ export function PageView({
   returnFocus,
   compact = false,
   notice = null,
+  share,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -48,6 +49,7 @@ export function PageView({
   compact?: boolean;
   /** Said in place of the page when it could not be opened. */
   notice?: ReactNode;
+  share?: (drawn: boolean) => ReactNode;
 }) {
   const { t } = useLingui();
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -59,15 +61,33 @@ export function PageView({
     documentKey?: string;
     attempt: number;
     status: "loading" | "drawn" | "stalled";
-  }>({ document: frameDocument, documentKey, attempt: 0, status: "loading" });
+    committed: boolean;
+  }>({ document: frameDocument, documentKey, attempt: 0, status: "loading", committed: false });
   const { attempt, status } = frame;
+  const currentFrame = frame.document === frameDocument && frame.documentKey === documentKey;
   // A notice removes the frame. Clearing it starts a new attempt even for the same document.
-  if (frame.document !== frameDocument || frame.documentKey !== documentKey) {
-    setFrame({ document: frameDocument, documentKey, attempt: attempt + 1, status: "loading" });
+  if (!currentFrame) {
+    setFrame({
+      document: frameDocument,
+      documentKey,
+      attempt: attempt + 1,
+      status: "loading",
+      committed: false,
+    });
   }
-  const drawn = status === "drawn";
-  const stalled = status === "stalled";
+  const drawn = currentFrame && status === "drawn";
+  const stalled = currentFrame && status === "stalled";
   const frameKey = JSON.stringify([documentKey, attempt]);
+  const onPageDrawn = useCallback(
+    (committed: boolean) => {
+      setFrame((current) =>
+        current.attempt === attempt && current.committed !== committed
+          ? { ...current, committed }
+          : current,
+      );
+    },
+    [attempt],
+  );
   const waiting = frameDocument !== null && status === "loading";
   useEffect(() => {
     if (!waiting) return;
@@ -159,8 +179,9 @@ export function PageView({
                 labelClassName="sr-only"
               />
             ) : null}
+            {share?.(drawn && frame.committed && notice === null)}
           </div>
-          {/* After the controls, so Tab reaches Close and Download PDF before the page's stops. */}
+          {/* Keep the toolbar before the page's own tab stops. */}
           <section
             aria-label={title || undefined}
             className={`absolute inset-x-0 bottom-0 print:static ${compact ? "top-[50px]" : "top-[34px]"}`}
@@ -180,6 +201,7 @@ export function PageView({
                       interactive
                       onReply={onReply}
                       onHeight={onDrawn}
+                      onPageDrawn={onPageDrawn}
                     />
                   </div>
                 ) : null}
@@ -192,6 +214,7 @@ export function PageView({
                         ...current,
                         attempt: current.attempt + 1,
                         status: "loading",
+                        committed: false,
                       }));
                     }}
                     onClose={() => onOpenChange(false)}

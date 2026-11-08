@@ -56,11 +56,15 @@ function copyBySelection(text: string): boolean {
  * Puts text on the clipboard; true once there. Browsers expose the Clipboard API only to secure
  * pages, so its absence is the insecure case.
  */
-export function writeClipboard(text: string): Promise<boolean> {
+export function writeClipboard(
+  text: string,
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+  if (!isCurrent()) return Promise.resolve(false);
   if (navigator.clipboard?.writeText) {
     return navigator.clipboard.writeText(text).then(
       () => true,
-      () => copyBySelection(text),
+      () => isCurrent() && copyBySelection(text),
     );
   }
   return Promise.resolve(copyBySelection(text));

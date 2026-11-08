@@ -1,5 +1,5 @@
 import path from "node:path";
-import { PAGE_RUNTIME_PATH } from "@rakazo/contracts";
+import { PAGE_RUNTIME_PATH, SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   bundledRendererCandidates,
@@ -8,6 +8,7 @@ import {
   immutableRendererAsset,
   isRendererAssetMiss,
   isRendererViewerDocument,
+  rendererPageShareDocumentHeaders,
   rendererViewerDocumentHeaders,
 } from "./renderer-assets.js";
 
@@ -20,6 +21,25 @@ const runtimePaths = [
 ];
 
 describe("bundled desktop renderer", () => {
+  it("uses the uncached public document shell and forwards shared data to the server", () => {
+    const slug = `plan-${"x".repeat(43)}`;
+    for (const pathname of ["/p", `/p/${slug}`, `/%70/${slug}`, `/p/${slug}/invalid`]) {
+      expect(bundledRendererCandidates(root, `${origin}${pathname}`, origin, true)).toEqual([
+        path.join(root, "index.html"),
+      ]);
+    }
+    expect(rendererPageShareDocumentHeaders).toEqual({
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-robots-tag": "noindex, nofollow",
+    });
+    expect(
+      bundledRendererCandidates(root, `${origin}/%61pi/v1/pages/shared/${slug}`, origin, true),
+    ).toBeNull();
+    expect(bundledRendererCandidates(root, `${origin}/pages`, origin, true)?.[0]).toBe(
+      path.join(root, "pages"),
+    );
+  });
   it("serves static assets and falls back to index.html for app routes", () => {
     expect(bundledRendererCandidates(root, `${origin}/assets/app-123.js`, origin, false)).toEqual([
       path.join(root, "assets/app-123.js"),
@@ -171,4 +191,42 @@ describe("bundled desktop renderer", () => {
       expect(new Headers(options.headers).get("origin")).toBe(origin);
     }
   });
+
+  it.each(["GET", "HEAD"])(
+    "never forwards credentials or referrer for public data on %s",
+    (method) => {
+      const token = "x".repeat(43);
+      const headers = {
+        authorization: "Bearer synthetic",
+        cookie: "session=synthetic",
+        referer: `${origin}/p/${token}`,
+        accept: "application/json",
+      };
+      for (const pathname of [
+        `${SHARED_PAGE_PATH_PREFIX}${token}`,
+        `/%61pi/v1/pages/shared/${token}`,
+        `${SHARED_PAGE_PATH_PREFIX}bad%`,
+      ]) {
+        const options = forwardedRendererRequestInit(
+          new Request(`${origin}${pathname}`, { method, headers }),
+          origin,
+        );
+        expect(options).toMatchObject({
+          credentials: "omit",
+          cache: "no-store",
+          referrerPolicy: "no-referrer",
+        });
+        expect(Object.fromEntries(new Headers(options.headers))).toEqual({
+          accept: "application/json",
+        });
+      }
+      for (const request of [
+        new Request(`${origin}/api/v1/pages/shared-elsewhere/${token}`),
+        new Request(`${origin}${SHARED_PAGE_PATH_PREFIX}${token}`, { method: "POST" }),
+        new Request(`https://different.example.com${SHARED_PAGE_PATH_PREFIX}${token}`),
+      ]) {
+        expect(forwardedRendererRequestInit(request, origin).credentials).toBe("include");
+      }
+    },
+  );
 });

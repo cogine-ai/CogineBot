@@ -43,6 +43,13 @@ export const NATIVE_PAGE_SHELL = `<!DOCTYPE html><meta http-equiv="Content-Secur
     if (!gestureKey || event.source !== preview.contentWindow || event.origin !== "null") return;
     const message = event.data;
     if (!message || typeof message !== "object") return;
+    if (message.type === "rakazo-page:drawn") {
+      if (message.key === gestureKey && typeof message.drawn === "boolean") {
+        const status = { type: message.type, drawn: message.drawn };
+        window.ReactNativeWebView?.postMessage(JSON.stringify({ instance, message: status }));
+      }
+      return;
+    }
     if (message.type === "rakazo-page:gesture") {
       if (message.key === gestureKey) tappedAt = Date.now();
       return;
@@ -78,6 +85,7 @@ export function nativePageMountScript(
   document: string,
   instance: string,
   gestureKey: string | null,
+  reportDraw = false,
 ): string {
   const guard = gestureKey
     ? `<script>(() => {
@@ -87,6 +95,7 @@ export function nativePageMountScript(
   addEventListener("pointerup", (event) => {
     if (event.isTrusted) send({ type: "rakazo-page:gesture", key }, "*");
   }, true);
+  ${reportDraw ? 'window.__coginePageReportDraw = (drawn) => send({ type: "rakazo-page:drawn", key, drawn }, "*");' : ""}
 })();</script>`
     : "";
   const html = withSandboxedPageCsp(document, guard);
@@ -97,12 +106,13 @@ export function nativePageAnswerScript(instance: string, message: object): strin
   return `window.coginePage?.answer(${scriptData(instance)}, ${scriptData(message)});true;`;
 }
 
-type NativePageAction =
+type NativePageMessage =
+  | { kind: "drawn"; drawn: boolean }
   | { kind: "copy"; id: string; text: string }
   | { kind: "link"; url: string }
   | { kind: "reply"; text: string };
 
-export function readNativePageAction(data: string, instance: string): NativePageAction | null {
+export function readNativePageMessage(data: string, instance: string): NativePageMessage | null {
   // JSON can take six characters to encode each code unit of the allowed clipboard payload.
   if (data.length > (PAGE_COPY_MAX_LENGTH + 512) * 6) return null;
   let envelope: { instance?: unknown; message?: unknown } | null;
@@ -113,6 +123,9 @@ export function readNativePageAction(data: string, instance: string): NativePage
   }
   if (envelope?.instance !== instance) return null;
   const { message } = envelope;
+  const status = message as { type?: unknown; drawn?: unknown } | null;
+  if (status?.type === "rakazo-page:drawn" && typeof status.drawn === "boolean")
+    return { kind: "drawn", drawn: status.drawn };
   const copy = pageCopyRequest(message);
   if (copy) return { kind: "copy", ...copy };
   const url = pageLinkRequest(message);

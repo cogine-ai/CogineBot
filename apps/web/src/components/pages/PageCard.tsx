@@ -142,11 +142,13 @@ export function PageCard({
   onOpen,
   updated = false,
   updatedAt,
+  sharedByLink,
   failed = false,
 }: {
   title: string;
   /** When the page last changed, said under its title. */
   updatedAt?: string;
+  sharedByLink?: boolean;
   document: string | null;
   documentKey?: string;
   /** The page could not be read, so its preview stops looking like it is loading. */
@@ -177,7 +179,17 @@ export function PageCard({
             {onOpen === undefined ? (
               <Trans>Page · Deleted</Trans>
             ) : updated ? (
-              <Trans>Page · Updated below</Trans>
+              sharedByLink ? (
+                <Trans>Page · Shared · Updated below</Trans>
+              ) : (
+                <Trans>Page · Updated below</Trans>
+              )
+            ) : sharedByLink ? (
+              when ? (
+                <Trans>Page · Shared · {when}</Trans>
+              ) : (
+                <Trans>Page · Shared</Trans>
+              )
             ) : when ? (
               <Trans>Page · {when}</Trans>
             ) : (

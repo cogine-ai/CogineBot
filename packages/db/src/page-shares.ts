@@ -9,6 +9,8 @@ type PageShareOwner = Pick<Actor, "spaceId" | "userId">;
 type PreparedPageShare = {
   botId: string | null;
   groupId: string | null;
+  expectedVersion: number;
+  expectedShareRevision: number;
   tokenHash: string;
   secret: { id: string; ciphertext: string };
   unreadable: string | null;
@@ -27,7 +29,7 @@ export async function swapPageShare(
   { spaceId, userId }: PageShareOwner,
   pageId: string,
   next: PreparedPageShare | null,
-): Promise<{ kept: boolean }> {
+): Promise<{ kept: false } | { kept: true; shareRevision: number; shareSecretId: string }> {
   if (next && !/^[a-f0-9]{64}$/.test(next.tokenHash)) {
     throw new Error("Invalid page share token digest");
   }
@@ -36,19 +38,27 @@ export async function swapPageShare(
     try {
       return await withTransactionRetry(() =>
         prisma.$transaction(async (tx) => {
-          const current = await tx.page.findFirst({
+          const row = await tx.page.findFirst({
             where: page,
             select: {
               botId: true,
               groupId: true,
+              currentVersion: true,
+              shareRevision: true,
               visibility: true,
               shareTokenHash: true,
               shareSecretId: true,
             },
           });
-          if (!current) throw new IsolationError();
-          // Bot deletion preserves the Page, but a prepared link cannot cross that detachment.
-          if (next && (next.botId !== current.botId || next.groupId !== current.groupId)) {
+          if (!row) throw new IsolationError();
+          const { currentVersion, ...current } = row;
+          // A staged token cannot publish an unseen version or cross a Bot/group detachment.
+          if (
+            next &&
+            (next.botId !== current.botId ||
+              next.groupId !== current.groupId ||
+              next.expectedVersion !== currentVersion)
+          ) {
             throw new PageShareConflictError();
           }
           if (
@@ -56,9 +66,23 @@ export async function swapPageShare(
             current.visibility === "link" &&
             current.shareTokenHash &&
             current.shareSecretId &&
-            current.shareSecretId !== next.unreadable
+            current.shareSecretId !== next.unreadable &&
+            // Keep a concurrent winner, but never cross a publication and revocation.
+            (current.shareRevision === next.expectedShareRevision ||
+              current.shareRevision === next.expectedShareRevision + 1)
           ) {
-            return { kept: true };
+            return {
+              kept: true,
+              shareRevision: current.shareRevision,
+              shareSecretId: current.shareSecretId,
+            } as const;
+          }
+          if (
+            next &&
+            (current.shareRevision !== next.expectedShareRevision ||
+              (next.unreadable && current.shareSecretId !== next.unreadable))
+          ) {
+            throw new PageShareConflictError();
           }
           if (next) {
             await tx.secret.create({
@@ -72,14 +96,20 @@ export async function swapPageShare(
             });
           }
           const moved = await tx.page.updateMany({
-            where: { ...page, ...current },
+            where: { ...page, ...current, ...(next ? { currentVersion } : {}) },
             data: next
               ? {
                   visibility: "link",
                   shareTokenHash: next.tokenHash,
                   shareSecretId: next.secret.id,
+                  shareRevision: { increment: 1 },
                 }
-              : { visibility: "private", shareTokenHash: null, shareSecretId: null },
+              : {
+                  visibility: "private",
+                  shareTokenHash: null,
+                  shareSecretId: null,
+                  shareRevision: { increment: 1 },
+                },
           });
           if (moved.count !== 1) throw new PageShareConflictError();
           if (current.shareSecretId) {
@@ -87,7 +117,7 @@ export async function swapPageShare(
               where: { id: current.shareSecretId, spaceId, userId, kind: PAGE_SHARE_SECRET_KIND },
             });
           }
-          return { kept: false };
+          return { kept: false } as const;
         }),
       );
     } catch (error) {
@@ -104,7 +134,7 @@ export async function deletePageShareSecrets(
   // Lock even private Pages so a concurrent link cannot appear before their deletion.
   const locked = await tx.page.updateManyAndReturn({
     where: pages,
-    data: { visibility: "private", shareTokenHash: null },
+    data: { visibility: "private", shareTokenHash: null, shareRevision: { increment: 1 } },
     select: { id: true, spaceId: true, userId: true, shareSecretId: true },
   });
   const linked = locked.flatMap((page) =>

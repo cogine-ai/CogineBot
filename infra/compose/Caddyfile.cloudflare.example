@@ -1,5 +1,12 @@
 {
 	order abort first
+	# Caddy can log the original URL even when the upstream never responds.
+	log {
+		format filter {
+			request>uri regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
+			request>headers>Referer regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
+		}
+	}
 }
 
 (cloudflare_only) {
@@ -13,8 +20,27 @@
 	lb_try_interval 250ms
 }
 
+(shared_page_privacy) {
+	Cache-Control no-store
+	Referrer-Policy no-referrer
+	X-Robots-Tag "noindex, nofollow"
+}
+
+(shared_page_headers) {
+	@sharedPage path /p /p/* /api/v1/pages/shared /api/v1/pages/shared/*
+	# Set on an origin failure, and replace any upstream values on successful proxying.
+	header @sharedPage {
+		import shared_page_privacy
+	}
+	header @sharedPage {
+		import shared_page_privacy
+		defer
+	}
+}
+
 http://{$RAKAZO_HOST:app.example.com} {
 	import cloudflare_only
+	import shared_page_headers
 	redir https://{$RAKAZO_HOST:app.example.com}{uri} 308
 }
 
@@ -25,6 +51,7 @@ http://{$RAKAZO_HOST:app.example.com} {
 {$RAKAZO_HOST:app.example.com} {
 	import cloudflare_only
 	encode zstd gzip
+	import shared_page_headers
 
 	# A localhost trial must not pin HTTPS onto every local dev server.
 	@hsts not host localhost 127.0.0.1

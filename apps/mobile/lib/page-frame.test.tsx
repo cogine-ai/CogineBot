@@ -255,3 +255,39 @@ it("revokes old taps, callbacks and copy acknowledgments on reload, focus loss a
     'window.coginePage?.answer("native-test-5", {"type":"rakazo-page:copied","id":"copy-1","ok":true})',
   );
 });
+
+it("reports a successful current draw, not the shell load, height, or obsolete instance", async () => {
+  const onDrawnChange = vi.fn();
+  const onError = vi.fn();
+  const drawn = { type: "rakazo-page:drawn", drawn: true };
+  await render({ onDrawnChange, onError });
+  navigate();
+  receive("native-test-1", { type: "rakazo-page:height", height: 100 });
+  receive("native-test-1", { ...drawn, drawn: "true" });
+  receive("obsolete", drawn);
+  expect(onDrawnChange).not.toHaveBeenCalled();
+  receive("native-test-1", drawn);
+  receive("native-test-1", drawn);
+  expect(onDrawnChange.mock.calls).toEqual([[true]]);
+  receive("native-test-1", { ...drawn, drawn: false });
+  expect(onDrawnChange.mock.calls).toEqual([[true], [false]]);
+  receive("native-test-1", drawn);
+
+  navigate();
+  receive("native-test-1", drawn);
+  expect(onDrawnChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+  receive("native-test-3", drawn);
+  const obsolete = host.frame?.onMessage;
+  await render({ documentKey: "scope:page:version-2", onDrawnChange, onError });
+  navigate();
+  receive("native-test-3", drawn, obsolete);
+  receive("native-test-5", drawn);
+  expect(onDrawnChange.mock.calls).toEqual([[true], [false], [true], [false], [true], [true]]);
+
+  const fail = host.frame?.onError;
+  fail?.({} as Parameters<NonNullable<WebViewProps["onError"]>>[0]);
+  receive("native-test-5", drawn);
+  expect(onDrawnChange).toHaveBeenLastCalledWith(false);
+  expect(onDrawnChange).toHaveBeenCalledTimes(7);
+  expect(onError).toHaveBeenCalledOnce();
+});

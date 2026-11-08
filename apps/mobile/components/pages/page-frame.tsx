@@ -15,7 +15,7 @@ import {
   nativePageMountScript,
   PAGE_ACTION_WINDOW_MS,
   PAGE_TAP_SLOP,
-  readNativePageAction,
+  readNativePageMessage,
 } from "../../lib/page-webview";
 
 type PageFrameProps = {
@@ -27,6 +27,7 @@ type PageFrameProps = {
   active?: boolean;
   isCurrent?: () => boolean;
   onReply?: (text: string) => void;
+  onDrawnChange?: (drawn: boolean) => void;
   onError?: () => void;
   scrollEnabled?: boolean;
 };
@@ -34,22 +35,32 @@ type PageFrameProps = {
 const shell = { html: NATIVE_PAGE_SHELL, baseUrl: "about:blank" };
 
 export function PageFrame({ documentKey, ...props }: PageFrameProps) {
-  const { document, interactive = false, onReply } = props;
+  const { document, interactive = false, onReply, onDrawnChange } = props;
   const canReply = onReply !== undefined;
+  const reportsDraw = onDrawnChange !== undefined;
   const [frame, setFrame] = useState({
     document,
     documentKey,
     interactive,
     canReply,
+    reportsDraw,
     generation: 0,
   });
   if (
     frame.document !== document ||
     frame.documentKey !== documentKey ||
     frame.interactive !== interactive ||
-    frame.canReply !== canReply
+    frame.canReply !== canReply ||
+    frame.reportsDraw !== reportsDraw
   )
-    setFrame({ document, documentKey, interactive, canReply, generation: frame.generation + 1 });
+    setFrame({
+      document,
+      documentKey,
+      interactive,
+      canReply,
+      reportsDraw,
+      generation: frame.generation + 1,
+    });
   return <PageFrameDocument key={frame.generation} {...props} />;
 }
 
@@ -69,18 +80,19 @@ function PageFrameDocument({
   active = true,
   isCurrent,
   onReply,
+  onDrawnChange,
   onError,
   scrollEnabled,
 }: Omit<PageFrameProps, "documentKey">) {
   const view = useRef<WebView>(null);
-  const load = useRef<{ view: WebView; instance: string } | null>(null);
+  const load = useRef<{ view: WebView; instance: string; drawn: boolean } | null>(null);
   const mounted = useRef(false);
   const tap = useRef<Tap | null>(null);
   const tappedAt = useRef<number | null>(null);
   const actionGeneration = useRef(0);
   const navigation = useNavigation();
   const openLink = useNativeLinkConfirm();
-  const handlers = useRef({ active, isCurrent, onReply, onError, openLink });
+  const handlers = useRef({ active, isCurrent, onReply, onDrawnChange, onError, openLink });
 
   const clearTap = useCallback(() => {
     tap.current = null;
@@ -91,13 +103,16 @@ function PageFrameDocument({
     clearTap();
   }, [clearTap]);
   const resetLoad = useCallback(() => {
+    const previous = load.current;
     load.current = null;
     revoke();
+    if (previous?.drawn && mounted.current && handlers.current.isCurrent?.() !== false)
+      handlers.current.onDrawnChange?.(false);
   }, [revoke]);
 
   useLayoutEffect(() => {
-    handlers.current = { active, isCurrent, onReply, onError, openLink };
-  }, [active, isCurrent, onReply, onError, openLink]);
+    handlers.current = { active, isCurrent, onReply, onDrawnChange, onError, openLink };
+  }, [active, isCurrent, onReply, onDrawnChange, onError, openLink]);
   useLayoutEffect(() => {
     if (!active) revoke();
   }, [active, revoke]);
@@ -129,12 +144,26 @@ function PageFrameDocument({
 
   function receive(data: string) {
     const current = load.current;
+    if (
+      !current ||
+      current.view !== view.current ||
+      !mounted.current ||
+      handlers.current.isCurrent?.() === false
+    )
+      return;
+    const action = readNativePageMessage(data, current.instance);
+    if (!action) return;
+    if (action.kind === "drawn") {
+      if (action.drawn !== current.drawn) {
+        current.drawn = action.drawn;
+        handlers.current.onDrawnChange?.(action.drawn);
+      }
+      return;
+    }
     const now = Date.now();
     const at = tappedAt.current;
-    if (!current || current.view !== view.current || !canAct() || at === null) return;
-    if (now < at || now - at > PAGE_ACTION_WINDOW_MS) return;
-    const action = readNativePageAction(data, current.instance);
-    if (!action || (action.kind === "reply" && !handlers.current.onReply)) return;
+    if (!canAct() || at === null || now < at || now - at > PAGE_ACTION_WINDOW_MS) return;
+    if (action.kind === "reply" && !handlers.current.onReply) return;
     // One native tap permits one validated action from the current opaque child.
     tappedAt.current = null;
     if (action.kind === "reply") handlers.current.onReply?.(action.text);
@@ -221,9 +250,14 @@ function PageFrameDocument({
           )
             return;
           const instance = uuid.v4();
-          load.current = { view: current, instance };
+          load.current = { view: current, instance, drawn: false };
           current.injectJavaScript(
-            nativePageMountScript(document, instance, interactive ? uuid.v4() : null),
+            nativePageMountScript(
+              document,
+              instance,
+              interactive ? uuid.v4() : null,
+              handlers.current.onDrawnChange !== undefined,
+            ),
           );
         }}
         onError={failed}

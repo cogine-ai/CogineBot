@@ -17,9 +17,11 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { PreviewServer, ViteDevServer } from "vite";
 import { defineConfig, loadEnv } from "vite";
+import * as pageSharePaths from "../../packages/contracts/src/pages.ts";
 import { resolveScreenProxySecret } from "../../packages/core/src/secrets-guard.ts";
 import { createServiceLogger } from "../../packages/logging/src/env.ts";
 import { collectNovncHtml, MAX_NOVNC_HTML_BYTES } from "./src/novnc-html.js";
+import { pageShareEdge } from "./src/page-share-edge.js";
 import {
   resolveNovncTarget,
   safeProxyHeaders,
@@ -469,8 +471,20 @@ export default defineConfig(({ mode }) => {
   const desktopStackToken =
     process.env.RAKAZO_DESKTOP_STACK_TOKEN ?? rootEnv.RAKAZO_DESKTOP_STACK_TOKEN ?? "";
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
+  const sharedPageEdge = pageShareEdge(api, pageSharePaths, () =>
+    screenLog.warn("Shared Page proxy unavailable"),
+  );
   return {
     plugins: [
+      {
+        name: "shared-page-edge",
+        configureServer: (server) => {
+          server.middlewares.use(sharedPageEdge);
+        },
+        configurePreviewServer: (server) => {
+          server.middlewares.use(sharedPageEdge);
+        },
+      },
       {
         name: "private-html-viewer-headers",
         configureServer: (server) => attachPrivateHtmlViewer(server, server.config.publicDir, true),
