@@ -87,11 +87,13 @@ function liveLink(response: {
 
 function tokenFromLink(shareUrl: string, slug = "weekly-plan"): string {
   const url = new URL(shareUrl);
+  const token = url.pathname.slice(-43);
   expect(url.origin).toBe(origin);
-  expect(url.pathname).toMatch(new RegExp(`^/p/${slug}-[A-Za-z0-9_-]{43}$`));
+  expect(url.pathname).toBe(`/p/${slug}-${token}`);
+  expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(url.search).toBe("");
   expect(url.hash).toBe("");
-  return url.pathname.slice(-43);
+  return token;
 }
 
 function tokenHash(shareUrl: string): string {

@@ -1,10 +1,10 @@
+import { createClientIpResolver, parseTrustedProxies } from "@rakazo/core/node/trusted-proxy";
 import { describe, expect, it, vi } from "vitest";
-import { createClientIpResolver } from "./client-ip.js";
 import { throttleKey, windowCounter } from "./window-counter.js";
 
 describe("shared Page rate limits", () => {
   it("only consults the chain behind an allowed socket peer", async () => {
-    const resolve = createClientIpResolver(["127.0.0.1", "10.0.0.0/24"]);
+    const resolve = createClientIpResolver(parseTrustedProxies(" 127.0.0.1, , 10.0.0.0/24 "));
     expect(await resolve({ peer: "203.0.113.4", forwarded: "192.0.2.1" })).toBe("203.0.113.4");
     expect(
       await resolve({

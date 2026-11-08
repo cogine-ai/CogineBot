@@ -137,6 +137,28 @@ it("ignores late copied feedback after reissue and copies the newly verified lin
   expect(button("Copied")).toBeDefined();
 });
 
+it("copies a same-generation link after a same-origin title change", async () => {
+  state = { ...original, shareUrl: original.shareUrl.replace("/plan-", "/renamed-plan-") };
+  writeText.mockResolvedValueOnce();
+  await act(async () => button("Copy link")!.click());
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(state.shareUrl);
+});
+
+it("requires a new action after the link origin changes without a new generation", async () => {
+  state = {
+    ...original,
+    shareUrl: original.shareUrl.replace("app.example.test", "new.example.test"),
+  };
+  writeText.mockResolvedValueOnce();
+  await act(async () => button("Copy link")!.click());
+  expect(writeText).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+    "The page link changed. Try again.",
+  );
+  await act(async () => button("Copy link")!.click());
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(state.shareUrl);
+});
+
 it("requires fresh consent for a renamed page even when the version did not change", async () => {
   await render(page, false);
   state = privatePage;

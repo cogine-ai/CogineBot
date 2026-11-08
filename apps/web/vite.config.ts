@@ -12,6 +12,7 @@ import {
   safeScreenProxyResponseHeaders,
   stripSensitiveHandshakeHeaders,
 } from "@rakazo/core/node/screen-proxy-response";
+import { createClientIpResolver, parseTrustedProxies } from "@rakazo/core/node/trusted-proxy";
 import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -471,8 +472,13 @@ export default defineConfig(({ mode }) => {
   const desktopStackToken =
     process.env.RAKAZO_DESKTOP_STACK_TOKEN ?? rootEnv.RAKAZO_DESKTOP_STACK_TOKEN ?? "";
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
-  const sharedPageEdge = pageShareEdge(api, pageSharePaths, () =>
-    screenLog.warn("Shared Page proxy unavailable"),
+  const sharedPageEdge = pageShareEdge(
+    api,
+    pageSharePaths,
+    () => screenLog.warn("Shared Page proxy unavailable"),
+    createClientIpResolver(
+      parseTrustedProxies(process.env.WEB_TRUSTED_PROXIES ?? rootEnv.WEB_TRUSTED_PROXIES),
+    ),
   );
   return {
     plugins: [

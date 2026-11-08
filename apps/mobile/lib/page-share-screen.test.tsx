@@ -251,6 +251,14 @@ it.each(["ios", "android"])(
   },
 );
 
+it("shares the latest decorative slug when the generation and origin are unchanged", async () => {
+  state = linked;
+  await show();
+  state = { ...linked, shareUrl: currentUrl.replace("/plan-", "/renamed-plan-") };
+  await press("Share");
+  expect(host.nativeShare).toHaveBeenCalledExactlyOnceWith({ url: state.shareUrl });
+});
+
 it("keeps a dormant link revocable without exposing it or requiring a rendered version", async () => {
   host.viewId = undefined;
   state = { ...linked, publishingEnabled: false, shareUrl: null, generation: null };

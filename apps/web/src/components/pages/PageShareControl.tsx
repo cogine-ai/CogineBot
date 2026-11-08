@@ -1,6 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { PageDetail, PageShareInput, PageShareState } from "@rakazo/contracts";
-import { PageShareStateSchema } from "@rakazo/contracts";
+import { PageShareStateSchema, parsePageShareUrl } from "@rakazo/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,7 +19,6 @@ import {
 import { ArrowUpRight, Check, Copy, Globe, Lock, Share } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { desktopBridge } from "../../lib/desktop";
-import { usablePageShareUrl } from "../../lib/page-share-links";
 import { usePages } from "../../lib/pages";
 import { ManualPageLinkCopy, usePageLinkCopy } from "./PageLinkCopy";
 
@@ -75,9 +74,9 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
     publishingEnabled &&
     confirmation?.version === page.version &&
     confirmation.title === page.title;
-  const shareUrl =
-    publishingEnabled && state?.visibility === "link" && state.generation
-      ? usablePageShareUrl(state.shareUrl)
+  const shareLink =
+    state?.visibility === "link" && state.publishingEnabled
+      ? parsePageShareUrl(state.shareUrl)
       : null;
 
   useLayoutEffect(() => {
@@ -163,7 +162,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
 
   function actOnLink(action: "copy" | "open") {
     const generation = state?.generation;
-    if (!generation || !shareUrl) return;
+    if (!generation || !shareLink) return;
     void perform(async (signal, current) => {
       const native = Boolean(desktopBridge());
       let tab: Window | null = null;
@@ -181,25 +180,23 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
         const latest = await readShare(signal);
         if (!current()) return;
         setState(latest);
-        if (
-          !latest.publishingEnabled ||
-          latest.visibility !== "link" ||
-          latest.generation !== generation
-        ) {
+        const link =
+          latest.visibility === "link" && latest.publishingEnabled
+            ? parsePageShareUrl(latest.shareUrl)
+            : null;
+        if (!link || latest.generation !== generation || link.origin !== shareLink.origin) {
           setError(t`The page link changed. Try again.`);
           store.invalidate(pageId);
           return;
         }
-        const url = usablePageShareUrl(latest.shareUrl);
-        if (!url) throw new Error("Link unavailable");
-        if (action === "copy") copy(url, current);
-        else if (native) window.open(url, "_blank", "noopener,noreferrer");
+        if (action === "copy") copy(link.href, current);
+        else if (native) window.open(link.href, "_blank", "noopener,noreferrer");
         else if (tab && !tab.closed) {
-          const link = tab.document.createElement("a");
-          link.href = url;
-          link.rel = "noopener noreferrer";
-          tab.document.body.append(link);
-          link.click();
+          const anchor = tab.document.createElement("a");
+          anchor.href = link.href;
+          anchor.rel = "noopener noreferrer";
+          tab.document.body.append(anchor);
+          anchor.click();
           pendingTab.current = null;
           tab = null;
         }
@@ -270,7 +267,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
           onSelect={() => setConfirmation({ version: page.version, title: page.title })}
         />
       </fieldset>
-      {shareUrl ? (
+      {shareLink ? (
         <div className="flex flex-col gap-2">
           <div className="flex gap-2">
             <Button
@@ -294,7 +291,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
               <Trans>Open link</Trans>
             </Button>
           </div>
-          {!pending && manualUrl === shareUrl ? <ManualPageLinkCopy url={manualUrl} /> : null}
+          {!pending && manualUrl === shareLink.href ? <ManualPageLinkCopy url={manualUrl} /> : null}
           <span role="status" className="sr-only">
             {copied ? t`Link copied` : ""}
           </span>

@@ -5,6 +5,8 @@ import {
   PageSummarySchema,
   PageTextContextSchema,
   PageTitleSchema,
+  pageShareUrl,
+  parsePageShareUrl,
 } from "./pages.js";
 
 describe("PageTitleSchema", () => {
@@ -79,4 +81,41 @@ it("keeps private page routes bounded and exposes no sharing command", () => {
   }
   expect(get.safeParse({ pageId: "page-1", version: 2_147_483_647 }).success).toBe(true);
   expect("setVisibility" in appContract.pages).toBe(false);
+});
+
+it("accepts normalized owner URLs with any slug the Page share producer emits", () => {
+  const token = "a".repeat(43);
+  for (const title of ["Quarterly plan – draft", "计划", `${"a".repeat(59)} B longer`]) {
+    const value = pageShareUrl("https://APP.example.test:443", title, token);
+    const parsed = parsePageShareUrl(value);
+    expect(parsed?.href).toBe(value);
+    expect(parsed?.origin).toBe("https://app.example.test");
+  }
+  const local = `http://127.0.0.1:5173/p/${token}`;
+  expect(parsePageShareUrl(local)?.href).toBe(local);
+});
+
+it("rejects owner URLs with invalid schemes, URL metadata or ungenerated slugs", () => {
+  const token = "a".repeat(43);
+  const base = "https://app.example.test";
+  const path = `/p/plan-${token}`;
+  for (const invalid of [
+    path,
+    `ftp://app.example.test${path}`,
+    `https://account:password@app.example.test${path}`,
+    `${base}${path}?download=1`,
+    `${base}${path}?`,
+    `${base}${path}#section`,
+    `${base}${path}#`,
+    `${base}${path}/extra`,
+    `${base}/p/Plan-${token}`,
+    `${base}/p/double--dash-${token}`,
+    `${base}/p/${"a".repeat(61)}-${token}`,
+    `${base}/p/plan${token}`,
+    `${base}/p/%70lan-${token}`,
+    `${base}/p/plan-${token.slice(1)}`,
+    `${base}/p/plan-${token.slice(1)}!`,
+  ]) {
+    expect(parsePageShareUrl(invalid), invalid).toBeNull();
+  }
 });

@@ -7,11 +7,12 @@ import {
   SHARED_PAGE_PATH_PREFIX,
   SharedPageSchema,
 } from "@rakazo/contracts";
+import { createClientIpResolver } from "@rakazo/core/node/trusted-proxy";
 import type { PrismaClient } from "@rakazo/db";
 import { PAGE_SHARE_SECRET_KIND, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Context, Hono } from "hono";
-import { createClientIpResolver, requestClientIp } from "./client-ip.js";
+import { requestClientIp } from "./client-ip.js";
 import { throttleKey, windowCounter } from "./window-counter.js";
 
 const headers = {

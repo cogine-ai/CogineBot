@@ -1,9 +1,11 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
 import http from "node:http";
 import https from "node:https";
+import type * as PageShareContracts from "@rakazo/contracts";
+import { createClientIpResolver } from "@rakazo/core/node/trusted-proxy";
 
 type PageSharePaths = Pick<
-  typeof import("@rakazo/contracts"),
+  typeof PageShareContracts,
   | "isPageShareApiPath"
   | "isPageShareDocumentPath"
   | "isSensitivePageShareDocumentPath"
@@ -21,8 +23,9 @@ export function pageShareEdge(
     SHARED_PAGE_PATH_PREFIX,
   }: PageSharePaths,
   reportProxyFailure: () => void,
+  resolveClientIp = createClientIpResolver(),
 ) {
-  return (
+  return async (
     request: IncomingMessage & { originalUrl?: string },
     response: ServerResponse,
     next: () => void,
@@ -82,38 +85,59 @@ export function pageShareEdge(
       unavailable();
       return;
     }
-    if (target.protocol !== "http:" && target.protocol !== "https:") {
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username ||
+      target.password
+    ) {
       unavailable();
       return;
     }
+    let address: string | undefined;
+    try {
+      const forwarded = request.headers["x-forwarded-for"];
+      address = await resolveClientIp({
+        peer: request.socket.remoteAddress,
+        forwarded: Array.isArray(forwarded) ? forwarded.join(",") : forwarded,
+      });
+    } catch {
+      unavailable();
+      return;
+    }
+    // A hostname lookup may outlast the browser connection.
+    if (response.destroyed || response.writableEnded) return;
     const transport = target.protocol === "https:" ? https : http;
     // Vite's generic proxy logs the full request URL on failure and can pass through
-    // a caller-supplied forwarding header. This public route needs neither behavior.
-    const upstream = transport.request(
-      target,
-      {
-        method: request.method,
-        headers: request.socket.remoteAddress
-          ? { "x-forwarded-for": request.socket.remoteAddress }
-          : {},
-      },
-      (incoming) => {
-        if (response.destroyed) {
-          incoming.destroy();
-          return;
-        }
-        response.statusCode = incoming.statusCode ?? 502;
-        for (const name of ["content-type", "retry-after"]) {
-          const value = incoming.headers[name];
-          if (value) response.setHeader(name, value);
-        }
-        incoming.on("error", unavailable);
-        incoming.pipe(response);
-      },
-    );
-    upstream.setTimeout(15_000, () => upstream.destroy());
-    upstream.on("error", unavailable);
-    response.on("close", () => upstream.destroy());
-    upstream.end();
+    // a caller-supplied forwarding chain. Forward only the resolved address.
+    let upstream: ClientRequest | undefined;
+    try {
+      upstream = transport.request(
+        target,
+        {
+          method: request.method,
+          headers: address ? { "x-forwarded-for": address } : {},
+        },
+        (incoming) => {
+          if (response.destroyed) {
+            incoming.destroy();
+            return;
+          }
+          response.statusCode = incoming.statusCode ?? 502;
+          for (const name of ["content-type", "retry-after"]) {
+            const value = incoming.headers[name];
+            if (value) response.setHeader(name, value);
+          }
+          incoming.on("error", unavailable);
+          incoming.pipe(response);
+        },
+      );
+      upstream.on("error", unavailable);
+      upstream.setTimeout(15_000, () => upstream?.destroy());
+      response.once("close", () => upstream?.destroy());
+      upstream.end();
+    } catch {
+      upstream?.destroy();
+      unavailable();
+    }
   };
 }

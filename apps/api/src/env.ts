@@ -13,6 +13,7 @@ import {
   resolveScreenProxySecret,
   resolveSupervisorToken,
 } from "@rakazo/core";
+import { parseTrustedProxies } from "@rakazo/core/node/trusted-proxy";
 
 export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapters";
 
@@ -180,9 +181,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     piSessionRecording: source.PI_SESSION_RECORDING === "true",
     ticketBoardEnabled: source.TICKET_BOARD_ENABLED === "true",
     pageSharingEnabled: source.PAGE_SHARING_ENABLED === "true",
-    trustedProxies: source.TRUSTED_PROXIES?.split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean),
+    trustedProxies: parseTrustedProxies(source.TRUSTED_PROXIES),
     sandboxSupervisorUrl: source.SANDBOX_SUPERVISOR_URL ?? "http://127.0.0.1:7091",
     sandboxSupervisorToken:
       sandboxProvider === "docker" ? resolveSupervisorToken(source) : undefined,

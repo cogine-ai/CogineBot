@@ -1,5 +1,5 @@
 import type { PageDetail, PageShareInput, PageShareState } from "@rakazo/contracts";
-import { PageInputIdSchema, PageShareStateSchema, pageShareTokenFromSlug } from "@rakazo/contracts";
+import { PageInputIdSchema, PageShareStateSchema, parsePageShareUrl } from "@rakazo/contracts";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -42,31 +42,9 @@ type Ready = {
 type Loaded = { status: "loading" } | { status: "error"; error: unknown } | Ready;
 
 function pageShareLink(share: PageShareState | null) {
-  if (
-    !share?.publishingEnabled ||
-    share.visibility !== "link" ||
-    !share.shareUrl ||
-    !share.generation
-  )
-    return null;
-  try {
-    const url = new URL(share.shareUrl);
-    const [, segment] =
-      /^\/p\/((?:[a-z0-9][a-z0-9-]{0,59}-)?[A-Za-z0-9_-]{43})$/.exec(url.pathname) ?? [];
-    const token = segment && pageShareTokenFromSlug(segment);
-    if (
-      !token ||
-      !["http:", "https:"].includes(url.protocol) ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash
-    )
-      return null;
-    return { url: url.href, origin: url.origin, generation: share.generation, token };
-  } catch {
-    return null;
-  }
+  if (share?.visibility !== "link" || !share.publishingEnabled) return null;
+  const url = parsePageShareUrl(share.shareUrl);
+  return url ? { url: url.href, origin: url.origin, generation: share.generation } : null;
 }
 
 async function readShare(pageId: string, current: () => boolean) {
@@ -303,12 +281,7 @@ function PageShareSheet({
       if (!active.current()) return;
       show({ ...loaded, share });
       const link = pageShareLink(share);
-      if (
-        !link ||
-        link.generation !== expected.generation ||
-        link.token !== expected.token ||
-        link.origin !== expected.origin
-      ) {
+      if (!link || link.generation !== expected.generation || link.origin !== expected.origin) {
         setCopied(false);
         setProblem("changed");
         return;

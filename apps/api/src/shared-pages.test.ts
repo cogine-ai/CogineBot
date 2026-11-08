@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
-import { createServer, request } from "node:http";
+import { createServer, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { getRequestListener } from "@hono/node-server";
-import { SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
+import * as pageSharePaths from "@rakazo/contracts";
+import { createClientIpResolver } from "@rakazo/core/node/trusted-proxy";
 import type { PrismaClient } from "@rakazo/db";
 import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { createLogger, createTestSink, getLogger, installLogger } from "@rakazo/logging";
 import { requestLogging } from "@rakazo/logging/hono";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { pageShareEdge } from "../../web/src/page-share-edge.js";
 import { mountSharedPages, sharedPageLogRoute } from "./shared-pages.js";
 
+const { SHARED_PAGE_PATH_PREFIX } = pageSharePaths;
 const token = "a".repeat(43);
 const url = `${SHARED_PAGE_PATH_PREFIX}${token}`;
 const updatedAt = new Date("2026-01-02T03:04:05.000Z");
@@ -18,7 +21,7 @@ const loggedRoute = `${SHARED_PAGE_PATH_PREFIX}:token`;
 const originalLogger = getLogger();
 afterEach(() => installLogger(originalLogger));
 
-function fixture(enabled = true) {
+function fixture(enabled = true, trustedProxies?: string[]) {
   const $queryRaw = vi.fn(async (_sql: TemplateStringsArray, _kind: string, _hash: string) => [
     { title: "Synthetic plan", code: "compiledPage()", version: 2, updatedAt },
   ]);
@@ -32,10 +35,27 @@ function fixture(enabled = true) {
       sensitiveRoute: sharedPageLogRoute,
     }),
   );
-  mountSharedPages(app, { $queryRaw } as unknown as Pick<PrismaClient, "$queryRaw">, { enabled });
+  mountSharedPages(app, { $queryRaw } as unknown as Pick<PrismaClient, "$queryRaw">, {
+    enabled,
+    trustedProxies,
+  });
   const authenticate = vi.fn(() => new Response("Not authenticated", { status: 401 }));
   app.all("*", authenticate);
   return { app, $queryRaw, sink, authenticate };
+}
+
+async function listen(server: Server) {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return (server.address() as AddressInfo).port;
+}
+
+async function close(server: Server) {
+  if (!server.listening) return;
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 function expectProtected(response: Response) {
@@ -126,6 +146,42 @@ describe("public Page HTTP", () => {
     expect($queryRaw).toHaveBeenCalledTimes(120);
   });
 
+  it("keeps visitor buckets separate through a trusted Web hop and ignores forged direct forwarding", async () => {
+    const { app, $queryRaw } = fixture(true, ["127.0.0.1"]);
+    const upstream = createServer(getRequestListener(app.fetch));
+    const api = `http://127.0.0.1:${await listen(upstream)}`;
+    const report = vi.fn();
+    const trusted = pageShareEdge(
+      api,
+      pageSharePaths,
+      report,
+      createClientIpResolver(["127.0.0.1"]),
+    );
+    const untrusted = pageShareEdge(api, pageSharePaths, report);
+    const trustedWeb = createServer((req, res) => void trusted(req, res, () => res.end()));
+    const directWeb = createServer((req, res) => void untrusted(req, res, () => res.end()));
+    const read = async (port: number, forwarded: string) =>
+      fetch(`http://127.0.0.1:${port}${url}`, {
+        method: "HEAD",
+        headers: { "x-forwarded-for": forwarded },
+      });
+    try {
+      const trustedPort = await listen(trustedWeb);
+      const directPort = await listen(directWeb);
+      for (let index = 1; index <= 120; index++) {
+        expect((await read(trustedPort, `203.0.113.${index}, 2001:db8:11:5::1`)).status).toBe(200);
+        expect((await read(directPort, `198.51.100.${index}`)).status).toBe(200);
+      }
+      expect((await read(trustedPort, "2001:db8:11:5::2")).status).toBe(429);
+      expect((await read(trustedPort, "2001:db8:11:6::1")).status).toBe(200);
+      expect((await read(directPort, "203.0.113.201")).status).toBe(429);
+      expect($queryRaw).toHaveBeenCalledTimes(241);
+      expect(report).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([close(trustedWeb), close(directWeb), close(upstream)]);
+    }
+  });
+
   it("reports a database failure without echoing its diagnostic", async () => {
     const { app, $queryRaw, sink } = fixture();
     $queryRaw.mockRejectedValue(new Error(`Unexpected connection data ${url}`));
@@ -151,11 +207,7 @@ describe("public Page HTTP", () => {
   it("rejects dot aliases from Node origin-form and absolute-form targets before the database", async () => {
     const { app, $queryRaw, sink } = fixture();
     const server = createServer(getRequestListener(app.fetch));
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const port = (server.address() as AddressInfo).port;
+    const port = await listen(server);
     try {
       const statusFor = (path: string) =>
         new Promise<number | undefined>((resolve, reject) => {
@@ -176,8 +228,7 @@ describe("public Page HTTP", () => {
       expect(await statusFor(`${authority}${url}`)).toBe(200);
       expect($queryRaw).toHaveBeenCalledTimes(2);
     } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await close(server);
     }
   });
 });

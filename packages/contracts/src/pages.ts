@@ -55,6 +55,7 @@ export const PageInputIdSchema = Id.refine((id) => !id.includes("\0"));
 
 /** 32 random bytes as base64url. */
 const PAGE_SHARE_TOKEN_LENGTH = 43;
+const PAGE_SHARE_TITLE_SLUG_MAX_LENGTH = 60;
 
 /** The readable title prefix is decorative. Only the last 43 characters are the token. */
 export function pageShareUrl(webOrigin: string, title: string, token: string): string {
@@ -63,7 +64,7 @@ export function pageShareUrl(webOrigin: string, title: string, token: string): s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 60)
+    .slice(0, PAGE_SHARE_TITLE_SLUG_MAX_LENGTH)
     .replace(/-+$/, "");
   return new URL(`/p/${slug ? `${slug}-` : ""}${token}`, webOrigin).href;
 }
@@ -71,6 +72,32 @@ export function pageShareUrl(webOrigin: string, title: string, token: string): s
 export function pageShareTokenFromSlug(segment: string): string | null {
   const token = segment.slice(-PAGE_SHARE_TOKEN_LENGTH);
   return token.length === PAGE_SHARE_TOKEN_LENGTH && /^[A-Za-z0-9_-]+$/.test(token) ? token : null;
+}
+
+/** Validate the generated owner link before exposing it to the clipboard or an external browser. */
+export function parsePageShareUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.href !== url.origin + url.pathname ||
+      !url.pathname.startsWith("/p/")
+    )
+      return null;
+
+    const slug = url.pathname.slice("/p/".length);
+    if (!pageShareTokenFromSlug(slug)) return null;
+    const prefix = slug.slice(0, -PAGE_SHARE_TOKEN_LENGTH);
+    if (
+      prefix &&
+      (prefix.length > PAGE_SHARE_TITLE_SLUG_MAX_LENGTH + 1 ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*-$/.test(prefix))
+    )
+      return null;
+    return url;
+  } catch {
+    return null;
+  }
 }
 
 /**

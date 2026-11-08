@@ -29,6 +29,11 @@
       "development": "./src/node/screen-proxy-response.ts",
       "default": "./src/node/screen-proxy-response.ts"
     },
+    "./node/trusted-proxy": {
+      "types": "./src/node/trusted-proxy.ts",
+      "development": "./src/node/trusted-proxy.ts",
+      "default": "./src/node/trusted-proxy.ts"
+    },
     "./plot": {
       "types": "./src/plot/plot-spec.ts",
       "development": "./src/plot/plot-spec.ts",

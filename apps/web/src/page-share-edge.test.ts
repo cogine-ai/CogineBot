@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import {
+import http, {
   createServer as createHttpServer,
   get,
   type IncomingMessage,
@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as pageSharePaths from "@rakazo/contracts";
+import { createClientIpResolver } from "@rakazo/core/node/trusted-proxy";
 import { createServer, type Plugin, preview } from "vite";
 import { describe, expect, it, vi } from "vitest";
 import { pageShareEdge } from "./page-share-edge.js";
@@ -32,6 +33,14 @@ async function listen(server: Server) {
 async function close(server: Server) {
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }
 
 function expectPrivacy(response: Response) {
@@ -123,6 +132,108 @@ describe("Page share development and preview edge", () => {
       await close(edge);
     }
   });
+
+  it("does not forward a request whose browser disconnects during proxy DNS resolution", async () => {
+    const upstream = createHttpServer((_request, response) => response.end());
+    const api = await listen(upstream);
+    const started = deferred<void>();
+    const browserClosed = deferred<void>();
+    const lookup = deferred<string[]>();
+    const resolved = deferred<void>();
+    const resolve = createClientIpResolver(["host-proxy"], {
+      resolve: () => {
+        started.resolve();
+        return lookup.promise;
+      },
+    });
+    const report = vi.fn();
+    const middleware = pageShareEdge(api, pageSharePaths, report, async (input) => {
+      const address = await resolve(input);
+      resolved.resolve();
+      return address;
+    });
+    const edge = createHttpServer((request, response) => {
+      response.once("close", browserClosed.resolve);
+      void middleware(request, response, () => response.end());
+    });
+    const web = await listen(edge);
+    const proxyRequests = vi.spyOn(http, "request");
+    const browser = get(`${web}${apiPath}`, {
+      headers: { "x-forwarded-for": "192.0.2.1" },
+    });
+    browser.on("error", () => {});
+    try {
+      await started.promise;
+      proxyRequests.mockClear();
+      browser.destroy();
+      await browserClosed.promise;
+      lookup.resolve(["127.0.0.1"]);
+      await resolved.promise;
+      await Promise.resolve();
+      expect(proxyRequests).not.toHaveBeenCalled();
+      expect(report).not.toHaveBeenCalled();
+    } finally {
+      lookup.resolve([]);
+      browser.destroy();
+      proxyRequests.mockRestore();
+      await Promise.all([close(edge), close(upstream)]);
+    }
+  });
+
+  it.each([
+    {
+      failure: "address resolution rejects",
+      api: "http://127.0.0.1:1",
+      rejectAddress: true,
+      transportCalls: 0,
+    },
+    {
+      failure: "transport setup throws",
+      api: "http://127.0.0.1:1",
+      rejectAddress: false,
+      transportCalls: 1,
+    },
+    {
+      failure: "upstream URL has userinfo",
+      api: "http://%FF@127.0.0.1:1",
+      rejectAddress: false,
+      transportCalls: 0,
+    },
+  ])(
+    "protects the error response and diagnostic when $failure",
+    async ({ api, rejectAddress, transportCalls }) => {
+      const report = vi.fn();
+      const failure = new Error(`Unexpected proxy failure for ${apiPath}`);
+      const proxyRequest = vi.spyOn(http, "request").mockImplementation(() => {
+        throw failure;
+      });
+      const middleware = pageShareEdge(
+        api,
+        pageSharePaths,
+        report,
+        rejectAddress
+          ? async () => {
+              throw failure;
+            }
+          : undefined,
+      );
+      const edge = createHttpServer(
+        (request, response) => void middleware(request, response, () => response.end()),
+      );
+      const web = await listen(edge);
+      try {
+        const result = await fetch(`${web}${apiPath}`);
+        expect(result.status).toBe(502);
+        expectPrivacy(result);
+        expect(await result.text()).toBe("");
+        expect(report.mock.calls).toEqual([[]]);
+        expect(proxyRequest).toHaveBeenCalledTimes(transportCalls);
+      } finally {
+        proxyRequest.mockRestore();
+        await close(edge);
+      }
+    },
+  );
 
   it("serves the first document in real Vite dev and preview with no-store even on a conditional request", async () => {
     const root = await mkdtemp(join(tmpdir(), "page-share-vite-"));
