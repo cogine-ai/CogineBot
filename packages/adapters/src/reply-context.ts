@@ -135,13 +135,17 @@ export function resolveReplyContext(
   };
 }
 
-export function messageToAgentHistoryText(message: ReplyMessage): string {
-  return [
-    resolveReplyContext(message, message.threadId)?.text,
-    modelMessageBlocksText(messageBlocks(message)),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+export function messageToAgentHistory(message: ReplyMessage) {
+  const blocks = messageBlocks(message);
+  const reply = resolveReplyContext(message, message.threadId);
+  return {
+    content: [reply?.text, modelMessageBlocksText(blocks)].filter(Boolean).join("\n\n"),
+    includesPage: Boolean(
+      reply?.includesPage ||
+        pageInputContext(blocks) ||
+        blocks.some((block) => block.kind === "page"),
+    ),
+  };
 }
 
 /** Fetch the explicit target even when it has fallen outside the history window. */
