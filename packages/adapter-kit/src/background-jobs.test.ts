@@ -6,6 +6,7 @@ import {
   historyCompactJobKey,
   messagingDeliverJob,
   parseBackgroundJob,
+  routineRetryJob,
 } from "./background-jobs.js";
 import type { BackgroundJobHandlers } from "./types.js";
 
@@ -18,6 +19,7 @@ function handlers(): BackgroundJobHandlers {
     "native.slack.lifecycle": vi.fn(async () => undefined),
     "run.continue": vi.fn(async () => undefined),
     "routine.wakeup": vi.fn(async () => undefined),
+    "routine.retry": vi.fn(async () => undefined),
     "computer.update": vi.fn(async () => undefined),
     "computer.sleep": vi.fn(async () => undefined),
     "computer.control-expire": vi.fn(async () => undefined),
@@ -64,6 +66,22 @@ describe("background job contracts", () => {
     expect(target["run.continue"]).toHaveBeenCalledExactlyOnceWith({ runId: "run-a" }, execution);
     await dispatchBackgroundJob(target, "run.continue", { runId: "run-b" });
     expect(vi.mocked(target["run.continue"]).mock.calls[1]).toEqual([{ runId: "run-b" }]);
+  });
+
+  it("validates a delayed Routine retry and keys it by the original Run", async () => {
+    const target = handlers();
+    const availableAt = new Date("2026-08-15T12:12:00.000Z");
+    const job = routineRetryJob("failed-run", availableAt);
+    expect(job).toEqual({
+      name: "routine.retry",
+      payload: { runId: "failed-run" },
+      availableAt,
+      replaceKey: "routine.retry:failed-run",
+      keepExisting: true,
+    });
+    await dispatchBackgroundJob(target, job.name, job.payload);
+    expect(target["routine.retry"]).toHaveBeenCalledExactlyOnceWith({ runId: "failed-run" });
+    expect(() => parseBackgroundJob("routine.retry", { runId: "" })).toThrow();
   });
 
   it("rejects unknown names and malformed deliveries", () => {

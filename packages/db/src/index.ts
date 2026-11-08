@@ -38,6 +38,12 @@ export * from "./plugin-installs.js";
 export * from "./readiness.js";
 export * from "./repos.js";
 export {
+  claimRoutineRetry,
+  lockRoutineRetryThread,
+  revokePendingRoutineRetries,
+  type VerifyRoutineRetryNativeSource,
+} from "./routine-retry.js";
+export {
   asSystem,
   currentDbContext,
   type DbContext,

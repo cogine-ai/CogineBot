@@ -811,6 +811,8 @@ model Run {
   sourceMessage        Message?         @relation("RunSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
   routineId            String?
   routine              Routine?         @relation(fields: [routineId], references: [id], onDelete: SetNull)
+  retryOfRunId          String?          @unique
+  routineRetryAt       DateTime?
   startedAt            DateTime?
   wakeAt               DateTime?
   firstResponseAt      DateTime?
@@ -840,6 +842,7 @@ model Run {
   @@index([parentRunId])
   @@index([threadId, status, createdAt])
   @@index([routineId])
+  @@index([routineRetryAt, id])
   @@map("runs")
   @@schema("public")
 }
@@ -976,6 +979,10 @@ model Routine {
   thinkingLevel  String?
   lastRunAt      DateTime?
   nextRunAt      DateTime?
+  /// Written under the Routine row lock by each Run producer.
+  latestRunId    String?
+  /// Exact timer Run that automatically switched this one-shot off.
+  autoCompletedRunId String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   runs           Run[]

@@ -280,7 +280,7 @@ export async function createScheduleFromTool(
       // Do not soft-return while the row may still be active.
       await deps.prisma.routine.update({
         where: { id: row.id },
-        data: { active: false, nextRunAt: null },
+        data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
       });
     }
     return { error: "Could not schedule the reminder. Try again." };

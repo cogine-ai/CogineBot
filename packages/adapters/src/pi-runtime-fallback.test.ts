@@ -62,7 +62,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 }));
 
 import { estimateModelContextTokens } from "./model-context.js";
-import { ModelOutputRecoveryError } from "./model-output-recovery.js";
+import { ModelOutputRecoveryError, TransientModelError } from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import { isRetryableProviderUnavailable, PiAgentRuntime } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS } from "./pi-runtime-limits.js";
@@ -404,9 +404,33 @@ describe("Pi runtime completion recovery", () => {
       .mockImplementation(() =>
         stream(primary, message(primary, [], "error", "HTTP 503 unavailable")),
       );
-    await expect(run(request())).rejects.toThrow("HTTP 503 initial provider failure");
+    const failure = run(request());
+    await expect(failure).rejects.toBeInstanceOf(TransientModelError);
+    await expect(failure).rejects.toThrow("HTTP 503 initial provider failure");
     expect(providerState.stream).toHaveBeenCalledTimes(4);
     expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000, 8_000, 20_000]);
+  });
+
+  it("does not type a retained long quota refusal as a transient Routine failure", async () => {
+    const refusal = 'HTTP 429 rate limit: {"Retry-After":"7200"}';
+    providerState.stream
+      .mockImplementationOnce(() => stream(primary, message(primary, [], "error", refusal)))
+      .mockImplementation(() =>
+        stream(primary, message(primary, [], "error", "HTTP 503 unavailable")),
+      );
+    const failure = run(request());
+    await expect(failure).rejects.toThrow(refusal);
+    await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
+  });
+
+  it("does not type a provider rate refusal with a long HTTP Retry-After as transient", async () => {
+    providerState.stream.mockImplementation((target: typeof primary, _context, options) => {
+      void options.onResponse({ status: 429, headers: { "retry-after": "7200" } }, target);
+      return stream(target, message(target, [], "error", "HTTP 429 rate limit"));
+    });
+    const failure = run(request());
+    await expect(failure).rejects.toThrow("HTTP 429 rate limit");
+    await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
   });
 
   it("starts a fresh completion budget after one completed tool without replaying it", async () => {
@@ -587,9 +611,13 @@ describe("Pi runtime completion recovery", () => {
       providerState.stream.mockImplementation(() =>
         stream(primary, message(primary, [], "error", "429 provider rate limit")),
       );
-      await expect(
-        run(input, [], new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } })),
-      ).rejects.toThrow("503 local service unavailable");
+      const failure = run(
+        input,
+        [],
+        new PiAgentRuntime({ modelCallObserver: { beforeCall, afterCall } }),
+      );
+      await expect(failure).rejects.toThrow("503 local service unavailable");
+      await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
       expect(beforeCall).toHaveBeenCalledOnce();
       expect(providerState.stream).toHaveBeenCalledTimes(phase === "reservation" ? 0 : 1);
       expect(providerState.delay).not.toHaveBeenCalled();
@@ -679,9 +707,61 @@ describe("Pi runtime early connection timeout recovery", () => {
     ]);
     expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000, 8_000]);
   });
+
+  it("preserves a verified provider outage when a later attempt runs out of request time", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      let retryStarted!: () => void;
+      const retry = new Promise<void>((resolve) => {
+        retryStarted = resolve;
+      });
+      providerState.stream
+        .mockImplementationOnce(() =>
+          stream(primary, message(primary, [], "error", "HTTP 503 service unavailable")),
+        )
+        .mockImplementationOnce(() => {
+          retryStarted();
+          return new AssistantMessageEventStream();
+        });
+      const failure = expect(run(request())).rejects.toBeInstanceOf(TransientModelError);
+      await retry;
+      await vi.advanceTimersByTimeAsync(120_000);
+      await failure;
+      expect(providerState.stream).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Pi runtime ordered model fallback", () => {
+  it.each([
+    ["503 service unavailable", true],
+    ["HTTP 429 quota exceeded: requests per minute", true],
+    ["HTTP 402 quota exceeded", false],
+    ["HTTP 429 daily usage limit resets in 5 hours", false],
+    ['HTTP 429 rate limit: {"Retry-After":"7200"}', false],
+  ])(
+    "types an exhausted fallback chain with primary failure %s",
+    async (messageText, transient) => {
+      providerState.stream.mockImplementation((target: typeof primary) =>
+        stream(
+          target,
+          message(
+            target,
+            [],
+            "error",
+            target.id === primary.id ? messageText : "HTTP 503 unavailable",
+          ),
+        ),
+      );
+      const input = request([{ provider: backupA.provider, id: backupA.id, apiKey: "backup-key" }]);
+      const failure = run(input);
+      if (transient) await expect(failure).rejects.toBeInstanceOf(TransientModelError);
+      else await expect(failure).rejects.not.toBeInstanceOf(TransientModelError);
+      expect(providerState.stream.mock.calls.some(([model]) => model.id === backupA.id)).toBe(true);
+    },
+  );
   it.each(["absent", "empty"])(
     "passes the original stream options and terminal content through with %s backups",
     async (backups) => {

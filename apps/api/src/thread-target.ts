@@ -46,7 +46,9 @@ import {
   IsolationError,
   loadThreadAttention,
   lockOwnedGroup,
+  lockRoutineRetryThread,
   retireWaitingQuestionInTransaction,
+  revokePendingRoutineRetries,
   touchGroupUpdatedAt,
   updateTaskConnectionSelection,
 } from "@rakazo/db";
@@ -1200,7 +1202,9 @@ export async function stopThreadRuns(
   target: ThreadTarget,
 ) {
   const { runIds, computers, leases, eventSeq } = await deps.prisma.$transaction(async (tx) => {
+    await lockRoutineRetryThread(tx, target.threadId);
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
+    await revokePendingRoutineRetries(tx, { spaceId: actor.spaceId, threadId: target.threadId });
     const cancelled = await tx.run.updateManyAndReturn({
       where: {
         threadId: target.threadId,

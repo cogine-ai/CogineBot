@@ -3,6 +3,9 @@ import { createStreamingRedactor, protectedContinuationLength } from "@rakazo/co
 /** A failed output recovery can keep the reply text already shown to the user. */
 export class ModelOutputRecoveryError extends Error {}
 
+/** A provider failure that can clear without changing the request or account. */
+export class TransientModelError extends Error {}
+
 /** Mask a credential tail that the live redactor had not released when output stopped. */
 export function redactInterruptedOutput(
   text: string,

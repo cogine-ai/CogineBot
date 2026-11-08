@@ -46,6 +46,16 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import {
+  firstRoutineRetryExecutionFence,
+  lockRoutineRetryExecution,
+  lockRoutineRetryThread,
+  planRoutineRetryInTransaction,
+  type RoutineRetryExecutionInput,
+  revokePendingRoutineRetries,
+  routineRetrySteeringTargetIsCurrent,
+  type VerifyRoutineRetryNativeSource,
+} from "./routine-retry.js";
 import { reserveRunProgressResetInTransaction } from "./run-progress.js";
 import { isRunResponse, readRunTimingFields } from "./run-timing.js";
 import {
@@ -140,6 +150,7 @@ export interface ClaimedSteeringMessage {
 
 export interface FinalizeRunResult {
   continuationRunId: string | null;
+  routineRetryAt?: Date;
 }
 
 interface FinalizeRunBase {
@@ -160,7 +171,7 @@ export type FinalizeRunInput = FinalizeRunBase &
         blocks: MessageBlock[];
         markUnread?: boolean;
       }
-    | { outcome: "failed"; error: string; partialText?: string }
+    | { outcome: "failed"; error: string; partialText?: string; retryRoutine?: boolean }
   );
 
 export interface PauseRunForInput {
@@ -329,6 +340,7 @@ export async function clearThread(
   realtime?: RealtimeFanout,
 ): Promise<ClearThreadResult> {
   const committed = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await lockRoutineRetryThread(tx, input.threadId);
     const thread = await tx.thread.update({
       where: {
         id: input.threadId,
@@ -350,6 +362,7 @@ export async function clearThread(
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
     await cancelRunsInTransaction(tx, activeRuns, now);
+    await revokePendingRoutineRetries(tx, input);
     // Expire as tombstones so a still-open provider screen claim cannot reset fencing to 1.
     await expireComputerExecutionLeases(tx, { runId: { in: runIds } });
     await tx.computer.updateMany({
@@ -1838,6 +1851,70 @@ export async function appendEvent(
   return productEvent;
 }
 
+/** Fence the first retry start after computer admission and before any attempt work. */
+export async function beginRoutineRetryExecution(
+  prisma: PrismaClient,
+  input: RoutineRetryExecutionInput,
+  verifyNativeSource?: VerifyRoutineRetryNativeSource,
+): Promise<{ started: boolean; cancellationSeq?: number; continuationRunId?: string }> {
+  return withTransactionRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const decision = await lockRoutineRetryExecution(tx, input, verifyNativeSource);
+      if (!decision) return { started: false };
+      const fence = firstRoutineRetryExecutionFence(input);
+      if (decision.allowed) {
+        const mark = await tx.run.updateMany({
+          where: fence,
+          data: { startedAt: input.startedAt },
+        });
+        return { started: mark.count === 1 };
+      }
+      const { child } = decision;
+      const canContinueSteering = await routineRetrySteeringTargetIsCurrent(tx, child);
+      // History writers lock Thread before Run. The prior thread advisory also
+      // excludes a concurrent Stop or clear from admitting a replacement.
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${child.threadId} FOR UPDATE`;
+      const cancelled = await tx.run.updateMany({
+        where: fence,
+        data: {
+          status: "cancelled",
+          completedAt: new Date(),
+          leaseOwner: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (cancelled.count !== 1) return { started: false };
+      await clearRunTurnCheckpoints(tx, [{ id: child.id, spaceId: child.spaceId }]);
+      await tx.task.update({
+        where: {
+          id: child.taskId,
+          spaceId: child.spaceId,
+          userId: child.userId,
+          botId: child.botId,
+          threadId: child.threadId,
+        },
+        data: { status: "cancelled" },
+      });
+      const event = await appendEventInTransaction(tx, {
+        spaceId: child.spaceId,
+        threadId: child.threadId,
+        botId: child.botId,
+        runId: child.id,
+        type: "run.cancelled",
+        payload: {},
+      });
+      const continuationRunId = canContinueSteering
+        ? await createPendingSteeringRun(tx, child)
+        : null;
+      return {
+        started: false,
+        cancellationSeq: event.seq,
+        ...(continuationRunId ? { continuationRunId } : {}),
+      };
+    }),
+  );
+}
+
 export async function finalizeRun(
   prisma: PrismaClient,
   input: FinalizeRunInput,
@@ -1858,7 +1935,10 @@ export async function finalizeRun(
     "thread.id": input.threadId,
     "bot.id": input.botId,
   });
-  return { continuationRunId: committed.continuationRunId };
+  return {
+    continuationRunId: committed.continuationRunId,
+    ...(committed.routineRetryAt ? { routineRetryAt: committed.routineRetryAt } : {}),
+  };
 }
 
 /** Stamps one turn-level wall-clock duration on the final tool block. */
@@ -1887,6 +1967,7 @@ async function finalizeRunOnce(
   seq: number;
   continuationRunId: string | null;
   firstResponse: boolean;
+  routineRetryAt?: Date;
 } | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
@@ -1992,6 +2073,10 @@ async function finalizeRunOnce(
             : {}
           : { error: input.error },
     });
+    let routineRetryAt =
+      input.outcome === "failed" && input.retryRoutine
+        ? await planRoutineRetryInTransaction(tx, input.runId, now)
+        : undefined;
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
     if (input.outcome === "completed") {
       await tx.steeringMessage.deleteMany({
@@ -2017,8 +2102,18 @@ async function finalizeRunOnce(
       });
     }
     const continuationRunId = await createPendingSteeringRun(tx, input);
+    if (continuationRunId && routineRetryAt) {
+      await tx.run.update({ where: { id: input.runId }, data: { routineRetryAt: null } });
+      routineRetryAt = undefined;
+    }
     await tx.bot.update({ where: { id: input.botId }, data: { updatedAt: now } });
-    return { threadId: lastEvent.threadId, seq: lastEvent.seq, continuationRunId, firstResponse };
+    return {
+      threadId: lastEvent.threadId,
+      seq: lastEvent.seq,
+      continuationRunId,
+      firstResponse,
+      routineRetryAt,
+    };
   });
 }
 

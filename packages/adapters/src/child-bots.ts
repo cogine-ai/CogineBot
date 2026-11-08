@@ -498,7 +498,7 @@ export async function archiveBot(
     const cancelledRuns = await cancelRunsInTransaction(tx, activeRuns, now);
     await tx.routine.updateMany({
       where: { botId: bot.id },
-      data: { active: false, nextRunAt: null },
+      data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
     });
     await expireComputerExecutionLeases(tx, { botId: bot.id });
     await tx.computer.updateMany({

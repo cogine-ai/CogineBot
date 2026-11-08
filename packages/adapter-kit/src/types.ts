@@ -788,6 +788,7 @@ export interface BackgroundJobPayloads {
   "native.slack.lifecycle": NativeSlackLifecycleJobPayload;
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
+  "routine.retry": { runId: string };
   "computer.sleep": { computerId: string };
   "computer.update": { updateId: string };
   "computer.control-expire": { computerId: string; leaseId: string };

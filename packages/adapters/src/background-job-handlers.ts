@@ -8,10 +8,10 @@ import type {
   SandboxProvider,
   SecretStore,
 } from "@rakazo/adapter-kit";
-import { messagingDeliverJob } from "@rakazo/adapter-kit";
+import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { PlatformModelAllowlist } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { runAsSystem, runAsTenant } from "@rakazo/db";
+import { claimRoutineRetry, runAsSystem, runAsTenant } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { pollCloudAgent } from "./cloud-agent-poll.js";
@@ -23,7 +23,10 @@ import { compactHistory } from "./history-compaction.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { deliverMessagingOutbound, mirrorMessagingOutbound } from "./messaging-delivery.js";
 import type { NativeRoutineEventService } from "./native-connectors/events/service.js";
-import { nativeTriggerScope } from "./native-connectors/events/store.js";
+import {
+  nativeTriggerScope,
+  verifyRoutineRetryNativeSource,
+} from "./native-connectors/events/store.js";
 import { expireTaughtSkillTeaching } from "./teaching-session.js";
 
 type Tenant = { spaceId: string; userId: string };
@@ -151,6 +154,16 @@ export function createBackgroundJobHandlers(deps: {
     },
     "routine.wakeup": asOwner(routine, async (payload) => {
       await deps.executor.wakeRoutine(payload.routineId, payload.scheduledFor);
+    }),
+    "routine.retry": asOwner(run, async ({ runId }) => {
+      const retry = await claimRoutineRetry(
+        deps.prisma,
+        runId,
+        undefined,
+        verifyRoutineRetryNativeSource,
+      );
+      // A committed queued Run is recovered by the ordinary Run reconciler.
+      if (retry) await deps.jobs.enqueue(runContinueJob(retry.runId));
     }),
     "computer.update": asOwner(updatedComputer, async ({ updateId }) => {
       await performComputerUpdate(deps, updateId);

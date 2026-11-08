@@ -62,6 +62,7 @@ import {
   MEMORY_REVISION_CONFLICT_ERROR,
   MemoryCommitIdentityError,
   routineJobKey,
+  routineRetryJob,
   routineWakeupJob,
   runContinueJob,
   SandboxRateLimitError,
@@ -149,6 +150,7 @@ import {
   appendEventInTransaction,
   authorizeCollaborationRunStart,
   BOT_COLLABORATION_ORIGINS,
+  beginRoutineRetryExecution,
   createSpaceForMember,
   effectiveMemoryScope,
   failScriptedRunPreservingSteering,
@@ -358,7 +360,11 @@ import {
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
-import { ModelOutputRecoveryError, redactInterruptedOutput } from "./model-output-recovery.js";
+import {
+  ModelOutputRecoveryError,
+  redactInterruptedOutput,
+  TransientModelError,
+} from "./model-output-recovery.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -380,6 +386,7 @@ import {
   modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
+import { verifyRoutineRetryNativeSource } from "./native-connectors/events/store.js";
 import { prepareSharedPageUpdate, sharedPageUpdateRequest } from "./page-share-update.js";
 import {
   preparePageToolRequest,
@@ -3459,7 +3466,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Archiving pauses a bot's routines; re-pause one that slipped back to active.
         await deps.prisma.routine.updateMany({
           where: { id: routine.id, active: true },
-          data: { active: false, nextRunAt: null },
+          data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
         });
         return;
       }
@@ -3487,7 +3494,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
       // legacy row accepted before cron validation was added) fires the
       // already-due run once, then nextRunAt stays null and the routine
       // pauses rather than crash-looping the wakeup job.
-      const nextRunAt = isOneShotRoutineCrons(routine.crons)
+      const oneShot = isOneShotRoutineCrons(routine.crons);
+      const nextRunAt = oneShot
         ? null
         : nextCronDateAcross(
             routine.crons,
@@ -3504,6 +3512,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             id: routine.id,
             active: true,
             nextRunAt: scheduledAt,
+            crons: { equals: routine.crons },
+            timezone: routine.timezone,
             bot: { archivedAt: null },
           },
           data: {
@@ -3528,9 +3538,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
         if (!current) return null;
         const routinePrompt = expandSkillReferencesInPrompt(current.prompt, skillRecords);
-        const timerNonce = !isOneShotRoutineCrons(routine.crons)
-          ? routineTimerNonce(routine.id, scheduledFor)
-          : undefined;
+        const timerNonce = oneShot ? undefined : routineTimerNonce(routine.id, scheduledFor);
         if (timerNonce) {
           const pending = await findPendingRoutineTick(tx, {
             routineId: routine.id,
@@ -3576,6 +3584,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ...routineRunModelPin(current),
           },
         });
+        await tx.routine.updateMany({
+          where: { id: routine.id },
+          data: { latestRunId: run.id, autoCompletedRunId: oneShot ? run.id : null },
+        });
         return { ...run, coalesced: false };
       });
       if (!claimed) return;
@@ -3620,7 +3632,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       } catch {
         // Best effort: the run is already queued.
       }
-      if (isOneShotRoutineCrons(routine.crons)) {
+      if (oneShot) {
         try {
           await deps.jobs.cancel(routineJobKey(routine.id));
         } catch {
@@ -3903,12 +3915,43 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const progressRunStartedAt = run.startedAt ?? new Date();
       let attempt: { id: string };
       try {
-        const executionStarted = await deps.prisma.run.updateMany({
-          where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-          data: { startedAt: progressRunStartedAt },
-        });
-        if (executionStarted.count !== 1) {
+        const execution: {
+          started: boolean;
+          cancellationSeq?: number;
+          continuationRunId?: string;
+        } =
+          run.retryOfRunId && !run.startedAt
+            ? await beginRoutineRetryExecution(
+                deps.prisma,
+                { runId, workerId, fence, startedAt: progressRunStartedAt },
+                verifyRoutineRetryNativeSource,
+              )
+            : {
+                started:
+                  (
+                    await deps.prisma.run.updateMany({
+                      where: {
+                        id: runId,
+                        status: "running",
+                        leaseOwner: workerId,
+                        leaseFence: fence,
+                      },
+                      data: { startedAt: progressRunStartedAt },
+                    })
+                  ).count === 1,
+              };
+        if (!execution.started) {
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          if (execution.cancellationSeq !== undefined) {
+            await deps.events
+              .notify(run.threadId, execution.cancellationSeq)
+              .catch(() => undefined);
+          }
+          if (execution.continuationRunId) {
+            await deps.jobs
+              .enqueue(runContinueJob(execution.continuationRunId))
+              .catch((error) => getLogger().error("steering continuation enqueue", error));
+          }
           return;
         }
         getLogger().info("run.execution_started", {
@@ -3965,6 +4008,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         message: string,
         knownBot?: { id: string; name: string },
         partialText?: string,
+        retryRoutine?: boolean,
       ) => {
         const failed = await deps.events.finalizeRun({
           spaceId: run.spaceId,
@@ -3978,9 +4022,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           outcome: "failed",
           error: message,
           ...(partialText ? { partialText } : {}),
+          ...(retryRoutine ? { retryRoutine } : {}),
         });
         if (!failed) return;
         stopHeartbeatAfterCompletion();
+        if (failed.routineRetryAt) {
+          await deps.jobs.enqueue(routineRetryJob(runId, failed.routineRetryAt)).catch(() => {
+            // Finalization committed the intent. The reconciler republishes a lost wake.
+            getLogger().warn("routine.retry_wakeup_failed", { "run.id": runId });
+          });
+        }
         await settleLocalPeerDelivery();
         if (failed.continuationRunId) {
           await deps.jobs
@@ -9726,7 +9777,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const text = redactInterruptedOutput(assembled, runSecrets, precedingProgress()).trim();
             if (text && !containsSecret(text, runSecrets)) partialText = text;
           }
-          await settleRunFailure(message, bot, partialText);
+          await settleRunFailure(
+            message,
+            bot,
+            partialText,
+            run.trigger === "routine" &&
+              error instanceof TransientModelError &&
+              // Stream cleanup aborts its tool signal even when the provider failed.
+              // Finalization separately fences out a Stop or expired lease.
+              leaseValid &&
+              !handedOff &&
+              !assembled,
+          );
         }
       } catch (setupError) {
         if (deps.shutdownSignal?.aborted || setupError instanceof RunHistoryWriteError) return;
