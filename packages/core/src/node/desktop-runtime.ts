@@ -911,7 +911,7 @@ export function releaseDesktopCommand(
     ...registryLockCommand(screenId),
     '[ -f "$slot" ] || exit 0',
     // A fenced deferred release cannot claim a view opened without that lease.
-    ...(preserveActiveControl && leaseId ? ['[ -n "$current" ] || exit 0'] : []),
+    ...(!retainBrowser && preserveActiveControl && leaseId ? ['[ -n "$current" ] || exit 0'] : []),
     ...acceptLeaseCommand(leaseId, true),
     ...(preserveActiveControl
       ? ['if [ -n "$control_token" ] || [ -n "$revoking_token" ]; then exit 0; fi']

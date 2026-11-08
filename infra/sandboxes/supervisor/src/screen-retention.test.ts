@@ -296,6 +296,25 @@ describe("screen retention through supervisor routes", () => {
     expect(f.commands.slice(assigned).join("\n")).toContain("Browser.close");
   });
 
+  it("revokes transports for ordinary retained handback of a registered lease-less screen", async () => {
+    const f = await fixture();
+    expect((await f.watch("a", "")).status).toBe(200);
+    const start = f.commands.length;
+    expect((await f.release("a", "run-a:2", false, true)).status).toBe(200);
+    const cleanup = f.commands.slice(start).join("\n");
+    expect(cleanup).toContain("desktop-targets/terminal-1");
+    expect(cleanup).not.toContain("Browser.close");
+  });
+
+  it("only runs the registry-less browser stop for direct cancellation", async () => {
+    const f = await fixture();
+    const start = f.commands.length;
+    expect((await f.release("a", "run-a:2", false, true)).status).toBe(200);
+    expect(f.commands.slice(start)).toEqual([]);
+    expect((await f.release("a", "run-a:2", true)).status).toBe(200);
+    expect(f.commands.slice(start).join("\n")).toContain("Browser.close");
+  });
+
   it("fully stops only the cancelled screen and rejects a late old execution release", async () => {
     const f = await fixture();
     await f.watch();

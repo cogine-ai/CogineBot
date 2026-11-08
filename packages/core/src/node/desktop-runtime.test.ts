@@ -122,6 +122,18 @@ describe("shared Linux desktop lifecycle", () => {
     expect(readFileSync(slot, "utf8")).toBe(before);
   });
 
+  it("revokes transports while retaining a lease-less desktop on ordinary handback", () => {
+    const f = fixture();
+    expect(f.run(managedDesktopCommand("a", undefined, env, "view-a")).status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    const result = f.run(releaseDesktopCommand("a", "run:2", env, true, true));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("RAKAZO_DESKTOP_RETAINED=");
+    const fields = readFileSync(slot, "utf8").split("\n");
+    expect(fields[1]).toBe("run:2");
+    expect(fields[4]).toBe("idle");
+  });
+
   it.each(["active", "revoking"])(
     "preserves %s human control when a retained attempt releases the screen",
     (state) => {
