@@ -34,7 +34,12 @@ import type {
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
 import { canonicalPiProviderId, usableModelId } from "@rakazo/contracts";
-import { abortableDelay, MISSING_TOOL_FINAL_RESPONSE_ERROR } from "@rakazo/core";
+import {
+  abortableDelay,
+  createStreamingRedactor,
+  MISSING_TOOL_FINAL_RESPONSE_ERROR,
+  redactSecrets,
+} from "@rakazo/core";
 import { MAX_SELF_RECOVERIES_PER_RUN } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult, uncertainEffectResult } from "./approval-effect.js";
@@ -75,7 +80,7 @@ import {
   MODEL_CONTEXT_FRAMING_TOKENS,
   maxFallbackInputTokens,
 } from "./model-context.js";
-import { ModelOutputRecoveryError } from "./model-output-recovery.js";
+import { ModelOutputRecoveryError, redactInterruptedOutput } from "./model-output-recovery.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
@@ -102,11 +107,9 @@ import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import type { LengthRecovery } from "./pi-output-recovery.js";
 import {
   CUT_REPLY_CONTINUATION_PROMPT,
-  continuationRepeat,
   cutReplyAtLimitPrompt,
   lengthRecovery,
-  MAX_CONTINUATION_MARKER,
-  MAX_CONTINUATION_OVERLAP,
+  ReplyJoin,
 } from "./pi-output-recovery.js";
 import {
   clipToolResultContent,
@@ -722,26 +725,11 @@ export class PiAgentRuntime implements AgentRuntime {
         let truncatedToolBatch = false;
         let joinedMessage = false;
         let lastRecoveryKind: CutReplyReason | undefined;
-        let join:
-          | {
-              recovery: PendingOutputRecovery;
-              tail: string;
-              start: number;
-              held: string;
-              released: boolean;
-            }
-          | undefined;
+        let join: ActiveReplyJoin | undefined;
         const emitReply = (text: string) => {
           if (!text) return;
           streamed += text;
           queue.push({ type: "text", text });
-        };
-        const releaseJoin = () => {
-          if (!join || join.released) return;
-          join.released = true;
-          const repeat = continuationRepeat(join.tail, join.held, join.recovery.kind === "limit");
-          emitReply(join.held.slice(repeat));
-          join.held = "";
         };
         let toolWorkPendingFinal = false;
         // Text streamed before this point is tool-turn narration. Only text after
@@ -799,16 +787,7 @@ export class PiAgentRuntime implements AgentRuntime {
                 queue.push({ type: "progress", text: "", activity: true });
               }
               currentMessageStreamed += delta;
-              if (join && !join.released) {
-                join.held += delta;
-                if (
-                  join.held.length >
-                  Math.min(join.tail.length, MAX_CONTINUATION_OVERLAP) + MAX_CONTINUATION_MARKER
-                )
-                  releaseJoin();
-              } else {
-                emitReply(delta);
-              }
+              emitReply(join ? join.output.append(delta) : delta);
             }
           }
           if (event.type === "turn_end") {
@@ -871,13 +850,7 @@ export class PiAgentRuntime implements AgentRuntime {
             const previousJoin = join;
             joinedMessage = previousJoin !== undefined;
             if (previousJoin) {
-              if (!previousJoin.released) {
-                if (text.startsWith(streamedThisMessage)) previousJoin.held = text;
-                releaseJoin();
-              } else if (continued) {
-                emitReply(textToEmit);
-              }
-              join = undefined;
+              emitReply(previousJoin.output.finish(text, streamedThisMessage));
             } else {
               const sincePendingFinal = streamed.slice(streamedBeforePendingFinal);
               const alreadyEmitted =
@@ -889,54 +862,18 @@ export class PiAgentRuntime implements AgentRuntime {
                 emitReply(text);
               }
             }
-            const cutBy = cutReplies.get(event.message.content);
-            let recovery = cutBy ? fallbackState.nextRecovery : undefined;
-            let tail = previousJoin
-              ? streamed.slice(previousJoin.start) || previousJoin.tail
-              : text || streamedThisMessage;
-            if (
-              !recovery &&
-              previousJoin?.recovery.kind === "limit" &&
-              event.message.stopReason === "stop" &&
-              !hasCalls &&
-              !streamed.slice(previousJoin.start).trim() &&
-              !signal.aborted
-            ) {
-              const deadline = previousJoin.recovery.deadline;
-              if (
-                Date.now() < deadline &&
-                fallbackState.canRecover() &&
-                (await reserveSelfRecovery()) &&
-                !signal.aborted &&
-                Date.now() < deadline &&
-                fallbackState.canRecover()
-              ) {
-                recovery = previousJoin.recovery;
-                fallbackState.nextRecovery = recovery;
-                tail = previousJoin.tail;
-              } else if (!signal.aborted) {
-                fallbackState.outputRecoveryFailed = true;
-              }
-            } else if (
-              !recovery &&
-              previousJoin?.recovery.kind === "connection" &&
-              event.message.stopReason === "stop" &&
-              !streamed.slice(previousJoin.start).trim() &&
-              !signal.aborted
-            ) {
-              fallbackState.outputRecoveryFailed = true;
-            }
-            if (recovery && !signal.aborted && fallbackState.canRecover()) {
-              lastRecoveryKind = recovery.kind === "tool" ? undefined : recovery.kind;
-              join = { recovery, tail, start: streamed.length, held: "", released: false };
-              agent.followUp({
-                role: "user",
-                content:
-                  recovery.kind === "limit"
-                    ? cutReplyAtLimitPrompt(tail)
-                    : CUT_REPLY_CONTINUATION_PROMPT,
-                timestamp: Date.now(),
-              });
+            const cut = cutReplies.get(event.message.content);
+            if (previousJoin || cut) {
+              lastRecoveryKind = cut ?? lastRecoveryKind;
+              join = await continueCutReply(
+                agent,
+                fallbackState,
+                event.message,
+                previousJoin,
+                streamed,
+                text || streamedThisMessage,
+              );
+              if (join) lastRecoveryKind = join.kind;
             }
             if (
               canMessageUser &&
@@ -2239,13 +2176,16 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   let nested!: Agent;
   const providerFailures = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
   const completedBudgets = new WeakMap<AssistantMessage["content"], PiDispatchBudget>();
+  const cutReplies = new WeakMap<AssistantMessage["content"], CutReplyReason>();
   const requestDeadlineFailures = new WeakSet<AssistantMessage["content"]>();
   const retryState: FallbackStreamState = {
     request: { ...host.request, model: requestModel, fallbackModels: [] },
     getActive: () => nestedHost.activeModel,
     signal: host.signal,
     reserveSelfRecovery: host.reserveSelfRecovery,
-    canRecover: () => !nestedHost.pausePending && !("error" in host.controlFailure),
+    canRecover: () =>
+      !host.pausePending && !nestedHost.pausePending && !("error" in host.controlFailure),
+    cutReplies,
     completedBudget: (message) => completedBudgets.get(message.content),
     attempted: new Set(),
     nextIndex: 0,
@@ -2350,10 +2290,31 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   host.nestedAgents.add(nested);
 
   let streamed = "";
+  let currentMessageStreamed = "";
   let lastPush = 0;
   let truncatedToolBatch = false;
-  nested.subscribe((event) => {
+  let join: ActiveReplyJoin | undefined;
+  let lastRecoveryKind: CutReplyReason | undefined;
+  const helperSecrets = () => host.request.pageToolSecrets?.() ?? [];
+  const redactHelper = (text: string) => redactSecrets(text, helperSecrets());
+  const emitReply = (text: string) => {
+    if (!text) return;
+    streamed += text;
+    const now = Date.now();
+    if (now - lastPush < 80) return;
+    lastPush = now;
+    host.queue.push({
+      type: "subagent",
+      agentId,
+      name,
+      task,
+      status: "running",
+      progress: createStreamingRedactor(helperSecrets()).push(streamed).slice(-800),
+    });
+  };
+  nested.subscribe(async (event) => {
     if (event.type === "message_start" && event.message.role === "assistant") {
+      currentMessageStreamed = "";
       truncatedToolBatch = false;
     }
     if (event.type === "tool_execution_start") {
@@ -2370,27 +2331,36 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     }
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta;
-      if (delta) {
-        streamed += delta;
-        const now = Date.now();
-        if (now - lastPush >= 80) {
-          lastPush = now;
-          host.queue.push({
-            type: "subagent",
-            agentId,
-            name,
-            task,
-            status: "running",
-            progress: streamed.slice(-800),
-          });
-        }
-      }
+      currentMessageStreamed += delta;
+      emitReply(join ? join.output.append(delta) : delta);
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
       truncatedToolBatch =
         event.message.stopReason === "length" && messageHasToolCall(event.message);
       const text = assistantText(event.message);
-      if (text && !streamed) streamed = text;
+      const cut = cutReplies.get(event.message.content);
+      if (join) {
+        emitReply(join.output.finish(text, currentMessageStreamed));
+      } else if (
+        (cut || retryState.outputRecoveryFailed) &&
+        text.startsWith(currentMessageStreamed)
+      ) {
+        emitReply(text.slice(currentMessageStreamed.length));
+      } else if (text && !streamed) {
+        streamed = text;
+      }
+      if (join || cut) {
+        lastRecoveryKind = cut ?? lastRecoveryKind;
+        join = await continueCutReply(
+          nested,
+          retryState,
+          event.message,
+          join,
+          streamed,
+          text || currentMessageStreamed,
+        );
+        if (join) lastRecoveryKind = join.kind;
+      }
     }
   });
 
@@ -2425,18 +2395,30 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
     // Shared-budget abort leaves errorMessage on the nested agent; surface it as a
     // completed stop rather than a failed subagent chip.
     const budgetExceeded = host.toolCallBudget.exceeded;
-    const error = nested.state.errorMessage || providerFailureText(nested.state.messages.at(-1));
+    const error =
+      nested.state.errorMessage ||
+      providerFailureText(nested.state.messages.at(-1)) ||
+      (retryState.outputRecoveryFailed
+        ? lastRecoveryKind === "connection"
+          ? MODEL_PARTIAL_FAILURE_ERROR
+          : MODEL_OUTPUT_CUT_ERROR
+        : undefined);
     if (error && !budgetExceeded) {
-      const message = sanitizeProviderError(subagentModel.provider, error);
+      const message = sanitizeProviderError(subagentModel.provider, redactHelper(error));
+      const partial =
+        !host.signal.aborted && (lastRecoveryKind || retryState.outputRecoveryFailed)
+          ? clipToolResultText(redactInterruptedOutput(streamed, helperSecrets()).trim(), 8_000)
+          : "";
+      const failure = `Subagent failed: ${message}`;
       host.queue.push({
         type: "subagent",
         agentId,
         name,
         task,
         status: "failed",
-        result: message,
+        result: partial ? `${partial}\n\n${failure}` : message,
       });
-      return `Subagent failed: ${message}`;
+      return partial ? `${failure}\n\n${partial}` : failure;
     }
     const budgetMessage = budgetExceeded
       ? toolCallBudgetExceededMessage(host.toolCallBudget.limit)
@@ -2445,7 +2427,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
       budgetMessage && streamed.trim()
         ? `${streamed.trim()}\n\n${budgetMessage}`
         : budgetMessage || streamed || assistantText(nested.state.messages.at(-1)) || "done.";
-    const clipped = clipToolResultText(result, 12_000);
+    const clipped = clipToolResultText(redactHelper(result), 12_000);
     host.queue.push({
       type: "subagent",
       agentId,
@@ -3114,7 +3096,7 @@ interface FallbackStreamState {
   onSwitch(target: RuntimeModelTarget): Promise<void>;
   reserveSelfRecovery(): Promise<boolean>;
   canRecover(): boolean;
-  cutReplies?: WeakMap<AssistantMessage["content"], CutReplyReason>;
+  cutReplies: WeakMap<AssistantMessage["content"], CutReplyReason>;
   nextRecovery?: PendingOutputRecovery;
   outputRecoveryFailed?: boolean;
   completedBudget(message: AssistantMessage): PiDispatchBudget | undefined;
@@ -3134,6 +3116,71 @@ interface FallbackStreamState {
     requestDeadline?: number,
     correction?: PiBudgetCorrection,
   ): AssistantMessageEventStream;
+}
+
+type ActiveReplyJoin = {
+  kind: CutReplyReason;
+  recovery: PendingOutputRecovery;
+  start: number;
+  output: ReplyJoin;
+};
+
+async function reserveOutputRecovery(
+  state: FallbackStreamState,
+  signal: AbortSignal,
+  deadline: number,
+): Promise<boolean> {
+  const eligible = () => state.canRecover() && !signal.aborted && Date.now() < deadline;
+  return eligible() && (await state.reserveSelfRecovery()) && eligible();
+}
+
+async function continueCutReply(
+  agent: Agent,
+  state: FallbackStreamState,
+  message: AssistantMessage,
+  previous: ActiveReplyJoin | undefined,
+  streamed: string,
+  text: string,
+): Promise<ActiveReplyJoin | undefined> {
+  let recovery = state.cutReplies.has(message.content) ? state.nextRecovery : undefined;
+  const added = previous ? streamed.slice(previous.start) : text;
+  const tail = added || previous?.output.tail || text;
+  if (
+    !recovery &&
+    previous &&
+    message.stopReason === "stop" &&
+    !messageHasToolCall(message) &&
+    !added.trim() &&
+    !state.signal.aborted
+  ) {
+    if (
+      previous.kind === "limit" &&
+      (await reserveOutputRecovery(state, state.signal, previous.recovery.deadline))
+    ) {
+      recovery = previous.recovery;
+      state.nextRecovery = recovery;
+    } else if (!state.signal.aborted) {
+      state.outputRecoveryFailed = true;
+    }
+  }
+  if (!recovery || recovery.kind === "tool") return;
+  if (state.signal.aborted || !state.canRecover() || Date.now() >= recovery.deadline) {
+    state.nextRecovery = undefined;
+    if (!state.signal.aborted) state.outputRecoveryFailed = true;
+    return;
+  }
+  agent.followUp({
+    role: "user",
+    content:
+      recovery.kind === "limit" ? cutReplyAtLimitPrompt(tail) : CUT_REPLY_CONTINUATION_PROMPT,
+    timestamp: Date.now(),
+  });
+  return {
+    kind: recovery.kind,
+    recovery,
+    start: streamed.length,
+    output: new ReplyJoin(tail, recovery.kind === "limit"),
+  };
 }
 
 function errorFacts(value: unknown) {
@@ -3549,14 +3596,7 @@ function fallbackAwareModelStream(
     let retriedIdle = false;
     let outputSettings = inherited?.settings;
     let lengthRecovered = false;
-    const reserve = async () =>
-      state.canRecover() &&
-      !signalAborted() &&
-      Date.now() < deadline &&
-      (await state.reserveSelfRecovery()) &&
-      state.canRecover() &&
-      !signalAborted() &&
-      Date.now() < deadline;
+    const reserve = () => reserveOutputRecovery(state, signal, deadline);
     const failOutput = (message: AssistantMessage, errorMessage: string) => {
       state.outputRecoveryFailed = true;
       const failure: AssistantMessage = {
@@ -3579,7 +3619,7 @@ function fallbackAwareModelStream(
         content: message.content.filter((part) => part.type === "text"),
         stopReason: "stop",
       };
-      state.cutReplies?.set(cut.content, kind);
+      state.cutReplies.set(cut.content, kind);
       state.nextRecovery = { kind, deadline, settings };
       output.push({ type: "done", reason: "stop", message: cut });
       output.end(cut);
@@ -3901,7 +3941,6 @@ function fallbackAwareModelStream(
             const transientCut =
               idle || (providerFailure && !failureFacts.statuses.has(429) && retryable && canRetry);
             if (
-              state.cutReplies &&
               partial &&
               assistantText(lastPartial).trim() &&
               assistantText(partial).trim() &&
@@ -3990,7 +4029,7 @@ function fallbackAwareModelStream(
                 // Pi emits failed results for all calls in a truncated batch without executing them.
                 state.nextRecovery = { kind: "tool", deadline, settings: nextSettings };
               } else if (text) {
-                if (!state.cutReplies || !sent || !(await reserve())) {
+                if (!sent || !(await reserve())) {
                   if (failIfAborted(target)) return;
                   failOutput(message, MODEL_OUTPUT_CUT_ERROR);
                   return;

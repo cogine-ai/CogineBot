@@ -358,7 +358,7 @@ import {
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
-import { ModelOutputRecoveryError } from "./model-output-recovery.js";
+import { ModelOutputRecoveryError, redactInterruptedOutput } from "./model-output-recovery.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -9729,7 +9729,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               precedingProgress(),
               runSecrets,
             );
-            const text = redactSecrets(boundary.text, runSecrets).trim();
+            const text = redactInterruptedOutput(boundary.text, runSecrets).trim();
             if (text && !containsSecret(text, runSecrets)) partialText = text;
           }
           await settleRunFailure(message, bot, partialText);

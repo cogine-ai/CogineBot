@@ -3420,6 +3420,246 @@ describe("Pi current-call output recovery", () => {
     expect(providerState.delay).toHaveBeenCalledOnce();
   });
 
+  function delegate(input: AgentRunRequest) {
+    input.tools.push({
+      name: "run_subagent",
+      description: "Run helper",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" }, task: { type: "string" } },
+        required: ["name", "task"],
+      },
+      readOnly: true,
+    });
+    return () =>
+      stream(
+        primary,
+        message(
+          primary,
+          [
+            {
+              type: "toolCall",
+              id: "helper-once",
+              name: "run_subagent",
+              arguments: { name: "helper", task: "Report fixture" },
+            },
+          ],
+          "toolUse",
+        ),
+      );
+  }
+
+  it.each(["connection", "limit"] as const)(
+    "joins a helper $0 cut before returning its result to the parent",
+    async (kind) => {
+      const input = request();
+      input.reserveSelfRecovery = vi.fn(async () => true);
+      providerState.stream
+        .mockImplementationOnce(delegate(input))
+        .mockImplementationOnce(() =>
+          kind === "connection" ? disconnected(cut) : reply(cut, "length"),
+        )
+        .mockImplementationOnce(() => reply("ready for review."))
+        .mockImplementationOnce(() => reply("Parent done."));
+
+      const events = await run(input);
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "subagent", status: "completed", result: finished }),
+      );
+      expect(visible(events)).toBe("Parent done.");
+      const helperRetry = providerState.stream.mock.calls[2]![1] as Context;
+      expect(helperRetry.tools).toEqual([]);
+      const parentNext = providerState.stream.mock.calls[3]![1] as Context;
+      expect(parentNext.messages).toContainEqual(
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "helper-once",
+          content: expect.arrayContaining([
+            expect.objectContaining({ type: "text", text: finished }),
+          ]),
+          details: { result: finished },
+        }),
+      );
+      expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+      expect(input.executeTool).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps a failed helper's partial text and shares its allowance with the parent", async () => {
+    const input = request();
+    input.reserveSelfRecovery = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => reply(cut, "length"))
+      .mockImplementationOnce(() => reply("ready for review.", "length"))
+      .mockImplementationOnce(() => reply("Parent partial.", "length"));
+    const events: AgentRuntimeEvent[] = [];
+
+    await expect(run(input, events)).rejects.toThrow("before finishing its reply");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "failed",
+        result: `${finished}\n\nSubagent failed: The model hit its output limit before finishing its reply.`,
+      }),
+    );
+    expect(visible(events)).toBe("Parent partial.");
+    expect(input.reserveSelfRecovery).toHaveBeenCalledTimes(3);
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+  });
+
+  it("retains the terminal-only suffix of a helper cut when no slot remains", async () => {
+    const input = request();
+    input.reserveSelfRecovery = vi.fn(async () => false);
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => {
+        const result = new AssistantMessageEventStream();
+        const partial = message(primary, [part(cut)], "stop");
+        const terminal = message(primary, [part(finished)], "error", "connection reset");
+        result.push({ type: "start", partial: { ...partial, content: [] } });
+        result.push({ type: "text_delta", contentIndex: 0, delta: cut, partial });
+        result.push({ type: "error", reason: "error", error: terminal });
+        result.end(terminal);
+        return result;
+      })
+      .mockImplementationOnce(() => reply("Parent handled the failure."));
+
+    expect(await run(input)).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "failed",
+        result: `${finished}\n\nSubagent failed: connection reset`,
+      }),
+    );
+    expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+  });
+
+  it("redacts a failed helper's partial before clipping it for the card and parent", async () => {
+    const input = request();
+    const secret = `opaque-fixture-value-${"q".repeat(175)}`;
+    const partial = `Visible text. ${"x".repeat(7_850)}${secret} trailing text.`;
+    input.pageToolSecrets = () => [secret];
+    input.reserveSelfRecovery = vi.fn(async () => false);
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => reply(partial, "length"))
+      .mockImplementationOnce(() => reply("Parent handled the failure."));
+
+    const events = await run(input);
+    const failure = events.find((event) => event.type === "subagent" && event.status === "failed");
+    expect(failure).toMatchObject({
+      result: expect.stringContaining("[redacted]"),
+    });
+    expect(JSON.stringify(failure)).not.toContain("opaque-fixture-value-");
+    expect(JSON.stringify(providerState.stream.mock.calls[2]![1])).not.toContain(
+      "opaque-fixture-value-",
+    );
+    expect(input.reserveSelfRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("withholds a known secret prefix from a live helper progress event", async () => {
+    const input = request();
+    const secret = "private-fixture-split-token";
+    const prefix = "This ordinary helper prefix is long enough to show live. ";
+    const first = `${prefix}private-fixture-`;
+    input.pageToolSecrets = () => [secret];
+    const helper = new AssistantMessageEventStream();
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => helper)
+      .mockImplementationOnce(() => reply("Parent done."));
+    const firstMessage = message(primary, [part(first)], "stop");
+    helper.push({ type: "start", partial: { ...firstMessage, content: [] } });
+    helper.push({ type: "text_delta", contentIndex: 0, delta: first, partial: firstMessage });
+
+    const events: AgentRuntimeEvent[] = [];
+    const outcome = run(input, events);
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "subagent",
+          status: "running",
+          progress: expect.stringContaining("ordinary helper prefix"),
+        }),
+      ),
+    );
+    expect(JSON.stringify(events)).not.toContain("private-fixture-");
+    now += 100;
+    const terminal = message(primary, [part(`${prefix}${secret} done.`)], "stop");
+    helper.push({
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "split-token done.",
+      partial: terminal,
+    });
+    helper.push({ type: "done", reason: "stop", message: terminal });
+    helper.end(terminal);
+
+    expect(await outcome).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "completed",
+        result: `${prefix}[redacted] done.`,
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain("private-fixture-");
+    expect(JSON.stringify(providerState.stream.mock.calls[2]![1])).not.toContain(
+      "private-fixture-",
+    );
+  });
+
+  it("does not release a known secret prefix when a helper fails before its suffix arrives", async () => {
+    const input = request();
+    input.pageToolSecrets = () => ["private-fixture-split-token"];
+    input.reserveSelfRecovery = vi.fn(async () => false);
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => disconnected("Visible text. private-fixture-split-"))
+      .mockImplementationOnce(() => reply("Parent handled the failure."));
+
+    const events = await run(input);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "failed",
+        result: expect.stringContaining("Visible text. [redacted]"),
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain("private-fixture-");
+    expect(JSON.stringify(providerState.stream.mock.calls[2]![1])).not.toContain(
+      "private-fixture-",
+    );
+  });
+
+  it("does not execute a helper tool emitted during its text-only continuation", async () => {
+    const input = request();
+    providerState.stream
+      .mockImplementationOnce(delegate(input))
+      .mockImplementationOnce(() => disconnected(cut))
+      .mockImplementationOnce(() =>
+        stream(primary, message(primary, [write("unexpected", "never")], "toolUse")),
+      )
+      .mockImplementationOnce(() => reply("Parent handled the failure."));
+
+    const events = await run(input);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "subagent",
+        status: "failed",
+        result: `${cut}\n\nSubagent failed: The model failed after writing a response.`,
+      }),
+    );
+    expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
+      "run_subagent",
+    ]);
+    expect(providerState.stream).toHaveBeenCalledTimes(4);
+  });
+
   it("shares the original deadline while claiming recovery and does not dispatch after expiry", async () => {
     const input = request();
     let time = 100;

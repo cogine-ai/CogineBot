@@ -24,7 +24,7 @@ export function cutReplyAtLimitPrompt(cut: string): string {
   );
 }
 const MIN_CONTINUATION_OVERLAP = 4;
-export const MAX_CONTINUATION_OVERLAP = 240;
+const MAX_CONTINUATION_OVERLAP = 240;
 
 /**
  * How much of the start of a continuation repeats the end of the cut reply: the longest such
@@ -45,7 +45,7 @@ export function continuationOverlap(
 // Models often open a continuation with an ellipsis before picking the words up again.
 const CONTINUATION_MARKER = /^(?:…|\.{3})[^\S\n]*/;
 /** Longest marker the join may drop, so it waits for enough text to decide. */
-export const MAX_CONTINUATION_MARKER = 4;
+const MAX_CONTINUATION_MARKER = 4;
 
 /**
  * How much of the start of a continuation to drop: its repeat of the end of the cut reply, and
@@ -65,6 +65,39 @@ export function continuationRepeat(cut: string, continuation: string, requested 
     ? marker.length + afterMarker
     : continuationOverlap(cut, continuation, minimum);
 }
+/** Hold only the start of a continuation until its repeated prefix can be removed. */
+export class ReplyJoin {
+  private held = "";
+  private released = false;
+
+  constructor(
+    readonly tail: string,
+    private readonly requested: boolean,
+  ) {}
+
+  append(delta: string): string {
+    if (this.released) return delta;
+    this.held += delta;
+    return this.held.length >
+      Math.min(this.tail.length, MAX_CONTINUATION_OVERLAP) + MAX_CONTINUATION_MARKER
+      ? this.release()
+      : "";
+  }
+
+  finish(text: string, streamed: string): string {
+    if (this.released) return text.startsWith(streamed) ? text.slice(streamed.length) : "";
+    if (text.startsWith(streamed)) this.held = text;
+    return this.release();
+  }
+
+  private release(): string {
+    this.released = true;
+    const text = this.held.slice(continuationRepeat(this.tail, this.held, this.requested));
+    this.held = "";
+    return text;
+  }
+}
+
 const LOWEST_FIRST_THINKING_LEVELS: readonly ModelThinkingLevel[] = [
   "minimal",
   "low",

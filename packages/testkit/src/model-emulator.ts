@@ -16,7 +16,7 @@ export interface ModelEmulatorRequest {
 }
 
 export type ModelEmulatorResponse =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; finishReason?: "content_filter" }
   | {
       type: "tool";
       id: string;
@@ -150,7 +150,7 @@ export async function startModelEmulator(options: {
           response.destroy();
           return;
         }
-        emit({}, "stop");
+        emit({}, reply.finishReason ?? "stop");
       }
       emitUsage();
       response.end("data: [DONE]\n\n");
