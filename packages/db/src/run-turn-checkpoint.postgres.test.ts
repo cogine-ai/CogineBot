@@ -12,7 +12,11 @@ import {
 } from "./events.js";
 import { expireStuckRun } from "./expire-stuck-run.js";
 import { createThreadMessage } from "./messages.js";
-import { claimRoutineRetry } from "./routine-retry.js";
+import {
+  claimRoutineRetry,
+  lockRoutineRetryThread,
+  revokePendingRoutineRetries,
+} from "./routine-retry.js";
 import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
 import { reserveRunSelfRecovery } from "./run-self-recovery.js";
 import {
@@ -256,6 +260,39 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     });
   });
 
+  it("does not claim a retry that was revoked after its initial read", async () => {
+    const f = await seedRetry();
+    const terminal = await finalizeRun(prisma, f.failure);
+    const due = terminal === false ? undefined : terminal.routineRetryAt;
+    if (!due) throw new Error("Missing routine retry intent");
+    let revoked = false;
+    const racingPrisma = prisma.$extends({
+      query: {
+        run: {
+          async findFirst({ args, query }) {
+            const run = await query(args);
+            if (run && args.where?.id === f.run.id && !revoked) {
+              await prisma.$transaction(async (tx) => {
+                await lockRoutineRetryThread(tx, f.thread.id);
+                await revokePendingRoutineRetries(tx, { spaceId, threadId: f.thread.id });
+              });
+              revoked = true;
+            }
+            return run;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    await expect(claimRoutineRetry(racingPrisma, f.run.id, due)).resolves.toBeNull();
+    expect(revoked).toBe(true);
+    expect(await prisma.run.count({ where: { retryOfRunId: f.run.id } })).toBe(0);
+    expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+      status: "failed",
+      routineRetryAt: null,
+    });
+  });
+
   it.each(["Routine pause", "Group membership loss"] as const)(
     "cancels an unstarted retry after %s and continues only authorized human steering",
     async (revocation) => {
@@ -334,6 +371,82 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       });
     },
   );
+
+  it("leaves cancellation and steering to the worker that replaced the retry lease", async () => {
+    const f = await seedRetry();
+    const terminal = await finalizeRun(prisma, f.failure);
+    const due = terminal === false ? undefined : terminal.routineRetryAt;
+    if (!due) throw new Error("Missing routine retry intent");
+    const child = await claimRoutineRetry(prisma, f.run.id, due);
+    if (!child) throw new Error("Missing routine retry Run");
+    await prisma.run.update({
+      where: { id: child.runId },
+      data: {
+        status: "running",
+        leaseOwner: "retry-worker",
+        leaseFence: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await prisma.routine.update({
+      where: { id: f.routine.id },
+      data: { active: false, nextRunAt: null, latestRunId: null },
+    });
+    const message = await createThreadMessage(prisma, {
+      threadId: f.thread.id,
+      role: "user",
+      blocks: [{ kind: "text", text: "Continue with my changes." }],
+    });
+    const pending = await prisma.steeringMessage.create({
+      data: { messageId: message.id, botId, userId },
+    });
+
+    let leaseReplaced = false;
+    const racingPrisma = prisma.$extends({
+      query: {
+        run: {
+          async findFirst({ args, query }) {
+            const run = await query(args);
+            if (run && args.where?.id === child.runId && !leaseReplaced) {
+              // Commit on a separate connection after the first-start worker read its lease.
+              await prisma.run.update({
+                where: { id: child.runId },
+                data: { leaseOwner: "replacement-worker", leaseFence: 2 },
+              });
+              leaseReplaced = true;
+            }
+            return run;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    await expect(
+      beginRoutineRetryExecution(racingPrisma, {
+        ...child,
+        workerId: "retry-worker",
+        fence: 1,
+        startedAt: new Date(),
+      }),
+    ).resolves.toEqual({ started: false });
+    expect(leaseReplaced).toBe(true);
+    expect(
+      await prisma.run.findUniqueOrThrow({ where: { id: child.runId }, include: { task: true } }),
+    ).toMatchObject({
+      status: "running",
+      startedAt: null,
+      leaseOwner: "replacement-worker",
+      leaseFence: 2,
+      task: { status: "queued" },
+    });
+    expect(await prisma.event.count({ where: { runId: child.runId } })).toBe(0);
+    expect(await prisma.run.count({ where: { threadId: f.thread.id, trigger: "follow_up" } })).toBe(
+      0,
+    );
+    expect(
+      await prisma.steeringMessage.findUniqueOrThrow({ where: { id: pending.id } }),
+    ).toMatchObject({ runId: null, claimedAt: null });
+  });
 
   it("keeps a human steering continuation instead of a background retry", async () => {
     const f = await seedRetry();

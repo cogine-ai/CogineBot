@@ -262,8 +262,10 @@ export async function claimRoutineRetry(
       if (!candidate) return null;
       const targetLocked = await lockRetryTarget(tx, candidate);
 
-      const source = await tx.run.findFirst({
+      // Consume the due intent and read its payload after acquiring the target locks.
+      const [source] = await tx.run.updateManyAndReturn({
         where: { ...intent, routineRetryAt: { lte: now ?? new Date() } },
+        data: { routineRetryAt: null },
         select: {
           id: true,
           spaceId: true,
@@ -271,7 +273,6 @@ export async function claimRoutineRetry(
           botId: true,
           threadId: true,
           routineId: true,
-          routineRetryAt: true,
           clientNonce: true,
           modelPinned: true,
           modelProvider: true,
@@ -288,18 +289,14 @@ export async function claimRoutineRetry(
           },
         },
       });
-      if (!source) return null;
-      const consume = await tx.run.updateMany({
-        where: { ...intent, routineRetryAt: source.routineRetryAt },
-        data: { routineRetryAt: null },
-      });
-      if (consume.count !== 1 || !targetLocked || !source.routineId) return null;
+      if (!source || !targetLocked || !source.routineId) return null;
 
       const routine = await readRetryRoutine(tx, source);
       const scope = { spaceId: source.spaceId, userId: source.userId };
       if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
       if (!(await retryAuthorizationIsCurrent(tx, candidate, source, verifyNativeSource)))
         return null;
+      // Authorization can wait on locks long enough to enter the next-run window.
       if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
 
       const destination = {
@@ -353,15 +350,13 @@ export async function lockRoutineRetryExecution(
   input: RoutineRetryExecutionInput,
   verifyNativeSource?: VerifyRoutineRetryNativeSource,
 ) {
-  const fence = firstRoutineRetryExecutionFence(input);
-  const candidate = await tx.run.findFirst({ where: fence, select: retryTarget });
-  if (!candidate) return null;
-  const targetLocked = await lockRetryTarget(tx, candidate);
   const child = await tx.run.findFirst({
-    where: fence,
+    where: firstRoutineRetryExecutionFence(input),
     select: { ...retryTarget, id: true, retryOfRunId: true, taskId: true },
   });
   if (!child) return null;
+  // The start and cancellation writes fence lease changes after this identity read.
+  const targetLocked = await lockRetryTarget(tx, child);
   if (!targetLocked || !child.routineId || !child.retryOfRunId) return { child, allowed: false };
 
   const original = await tx.run.findFirst({
@@ -394,6 +389,7 @@ export async function lockRoutineRetryExecution(
   const authorized = await retryAuthorizationIsCurrent(tx, child, original, verifyNativeSource);
   return {
     child,
+    // The Routine row is locked, but time can pass during authorization.
     allowed: authorized && canRetryRoutine(routine, original.id, new Date(), child.id),
   };
 }
