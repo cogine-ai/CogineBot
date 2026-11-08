@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { writeClipboard } from "../../lib/copy-text";
 
 export function usePageLinkCopy() {
@@ -8,13 +8,17 @@ export function usePageLinkCopy() {
   const revision = useRef(0);
   const timer = useRef<number | undefined>(undefined);
 
-  useLayoutEffect(
-    () => () => {
-      revision.current++;
-      window.clearTimeout(timer.current);
-    },
-    [],
-  );
+  const cancel = useCallback(() => {
+    revision.current++;
+    window.clearTimeout(timer.current);
+  }, []);
+  useLayoutEffect(() => cancel, [cancel]);
+
+  const reset = useCallback(() => {
+    cancel();
+    setCopied(false);
+    setManualUrl(null);
+  }, [cancel]);
 
   function copy(url: string, isCurrent: () => boolean = () => true) {
     const action = ++revision.current;
@@ -28,7 +32,7 @@ export function usePageLinkCopy() {
     });
   }
 
-  return { copied, copy, manualUrl };
+  return { copied, copy, manualUrl, reset };
 }
 
 export function ManualPageLinkCopy({ url }: { url: string }) {

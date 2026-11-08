@@ -62,7 +62,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
   const busy = useRef(true);
   const pendingTab = useRef<Window | null>(null);
   const title = useRef<HTMLHeadingElement>(null);
-  const { copy, copied, manualUrl } = usePageLinkCopy();
+  const { copy, copied, manualUrl, reset: resetCopy } = usePageLinkCopy();
   const pageId = page.id;
   const visibility = state?.visibility ?? (page.sharedByLink ? "link" : null);
   const publishingEnabled = state?.publishingEnabled === true;
@@ -76,6 +76,7 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
     const { signal } = controller;
     lifetime.current = controller;
     busy.current = true;
+    resetCopy();
     setPending(true);
     const current = () => !signal.aborted && store.isCurrent();
     void store.client.pages
@@ -97,13 +98,14 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
       pendingTab.current?.close();
       pendingTab.current = null;
     };
-  }, [pageId, store, t]);
+  }, [pageId, resetCopy, store, t]);
 
   async function perform(work: (signal: AbortSignal, current: () => boolean) => Promise<void>) {
     const signal = lifetime.current?.signal;
     if (!signal || signal.aborted || !store.isCurrent() || busy.current) return;
     const current = () => !signal.aborted && store.isCurrent();
     busy.current = true;
+    resetCopy();
     setPending(true);
     setError(null);
     try {
