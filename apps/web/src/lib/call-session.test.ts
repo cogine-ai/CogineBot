@@ -242,6 +242,44 @@ describe("call session", () => {
     expect(callIdFromClientNonce(String(answer.mock.calls[0]?.[0]?.clientNonce))).toBeDefined();
   });
 
+  it("sends a shared Page approval to chat without accepting a spoken answer", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls.at(-1)?.[0];
+    const ask: ThreadMessage = {
+      ...botMessage("ask-page", ""),
+      blocks: [
+        {
+          kind: "ask",
+          approvalEffectId: "effect-page",
+          reviewMode: "screen",
+          text: "Update shared page “Report”?",
+          detail: "- Unpublished before\n+ Unpublished after",
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Allow once" },
+            { id: "deny", label: "Deny" },
+          ],
+        },
+      ],
+    };
+    getThread.mockResolvedValue(
+      snapshot([ask], { ...runningRun, status: "waiting_input" } as ThreadSnapshot["run"]) as never,
+    );
+    await heard("update the report");
+    await feed?.refresh();
+
+    expect(speak).toHaveBeenCalledExactlyOnceWith(
+      "Hang up, then review the changes in chat.",
+      expect.objectContaining({ messageId: "ask-page" }),
+    );
+    expect(dictation.stop).toHaveBeenCalledWith("cancel");
+    await heard("yes");
+    expect(answer).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+    expect(getSnapshot()).toMatchObject({ caption: "Hang up, then review the changes in chat." });
+  });
+
   it("drops a send that finishes after the same bot is called again", async () => {
     let finishSend: (value: { runId: string; taskId: string }) => void = () => undefined;
     let failSend: (error: Error) => void = () => undefined;

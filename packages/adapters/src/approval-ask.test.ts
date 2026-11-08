@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 import { buildApprovalAskBlock } from "./approval-ask.js";
 
 describe("buildApprovalAskBlock", () => {
+  it("presents the complete shared Page change for a one-time visual decision", () => {
+    const detail = `- <Text>Before</Text>\n+ <Text>After</Text>\n${"x".repeat(3_958)}`;
+
+    expect(
+      buildApprovalAskBlock("effect-page", "save_page", {}, [], {
+        sharedPageUpdate: { title: "Weekly [report](https://example.test)", detail },
+      }),
+    ).toEqual({
+      kind: "ask",
+      approvalEffectId: "effect-page",
+      reviewMode: "screen",
+      text: "Update shared page “Weekly [report](https://example.test)”?",
+      detail,
+      status: "pending",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+  });
+
   it("keeps a declined connection's requester readable without letting the label format the card", () => {
     const block = buildApprovalAskBlock(
       "effect-connection",

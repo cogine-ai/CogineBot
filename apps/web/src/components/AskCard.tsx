@@ -102,7 +102,7 @@ export function AskCard({
       className="max-w-[74%] rounded-2xl border border-border bg-card px-5 py-4"
     >
       <div className="text-[15.5px] leading-[1.5] text-foreground">
-        <ChatMarkdown>{block.text}</ChatMarkdown>
+        {block.reviewMode === "screen" ? block.text : <ChatMarkdown>{block.text}</ChatMarkdown>}
       </div>
       {secretInput && block.credential ? (
         <div

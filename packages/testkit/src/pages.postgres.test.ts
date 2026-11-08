@@ -1,9 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Actor } from "@rakazo/contracts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ComposioEmulator } from "@rakazo/adapters";
+import type { Actor, ModelCredential } from "@rakazo/contracts";
+import { callClientNonce } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
+  createThreadEvents,
   deletePageShareSecrets,
   IsolationError,
   PAGE_SHARE_SECRET_KIND,
@@ -15,6 +21,7 @@ import {
   verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { createApp } from "../../../apps/api/src/app.js";
 import {
   getPage,
   listPages,
@@ -23,8 +30,14 @@ import {
   removePage,
   renamePage,
 } from "../../../apps/api/src/pages.js";
+import { TeamChatBridge } from "../../../apps/api/src/team-chat-bridge.js";
+import { prepareSharedPageUpdate } from "../../adapters/src/page-share-update.js";
 import type { PageToolContext } from "../../adapters/src/page-tools.js";
 import { recoverSavedPageFromTool, savePageFromTool } from "../../adapters/src/page-tools.js";
+import { parseStoredScriptedState } from "../../adapters/src/scripted-state.js";
+import { discardBotIntroRun } from "./discard-bot-intro.js";
+import { sessionCookieHeader } from "./index.js";
+import { startModelEmulator } from "./model-emulator.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgres =
@@ -35,6 +48,7 @@ const postgres =
     : describe.skip;
 const source = (text: string) =>
   `export default function App() { return <Page title="Example"><Text>${text}</Text></Page>; }`;
+const appOrigin = "http://127.0.0.1:5173";
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const preparedShare = ({ botId, groupId }: { botId: string | null; groupId: string | null }) => {
   const id = randomUUID();
@@ -86,6 +100,32 @@ function afterPageRead(prisma: PrismaClient, observe: () => Promise<void>) {
       ),
     ),
   );
+}
+
+async function pageAppSession(handles: Awaited<ReturnType<typeof createApp>>) {
+  const signup = await handles.app.request("/api/auth/sign-up/email", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: appOrigin },
+    body: JSON.stringify({
+      email: `page-approval-${randomUUID()}@example.test`,
+      password: "password12",
+      name: "Page approval fixture",
+    }),
+  });
+  expect(signup.status).toBeLessThan(400);
+  const cookie = sessionCookieHeader(signup);
+  const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
+    const response = await handles.app.request(`/rpc/${procedure}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, origin: appOrigin },
+      body: JSON.stringify({ json: input }),
+    });
+    const body = (await response.json()) as { json?: T; error?: { message?: string } };
+    if (response.status >= 400 || body.error)
+      throw new Error(`${procedure}: ${body.error?.message ?? response.status}`);
+    return body.json as T;
+  };
+  return { cookie, rpc };
 }
 
 postgres("private Pages operations (isolated PostgreSQL)", () => {
@@ -180,6 +220,502 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     }
     if (failures.length) throw new AggregateError(failures, "Pages fixture cleanup failed");
   });
+
+  it.each(["allow", "deny", "rotated", "marker-only denial", "TeamChat"] as const)(
+    "binds a real Pi public update to its reviewed change and one outcome (%s)",
+    async (outcome) => {
+      const pageId = randomUUID();
+      const args = { pageId, edits: [{ find: "Original value", replace: "Reviewed value" }] };
+      const markerOnly = outcome === "marker-only denial";
+      const denied = outcome === "deny" || markerOnly;
+      const teamChat = outcome === "TeamChat";
+      const callId = markerOnly ? "recover-page" : "update-page";
+      const toolArgs = { name: "save_page", arguments: args };
+      const fixtureKey = "offline-page-approval-key";
+      const model = await startModelEmulator({
+        apiKey: fixtureKey,
+        steps: [
+          {
+            expect(request) {
+              expect(request.tools).toContainEqual(
+                expect.objectContaining({
+                  function: expect.objectContaining({ name: "use_tool" }),
+                }),
+              );
+            },
+            response: {
+              type: "tool",
+              id: "update-page",
+              name: "use_tool",
+              arguments: toolArgs,
+            },
+          },
+          ...(markerOnly
+            ? [
+                {
+                  expect(request) {
+                    const continuation = request.messages
+                      .flatMap((message) =>
+                        typeof message.content === "string" ? message.content.split("\n") : [],
+                      )
+                      .find((line) => line.startsWith("use_tool: "));
+                    expect(continuation).toBeDefined();
+                    expect(JSON.parse(continuation!.slice("use_tool: ".length))).toEqual(toolArgs);
+                    expect(JSON.stringify(request.messages)).not.toMatch(
+                      /candidateDigest|baseTitleDigest|requestKind/,
+                    );
+                  },
+                  response: {
+                    type: "tool" as const,
+                    id: callId,
+                    name: "use_tool",
+                    arguments: toolArgs,
+                  },
+                },
+              ]
+            : []),
+          {
+            expect(request) {
+              const result = request.messages.filter(
+                (message) => message.role === "tool" && message.tool_call_id === callId,
+              );
+              expect(result).toHaveLength(1);
+              const body = JSON.parse(String(result[0]?.content));
+              if (outcome === "allow") expect(body).toMatchObject({ pageId, version: 2 });
+              else if (teamChat)
+                expect(body).toMatchObject({
+                  error: "This shared Page update needs approval in the owner's chat.",
+                  unchanged: true,
+                });
+              else expect(JSON.stringify(body)).toMatch(denied ? /denied/i : /changed/i);
+              expect(JSON.stringify(request.messages)).not.toMatch(
+                /candidateDigest|baseTitleDigest|requestKind/,
+              );
+            },
+            response: { type: "text", text: "Finished checking the update." },
+          },
+        ],
+      });
+      const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-approval-"));
+      let stop: (() => Promise<void>) | undefined;
+      let bridge: TeamChatBridge | undefined;
+      try {
+        const { createApp } = await import("../../../apps/api/src/app.ts");
+        const handles = await createApp({
+          databaseUrl: runtimeUrl!,
+          realtimeDatabaseUrl: runtimeUrl!,
+          authUrl: appOrigin,
+          webOrigin: appOrigin,
+          dataDir,
+          sandboxProvider: "fake",
+          agentRuntime: "pi",
+          wakeupDriver: "memory",
+          signupsEnabled: "true",
+          composio: new ComposioEmulator(),
+          encryptionKey: "offline-page-approval-encryption-key",
+        });
+        stop = handles.stop;
+        const { cookie, rpc } = await pageAppSession(handles);
+        const credential = await rpc<ModelCredential>("models/connect", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          baseUrl: model.baseUrl,
+          apiKey: fixtureKey,
+          contextWindow: 160_000,
+          maxTokens: 4096,
+        });
+        const bot = await rpc<{ id: string }>("bots/create", {
+          name: "Page approval fixture",
+          title: "",
+          description: "",
+          notifyOnFinish: false,
+        });
+        await discardBotIntroRun(handles, cookie, bot.id);
+        await rpc("bots/update", {
+          botId: bot.id,
+          modelProvider: model.model.provider,
+          modelId: model.model.id,
+          modelCredentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        });
+        const db = admin();
+        const { spaceId, userId } = await db.bot.findUniqueOrThrow({ where: { id: bot.id } });
+        const scope = { spaceId, userId, botId: bot.id, groupId: null };
+        const share = preparedShare(scope);
+        await db.page.create({
+          data: {
+            ...scope,
+            id: pageId,
+            title: "Inventory",
+            versions: {
+              create: {
+                version: 1,
+                title: "Inventory",
+                source: source("Original value"),
+                code: "fixture current render",
+              },
+            },
+          },
+        });
+        await runAsTenant({ spaceId, userId }, () => swapPageShare(client(), scope, pageId, share));
+        await db.actionApprovalRule.create({
+          data: {
+            spaceId,
+            createdByUserId: userId,
+            matchKind: "tool",
+            matchValue: "save_page",
+            effect: "always_allow",
+          },
+        });
+        const prompt = "Update the shared inventory page.";
+        let runId: string;
+        if (teamChat) {
+          const chat = new TeamChatBridge({
+            prisma: handles.prisma,
+            events: createThreadEvents(handles.prisma),
+            jobs: handles.jobs,
+            providerId: "slack",
+            botId: bot.id,
+            send: async () => ({ handle: "fixture-outbound" }),
+          });
+          bridge = chat;
+          const eventId = randomUUID();
+          const target = await runAsTenant({ spaceId, userId }, async () => {
+            await chat.start();
+            return chat.receive({
+              eventId,
+              workspaceId: "fixture-workspace",
+              kind: "direct",
+              conversationType: "channel",
+              conversationKey: "fixture-channel",
+              conversationId: "fixture-channel",
+              senderId: "fixture-sender",
+              senderName: "Fixture sender",
+              content: prompt,
+              replyThreadId: null,
+            });
+          });
+          const inbound = await db.externalMessage.findFirstOrThrow({
+            where: {
+              providerEventId: eventId,
+              externalConversation: { thread: { id: target.threadId } },
+            },
+          });
+          if (!inbound.runId) throw new Error("Expected the TeamChat bridge to queue a Run");
+          runId = inbound.runId;
+        } else {
+          ({ runId } = await rpc<{ runId: string }>("threads/send", {
+            botId: bot.id,
+            text: prompt,
+          }));
+        }
+        const waitForStatus = async (status: string) => {
+          await expect
+            .poll(
+              async () => {
+                const run = await db.run.findUniqueOrThrow({ where: { id: runId } });
+                if (run.status === "failed") model.assertComplete();
+                return run.status;
+              },
+              { timeout: 12_000, interval: 100 },
+            )
+            .toBe(status);
+        };
+        if (teamChat) {
+          await waitForStatus("completed");
+          model.assertComplete();
+          expect(await db.externalEffect.count({ where: { runId, kind: "save_page" } })).toBe(0);
+          expect(await db.pageVersion.count({ where: { pageId } })).toBe(1);
+          expect(
+            await db.message.findMany({ where: { runId, role: "bot" }, select: { blocks: true } }),
+          ).not.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                blocks: expect.arrayContaining([expect.objectContaining({ kind: "ask" })]),
+              }),
+            ]),
+          );
+          return;
+        }
+        await waitForStatus("waiting_input");
+        expect(model.requests).toHaveLength(1);
+        const effect = await db.externalEffect.findFirstOrThrow({
+          where: { runId, kind: "save_page", status: "intended" },
+        });
+        expect(effect.request).toMatchObject({
+          requestKind: "shared_page_update",
+          args,
+          page: { id: pageId, version: 1 },
+          detail: expect.stringMatching(/Original value[\s\S]*Reviewed value/),
+        });
+        const card = await db.message.findFirstOrThrow({
+          where: { runId, role: "bot" },
+          orderBy: { seq: "desc" },
+        });
+        expect(card.blocks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "ask",
+              approvalEffectId: effect.id,
+              reviewMode: "screen",
+              actions: [
+                expect.objectContaining({ id: "allow" }),
+                expect.objectContaining({ id: "deny" }),
+              ],
+            }),
+          ]),
+        );
+        const answerInput = { botId: bot.id, runId, messageId: card.id };
+        await expect(rpc("threads/answer", { ...answerInput, answer: "always" })).rejects.toThrow();
+        await expect(
+          rpc("threads/answer", {
+            ...answerInput,
+            answer: "allow",
+            clientNonce: callClientNonce("fixture-call"),
+          }),
+        ).rejects.toThrow();
+        expect(await db.externalEffect.findUniqueOrThrow({ where: { id: effect.id } })).toEqual(
+          effect,
+        );
+        if (outcome === "rotated") {
+          await runAsTenant({ spaceId, userId }, async () => {
+            await swapPageShare(client(), scope, pageId, null);
+            await swapPageShare(client(), scope, pageId, preparedShare(scope));
+          });
+        }
+        if (markerOnly) {
+          const checkpoint = await db.externalEffect.findFirstOrThrow({
+            where: { runId, kind: "runtime_checkpoint", status: "runtime_checkpoint" },
+          });
+          const prefix = "shared-page-approval-v1:";
+          if (typeof checkpoint.result !== "string" || !checkpoint.result.startsWith(prefix))
+            throw new Error("Expected a shared Page checkpoint");
+          const { transcript, ...marker } = JSON.parse(checkpoint.result.slice(prefix.length));
+          expect(transcript).toEqual(expect.any(String));
+          expect(marker).toEqual({
+            effectKey: effect.idempotencyKey,
+            requestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          });
+          await db.externalEffect.update({
+            where: { id: checkpoint.id },
+            data: { result: `${prefix}${JSON.stringify(marker)}` },
+          });
+        }
+        await rpc("threads/answer", {
+          ...answerInput,
+          answer: denied ? "deny" : "allow",
+        });
+        await waitForStatus("completed");
+        model.assertComplete();
+        expect(model.requests).toHaveLength(markerOnly ? 3 : 2);
+        const rows = await db.externalEffect.findMany({ where: { runId, kind: "save_page" } });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: effect.id,
+          request: effect.request,
+          status: denied ? "denied" : "completed",
+        });
+        expect(
+          await db.pageVersion.findMany({
+            where: { pageId },
+            orderBy: { version: "asc" },
+            select: { source: true },
+          }),
+        ).toEqual([
+          { source: source("Original value") },
+          ...(outcome === "allow" ? [{ source: source("Reviewed value") }] : []),
+        ]);
+      } finally {
+        try {
+          try {
+            await bridge?.stop();
+          } finally {
+            await stop?.();
+          }
+        } finally {
+          await model.close();
+          await rm(dataDir, { recursive: true, force: true });
+        }
+      }
+    },
+    45_000,
+  );
+
+  it("resumes one shared Page approval at the same scripted cursor under row security", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-scripted-approval-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: runtimeUrl!,
+        realtimeDatabaseUrl: runtimeUrl!,
+        authUrl: appOrigin,
+        webOrigin: appOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "scripted",
+        defaultProvider: "scripted",
+        defaultModel: "scripted",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        composio: new ComposioEmulator(),
+        encryptionKey: "offline-page-approval-encryption-key",
+      });
+      stop = handles.stop;
+      const { cookie, rpc } = await pageAppSession(handles);
+      const { id: botId } = await rpc<{ id: string }>("bots/create", {
+        name: "Scripted Page fixture",
+        title: "",
+        description: "",
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, botId);
+      const enqueue = handles.jobs.enqueue.bind(handles.jobs);
+      const held = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
+        if (job.name !== "run.continue") await enqueue(job);
+      });
+      try {
+        const db = admin();
+        const { spaceId, userId } = await db.bot.findUniqueOrThrow({ where: { id: botId } });
+        const scope = { spaceId, userId, botId, groupId: null };
+        const { id: pageId } = await db.page.create({
+          data: {
+            ...scope,
+            title: "Inventory",
+            versions: {
+              create: {
+                version: 1,
+                title: "Inventory",
+                source: source("Original value"),
+                code: "fixture current render",
+              },
+            },
+          },
+        });
+        const tenant = <T>(work: () => Promise<T>) => runAsTenant({ spaceId, userId }, work);
+        await tenant(() => swapPageShare(client(), scope, pageId, preparedShare(scope)));
+        const { runId: initialId } = await rpc<{ runId: string }>("threads/send", {
+          botId,
+          text: "Initial task",
+        });
+        const leaseOwner = "initial-scripted-worker";
+        const leaseFence = 2;
+        const initial = await db.run.update({
+          where: { id: initialId, status: "queued" },
+          data: {
+            status: "running",
+            leaseOwner,
+            leaseFence,
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+          },
+        });
+        const attempt = await db.attempt.create({
+          data: { runId: initialId, fence: leaseFence, status: "running" },
+        });
+        const args = { pageId, edits: [{ find: "Original value", replace: "Reviewed value" }] };
+        for (const text of [
+          "write a file called notes/before-review.txt that says before-review",
+          `call save_page with ${JSON.stringify(args)}`,
+          "write a file called notes/after-review.txt that says after-review",
+        ]) {
+          await rpc("threads/send", { botId, text });
+        }
+        const events = createThreadEvents(handles.prisma);
+        const finished = await tenant(() =>
+          events.finalizeRun({
+            spaceId,
+            threadId: initial.threadId,
+            botId,
+            runId: initial.id,
+            taskId: initial.taskId,
+            attemptId: attempt.id,
+            leaseOwner,
+            leaseFence,
+            outcome: "completed",
+            blocks: [{ kind: "text", text: "Initial answer" }],
+          }),
+        );
+        const runId = finished?.continuationRunId;
+        if (!runId) throw new Error("Expected a steering continuation");
+        await tenant(() => handles.executor.continueRun(runId, "scripted-page-pause-worker"));
+        const paused = await db.run.findUniqueOrThrow({ where: { id: runId } });
+        expect(paused.status).toBe("waiting_input");
+        const checkpoint = parseStoredScriptedState(paused.scriptedState, runId);
+        expect(checkpoint).toMatchObject({
+          version: 4,
+          pause: { kind: "input", attemptId: checkpoint.attemptId, fence: checkpoint.fence },
+          state: { cursor: { phase: "tool" } },
+          pendingEffect: { kind: "save_page", requestKind: "shared_page_update" },
+        });
+        const effect = await db.externalEffect.findFirstOrThrow({
+          where: { runId, kind: "save_page" },
+        });
+        expect(effect).toMatchObject({ id: checkpoint.pendingEffect!.id, status: "intended" });
+        const messageId = checkpoint.pause!.messageId!;
+        const card = await db.message.findUniqueOrThrow({ where: { id: messageId, runId } });
+        expect(card.blocks).toEqual([
+          expect.objectContaining({
+            kind: "ask",
+            approvalEffectId: effect.id,
+            reviewMode: "screen",
+            detail: expect.stringMatching(/Original value[\s\S]*Reviewed value/),
+          }),
+        ]);
+        expect(await db.pageVersion.count({ where: { pageId } })).toBe(1);
+        const fileEffects = () =>
+          db.externalEffect.findMany({ where: { runId, kind: "write_file" } });
+        const before = await fileEffects();
+        expect(before).toEqual([
+          expect.objectContaining({
+            status: "completed",
+            request: expect.objectContaining({ path: "notes/before-review.txt" }),
+          }),
+        ]);
+
+        await rpc("threads/answer", { botId, runId, messageId, answer: "allow" });
+        await tenant(() => handles.executor.continueRun(runId, "scripted-page-resume-worker"));
+
+        await expect(db.run.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
+          status: "completed",
+        });
+        const effects = await db.externalEffect.findMany({ where: { runId, kind: "save_page" } });
+        expect(effects).toEqual([
+          expect.objectContaining({
+            id: effect.id,
+            idempotencyKey: effect.idempotencyKey,
+            request: effect.request,
+            status: "completed",
+          }),
+        ]);
+        expect(
+          await db.pageVersion.findMany({
+            where: { pageId },
+            orderBy: { version: "asc" },
+            select: { source: true },
+          }),
+        ).toEqual([{ source: source("Original value") }, { source: source("Reviewed value") }]);
+        const after = await fileEffects();
+        expect(after).toHaveLength(2);
+        expect(after).toEqual(
+          expect.arrayContaining([
+            before[0],
+            expect.objectContaining({
+              status: "completed",
+              request: expect.objectContaining({ path: "notes/after-review.txt" }),
+            }),
+          ]),
+        );
+      } finally {
+        held.mockRestore();
+      }
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    }
+  }, 45_000);
 
   async function setup(trigger = "user", groupChat = false) {
     const id = randomUUID();
@@ -281,6 +817,67 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
       cardWhere,
     };
   }
+
+  it("keeps an unapproved private write private across a concurrent share", async () => {
+    const f = await setup();
+    const page = await f.seed("Inventory");
+    const args = { pageId: page.id, source: source("Updated privately") };
+    const effect = await f.newEffect(args);
+    const interleaved = withTransaction(client(), async (next, work) => {
+      await swapPageShare(client(), f.actor, page.id, preparedShare(page));
+      return next(work);
+    });
+
+    await expect(
+      f.tenant(() => savePageFromTool(f.context(effect, interleaved), args)),
+    ).resolves.toMatchObject({ unchanged: true });
+
+    expect(await admin().page.findUniqueOrThrow({ where: { id: page.id } })).toMatchObject({
+      visibility: "link",
+      currentVersion: 1,
+    });
+    expect(await admin().pageVersion.count({ where: { pageId: page.id } })).toBe(1);
+    expect(await admin().event.count({ where: f.cardWhere })).toBe(0);
+    expect(
+      await admin().externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+    ).toMatchObject({
+      result: null,
+    });
+  });
+
+  it.each([true, false])(
+    "honors the owner's concurrent rename in a shared Routine update (explicit title: %s)",
+    async (explicitTitle) => {
+      const f = await setup("routine");
+      const page = await f.seed("Inventory");
+      const args = {
+        pageId: page.id,
+        source: source("Reviewed content"),
+        ...(explicitTitle ? { title: "Reviewed title" } : {}),
+      };
+      const prepared = await f.tenant(async () => {
+        await swapPageShare(client(), f.actor, page.id, preparedShare(page));
+        return prepareSharedPageUpdate(f.context({ id: "prepare-only" }), args);
+      });
+      if (!prepared || !("request" in prepared)) throw new Error("Expected a shared Page review");
+      const effect = await f.newEffect(prepared.request as Prisma.InputJsonObject, "executing");
+      const ctx = { ...f.context(effect), approvedSharedPageRequest: prepared.request };
+      await f.tenant(() => renamePage(client(), f.actor, page.id, "Owner rename"));
+
+      const outcome = await f.tenant(() => savePageFromTool(ctx, args));
+      if (explicitTitle) {
+        expect(outcome).toMatchObject({ unchanged: true });
+        expect(await admin().pageVersion.count({ where: { pageId: page.id } })).toBe(1);
+      } else {
+        expect(outcome).toMatchObject({ pageId: page.id, version: 2, title: "Owner rename" });
+        await f.tenant(() => swapPageShare(client(), f.actor, page.id, null));
+        await expect(
+          f.tenant(() => recoverSavedPageFromTool(f.context(effect), args)),
+        ).resolves.toEqual(outcome);
+      }
+      expect(await admin().event.count({ where: f.cardWhere })).toBe(0);
+    },
+  );
 
   it.each(
     (["intended", "executing"] as const).flatMap((status) =>

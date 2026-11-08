@@ -920,6 +920,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   Mute: "静音",
   Unmute: "取消静音",
   "Hang up": "挂断",
+  "Hang up, then review the changes in chat.": "请先挂断，再回到聊天中审阅变更。",
   "Allow microphone access to call a bot.": "请允许使用麦克风，以便与 Bot 通话。",
   "Could not hear that.": "没有听清。",
   "Could not transcribe that.": "无法转写。",

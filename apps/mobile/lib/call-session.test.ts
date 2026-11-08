@@ -862,6 +862,70 @@ describe("mobile call session on a timer", () => {
     vi.mocked(subscribeThread).mockReset();
   });
 
+  it("directs the caller to chat when the call's own visual approval starts waiting", async () => {
+    const { rpc, subscribeThread, applyMobileThreadEvent } = await import("./api");
+    vi.mocked(rpc).mockResolvedValue({ cursor: 0, messages: [], run: null } as never);
+    vi.mocked(subscribeThread).mockResolvedValue(undefined as never);
+    try {
+      const fake = fakes({ onDevice: true });
+      const { watch: _watch, ...deps } = fake.deps;
+      const callId = startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, deps);
+      await tick();
+      fake.hear("update the report");
+      await tick();
+      const receive = vi.mocked(subscribeThread).mock.calls[0]?.[2];
+      expect(receive).toBeTypeOf("function");
+
+      const messages = [
+        { id: "turn", role: "user", callId, runId: "run-1", blocks: [] },
+        {
+          id: "ask",
+          role: "bot",
+          runId: "run-1",
+          blocks: [
+            {
+              kind: "ask",
+              reviewMode: "screen",
+              status: "pending",
+              text: "Update shared page?",
+              detail: "- Unpublished before\n+ Unpublished after",
+            },
+          ],
+        },
+      ];
+      const run = { id: "another-run", status: "waiting_input" };
+      const activeRun = { id: "run-1", status: "running" };
+      vi.mocked(applyMobileThreadEvent).mockReturnValueOnce({
+        messages,
+        run,
+        activeRuns: [run, activeRun],
+      } as never);
+      receive?.({ type: "thread.message.created", seq: 1 });
+      expect(fake.spoken).toEqual([]);
+
+      vi.mocked(applyMobileThreadEvent).mockReturnValue({
+        messages,
+        run,
+        activeRuns: [run, { ...activeRun, status: "waiting_input" }],
+      } as never);
+      receive?.({ type: "run.waiting_input", seq: 2 });
+      receive?.({ type: "run.waiting_input", seq: 3 });
+      expect(fake.spoken).toEqual(["Hang up, then review the changes in chat."]);
+      expect(fake.signals[0]?.aborted).toBe(true);
+      fake.speeches[0]?.resolve();
+      await tick();
+      fake.hear("yes");
+      await tick();
+      expect(fake.send).toHaveBeenCalledOnce();
+      expect(fake.signals).toHaveLength(1);
+      expect(getSnapshot()).toMatchObject({ caption: "Hang up, then review the changes in chat." });
+    } finally {
+      vi.mocked(rpc).mockReset();
+      vi.mocked(subscribeThread).mockReset();
+      vi.mocked(applyMobileThreadEvent).mockReset();
+    }
+  });
+
   it("does not hang up after a farewell whose send was blocked by consent", async () => {
     const fake = fakes({ onDevice: true });
     fake.send.mockRejectedValueOnce(new AiConsentBlocked("consent denied"));

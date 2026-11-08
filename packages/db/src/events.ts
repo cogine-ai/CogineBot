@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
+import type { SharedPageUpdateRequest } from "@rakazo/contracts";
 import {
   type BotSecretDestination,
   encodeLoginSecret,
@@ -6,6 +8,9 @@ import {
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
   type ProductEvent,
+  SHARED_PAGE_UPDATE_REQUEST_KIND,
+  SharedPageUpdateRequestSchema,
+  sharedPageUpdateApprovalTitle,
 } from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
@@ -13,6 +18,7 @@ import {
   callIdFromClientNonce,
   canonicalApprovalSite,
   isApprovalAskBlock,
+  isCallClientNonce,
   isConversationalRun,
   isSecretAskBlock,
   messageBypassesTakeoverWait,
@@ -26,6 +32,7 @@ import {
   sanitizeJsonValue,
 } from "@rakazo/core";
 import { urlSite } from "@rakazo/core/egress";
+import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import { getLogger } from "@rakazo/logging";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
@@ -757,6 +764,19 @@ async function findPendingAsk(
   return null;
 }
 
+function matchesSharedPageApprovalCard(
+  card: Extract<MessageBlock, { kind: "ask" }>,
+  request: SharedPageUpdateRequest,
+): boolean {
+  return (
+    card.reviewMode === "screen" &&
+    card.text === sharedPageUpdateApprovalTitle(request.page.title) &&
+    card.detail === request.detail &&
+    card.actions?.length === 2 &&
+    isApprovalAskBlock(card)
+  );
+}
+
 async function commitAnswerRunInput(
   tx: Prisma.TransactionClient,
   input: AnswerRunInput,
@@ -790,6 +810,7 @@ async function commitAnswerRunInput(
   );
   if (pendingAsk?.kind !== "ask") return null;
   const approvalAsk = isApprovalAskBlock(pendingAsk);
+  if ((pendingAsk.approvalEffectId || pendingAsk.reviewMode) && !approvalAsk) return null;
   const secretAsk = isSecretAskBlock(pendingAsk);
   const choiceAsk = !approvalAsk && !secretAsk && Boolean(pendingAsk.actions?.length);
   const selectedChoice = choiceAsk
@@ -819,6 +840,24 @@ async function commitAnswerRunInput(
       },
     });
     if (!approvalEffect) return null;
+    const request = approvalEffect.request;
+    const sharedPageRequest =
+      approvalEffect.kind === "save_page" &&
+      request !== null &&
+      typeof request === "object" &&
+      Object.hasOwn(request, "requestKind");
+    if (sharedPageRequest || pendingAsk.reviewMode === "screen") {
+      const bound = SharedPageUpdateRequestSchema.safeParse(request);
+      if (
+        !sharedPageRequest ||
+        !bound.success ||
+        !matchesSharedPageApprovalCard(pendingAsk, bound.data) ||
+        run.userId !== input.answeredByUserId ||
+        (input.answer !== "allow" && input.answer !== "deny") ||
+        isCallClientNonce(input.clientNonce)
+      )
+        return null;
+    }
     if (input.answer === "always") {
       if (run.userId !== input.answeredByUserId) return null;
       approvalSite = alwaysAllowedSite(approvalEffect);
@@ -1142,9 +1181,11 @@ async function bindScriptedPause(
   tx: Prisma.TransactionClient,
   input: {
     runId: string;
+    spaceId: string;
     attemptId: string;
     leaseFence: number;
     scriptedState?: Prisma.InputJsonObject;
+    blocks?: MessageBlock[];
   },
   pause: { kind: "input"; messageId: string } | { kind: "takeover"; eventSeq: number },
 ): Promise<void> {
@@ -1152,12 +1193,54 @@ async function bindScriptedPause(
   const stored = input.scriptedState;
   if (
     stored.kind !== "scripted-state" ||
-    stored.version !== 2 ||
+    (stored.version !== 2 && stored.version !== 4) ||
     stored.runId !== input.runId ||
     stored.attemptId !== input.attemptId ||
     stored.fence !== input.leaseFence
   )
     throw new Error("Scripted pause does not belong to this attempt");
+  if (stored.version === 4) {
+    const pending = stored.pendingEffect;
+    const [card, otherAsk] = input.blocks?.filter((block) => block.kind === "ask") ?? [];
+    if (
+      pause.kind !== "input" ||
+      !pending ||
+      typeof pending !== "object" ||
+      Array.isArray(pending) ||
+      !("id" in pending) ||
+      typeof pending.id !== "string" ||
+      pending.kind !== "save_page" ||
+      pending.requestKind !== SHARED_PAGE_UPDATE_REQUEST_KIND ||
+      typeof pending.idempotencyKey !== "string" ||
+      typeof pending.requestDigest !== "string" ||
+      !card ||
+      otherAsk ||
+      card.status !== "pending" ||
+      card.approvalEffectId !== pending.id
+    ) {
+      throw new Error("Scripted Page approval does not match this pause");
+    }
+    const effect = await tx.externalEffect.findFirst({
+      where: {
+        id: pending.id,
+        runId: input.runId,
+        spaceId: input.spaceId,
+        kind: "save_page",
+        idempotencyKey: pending.idempotencyKey,
+        status: "intended",
+      },
+      select: { request: true },
+    });
+    const request = SharedPageUpdateRequestSchema.safeParse(effect?.request);
+    if (
+      !request.success ||
+      !matchesSharedPageApprovalCard(card, request.data) ||
+      createHash("sha256").update(stableJsonValue(effect?.request)).digest("hex") !==
+        pending.requestDigest
+    ) {
+      throw new Error("Scripted Page approval does not match this pause");
+    }
+  }
   const updated = await tx.run.updateMany({
     where: {
       id: input.runId,

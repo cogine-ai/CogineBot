@@ -952,6 +952,8 @@ export const RU_MESSAGES: Record<string, string> = {
   Mute: "Выключить микрофон",
   Unmute: "Включить микрофон",
   "Hang up": "Завершить",
+  "Hang up, then review the changes in chat.":
+    "Завершите звонок, затем проверьте изменения в чате.",
   "Allow microphone access to call a bot.": "Разрешите доступ к микрофону, чтобы звонить боту.",
   "Could not hear that.": "Не удалось расслышать.",
   "Could not transcribe that.": "Не удалось распознать речь.",

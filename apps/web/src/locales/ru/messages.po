@@ -2879,6 +2879,10 @@ msgstr "Сначала повесьте трубку, затем введите 
 msgid "Hang up, then enter the code on screen."
 msgstr "Повесьте трубку, затем введите код на экране."
 
+#: src/lib/call-session.ts
+msgid "Hang up, then review the changes in chat."
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "header"
 msgstr "заголовок"

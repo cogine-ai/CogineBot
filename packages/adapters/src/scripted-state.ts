@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
 import type { ScriptedRuntimeState, ScriptedTurn } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import {
+  MessageBlock as MessageBlockSchema,
+  SHARED_PAGE_UPDATE_REQUEST_KIND,
+} from "@rakazo/contracts";
 import { AGENT_CONNECTION_RESPONSE_TOOL } from "@rakazo/core";
-import { isToolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
+import {
+  isToolEffectIdempotencyKey,
+  toolEffectIdempotencyKey,
+} from "@rakazo/core/node/approval-effect-key";
 import type { Prisma } from "@rakazo/db";
+import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 
 export class ScriptedStateError extends Error {
   constructor() {
@@ -229,7 +236,7 @@ export interface ScriptedOutputState {
 
 export interface StoredScriptedState {
   kind: "scripted-state";
-  version: 2 | 3;
+  version: 2 | 3 | 4;
   runId: string;
   attemptId: string;
   fence: number;
@@ -237,7 +244,13 @@ export interface StoredScriptedState {
   output: ScriptedOutputState;
   effectOccurrences: Array<[string, number]>;
   consumedEffectIds: string[];
-  pendingEffect?: { id: string; kind: string; idempotencyKey: string; requestDigest: string };
+  pendingEffect?: {
+    id: string;
+    kind: string;
+    idempotencyKey: string;
+    requestDigest: string;
+    requestKind?: typeof SHARED_PAGE_UPDATE_REQUEST_KIND;
+  };
   pause?: {
     kind: "input" | "takeover";
     attemptId: string;
@@ -251,9 +264,14 @@ export interface StoredScriptedState {
 export function sealScriptedState(
   value: Omit<StoredScriptedState, "digest" | "pause">,
 ): StoredScriptedState {
-  // Earlier workers can replay an approved receipt while ignoring its connection version.
-  // A connection's pending state must be readable only by workers that enforce the binding.
-  const version = value.pendingEffect?.kind === AGENT_CONNECTION_RESPONSE_TOOL ? 3 : 2;
+  // Older workers must not resume requests whose approval binding they cannot enforce.
+  const pending = value.pendingEffect;
+  const version =
+    pending?.requestKind === SHARED_PAGE_UPDATE_REQUEST_KIND
+      ? 4
+      : pending?.kind === AGENT_CONNECTION_RESPONSE_TOOL
+        ? 3
+        : 2;
   const versioned = { ...value, version } as const;
   return { ...versioned, digest: scriptedStateDigest(versioned) };
 }
@@ -285,7 +303,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       throw new Error();
     if (
       value.kind !== "scripted-state" ||
-      (value.version !== 2 && value.version !== 3) ||
+      (value.version !== 2 && value.version !== 3 && value.version !== 4) ||
       value.runId !== runId ||
       typeof value.attemptId !== "string" ||
       !value.attemptId ||
@@ -352,11 +370,14 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
       if (
         !strings(pending, ["id", "kind", "idempotencyKey", "requestDigest"]) ||
         !object(pending) ||
-        !fields(pending, ["id", "kind", "idempotencyKey", "requestDigest"]) ||
+        !fields(pending, ["id", "kind", "idempotencyKey", "requestDigest", "requestKind"]) ||
         !pending.id ||
         !pending.kind ||
         !isToolEffectIdempotencyKey(String(pending.idempotencyKey), runId, String(pending.kind)) ||
-        !DIGEST.test(String(pending.requestDigest))
+        !DIGEST.test(String(pending.requestDigest)) ||
+        (value.version === 4
+          ? pending.requestKind !== SHARED_PAGE_UPDATE_REQUEST_KIND
+          : pending.requestKind !== undefined)
       )
         throw new Error();
     }
@@ -369,6 +390,24 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
           AGENT_CONNECTION_RESPONSE_TOOL)
     )
       throw new Error();
+    if (value.version === 4) {
+      const pending = value.pendingEffect;
+      const { cursor } = runtime;
+      const call = runtime.script[cursor.turn]?.toolCalls?.[cursor.tool];
+      if (
+        !object(pending) ||
+        pending.kind !== SAVE_PAGE_TOOL ||
+        cursor.phase !== "tool" ||
+        call?.name !== SAVE_PAGE_TOOL
+      )
+        throw new Error();
+      const prepared = preparePageToolRequest(call.args, []);
+      if (!prepared.ok || prepared.mode !== "write") throw new Error();
+      const fingerprint = toolEffectIdempotencyKey(runId, SAVE_PAGE_TOOL, prepared.args);
+      const occurrence = value.effectOccurrences.find(([key]) => key === fingerprint)?.[1] ?? 0;
+      if (pending.idempotencyKey !== (occurrence ? `${fingerprint}:${occurrence}` : fingerprint))
+        throw new Error();
+    }
     if (value.pause !== undefined) {
       const pause = value.pause;
       if (

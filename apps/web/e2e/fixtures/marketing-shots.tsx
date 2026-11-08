@@ -195,24 +195,25 @@ function ApprovalShot({
   variant,
   connectionLabel = "` Atlas `",
 }: {
-  variant: "default" | "site" | "routine" | "connection";
+  variant: "default" | "site" | "routine" | "connection" | "shared-page";
   connectionLabel?: string;
 }) {
   const [answer, setAnswer] = useState<string>();
   const site = variant === "site" ? "example.com" : undefined;
-  const routine = variant === "routine";
-  const connection = variant === "connection";
+  const allowAlways = variant === "default" || variant === "site";
   const text = {
     default: "Review before sending a reply from the demo inbox.",
     site: "Review before opening the report.",
     routine: "Allow this Routine to use these sites each time it runs?",
     connection: `Approve connection with “${connectionLabel}”?`,
+    "shared-page": "Update shared page “Weekly report <Beta>”?",
   }[variant];
   const detail = {
     default: "To: ada@example.test\nSubject: Re: Invoice 1042\n\nThanks, I will take a look.",
     site: "url: https://docs.example.com/report",
     routine: "example.net\nexample.org",
     connection: "Slack: U-DEMO-ATLAS",
+    "shared-page": "- <Text>Planned: 4 workshops</Text>\n+ <Text>Confirmed: 4 workshops</Text>",
   }[variant];
   return (
     <main data-ready="true" className="mx-auto max-w-[760px] bg-background p-8 text-foreground">
@@ -227,11 +228,12 @@ function ApprovalShot({
           text,
           detail,
           site,
+          ...(variant === "shared-page" ? { reviewMode: "screen" } : {}),
           status: answer ? "answered" : "pending",
           answer,
           actions: [
             { id: "allow", label: "Allow once" },
-            ...(routine || connection ? [] : [{ id: "always", label: "Always allow this tool" }]),
+            ...(allowAlways ? [{ id: "always", label: "Always allow this tool" }] : []),
             { id: "deny", label: "Deny" },
           ],
         }}
@@ -545,6 +547,8 @@ void bootstrapI18n("en").then(() => {
       <RoutineShot />
     ) : view === "connection-approval" ? (
       <ApprovalShot variant="connection" />
+    ) : view === "shared-page-approval" ? (
+      <ApprovalShot variant="shared-page" />
     ) : view === "connection-approval-literal" ? (
       <ApprovalShot
         variant="connection"

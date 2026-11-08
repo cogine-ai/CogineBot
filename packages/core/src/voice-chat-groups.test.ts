@@ -2,7 +2,7 @@ import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   groupVoiceChats,
-  latestSpokenCallReply,
+  latestCallReply,
   voiceChatDuration,
   voiceChatSummary,
 } from "./voice-chat-groups.js";
@@ -54,8 +54,8 @@ describe("groupVoiceChats", () => {
       blocks: [{ kind: "text", text: "Typed answer" }],
     });
 
-    expect(latestSpokenCallReply([callTurn, callReply], "call-1")?.id).toBe(callReply.id);
-    expect(latestSpokenCallReply([callTurn, callReply, typed, typedReply], "call-1")?.id).toBe(
+    expect(latestCallReply([callTurn, callReply], "call-1")?.message.id).toBe(callReply.id);
+    expect(latestCallReply([callTurn, callReply, typed, typedReply], "call-1")?.message.id).toBe(
       callReply.id,
     );
   });
@@ -75,7 +75,7 @@ describe("groupVoiceChats", () => {
       blocks: [{ kind: "text", text: "Here is the list" }],
     });
 
-    expect(latestSpokenCallReply([callTurn, callReply, marker, wrapUp], "call-1")).toBeUndefined();
+    expect(latestCallReply([callTurn, callReply, marker, wrapUp], "call-1")).toBeUndefined();
   });
 
   it("numbers the segments a typed message split a call into, and keeps them across pages", () => {
@@ -104,6 +104,53 @@ describe("groupVoiceChats", () => {
     expect(items).toHaveLength(2);
     expect(items[0]?.kind === "voiceChat" && items[0].messages).toHaveLength(2);
     expect(items[1]?.kind).toBe("message");
+  });
+
+  it("leaves on-screen approvals in chat while preserving the call transcript and marker", () => {
+    const callTurn = message({ role: "user", callId: "call-1", runId: "run-1" });
+    const ordinaryAsk = message({
+      role: "bot",
+      runId: "run-1",
+      blocks: [{ kind: "ask", text: "Which period?", status: "answered", answer: "May" }],
+    });
+    const screenReview = message({
+      role: "bot",
+      runId: "run-1",
+      blocks: [
+        {
+          kind: "ask",
+          reviewMode: "screen",
+          text: "Review the change",
+          detail: "- Before\n+ After",
+          status: "pending",
+        },
+      ],
+    });
+    const marker = message({
+      role: "bot",
+      runId: "wrap-up-run",
+      callId: "call-1",
+      blocks: [{ kind: "voice_call", callId: "call-1", title: "Planning update", farewell: "" }],
+    });
+    const wrapUp = message({ role: "bot", runId: "run-1" });
+
+    const items = groupVoiceChats([callTurn, ordinaryAsk, screenReview, marker, wrapUp]);
+
+    expect(items).toMatchObject([
+      { kind: "voiceChat", messages: [callTurn, ordinaryAsk, marker], marker },
+      { kind: "message", message: screenReview },
+      { kind: "message", message: wrapUp },
+    ]);
+    expect(latestCallReply([callTurn, ordinaryAsk, screenReview], "call-1")).toEqual({
+      kind: "screenReview",
+      message: screenReview,
+    });
+    expect(
+      latestCallReply([callTurn, ordinaryAsk, screenReview, marker], "call-1"),
+    ).toBeUndefined();
+    expect(
+      latestCallReply([callTurn, ordinaryAsk, { ...screenReview, runId: "typed-run" }], "call-1"),
+    ).toEqual({ kind: "spoken", message: ordinaryAsk });
   });
 
   it("leaves a typed message and its reply out of the card even on the call's run", () => {

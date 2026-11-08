@@ -23,6 +23,8 @@ export type VoiceChatGroup<T extends VoiceChatMessage = VoiceChatMessage> = {
   messages: T[];
   /** The `voice_call` message the bot left when it hung up; it closes the group. */
   marker?: T;
+  /** The current call can announce the handoff, while the message renders separately in chat. */
+  screenReview?: T;
 };
 export type ThreadItem<T extends VoiceChatMessage = VoiceChatMessage> =
   | { kind: "message"; message: T }
@@ -35,7 +37,8 @@ const SUMMARY_MAX = 120;
  * message carrying the call's `callId`, or a bot reply to a run already in the
  * group. Anything else ends the run — a typed user message breaks the group
  * even when it reuses the run of a call turn. The bot's `voice_call` marker
- * closes the group, so the work it does after hanging up renders as chat.
+ * closes the group, so the work it does after hanging up renders as chat. An
+ * on-screen approval in the call stays actionable outside its transcript.
  */
 export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): ThreadItem<T>[] {
   const items: ThreadItem<T>[] = [];
@@ -43,11 +46,20 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
   let openRunIds = new Set<string>();
   const segments = new Map<string, number>();
   for (const message of messages) {
+    const screenReview =
+      message.role === "bot"
+        ? message.blocks.find((block) => block.kind === "ask" && block.reviewMode === "screen")
+        : undefined;
     if (open) {
       const joinsByRun = Boolean(
         message.role === "bot" && message.runId && openRunIds.has(message.runId),
       );
       if (message.callId === open.callId || joinsByRun) {
+        if (screenReview?.kind === "ask") {
+          if (screenReview.status !== "answered") open.screenReview = message;
+          items.push({ kind: "message", message });
+          continue;
+        }
         open.messages.push(message);
         if (isCallMarker(message)) {
           open.marker = message;
@@ -59,7 +71,7 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
       }
       open = undefined;
     }
-    if (message.callId) {
+    if (message.callId && !screenReview) {
       const segment = (segments.get(message.callId) ?? 0) + 1;
       segments.set(message.callId, segment);
       open = {
@@ -77,19 +89,20 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
   return items;
 }
 
-/** Newest bot turn still inside this call's open card. Typed turns and wrap-up sit outside. */
-export function latestSpokenCallReply<T extends VoiceChatMessage>(
+/** The current call's latest spoken reply or its pending handoff to chat. */
+export function latestCallReply<T extends VoiceChatMessage>(
   messages: T[],
   callId: string,
-): T | undefined {
+): { message: T; kind: "spoken" | "screenReview" } | undefined {
   const groups = groupVoiceChats(messages).filter(
     (item): item is VoiceChatGroup<T> => item.kind === "voiceChat" && item.callId === callId,
   );
   const group = groups.at(-1);
   if (!group || group.marker) return undefined;
+  if (group.screenReview) return { kind: "screenReview", message: group.screenReview };
   for (let index = group.messages.length - 1; index >= 0; index -= 1) {
     const message = group.messages[index];
-    if (message?.role === "bot") return message;
+    if (message?.role === "bot") return { kind: "spoken", message };
   }
   return undefined;
 }

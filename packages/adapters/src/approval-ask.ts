@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { sharedPageUpdateApprovalTitle } from "@rakazo/contracts";
 import {
   messagingProviderName,
   redactSecrets,
@@ -10,6 +11,8 @@ import { urlSite } from "@rakazo/core/egress";
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
 const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
 export const MAX_FETCH_URL_LENGTH = 2_048;
+
+export type SharedPageApprovalSummary = { title: string; detail: string };
 
 export function formatRoutineSiteApprovalDetail(
   sites: readonly string[],
@@ -34,8 +37,28 @@ export function buildApprovalAskBlock(
   toolName: string,
   args: Record<string, unknown>,
   secrets: string[],
-  options?: { reviewReason?: string; allowSiteAlways?: boolean; routineSiteDetail?: string },
+  options?: {
+    reviewReason?: string;
+    allowSiteAlways?: boolean;
+    routineSiteDetail?: string;
+    sharedPageUpdate?: SharedPageApprovalSummary;
+  },
 ): MessageBlock {
+  if (toolName === "save_page" && options?.sharedPageUpdate) {
+    const { title, detail } = options.sharedPageUpdate;
+    return {
+      kind: "ask",
+      approvalEffectId: effectId,
+      reviewMode: "screen",
+      text: sharedPageUpdateApprovalTitle(title),
+      detail,
+      status: "pending",
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    };
+  }
   if (toolName === "respond_agent_connection") {
     const label =
       redactSecrets(

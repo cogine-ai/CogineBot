@@ -2879,6 +2879,10 @@ msgstr "请先挂断，然后输入屏幕上的代码。"
 msgid "Hang up, then enter the code on screen."
 msgstr "请挂断，然后输入屏幕上的代码。"
 
+#: src/lib/call-session.ts
+msgid "Hang up, then review the changes in chat."
+msgstr "请先挂断，再回到聊天中审阅变更。"
+
 #: src/pages/RoutineEditor.tsx
 msgid "header"
 msgstr "请求头"

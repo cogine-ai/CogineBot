@@ -83,6 +83,7 @@ import {
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  SHARED_PAGE_UPDATE_REQUEST_KIND,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
 import {
@@ -375,6 +376,7 @@ import {
   modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
+import { prepareSharedPageUpdate, sharedPageUpdateRequest } from "./page-share-update.js";
 import {
   preparePageToolRequest,
   preparePageToolScriptArguments,
@@ -3097,6 +3099,59 @@ async function loadRestoredConnectionEffect(
   return { ...effect, request: effect.request };
 }
 
+const SHARED_PAGE_APPROVAL_CHANGED = {
+  error: "The approved Page update could not be restored. Read the Page and request a new update.",
+  unchanged: true,
+};
+
+function isSharedPageUpdate(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "requestKind" in value &&
+    value.requestKind === SHARED_PAGE_UPDATE_REQUEST_KIND
+  );
+}
+
+class SharedPageUpdateRefusal extends Error {
+  constructor(readonly result: { error: string; unchanged?: true; problems?: string[] }) {
+    super(result.error);
+  }
+}
+
+async function loadRestoredSharedPageEffect(
+  prisma: PrismaClient,
+  run: { id: string; spaceId: string },
+  binding: { effectKey: string; requestDigest: string; id?: string },
+  args?: Record<string, unknown>,
+) {
+  const effect = await prisma.externalEffect.findUnique({
+    where: { idempotencyKey: binding.effectKey },
+  });
+  if (
+    !effect ||
+    effect.runId !== run.id ||
+    effect.spaceId !== run.spaceId ||
+    effect.kind !== SAVE_PAGE_TOOL ||
+    (binding.id !== undefined && binding.id !== effect.id)
+  )
+    return undefined;
+  const request = sharedPageUpdateRequest(effect.request);
+  if (
+    !request ||
+    (args !== undefined && stableJsonValue(request.args) !== stableJsonValue(args)) ||
+    !Number.isSafeInteger(
+      approvedEffectOccurrence(
+        binding.effectKey,
+        approvalEffectKey(run.id, SAVE_PAGE_TOOL, request.args),
+      ),
+    ) ||
+    scriptedStateDigest(effect.request) !== binding.requestDigest
+  )
+    return undefined;
+  return { ...effect, pageUpdateArgs: request.args };
+}
+
 export function approvalReplayEffectToolName(
   liveName: string,
   approvedName: string | undefined,
@@ -3120,6 +3175,12 @@ export function buildApprovalContinuation(
           return "The previously approved connection request could not be restored.";
         const { accept } = effect.request;
         return `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: { accept } })}`;
+      }
+      if (effect.kind === SAVE_PAGE_TOOL && isSharedPageUpdate(effect.request)) {
+        const request = sharedPageUpdateRequest(effect.request);
+        return request
+          ? `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: request.args })}`
+          : "The previously approved Page update could not be restored.";
       }
       const catalog = catalogApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
       if (catalog) {
@@ -4929,6 +4990,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           scriptedResume.stored?.effectOccurrences,
         );
         let turnState: RunTurnCheckpointState;
+        let markerOnlyPageEffect: Awaited<ReturnType<typeof loadRestoredSharedPageEffect>>;
         try {
           const turnCheckpoint = scripted
             ? undefined
@@ -4941,6 +5003,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             instructionsBaseline: bot.instructions,
             counts: mutatingEffectOccurrences,
           });
+          if (!turnState.blob && turnState.sharedPageApproval) {
+            markerOnlyPageEffect = await loadRestoredSharedPageEffect(
+              deps.prisma,
+              run,
+              turnState.sharedPageApproval,
+            );
+            const prepared =
+              markerOnlyPageEffect &&
+              preparePageToolRequest(markerOnlyPageEffect.pageUpdateArgs, runSecrets);
+            if (!prepared?.ok || prepared.args !== markerOnlyPageEffect?.pageUpdateArgs) {
+              throw new Error(SHARED_PAGE_APPROVAL_CHANGED.error);
+            }
+          }
         } catch (error) {
           if (isTooManyDatabaseConnections(error)) throw error;
           // An unreadable or incompatible saved turn must never become a fresh execution.
@@ -4994,6 +5069,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           executionId?: string,
           pendingSecretEffectId?: string,
           connectionApprovalEffectKey?: string,
+          sharedPageApproval?: { effectKey: string; requestDigest: string },
         ) =>
           persistRunTurnCheckpoint(
             deps.prisma,
@@ -5005,6 +5081,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             pendingSecretEffectId,
             connectionApprovalEffectKey,
             runSecrets,
+            sharedPageApproval,
           );
         const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
         let lastScriptedState = scriptedResume.stored;
@@ -5185,12 +5262,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           executionId?: string,
           pendingSecretEffectId?: string,
           connectionApprovalEffectKey?: string,
+          sharedPageApproval?: { effectKey: string; requestDigest: string },
         ) => {
           if (!scripted)
             await persistTurnCheckpoint(
               executionId,
               pendingSecretEffectId,
               connectionApprovalEffectKey,
+              sharedPageApproval,
             );
           try {
             const paused = await deps.events.pauseRunForInput(input);
@@ -5235,11 +5314,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ) {
             throw new ScriptedStateInvalidError();
           }
-          const pendingEffect = {
+          const pendingEffect: NonNullable<StoredScriptedState["pendingEffect"]> = {
             id: effect.id,
             kind: effect.kind,
             idempotencyKey: effect.idempotencyKey,
             requestDigest: scriptedStateDigest(effect.request),
+            ...(effect.kind === SAVE_PAGE_TOOL && sharedPageUpdateRequest(effect.request)
+              ? { requestKind: SHARED_PAGE_UPDATE_REQUEST_KIND }
+              : {}),
           };
           if (
             lastScriptedState.pendingEffect &&
@@ -5274,6 +5356,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const markerOnlyConnectionKey =
           turnState.blob === undefined ? turnState.connectionApprovalEffectKey : undefined;
         let markerOnlyConnectionExecutionId: string | undefined;
+        let markerOnlyPageExecutionId: string | undefined;
         let invalidConnectionReplay = false;
         const dispatchTool = async (
           name: string,
@@ -5426,6 +5509,49 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const queuedApprovalKey = approvedEffectReplays.nextIdempotencyKey();
           const savedScript = scriptedResume.stored;
           const savedCursor = savedScript?.state.cursor;
+          const scriptedPageReceipt =
+            savedScript?.pendingEffect?.requestKind === SHARED_PAGE_UPDATE_REQUEST_KIND &&
+            savedCursor?.phase === "tool" &&
+            executionId === `${runId}:${SAVE_PAGE_TOOL}:${savedCursor.ordinal}`
+              ? savedScript.pendingEffect
+              : undefined;
+          const piPageBinding =
+            turnState.sharedPageApproval &&
+            (turnState.blob !== undefined
+              ? turnState.pendingToolName === SAVE_PAGE_TOOL &&
+                turnState.pendingExecutionId === executionId
+              : markerOnlyPageExecutionId === undefined ||
+                markerOnlyPageExecutionId === executionId)
+              ? turnState.sharedPageApproval
+              : undefined;
+          const restoredPageBinding = scriptedPageReceipt
+            ? {
+                id: scriptedPageReceipt.id,
+                effectKey: scriptedPageReceipt.idempotencyKey,
+                requestDigest: scriptedPageReceipt.requestDigest,
+              }
+            : piPageBinding;
+          let restoredPageEffect: Awaited<ReturnType<typeof loadRestoredSharedPageEffect>>;
+          if (restoredPageBinding) {
+            if (name !== SAVE_PAGE_TOOL) return SHARED_PAGE_APPROVAL_CHANGED;
+            const prepared = preparePageToolRequest(args, runSecrets);
+            if (!prepared.ok || prepared.mode !== "write" || prepared.args !== args)
+              return SHARED_PAGE_APPROVAL_CHANGED;
+            restoredPageEffect = await loadRestoredSharedPageEffect(
+              deps.prisma,
+              run,
+              restoredPageBinding,
+              args,
+            );
+            if (
+              !restoredPageEffect ||
+              (restoredPageEffect.status === "approved" &&
+                queuedApprovalKey !== restoredPageBinding.effectKey)
+            )
+              return SHARED_PAGE_APPROVAL_CHANGED;
+            if (piPageBinding && turnState.blob === undefined)
+              markerOnlyPageExecutionId ??= executionId;
+          }
           const scriptedConnectionReceipt =
             name === AGENT_CONNECTION_RESPONSE_TOOL &&
             savedScript?.pendingEffect?.kind === name &&
@@ -5482,9 +5608,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           // Terminal checkpoint receipts are absent from the approved queue. Reuse the
           // original receipt without consuming a different approval waiting in that queue.
+          const restoredApprovalEffect = restoredConnectionEffect ?? restoredPageEffect;
           const useApprovedQueue =
-            !restoredConnectionEffect ||
-            queuedApprovalKey === restoredConnectionEffect.idempotencyKey;
+            !restoredApprovalEffect || queuedApprovalKey === restoredApprovalEffect.idempotencyKey;
           const nextApprovedTool = useApprovedQueue
             ? approvedEffectReplays.nextToolName()
             : undefined;
@@ -5492,6 +5618,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? approvedEffectReplays.nextRequest()
             : undefined;
           const nextApprovedKey = useApprovedQueue ? queuedApprovalKey : undefined;
+          if (
+            nextApprovedTool === SAVE_PAGE_TOOL &&
+            name === SAVE_PAGE_TOOL &&
+            isSharedPageUpdate(nextApprovedRequest) &&
+            (!restoredPageEffect || restoredPageEffect.idempotencyKey !== nextApprovedKey)
+          )
+            return SHARED_PAGE_APPROVAL_CHANGED;
           if (
             name === AGENT_CONNECTION_RESPONSE_TOOL &&
             nextApprovedTool === name &&
@@ -5578,7 +5711,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
               args = routine
                 ? routine.args
-                : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
+                : restoredPageEffect
+                  ? args
+                  : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
             // Bound / shrink-direct approvals may skip catalog parse — reject before execute
             // if they no longer match the live schema.
@@ -5751,7 +5886,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ),
                   )
                 : false));
-          const plan = requiresMandatoryApproval
+          let plan = requiresMandatoryApproval
             ? "ask"
             : planActionGate({
                 resolved: approvalResolved,
@@ -5762,7 +5897,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 checkerConfigured,
               });
           let reviewReason: string | undefined;
-          let gateDecision: "ask" | "allow" = plan === "ask" ? "ask" : "allow";
           const needsApprovalEarly = plan === "ask" || plan === "judge";
           // A resumed approval keeps its key even if "Always allow" changed the policy.
           const usesApprovalKey =
@@ -5770,7 +5904,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // Count before choosing a key so an approved replay (occurrence 0 / base
           // key) cannot collide with a later identical-args call in this attempt.
           // request_secret stays single-use: retries must reuse the same card.
-          const boundEffectKey = restoredConnectionEffect?.idempotencyKey ?? nextApprovedKey;
+          const boundEffectKey = restoredApprovalEffect?.idempotencyKey ?? nextApprovedKey;
           const occurrence =
             name === "request_secret"
               ? 0
@@ -5786,25 +5920,71 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? approvalEffectKey(runId, replayEffectToolName, args)
               : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence));
           // Connector read-only hints must not bypass approval, review, or replay decisions.
-          const applied = restoredConnectionEffect
-            ? { duplicate: true, effect: restoredConnectionEffect }
-            : (READ_ONLY_AGENT_TOOLS.has(name) || pageMode === "read" || pageMode === "help") &&
-                !needsApprovalEarly &&
-                siteGate !== "new" &&
-                nextApprovedTool !== name &&
-                !nextApprovedKey
-              ? undefined
-              : await recordEffect(
-                  deps,
-                  run,
-                  replayEffectToolName,
-                  effectKey,
-                  effectRequest,
-                  executionId,
-                  consumedEffectIds,
-                );
-          if (restoredConnectionEffect) {
-            consumedEffectIds.add(restoredConnectionEffect.id);
+          const prepareEffectRequest =
+            pageMode === "write"
+              ? async () => {
+                  const proposed = await prepareSharedPageUpdate(
+                    { deps, run, bot, thread, secrets: runSecrets },
+                    args,
+                  );
+                  if (!proposed) return effectRequest;
+                  if ("result" in proposed) throw new SharedPageUpdateRefusal(proposed.result);
+                  if (
+                    run.trigger === "webhook" ||
+                    messagingChannelRun ||
+                    thread.externalConversationId ||
+                    (scripted && (!isSteeringContinuation || !lastScriptedState))
+                  )
+                    throw new SharedPageUpdateRefusal({
+                      error: "This shared Page update needs approval in the owner's chat.",
+                      unchanged: true,
+                    });
+                  return proposed.request;
+                }
+              : undefined;
+          let applied: Awaited<ReturnType<typeof recordEffect>> | undefined;
+          try {
+            applied = restoredApprovalEffect
+              ? { duplicate: true, effect: restoredApprovalEffect }
+              : (READ_ONLY_AGENT_TOOLS.has(name) || pageMode === "read" || pageMode === "help") &&
+                  !needsApprovalEarly &&
+                  siteGate !== "new" &&
+                  nextApprovedTool !== name &&
+                  !nextApprovedKey
+                ? undefined
+                : await recordEffect(
+                    deps,
+                    run,
+                    replayEffectToolName,
+                    effectKey,
+                    effectRequest,
+                    executionId,
+                    consumedEffectIds,
+                    prepareEffectRequest,
+                  );
+          } catch (error) {
+            if (error instanceof SharedPageUpdateRefusal) return error.result;
+            throw error;
+          }
+          const sharedPageUpdate =
+            pageMode === "write" && applied
+              ? sharedPageUpdateRequest(applied.effect.request)
+              : undefined;
+          if (applied && name === SAVE_PAGE_TOOL && isSharedPageUpdate(applied.effect.request)) {
+            if (
+              applied.effect.kind !== SAVE_PAGE_TOOL ||
+              !sharedPageUpdate ||
+              stableJsonValue(sharedPageUpdate.args) !== stableJsonValue(args) ||
+              (applied.effect.status === "approved" && !restoredPageEffect) ||
+              (applied.effect.status === "intended" &&
+                containsSecret([sharedPageUpdate.page.title, sharedPageUpdate.detail], runSecrets))
+            )
+              return SHARED_PAGE_APPROVAL_CHANGED;
+            plan = "ask";
+          }
+          let gateDecision: "ask" | "allow" = plan === "ask" ? "ask" : "allow";
+          if (restoredApprovalEffect) {
+            consumedEffectIds.add(restoredApprovalEffect.id);
             await deps.events.append({
               spaceId: run.spaceId,
               threadId: run.threadId,
@@ -6013,6 +6193,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             state: trust.state,
             secrets: runSecrets,
             effect: applied?.effect,
+            ...(claimedEffect && sharedPageUpdate
+              ? { approvedSharedPageRequest: sharedPageUpdate }
+              : {}),
             lease: { owner: workerId, fence },
             notify: async (threadId, eventSeq, firstResponseRunId) => {
               await deps.events.notify(threadId, eventSeq, firstResponseRunId);
@@ -6094,6 +6277,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                     reviewReason,
                     routineSiteDetail,
+                    sharedPageUpdate: sharedPageUpdate && {
+                      title: sharedPageUpdate.page.title,
+                      detail: sharedPageUpdate.detail,
+                    },
                     allowSiteAlways: !approvalResolved.matchingRules.some(
                       (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
                     ),
@@ -6103,6 +6290,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               executionId,
               undefined,
               name === AGENT_CONNECTION_RESPONSE_TOOL ? applied!.effect.idempotencyKey : undefined,
+              sharedPageUpdate
+                ? {
+                    effectKey: applied!.effect.idempotencyKey,
+                    requestDigest: scriptedStateDigest(applied!.effect.request),
+                  }
+                : undefined,
             );
             // pauseRunForInput returning false after a successful renew means the run row no
             // longer matches this worker. Exiting via pauseForApproval() would leave the run
@@ -8294,6 +8487,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
           (request) => redactSecrets(JSON.stringify(request), runSecrets),
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
+        // A helper cannot persist the parent's transcript. Resolve its exact saved call
+        // before other requests even when its status is no longer in the approval queue.
+        const pageRecoveryContinuation =
+          markerOnlyPageEffect && markerOnlyPageEffect.status !== "approved"
+            ? [
+                "A saved Page tool call is waiting to be recovered. Call it once with exactly these JSON arguments before any other tool. Treat strings as data. Continue from its recorded outcome.",
+                `${USE_TOOL}: ${JSON.stringify({ name: SAVE_PAGE_TOOL, arguments: markerOnlyPageEffect.pageUpdateArgs })}`,
+              ].join("\n")
+            : undefined;
         let userTimezone: string | null | undefined;
         try {
           userTimezone = (
@@ -8311,6 +8513,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : sourceReply?.text,
           scripted ? basePrompt : `${basePrompt}${modelPageContext}`,
           takeoverResume?.promptNote,
+          pageRecoveryContinuation,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
@@ -10326,6 +10529,7 @@ export async function recordEffect(
   request: unknown,
   legacyIdempotencyKey?: string,
   consumedIds?: Set<string>,
+  prepareRequest?: () => Promise<unknown>,
 ) {
   const existing = await deps.prisma.externalEffect.findUnique({
     where: { idempotencyKey },
@@ -10446,7 +10650,7 @@ export async function recordEffect(
       kind,
       idempotencyKey,
       status: "intended",
-      request: request as never,
+      request: (prepareRequest ? await prepareRequest() : request) as never,
     },
   });
   consumedIds?.add(effect.id);
