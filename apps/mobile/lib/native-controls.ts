@@ -74,3 +74,6 @@ export type NativeSegmentedControlProps<T extends string> = {
   options: readonly SegmentedOption<T>[];
   disabled?: boolean;
 };
+
+/** Touch target shared by the native page reader controls. */
+export const HEADER_CONTROL_SIZE = 44;

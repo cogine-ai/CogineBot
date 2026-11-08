@@ -14,6 +14,7 @@ import {
   getCurrentTools,
 } from "@earendil-works/pi-ai";
 import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
+import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { approvalPausedToolResult, takeoverPausedToolResult } from "./approval-effect.js";
@@ -430,6 +431,93 @@ describe("real Pi built-in discovery and execution", () => {
       "write_file",
     ]);
   });
+
+  it("discovers Pages on demand and keeps the entire guide in actual Pi context", async () => {
+    const page = builtin("save_page");
+    provider.stream
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(getCurrentTools(context.messages).map((tool) => tool.name)).toEqual([
+          FIND_TOOL,
+          USE_TOOL,
+        ]);
+        return response([call("find-pages", FIND_TOOL, { names: [page.name] })]);
+      })
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(payload(context, "find-pages").tools).toEqual([
+          { name: page.name, description: page.description, inputSchema: page.inputSchema },
+        ]);
+        return response([call("guide", USE_TOOL, { name: page.name, arguments: { help: true } })]);
+      })
+      .mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(payload(context, "guide")).toEqual({ guide: PAGE_KIT_GUIDE });
+        return response();
+      });
+    const execute = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => ({
+      guide: PAGE_KIT_GUIDE,
+    }));
+    await consume(request([page], { executeTool: execute }));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.slice(0, 2)).toEqual([page.name, { help: true }]);
+  });
+
+  it.each([
+    { contextWindow: 8192, fits: false },
+    { contextWindow: 65536, fits: true },
+  ])(
+    "sends complete deferred Page results or an omission at $contextWindow tokens",
+    async ({ contextWindow, fits }) => {
+      const pageTool = builtin("save_page");
+      const page = {
+        pageId: "page-1",
+        version: 2,
+        title: "Weekly report",
+        source: `export default function Page() { return <main>${"Page content ".repeat(3800)}</main>; }`,
+      };
+      const guide = { guide: PAGE_KIT_GUIDE };
+      provider.stream
+        .mockImplementationOnce(() =>
+          response([
+            call("read-page", USE_TOOL, {
+              name: pageTool.name,
+              arguments: { pageId: page.pageId },
+            }),
+            call("guide", USE_TOOL, { name: pageTool.name, arguments: { help: true } }),
+          ]),
+        )
+        .mockImplementationOnce(() => response());
+      const executeTool = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async (_name, args) =>
+        args.help ? guide : page,
+      );
+      const storeToolResult = vi.fn<NonNullable<AgentRunRequest["storeToolResult"]>>();
+      await consume(
+        request([pageTool], {
+          contextStrategy: "retrieval",
+          model: { provider: model.provider, id: model.id, apiKey: "fixture", contextWindow },
+          executeTool,
+          storeToolResult,
+        }),
+      );
+      expect(provider.stream).toHaveBeenCalledTimes(2);
+      const sent = provider.stream.mock.calls[1]?.[1] as TranscriptContext;
+      expect(payload(sent, "guide")).toEqual(guide);
+      if (fits) expect(payload(sent, "read-page")).toEqual(page);
+      else {
+        const omitted = payload(sent, "read-page");
+        expect(omitted).toEqual({
+          contextTruncated: true,
+          error: expect.stringContaining("larger context window"),
+          pageId: page.pageId,
+          version: page.version,
+        });
+        expect(omitted).not.toHaveProperty("source");
+      }
+      expect(executeTool.mock.calls.map(([name, args]) => [name, args])).toEqual([
+        [pageTool.name, { pageId: page.pageId }],
+        [pageTool.name, { help: true }],
+      ]);
+      expect(storeToolResult).not.toHaveBeenCalled();
+    },
+  );
 
   it("preserves the current bot-creation fields through the real deferred wrapper", async () => {
     provider.stream

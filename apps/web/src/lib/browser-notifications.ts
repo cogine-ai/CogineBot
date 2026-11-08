@@ -1,5 +1,6 @@
-import type { ProductEvent } from "@rakazo/contracts";
-import { plainTextFromMarkdown } from "@rakazo/core";
+import type { MessageBlock, ProductEvent } from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { plainTextFromMarkdown, withoutLegacyPageCardFallbacks } from "@rakazo/core";
 import { i18n } from "./i18n";
 
 export type BrowserNotificationPermission = "default" | "denied" | "granted";
@@ -72,12 +73,21 @@ export function browserNotificationMessage(
   const name = botName.trim() || i18n._({ id: "Bot", message: "Bot" });
   if (event.type === "thread.message.created") {
     const blocks = Array.isArray(event.payload.blocks) ? event.payload.blocks : [];
-    const body = blocks
-      .map((block) =>
-        block && typeof block === "object" && "text" in block && typeof block.text === "string"
-          ? plainTextFromMarkdown(block.text)
-          : "",
-      )
+    const textAndPages = blocks.flatMap((block: unknown): MessageBlock[] => {
+      if (!block || typeof block !== "object") return [];
+      if (
+        "kind" in block &&
+        (block.kind === "page" || (block.kind === "text" && "pageCardFallbackFor" in block))
+      ) {
+        const parsed = MessageBlockSchema.safeParse(block);
+        if (parsed.success) return [parsed.data];
+      }
+      return "text" in block && typeof block.text === "string"
+        ? [{ kind: "text", text: block.text }]
+        : [];
+    });
+    const body = withoutLegacyPageCardFallbacks(textAndPages)
+      .map((block) => (block.kind === "text" ? plainTextFromMarkdown(block.text) : ""))
       .filter(Boolean)
       .join("\n")
       .trim();

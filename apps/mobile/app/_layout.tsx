@@ -244,6 +244,11 @@ export default function Layout() {
                   />
                   <Stack.Screen name="artifacts" options={glassHeaderOptions(t("Artifacts"))} />
                   <Stack.Screen name="artifact" options={{ title: t("Artifact") }} />
+                  <Stack.Screen name="pages" options={glassHeaderOptions(t("Pages"))} />
+                  <Stack.Screen
+                    name="page"
+                    options={{ headerShown: false, presentation: "fullScreenModal" }}
+                  />
                   <Stack.Screen name="group-thread" options={{ title: t("Group") }} />
                   <Stack.Screen
                     name="group-settings"

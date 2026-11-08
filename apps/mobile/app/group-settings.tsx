@@ -186,6 +186,16 @@ function GroupSettingsForm({ scope, groupId }: { scope: MobileScope; groupId: st
         contentContainerStyle={{ padding: 24 }}
         contentInsetAdjustmentBehavior="automatic"
       >
+        {group ? (
+          <NativeActionButton
+            label={t("Pages")}
+            prominence="secondary"
+            onPress={() => {
+              if (current()) router.push({ pathname: "/pages", params: { groupId } });
+            }}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Text style={{ color: tokens.mutedForeground, fontSize: 14 }}>{t("Name")}</Text>
         <TextInput
           value={name}

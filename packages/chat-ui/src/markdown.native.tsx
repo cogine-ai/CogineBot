@@ -1,5 +1,5 @@
 import type { ColorTokens, ResolvedAppearance } from "@rakazo/ui-tokens";
-import { darkTokens } from "@rakazo/ui-tokens";
+import { darkTokens, pageIconBars } from "@rakazo/ui-tokens";
 import type {
   ASTNode,
   MarkdownStyleMap,
@@ -42,6 +42,7 @@ import {
   linkifyExplicitUrls,
   linkLabel,
   markdownLinkRequiresConfirmation,
+  markdownPageId,
   markRemoteImageLoaded,
   plainTextLinkParts,
   RemoteImagesContext,
@@ -50,9 +51,9 @@ import {
   sanitizeMarkdownUrl,
   useLinkFavicon,
 } from "./markdown";
-
 import { useMarkdownLinkAppOrigin, useMarkdownLinkCopy } from "./markdown-link-prompt";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE, isMermaidFence } from "./mermaid";
+import { PAGE_ICON } from "./page-icon";
 
 function keepMarkdownLinkToken(_url: string) {
   return true;
@@ -300,7 +301,7 @@ async function openSafeLink(url: string) {
 
 const OpenLinkContext = createContext<(url: string) => void>(() => undefined);
 
-function useNativeLinkConfirm() {
+export function useNativeLinkConfirm() {
   const appOrigin = useMarkdownLinkAppOrigin();
   const copy = useMarkdownLinkCopy();
   return useCallback(
@@ -873,12 +874,149 @@ const renderRules: RenderRules = {
   },
 };
 
+const PageChipsContext = createContext<{
+  onOpenPage?: (pageId: string) => void;
+  palette: ColorTokens;
+}>({ palette: darkTokens });
+
+/** `PAGE_ICON` drawn from views so it can sit inline in text; the flap is a border triangle. */
+export function PageIcon({
+  colors,
+  width = PAGE_ICON.width,
+  style,
+}: {
+  /** The app's resolved palette, which can differ from the device's color scheme. */
+  colors: ColorTokens;
+  width?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const s = width / PAGE_ICON.width;
+  const { foldX, foldY, radius } = PAGE_ICON;
+  const sheet = { position: "absolute", backgroundColor: colors.pageIconSheet } as const;
+  return (
+    <View
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      style={[{ width, height: PAGE_ICON.height * s }, style]}
+    >
+      <View
+        style={[
+          sheet,
+          {
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: foldX * s,
+            borderTopLeftRadius: radius * s,
+            borderBottomLeftRadius: radius * s,
+          },
+        ]}
+      />
+      <View
+        style={[
+          sheet,
+          {
+            left: foldX * s - 0.5,
+            right: 0,
+            top: foldY * s,
+            bottom: 0,
+            borderBottomRightRadius: radius * s,
+          },
+        ]}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: foldX * s,
+          top: 0,
+          width: 0,
+          height: 0,
+          borderLeftWidth: (PAGE_ICON.width - foldX) * s,
+          borderTopWidth: foldY * s,
+          borderLeftColor: colors.pageIconFold,
+          borderTopColor: "transparent",
+        }}
+      />
+      {PAGE_ICON.lines.map((line) => (
+        <View
+          key={line.y}
+          style={{
+            position: "absolute",
+            left: line.x * s,
+            top: line.y * s,
+            width: line.width * s,
+            height: line.height * s,
+            borderRadius: (line.height / 2) * s,
+            backgroundColor: colors[line.token],
+          }}
+        />
+      ))}
+      {PAGE_ICON.bars.map((bar, index) => (
+        <View
+          key={bar.x}
+          style={{
+            position: "absolute",
+            left: bar.x * s,
+            top: bar.y * s,
+            width: PAGE_ICON.barWidth * s,
+            height: bar.height * s,
+            borderRadius: (PAGE_ICON.barWidth / 2) * s,
+            backgroundColor: pageIconBars[index],
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+// The chip's icon is 17/16 of the text, its bottom 2pt below the baseline and 7pt before the
+// title at 16pt text. Inline views drop their margins, so the gap is part of the view.
+const chipIconHeight = (BODY_FONT_SIZE * 17) / 16;
+const chipIconWidth = (chipIconHeight * PAGE_ICON.width) / PAGE_ICON.height;
+const pageChipMarker = {
+  width: chipIconWidth + (chipIconHeight * 7) / 17,
+  height: chipIconHeight,
+  transform: [{ translateY: (chipIconHeight * 2) / 17 }],
+} as const;
+
+function MarkdownPageChip({
+  pageId,
+  children,
+  titleStyle,
+  onOpenPage,
+}: {
+  pageId: string;
+  children: ReactNode;
+  titleStyle: MarkdownStyleMap[string];
+  /** A user bubble's opener; Markdown reads it from the message. */
+  onOpenPage?: (pageId: string) => void;
+}) {
+  const { onOpenPage: fromMessage, palette } = useContext(PageChipsContext);
+  const openPage = onOpenPage ?? fromMessage;
+  if (!openPage) return <Text>{children}</Text>;
+  return (
+    <Text accessibilityRole="link" onPress={() => openPage(pageId)}>
+      <View style={pageChipMarker}>
+        <PageIcon colors={palette} width={chipIconWidth} />
+      </View>
+      <Text style={titleStyle}>{children}</Text>
+    </Text>
+  );
+}
+
 function renderMarkdownLink(
   node: ASTNode,
   children: ReactNode[],
   styleMap: MarkdownStyleMap,
   block: boolean,
 ) {
+  const pageId = markdownPageId(node.attributes.href);
+  if (pageId)
+    return (
+      <MarkdownPageChip key={node.key} pageId={pageId} titleStyle={styleMap.link}>
+        {children}
+      </MarkdownPageChip>
+    );
   const href = sanitizeMarkdownUrl(node.attributes.href ?? "");
   if (!href) return <Text key={node.key}>{children}</Text>;
   const image = soleRemoteImage(node);
@@ -1045,6 +1183,7 @@ type LinkifiedTextProps = {
   color: string;
   linkColor: string;
   palette: ColorTokens;
+  onOpenPage?: (pageId: string) => void;
 };
 
 export const LinkifiedText = memo(function LinkifiedText({
@@ -1052,8 +1191,10 @@ export const LinkifiedText = memo(function LinkifiedText({
   color,
   linkColor,
   palette,
+  onOpenPage,
 }: LinkifiedTextProps) {
   const openLink = useNativeLinkConfirm();
+  const parts = onOpenPage ? plainTextLinkParts(children, true) : plainTextLinkParts(children);
   const labelStyle: TextStyle = {
     color,
     fontWeight: "500",
@@ -1061,56 +1202,70 @@ export const LinkifiedText = memo(function LinkifiedText({
     textDecorationColor: palette.mutedForeground,
   };
   return (
-    <Text
-      style={[
-        { color, fontSize: BODY_FONT_SIZE, lineHeight: 23 },
-        contraryDirection(children) && layout.farSideText,
-      ]}
-    >
-      {plainTextLinkParts(children).map((part, index) => {
-        if (part.type === "text") return part.value;
-        const open = () => {
-          openLink(part.href);
-        };
-        if (!linkFaviconOrigin(part.href)) {
+    <PageChipsContext.Provider value={{ onOpenPage, palette }}>
+      <Text
+        style={[
+          { color, fontSize: BODY_FONT_SIZE, lineHeight: 23 },
+          contraryDirection(children) && layout.farSideText,
+        ]}
+      >
+        {parts.map((part, index) => {
+          if (part.type === "text") return part.value;
+          if (part.type === "page")
+            return (
+              <MarkdownPageChip
+                key={index}
+                pageId={part.pageId}
+                titleStyle={{ textDecorationLine: "underline", textDecorationColor: linkColor }}
+                onOpenPage={onOpenPage}
+              >
+                {part.value}
+              </MarkdownPageChip>
+            );
+          const open = () => {
+            openLink(part.href);
+          };
+          if (!linkFaviconOrigin(part.href)) {
+            return (
+              <Text
+                accessibilityRole="link"
+                key={index}
+                style={{ color: linkColor, textDecorationLine: "underline" }}
+                onPress={open}
+              >
+                {part.value}
+              </Text>
+            );
+          }
+          const label = linkLabel(part.value, part.href);
           return (
             <Text
               accessibilityRole="link"
+              accessibilityLabel={label}
               key={index}
-              style={{ color: linkColor, textDecorationLine: "underline" }}
+              style={{ color, fontWeight: "500" }}
               onPress={open}
             >
-              {part.value}
+              <LinkFavicon
+                href={part.href}
+                plate={{ backgroundColor: palette.faviconPlate, padding: 2 }}
+              />
+              {WORD_JOINER}
+              {ISOLATE}
+              <Text style={labelStyle}>{label}</Text>
+              {POP_ISOLATE}
             </Text>
           );
-        }
-        const label = linkLabel(part.value, part.href);
-        return (
-          <Text
-            accessibilityRole="link"
-            accessibilityLabel={label}
-            key={index}
-            style={{ color, fontWeight: "500" }}
-            onPress={open}
-          >
-            <LinkFavicon
-              href={part.href}
-              plate={{ backgroundColor: palette.faviconPlate, padding: 2 }}
-            />
-            {WORD_JOINER}
-            {ISOLATE}
-            <Text style={labelStyle}>{label}</Text>
-            {POP_ISOLATE}
-          </Text>
-        );
-      })}
-    </Text>
+        })}
+      </Text>
+    </PageChipsContext.Provider>
   );
 });
 
 export const ChatMarkdown = memo(function ChatMarkdown({
   children,
   streaming = false,
+  onOpenPage,
   palette = darkTokens,
   colorScheme = "dark",
 }: ChatMarkdownProps & { palette?: ColorTokens; colorScheme?: ResolvedAppearance }) {
@@ -1133,19 +1288,21 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 
   return (
     <OpenLinkContext.Provider value={openLink}>
-      <View style={layout.wrap}>
-        <LinkFaviconsPausedContext.Provider value={streaming}>
-          <DiagramSurfaceContext.Provider value={diagramSurface}>
-            {streaming ? (
-              <MarkdownStream {...sharedProps} cursorColor={palette.mutedForeground} streaming>
-                {children}
-              </MarkdownStream>
-            ) : (
-              <Markdown {...sharedProps}>{children}</Markdown>
-            )}
-          </DiagramSurfaceContext.Provider>
-        </LinkFaviconsPausedContext.Provider>
-      </View>
+      <PageChipsContext.Provider value={{ onOpenPage, palette }}>
+        <View style={layout.wrap}>
+          <LinkFaviconsPausedContext.Provider value={streaming}>
+            <DiagramSurfaceContext.Provider value={diagramSurface}>
+              {streaming ? (
+                <MarkdownStream {...sharedProps} cursorColor={palette.mutedForeground} streaming>
+                  {children}
+                </MarkdownStream>
+              ) : (
+                <Markdown {...sharedProps}>{children}</Markdown>
+              )}
+            </DiagramSurfaceContext.Provider>
+          </LinkFaviconsPausedContext.Provider>
+        </View>
+      </PageChipsContext.Provider>
     </OpenLinkContext.Provider>
   );
 });

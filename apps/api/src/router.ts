@@ -348,6 +348,8 @@ import {
   loadAllMessages,
   loadMessagePage,
   projectPeerThreadEvent,
+  projectThreadEventPageFallback,
+  projectThreadPageFallbacks,
   shouldForwardBackgroundThreadEvent,
 } from "./thread-message-pages.js";
 import type { ThreadTarget } from "./thread-target.js";
@@ -1344,7 +1346,7 @@ export function createRouter(deps: RouterDeps) {
         botSections,
         archivedBots,
         archivedGroups,
-        thread,
+        thread: thread ? projectThreadPageFallbacks(thread) : null,
         routines,
         spaces: navigation.spaces,
       };
@@ -2415,16 +2417,15 @@ export function createRouter(deps: RouterDeps) {
       ),
       get: authed.groups.get.handler(async ({ context, input }) => {
         const group = await groupRepos.getGroup(context.actor, input.groupId);
+        const page = await loadMessagePage(
+          deps.prisma,
+          group.thread!.id,
+          undefined,
+          THREAD_MESSAGE_PAGE_SIZE,
+        );
         return {
           ...groupRepos.mapGroup(group),
-          messages: (
-            await loadMessagePage(
-              deps.prisma,
-              group.thread!.id,
-              undefined,
-              THREAD_MESSAGE_PAGE_SIZE,
-            )
-          ).messages,
+          messages: projectThreadPageFallbacks(page).messages,
         };
       }),
       duplicate: authed.groups.duplicate.handler(async ({ context, input }) => {
@@ -2577,20 +2578,22 @@ export function createRouter(deps: RouterDeps) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input, {
           includeArchived: true,
         });
-        return threadSnapshot(deps, target);
+        return projectThreadPageFallbacks(await threadSnapshot(deps, target));
       }),
       messages: authed.threads.messages.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input, {
           includeArchived: true,
         });
-        return loadMessagePage(
-          deps.prisma,
-          target.threadId,
-          input.before,
-          THREAD_MESSAGE_PAGE_SIZE,
-          input.around,
-          input.includePeerRuns,
-          input.includePeerReceipts,
+        return projectThreadPageFallbacks(
+          await loadMessagePage(
+            deps.prisma,
+            target.threadId,
+            input.before,
+            THREAD_MESSAGE_PAGE_SIZE,
+            input.around,
+            input.includePeerRuns,
+            input.includePeerReceipts,
+          ),
         );
       }),
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
@@ -2657,12 +2660,12 @@ export function createRouter(deps: RouterDeps) {
             if (await isPeerRun(deps.prisma, sourceRunId, peerRunCache)) {
               const visible = projectPeerThreadEvent(event);
               if (!visible) continue;
-              yield visible;
+              yield projectThreadEventPageFallback(visible);
               continue;
             } else if (await isBackgroundRun(deps.prisma, sourceRunId, backgroundRunCache)) {
               if (!shouldForwardBackgroundThreadEvent(event)) continue;
             }
-            yield event;
+            yield projectThreadEventPageFallback(event);
           }
         } finally {
           // Not awaited: closing can queue behind a read that the abort has not landed on yet.

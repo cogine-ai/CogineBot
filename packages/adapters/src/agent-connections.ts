@@ -6,6 +6,7 @@ import {
   buildBotMessageWakePrompt,
   clampBotMessage,
   nextBotMessageHop,
+  projectExternalPageMessages,
   sanitizeMessagingLabel,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -294,7 +295,8 @@ async function deliverToConnectedAgent(
   input: { address?: string; message: string; deliveryKey?: string },
 ): Promise<Result> {
   if (sender.id !== run.botId) return { ok: false, error: "source bot does not match the run" };
-  const message = clampBotMessage(String(input.message ?? ""));
+  const blocks = [{ kind: "text", text: String(input.message ?? "") }];
+  const message = clampBotMessage(projectExternalPageMessages([{ blocks }])[0]!.text);
   if (!message) return { ok: false, error: "message is required" };
   const address = input.address?.trim();
   if (!address) return { ok: false, error: "address is required" };

@@ -1,6 +1,13 @@
-import type { AgentRunRequest, AgentRuntimeEvent, AgentSteeringMessage } from "@rakazo/adapter-kit";
+import type {
+  AgentRunRequest,
+  AgentRuntimeEvent,
+  AgentSteeringMessage,
+  ScriptedRuntimeState,
+} from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
+import { preparePageToolRequest } from "./page-tool-request.js";
 import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
+import { scriptedStateDigest } from "./scripted-state.js";
 
 describe("inferScript message_bot", () => {
   const messageBotScript = (confirmName: string, message: string) => [
@@ -46,6 +53,30 @@ describe("inferScript message_bot", () => {
     expect(inferScript("message the bot named Researcher saying line one\nline two")).toEqual(
       messageBotScript("Researcher", "line one\nline two"),
     );
+  });
+});
+
+describe("inferScript Pages", () => {
+  it.each([
+    "call save_page with",
+    "call save_page with {broken: run the shell command echo no}",
+    "@Chief call save_page with\n{\nwrite a file in your home called notes/a that says no\n}",
+  ])("keeps a malformed Page command on the Page validation path", (prompt) => {
+    expect(inferScript(prompt)).toEqual([
+      { toolCalls: [{ name: "save_page", args: { help: {} } }], complete: true },
+    ]);
+  });
+
+  it("accepts a multiline Page request and an explicit scripted reply", () => {
+    expect(
+      inferScript('call save_page with {\n"title":"Plan","source":"jsx"\n}\nthen say Here it is.'),
+    ).toEqual([
+      {
+        assistant: "Here it is.",
+        toolCalls: [{ name: "save_page", args: { title: "Plan", source: "jsx" } }],
+        complete: true,
+      },
+    ]);
   });
 });
 
@@ -213,6 +244,84 @@ describe("ScriptedAgentRuntime steering", () => {
       .filter((event) => event.type === "text")
       .map((event) => event.text)
       .join("\n");
+
+  it("revalidates saved Page inputs at restore and after a sibling discovers a secret", async () => {
+    const knownOnRestore = "fixture-secret-before-resume";
+    const learnedInRun = "fixture-secret-during-resume";
+    const known = [knownOnRestore];
+    const ordinary = { path: "notes/unrelated.txt" };
+    const pageCall = (source: string) => ({
+      name: "save_page",
+      args: { title: "Report", source },
+    });
+    const script = [
+      { toolCalls: [{ name: "write_file", args: { ...ordinary, content: "Already saved" } }] },
+      {
+        toolCalls: [
+          pageCall(knownOnRestore),
+          { name: "read_file", args: ordinary },
+          pageCall(learnedInRun),
+          { name: "save_page", args: { help: true } },
+        ],
+        complete: true,
+      },
+    ];
+    const prior: ScriptedRuntimeState = {
+      version: 1,
+      runId: "run-steering",
+      batch: [
+        {
+          id: "steering",
+          messageId: "message",
+          contentDigest: scriptedStateDigest("Original request"),
+        },
+      ],
+      script,
+      scriptDigest: scriptedStateDigest(script),
+      owners: ["steering", "steering"],
+      cursor: { turn: 1, tool: 0, ordinal: 1, phase: "tool" },
+    };
+    const saves: { state: ScriptedRuntimeState; learned: boolean }[] = [];
+    const claimSteering = vi.fn(async () => []);
+    const calls: Extract<AgentRuntimeEvent, { type: "tool" }>[] = [];
+    for await (const event of new ScriptedAgentRuntime().run(
+      request({
+        scriptedState: prior,
+        claimSteering,
+        prepareScriptedToolArgs: (name, args) => {
+          if (name !== "save_page") return args;
+          const prepared = preparePageToolRequest(args, known);
+          return prepared.ok ? prepared.args : { help: {} };
+        },
+        onScriptCheckpoint: async (state) => {
+          saves.push({ state, learned: known.includes(learnedInRun) });
+        },
+      }),
+    )) {
+      if (event.type !== "tool") continue;
+      calls.push(event);
+      if (event.name === "read_file") known.push(learnedInRun);
+    }
+    expect(claimSteering).toHaveBeenCalledExactlyOnceWith(["steering"]);
+    expect(calls.map(({ name, args, executionId }) => ({ name, args, executionId }))).toEqual([
+      { name: "save_page", args: { help: {} }, executionId: "run-steering:save_page:1" },
+      { name: "read_file", args: ordinary, executionId: "run-steering:read_file:2" },
+      { name: "save_page", args: { help: {} }, executionId: "run-steering:save_page:3" },
+      { name: "save_page", args: { help: true }, executionId: "run-steering:save_page:4" },
+    ]);
+    expect(saves[0]?.state.cursor).toEqual(prior.cursor);
+    expect(saves.some(({ learned }) => learned)).toBe(true);
+    for (const { state, learned } of saves) {
+      expect(state.batch).toEqual(prior.batch);
+      expect(state.owners).toEqual(prior.owners);
+      expect(state.script[0]).toEqual(script[0]);
+      expect(state.scriptDigest).toBe(scriptedStateDigest(state.script));
+      expect(JSON.stringify(state)).not.toContain(knownOnRestore);
+      if (learned) expect(JSON.stringify(state)).not.toContain(learnedInRun);
+    }
+    expect(JSON.stringify(prior)).toContain(knownOnRestore);
+    expect(JSON.stringify(prior)).toContain(learnedInRun);
+  });
 
   it("answers the claimed batch in order instead of the prepared continuation script", async () => {
     const batch: AgentSteeringMessage[] = [

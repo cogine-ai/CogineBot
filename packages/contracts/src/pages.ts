@@ -24,9 +24,13 @@ export const PageInputIdSchema = Id.refine((id) => !id.includes("\0"));
  * A page title is one line: control characters and line breaks fold into single spaces, since
  * the title sits in pills, chips and `[title](page:id)` links that a break would cut.
  */
+export function normalizePageTitle(title: string): string {
+  return title.replace(/[\p{Cc}\u2028\u2029\s]+/gu, " ").trim();
+}
+
 export const PageTitleSchema = z
   .string()
-  .transform((title) => title.replace(/[\p{Cc}\u2028\u2029\s]+/gu, " ").trim())
+  .transform(normalizePageTitle)
   .pipe(z.string().min(1).max(PAGE_TITLE_MAX_LENGTH));
 
 /** The reader may identify a fallback Page; its title is resolved by the server. */

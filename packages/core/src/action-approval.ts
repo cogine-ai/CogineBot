@@ -150,6 +150,7 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "render_plot",
   "request_secret",
   "save_memory",
+  "save_page",
   "save_shared_memory",
   "schedule_cancel",
   "schedule_create",

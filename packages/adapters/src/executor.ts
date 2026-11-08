@@ -375,6 +375,17 @@ import {
   modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
+import {
+  preparePageToolRequest,
+  preparePageToolScriptArguments,
+  SAVE_PAGE_TOOL,
+} from "./page-tool-request.js";
+import type { PageToolContext } from "./page-tools.js";
+import {
+  readCompletedPageToolResult,
+  recoverSavedPageFromTool,
+  savePageFromTool,
+} from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
@@ -4676,6 +4687,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     }
                   : tool,
               );
+        const pageToolOffered = tools.some((tool) => tool.name === SAVE_PAGE_TOOL);
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
@@ -4992,6 +5004,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             executionId,
             pendingSecretEffectId,
             connectionApprovalEffectKey,
+            runSecrets,
           );
         const consumedEffectIds = new Set<string>(scriptedResume.stored?.consumedEffectIds);
         let lastScriptedState = scriptedResume.stored;
@@ -5283,6 +5296,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : !(await availableToolNames()).includes(name)))
           ) {
             return { error: "This tool is disabled for this bot." };
+          }
+          if (name === SAVE_PAGE_TOOL) {
+            if (!pageToolOffered) {
+              return { error: "This tool is unavailable on this run." };
+            }
+            // An unsafe call removed from a checkpoint cannot consume a separate approval.
+            if (args.help && typeof args.help === "object") {
+              return { error: "Invalid Page arguments.", unchanged: true };
+            }
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name) && !pageBrowserAllowed) {
             return { error: "Page browser is unavailable on this computer." };
@@ -5597,6 +5619,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             effectRequest = args;
           }
+          let pageMode: "help" | "read" | "write" | undefined;
+          if (name === SAVE_PAGE_TOOL) {
+            const prepared = preparePageToolRequest(args, runSecrets);
+            if (!prepared.ok) return prepared.result;
+            if (nextApprovedTool === name && prepared.args !== args) {
+              return {
+                error: "The approved Page request has changed. Ask for a new approval.",
+                unchanged: true,
+              };
+            }
+            args = prepared.args;
+            effectRequest = args;
+            pageMode = prepared.mode;
+          }
           const viaConnector = !BUILTIN_AGENT_TOOL_NAMES.has(name);
           // Declared effect of the operation this call dispatches (installed API method and
           // flag). Install config is immutable per route resource, so it cannot drift before
@@ -5752,7 +5788,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // Connector read-only hints must not bypass approval, review, or replay decisions.
           const applied = restoredConnectionEffect
             ? { duplicate: true, effect: restoredConnectionEffect }
-            : READ_ONLY_AGENT_TOOLS.has(name) &&
+            : (READ_ONLY_AGENT_TOOLS.has(name) || pageMode === "read" || pageMode === "help") &&
                 !needsApprovalEarly &&
                 siteGate !== "new" &&
                 nextApprovedTool !== name &&
@@ -5969,6 +6005,44 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
           let approvedRoutineSites: string[] = [];
+          const pageToolContext = (): PageToolContext => ({
+            deps,
+            run,
+            bot,
+            thread,
+            state: trust.state,
+            secrets: runSecrets,
+            effect: applied?.effect,
+            lease: { owner: workerId, fence },
+            notify: async (threadId, eventSeq, firstResponseRunId) => {
+              await deps.events.notify(threadId, eventSeq, firstResponseRunId);
+            },
+          });
+          const replayPageResult = (result: unknown) => {
+            if (!pageMode) return result;
+            if (
+              pageMode === "read" &&
+              result &&
+              typeof result === "object" &&
+              "source" in result &&
+              typeof result.source === "string"
+            )
+              trust.state.tainted = true;
+            return redactConnectorPayload(result, runSecrets);
+          };
+          const completedPageWrite = async () => {
+            if (pageMode !== "write") return undefined;
+            const result = await readCompletedPageToolResult(pageToolContext(), args);
+            return result === undefined ? undefined : replayPageResult(result);
+          };
+          const recoverPageWrite = async (effect: { id: string; status: string }) => {
+            if (pageMode !== "write" || effect.status !== "executing") return undefined;
+            const result = await recoverSavedPageFromTool(pageToolContext(), args);
+            if (result === undefined) return completedPageWrite();
+            return (await completeEffect(deps, effect.id, "executing", result))
+              ? result
+              : ((await completedPageWrite()) ?? uncertainEffectResult(name));
+          };
 
           const claimOrReturn = async (
             from: "approved" | "intended",
@@ -5983,8 +6057,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             if (current) {
               const retryGate = resolveDuplicateEffectGate(current, name);
-              if (retryGate.action === "return") return retryGate.result;
+              if (retryGate.action === "return") return replayPageResult(retryGate.result);
               if (retryGate.action === "uncertain") {
+                const recovered = await recoverPageWrite(current);
+                if (recovered !== undefined) return recovered;
                 return settleUncertainEffect(
                   deps.prisma,
                   applied!.effect.id,
@@ -6078,7 +6154,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   return gate.result;
                 }
               } else {
-                return gate.result;
+                return replayPageResult(gate.result);
               }
             }
             if (gate.action === "paused") {
@@ -6093,7 +6169,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 // An intended secret request resumes protected entry below, including
                 // recovery after action approval but before the card was committed.
               } else if (!needsApproval) {
-                if (name !== "request_takeover") {
+                // The Page transaction owns the intended write and its commit receipt.
+                if (name !== "request_takeover" && pageMode !== "write") {
                   const early = await claimOrReturn("intended");
                   if (early !== undefined) return early;
                 }
@@ -6108,6 +6185,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return requestApproval();
               }
             } else if (gate.action === "uncertain") {
+              const recovered = await recoverPageWrite(applied.effect);
+              if (recovered !== undefined) return recovered;
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
@@ -6122,7 +6201,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           } else if (needsApproval && applied) {
             return requestApproval();
-          } else if (bypassApproval && applied && name !== "request_takeover") {
+          } else if (
+            bypassApproval &&
+            applied &&
+            name !== "request_takeover" &&
+            pageMode !== "write"
+          ) {
             const early = await claimOrReturn("intended");
             if (early !== undefined) return early;
           }
@@ -6304,6 +6388,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
             return finish({ ok: true, path: filePath });
+          }
+          if (name === SAVE_PAGE_TOOL) {
+            try {
+              const result = await savePageFromTool(pageToolContext(), args);
+              if (await persistEffectResult(result)) return result;
+              return (await completedPageWrite()) ?? uncertainEffectResult(name);
+            } catch (error) {
+              const completed = await completedPageWrite();
+              if (completed !== undefined) return completed;
+              throw error;
+            }
           }
           if (name === "render_plot") {
             if (args.charts !== undefined) {
@@ -8427,6 +8522,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 historyRetrievalEnabled: contextStrategy !== "current",
                 computerInstruction,
                 pageBrowserAllowed,
+                pageToolOffered,
                 taskCatalogInstruction,
                 workspaceInstruction,
                 agentEnvironmentInstruction,
@@ -8521,6 +8617,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ...(scripted
                 ? {}
                 : {
+                    pageToolSecrets: () => runSecrets,
                     turnCheckpoint: turnState.blob,
                     ...(!heldForTakeover &&
                     !takeoverResume &&
@@ -8538,6 +8635,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               script,
               ...(scripted
                 ? {
+                    prepareScriptedToolArgs: (
+                      name: string,
+                      args: Record<string, unknown>,
+                      revalidate: boolean,
+                    ) =>
+                      name === SAVE_PAGE_TOOL
+                        ? preparePageToolScriptArguments(args, runSecrets, revalidate)
+                        : args,
                     onScriptResolved: (resolved: ScriptedTurn[]) => {
                       resolvedEffectScript = resolved;
                       scriptCompleted = false;
@@ -9870,6 +9975,7 @@ export function userTurnInstructions(parts: {
   historyRetrievalEnabled?: boolean;
   computerInstruction: string;
   pageBrowserAllowed: boolean;
+  pageToolOffered?: boolean;
   taskCatalogInstruction?: string;
   workspaceInstruction: string;
   agentEnvironmentInstruction: string | undefined;
@@ -9922,6 +10028,9 @@ export function userTurnInstructions(parts: {
       "render_plot",
       'For charts and data visualization, use the render_plot tool: it renders bar, line, scatter, histogram, heatmap, faceted and many more chart types from a JSON spec and attaches the PNG to the chat. Call render_plot with {"help": true} before your first chart to read the full guide.',
     ),
+    parts.pageToolOffered
+      ? 'For a dashboard, report, tracker or comparison, build a page with save_page (call it with {"help": true} first for the kit guide). To change a page, pass its pageId with edits or new source instead of making a new page. In your reply, mention the page by its title; never paste its source.'
+      : undefined,
     offeredBuiltinClause(
       parts.disabledBuiltinTools,
       "add_mcp_server",

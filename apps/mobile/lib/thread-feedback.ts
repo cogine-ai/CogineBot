@@ -1,4 +1,4 @@
-import type { AgentSkillCatalogEntry } from "@rakazo/contracts";
+import type { AgentSkillCatalogEntry, PageReplyContext } from "@rakazo/contracts";
 import type { ComposerMention, resolveComposerSendPlan } from "@rakazo/core";
 import { isServerUnreachable } from "@rakazo/core";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -33,6 +33,9 @@ export type SendPayload = {
   attachments: PickedAttachment[];
   replyTargetId?: string;
   replyQuote: string | null;
+  /** A reply to this chat's Page card, with no message quote. */
+  fromPage?: true;
+  pageContext?: PageReplyContext;
 };
 
 export type SendAttempt = {
@@ -97,6 +100,8 @@ export async function deliverSend(
     artifactIds: artifactIds.length ? artifactIds : undefined,
     replyToMessageId: reroutedToGroup ? undefined : payload.replyTargetId,
     replyQuote: reroutedToGroup ? undefined : (payload.replyQuote ?? undefined),
+    fromPage: reroutedToGroup ? undefined : payload.fromPage,
+    pageContext: reroutedToGroup ? undefined : payload.pageContext,
   });
   return sent.seq;
 }
@@ -106,7 +111,8 @@ export type UnsentDisk = {
   admit(attempt: SendAttempt): boolean;
   hydrate(attempt: SendAttempt): Promise<void>;
   forget(attempt: SendAttempt): void;
-  save(attempts: SendAttempt[]): void;
+  /** True acknowledges a committed index. */
+  save(attempts: SendAttempt[]): boolean;
   load(session: number, scope: OutboxScope): SendAttempt[];
   clear(): void;
 };
@@ -134,6 +140,7 @@ const watchers = new Set<() => void>();
 const deliveredListeners = new Set<(attempt: SendAttempt) => void>();
 const echoes = new Map<string, Set<number>>();
 const screens = new Map<string, number>();
+const removed = new Set<SendAttempt>();
 export const OUTBOX_MAX_ENTRIES = 20;
 
 function subscribe(watcher: () => void) {
@@ -145,9 +152,27 @@ function subscribe(watcher: () => void) {
 function getUnsentSends() {
   return unsentSends;
 }
-function changed() {
+function waiting() {
+  return unsentSends.filter((attempt) => attempt.acceptedSeq === undefined);
+}
+function save(attempts: SendAttempt[]) {
+  if (!config || !restored) return false;
+  try {
+    if (!config.disk.save(attempts)) return false;
+  } catch {
+    return false;
+  }
+  // The previous committed index can still refer to these files until the save succeeds.
+  for (const attempt of removed) {
+    removed.delete(attempt);
+    if (!attempts.some((saved) => saved.clientNonce === attempt.clientNonce))
+      config.disk.forget(attempt);
+  }
+  return true;
+}
+function changed(persist = true) {
   unsentSends = [...unsentSends];
-  if (restored) config?.disk.save(unsentSends.filter((a) => a.acceptedSeq === undefined));
+  if (persist) save(waiting());
   for (const watcher of watchers) watcher();
 }
 function inScope(attempt: SendAttempt) {
@@ -161,8 +186,8 @@ function inScope(attempt: SendAttempt) {
   );
 }
 function remove(attempt: SendAttempt) {
-  config?.disk.forget(attempt);
   unsentSends = unsentSends.filter((a) => a !== attempt);
+  removed.add(attempt);
   changed();
 }
 export function configureUnsentSends(next: Config) {
@@ -180,6 +205,7 @@ export function clearUnsentSends() {
   sessionCount += 1;
   restored = false;
   unsentSends = [];
+  removed.clear();
   echoes.clear();
   pendingForce = null;
   config?.disk.clear();
@@ -220,10 +246,16 @@ export function sendWaitingMessages(force = false): Promise<void> {
         if (!attempt) break;
         attempt.state = "pending";
         changed();
+        let messageRejection: unknown;
         try {
           const request = ((...args: Parameters<typeof rpc>) => {
             if (!inScope(attempt)) throw new Error("Session changed");
-            return config!.request(args[0], args[1], args[2], attempt.spaceId);
+            const response = config!.request(args[0], args[1], args[2], attempt.spaceId);
+            if (args[0] !== "threads/send") return response;
+            return response.catch((error: unknown) => {
+              messageRejection = error;
+              throw error;
+            });
           }) as typeof rpc;
           await config.disk.hydrate(attempt);
           const seq = await deliverSend(attempt.payload, attempt, request);
@@ -249,7 +281,42 @@ export function sendWaitingMessages(force = false): Promise<void> {
               ? "refused"
               : "failed";
           attempt.error = config.errorText(error);
-          changed();
+          const rejection = error as { code?: unknown; data?: { reason?: unknown } } | null;
+          let recoveredOnDisk = false;
+          if (
+            error === messageRejection &&
+            status === 404 &&
+            rejection?.code === "NOT_FOUND" &&
+            rejection.data?.reason === "page_context_unavailable" &&
+            attempt.payload.pageContext &&
+            !attempt.payload.reroutedToGroup &&
+            unsentSends.includes(attempt)
+          ) {
+            const rejectedPayload = attempt.payload;
+            attempt.state = "failed";
+            const recovered: SendAttempt = {
+              ...attempt,
+              state: "failed",
+              payload: {
+                ...attempt.payload,
+                pageContext: undefined,
+                displayText: attempt.payload.plan.trimmed,
+              },
+            };
+            // Keep the same intent nonce: an earlier request may still commit after this rejection.
+            // Do not expose a context-free retry until its payload is committed for restart recovery.
+            recoveredOnDisk = save(waiting().map((a) => (a === attempt ? recovered : a)));
+            if (
+              recoveredOnDisk &&
+              inScope(attempt) &&
+              unsentSends.includes(attempt) &&
+              attempt.payload === rejectedPayload
+            ) {
+              attempt.payload = recovered.payload;
+              attempt.state = recovered.state;
+            }
+          }
+          changed(!recoveredOnDisk);
           if (offline) break;
           config.notDelivered(attempt);
         } finally {
@@ -305,9 +372,9 @@ export function useThreadFeedback(threadKey: string | undefined, newNonce: () =>
     unsentSends: allSends.filter((a) => a.payload.originThreadKey === threadKey && inScope(a)),
     sendAttempt(payload: SendPayload): SendAttempt {
       const scope = config?.scope();
-      if (!scope) throw new Error("SESSION_CHANGED");
-      if (unsentSends.filter((a) => a.acceptedSeq === undefined).length >= OUTBOX_MAX_ENTRIES)
-        throw new Error(t("Too many unsent messages"));
+      if (!scope || !restored) throw new Error("SESSION_CHANGED");
+      if (waiting().length >= OUTBOX_MAX_ENTRIES) throw new Error(t("Too many unsent messages"));
+      if (removed.size) save(waiting());
       const attempt: SendAttempt = {
         payload: { ...payload, attachments: payload.attachments.map((a) => ({ ...a })) },
         clientNonce: newNonce(),

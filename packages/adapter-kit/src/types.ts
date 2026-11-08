@@ -519,6 +519,14 @@ export interface AgentRunRequest {
   turnCheckpoint?: string;
   /** Captures are persisted only when the matching execution actually pauses. */
   onCheckpoint?: (capture: () => string, executionId: string) => void | Promise<void>;
+  /** Live known secrets for private Page transcript storage. */
+  pageToolSecrets?: () => string[];
+  /** Canonicalize fresh scripted call inputs, then recheck them before durable checkpoints. */
+  prepareScriptedToolArgs?: (
+    name: string,
+    args: Record<string, unknown>,
+    revalidate: boolean,
+  ) => Record<string, unknown>;
   /** Validated response to the suspended ask/takeover interaction. */
   resumeToolResult?: AgentToolExecutionResult;
   /** Server-verified pending takeover without a user release; re-enter its executor gate. */

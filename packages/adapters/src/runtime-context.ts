@@ -17,6 +17,7 @@ import {
   ContextCacheTracker,
   copyToolResultProvenance,
   estimateContextTokens,
+  isPageToolCall,
   markToolResultContent,
   protectedContextIndexes,
   providerContextPrefix,
@@ -24,6 +25,7 @@ import {
   toolResultContentProvenance,
 } from "./context-selection.js";
 import { MODEL_CONTEXT_FRAMING_TOKENS, maxFallbackInputTokens } from "./model-context.js";
+import { SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import {
   effectiveOutputReserve,
@@ -34,6 +36,7 @@ import { withoutThinkingFrom } from "./thinking-signatures.js";
 import {
   isVerbatimMcpResult,
   mcpToolResultRoute,
+  toolCallIdentity,
   verbatimMcpToolResultIndexes,
 } from "./verbatim-mcp-result.js";
 
@@ -47,8 +50,12 @@ interface ProjectionEntry {
   catalogIds?: string[];
 }
 const projections = new Map<string, ProjectionEntry[]>();
-/** Keep editable source and fleet instruction versions intact; these tools bound their own output. */
-export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set(["skill_read", "list_fleet"]);
+/** Keep editable source and bounded on-demand guides intact within the full model budget. */
+export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set([
+  "skill_read",
+  "list_fleet",
+  SAVE_PAGE_TOOL,
+]);
 // History reads are exact evidence and keep their own offset-aware shortening elsewhere.
 const UNSHORTENED_TOOL_RESULTS = new Set([
   "read_history",
@@ -568,9 +575,12 @@ export function createRuntimeContextPolicy(
         for (const part of message.content)
           if (part.type === "toolCall") latestCalls.set(part.id, part);
       if (message.role !== "toolResult") return false;
+      const call = latestCalls.get(message.toolCallId);
+      const route = mcpToolResultRoute(message.content);
       return (
-        latestCalls.has(message.toolCallId) &&
-        isVerbatimMcpResult(mcpToolResultRoute(message.content), request.verbatimMcpServers)
+        call !== undefined &&
+        (isVerbatimMcpResult(route, request.verbatimMcpServers) ||
+          (route?.connectorId !== "mcp" && isPageToolCall(toolCallIdentity(call))))
       );
     });
     const shortenOlderResults = (keepRecent: boolean) =>
@@ -630,6 +640,7 @@ export function createRuntimeContextPolicy(
         budget,
         strategy,
         protectedIndexes,
+        pageToolResults: modelWindow === actualWindow ? "omit" : "preserve",
         verbatimMcpServers: request.verbatimMcpServers,
         cacheWarmth: predictedCache,
         recentExchanges:

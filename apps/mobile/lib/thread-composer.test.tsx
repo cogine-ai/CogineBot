@@ -137,6 +137,20 @@ describe("thread composer isolation", () => {
     expect(props.send).toHaveBeenCalledOnce();
   });
 
+  it("clears Page provenance when clearing and retyping occur in one input batch", () => {
+    const onEmptied = vi.fn();
+    render({ onEmptied });
+    type("Page question");
+    onEmptied.mockClear();
+
+    act(() => {
+      input.change("");
+      input.change("Ordinary message");
+      expect(onEmptied).toHaveBeenCalledOnce();
+      expect(composer.current?.snapshot().promptText).toBe("Ordinary message");
+    });
+  });
+
   it("inserts an example once into the current empty composer without sending", () => {
     let inserted = false;
     let repeated = true;

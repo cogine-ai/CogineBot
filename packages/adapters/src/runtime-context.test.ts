@@ -2,6 +2,8 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
+import { PAGE_SOURCE_MAX_BYTES } from "@rakazo/contracts";
+import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { describe, expect, it, vi } from "vitest";
 import { catalogExecuteToolName } from "./approval-effect.js";
 import {
@@ -60,6 +62,186 @@ function enableHistoryRetrieval(request: AgentRunRequest) {
   request.executeTool = async () => ({});
 }
 describe("runtime context policy", () => {
+  it.each(["save_page", "use_tool"])(
+    "tells the model when a whole Page source cannot fit through %s",
+    (name) => {
+      const { request, context } = fixture(0);
+      const page = {
+        pageId: "page-1",
+        version: 2,
+        title: "Saved page",
+        source: "A".repeat(PAGE_SOURCE_MAX_BYTES),
+      };
+      const args = { pageId: page.pageId };
+      const ordinary = "Other tool evidence ".repeat(125);
+      context.messages.push(
+        fauxAssistantMessage([
+          {
+            type: "toolCall",
+            id: "page-read",
+            name,
+            arguments: name === "use_tool" ? { name: "save_page", arguments: args } : args,
+          },
+          { type: "toolCall", id: "other-result", name: "shell", arguments: {} },
+        ]),
+        {
+          role: "toolResult",
+          toolCallId: "page-read",
+          toolName: name,
+          content: [{ type: "text", text: JSON.stringify(page) }],
+          isError: false,
+          timestamp: 101,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "other-result",
+          toolName: "shell",
+          content: [{ type: "text", text: ordinary }],
+          isError: false,
+          timestamp: 101,
+        },
+      );
+      const policy = createRuntimeContextPolicy(request);
+      const prepared = policy.prepareContext(context, {
+        ...model,
+        contextWindow: 8192,
+        maxTokens: 512,
+      });
+      const result = prepared.messages.find((message) => message.role === "toolResult");
+      expect(result?.content).toEqual([
+        {
+          type: "text",
+          text: JSON.stringify({
+            contextTruncated: true,
+            error:
+              "The Page source does not fit this model context. Use a model with a larger context window before editing this Page.",
+            pageId: page.pageId,
+            version: page.version,
+          }),
+        },
+      ]);
+      expect(
+        prepared.messages.find(
+          (message) => message.role === "toolResult" && message.toolCallId === "other-result",
+        )?.content,
+      ).toEqual([{ type: "text", text: ordinary }]);
+      const roomy = createRuntimeContextPolicy(request).prepareContext(context, {
+        ...model,
+        contextWindow: 150000,
+        maxTokens: 512,
+      });
+      expect(roomy.messages.find((message) => message.role === "toolResult")?.content).toEqual([
+        { type: "text", text: JSON.stringify(page) },
+      ]);
+    },
+  );
+
+  it("preserves a deferred Page Kit guide after it has been read when it still fits", () => {
+    const { request, context } = fixture(0);
+    const guide = JSON.stringify({ guide: PAGE_KIT_GUIDE });
+    context.messages.push(
+      fauxAssistantMessage([
+        {
+          type: "toolCall",
+          id: "guide",
+          name: "use_tool",
+          arguments: {
+            name: "save_page",
+            arguments: { help: true },
+          },
+        },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "guide",
+        toolName: "use_tool",
+        content: [{ type: "text", text: guide }],
+        isError: false,
+        timestamp: 101,
+      },
+    );
+    for (let index = 0; index < 3; index++) {
+      const id = `shell-${index}`;
+      context.messages.push(
+        fauxAssistantMessage([{ type: "toolCall", id, name: "shell", arguments: {} }]),
+        {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: "shell",
+          content: [{ type: "text", text: "x".repeat(2800) }],
+          isError: false,
+          timestamp: index + 102,
+        },
+      );
+    }
+    const prepared = createRuntimeContextPolicy(request).prepareContext(context, {
+      ...model,
+      contextWindow: 10000,
+      maxTokens: 512,
+    });
+    const result = prepared.messages.find(
+      (message) => message.role === "toolResult" && message.toolCallId === "guide",
+    );
+    expect(result?.content).toEqual([{ type: "text", text: guide }]);
+  });
+
+  it("retains a full Page source when it fits the model but not the optional rebuild headroom", () => {
+    const { request, context } = fixture(6);
+    const small = { ...model, contextWindow: 8192, maxTokens: 512 };
+    const policy = createRuntimeContextPolicy(request);
+    const before = policy.prepareContext(context, small);
+    expect(before.messages).toHaveLength(context.messages.length);
+    const source = JSON.stringify({ pageId: "page-1", version: 2, source: "A".repeat(23_000) });
+    context.messages.push(
+      fauxAssistantMessage([
+        { type: "toolCall", id: "page", name: "save_page", arguments: { pageId: "page-1" } },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "page",
+        toolName: "save_page",
+        content: [{ type: "text", text: source }],
+        isError: false,
+        timestamp: 101,
+      },
+    );
+    const after = policy.prepareContext(context, small);
+    expect(after.messages.length).toBeLessThan(context.messages.length);
+    expect(after.messages.at(-1)?.content).toEqual([{ type: "text", text: source }]);
+  });
+
+  it("explicitly omits a Page Kit guide that cannot fit the actual input budget", () => {
+    const { request, context } = fixture(0);
+    context.messages.push(
+      fauxAssistantMessage([
+        { type: "toolCall", id: "guide", name: "save_page", arguments: { help: true } },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: "guide",
+        toolName: "save_page",
+        content: [{ type: "text", text: JSON.stringify({ guide: PAGE_KIT_GUIDE }) }],
+        isError: false,
+        timestamp: 101,
+      },
+    );
+    const after = createRuntimeContextPolicy(request).prepareContext(context, {
+      ...model,
+      contextWindow: 2800,
+      maxTokens: 512,
+    });
+    expect(after.messages.at(-1)?.content).toEqual([
+      {
+        type: "text",
+        text: JSON.stringify({
+          contextTruncated: true,
+          error:
+            "The Page Kit guide does not fit this model context. Use a model with a larger context window before building a Page.",
+        }),
+      },
+    ]);
+  });
+
   it.each([
     { reusedId: false, identicalBodies: false },
     { reusedId: true, identicalBodies: false },

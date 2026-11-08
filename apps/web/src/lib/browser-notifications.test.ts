@@ -1,3 +1,4 @@
+import { LEGACY_PAGE_CARD_FALLBACK } from "@rakazo/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type BrowserNotificationApi,
@@ -116,6 +117,46 @@ describe("browser notifications", () => {
       title: "Chief stopped",
       body: "Stopped.",
     });
+  });
+
+  it("omits paired old-client notices while retaining the generic Page-only body", () => {
+    const page = { kind: "page", pageId: "page-1", version: 2, title: "Weekly results" };
+    const fallback = {
+      kind: "text",
+      text: LEGACY_PAGE_CARD_FALLBACK,
+      pageCardFallbackFor: { pageId: "page-1", version: 2 },
+    };
+    const notify = (blocks: unknown[]) =>
+      browserNotificationMessage(event({ payload: { role: "bot", blocks } }), "Chief");
+
+    expect(notify([page, fallback])).toEqual({ title: "Chief", body: "Message" });
+    expect(notify([page])).toEqual({ title: "Chief", body: "Message" });
+    expect(notify([page, fallback, { kind: "text", text: "**Done.**" }])).toEqual({
+      title: "Chief",
+      body: "Done.",
+    });
+    expect(notify([page, { kind: "unknown", text: "Other message." }]).body).toBe("Other message.");
+    expect(notify([]).body).toBe("Message");
+  });
+
+  it("keeps standalone and unmatched old-client notices as prose", () => {
+    const page = { kind: "page", pageId: "page-1", version: 2, title: "Weekly results" };
+    const fallback = {
+      kind: "text",
+      text: LEGACY_PAGE_CARD_FALLBACK,
+      pageCardFallbackFor: { pageId: "page-1", version: 2 },
+    };
+    const notify = (blocks: unknown[]) =>
+      browserNotificationMessage(event({ payload: { role: "bot", blocks } }), "Chief").body;
+
+    expect(notify([fallback])).toBe(LEGACY_PAGE_CARD_FALLBACK);
+    expect(notify([{ ...page, pageId: "page-2" }, fallback])).toBe(LEGACY_PAGE_CARD_FALLBACK);
+    expect(notify([{ ...page, version: 1 }, fallback])).toBe(LEGACY_PAGE_CARD_FALLBACK);
+    expect(notify([{ ...page, title: null }, fallback])).toBe(LEGACY_PAGE_CARD_FALLBACK);
+    expect(notify([page, { kind: "text", text: LEGACY_PAGE_CARD_FALLBACK }])).toBe(
+      LEGACY_PAGE_CARD_FALLBACK,
+    );
+    expect(notify([page, { ...fallback, text: "User-facing prose." }])).toBe("User-facing prose.");
   });
 
   it("dedupes a replay but delivers another message from the same run", () => {

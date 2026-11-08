@@ -1,3 +1,6 @@
+import type { ThreadMessage } from "@rakazo/contracts";
+import { MessageBlock } from "@rakazo/contracts";
+import { LEGACY_PAGE_CARD_FALLBACK, userVisibleMessages } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -6,11 +9,61 @@ import {
   loadAllMessages,
   loadMessagePage,
   projectPeerThreadEvent,
+  projectThreadEventPageFallback,
+  projectThreadPageFallbacks,
   shouldForwardBackgroundThreadEvent,
   shouldForwardPeerThreadEvent,
 } from "./thread-message-pages.js";
 
 describe("thread message pages", () => {
+  it("adds one plain compatibility block to the wire only, with no private link or title", () => {
+    const card = {
+      kind: "page",
+      pageId: "private-id",
+      version: 2,
+      title: "![outside](https://example.test)",
+    } as const;
+    const message: ThreadMessage = {
+      id: "page-card",
+      threadId: "thread-1",
+      seq: 7,
+      role: "bot",
+      createdAt: "2026-10-12T00:00:00.000Z",
+      blocks: [card],
+    };
+    const mixed: ThreadMessage = {
+      ...message,
+      id: "mixed",
+      blocks: [card, { kind: "text", text: "Bot reply" }],
+    };
+    const user: ThreadMessage = { ...message, id: "user", role: "user" };
+    const original = { messages: [message, mixed, user], cursor: 23 };
+    const projected = projectThreadPageFallbacks(original);
+    const expected = [
+      card,
+      {
+        kind: "text",
+        text: LEGACY_PAGE_CARD_FALLBACK,
+        pageCardFallbackFor: { pageId: "private-id", version: 2 },
+      },
+    ];
+    expect(projected.cursor).toBe(23);
+    expect(projected.messages[0]).toMatchObject({ id: message.id, seq: 7, blocks: expected });
+    expect(MessageBlock.array().parse(projected.messages[0]?.blocks)).toEqual(expected);
+    expect(projected.messages[1]).toBe(mixed);
+    expect(projected.messages[2]).toBe(user);
+    expect(userVisibleMessages(projected.messages)[0]?.blocks).toEqual([card]);
+    expect(message.blocks).toEqual([card]);
+    expect(projectThreadPageFallbacks(projected)).toEqual(projected);
+    for (const type of ["thread.message.created", "thread.message.updated"]) {
+      const event = { type, payload: { blocks: [card] } };
+      expect(projectThreadEventPageFallback(event).payload.blocks).toEqual(expected);
+      expect(event.payload.blocks).toEqual([card]);
+    }
+    const progress = { type: "thread.progress", payload: { blocks: [card] } };
+    expect(projectThreadEventPageFallback(progress)).toBe(progress);
+  });
+
   it("projects new peer MCP approvals consistently in normal/around pages and SSE", async () => {
     const approval = {
       kind: "mcp_approval",

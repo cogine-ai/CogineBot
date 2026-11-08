@@ -69,6 +69,7 @@ type SettingsRowProps = Omit<PressableProps, "children" | "style"> & {
   prominent?: boolean;
   destructive?: boolean;
   dimmed?: boolean;
+  leading?: ReactNode;
   trailing?: ReactNode;
 };
 
@@ -80,6 +81,7 @@ export function SettingsRow({
   prominent,
   destructive,
   dimmed,
+  leading,
   trailing,
   ...props
 }: SettingsRowProps) {
@@ -93,6 +95,7 @@ export function SettingsRow({
   );
   const content = (
     <>
+      {leading}
       <View style={styles.titleColumn}>
         <Text
           style={[styles.title, prominent && styles.prominent, destructive && styles.destructive]}

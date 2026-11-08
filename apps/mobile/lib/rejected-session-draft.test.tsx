@@ -44,7 +44,7 @@ import {
   snapshotSessionToken,
 } from "./session";
 import type { SendAttempt, SendPayload } from "./thread-feedback";
-import { configureUnsentSends, useThreadFeedback } from "./thread-feedback";
+import { configureUnsentSends, restoreUnsentSends, useThreadFeedback } from "./thread-feedback";
 
 const mock = vi.hoisted(() => ({
   disk: new Map<string, string>(),
@@ -237,6 +237,7 @@ function productionEditor(state: HarnessState) {
       state.files = pendingAttachments;
     });
     async function send() {
+      restoreUnsentSends();
       const submitted = composerRef.current.snapshot();
       const attempt = feedback.sendAttempt({
         originThreadKey: threadKey, displayText: submitted.promptText,
@@ -283,6 +284,7 @@ function productionEditor(state: HarnessState) {
     nextNonce,
     useThreadFeedback,
     resolveComposerSendPlan,
+    restoreUnsentSends,
   };
   return new Function(...Object.keys(values), compiled)(...Object.values(values));
 }
@@ -351,7 +353,7 @@ describe("rejected-session editor isolation", () => {
         admit: () => true,
         hydrate: async () => {},
         forget: () => {},
-        save: () => {},
+        save: () => true,
         load: () => [],
         clear: diskClear,
       },
@@ -572,6 +574,7 @@ describe("rejected-session editor isolation", () => {
     };
     let old!: SendAttempt;
     await act(async () => {
+      restoreUnsentSends();
       old = state.feedback!.sendAttempt(oldPayload);
       await state.feedback!.send(old);
     });

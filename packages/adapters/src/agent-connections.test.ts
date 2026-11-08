@@ -544,6 +544,25 @@ describe("messageConnectedAgent", () => {
     ]);
   });
 
+  it("keeps private Page identifiers out of the cross-Space recipient and wake prompt", async () => {
+    const deps = createDeps({
+      connection: { id: "ac-1", requesterBotId: "bot-1", targetBotId: "bot-2", status: "approved" },
+    });
+    const result = await messageConnectedAgent(deps, run, sender, {
+      address: "+15552222222",
+      message: "Read [Report](page:private-plan). `page:private-code` or private-plan.",
+      deliveryKey: "exec-page",
+    });
+    expect(result).toMatchObject({ ok: true, botId: "bot-2" });
+    const text = "Read Report. `private page` or private page.";
+    expect(deps.txCalls.messageCreate[0]).toMatchObject({
+      threadId: "thread-2",
+      clientNonce: "agent-message:exec-page",
+      blocks: [{ kind: "bot_message_received", text }],
+    });
+    expect(deps.txCalls.taskCreate[0]).toMatchObject({ prompt: expect.stringContaining(text) });
+  });
+
   it("refuses without an approved connection", async () => {
     const deps = createDeps();
     const result = await messageConnectedAgent(deps, run, sender, {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import replyAnnouncementCases from "../../testkit/src/reply-announcement-fixtures.json" with {
   type: "json",
 };
+import { LEGACY_PAGE_CARD_FALLBACK } from "./message-visibility.js";
 import type { AnnouncementEvent, AnnouncementSnapshot } from "./reply-announcement.js";
 import { ReplyAnnouncements } from "./reply-announcement.js";
 
@@ -44,6 +45,29 @@ function deepFreeze<T>(value: T): T {
 }
 
 describe("durable visible reply announcements", () => {
+  it("consumes a Page-only receipt without announcing its old client notice", () => {
+    const observer = new ReplyAnnouncements();
+    observer.update("scope", true, snapshot());
+    observer.observe("scope", true, terminal());
+    const completed = snapshot(null);
+    completed.messages = [
+      {
+        id: "final",
+        role: "bot",
+        runId: "run-a",
+        blocks: [
+          { kind: "page", pageId: "page-a", version: 1, title: "Plan" },
+          {
+            kind: "text",
+            text: LEGACY_PAGE_CARD_FALLBACK,
+            pageCardFallbackFor: { pageId: "page-a", version: 1 },
+          },
+        ],
+      },
+    ];
+    expect(observer.update("scope", true, completed)).toEqual([]);
+  });
+
   it.each(REPLY_ANNOUNCEMENT_CASES)(
     "announces visible $name without mutating stored blocks",
     ({ blocks, spoken }) => {
