@@ -123,6 +123,36 @@ describe("hono request logging", () => {
       ),
     ).toBe(true);
   });
+
+  it("omits the capability and caller correlation from sensitive route failures", async () => {
+    const sink = createTestSink();
+    const logger = createLogger({ service: "rakazo-api", sinks: [sink] });
+    const app = new Hono();
+    app.use(
+      "*",
+      requestLogging(logger, {
+        sensitiveRoute: (path) =>
+          path.startsWith("/capability/") ? "/capability/:token" : undefined,
+      }),
+    );
+    app.onError(() => new Response(null, { status: 500 }));
+    app.get("/capability/:token", (c) => {
+      throw new Error(`Unexpected ${c.req.url}`);
+    });
+    const token = "synthetic-bearer-capability";
+    const trace = "e".repeat(32);
+    const response = await app.request(`/capability/${token}`, {
+      headers: { "x-request-id": token, traceparent: `00-${trace}-${"f".repeat(16)}-01` },
+    });
+    expect(response.status).toBe(500);
+    expect(response.headers.get("x-request-id")).not.toBe(token);
+    expect(sink.events.map((event) => [event.message, event["http.route"]])).toEqual([
+      ["http.request.failed", "/capability/:token"],
+      ["http.request.completed", "/capability/:token"],
+    ]);
+    expect(JSON.stringify(sink.events)).not.toContain(token);
+    expect(JSON.stringify(sink.events)).not.toContain(trace);
+  });
 });
 
 describe("outgoing correlation headers", () => {

@@ -38,6 +38,7 @@ export function PageBlockCard({ block, updated = false }: { block: PageBlock; up
       failed={denied || viewer.failed || shown.error !== undefined}
       updated={updated}
       updatedAt={current.data?.updatedAt}
+      sharedByLink={current.data?.sharedByLink}
       onOpen={deleted ? undefined : () => openPage(block.pageId)}
     />
   );

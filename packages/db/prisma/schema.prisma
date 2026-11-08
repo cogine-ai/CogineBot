@@ -2083,6 +2083,8 @@ model Page {
   group          ChatGroup?    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   title          String
   visibility     String        @default("private")
+  /// Sharing changes advance independently of the published content version and library order.
+  shareRevision  Int           @default(0)
   shareTokenHash String?       @unique
   shareSecretId  String?       @unique
   shareSecret    Secret?       @relation(fields: [shareSecretId], references: [id], onDelete: SetNull)

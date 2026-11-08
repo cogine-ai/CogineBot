@@ -1,3 +1,5 @@
+import { isPageShareDocumentPath } from "@rakazo/contracts";
+
 const OAUTH_POPUP_NAMES = new Set([
   "rakazo-app-connect",
   "rakazo-mcp-oauth",
@@ -21,7 +23,8 @@ export function shouldOpenInAppPopup(
   if (childUrl === "about:blank" && frameName === "rakazo-sso-oauth") return true;
 
   const isHttp = target.protocol === "http:" || target.protocol === "https:";
-  if (appOrigin !== null && target.origin === appOrigin) return isHttp;
+  if (appOrigin !== null && target.origin === appOrigin)
+    return isHttp && !isPageShareDocumentPath(target.pathname);
   return target.protocol === "https:" && OAUTH_POPUP_NAMES.has(frameName);
 }
 

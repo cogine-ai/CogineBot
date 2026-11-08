@@ -8,7 +8,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import PageScreen from "../app/page";
 import type { PageFrame } from "../components/pages/page-frame";
-import { takePageReply } from "./pages";
+import { takePageReply, viewedPageShare } from "./pages";
 
 const host = vi.hoisted(() => ({
   frame: undefined as ComponentProps<typeof PageFrame> | undefined,
@@ -18,27 +18,41 @@ const host = vi.hoisted(() => ({
   generation: 1,
   locale: "en",
   theme: "light" as "light" | "dark",
+  appState: "active",
   listeners: new Set<() => void>(),
   routes: [] as { name: string; params?: object }[],
   rpc: vi.fn(),
   compile: vi.fn(),
   back: vi.fn(),
+  push: vi.fn(),
   replace: vi.fn(),
 }));
 
 vi.mock("react-native", () => ({
   ActivityIndicator: () => <div data-testid="loading" />,
+  AppState: {
+    get currentState() {
+      return host.appState;
+    },
+  },
   Platform: { OS: "android" },
   Text: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 },
 }));
+vi.mock("expo-modules-core", () => ({ uuid: { v4: () => "synthetic-native-view" } }));
 vi.mock("expo-router", () => ({
   useLocalSearchParams: () => ({ pageId: host.pageId }),
   useNavigation: () => ({
+    isFocused: () => true,
     getState: () => ({ routes: [...host.routes, { name: "page" }], index: host.routes.length }),
   }),
-  useRouter: () => ({ back: host.back, canGoBack: () => true, replace: host.replace }),
+  useRouter: () => ({
+    back: host.back,
+    canGoBack: () => true,
+    push: host.push,
+    replace: host.replace,
+  }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0 }) }));
 vi.mock("../components/native-action-button", () => ({
@@ -124,6 +138,7 @@ beforeEach(() => {
   host.pageId = "page-1";
   host.locale = "en";
   host.theme = "light";
+  host.appState = "active";
   host.routes = [];
   switchSpace("space-a");
   host.rpc.mockReset().mockImplementation(async (proc: string) => {
@@ -135,6 +150,7 @@ beforeEach(() => {
   // The render key must rotate even if the mocked runtime returns identical bytes.
   host.compile.mockReset().mockResolvedValue("<p>Page content</p>");
   host.back.mockReset();
+  host.push.mockReset();
   host.replace.mockReset();
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
@@ -150,6 +166,32 @@ const frame = () => host.frame!;
 const rendered = () => container.querySelector('[data-testid="page-frame"]');
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+
+it("opens sharing with the actual title and version displayed by this viewer", async () => {
+  host.rpc.mockImplementation(async (proc: string) => {
+    if (proc === "pages/get")
+      return detail({ title: "Original title", version: 7, currentVersion: 7 });
+    if (proc === "bots/list") return [{ id: "bot-1" }];
+    throw new Error(`Unexpected procedure ${proc}`);
+  });
+  await show();
+  expect(button("Share")).toBeNull();
+  await act(async () => frame().onDrawnChange?.(true));
+  host.appState = "background";
+  await act(async () => button("Share")!.click());
+  expect(host.push).not.toHaveBeenCalled();
+  host.appState = "active";
+  await act(async () => button("Share")!.click());
+  expect(host.push).toHaveBeenCalledExactlyOnceWith({
+    pathname: "/page-share",
+    params: { pageId: "page-1", viewId: "synthetic-native-view" },
+  });
+  expect(viewedPageShare("page-1", "synthetic-native-view")).toEqual({
+    title: "Original title",
+    version: 7,
+  });
+  expect(viewedPageShare("page-1", "external-view")).toBeUndefined();
+});
 
 it.each([
   {
@@ -213,6 +255,8 @@ it("opens the Page without replies during origin lookup, then creates a new docu
   expect(rendered()).not.toBeNull();
   const previous = frame();
   expect(previous.onReply).toBeUndefined();
+  await act(async () => previous.onDrawnChange?.(true));
+  expect(button("Share")).not.toBeNull();
   expect(host.compile).toHaveBeenLastCalledWith(
     host.api,
     "compiled page",
@@ -225,6 +269,13 @@ it("opens the Page without replies during origin lookup, then creates a new docu
   expect(frame().document).toBe(previous.document);
   expect(frame().documentKey).not.toBe(previous.documentKey);
   expect(host.compile.mock.lastCall?.[4]).toEqual({ reply: true, lang: "en" });
+  expect(button("Share")).toBeNull();
+  await act(async () => previous.onDrawnChange?.(true));
+  expect(button("Share")).toBeNull();
+  await act(async () => frame().onDrawnChange?.(true));
+  expect(button("Share")).not.toBeNull();
+  await act(async () => frame().onDrawnChange?.(false));
+  expect(button("Share")).toBeNull();
 });
 
 it("leaves a Page readable without replies if the origin is missing", async () => {
@@ -300,7 +351,10 @@ it("retries a native load failure using the actual latest Page version", async (
   await show();
   const initial = frame();
   expect(JSON.parse(initial.documentKey).slice(1, 3)).toEqual(["page-1", 1]);
+  await act(async () => initial.onDrawnChange?.(true));
+  expect(button("Share")).not.toBeNull();
   await act(async () => initial.onError?.());
+  expect(button("Share")).toBeNull();
   expect(rendered()).toBeNull();
   expect(container.textContent).toContain("Could not load this page.");
   host.rpc.mockResolvedValueOnce(detail({ version: 2, currentVersion: 2 }));
@@ -309,6 +363,10 @@ it("retries a native load failure using the actual latest Page version", async (
   expect(frame().document).toBe(initial.document);
   expect(frame().documentKey).not.toBe(initial.documentKey);
   expect(JSON.parse(frame().documentKey).slice(1, 3)).toEqual(["page-1", 2]);
+  await act(async () => initial.onDrawnChange?.(true));
+  expect(button("Share")).toBeNull();
+  await act(async () => frame().onDrawnChange?.(true));
+  expect(button("Share")).not.toBeNull();
   expect(
     host.rpc.mock.calls.filter(([procedure]) => procedure === "pages/get").map(([, arg]) => arg),
   ).toEqual([{ pageId: "page-1" }, { pageId: "page-1" }]);

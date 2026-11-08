@@ -135,6 +135,7 @@ import { mountPageRuntime } from "./page-runtime.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
+import { mountSharedPages, sharedPageLogRoute } from "./shared-pages.js";
 import { isDeferredReservationLost, TeamChatBridge } from "./team-chat-bridge.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -628,6 +629,7 @@ async function buildApp(
   });
   const router = createRouter({
     deploymentTransfer,
+    pageSharingEnabled: env.pageSharingEnabled,
     pluginRead,
     openApiPreviewKey: env.encryptionKey,
     openApiNow,
@@ -685,9 +687,18 @@ async function buildApp(
     clientInterceptors: [onError((error, { path }) => handleRpcError(error, path))],
   });
   const app = new Hono();
-  app.use("*", requestLogging(logger));
+  app.use(
+    "*",
+    requestLogging(logger, {
+      sensitiveRoute: sharedPageLogRoute,
+    }),
+  );
   // This fixed asset is fetched without credentials by sandboxed viewers.
   mountPageRuntime(app);
+  mountSharedPages(app, prisma, {
+    enabled: env.pageSharingEnabled,
+    trustedProxies: env.trustedProxies,
+  });
   app.use(
     "*",
     cors({

@@ -50,12 +50,27 @@ const source = (text: string) =>
   `export default function App() { return <Page title="Example"><Text>${text}</Text></Page>; }`;
 const appOrigin = "http://127.0.0.1:5173";
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
-const preparedShare = ({ botId, groupId }: { botId: string | null; groupId: string | null }) => {
+const preparedShare = ({
+  botId,
+  groupId,
+  title,
+  currentVersion = 1,
+  shareRevision = 0,
+}: {
+  botId: string | null;
+  groupId: string | null;
+  title: string;
+  currentVersion?: number;
+  shareRevision?: number;
+}) => {
   const id = randomUUID();
   const ciphertext = `sealed-fixture:${id}`;
   return {
     botId,
     groupId,
+    expectedVersion: currentVersion,
+    expectedTitle: title,
+    expectedShareRevision: shareRevision,
     tokenHash: createHash("sha256").update(id).digest("hex"),
     secret: { id, ref: ciphertext, ciphertext },
     unreadable: null,
@@ -341,7 +356,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
         const db = admin();
         const { spaceId, userId } = await db.bot.findUniqueOrThrow({ where: { id: bot.id } });
         const scope = { spaceId, userId, botId: bot.id, groupId: null };
-        const share = preparedShare(scope);
+        const share = preparedShare({ ...scope, title: "Inventory" });
         await db.page.create({
           data: {
             ...scope,
@@ -480,7 +495,8 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
         if (outcome === "rotated") {
           await runAsTenant({ spaceId, userId }, async () => {
             await swapPageShare(client(), scope, pageId, null);
-            await swapPageShare(client(), scope, pageId, preparedShare(scope));
+            const unshared = await client().page.findUniqueOrThrow({ where: { id: pageId } });
+            await swapPageShare(client(), scope, pageId, preparedShare(unshared));
           });
         }
         if (markerOnly) {
@@ -593,7 +609,9 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           },
         });
         const tenant = <T>(work: () => Promise<T>) => runAsTenant({ spaceId, userId }, work);
-        await tenant(() => swapPageShare(client(), scope, pageId, preparedShare(scope)));
+        await tenant(() =>
+          swapPageShare(client(), scope, pageId, preparedShare({ ...scope, title: "Inventory" })),
+        );
         const { runId: initialId } = await rpc<{ runId: string }>("threads/send", {
           botId,
           text: "Initial task",
@@ -1330,8 +1348,8 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           unreadable: randomUUID(),
         }),
       ),
-    ).resolves.toEqual({ kept: true });
-    const replacement = preparedShare(page);
+    ).resolves.toMatchObject({ kept: true, shareSecretId: winner.secret.id });
+    const replacement = preparedShare(await admin().page.findUniqueOrThrow(selector));
     await expect(
       tenant(() =>
         swapPageShare(client(), actor, page.id, { ...replacement, unreadable: winner.secret.id }),
@@ -1385,6 +1403,51 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
       tenant(() => swapPageShare(client(), actor, page.id, preparedShare(retained))),
     ).resolves.toEqual({ kept: false });
   });
+
+  it.each(["version", "title"] as const)(
+    "compares the confirmed %s again when committing the staged share",
+    async (field) => {
+      const { actor, seed, tenant } = await setup();
+      const page = await seed("Reviewed Page");
+      const next = preparedShare(page);
+      const renamed = "Renamed before publication";
+      const nextVersion = page.currentVersion + 1;
+      let changed = false;
+      const duringShare = afterPageRead(client(), async () => {
+        if (changed) return;
+        changed = true;
+        await admin().page.update({
+          where: { id: page.id },
+          data:
+            field === "title"
+              ? { title: renamed }
+              : {
+                  currentVersion: nextVersion,
+                  versions: {
+                    create: {
+                      version: nextVersion,
+                      title: page.title,
+                      source: source("New content"),
+                      code: "new version render",
+                    },
+                  },
+                },
+        });
+      });
+      await expect(
+        tenant(() => swapPageShare(duringShare, actor, page.id, next)),
+      ).rejects.toBeInstanceOf(PageShareConflictError);
+      expect(changed).toBe(true);
+      expect(await admin().secret.findUnique({ where: { id: next.secret.id } })).toBeNull();
+      expect(await admin().page.findUnique({ where: { id: page.id } })).toMatchObject({
+        visibility: "private",
+        title: field === "title" ? renamed : page.title,
+        currentVersion: field === "version" ? nextVersion : page.currentVersion,
+        shareSecretId: null,
+        shareTokenHash: null,
+      });
+    },
+  );
 
   it("scopes share changes and terminal revocation to the Page owner's token", async () => {
     const { actor, seed, tenant } = await setup();

@@ -33,15 +33,19 @@ vi.mock("./session", () => ({
 
 const {
   chatOnScreen,
+  clearPageShareView,
   getLatestPage,
   getPageVersion,
   getPageReplyChat,
   offerPageReply,
+  offerPageShareView,
   pageLoadProblem,
+  privatePageRpc,
   renamePage,
   removePage,
   pinPage,
   takePageReply,
+  viewedPageShare,
 } = await import("./pages");
 const page = (id: string, version: number): PageDetail => ({
   id,
@@ -106,6 +110,47 @@ it("rejects a late origin-availability result across a Space generation change",
   host.generation += 2;
   pending.resolve([{ id: "bot-1" }]);
   await expect(result).rejects.toThrow("Page scope changed");
+});
+
+it("keeps the reviewed publication title and version bound to its exact Page, route and scope", () => {
+  offerPageShareView("opened", { id: "page-1", title: "Original title", version: 7 });
+  expect(viewedPageShare("page-1", "opened")).toEqual({ title: "Original title", version: 7 });
+  expect(viewedPageShare("page-1", "invented")).toBeUndefined();
+  expect(viewedPageShare("page-2", "opened")).toBeUndefined();
+
+  clearPageShareView("invented");
+  expect(viewedPageShare("page-1", "opened")).toEqual({ title: "Original title", version: 7 });
+  clearPageShareView("opened");
+  expect(viewedPageShare("page-1", "opened")).toBeUndefined();
+
+  offerPageShareView("reopened", { id: "page-1", title: "New title", version: 8 });
+  host.generation += 2;
+  expect(viewedPageShare("page-1", "reopened")).toBeUndefined();
+});
+
+it("stops an expired owner-share intent before transport and ignores a late owner response", async () => {
+  let active = true;
+  const current = () => active;
+  const mutation = privatePageRpc(
+    "pages/setShare",
+    { pageId: "page-1", visibility: "private" },
+    current,
+  );
+  active = false;
+  await expect(mutation).rejects.toThrow("Page scope changed");
+  expect(host.rpc).not.toHaveBeenCalled();
+
+  active = true;
+  const pending = deferred<unknown>();
+  host.rpc.mockReturnValueOnce(pending.promise);
+  const read = privatePageRpc("pages/getShare", { pageId: "page-1" }, current);
+  await Promise.resolve();
+  const options = host.rpc.mock.calls[0]?.[2];
+  expect(options.requestContext.isCurrent()).toBe(true);
+  active = false;
+  expect(options.requestContext.isCurrent()).toBe(false);
+  pending.resolve({ visibility: "private", shareUrl: null });
+  await expect(read).rejects.toThrow("Page scope changed");
 });
 
 it.each(["api", "account"] as const)(

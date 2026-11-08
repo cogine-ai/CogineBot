@@ -8,6 +8,13 @@ describe("desktop child windows", () => {
     expect(shouldOpenInAppPopup(appOrigin, `${appOrigin}/mcp/oauth/callback`, "_blank")).toBe(true);
   });
 
+  it("opens public Page links in the system browser even on the app origin", () => {
+    const slug = `plan-${"x".repeat(43)}`;
+    expect(shouldOpenInAppPopup(appOrigin, `${appOrigin}/p/${slug}`, "_blank")).toBe(false);
+    expect(shouldOpenInAppPopup(appOrigin, `${appOrigin}/%70/${slug}`, "_blank")).toBe(false);
+    expect(shouldOpenInAppPopup(appOrigin, `${appOrigin}/pages`, "_blank")).toBe(true);
+  });
+
   it("opens ordinary external links outside Electron", () => {
     expect(
       shouldOpenInAppPopup(appOrigin, "https://github.com/elie222/rakazo/pull/395", "_blank"),

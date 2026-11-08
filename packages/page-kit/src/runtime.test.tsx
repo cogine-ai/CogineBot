@@ -121,3 +121,67 @@ it.each([
     appendSpy.mockRestore();
   }
 });
+
+async function mountForDraw(code: string) {
+  vi.resetModules();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  await import("./runtime.js");
+  document.body.replaceChildren();
+  const report = vi.fn();
+  window.__coginePageReportDraw = report;
+  const append = document.head.append.bind(document.head);
+  const appendSpy = vi.spyOn(document.head, "append").mockImplementation((...nodes) => {
+    for (const node of nodes) {
+      if (node instanceof HTMLScriptElement) {
+        expect(window.__coginePageReportDraw).toBeUndefined();
+        expect(window.RakazoPage).toBeUndefined();
+        new Function(node.text)();
+      }
+    }
+    append(...nodes);
+  });
+  try {
+    await act(async () => {
+      window.RakazoPage!.mount({ code, theme: "light", errorTitle: "Page failed" });
+    });
+    return report;
+  } finally {
+    appendSpy.mockRestore();
+  }
+}
+
+it.each([
+  [
+    "a committed Page",
+    "exports.default = () => React.createElement('p', null, typeof window.__coginePageReportDraw);",
+    true,
+  ],
+  ["an empty Page", "exports.default = () => null;", false],
+  ["a failed factory", "throw new Error('fixture runtime error');", false],
+] as const)("only reports a trusted draw for %s", async (_name, code, expected) => {
+  const report = await mountForDraw(code);
+  if (expected) expect(report).toHaveBeenCalledExactlyOnceWith(true);
+  else expect(report).not.toHaveBeenCalled();
+});
+
+it("does not report a draw when an error boundary replaces an empty Page", async () => {
+  const fixture = window as Window & { failFixturePage?: () => void };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const report = await mountForDraw(`
+      exports.default = () => {
+        const [failed, setFailed] = React.useState(false);
+        window.failFixturePage = () => setFailed(true);
+        if (failed) throw new Error("fixture render error");
+        return null;
+      };
+    `);
+    expect(report).not.toHaveBeenCalled();
+    await act(async () => fixture.failFixturePage?.());
+    expect(document.body.textContent).toContain("Page failed");
+    expect(report).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    delete fixture.failFixturePage;
+  }
+});

@@ -3,6 +3,39 @@ import { Id, IsoDate } from "./ids.js";
 
 /** Shared public renderer asset served without account credentials. */
 export const PAGE_RUNTIME_PATH = "/api/v1/assets/page-runtime.js";
+export const SHARED_PAGE_PATH_PREFIX = "/api/v1/pages/shared/";
+
+/** Classify the sensitive API namespace for credentials and logs, never for authorization. */
+export function isPageShareApiPath(pathname: string): boolean {
+  return isSensitiveNamespace(pathname, SHARED_PAGE_PATH_PREFIX.slice(0, -1));
+}
+
+/** Also recognize aliases a server or proxy could normalize into the document route. */
+export function isSensitivePageShareDocumentPath(pathname: string): boolean {
+  return isSensitiveNamespace(pathname, "/p");
+}
+
+function isSensitiveNamespace(pathname: string, prefix: string): boolean {
+  // Decode individual escapes so a malformed suffix cannot hide an encoded namespace.
+  const normalized = pathname
+    .replace(/%([0-9a-f]{2})/gi, (_, byte: string) =>
+      String.fromCharCode(Number.parseInt(byte, 16)),
+    )
+    .toLowerCase()
+    .replace(/[\\/]+/g, "/");
+  const matches = (path: string) => path === prefix || path.startsWith(`${prefix}/`);
+  if (matches(normalized)) return true;
+  return (
+    normalized.startsWith("/") &&
+    /\/\.{1,2}(?:\/|$)/.test(normalized) &&
+    matches(new URL(normalized, "http://localhost").pathname)
+  );
+}
+
+export function isPageShareDocumentPath(pathname: string): boolean {
+  // %70 is the encoded form of the route segment. Encoded separators are not routes.
+  return /^\/(?:p|%70)(?:\/|$)/.test(pathname);
+}
 
 export const PAGE_TITLE_MAX_LENGTH = 200;
 export const PAGE_LIST_MAX_LIMIT = 60;
@@ -20,21 +53,9 @@ export type PageVisibility = z.infer<typeof PageVisibilitySchema>;
 /** Page queries send these identifiers directly to PostgreSQL text filters. */
 export const PageInputIdSchema = Id.refine((id) => !id.includes("\0"));
 
-export const PageShareInputSchema = z.strictObject({
-  pageId: PageInputIdSchema,
-  visibility: z.enum(["private", "link"]),
-});
-export type PageShareInput = z.infer<typeof PageShareInputSchema>;
-
-/** Sharing state is separate from the ordinary private Page and card response. */
-export const PageShareStateSchema = z.discriminatedUnion("visibility", [
-  z.strictObject({ visibility: z.literal("private"), shareUrl: z.null() }),
-  z.strictObject({ visibility: z.literal("link"), shareUrl: z.url() }),
-]);
-export type PageShareState = z.infer<typeof PageShareStateSchema>;
-
 /** 32 random bytes as base64url. */
 const PAGE_SHARE_TOKEN_LENGTH = 43;
+const PAGE_SHARE_TITLE_SLUG_MAX_LENGTH = 60;
 
 /** The readable title prefix is decorative. Only the last 43 characters are the token. */
 export function pageShareUrl(webOrigin: string, title: string, token: string): string {
@@ -43,7 +64,7 @@ export function pageShareUrl(webOrigin: string, title: string, token: string): s
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 60)
+    .slice(0, PAGE_SHARE_TITLE_SLUG_MAX_LENGTH)
     .replace(/-+$/, "");
   return new URL(`/p/${slug ? `${slug}-` : ""}${token}`, webOrigin).href;
 }
@@ -51,6 +72,32 @@ export function pageShareUrl(webOrigin: string, title: string, token: string): s
 export function pageShareTokenFromSlug(segment: string): string | null {
   const token = segment.slice(-PAGE_SHARE_TOKEN_LENGTH);
   return token.length === PAGE_SHARE_TOKEN_LENGTH && /^[A-Za-z0-9_-]+$/.test(token) ? token : null;
+}
+
+/** Validate the generated owner link before exposing it to the clipboard or an external browser. */
+export function parsePageShareUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.href !== url.origin + url.pathname ||
+      !url.pathname.startsWith("/p/")
+    )
+      return null;
+
+    const slug = url.pathname.slice("/p/".length);
+    if (!pageShareTokenFromSlug(slug)) return null;
+    const prefix = slug.slice(0, -PAGE_SHARE_TOKEN_LENGTH);
+    if (
+      prefix &&
+      (prefix.length > PAGE_SHARE_TITLE_SLUG_MAX_LENGTH + 1 ||
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*-$/.test(prefix))
+    )
+      return null;
+    return url;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -86,6 +133,48 @@ export type PageTextContext = z.infer<typeof PageTextContextSchema>;
 
 export const PageVersionSchema = z.number().int().min(1).max(2_147_483_647);
 
+export const PageShareInputSchema = z.discriminatedUnion("visibility", [
+  z.strictObject({ pageId: PageInputIdSchema, visibility: z.literal("private") }),
+  z.strictObject({
+    pageId: PageInputIdSchema,
+    visibility: z.literal("link"),
+    expectedVersion: PageVersionSchema,
+    expectedTitle: PageTitleSchema,
+  }),
+]);
+export type PageShareInput = z.infer<typeof PageShareInputSchema>;
+
+/** The owner can revoke a dormant link without retrieving its token. */
+export const PageShareStateSchema = z.union([
+  z.strictObject({
+    visibility: z.literal("private"),
+    publishingEnabled: z.boolean(),
+    shareUrl: z.null(),
+    generation: z.null(),
+  }),
+  z.strictObject({
+    visibility: z.literal("link"),
+    publishingEnabled: z.literal(false),
+    shareUrl: z.null(),
+    generation: z.null(),
+  }),
+  z.strictObject({
+    visibility: z.literal("link"),
+    publishingEnabled: z.literal(true),
+    shareUrl: z.url(),
+    generation: Id,
+  }),
+]);
+export type PageShareState = z.infer<typeof PageShareStateSchema>;
+
+export const SharedPageSchema = z.strictObject({
+  title: z.string().max(PAGE_TITLE_MAX_LENGTH),
+  code: z.string(),
+  version: PageVersionSchema,
+  updatedAt: IsoDate,
+});
+export type SharedPage = z.infer<typeof SharedPageSchema>;
+
 export const SHARED_PAGE_UPDATE_REQUEST_KIND = "shared_page_update";
 export const MAX_SHARED_PAGE_APPROVAL_DETAIL_LENGTH = 4_000;
 const pageApprovalDigest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -117,6 +206,8 @@ export const PageSummarySchema = z.strictObject({
   botId: Id.nullable(),
   groupId: Id.nullable(),
   visibility: PageVisibilitySchema,
+  /** Owner-scoped status only. The link is fetched separately. */
+  sharedByLink: z.boolean().optional(),
   currentVersion: PageVersionSchema,
   pinned: z.boolean(),
   createdAt: IsoDate,

@@ -283,3 +283,30 @@ it("vouches only for a fresh active gesture and forwards only a matching copy re
   view.parentMessage({ type: "rakazo-viewer:answer", instance: view.instance, message: receipt });
   expect(view.child.postMessage.mock.calls).toEqual([[receipt, "*"]]);
 });
+
+it("relays draw results only with the current interactive frame's private key", () => {
+  const view = mountShell();
+  view.load(true);
+  const key = /key = "([a-f0-9]+)"/.exec(view.preview.srcdoc)?.[1];
+  expect(key).toBeTruthy();
+  expect(view.preview.srcdoc).toContain("__coginePageReportDraw");
+  view.page({ type: "rakazo-page:drawn", drawn: true });
+  view.page({ type: "rakazo-page:drawn", key: "stale", drawn: true });
+  view.page({ type: "rakazo-page:drawn", key, drawn: "true" });
+  view.page({ type: "rakazo-page:drawn", key, drawn: true }, "https://example.invalid");
+  expect(view.parent.postMessage).not.toHaveBeenCalled();
+
+  for (const drawn of [true, false]) {
+    view.page({ type: "rakazo-page:drawn", key, drawn });
+  }
+  expect(view.parent.postMessage.mock.calls).toEqual(
+    [true, false].map((drawn) => [
+      {
+        type: "rakazo-viewer:message",
+        instance: view.instance,
+        message: { type: "rakazo-page:drawn", drawn },
+      },
+      "*",
+    ]),
+  );
+});

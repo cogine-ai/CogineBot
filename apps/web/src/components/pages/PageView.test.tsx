@@ -8,6 +8,7 @@ import { PageView } from "./PageView";
 
 const frame = vi.hoisted(() => ({
   drawn: undefined as (() => void) | undefined,
+  committed: undefined as ((drawn: boolean) => void) | undefined,
   key: undefined as string | undefined,
 }));
 
@@ -16,8 +17,17 @@ vi.mock("@lingui/react/macro", () => ({
   Trans: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock("./PageFrame", () => ({
-  PageFrame: ({ onHeight, documentKey }: { onHeight: () => void; documentKey?: string }) => {
+  PageFrame: ({
+    onHeight,
+    onPageDrawn,
+    documentKey,
+  }: {
+    onHeight: () => void;
+    onPageDrawn: (drawn: boolean) => void;
+    documentKey?: string;
+  }) => {
     frame.drawn = onHeight;
+    frame.committed = onPageDrawn;
     frame.key = documentKey;
     return <iframe title="page" />;
   },
@@ -34,6 +44,7 @@ function mount(props: {
   documentKey?: string;
   notice?: ReactNode;
   onOpenChange?: (open: boolean) => void;
+  share?: (drawn: boolean) => ReactNode;
 }) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const root = createRoot(document.body.appendChild(document.createElement("div")));
@@ -47,6 +58,7 @@ function mount(props: {
           document={next.document}
           documentKey={next.documentKey}
           notice={next.notice}
+          share={next.share}
         />,
       ),
     );
@@ -89,6 +101,35 @@ it("waits for a distinct version and retry even when the compiled bytes match", 
   await act(async () => frame.drawn?.());
   expect(document.querySelector('button[title^="Opens your browser"]')).not.toBeNull();
   await view.unmount();
+});
+
+it("allows sharing only after the current visible frame reports a successful commit", async () => {
+  const share = vi.fn();
+  const page = { document: "<p>same bytes</p>", documentKey: "page:1", share };
+  const view = mount(page);
+  try {
+    await view.render(page);
+    const firstCommit = frame.committed!;
+    await act(async () => frame.drawn?.());
+    expect(share).toHaveBeenLastCalledWith(false);
+    await act(async () => firstCommit(true));
+    expect(share).toHaveBeenLastCalledWith(true);
+    await act(async () => firstCommit(false));
+    expect(share).toHaveBeenLastCalledWith(false);
+
+    await view.render({ ...page, documentKey: "page:2" });
+    await act(async () => {
+      frame.drawn?.();
+      firstCommit(true);
+    });
+    expect(share).toHaveBeenLastCalledWith(false);
+    await act(async () => frame.committed?.(true));
+    expect(share).toHaveBeenLastCalledWith(true);
+    await act(async () => firstCommit(false));
+    expect(share).toHaveBeenLastCalledWith(true);
+  } finally {
+    await view.unmount();
+  }
 });
 
 it("waits for a fresh frame after a refresh notice clears without changing the document", async () => {

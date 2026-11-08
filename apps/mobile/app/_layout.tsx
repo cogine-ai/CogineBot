@@ -249,6 +249,16 @@ export default function Layout() {
                     name="page"
                     options={{ headerShown: false, presentation: "fullScreenModal" }}
                   />
+                  <Stack.Screen
+                    name="page-share"
+                    options={{
+                      headerShown: false,
+                      presentation: "formSheet",
+                      sheetAllowedDetents: [0.6, 1],
+                      sheetGrabberVisible: true,
+                      contentStyle: { backgroundColor: native.groupedPage },
+                    }}
+                  />
                   <Stack.Screen name="group-thread" options={{ title: t("Group") }} />
                   <Stack.Screen
                     name="group-settings"

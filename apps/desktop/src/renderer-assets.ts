@@ -1,5 +1,5 @@
 import path from "node:path";
-import { PAGE_RUNTIME_PATH } from "@rakazo/contracts";
+import { isPageShareApiPath, isPageShareDocumentPath, PAGE_RUNTIME_PATH } from "@rakazo/contracts";
 
 const PASSTHROUGH_PATHS = ["/api", "/rpc", "/novnc"];
 const VIEWER_DOCUMENT = "html-viewer.html";
@@ -7,6 +7,12 @@ const VIEWER_DOCUMENT = "html-viewer.html";
 export const rendererViewerDocumentHeaders = {
   "content-security-policy": "frame-ancestors 'self'",
   "referrer-policy": "no-referrer",
+};
+
+export const rendererPageShareDocumentHeaders = {
+  "cache-control": "no-store",
+  "referrer-policy": "no-referrer",
+  "x-robots-tag": "noindex, nofollow",
 };
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -32,10 +38,12 @@ export function bundledRendererCandidates(
   if (
     url.origin !== webOrigin ||
     isPageRuntimePath(url.pathname) ||
+    isPageShareApiPath(url.pathname) ||
     PASSTHROUGH_PATHS.some((prefix) => matchesPrefix(url.pathname, prefix))
   ) {
     return null;
   }
+  if (acceptsHtml && isPageShareDocumentPath(url.pathname)) return [path.join(root, "index.html")];
 
   let pathname: string;
   try {
@@ -81,11 +89,21 @@ export function forwardedRendererRequestInit(
   };
   const url = new URL(request.url);
   const sameOrigin = url.origin === webOrigin;
-  if (
-    isPageRuntimePath(url.pathname) &&
-    (request.method === "GET" || request.method === "HEAD") &&
-    (sameOrigin || request.credentials === "omit")
-  ) {
+  const read = request.method === "GET" || request.method === "HEAD";
+  if (read && sameOrigin && isPageShareApiPath(url.pathname)) {
+    const headers = new Headers(request.headers);
+    headers.delete("authorization");
+    headers.delete("cookie");
+    headers.delete("referer");
+    return {
+      ...init,
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers,
+    };
+  }
+  if (isPageRuntimePath(url.pathname) && read && (sameOrigin || request.credentials === "omit")) {
     // This fixed script is public. The managed renderer's credentialed proxy
     // must not add an account session to a viewer's anonymous revalidation.
     const headers = new Headers(request.headers);

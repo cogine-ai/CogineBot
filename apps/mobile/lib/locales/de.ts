@@ -23,6 +23,29 @@ export const DE_MESSAGES: Record<string, string> = {
   Deleted: "Gelöscht",
   Page: "Seite",
   Pages: "Seiten",
+  Shared: "Geteilt",
+  "Share “{title}”": "„{title}“ teilen",
+  Owner: "Eigentümer",
+  "Who can view": "Wer kann die Seite ansehen?",
+  "Only you": "Nur du",
+  "Anyone with the link": "Alle mit dem Link",
+  "No sign-in needed": "Keine Anmeldung erforderlich",
+  "Link sharing is unavailable": "Teilen per Link ist nicht verfügbar",
+  "Open current version": "Aktuelle Version öffnen",
+  "Review the current version before sharing.": "Sieh dir vor dem Teilen die aktuelle Version an.",
+  "Share this page?": "Diese Seite teilen?",
+  "Anyone with the link can view version {version} and future approved updates.":
+    "Alle mit dem Link können Version {version} und künftige genehmigte Aktualisierungen ansehen.",
+  "Copy link": "Link kopieren",
+  "Open in browser": "Im Browser öffnen",
+  "Could not load page sharing.": "Die Freigabeeinstellungen konnten nicht geladen werden.",
+  "Could not change who can view this page. Try again.":
+    "Der Zugriff auf diese Seite konnte nicht geändert werden. Versuche es erneut.",
+  "The page or its link changed. Try again.":
+    "Die Seite oder ihr Link hat sich geändert. Versuche es erneut.",
+  "Could not copy the link.": "Der Link konnte nicht kopiert werden.",
+  "Could not share the link.": "Der Link konnte nicht geteilt werden.",
+  "Could not open the link.": "Der Link konnte nicht geöffnet werden.",
   "This model's context window is too small. Choose another model.":
     "Das Kontextfenster dieses Modells ist zu klein. Wähle ein anderes Modell.",
   "This server's tool result does not fit the model. Choose another model.":

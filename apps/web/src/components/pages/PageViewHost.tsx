@@ -1,11 +1,19 @@
 import { useLingui } from "@lingui/react/macro";
 import type { Bot, Group } from "@rakazo/contracts";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { PAGE_PARAM, useMedia, usePageDetail, usePageDocument, usePages } from "../../lib/pages";
+import {
+  PAGE_PARAM,
+  PAGE_SHARE_PARAM,
+  useMedia,
+  usePageDetail,
+  usePageDocument,
+  usePages,
+} from "../../lib/pages";
 import { usePrivatePageMutation } from "../../lib/private-page-list";
 import { errorCode } from "../../lib/user-error";
 import { PageNotice } from "./PageNotice";
+import { PageShareControl } from "./PageShareControl";
 import { PageView } from "./PageView";
 
 /** A private page over its chat, with that chat's composer docked at the bottom. */
@@ -47,6 +55,8 @@ function OpenPage({
   const sheet = useMedia("(pointer: coarse) and (min-width: 900px)");
   const page = usePageDetail(pageId);
   const data = page.data;
+  const [shareOpen, setShareOpen] = useState(false);
+  const shareFromLibrary = search.has(PAGE_SHARE_PARAM);
   // A Page belongs to its recorded group, or to its bot when it has no group.
   // A missing/archived chat remains readable without borrowing another chat's composer.
   const target = data?.groupId
@@ -65,11 +75,10 @@ function OpenPage({
   const canReply = available && matches && pages.store.isCurrent();
   useEffect(() => {
     if (!target || !available || matches || !pages.store.isCurrent()) return;
-    navigate(
-      { pathname: target, search: new URLSearchParams({ [PAGE_PARAM]: pageId }).toString() },
-      { replace: true },
-    );
-  }, [target, available, matches, pages, navigate, pageId]);
+    const next = new URLSearchParams({ [PAGE_PARAM]: pageId });
+    if (shareFromLibrary) next.set(PAGE_SHARE_PARAM, "1");
+    navigate({ pathname: target, search: next.toString() }, { replace: true });
+  }, [target, available, matches, pages, navigate, pageId, shareFromLibrary]);
   const viewer = usePageDocument(
     data?.code,
     sheet ? "background" : "card",
@@ -86,6 +95,7 @@ function OpenPage({
       setSearch((current) => {
         const next = new URLSearchParams(current);
         next.delete(PAGE_PARAM);
+        next.delete(PAGE_SHARE_PARAM);
         return next;
       }),
     [setSearch],
@@ -129,6 +139,30 @@ function OpenPage({
       onReply={canReply ? reply : undefined}
       renameError={rename.isError ? t`Could not rename this page. Try again.` : null}
       onRename={!data || rename.isPending ? undefined : (title) => rename.mutate({ pageId, title })}
+      share={
+        data
+          ? (drawn) => (
+              <PageShareControl
+                page={data}
+                drawn={drawn}
+                compact={compact}
+                open={shareOpen || shareFromLibrary}
+                onOpenChange={(open) => {
+                  setShareOpen(open);
+                  if (!open && shareFromLibrary)
+                    setSearch(
+                      (current) => {
+                        const next = new URLSearchParams(current);
+                        next.delete(PAGE_SHARE_PARAM);
+                        return next;
+                      },
+                      { replace: true },
+                    );
+                }}
+              />
+            )
+          : undefined
+      }
       notice={
         gone ? (
           <PageNotice

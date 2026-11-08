@@ -117,6 +117,34 @@ export function takePageReply(
   return { text, page };
 }
 
+let pageShareView: {
+  id: string;
+  pageId: string;
+  page: Pick<PageDetail, "title" | "version">;
+  scope: string;
+} | null = null;
+
+/** Only a rendered viewer can confirm the Page title and version for publication. */
+export function offerPageShareView(
+  id: string,
+  { id: pageId, title, version }: Pick<PageDetail, "id" | "title" | "version">,
+) {
+  pageShareView = { id, pageId, page: { title, version }, scope: pageScopeKey() };
+}
+
+export function viewedPageShare(pageId: string | undefined, id: string | undefined) {
+  if (
+    pageShareView?.id === id &&
+    pageShareView?.pageId === pageId &&
+    pageShareView?.scope === pageScopeKey()
+  )
+    return pageShareView.page;
+}
+
+export function clearPageShareView(id: string | undefined) {
+  if (id && pageShareView?.id === id) pageShareView = null;
+}
+
 type PageRead = {
   read: Promise<PageDetail>;
   onScreen: number;
@@ -152,6 +180,7 @@ function clearPageReads(scope: string, pageId: string) {
 const clearPages = () => {
   pageReads.clear();
   pendingReply = null;
+  pageShareView = null;
 };
 registerSessionDiskCache(clearPages);
 subscribeSelectedSpace(clearPages);
@@ -178,10 +207,10 @@ export function subscribePageScope(listener: () => void): () => void {
   };
 }
 
-async function pageRpc<T>(proc: string, body: unknown): Promise<T> {
+async function pageRpc<T>(proc: string, body: unknown, isCurrent?: () => boolean): Promise<T> {
   const scope = pageScopeKey();
-  const current = () => scope === pageScopeKey();
-  if (currentSessionGeneration() !== currentReadySessionGeneration())
+  const current = () => scope === pageScopeKey() && isCurrent?.() !== false;
+  if (!current() || currentSessionGeneration() !== currentReadySessionGeneration())
     throw new Error("Page scope changed");
   const context = await captureApiRequestContext();
   if (!current()) throw new Error("Page scope changed");

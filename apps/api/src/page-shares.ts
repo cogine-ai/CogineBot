@@ -21,8 +21,6 @@ interface PageShareDeps {
   pageSharingEnabled?: boolean;
 }
 
-const privateShare = { visibility: "private", shareUrl: null } as const;
-
 function sharingUnavailable() {
   return new ORPCError("NOT_FOUND", { message: "Page sharing is unavailable" });
 }
@@ -51,6 +49,8 @@ async function requireOwnedShare(prisma: PrismaClient, actor: Actor, pageId: str
       title: true,
       botId: true,
       groupId: true,
+      currentVersion: true,
+      shareRevision: true,
       visibility: true,
       shareTokenHash: true,
       shareSecretId: true,
@@ -91,7 +91,10 @@ async function readLink(
     select: { title: true },
   });
   if (!stillCurrent) throw sharingConflict();
-  return pageShareUrl(deps.env.webOrigin, stillCurrent.title, token);
+  return {
+    shareUrl: pageShareUrl(deps.env.webOrigin, stillCurrent.title, token),
+    generation: shareSecretId,
+  };
 }
 
 export async function getPageShare(
@@ -100,33 +103,47 @@ export async function getPageShare(
   pageId: string,
   signal?: AbortSignal,
 ): Promise<PageShareState> {
-  if (!deps.pageSharingEnabled) throw sharingUnavailable();
   const row = await requireOwnedShare(deps.prisma, actor, pageId);
-  if (row.visibility !== "link" || !row.shareTokenHash || !row.shareSecretId) return privateShare;
-  const shareUrl = await readLink(deps, actor, row, signal);
-  if (!shareUrl) throw linkUnavailable();
-  return { visibility: "link", shareUrl };
+  const publishingEnabled = deps.pageSharingEnabled === true;
+  if (row.visibility !== "link")
+    return { visibility: "private", publishingEnabled, shareUrl: null, generation: null };
+  if (!publishingEnabled)
+    return { visibility: "link", publishingEnabled, shareUrl: null, generation: null };
+  const link = await readLink(deps, actor, row, signal);
+  if (!link) throw linkUnavailable();
+  return { visibility: "link", publishingEnabled, ...link };
 }
 
 export async function setPageShare(
   deps: PageShareDeps,
   actor: Actor,
-  { pageId, visibility }: PageShareInput,
+  input: PageShareInput,
   signal = new AbortController().signal,
 ): Promise<PageShareState> {
   const { prisma, secrets } = deps;
+  const { pageId, visibility } = input;
   const owner = { spaceId: actor.spaceId, userId: actor.userId };
   if (visibility === "link" && !deps.pageSharingEnabled) throw sharingUnavailable();
   try {
     // Revocation remains available while link issuance and reads are disabled.
     if (visibility === "private") {
       await swapPageShare(prisma, owner, pageId, null);
-      return privateShare;
+      return {
+        visibility,
+        publishingEnabled: deps.pageSharingEnabled === true,
+        shareUrl: null,
+        generation: null,
+      };
     }
 
     const row = await requireOwnedShare(prisma, actor, pageId);
+    if (row.currentVersion !== input.expectedVersion || row.title !== input.expectedTitle) {
+      throw sharingConflict();
+    }
     const existing = await readLink(deps, actor, row, signal);
-    if (existing) return { visibility: "link", shareUrl: existing };
+    if (existing) {
+      return { visibility, publishingEnabled: true, ...existing };
+    }
 
     const token = randomBytes(32).toString("base64url");
     const stored = await secrets.put(token, {
@@ -142,21 +159,31 @@ export async function setPageShare(
           secret: stored,
           botId: row.botId,
           groupId: row.groupId,
+          expectedVersion: input.expectedVersion,
+          expectedTitle: input.expectedTitle,
+          expectedShareRevision: row.shareRevision,
           unreadable: row.shareSecretId,
         }),
       ),
     );
     if (outcome.kept) {
-      const winner = await readLink(
-        deps,
-        actor,
-        await requireOwnedShare(prisma, actor, pageId),
-        signal,
-      );
+      const latest = await requireOwnedShare(prisma, actor, pageId);
+      if (
+        latest.shareRevision !== outcome.shareRevision ||
+        latest.shareSecretId !== outcome.shareSecretId
+      ) {
+        throw sharingConflict();
+      }
+      const winner = await readLink(deps, actor, latest, signal);
       if (!winner) throw sharingConflict();
-      return { visibility: "link", shareUrl: winner };
+      return { visibility, publishingEnabled: true, ...winner };
     }
-    return { visibility: "link", shareUrl: pageShareUrl(deps.env.webOrigin, row.title, token) };
+    return {
+      visibility,
+      publishingEnabled: true,
+      shareUrl: pageShareUrl(deps.env.webOrigin, row.title, token),
+      generation: stored.id,
+    };
   } catch (error) {
     if (error instanceof IsolationError) throw pageUnavailable();
     if (error instanceof PageShareConflictError) throw sharingConflict();

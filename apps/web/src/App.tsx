@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { LinkFavicons } from "@rakazo/chat-ui/web";
 import { LinkFaviconsContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
-import { LOCAL_SETTINGS_PAGE } from "@rakazo/contracts";
+import { isPageShareDocumentPath, LOCAL_SETTINGS_PAGE } from "@rakazo/contracts";
 import { parseDeploymentTransferPage } from "@rakazo/core";
 import { Button, Skeleton } from "@rakazo/ui-web";
 import {
@@ -15,6 +15,7 @@ import {
 } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { LoadingState } from "./components/ai/primitives";
+import { DesktopUpdatesProvider } from "./components/DesktopUpdates";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
@@ -39,6 +40,7 @@ import { completeSsoCallback, SSO_CALLBACK_PATH } from "./lib/sso-flow";
 import { IntegrationSetupPage } from "./pages/IntegrationSetup";
 import { LocalSettingsPage } from "./pages/LocalSettings";
 import { McpOAuthCallbackPage } from "./pages/McpOAuthCallback";
+import { SharedPagePage } from "./pages/SharedPage";
 import { ShellPage } from "./pages/Shell";
 
 const AuthPage = lazy(() =>
@@ -121,6 +123,22 @@ const linkFavicons: LinkFavicons = {
 };
 
 export function App() {
+  const { pathname } = useLocation();
+  if (isPageShareDocumentPath(pathname)) {
+    return (
+      <ErrorBoundary fallback={<AppFailed />}>
+        <SharedPagePage pathname={pathname} />
+      </ErrorBoundary>
+    );
+  }
+  return (
+    <DesktopUpdatesProvider>
+      <PrivateApp />
+    </DesktopUpdatesProvider>
+  );
+}
+
+function PrivateApp() {
   const loadRemoteImages = useSyncExternalStore(
     subscribeRemoteImages,
     getRemoteImagesEnabled,

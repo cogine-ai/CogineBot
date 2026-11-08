@@ -150,6 +150,11 @@ function OwnerPages({ botId, groupId }: { botId?: string; groupId?: string }) {
             </span>
             <span className="flex items-center gap-1 text-[12px] leading-4 text-muted-foreground">
               <span>{formatRelativeTime(page.updatedAt)}</span>
+              {page.sharedByLink ? (
+                <span>
+                  <Trans>· Shared</Trans>
+                </span>
+              ) : null}
             </span>
           </span>
         </button>
@@ -164,6 +169,9 @@ function OwnerPages({ botId, groupId }: { botId?: string; groupId?: string }) {
         <DropdownMenuContent align="end" className="w-44">
           <DropdownMenuItem onClick={() => openPage(page.id)}>
             <Trans>Open</Trans>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openPage(page.id, true)}>
+            <Trans>Share</Trans>
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setRenaming({ id: page.id, draft: page.title })}>
             <Trans>Rename</Trans>

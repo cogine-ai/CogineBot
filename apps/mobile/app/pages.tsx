@@ -2,7 +2,7 @@ import { MenuView } from "@expo/ui/community/menu";
 import { PageIcon } from "@rakazo/chat-ui/native";
 import type { PageSummary } from "@rakazo/contracts";
 import { PAGE_LIST_QUERY_MAX_LENGTH, PAGE_TITLE_MAX_LENGTH } from "@rakazo/contracts";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput } from "react-native";
 import { PageLoadFailure } from "../components/pages/page-load-failure";
@@ -39,6 +39,7 @@ function OwnerPages({
   groupId?: string;
 }) {
   const openPage = useOpenPrivatePage();
+  const router = useRouter();
   const { t } = useI18n();
   const tokens = useMobileTokens();
   const colorScheme = useResolvedAppearance();
@@ -62,6 +63,8 @@ function OwnerPages({
     if (scope !== pageScopeKey()) return;
     setProblem(null);
     if (action === "open") open(page);
+    else if (action === "share")
+      router.push({ pathname: "/page-share", params: { pageId: page.id } });
     else if (action === "rename") {
       rename.ask(page.title, (title) => {
         if (scope !== pageScopeKey() || !title || title === page.title) return;
@@ -91,6 +94,7 @@ function OwnerPages({
       title={page.title}
       actions={[
         { id: "open", title: t("Open") },
+        { id: "share", title: t("Share") },
         { id: "rename", title: t("Rename") },
         { id: "pin", title: page.pinned ? t("Unpin") : t("Pin") },
         { id: "delete", title: t("Delete"), attributes: { destructive: true } },
@@ -101,7 +105,7 @@ function OwnerPages({
         accessibilityRole="button"
         chevron="right"
         title={page.title}
-        detail={formatActivityRelativeTime(page.updatedAt)}
+        detail={`${page.sharedByLink ? `${t("Shared")} · ` : ""}${formatActivityRelativeTime(page.updatedAt)}`}
         leading={<PageIcon colors={tokens} width={26} />}
         onPress={() => open(page)}
       />

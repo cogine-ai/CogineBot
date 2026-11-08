@@ -15,7 +15,7 @@ function guard() {
   ).join("");
   // Only the guard knows the key. It runs first, captures the native repeat accessor,
   // and removes its own script before the page can run.
-  return `<script>(() => { const up = parent, key = "${key}"; document.currentScript.remove(); const apply = Reflect.apply, repeat = Object.getOwnPropertyDescriptor(KeyboardEvent.prototype, "repeat").get; const tell = () => up.postMessage({ type: "rakazo-page:gesture", key }, "*"); addEventListener("pointerup", (event) => { if (event.isTrusted) tell(); }, true); addEventListener("keydown", (event) => { if (event.isTrusted && !apply(repeat, event, [])) tell(); }, true); })();</${"script"}>`;
+  return `<script>(() => { const up = parent, key = "${key}"; document.currentScript.remove(); const apply = Reflect.apply, repeat = Object.getOwnPropertyDescriptor(KeyboardEvent.prototype, "repeat").get; const tell = () => up.postMessage({ type: "rakazo-page:gesture", key }, "*"); Object.defineProperty(window, "__coginePageReportDraw", { configurable: true, value: (drawn) => up.postMessage({ type: "rakazo-page:drawn", key, drawn }, "*") }); addEventListener("pointerup", (event) => { if (event.isTrusted) tell(); }, true); addEventListener("keydown", (event) => { if (event.isTrusted && !apply(repeat, event, [])) tell(); }, true); })();</${"script"}>`;
 }
 
 function send(message) {
@@ -56,6 +56,12 @@ addEventListener("message", (event) => {
     return;
   }
   if (!interactive) return;
+  if (data.type === "rakazo-page:drawn") {
+    if (key && data.key === key && typeof data.drawn === "boolean") {
+      send({ type: data.type, drawn: data.drawn });
+    }
+    return;
+  }
   const active = navigator.userActivation?.isActive === true;
   if (data.type === "rakazo-page:gesture") {
     if (key && data.key === key && active) {

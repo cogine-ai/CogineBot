@@ -226,9 +226,22 @@ there. Vite preview same-origin-proxies `/api` and `/rpc`, so do not expose `:31
 
 ```Caddyfile
 app.example.com {
-	reverse_proxy 127.0.0.1:5173
+	reverse_proxy 127.0.0.1:5173 {
+		header_up X-Forwarded-For {remote_host}
+	}
 }
 ```
+
+Public Page links stay off by default. Before setting `PAGE_SHARING_ENABLED=true` with this host
+proxy, set `WEB_TRUSTED_PROXIES` to the exact proxy address seen by the web container. Confirm the
+address at the container because Docker may present a bridge gateway address. Keep port 5173 bound
+to loopback and direct public traffic through the TLS proxy. The proxy must replace
+`X-Forwarded-For` with the visitor's address, as in the direct TLS example above. For direct local
+connections, leave `WEB_TRUSTED_PROXIES` empty.
+
+Apply the [bundled Caddy privacy headers and URI/Referer log filter](../infra/compose/Caddyfile.prod)
+at the host proxy too. The outer proxy can log a link or generate its own response when the web
+container is unavailable.
 
 Open **Agent computer** on a bot, or send a message that uses the desktop, to see
 the local Docker computer. For in-stack Caddy plus remote E2B computers, use the

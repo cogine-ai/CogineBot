@@ -17,6 +17,7 @@ import type { RpcClient } from "./rpc";
 import { captureRpcRecoveryScope, createSpaceRpc, isRpcRecoveryScopeCurrent } from "./rpc";
 
 export const PAGE_PARAM = "page";
+export const PAGE_SHARE_PARAM = "share-page";
 function readTheme(): "light" | "dark" {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
@@ -260,7 +261,7 @@ export function createPageStore(client: RpcClient, isCurrent: () => boolean) {
 
 type PageStore = ReturnType<typeof createPageStore>;
 type Pages = {
-  open: (pageId: string) => void;
+  open: (pageId: string, share?: boolean) => void;
   session: PageSession;
   store: PageStore;
   scopeKey: string;
@@ -320,12 +321,14 @@ export function usePagesForChat(scopeKey: string, spaceId: string | null) {
     };
   }, [binding, pages, spaceId]);
   const open = useCallback(
-    (pageId: string) => {
+    (pageId: string, share = false) => {
       if (!pages.store.isCurrent()) return;
       pages.session.rememberOpener();
       setSearchParams((current) => {
         const next = new URLSearchParams(current);
         next.set(PAGE_PARAM, pageId);
+        if (share) next.set(PAGE_SHARE_PARAM, "1");
+        else next.delete(PAGE_SHARE_PARAM);
         return next;
       });
     },

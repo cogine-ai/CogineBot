@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Me, MessageBlock, ThreadSnapshot } from "@rakazo/contracts";
+import type { Me, MessageBlock, PageShareState, ThreadSnapshot } from "@rakazo/contracts";
+import { SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -176,6 +177,164 @@ test("the chat tool creates and updates a private Page", async ({ page }, testIn
   expect(updated.items).toEqual([expect.objectContaining({ id: saved.id, currentVersion: 2 })]);
 });
 
+test("a Page owner shares and revokes a read-only link", async ({ browser, page }, testInfo) => {
+  await signup(page, `page-share-${Date.now()}@example.test`, "password12", "Page Owner");
+  await completeOnboarding(page);
+  const title = "Weekly stock plan";
+  const source = `export default function Stock() {
+    return <Page title="${title}"><Text>Stock on hand: 14</Text><ReplyButton label="Ask about stock" reply="How much stock is available?" /></Page>;
+  }`;
+  const pageId = await seedPage(
+    page,
+    { botId: activeBotId(page) },
+    { title, source, reply: title },
+  );
+  const card = page.getByTestId("page-card");
+  await page.getByRole("button", { name: "Pages", exact: true }).click();
+  await page
+    .getByTestId("bot-pages")
+    .getByRole("button", { name: `Actions for ${title}` })
+    .click();
+  await page.getByRole("menuitem", { name: "Share", exact: true }).click();
+  const view = page.getByTestId("page-view");
+  const share = page.getByTestId("page-share");
+  const shareButton = view.getByRole("button", { name: /^Share/ });
+  await expect(pageFrame(page, title).getByText("Stock on hand: 14")).toBeVisible();
+  const privateChoice = share.getByRole("radio", { name: /^Only you/ });
+  const linkChoice = share.getByRole("radio", { name: /^Anyone with the link/ });
+  const confirmation = page.getByRole("alertdialog", { name: "Share this page?" });
+  await expect(privateChoice).toBeChecked();
+  await expect(share.getByRole("button", { name: "Copy link" })).toHaveCount(0);
+  await linkChoice.click();
+  await expect(confirmation).toContainText(title);
+  await expect(confirmation).toContainText("view version 1 and future approved updates");
+  await captureScreenshot(page, testInfo, "page-share-confirm-version");
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(privateChoice).toBeChecked();
+  await expect(share.getByRole("button", { name: "Copy link" })).toHaveCount(0);
+  await linkChoice.click();
+  await confirmation.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(linkChoice).toBeChecked();
+  await expect(card).toContainText("Page · Shared");
+  await captureScreenshot(page, testInfo, "page-share-controls");
+
+  const link = await rpc<PageShareState>(page, "pages/getShare", { pageId });
+  expect(link.visibility).toBe("link");
+  expect(link.shareUrl).toBeTruthy();
+  const shareUrl = link.shareUrl!;
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await share.getByRole("button", { name: "Copy link" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(shareUrl);
+
+  const isPublicRead = (url: string) => new URL(url).pathname.startsWith(SHARED_PAGE_PATH_PREFIX);
+  const signedInRead = page
+    .context()
+    .waitForEvent("request", (request) => isPublicRead(request.url()));
+  const signedInDocument = page
+    .context()
+    .waitForEvent(
+      "request",
+      (request) => request.url() === shareUrl && request.isNavigationRequest(),
+    );
+  const popupReady = page.waitForEvent("popup");
+  await share.getByRole("button", { name: "Open link" }).click();
+  const popup = await popupReady;
+  await expect(popup).toHaveURL(shareUrl);
+  expect(await popup.evaluate(() => window.opener)).toBeNull();
+  expect(await (await signedInDocument).allHeaders()).not.toHaveProperty("referer");
+  const signedHeaders = await (await signedInRead).allHeaders();
+  expect(signedHeaders).not.toHaveProperty("cookie");
+  expect(signedHeaders).not.toHaveProperty("authorization");
+  // Chromium can report an empty synthetic header for a fetch with referrerPolicy: no-referrer.
+  expect(signedHeaders.referer ?? "").toBe("");
+  await popup.close();
+
+  const visitor = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  try {
+    const outside = await visitor.newPage();
+    const privateRequests: string[] = [];
+    await outside.route(/\/api\/auth\/|\/rpc\//, (route) => {
+      privateRequests.push(new URL(route.request().url()).pathname);
+      return route.abort();
+    });
+    await outside.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: () => Promise.reject(new Error("Clipboard unavailable")) },
+      });
+      document.execCommand = () => false;
+      window.print = () => document.documentElement.setAttribute("data-printed", "true");
+    });
+    const publicRead = outside.waitForResponse((response) => isPublicRead(response.url()));
+    const document = await outside.goto(shareUrl);
+    const data = await publicRead;
+    for (const response of [document!, data]) {
+      expect(response.headers()).toMatchObject({
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "x-robots-tag": "noindex, nofollow",
+      });
+    }
+    expect(Object.keys(await data.json()).sort()).toEqual([
+      "code",
+      "title",
+      "updatedAt",
+      "version",
+    ]);
+    await expect(pageFrame(outside, title).getByText("Stock on hand: 14")).toBeVisible();
+    await expect(
+      pageFrame(outside, title).getByRole("button", { name: "Ask about stock" }),
+    ).toBeDisabled();
+    await expect(outside.getByRole("combobox", { name: /^Message/ })).toHaveCount(0);
+    expect(privateRequests).toEqual([]);
+    await captureScreenshot(outside, testInfo, "shared-page-public-mobile");
+    await outside.setViewportSize({ width: 1280, height: 800 });
+    await captureScreenshot(outside, testInfo, "shared-page-public");
+    await outside.getByRole("button", { name: "Download PDF" }).click();
+    await expect(outside.locator("html")).toHaveAttribute("data-printed", "true");
+    await outside.getByRole("button", { name: "Copy link" }).click();
+    await expect(outside.getByRole("textbox", { name: "Page link" })).toHaveValue(shareUrl);
+
+    if (!(await share.isVisible())) await shareButton.click();
+    await privateChoice.click();
+    await expect(share.getByRole("button", { name: "Open link" })).toHaveCount(0);
+    await outside.reload();
+    await expect(outside.getByRole("heading", { name: "This page isn't available" })).toBeVisible();
+    await expect(outside.locator("iframe")).toHaveCount(0);
+    await captureScreenshot(outside, testInfo, "shared-page-revoked");
+
+    await linkChoice.click();
+    await confirmation.getByRole("button", { name: "Share", exact: true }).click();
+    await expect(share.getByRole("button", { name: "Open link" })).toBeEnabled();
+    const newLink = await rpc<PageShareState>(page, "pages/getShare", { pageId });
+    expect(newLink.shareUrl).toBeTruthy();
+    expect(newLink.shareUrl).not.toBe(shareUrl);
+    await outside.reload();
+    await expect(outside.getByRole("heading", { name: "This page isn't available" })).toBeVisible();
+    await outside.goto(newLink.shareUrl!);
+    await expect(pageFrame(outside, title).getByText("Stock on hand: 14")).toBeVisible();
+    expect(privateRequests).toEqual([]);
+
+    // Another owner window revoked and reissued the link while this menu was open.
+    await rpc(page, "pages/setShare", { pageId, visibility: "private" });
+    const replacement = await rpc<PageShareState>(page, "pages/setShare", {
+      pageId,
+      visibility: "link",
+      expectedVersion: 1,
+      expectedTitle: title,
+    });
+    const copyButton = share.getByRole("button", { name: /^(Copy link|Copied)$/ });
+    await copyButton.click();
+    await expect(share.getByRole("alert")).toContainText("The page link changed");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shareUrl);
+    await copyButton.click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(replacement.shareUrl);
+  } finally {
+    await visitor.close();
+  }
+});
+
 test("the Pages button reflects the library's open state", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await signup(page, `pages-toggle-${Date.now()}@example.test`, "password12", "Page Owner");
@@ -257,14 +416,14 @@ test("a private page opens from its card, replies in chat and updates", async ({
     pageFrame(page, title).getByRole("heading", { name: "Test dashboard", level: 1 }),
   ).toBeVisible();
   await captureScreenshot(page, testInfo, "page-full-screen");
-  // Opening lands on Close; title and Download PDF precede the page's own controls.
+  // Opening lands on Close; the title and toolbar precede the page's own controls.
   await expect(view.getByRole("button", { name: "Close page" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(view.getByRole("button", { name: title })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(view.getByRole("button", { name: "Download PDF" })).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(view.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
+  await expect(view.getByRole("button", { name: "Share", exact: true })).toBeFocused();
   // Download PDF opens the print dialog, and on paper only the page shows: no controls, no
   // composer, no chat behind it, and the page at its full height drawn light on a dark app.
   await page.evaluate(() => {
@@ -278,7 +437,7 @@ test("a private page opens from its card, replies in chat and updates", async ({
   expect(await page.evaluate(() => (window as Window & { printed?: number }).printed)).toBe(1);
   await page.emulateMedia({ media: "print" });
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
-  for (const name of ["Close page", title, "Download PDF"]) {
+  for (const name of ["Close page", title, "Download PDF", "Share"]) {
     await expect(view.getByRole("button", { name })).toBeHidden();
   }
   await expect(page.getByRole("combobox", { name: /^Message/ })).toBeHidden();

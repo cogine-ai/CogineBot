@@ -5,7 +5,7 @@ import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { withSecretPersistence } from "@rakazo/adapters";
 import type { Actor, PageShareState } from "@rakazo/contracts";
-import { PageShareStateSchema } from "@rakazo/contracts";
+import { PageShareStateSchema, SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
 import {
   applyRowSecurityPolicies,
   createDb,
@@ -13,9 +13,11 @@ import {
   rlsBypassKey,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
+import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
+import { mountSharedPages } from "./shared-pages.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgres =
@@ -25,7 +27,16 @@ const postgres =
     ? describe.sequential
     : describe.skip;
 const origin = "https://pages.example.test";
-const privateShare = { status: 200, body: { visibility: "private", shareUrl: null } };
+const pageTitle = "Weekly plan";
+const initialShare = { visibility: "link", expectedVersion: 1, expectedTitle: pageTitle } as const;
+const privateShare = {
+  status: 200,
+  body: { visibility: "private", publishingEnabled: true, shareUrl: null, generation: null },
+};
+const dormant = (visibility: "private" | "link") => ({
+  status: 200,
+  body: { visibility, publishingEnabled: false, shareUrl: null, generation: null },
+});
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
 function vaultFixture() {
@@ -66,20 +77,23 @@ function vaultFixture() {
 function liveLink(response: {
   status: number;
   body: unknown;
-}): Extract<PageShareState, { visibility: "link" }> {
+}): Extract<PageShareState, { visibility: "link"; publishingEnabled: true }> {
   expect(response.status).toBe(200);
   const share = PageShareStateSchema.parse(response.body);
-  if (share.visibility !== "link") throw new Error("Page link is missing");
+  if (share.visibility !== "link" || !share.publishingEnabled)
+    throw new Error("Page link is missing");
   return share;
 }
 
-function tokenFromLink(shareUrl: string): string {
+function tokenFromLink(shareUrl: string, slug = "weekly-plan"): string {
   const url = new URL(shareUrl);
+  const token = url.pathname.slice(-43);
   expect(url.origin).toBe(origin);
-  expect(url.pathname).toMatch(/^\/p\/weekly-plan-[A-Za-z0-9_-]{43}$/);
+  expect(url.pathname).toBe(`/p/${slug}-${token}`);
+  expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(url.search).toBe("");
   expect(url.hash).toBe("");
-  return url.pathname.slice(-43);
+  return token;
 }
 
 function tokenHash(shareUrl: string): string {
@@ -195,7 +209,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       isDeploymentOwner: true,
     };
     const otherSpace: Actor = { ...actor, spaceId: `other-${id}` };
-    const title = "Weekly plan";
+    const title = pageTitle;
     await db.user.createMany({
       data: [actor, guest].map(({ userId, email }) => ({ id: userId, email, name: "Page owner" })),
     });
@@ -261,8 +275,10 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       );
     const enabled = handler(true);
     const disabled = handler();
+    const anonymous = new Hono();
+    mountSharedPages(anonymous, runtime!.prisma, { enabled: true });
     async function call(
-      proc: "get" | "getShare" | "setShare",
+      proc: "get" | "getShare" | "setShare" | "remove" | "rename",
       input: Record<string, unknown> = {},
       requestActor: Actor | null = actor,
       sharingEnabled = true,
@@ -285,7 +301,21 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       otherSpace,
       call,
       vault,
+      readPublic: (token: string) =>
+        anonymous.request(`${origin}${SHARED_PAGE_PATH_PREFIX}${token}`),
+      updateSecret: (id: string, data: { kind?: string; spaceId?: string; userId?: string }) =>
+        db.secret.update({ where: { id }, data }),
       removeOrigin: () => db.bot.delete({ where: { id: bot.id } }),
+      advance: () =>
+        db.page.update({
+          where: { id: page.id },
+          data: {
+            currentVersion: 2,
+            versions: {
+              create: { version: 2, title, source: "revised source", code: "revised code" },
+            },
+          },
+        }),
       row: () => db.page.findUniqueOrThrow({ where: { id: page.id } }),
       secrets: () => db.secret.findMany({ where: { userId, spaceId, kind: "page_share" } }),
     };
@@ -293,9 +323,9 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("keeps sharing dormant by default and only lets the active Page owner manage the link", async () => {
     const f = await setup();
-    const enable = { visibility: "link" };
+    const enable = initialShare;
     expect(await f.call("setShare", enable, f.actor, false)).toMatchObject({ status: 404 });
-    expect(await f.call("getShare", {}, f.actor, false)).toMatchObject({ status: 404 });
+    expect(await f.call("getShare", {}, f.actor, false)).toEqual(dormant("private"));
     expect(await f.call("setShare", enable, null)).toMatchObject({ status: 401 });
     const absent = await f.call("getShare", { pageId: `missing-${randomUUID()}` });
     expect(absent).toMatchObject({ status: 404 });
@@ -311,8 +341,12 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
     const link = liveLink(await f.call("setShare", enable));
     f.vault.store.load.mockClear();
+    expect(await f.call("getShare", {}, f.actor, false)).toEqual(dormant("link"));
     const detail = await f.call("get");
-    expect(detail).toMatchObject({ status: 200, body: { code: "fixture code" } });
+    expect(detail).toMatchObject({
+      status: 200,
+      body: { code: "fixture code", sharedByLink: true },
+    });
     expect(detail.body).not.toHaveProperty("shareUrl");
     expect(JSON.stringify(detail.body)).not.toContain(tokenFromLink(link.shareUrl));
     expect(f.vault.store.load).not.toHaveBeenCalled();
@@ -322,7 +356,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     }
     expect(await f.call("getShare")).toEqual({ status: 200, body: link });
     expect(await f.call("setShare", { visibility: "private" }, f.actor, false)).toEqual(
-      privateShare,
+      dormant("private"),
     );
     expect(await f.call("getShare")).toEqual(privateShare);
     expect(await f.secrets()).toEqual([]);
@@ -337,10 +371,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       await release.promise;
       return staged;
     });
-    const calls = [
-      f.call("setShare", { visibility: "link" }),
-      f.call("setShare", { visibility: "link" }),
-    ];
+    const calls = [f.call("setShare", initialShare), f.call("setShare", initialShare)];
     let link: ReturnType<typeof liveLink>;
     try {
       await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(2), { timeout: 5000 });
@@ -380,8 +411,9 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     expect(f.vault.records.size).toBe(0);
     expect(await f.call("getShare")).toEqual(privateShare);
 
-    const reopened = liveLink(await f.call("setShare", { visibility: "link" }));
+    const reopened = liveLink(await f.call("setShare", initialShare));
     expect(tokenFromLink(reopened.shareUrl)).not.toBe(tokenFromLink(link.shareUrl));
+    expect(reopened.generation).not.toBe(link.generation);
     expect(await f.row()).toMatchObject({
       visibility: "link",
       shareTokenHash: tokenHash(reopened.shareUrl),
@@ -390,9 +422,147 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     expect(await f.secrets()).not.toContainEqual(activeSecrets[0]);
   });
 
+  it("requires the version shown to the owner even if the page changes during token staging", async () => {
+    const f = await setup();
+    const staged = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const stored = await put(...args);
+      staged.resolve();
+      await release.promise;
+      return stored;
+    });
+    const priorVersion = initialShare;
+    const pending = f.call("setShare", priorVersion);
+    try {
+      await staged.promise;
+      await f.advance();
+      release.resolve();
+      expect(await pending).toMatchObject({ status: 409 });
+      expect(await f.call("getShare")).toEqual(privateShare);
+      expect(await f.secrets()).toEqual([]);
+      expect(f.vault.records.size).toBe(0);
+      expect(await f.call("setShare", priorVersion)).toMatchObject({ status: 409 });
+      expect(f.vault.store.put).toHaveBeenCalledTimes(1);
+      expect(
+        liveLink(await f.call("setShare", { ...initialShare, expectedVersion: 2 })).generation,
+      ).toBeTruthy();
+      expect(await f.row()).toMatchObject({ currentVersion: 2, visibility: "link" });
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+
+  it("reads only the current shared version under RLS and requires the owner's live share secret", async () => {
+    const f = await setup();
+    const link = liveLink(await f.call("setShare", initialShare));
+    const token = tokenFromLink(link.shareUrl);
+    const original = await f.row();
+    f.vault.store.load.mockClear();
+    const first = await f.readPublic(token);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    expect(first.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(first.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(await first.json()).toEqual({
+      title: original.title,
+      code: "fixture code",
+      version: 1,
+      updatedAt: original.updatedAt.toISOString(),
+    });
+    const current = await f.advance();
+    expect(await (await f.readPublic(token)).json()).toEqual({
+      title: current.title,
+      code: "revised code",
+      version: 2,
+      updatedAt: current.updatedAt.toISOString(),
+    });
+    const [secret] = await f.secrets();
+    expect(secret).toBeDefined();
+    const wrong = [
+      { kind: "fixture_credential", userId: f.actor.userId, spaceId: f.actor.spaceId },
+      { kind: secret!.kind, userId: f.guest.userId, spaceId: f.actor.spaceId },
+      { kind: secret!.kind, userId: f.actor.userId, spaceId: f.otherSpace.spaceId },
+    ];
+    for (const data of wrong) {
+      await f.updateSecret(secret!.id, data);
+      const unavailable = await f.readPublic(token);
+      expect(unavailable.status).toBe(404);
+      expect(await unavailable.json()).toEqual({ error: "Not found" });
+    }
+    await f.updateSecret(secret!.id, {
+      kind: secret!.kind,
+      userId: f.actor.userId,
+      spaceId: f.actor.spaceId,
+    });
+    expect(f.vault.store.load).not.toHaveBeenCalled();
+    expect(await f.call("setShare", { visibility: "private" })).toEqual(privateShare);
+    expect((await f.readPublic(token)).status).toBe(404);
+    const reopened = liveLink(await f.call("setShare", { ...initialShare, expectedVersion: 2 }));
+    const currentToken = tokenFromLink(reopened.shareUrl);
+    expect((await f.readPublic(token)).status).toBe(404);
+    expect((await f.readPublic(currentToken)).status).toBe(200);
+    expect(await f.call("remove")).toMatchObject({ status: 200 });
+    expect((await f.readPublic(currentToken)).status).toBe(404);
+  });
+
+  it("requires the confirmed title when first sharing and retains direct owner renames", async () => {
+    const f = await setup();
+    const staged = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const stored = await put(...args);
+      staged.resolve();
+      await release.promise;
+      return stored;
+    });
+
+    const pending = f.call("setShare", initialShare);
+    const title = "Confirmed plan";
+    try {
+      await staged.promise;
+      expect(await f.call("rename", { title })).toMatchObject({
+        status: 200,
+        body: { title, currentVersion: 1 },
+      });
+      release.resolve();
+      expect(await pending).toMatchObject({ status: 409 });
+      expect(await f.call("setShare", initialShare)).toMatchObject({ status: 409 });
+      expect(f.vault.store.put).toHaveBeenCalledTimes(1);
+      expect(await f.call("getShare")).toEqual(privateShare);
+      expect(await f.secrets()).toEqual([]);
+      expect(f.vault.records.size).toBe(0);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+
+    const link = liveLink(await f.call("setShare", { ...initialShare, expectedTitle: title }));
+    const token = tokenFromLink(link.shareUrl, "confirmed-plan");
+    expect(await (await f.readPublic(token)).json()).toMatchObject({
+      title,
+      code: "fixture code",
+      version: 1,
+    });
+    const renamed = "Owner renamed the plan";
+    expect(await f.call("rename", { title: renamed }, f.guest)).toMatchObject({ status: 404 });
+    expect(await f.call("rename", { title: renamed })).toMatchObject({ status: 200 });
+    const current = await f.row();
+    expect(current.shareSecretId).toBe(link.generation);
+    expect(await (await f.readPublic(token)).json()).toEqual({
+      title: renamed,
+      code: "fixture code",
+      version: 1,
+      updatedAt: current.updatedAt.toISOString(),
+    });
+  });
+
   it("keeps a live token on provider outage and rotates a proven missing or mismatched token", async () => {
     const f = await setup();
-    const enable = { visibility: "link" };
+    const enable = initialShare;
     const original = liveLink(await f.call("setShare", enable));
     const originalRow = await f.row();
     f.vault.store.load
@@ -430,7 +600,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
 
   it("rejects a former link read when its vault load races revocation and replacement", async () => {
     const f = await setup();
-    const enable = { visibility: "link" };
+    const enable = initialShare;
     const original = liveLink(await f.call("setShare", enable));
     const release = Promise.withResolvers<void>();
     const load = f.vault.store.load.getMockImplementation()!;
@@ -458,6 +628,108 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
     }
   });
 
+  it("does not re-enable a revoked link when a repair token was already staged", async () => {
+    const f = await setup();
+    const enable = initialShare;
+    const original = liveLink(await f.call("setShare", enable));
+    const release = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    f.vault.store.load.mockRejectedValueOnce(new SecretNotFoundError());
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const staged = await put(...args);
+      await release.promise;
+      return staged;
+    });
+    const pending = f.call("setShare", enable);
+    try {
+      await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(2), { timeout: 5000 });
+      expect(await f.call("setShare", { visibility: "private" })).toEqual(privateShare);
+      release.resolve();
+      expect(await pending).toMatchObject({ status: 409 });
+      expect(await f.call("getShare")).toEqual(privateShare);
+      expect((await f.readPublic(tokenFromLink(original.shareUrl))).status).toBe(404);
+      expect(await f.secrets()).toEqual([]);
+      expect(f.vault.records.size).toBe(0);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+
+  it("does not publish an old confirmation after another window shares and then revokes", async () => {
+    const f = await setup();
+    const enable = initialShare;
+    const release = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    const original = await f.row();
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const staged = await put(...args);
+      await release.promise;
+      return staged;
+    });
+    const pending = f.call("setShare", enable);
+    try {
+      await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      const winner = liveLink(await f.call("setShare", enable));
+      expect(await f.call("setShare", { visibility: "private" })).toEqual(privateShare);
+      expect(await f.row()).toMatchObject({
+        visibility: "private",
+        currentVersion: original.currentVersion,
+        updatedAt: original.updatedAt,
+        shareRevision: original.shareRevision + 2,
+      });
+      release.resolve();
+      expect(await pending).toMatchObject({ status: 409 });
+      expect(await f.call("getShare")).toEqual(privateShare);
+      expect((await f.readPublic(tokenFromLink(winner.shareUrl))).status).toBe(404);
+      expect(await f.secrets()).toEqual([]);
+      expect(f.vault.records.size).toBe(0);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+
+  it("does not return a new generation to a losing concurrent share after readback is delayed", async () => {
+    const f = await setup();
+    const enable = initialShare;
+    const releasePut = Promise.withResolvers<void>();
+    const releaseCleanup = Promise.withResolvers<void>();
+    const put = f.vault.store.put.getMockImplementation()!;
+    f.vault.store.put.mockImplementationOnce(async (...args) => {
+      const stored = await put(...args);
+      await releasePut.promise;
+      return stored;
+    });
+    const pending = f.call("setShare", enable);
+    try {
+      await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      const winner = liveLink(await f.call("setShare", enable));
+      const deleteSecret = f.vault.store.delete.getMockImplementation()!;
+      f.vault.store.delete.mockImplementationOnce(async (...args) => {
+        await deleteSecret(...args);
+        await releaseCleanup.promise;
+      });
+      releasePut.resolve();
+      await vi.waitFor(() => expect(f.vault.store.delete).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+      expect(await f.call("setShare", { visibility: "private" })).toEqual(privateShare);
+      const replacement = liveLink(await f.call("setShare", enable));
+      expect(replacement.generation).not.toBe(winner.generation);
+      releaseCleanup.resolve();
+      const stale = await pending;
+      expect(stale).toMatchObject({ status: 409 });
+      expect(JSON.stringify(stale.body)).not.toContain(tokenFromLink(replacement.shareUrl));
+      expect(await f.call("getShare")).toEqual({ status: 200, body: replacement });
+      expect(f.vault.records.size).toBe(1);
+    } finally {
+      releasePut.resolve();
+      releaseCleanup.resolve();
+      await pending;
+    }
+  });
+
   it("cannot attach a staged token after a private Page loses its Bot", async () => {
     const f = await setup();
     const release = Promise.withResolvers<void>();
@@ -467,7 +739,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       await release.promise;
       return staged;
     });
-    const pending = f.call("setShare", { visibility: "link" });
+    const pending = f.call("setShare", initialShare);
     try {
       await vi.waitFor(() => expect(f.vault.store.put).toHaveBeenCalledTimes(1), {
         timeout: 5000,

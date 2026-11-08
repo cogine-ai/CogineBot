@@ -20,6 +20,7 @@ export function PageFrame({
   title,
   interactive = false,
   onHeight,
+  onPageDrawn,
   onReply,
 }: {
   document: string;
@@ -28,6 +29,8 @@ export function PageFrame({
   title: string;
   interactive?: boolean;
   onHeight?: (height: number) => void;
+  /** Trusted runtime commit or render failure, separate from layout measurement. */
+  onPageDrawn?: (drawn: boolean) => void;
   /** Where a page's reply button puts its text; without it the page offers no replies. */
   onReply?: (text: string) => void;
 }) {
@@ -45,6 +48,7 @@ export function PageFrame({
       const message = data as {
         type?: unknown;
         height?: unknown;
+        drawn?: unknown;
         text?: unknown;
         gesture?: unknown;
       };
@@ -67,6 +71,10 @@ export function PageFrame({
         onHeight?.(height);
         return;
       }
+      if (message.type === "rakazo-page:drawn" && typeof message.drawn === "boolean") {
+        onPageDrawn?.(message.drawn);
+        return;
+      }
       const { gesture } = message;
       if (!interactive || !focused || typeof gesture !== "string" || gesture.length === 0) return;
       if (gesture === usedGesture.current) return;
@@ -82,7 +90,7 @@ export function PageFrame({
       else if (url) open(url);
       else if (reply) onReply?.(reply);
     },
-    [document, documentKey, interactive, onHeight, onReply, open],
+    [document, documentKey, interactive, onHeight, onPageDrawn, onReply, open],
   );
   return (
     <>

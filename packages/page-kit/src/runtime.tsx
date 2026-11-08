@@ -1,5 +1,13 @@
 import * as React from "react";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
   PAGE_GLOBALS,
@@ -22,6 +30,7 @@ type PageFactory = (exports: { default?: unknown }, ...globals: unknown[]) => vo
 declare global {
   interface Window {
     RakazoPage?: { mount: (boot: PageBoot) => void };
+    __coginePageReportDraw?: (drawn: boolean) => void;
     __rakazoPageFactory?: PageFactory;
   }
 }
@@ -87,7 +96,36 @@ function reportHeight() {
   new ResizeObserver(post).observe(document.body);
 }
 
+const DrawObserver = MutationObserver;
+const hasContent = Function.call.bind(Node.prototype.hasChildNodes) as (node: Node) => boolean;
+
+function DrawReceipt({ host, report }: { host: HTMLElement; report: (drawn: boolean) => void }) {
+  useLayoutEffect(() => {
+    let drawn = false;
+    const mark = () => {
+      const visible = hasContent(host);
+      if (visible !== drawn) {
+        drawn = visible;
+        report(visible);
+      }
+    };
+    const observer = new DrawObserver(mark);
+    observer.observe(host, { childList: true });
+    mark();
+    return () => {
+      observer.disconnect();
+      if (drawn) report(false);
+    };
+  }, [host, report]);
+  return null;
+}
+
 function mount(boot: PageBoot) {
+  // Consume the host's private reporter before evaluating authored code. A
+  // second mount cannot use the original viewer's publication receipt.
+  const reportDrawn = window.__coginePageReportDraw;
+  delete window.__coginePageReportDraw;
+  if (reportDrawn) delete window.RakazoPage;
   document.documentElement.dataset.theme = boot.theme === "light" ? "light" : "dark";
   reportHeight();
   const host =
@@ -110,6 +148,7 @@ function mount(boot: PageBoot) {
       <PageLanguage.Provider value={typeof boot.lang === "string" ? boot.lang : undefined}>
         <ErrorBoundary>
           <Page />
+          {reportDrawn ? <DrawReceipt host={host} report={reportDrawn} /> : null}
         </ErrorBoundary>
       </PageLanguage.Provider>
     </ErrorTitle.Provider>,
