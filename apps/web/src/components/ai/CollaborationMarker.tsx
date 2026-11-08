@@ -41,10 +41,28 @@ export function CollaborationMarker({
   );
 }
 
-export function ActiveBotGlyph({ bots, label }: { bots: GroupAvatarMember[]; label: string }) {
+export function ActiveBotGlyph({
+  bots,
+  label,
+  narrationStatus,
+}: {
+  bots: GroupAvatarMember[];
+  label: string;
+  narrationStatus?: string;
+}) {
+  const avatar = <GroupAvatar members={bots} size={28} />;
   return (
     <div className="flex min-h-10 items-center px-1">
-      <LoadingState indicator={<GroupAvatar members={bots} size={28} />} label={label} />
+      {narrationStatus ? (
+        <div role="status" className="flex min-w-0 items-center gap-2.5">
+          {avatar}
+          <span dir="auto" className="min-w-0 truncate text-[15px] text-muted-foreground">
+            {narrationStatus}
+          </span>
+        </div>
+      ) : (
+        <LoadingState indicator={avatar} label={label} />
+      )}
     </div>
   );
 }

@@ -79,6 +79,17 @@ describe("mobile message presentation", () => {
     expect(messagePresentationSegments([mixed])).toEqual([{ kind: "content", blocks: [mixed] }]);
   });
 
+  it("keeps the short working status out of message bubbles", () => {
+    const status: MessageBlock = {
+      kind: "progress",
+      text: "Checking the totals.",
+      activity: true,
+      narrationStatus: true,
+    };
+    expect(hasVisibleMessagePresentation([status])).toBe(false);
+    expect(messagePresentationSegments([status])).toEqual([]);
+  });
+
   it("keeps only response content around tool activity", () => {
     const tool: Extract<MessageBlock, { kind: "steps" }> = {
       kind: "steps",

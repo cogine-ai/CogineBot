@@ -1,10 +1,13 @@
 import { readFile } from "node:fs/promises";
+import type { MessageBlock } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { finalizeRun } from "./events.js";
+import { claimSteering, finalizeRun } from "./events.js";
 import { expireStuckRun } from "./expire-stuck-run.js";
+import { createThreadMessage } from "./messages.js";
+import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
 import {
   clearRunTurnCheckpoints,
   dropRunTurnCheckpoint,
@@ -105,6 +108,242 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       blocks: [],
     };
   }
+
+  const resetClock = Date.parse("2026-10-20T12:00:00.000Z");
+  const resetTime = (offsetMs: number) => new Date(resetClock + offsetMs);
+
+  async function seedSteering(
+    f: Awaited<ReturnType<typeof seed>>,
+    claimedAt: Date | null,
+    overrides: {
+      authorUserId?: string;
+      steeringUserId?: string;
+      originTrigger?: string;
+      clientNonce?: string;
+      blocks?: MessageBlock[];
+    } = {},
+  ) {
+    const message = await createThreadMessage(prisma, {
+      threadId: f.thread.id,
+      role: "user",
+      authorUserId: overrides.authorUserId ?? userId,
+      blocks: overrides.blocks ?? [{ kind: "text", text: "Synthetic steering" }],
+      clientNonce: overrides.clientNonce,
+    });
+    return prisma.steeringMessage.create({
+      data: {
+        messageId: message.id,
+        botId,
+        runId: f.run.id,
+        userId: overrides.steeringUserId ?? userId,
+        originTrigger: overrides.originTrigger,
+        claimedAt,
+      },
+    });
+  }
+
+  function resetInput(f: Awaited<ReturnType<typeof seed>>, steeringId: string, offsetMs: number) {
+    return {
+      runId: f.run.id,
+      spaceId,
+      botId,
+      threadId: f.thread.id,
+      leaseOwner: "worker",
+      leaseFence: 7,
+      steeringId,
+      now: resetTime(offsetMs),
+    };
+  }
+
+  function reserveRunProgressReset(db: PrismaClient, input: ReturnType<typeof resetInput>) {
+    return db.$transaction((tx) => reserveRunProgressResetInTransaction(tx, input));
+  }
+
+  it("commits a live owner reset with its claim and restores it without granting again", async () => {
+    const f = await seed();
+    const claim = {
+      runId: f.run.id,
+      botId,
+      threadId: f.thread.id,
+      leaseOwner: "worker",
+      leaseFence: 7,
+      seenIds: [],
+    };
+    const opening = await seedSteering(f, null);
+    const initial = await claimSteering(prisma, claim);
+    expect(initial).toMatchObject([{ id: opening.id, ownerInput: true }]);
+    expect(initial[0]?.progressResetAt).toBeUndefined();
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toBeUndefined();
+    const replayedOpening = await claimSteering(prisma, { ...claim, liveProgressReset: true });
+    expect(replayedOpening[0]?.progressResetAt).toBeUndefined();
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toBeUndefined();
+
+    const owner = await seedSteering(f, null);
+    const channel = await seedSteering(f, null, { clientNonce: "messaging:fixture" });
+    const liveClaim = {
+      ...claim,
+      seenIds: [opening.id],
+      liveProgressReset: true as const,
+    };
+    const live = await Promise.all([
+      claimSteering(prisma, liveClaim),
+      claimSteering(prisma, liveClaim),
+    ]);
+    for (const batch of live) {
+      expect(batch.map(({ id }) => id)).toEqual([owner.id, channel.id]);
+      expect(batch[1]?.progressResetAt).toBeUndefined();
+    }
+    const grants = live.map((batch) => batch[0]?.progressResetAt).filter(Boolean);
+    expect(grants).toEqual([expect.any(Date)]);
+
+    // Simulate losing the worker after the claim commits, before it can emit or apply the event.
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { leaseOwner: "successor", leaseFence: 8 },
+    });
+    const successor = { ...claim, leaseOwner: "successor", leaseFence: 8 };
+    const expected = { startedAt: grants[0], startMessageSeq: 3 };
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toEqual(expected);
+    const recovered = await claimSteering(prisma, successor);
+    expect(recovered.map(({ id }) => id)).toEqual([opening.id, owner.id, channel.id]);
+    expect(recovered.every((item) => item.progressResetAt === undefined)).toBe(true);
+    const replayedLive = await claimSteering(prisma, { ...successor, liveProgressReset: true });
+    expect(replayedLive.every((item) => item.progressResetAt === undefined)).toBe(true);
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toEqual(expected);
+  });
+
+  it("serializes steering resets and preserves the latest budget anchor across a new lease", async () => {
+    const f = await seed();
+    const first = await seedSteering(f, resetTime(0));
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toBeUndefined();
+    const results = await Promise.all([
+      reserveRunProgressReset(prisma, resetInput(f, first.id, 0)),
+      reserveRunProgressReset(prisma, resetInput(f, first.id, 0)),
+    ]);
+    expect(results.filter(Boolean)).toEqual([{ startedAt: resetTime(0), startMessageSeq: 1 }]);
+    const update = await createThreadMessage(prisma, {
+      threadId: f.thread.id,
+      runId: f.run.id,
+      botId,
+      role: "bot",
+      blocks: [{ kind: "text", text: "Progress after reset" }],
+      clientNonce: `user-progress:${f.run.id}:0`,
+    });
+    expect(update.seq).toBe(1);
+
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { leaseOwner: "successor", leaseFence: 8 },
+    });
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toEqual({
+      startedAt: resetTime(0),
+      startMessageSeq: 1,
+    });
+    const reserve = (id: string, offset: number) =>
+      reserveRunProgressReset(prisma, {
+        ...resetInput(f, id, offset),
+        leaseOwner: "successor",
+        leaseFence: 8,
+      });
+    const tooEarly = await seedSteering(f, resetTime(59_999));
+    await expect(reserve(tooEarly.id, 59_999)).resolves.toBeUndefined();
+    await expect(reserve(tooEarly.id, 60_000)).resolves.toBeUndefined();
+    const second = await seedSteering(f, resetTime(60_000));
+    await expect(
+      reserveRunProgressReset(prisma, resetInput(f, second.id, 60_000)),
+    ).resolves.toBeUndefined();
+    await expect(reserve(second.id, 60_000)).resolves.toEqual({
+      startedAt: resetTime(60_000),
+      startMessageSeq: 4,
+    });
+    const third = await seedSteering(f, resetTime(120_000));
+    await expect(reserve(third.id, 120_000)).resolves.toEqual({
+      startedAt: resetTime(120_000),
+      startMessageSeq: 5,
+    });
+    const fourth = await seedSteering(f, resetTime(180_000));
+    await expect(reserve(fourth.id, 180_000)).resolves.toBeUndefined();
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toEqual({
+      startedAt: resetTime(120_000),
+      startMessageSeq: 5,
+    });
+    expect(await prisma.externalEffect.count({ where: { runId: f.run.id } })).toBe(1);
+    expect(await prisma.event.count({ where: { runId: f.run.id } })).toBe(0);
+  });
+
+  it("rejects initial, unclaimed, outside, wrong-scope, and stopped steering", async () => {
+    const f = await seed();
+    const initial = await seedSteering(f, resetTime(0));
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { sourceMessageId: initial.messageId },
+    });
+    const invalid = [
+      initial,
+      await seedSteering(f, null),
+      await seedSteering(f, resetTime(0), { authorUserId: "fixture-peer" }),
+      await seedSteering(f, resetTime(0), { steeringUserId: "fixture-peer" }),
+      await seedSteering(f, resetTime(0), { originTrigger: "webhook" }),
+      await seedSteering(f, resetTime(0), { clientNonce: "messaging:fixture" }),
+      await seedSteering(f, resetTime(0), {
+        blocks: [
+          {
+            kind: "channel_message",
+            provider: "fixture",
+            channelId: "fixture-channel",
+            fromAddress: "fixture-address",
+            fromLabel: "Fixture author",
+            text: "Synthetic channel message",
+          },
+        ],
+      }),
+    ];
+    for (const steering of invalid) {
+      await expect(
+        reserveRunProgressReset(prisma, resetInput(f, steering.id, 0)),
+      ).resolves.toBeUndefined();
+    }
+    const owned = await seedSteering(f, resetTime(0));
+    const input = resetInput(f, owned.id, 0);
+    await expect(
+      reserveRunProgressReset(prisma, { ...input, spaceId: otherSpaceId }),
+    ).resolves.toBeUndefined();
+    for (const trigger of ["messaging", "webhook", "routine", "tickets"]) {
+      await prisma.run.update({ where: { id: f.run.id }, data: { trigger } });
+      await expect(reserveRunProgressReset(prisma, input)).resolves.toBeUndefined();
+    }
+    await prisma.run.update({
+      where: { id: f.run.id },
+      data: { status: "cancelled", trigger: "user" },
+    });
+    await expect(reserveRunProgressReset(prisma, input)).resolves.toBeUndefined();
+    await expect(loadRunProgressReset(prisma, f.run.id)).resolves.toBeUndefined();
+  });
+
+  it("fails closed when the persisted reset would restore a different budget", async () => {
+    const f = await seed();
+    const ownerSteering = await seedSteering(f, resetTime(0));
+    const corrupt = await prisma.externalEffect.create({
+      data: {
+        spaceId,
+        runId: f.run.id,
+        idempotencyKey: JSON.stringify(["runtime_progress_reset", f.run.id]),
+        kind: "runtime_progress_reset",
+        status: "runtime_progress_reset",
+        request: {},
+        result: [{ steeringId: ownerSteering.id, startedAtMs: resetClock, startMessageSeq: -1 }],
+      },
+    });
+    await expect(loadRunProgressReset(prisma, f.run.id)).rejects.toThrow(
+      "Invalid Run progress reset state",
+    );
+    await expect(
+      reserveRunProgressReset(prisma, resetInput(f, ownerSteering.id, 0)),
+    ).rejects.toThrow("Invalid Run progress reset state");
+    await expect(prisma.externalEffect.findUnique({ where: { id: corrupt.id } })).resolves.toEqual(
+      corrupt,
+    );
+  });
 
   it("backfills existing MCP rows by executing the actual migration on a transaction-local old table", async () => {
     const migration = await readFile(

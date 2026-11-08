@@ -26,6 +26,7 @@ import {
   isSecretAskBlock,
   latestAnswerableAskMessageId,
   leaveThreadWindow,
+  liveNarrationStatusLine,
   messageAttachmentLabels,
   newestPageCards,
   openThreadWindow,
@@ -863,10 +864,14 @@ function Thread({
   const [dismissedChoiceQuestions, setDismissedChoiceQuestions] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(() => new Map());
+  const userMessages = useMemo(
+    () => userVisibleMessages(snap?.messages ?? [], { includePeerReceipts: true }),
+    [snap?.messages],
+  );
   const reactionView = useMemo(
     () =>
       projectMessageReactions(
-        userVisibleMessages(snap?.messages ?? [], { includePeerReceipts: true })
+        userMessages
           .map((message) => {
             const dismissed = dismissedChoiceQuestions.get(message.id);
             if (!dismissed) return message;
@@ -875,7 +880,7 @@ function Thread({
           })
           .filter((message) => hasVisibleMessagePresentation(message.blocks)),
       ),
-    [dismissedChoiceQuestions, snap?.messages],
+    [dismissedChoiceQuestions, userMessages],
   );
   const visibleMessages = reactionView.visibleMessages;
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
@@ -990,6 +995,12 @@ function Thread({
   activeThreadId.current = notificationThreadId;
   const currentBotStatus = snap ? snap.run?.status : currentBot?.status;
   const hasLiveProgress = visibleMessages.some((message) => message.id.startsWith("progress:"));
+  const workingNarrationStatus = liveNarrationStatusLine(
+    userMessages,
+    (snap?.activeRuns ?? (snap?.run ? [snap.run] : []))
+      .filter((run) => run.status === "running")
+      .map((run) => run.id),
+  );
   const workingGroupBots = useMemo(() => {
     if (!inGroup) return [];
     const seen = new Set<string>();
@@ -2735,7 +2746,9 @@ function Thread({
   const workingFooter =
     !inGroup && currentBot && isWorkingStatus(currentBotStatus) && !hasLiveProgress ? (
       <View
-        accessibilityLabel={t("{name} is working", { name: currentBot.name })}
+        accessibilityLabel={
+          workingNarrationStatus ?? t("{name} is working", { name: currentBot.name })
+        }
         accessibilityRole="text"
         style={{
           flexDirection: "row",
@@ -2751,14 +2764,15 @@ function Thread({
           size={28}
           status={currentBotStatus}
         />
-        <WorkingIndicator />
+        <WorkingIndicator label={workingNarrationStatus} />
       </View>
     ) : inGroup && workingGroupBots.length > 0 ? (
       <View
         accessibilityLabel={
-          workingGroupBots.length === 1
+          workingNarrationStatus ??
+          (workingGroupBots.length === 1
             ? t("{name} is working", { name: workingGroupBots[0]?.name ?? t("Agent") })
-            : t("{count} agents working", { count: workingGroupBots.length })
+            : t("{count} agents working", { count: workingGroupBots.length }))
         }
         accessibilityRole="text"
         style={{
@@ -2781,7 +2795,7 @@ function Thread({
             </View>
           ))}
         </View>
-        <WorkingIndicator />
+        <WorkingIndicator label={workingNarrationStatus} />
       </View>
     ) : null;
 

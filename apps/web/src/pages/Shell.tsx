@@ -50,6 +50,7 @@ import {
   isServerUnreachable,
   isToolActivityBlock,
   latestAnswerableAskMessageId,
+  liveNarrationStatusLine,
   mentionChipKey,
   messageAttachmentLabels,
   messageBlocksForQuestionCards,
@@ -3149,6 +3150,10 @@ export function ShellPage() {
       ),
     [activeSnapshot?.messages],
   );
+  const workingNarrationStatus = liveNarrationStatusLine(
+    transcriptMessages,
+    workingRuns.filter((run) => run.status === "running").map((run) => run.id),
+  );
   const pageProjection = useMemo(() => projectPageCards(transcriptMessages), [transcriptMessages]);
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
@@ -5802,6 +5807,7 @@ export function ShellPage() {
               answerableApprovalMessageIds={answerableApprovalMessageIds}
               running={transcriptRunning}
               workingBots={workingBots}
+              workingNarrationStatus={workingNarrationStatus}
               onLoadOlder={loadOlder}
               onOpenBot={openBot}
               onAnswer={answerMessage}
@@ -7132,6 +7138,7 @@ const Transcript = memo(function Transcript({
   answerableApprovalMessageIds,
   running,
   workingBots,
+  workingNarrationStatus,
   onLoadOlder,
   onOpenBot,
   onAnswer,
@@ -7167,6 +7174,7 @@ const Transcript = memo(function Transcript({
   answerableApprovalMessageIds: ReadonlySet<string>;
   running: boolean;
   workingBots: GroupAvatarMember[];
+  workingNarrationStatus?: string;
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
@@ -7636,7 +7644,11 @@ const Transcript = memo(function Transcript({
                   block.kind === "progress" && !isToolActivityBlock(block) && Boolean(block.text),
               ),
           ) ? (
-            <ActiveBotGlyph bots={workingBots} label={workingLabel} />
+            <ActiveBotGlyph
+              bots={workingBots}
+              label={workingLabel}
+              narrationStatus={workingNarrationStatus}
+            />
           ) : null}
         </div>
       </div>

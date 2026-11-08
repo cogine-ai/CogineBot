@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import type { SharedValue } from "react-native-reanimated";
 import Animated, {
   cancelAnimation,
@@ -50,21 +50,30 @@ function Dot({
  * `compact` is a single dot for list rows — decorative there, so the row's own
  * accessibility label carries the state instead.
  */
-export function WorkingIndicator({ compact = false, tint }: { compact?: boolean; tint?: string }) {
+export function WorkingIndicator({
+  compact = false,
+  tint,
+  label,
+}: {
+  compact?: boolean;
+  tint?: string;
+  label?: string;
+}) {
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const reducedMotion = useReducedMotion();
   const progress = useSharedValue(0);
+  const showLabel = !compact && Boolean(label);
 
   useEffect(() => {
-    if (reducedMotion) return;
+    if (reducedMotion || showLabel) return;
     progress.value = withRepeat(
       withTiming(1, { duration: CYCLE_MS, easing: Easing.linear }),
       -1,
       false,
     );
     return () => cancelAnimation(progress);
-  }, [progress, reducedMotion]);
+  }, [progress, reducedMotion, showLabel]);
 
   if (compact) {
     return (
@@ -81,10 +90,11 @@ export function WorkingIndicator({ compact = false, tint }: { compact?: boolean;
   }
   return (
     <View
-      accessibilityLabel={t("Working…")}
+      accessibilityLabel={label ?? t("Working…")}
       accessibilityRole="text"
       style={{
         alignSelf: "flex-start",
+        flexShrink: 1,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
@@ -94,16 +104,25 @@ export function WorkingIndicator({ compact = false, tint }: { compact?: boolean;
         borderRadius: 20,
       }}
     >
-      {DOTS.map((index) => (
-        <Dot
-          key={index}
-          progress={progress}
-          offset={index / DOTS.length}
-          size={7}
-          still={reducedMotion}
-          color={tokens.mutedForeground}
-        />
-      ))}
+      {label ? (
+        <Text
+          numberOfLines={1}
+          style={{ flexShrink: 1, color: tokens.mutedForeground, fontSize: 13 }}
+        >
+          {label}
+        </Text>
+      ) : (
+        DOTS.map((index) => (
+          <Dot
+            key={index}
+            progress={progress}
+            offset={index / DOTS.length}
+            size={7}
+            still={reducedMotion}
+            color={tokens.mutedForeground}
+          />
+        ))
+      )}
     </View>
   );
 }

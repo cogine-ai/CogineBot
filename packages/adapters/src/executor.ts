@@ -21,7 +21,7 @@ import {
 
 export { mayOpenModelStream } from "./run-lifecycle.js";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AdapterContext,
   AgentContextStrategy,
@@ -157,6 +157,7 @@ import {
   InvalidSpaceNameError,
   isTooManyDatabaseConnections,
   loadRunHistoryMessages,
+  loadRunProgressReset,
   loadRunTurnCheckpoint,
   Prisma,
   parseComputerMode,
@@ -535,7 +536,12 @@ import {
   finalBlocksAfterMidTurnProgress,
   isProgressMessageTruncated,
   isUserProgressClientNonce,
+  midTurnProgressBudgetAllows,
+  midTurnProgressBudgetUsed,
+  narrationStatusLine,
+  redactReplyAfterProgress,
   USER_PROGRESS_CLIENT_NONCE_PREFIX,
+  USER_PROGRESS_MESSAGE_MAX_LENGTH,
   userProgressClientNonce,
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
@@ -3892,11 +3898,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
         return;
       }
+      const progressRunStartedAt = run.startedAt ?? new Date();
       let attempt: { id: string };
       try {
         const executionStarted = await deps.prisma.run.updateMany({
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-          data: { startedAt: run.startedAt ?? new Date() },
+          data: { startedAt: progressRunStartedAt },
         });
         if (executionStarted.count !== 1) {
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
@@ -4813,18 +4820,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Rehydrate from this run's prior progress rows so a resume after ask/takeover
         // still knows progress was already published (skip hollow finals; status outcome).
         let publishedMidTurnUserMessage = false;
-        // Routine runs discard promoted narration instead of posting it as chat.
         let discardedMidTurnNarration = false;
+        let assistantTurnBreakPending = false;
         const midTurnUserTexts: string[] = [];
-        let midTurnProgressCount = 0;
+        const progressNonces = new Set<string>();
+        const restoredProgressReset =
+          !scripted && fence > 1 ? await loadRunProgressReset(deps.prisma, runId) : undefined;
+        let progressStartedAt = restoredProgressReset?.startedAt ?? progressRunStartedAt;
+        let progressBudgetStart = 0;
+        let steeringReplyPending = restoredProgressReset !== undefined;
         {
           const priorProgress = await deps.prisma.message.findMany({
             where: { runId: run.id, role: "bot" },
             orderBy: { seq: "asc" },
-            select: { blocks: true, clientNonce: true },
+            select: { blocks: true, clientNonce: true, seq: true },
           });
           for (const message of priorProgress) {
-            if (!isUserProgressClientNonce(message.clientNonce)) continue;
+            if (!message.clientNonce || !isUserProgressClientNonce(message.clientNonce)) continue;
+            progressNonces.add(message.clientNonce);
             const blocks = Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : [];
             const text = blocks
               .filter(
@@ -4836,7 +4849,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!text) continue;
             midTurnUserTexts.push(text);
             publishedMidTurnUserMessage = true;
-            midTurnProgressCount += 1;
+            if (restoredProgressReset && message.seq >= restoredProgressReset.startMessageSeq) {
+              steeringReplyPending = false;
+            } else if (restoredProgressReset) {
+              progressBudgetStart += 1;
+            }
           }
         }
         // Tool calls that land mid-sentence wait here until the narration catches up to a
@@ -4866,14 +4883,50 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let terminalCheckpointComplete = false;
         let approvalPausePending = false;
         let handedOff = false;
-        let progressRedactor = createStreamingRedactor(runSecrets);
+        const progressContextTail = (text: string): string => {
+          const length = Math.max(0, ...runSecrets.map((secret) => secret.length));
+          return length > 0 ? text.slice(-length) : "";
+        };
+        let publishedProgressTail = progressContextTail(midTurnUserTexts.join(""));
+        let narrationPrefix = publishedProgressTail;
+        const precedingProgress = () => [publishedProgressTail, narrationPrefix];
+        const startProgressRedactor = () =>
+          createStreamingRedactor(runSecrets, precedingProgress());
+        let progressRedactor = startProgressRedactor();
         const script = scripted
           ? inferScript(ownerTaskPrompt, takeoverResume?.checkpoint)
           : undefined;
         let resolvedEffectScript: ScriptedTurn[] | undefined;
         let scriptCompleted = false;
+        let narrationStatusShowing = false;
+        const pendingConnectionNarration = new Map<string, string>();
+        let progressWrites = Promise.resolve();
+        const serializeProgress = <T>(write: () => Promise<T>): Promise<T> => {
+          const pending = progressWrites.then(write);
+          progressWrites = pending.then(
+            () => undefined,
+            () => undefined,
+          );
+          return pending;
+        };
+        const progressSinceBudgetStart = () => midTurnUserTexts.length - progressBudgetStart;
+        const canPublishProgress = (allowSteeringReply = true) =>
+          (allowSteeringReply && steeringReplyPending) ||
+          midTurnProgressBudgetAllows(
+            progressSinceBudgetStart(),
+            Date.now() - progressStartedAt.getTime(),
+          );
+        const recordPublishedProgress = (text: string, nonce?: string) => {
+          if (nonce) progressNonces.add(nonce);
+          midTurnUserTexts.push(text);
+          publishedProgressTail = progressContextTail(publishedProgressTail + text);
+          progressRedactor = startProgressRedactor();
+          publishedMidTurnUserMessage = true;
+          steeringReplyPending = false;
+          narrationStatusShowing = false;
+        };
         const flushProgress = async () => {
-          if (scripted || !pendingProgress || isBackgroundRunTrigger(run.trigger)) return;
+          if (scripted || !pendingProgress || !runPromotesMidTurnNarration(run.trigger)) return;
           await deps.events.append({
             spaceId: run.spaceId,
             threadId: thread.id,
@@ -4890,58 +4943,64 @@ export function createRunExecutor(deps: ExecutorDeps) {
           pendingProgress = "";
           lastProgressAt = Date.now();
         };
-        const publishMidTurnNarration = async () => {
+        const takeMidTurnNarration = (): string => {
           const extracted = extractNarrationText(messageSegments, currentTextSegment);
-          const narration = clampUserProgressMessage(redactSecrets(extracted.text, runSecrets));
-          if (
-            isSteeringContinuation &&
-            lastScriptedState &&
-            narration &&
-            runPromotesMidTurnNarration(run.trigger)
-          ) {
-            const cleared = {
-              ...snapshotScriptedOutput(),
-              assembled: "",
-              currentTextSegment: "",
-              messageSegments: extracted.remaining,
-            };
-            await publishDurableScriptedOutput(
-              [{ kind: "text", text: narration }],
-              undefined,
-              "narration",
-              cleared,
-            );
-            messageSegments = cleared.messageSegments;
-            currentTextSegment = "";
-            assembled = "";
-            hasStreamedText = false;
-            pendingProgress = "";
-            midTurnUserTexts.push(narration);
-            publishedMidTurnUserMessage = true;
-            midTurnProgressCount += 1;
-            return;
-          }
-          // Native runtimes keep their existing publication and progress nonce semantics.
+          const raw = extracted.text || assembled;
+          const redactor = startProgressRedactor();
+          const text = (redactor.push(raw) + redactor.finish()).trim();
+          narrationPrefix = progressContextTail(narrationPrefix + raw);
           messageSegments = extracted.remaining;
           currentTextSegment = "";
-          if (!narration) return;
+          if (!text) return "";
           assembled = "";
           hasStreamedText = false;
           pendingProgress = "";
-          if (!runPromotesMidTurnNarration(run.trigger)) {
-            discardedMidTurnNarration = true;
+          progressRedactor.skip();
+          discardedMidTurnNarration = true;
+          return text;
+        };
+        const showNarrationStatus = async (text: string) => {
+          if (!text || isExactNoResponse(text)) return;
+          context.signal.throwIfAborted();
+          await deps.events.append({
+            spaceId: run.spaceId,
+            threadId: thread.id,
+            botId: bot.id,
+            type: "thread.progress",
+            runId,
+            payload: {
+              reset: true,
+              text: narrationStatusLine(text, runSecrets),
+              activity: true,
+              narrationStatus: true,
+            },
+          });
+          narrationStatusShowing = true;
+        };
+        const publishTakenNarration = async (text: string, allowSteeringReply = true) => {
+          if (!text || !runPromotesMidTurnNarration(run.trigger) || isExactNoResponse(text)) return;
+          if (
+            text.length > USER_PROGRESS_MESSAGE_MAX_LENGTH ||
+            !canPublishProgress(allowSteeringReply)
+          ) {
+            await showNarrationStatus(text);
             return;
           }
-          await publishMessage(
-            deps,
-            run,
-            "bot",
-            [{ kind: "text", text: narration }],
-            undefined,
-            userProgressClientNonce(run.id, midTurnProgressCount++),
-          );
-          midTurnUserTexts.push(narration);
-          publishedMidTurnUserMessage = true;
+          const nonce = userProgressClientNonce(run.id, midTurnUserTexts.length);
+          context.signal.throwIfAborted();
+          if (await publishMessage(deps, run, "bot", [{ kind: "text", text }], undefined, nonce)) {
+            recordPublishedProgress(text, nonce);
+          }
+        };
+        const publishMidTurnNarration = async (allowSteeringReply = true) => {
+          if (!scripted) await publishTakenNarration(takeMidTurnNarration(), allowSteeringReply);
+        };
+        const flushConnectionNarration = async (executionId: string) => {
+          const text = pendingConnectionNarration.get(executionId);
+          pendingConnectionNarration.delete(executionId);
+          if (text && !context.signal.aborted) {
+            await serializeProgress(() => publishTakenNarration(text));
+          }
         };
         const formatObservation = (
           observation: Awaited<ReturnType<SandboxProvider["observe"]>>,
@@ -5174,6 +5233,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   getLogger().error("scripted output realtime notification", error);
                 });
             context.signal.throwIfAborted();
+            return committed.eventSeq !== undefined;
           } catch (error) {
             if (error instanceof ScriptedStateInvalidError) throw error;
             throw new ScriptedStateError();
@@ -6329,6 +6389,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           const requestApproval = async () => {
+            await flushConnectionNarration(executionId);
             const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForApproval();
           };
@@ -6439,7 +6500,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (additions.length === 0) return;
             pendingProgress += progressRedactor.finish();
             runSecrets.push(...additions);
-            progressRedactor = createStreamingRedactor(runSecrets);
+            progressRedactor = startProgressRedactor();
           };
           const appendComputerCommand = (payload: ComputerCommand) =>
             deps.events
@@ -7364,6 +7425,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "add_mcp_server") {
+            const narration = pendingConnectionNarration.get(executionId);
             const parsed = parseMcpServerToolArgs(args);
             if (!parsed) {
               return finish({
@@ -7394,6 +7456,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const credentialBlob = buildMcpCredentialBlob(parsed);
             let storedCredential: { id: string; ciphertext: string } | null = null;
             if (credentialBlob) {
+              context.signal.throwIfAborted();
               storedCredential = await deps.secretStore.put(credentialBlob, {
                 operationId: executionId,
                 traceId: executionId,
@@ -7408,68 +7471,102 @@ export function createRunExecutor(deps: ExecutorDeps) {
             let approvalEventSeq: number | undefined;
             let approvalFirstResponseRunId: string | undefined;
             try {
-              const created = await deps.prisma.$transaction(async (tx) => {
-                if (storedCredential) {
-                  await tx.secret.create({
+              const create = () =>
+                deps.prisma.$transaction(async (tx) => {
+                  if (storedCredential) {
+                    await tx.secret.create({
+                      data: {
+                        id: storedCredential.id,
+                        userId: run.userId,
+                        spaceId: run.spaceId,
+                        kind: "mcp",
+                        ciphertext: storedCredential.ciphertext,
+                      },
+                    });
+                  }
+                  context.signal.throwIfAborted();
+                  const server = await tx.mcpServer.create({
                     data: {
-                      id: storedCredential.id,
-                      userId: run.userId,
                       spaceId: run.spaceId,
-                      kind: "mcp",
-                      ciphertext: storedCredential.ciphertext,
+                      userId: run.userId,
+                      slug: parsed.slug,
+                      name: parsed.name,
+                      description: parsed.description,
+                      transport: parsed.transport,
+                      endpoint: parsed.endpoint ?? null,
+                      command: parsed.command ?? null,
+                      args: parsed.args as unknown as Prisma.InputJsonValue,
+                      env: Object.fromEntries(Object.keys(parsed.env).map((key) => [key, true])),
+                      headers: Object.fromEntries(
+                        Object.keys(parsed.headers).map((key) => [key, true]),
+                      ),
+                      secretId: storedCredential?.id,
+                      enabled: true,
+                      allowAllTools: false,
+                      allowedTools: [],
                     },
                   });
-                }
-                const server = await tx.mcpServer.create({
-                  data: {
-                    spaceId: run.spaceId,
-                    userId: run.userId,
-                    slug: parsed.slug,
-                    name: parsed.name,
-                    description: parsed.description,
-                    transport: parsed.transport,
-                    endpoint: parsed.endpoint ?? null,
-                    command: parsed.command ?? null,
-                    args: parsed.args as unknown as Prisma.InputJsonValue,
-                    env: Object.fromEntries(Object.keys(parsed.env).map((key) => [key, true])),
-                    headers: Object.fromEntries(
-                      Object.keys(parsed.headers).map((key) => [key, true]),
-                    ),
-                    secretId: storedCredential?.id,
-                    enabled: true,
-                    allowAllTools: false,
-                    allowedTools: [],
-                  },
+                  if (!parsed.assignToSelf) return { server };
+                  const nonce =
+                    narration && narration.length <= USER_PROGRESS_MESSAGE_MAX_LENGTH
+                      ? userProgressClientNonce(run.id, midTurnUserTexts.length)
+                      : undefined;
+                  // Only a committed connection card makes its preamble exempt from the budget.
+                  const preamble =
+                    nonce && narration
+                      ? await persistMessageInTransaction(
+                          tx,
+                          run,
+                          "bot",
+                          [{ kind: "text", text: narration }],
+                          undefined,
+                          nonce,
+                          false,
+                          runLeaseFor(deps, runId),
+                        )
+                      : undefined;
+                  const blocks: MessageBlock[] = [
+                    {
+                      kind: "mcp_approval",
+                      name: server.name,
+                      serverId: server.id,
+                      serverRevision: server.revision,
+                      transport: parsed.transport,
+                      endpoint: parsed.endpoint ?? null,
+                      needsOAuth: oauthLikely,
+                      status: "pending",
+                    },
+                  ];
+                  const committed = await persistMessageInTransaction(
+                    tx,
+                    run,
+                    "bot",
+                    blocks,
+                    undefined,
+                    undefined,
+                    false,
+                    runLeaseFor(deps, runId),
+                  );
+                  return {
+                    server,
+                    nonce,
+                    eventSeq: committed.eventSeq,
+                    firstResponseRunId:
+                      preamble?.firstResponseRunId ?? committed.firstResponseRunId,
+                  };
                 });
-                if (!parsed.assignToSelf) return { server };
-                const blocks: MessageBlock[] = [
-                  {
-                    kind: "mcp_approval",
-                    name: server.name,
-                    serverId: server.id,
-                    serverRevision: server.revision,
-                    transport: parsed.transport,
-                    endpoint: parsed.endpoint ?? null,
-                    needsOAuth: oauthLikely,
-                    status: "pending",
-                  },
-                ];
-                const committed = await persistMessageInTransaction(
-                  tx,
-                  run,
-                  "bot",
-                  blocks,
-                  undefined,
-                  undefined,
-                  false,
-                  runLeaseFor(deps, runId),
-                );
-                return {
-                  server,
-                  eventSeq: committed.eventSeq,
-                  firstResponseRunId: committed.firstResponseRunId,
-                };
-              });
+              const created = narration
+                ? await serializeProgress(async () => {
+                    const result = await create();
+                    pendingConnectionNarration.delete(executionId);
+                    if (result.nonce) {
+                      recordPublishedProgress(narration, result.nonce);
+                    } else {
+                      await showNarrationStatus(narration);
+                    }
+                    return result;
+                  })
+                : await create();
               serverRow = created.server;
               approvalEventSeq = created.eventSeq;
               approvalFirstResponseRunId = created.firstResponseRunId;
@@ -7776,7 +7873,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               runSecrets.push(plaintext);
               // Keep the tail the old redactor still holds; a fresh instance drops it.
               pendingProgress += progressRedactor.finish();
-              progressRedactor = createStreamingRedactor(runSecrets);
+              progressRedactor = startProgressRedactor();
               const purpose = String(args.purpose ?? "otp");
               if (applied && !claimedEffect) {
                 if (applied.effect.status === "intended") {
@@ -8123,41 +8220,54 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
           if (name === "message_user") {
-            const rawMessage = redactSecrets(String(args.message ?? ""), runSecrets);
-            const text = clampUserProgressMessage(rawMessage);
-            if (!text) return finish({ error: "message is required" });
-            const truncated = isProgressMessageTruncated(rawMessage);
-            await flushProgress();
-            await publishMidTurnNarration();
-            if (isSteeringContinuation && lastScriptedState) {
-              await publishDurableScriptedOutput(
-                [{ kind: "text", text }],
-                true,
-                "message_user",
-                snapshotScriptedOutput(),
+            const rawMessage = String(args.message ?? "").trim();
+            if (!rawMessage) return finish({ error: "message is required" });
+            return serializeProgress(async () => {
+              const nonce = `${USER_PROGRESS_CLIENT_NONCE_PREFIX}${runId}:tool:${createHash("sha256").update(executionId).digest("hex")}`;
+              const replay = progressNonces.has(nonce);
+              if (!replay) {
+                context.signal.throwIfAborted();
+                await flushProgress();
+                // Keep the immediate owner reply available for the explicit answer.
+                await publishMidTurnNarration(false);
+              }
+              const safeMessage = redactSecrets(
+                redactReplyAfterProgress(rawMessage, [], precedingProgress(), runSecrets).text,
+                runSecrets,
               );
-              midTurnProgressCount += 1;
-            } else {
-              await publishMessage(
-                deps,
-                run,
-                "bot",
-                [{ kind: "text", text }],
-                true,
-                userProgressClientNonce(run.id, midTurnProgressCount++),
-              );
-            }
-            midTurnUserTexts.push(text);
-            publishedMidTurnUserMessage = true;
-            return finish(
-              truncated
+              const text = clampUserProgressMessage(safeMessage);
+              const result = isProgressMessageTruncated(safeMessage)
                 ? {
                     ok: true,
                     truncated: true,
-                    note: "This progress update was cut off at 500 characters and the user only saw the truncated version above — it did NOT deliver your full content. message_user is for short interim beats only, never the final answer. Put your complete answer in your normal final reply instead of relying on this truncated update.",
+                    note: "The user saw only the first 500 characters of this progress update. Put your complete answer in your normal final reply.",
                   }
-                : { ok: true },
-            );
+                : { ok: true };
+              if (replay) return finish(result);
+              if (!canPublishProgress()) {
+                return finish({
+                  ok: true,
+                  sent: false,
+                  note: midTurnProgressBudgetUsed(progressSinceBudgetStart())
+                    ? "The progress budget is used. Continue working and deliver the result in your normal final reply."
+                    : "This update was too early to send. Continue working and deliver the result in your normal final reply.",
+                });
+              }
+              if (isSteeringContinuation && lastScriptedState) {
+                const committed = await publishDurableScriptedOutput(
+                  [{ kind: "text", text }],
+                  true,
+                  "message_user",
+                  snapshotScriptedOutput(),
+                );
+                if (committed) recordPublishedProgress(text);
+              } else if (
+                await publishMessage(deps, run, "bot", [{ kind: "text", text }], true, nonce)
+              ) {
+                recordPublishedProgress(text, nonce);
+              }
+              return finish(result);
+            });
           }
           if (name === "message_bot") {
             const sent = await messageBot(
@@ -8360,39 +8470,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // The user takes over the computer's screen, so it must be up before the run waits.
             await runComputer.get();
             const safeReason = redactSecrets(reason, runSecrets);
-            // Publish pending narration as tagged mid-turn progress so reconciliation
-            // does not treat pre-takeover text as the delegated final result.
-            await publishMidTurnNarration();
-            if (assembled.trim()) {
-              const narration = clampUserProgressMessage(redactSecrets(assembled, runSecrets));
-              if (narration && runPromotesMidTurnNarration(run.trigger)) {
-                if (isSteeringContinuation && lastScriptedState) {
-                  await publishDurableScriptedOutput(
-                    [{ kind: "text", text: narration }],
-                    undefined,
-                    "takeover-narration",
-                    { ...snapshotScriptedOutput(), assembled: "", currentTextSegment: "" },
-                  );
-                  midTurnProgressCount += 1;
-                } else {
-                  await publishMessage(
-                    deps,
-                    run,
-                    "bot",
-                    [{ kind: "text", text: narration }],
-                    undefined,
-                    userProgressClientNonce(run.id, midTurnProgressCount++),
-                  );
-                }
-                midTurnUserTexts.push(narration);
-                publishedMidTurnUserMessage = true;
-              } else if (narration) {
-                discardedMidTurnNarration = true;
-              }
-              assembled = "";
-              hasStreamedText = false;
-              pendingProgress = "";
-            }
+            // Scripted output stays with its checkpoint instead of becoming a separate message.
+            await serializeProgress(() => publishMidTurnNarration());
             if (!(isSteeringContinuation && lastScriptedState) && !effect) {
               await publishMessage(
                 deps,
@@ -8448,6 +8527,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           try {
             return await dispatchTool(name, args, executionId, route, observer);
           } finally {
+            if (pendingConnectionNarration.has(executionId)) {
+              await flushConnectionNarration(executionId);
+            }
             // Only this bot's own profile is a confirmation of its own write.
             const ownProfile =
               name === "update_bot" &&
@@ -8919,7 +9001,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       runSecrets,
                     )
                   : Promise.resolve(undefined),
-              claimSteering: async (seenIds) => {
+              claimSteering: async (seenIds, options) => {
                 const steering = await deps.events.claimSteering({
                   threadId: thread.id,
                   botId: bot.id,
@@ -8927,6 +9009,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseOwner: workerId,
                   leaseFence: fence,
                   seenIds,
+                  ...options,
                 });
                 const mapped = await Promise.all(
                   steering.map(async (item) => {
@@ -8963,6 +9046,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       message: {
                         id: item.id,
                         messageId: item.messageId,
+                        ...(item.ownerInput ? { ownerInput: true as const } : {}),
+                        ...(item.progressResetAt ? { progressResetAt: item.progressResetAt } : {}),
                         historyText: scripted ? scriptedSteeringText(item.blocks) : text,
                         text: [reply?.text, text, filesInstruction, unavailableInstruction]
                           .filter(Boolean)
@@ -9009,32 +9094,44 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
 
             if (event.type === "text") {
-              assembled += event.text;
-              currentTextSegment += event.text;
+              const separator =
+                assistantTurnBreakPending &&
+                assembled &&
+                !/\s$/.test(assembled) &&
+                !/^\s/.test(event.text)
+                  ? "\n\n"
+                  : "";
+              const delta = separator + event.text;
+              assistantTurnBreakPending = false;
+              narrationStatusShowing = false;
+              assembled += delta;
+              currentTextSegment += delta;
               toolCallStreak = { key: undefined, count: 0 };
               tryFlushPendingTools();
-              pendingProgress += progressRedactor.push(event.text);
+              pendingProgress += progressRedactor.push(delta);
               const now = Date.now();
               if (!scripted && pendingProgress && now - lastProgressAt >= 250) {
                 await flushProgress();
               }
+            } else if (event.type === "steered") {
+              assistantTurnBreakPending = true;
+              if (!scripted && event.progressResetAt) {
+                const startedAt = event.progressResetAt;
+                await serializeProgress(async () => {
+                  // The claim has already anchored the new window. Hold any remaining
+                  // pre-steering prose as a status so it cannot spend that window.
+                  await showNarrationStatus(takeMidTurnNarration());
+                  progressStartedAt = startedAt;
+                  progressBudgetStart = midTurnUserTexts.length;
+                  steeringReplyPending = true;
+                });
+              }
             } else if (event.type === "progress") {
               if (!event.activity) toolCallStreak = { key: undefined, count: 0 };
-              if (isBackgroundRunTrigger(run.trigger)) continue;
-              // Flush batched text deltas first so an activity line cannot land
-              // ahead of text the model streamed before the tool call.
-              if (pendingProgress) {
-                await deps.events.append({
-                  spaceId: run.spaceId,
-                  threadId: thread.id,
-                  botId: bot.id,
-                  type: "thread.progress",
-                  runId,
-                  payload: { delta: pendingProgress, streaming: true },
-                });
-                pendingProgress = "";
-                lastProgressAt = Date.now();
-              }
+              if (!runPromotesMidTurnNarration(run.trigger)) continue;
+              if (narrationStatusShowing && event.activity) continue;
+              await flushProgress();
+              const text = redactSecrets(event.text, runSecrets);
               await deps.events.append({
                 spaceId: run.spaceId,
                 threadId: thread.id,
@@ -9042,7 +9139,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 type: "thread.progress",
                 runId,
                 payload: {
-                  text: redactSecrets(event.text, runSecrets),
+                  text: event.activity ? narrationStatusLine(text, runSecrets) : text,
                   ...(event.activity ? { activity: true } : {}),
                 },
               });
@@ -9105,7 +9202,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               // Promote streamed narration into a durable, replyable chat message before
               // tools continue, so long turns do not look stalled and stay replyable.
               if (event.name !== "message_user") {
-                await publishMidTurnNarration();
+                await serializeProgress(async () => {
+                  if (
+                    !scripted &&
+                    runPromotesMidTurnNarration(run.trigger) &&
+                    event.name === "add_mcp_server" &&
+                    parseMcpServerToolArgs(event.args)?.assignToSelf
+                  ) {
+                    const text = takeMidTurnNarration();
+                    if (text && !isExactNoResponse(text)) {
+                      pendingConnectionNarration.set(event.executionId, text);
+                    }
+                  } else {
+                    await publishMidTurnNarration();
+                  }
+                });
               }
               let alreadyRepresented = false;
               if (isSteeringContinuation && lastScriptedState) {
@@ -9436,7 +9547,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const silentReply = runAllowsSilentEmpty(run.trigger)
             ? stripNoResponseReply(assembled, messageSegments)
             : { assembled, blocks: messageSegments };
-          let completionBlocks = silentReply.blocks;
+          const finalBoundary = redactReplyAfterProgress(
+            silentReply.assembled,
+            silentReply.blocks,
+            precedingProgress(),
+            runSecrets,
+          );
+          let completionBlocks = finalBoundary.blocks;
           if (!silentReply.assembled || isBackgroundRunTrigger(run.trigger)) {
             // Mid-turn progress already posted durable chat messages; skip the empty
             // "…" fallback so we do not add a junk final bubble. Delegated bot_message
@@ -9458,7 +9575,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
           const text = handedOff
             ? ""
-            : redactSecrets(completionNotificationBody(silentReply.assembled, blocks), runSecrets);
+            : redactSecrets(completionNotificationBody(finalBoundary.text, blocks), runSecrets);
           if (containsSecret(text, runSecrets)) {
             throw new RunCompletionValidationError("refusing to persist a secret in the thread");
           }
@@ -10319,7 +10436,7 @@ export function runSendsFinishNotification(trigger: string): boolean {
 export { isExactNoResponse, NO_RESPONSE, stripNoResponseReply };
 
 export const LONG_WORK_PROGRESS_GUIDANCE =
-  "During long work, send a few short progress updates with message_user so the user can see what you are doing. Keep them brief and high-signal (a sentence or two, not a dump). Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
+  "During long work, send a few short progress updates with message_user so the user can see what you are doing. Wait until you have been working for a minute, unless you are answering the user's message while working. Keep updates brief and high-signal. Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
 
 export const ROUTINE_SILENT_REPLY_GUIDANCE = `If this routine's prompt says to stay silent when there is nothing to report, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 

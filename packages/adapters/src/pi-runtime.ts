@@ -335,6 +335,7 @@ export class PiAgentRuntime implements AgentRuntime {
         resumeHost = host;
         const tools = toAgentTools(toolDefs, host);
         const hasToolBridge = toolDefs.some((tool) => isDeferredTool(tool.name));
+        const canMessageUser = toolDefs.some((tool) => tool.name === "message_user");
         const pageToolSecrets = request.pageToolSecrets ?? (() => []);
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
@@ -559,12 +560,28 @@ export class PiAgentRuntime implements AgentRuntime {
           },
           prepareNextTurnWithContext: async () => {
             if (!request.claimSteering) return undefined;
-            const steering = await request.claimSteering([...seenSteeringIds]);
+            // Apply the previous turn's queued writes before the claim can reset the budget.
+            await queue.waitForConsumer(signal);
+            signal.throwIfAborted();
+            const steering = await request.claimSteering([...seenSteeringIds], {
+              liveProgressReset: true,
+            });
             if (steering.length === 0) return undefined;
+            signal.throwIfAborted();
             seenSteeringIds.push(...steering.map((item) => item.id));
+            const progressResetAt = steering.findLast(
+              (item) => item.progressResetAt,
+            )?.progressResetAt;
+            queue.push({ type: "steered", ...(progressResetAt && { progressResetAt }) });
+            // The next model request must see the Run's steering boundary before it can send progress.
+            await queue.waitForConsumer(signal);
+            signal.throwIfAborted();
             for (const item of steering) {
               const images = toPiImages(item.images);
-              const text = midTaskMessagePrompt(item.text);
+              const text = midTaskMessagePrompt(
+                item.text,
+                item.ownerInput === true && canMessageUser,
+              );
               agent.steer({
                 role: "user",
                 content: images.length ? [{ type: "text", text }, ...images] : text,
@@ -744,6 +761,7 @@ export class PiAgentRuntime implements AgentRuntime {
           }
           if (event.type === "message_end" && event.message.role === "assistant") {
             const text = assistantText(event.message);
+            const hasCalls = messageHasToolCall(event.message);
             const streamedThisMessage = currentMessageStreamed;
             currentMessageStreamed = "";
             const continued =
@@ -753,12 +771,16 @@ export class PiAgentRuntime implements AgentRuntime {
             const alreadyEmitted =
               !continued &&
               (streamedThisMessage.includes(text) || sincePendingFinal.endsWith(text));
-            if (textToEmit && !messageHasToolCall(event.message) && !alreadyEmitted) {
+            if (textToEmit && !hasCalls && !alreadyEmitted) {
               streamed += textToEmit;
               queue.push({ type: "text", text: textToEmit });
             } else if (text && !streamed) {
               streamed = text;
               queue.push({ type: "text", text });
+            }
+            if (canMessageUser && hasCalls && (text || streamedThisMessage)) {
+              // Admit parallel tools as before, after the shared narration is available.
+              await queue.waitForConsumer(signal);
             }
           }
         });
@@ -1606,9 +1628,11 @@ function toAgentTool(
         result = await (async () => {
           if (
             host.request.executeTool &&
-            (tool.name === "request_takeover" || tool.name === "run_subagent")
+            (tool.name === "request_takeover" ||
+              tool.name === "run_subagent" ||
+              tool.name === "add_mcp_server")
           ) {
-            // Persist queued narration and audit before a control call can pause the run.
+            // Give the Run its narration and audit before the tool can post or pause.
             await beforeInputPause();
             host.signal.throwIfAborted();
             if (host.pausePending) {

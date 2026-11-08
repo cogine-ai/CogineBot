@@ -242,9 +242,39 @@ export type LiveMessageUpdate =
   | { type: "tool"; name: string };
 
 export function reduceLiveMessageBlocks(
-  blocks: readonly MessageBlock[],
+  current: readonly MessageBlock[],
   update: LiveMessageUpdate,
 ): MessageBlock[] {
+  const priorTail = current.at(-1);
+  const statusText =
+    update.type === "progress" &&
+    update.payload?.reset === true &&
+    update.payload.activity === true &&
+    update.payload.narrationStatus === true &&
+    typeof update.payload.text === "string"
+      ? update.payload.text.trim()
+      : "";
+  if (statusText) {
+    let remaining: MessageBlock[] = current.filter(
+      (block) => block.kind !== "text" && block.kind !== "progress",
+    );
+    for (const name of priorTail?.kind === "progress" ? (priorTail.pendingToolNames ?? []) : []) {
+      remaining = appendToolCallSegment(remaining, name);
+    }
+    return [
+      ...remaining,
+      { kind: "progress", text: statusText, activity: true, narrationStatus: true },
+    ];
+  }
+
+  let blocks = current;
+  if (priorTail?.kind === "progress" && priorTail.activity && priorTail.narrationStatus) {
+    if (update.type === "tool") {
+      return [...appendToolCallSegment(current.slice(0, -1), update.name), priorTail];
+    }
+    if (update.payload?.activity === true) return [...current];
+    blocks = current.slice(0, -1);
+  }
   const tail = blocks.at(-1);
   const segments = tail?.kind === "progress" ? blocks.slice(0, -1) : blocks;
   const priorText = liveMessageText(blocks);
@@ -280,6 +310,16 @@ export function reduceLiveMessageBlocks(
       ...(pendingToolNames.length > 0 ? { pendingToolNames } : {}),
     },
   ];
+}
+
+/** The newest working Run's short narration note for the footer. */
+export function liveNarrationStatusLine(
+  messages: readonly { id: string; blocks: readonly MessageBlock[] }[],
+  workingRunIds: readonly string[],
+): string | undefined {
+  const workingIds = new Set(workingRunIds.map((runId) => progressMessageId({ runId })));
+  const tail = messages.findLast((message) => workingIds.has(message.id))?.blocks.at(-1);
+  return tail?.kind === "progress" && tail.activity && tail.narrationStatus ? tail.text : undefined;
 }
 
 function liveMessageText(blocks: readonly MessageBlock[]): string {
@@ -489,24 +529,52 @@ export function sanitizeJsonValue<T>(value: T): T {
   return value;
 }
 
-export function createStreamingRedactor(secrets: string[]) {
+/** Length of an exact protected value's continuation at the start of new text. */
+export function protectedContinuationLength(
+  text: string,
+  contexts: readonly string[],
+  secrets: readonly string[],
+): number {
+  let covered = 0;
+  for (const context of contexts) {
+    if (!context) continue;
+    const boundary = context + text;
+    for (const secret of secrets) {
+      const start = boundary.indexOf(secret, Math.max(0, context.length - secret.length + 1));
+      if (start >= 0 && start < context.length) {
+        covered = Math.max(covered, start + secret.length - context.length);
+      }
+    }
+  }
+  return covered;
+}
+
+export function createStreamingRedactor(secrets: string[], preceding: readonly string[] = []) {
   const values = [...new Set(secrets.filter(Boolean))].sort((a, b) => b.length - a.length);
   const maxLength = values[0]?.length ?? 0;
   let buffer = "";
+  let covered = 0;
+  let contexts = preceding;
 
   const drain = (final: boolean) => {
     let output: string;
     if (values.length === 0) {
-      output = buffer;
+      output = buffer.slice(covered);
       buffer = "";
+      covered = 0;
     } else {
       const safeStartLimit = final ? buffer.length : Math.max(0, buffer.length - maxLength + 1);
       let offset = 0;
       output = "";
+      if (safeStartLimit > 0 && contexts.length > 0) {
+        offset = protectedContinuationLength(buffer.slice(0, maxLength), contexts, values);
+        if (offset > covered) output += "[redacted]";
+        contexts = [];
+      }
       while (offset < safeStartLimit) {
         const secret = values.find((value) => buffer.startsWith(value, offset));
         if (secret) {
-          output += "[redacted]";
+          if (offset + secret.length > covered) output += "[redacted]";
           offset += secret.length;
           continue;
         }
@@ -517,16 +585,17 @@ export function createStreamingRedactor(secrets: string[]) {
           if (hasNext && isLowSurrogate(next)) {
             // Keep the pair together; hold both if the low unit is outside this drain window.
             if (!final && offset + 1 >= safeStartLimit) break;
-            output += buffer[offset]! + buffer[offset + 1]!;
+            if (offset >= covered) output += buffer[offset]! + buffer[offset + 1]!;
             offset += 2;
             continue;
           }
           if (!final && !hasNext) break; // trailing high surrogate — wait for the next chunk
         }
-        output += buffer[offset];
+        if (offset >= covered) output += buffer[offset];
         offset += 1;
       }
       buffer = buffer.slice(offset);
+      covered = Math.max(0, covered - offset);
     }
     // No-secret path emits the whole buffer; hold a trailing high until the next chunk.
     if (!final && endsWithHighSurrogate(output)) {
@@ -543,6 +612,10 @@ export function createStreamingRedactor(secrets: string[]) {
     },
     finish() {
       return drain(true);
+    },
+    // Do not show held text again, but still match values split at this boundary.
+    skip() {
+      covered = buffer.length;
     },
   };
 }

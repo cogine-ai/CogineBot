@@ -271,6 +271,118 @@ describe("real Pi turn checkpoint producer and recovery", () => {
     vi.unstubAllEnvs();
   });
 
+  it.each([
+    ["message_user", true],
+    ["message_user", false],
+    ["add_mcp_server", true],
+  ] as const)(
+    "delivers live steering and queued events before %s dispatch (reset granted: %s)",
+    async (toolName, granted) => {
+      const progressResetAt = new Date("2026-01-01T00:01:00Z");
+      const initial = {
+        id: "initial-owner",
+        messageId: "initial-message",
+        text: "Initial owner context.",
+        ownerInput: true as const,
+      };
+      const live = [
+        { ...initial, id: "older-owner", messageId: "older-message", text: "Older owner note." },
+        {
+          ...initial,
+          id: "latest-owner",
+          messageId: "latest-message",
+          text: "Latest owner note.",
+          ...(granted && { progressResetAt }),
+        },
+        { id: "other-member", messageId: "other-message", text: "Other member note." },
+      ];
+      const claimSteering = vi
+        .fn<NonNullable<AgentRunRequest["claimSteering"]>>(async () => [])
+        .mockResolvedValueOnce([initial])
+        .mockResolvedValueOnce(live);
+      const toolCall =
+        toolName === "message_user"
+          ? call("post-update", toolName, { message: "A brief update." })
+          : call("connect-mcp", USE_TOOL, {
+              name: toolName,
+              arguments: {
+                name: "Local fixture",
+                transport: "streamable_http",
+                endpoint: "https://fixture.invalid/mcp",
+              },
+            });
+      const contexts: TranscriptContext[] = [];
+      provider.stream
+        .mockImplementationOnce((_model: Model<Api>, context: TranscriptContext) => {
+          contexts.push(structuredClone(context));
+          return response([call("read-once", "read_file", { path: "input.txt" })]);
+        })
+        .mockImplementationOnce((_model: Model<Api>, context: TranscriptContext) => {
+          contexts.push(structuredClone(context));
+          return response([{ type: "text", text: "Checking the new request." }, toolCall]);
+        })
+        .mockImplementationOnce(() => response());
+
+      const executeTool = vi.fn(async (_name: string) => ({ ok: true }));
+      const input = request([builtin("read_file"), builtin(toolName)], {
+        claimSteering,
+        executeTool,
+      });
+      const events: AgentRuntimeEvent[] = [];
+      for await (const event of new PiAgentRuntime().run(input)) {
+        events.push(event);
+        if (event.type === "tool" && event.name === "read_file") {
+          await nextMacrotask();
+          expect(claimSteering).toHaveBeenCalledExactlyOnceWith([]);
+        }
+        if (event.type === "steered") {
+          await nextMacrotask();
+          expect(provider.stream).toHaveBeenCalledTimes(1);
+        }
+        if (
+          (event.type === "text" && event.text === "Checking the new request.") ||
+          (toolName === "add_mcp_server" && event.type === "tool" && event.name === toolName)
+        ) {
+          await nextMacrotask();
+          expect(executeTool.mock.calls.map(([name]) => name)).toEqual(["read_file"]);
+        }
+      }
+
+      expect(events.filter((event) => event.type === "steered")).toEqual([
+        { type: "steered", ...(granted && { progressResetAt }) },
+      ]);
+      const liveOptions = { liveProgressReset: true };
+      expect(claimSteering.mock.calls).toEqual([
+        [[]],
+        [[initial.id], liveOptions],
+        [[initial.id, ...live.map((item) => item.id)], liveOptions],
+      ]);
+      expect(executeTool.mock.calls.map(([name]) => name)).toEqual(["read_file", toolName]);
+      expect(contexts).toHaveLength(2);
+      const initialPrompt = JSON.stringify(contexts[0]!.messages);
+      expect(initialPrompt).toContain(initial.text);
+      expect(initialPrompt).not.toContain("Latest owner note.");
+      expect(initialPrompt).not.toContain("answer briefly with message_user");
+      const messages = contexts[1]!.messages
+        .filter((message) => message.role === "user")
+        .map((message) => JSON.stringify(message.content));
+      const ownerMessage = messages.find((message) => message.includes("Latest owner note."));
+      expect(ownerMessage).toContain(
+        toolName === "message_user"
+          ? "answer briefly with message_user"
+          : "Take it into account and continue the task.",
+      );
+      expect(messages.find((message) => message.includes("Other member note."))).toContain(
+        "Take it into account and continue the task.",
+      );
+      expect(events.filter((event) => event.type === "text").at(-1)).toEqual({
+        type: "text",
+        text: "Done.",
+      });
+      expect(events.at(-1)?.type).toBe("done");
+    },
+  );
+
   it("captures a completed parallel sibling at the actual pause and does not redo it in a fresh runtime", async () => {
     const store = captures();
     const siblingFinished = barrier();
@@ -1390,6 +1502,7 @@ describe("real Pi turn checkpoint producer and recovery", () => {
           id: "claimed-steering-once",
           messageId: "claimed-user-message",
           text: marker,
+          ownerInput: true as const,
           images: [image],
         },
       ];
@@ -1462,10 +1575,15 @@ describe("real Pi turn checkpoint producer and recovery", () => {
       expect(resultText(context, pendingId)).not.toContain("Additional user context:");
       expect(claimSteering).toHaveBeenNthCalledWith(1, []);
       expect(
-        claimSteering.mock.calls.slice(1).every(([seenIds]) => seenIds.includes(steering[0]!.id)),
+        claimSteering.mock.calls
+          .slice(1)
+          .every(
+            ([seenIds, options]) => options?.liveProgressReset && seenIds.includes(steering[0]!.id),
+          ),
       ).toBe(true);
       expect(execute).not.toHaveBeenCalled();
       expect(events.some((event) => event.type === "ask" || event.type === "takeover")).toBe(false);
+      expect(events.some((event) => event.type === "steered")).toBe(false);
     },
   );
 });

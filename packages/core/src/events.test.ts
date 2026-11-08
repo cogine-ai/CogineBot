@@ -8,6 +8,7 @@ import {
   endsSentence,
   humanizeToolName,
   isRunTerminalEvent,
+  liveNarrationStatusLine,
   normalizeResponseStreamingPreference,
   projectMessages,
   reduceLiveMessageBlocks,
@@ -127,6 +128,75 @@ describe("reduceLiveMessageBlocks", () => {
         payload: { text: "Using browser", activity: true },
       }),
     ).toEqual([{ kind: "progress", text: "Using browser", activity: true }]);
+  });
+
+  it("resets streamed narration, keeps tools, and replaces the short status when the reply streams", () => {
+    const status = {
+      kind: "progress",
+      text: "Checking the totals.",
+      activity: true,
+      narrationStatus: true,
+    } as const;
+    const blocks = reduceLiveMessageBlocks(
+      [
+        { kind: "text", text: "Earlier streamed text" },
+        { kind: "steps", steps: [{ label: "Shell", count: 1 }] },
+        { kind: "progress", text: "One moment", pendingToolNames: ["browser"] },
+      ],
+      {
+        type: "progress",
+        payload: { text: status.text, reset: true, activity: true, narrationStatus: true },
+      },
+    );
+    const steps = {
+      kind: "steps",
+      steps: [
+        { label: "Shell", count: 1 },
+        { label: "Browser", count: 1 },
+      ],
+    };
+    expect(blocks).toEqual([steps, status]);
+
+    const duringTool = reduceLiveMessageBlocks(blocks, { type: "tool", name: "browser" });
+    const duringSteps = {
+      kind: "steps",
+      steps: [
+        { label: "Shell", count: 1 },
+        { label: "Browser", count: 2 },
+      ],
+    };
+    expect(duringTool).toEqual([duringSteps, status]);
+    expect(
+      reduceLiveMessageBlocks(duringTool, {
+        type: "progress",
+        payload: { text: "Using shell", activity: true },
+      }),
+    ).toEqual(duringTool);
+    expect(
+      reduceLiveMessageBlocks(duringTool, {
+        type: "progress",
+        payload: { delta: "Done", streaming: true },
+      }),
+    ).toEqual([duringSteps, { kind: "progress", text: "Done" }]);
+  });
+
+  it("projects the newest active Run's short status even when reply streaming is disabled", () => {
+    const status = {
+      id: "progress:run-1",
+      blocks: [
+        { kind: "progress", text: "Checking the totals.", activity: true, narrationStatus: true },
+      ],
+    } as const;
+    const ordinaryTool = {
+      id: "progress:run-2",
+      blocks: [{ kind: "progress", text: "Using shell", activity: true }],
+    } as const;
+
+    const snapshot = withLiveStreamingProgress({ messages: [status, ordinaryTool] }, false);
+    expect(liveNarrationStatusLine(snapshot!.messages, ["run-1"])).toBe(status.blocks[0].text);
+    expect(liveNarrationStatusLine(snapshot!.messages, ["run-1", "run-2"])).toBeUndefined();
+    expect(liveNarrationStatusLine(snapshot!.messages, ["run-2"])).toBeUndefined();
+    expect(liveNarrationStatusLine([{ ...status, id: "durable" }], ["run-1"])).toBeUndefined();
   });
 
   it("replaces punctuated activity text with its tool step", () => {
@@ -810,6 +880,14 @@ describe("createStreamingRedactor", () => {
     ].join("");
     expect(output).toBe("before [redacted] after");
     expect(output).not.toContain("fake-secret-123");
+  });
+
+  it("skips old output while hiding secrets that continue across the boundary", () => {
+    const redactor = createStreamingRedactor(["fake-secret-123"]);
+    expect(redactor.push("before fake-se")).toBe("");
+    redactor.skip();
+    const output = redactor.push("cret-123 after") + redactor.finish();
+    expect(output).toBe("[redacted] after");
   });
 
   it("does not delay chunks when there are no known secrets", () => {

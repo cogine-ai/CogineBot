@@ -119,6 +119,7 @@ function fixture({
   webProvider,
   sandboxProvider,
   messagingIdentity = false,
+  startedAt = null,
 }: {
   builtin?: boolean;
   disabledBuiltinTools?: string[];
@@ -151,6 +152,7 @@ function fixture({
   webProvider?: WebProvider;
   sandboxProvider?: Partial<SandboxProvider>;
   messagingIdentity?: boolean;
+  startedAt?: Date | null;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -197,6 +199,7 @@ function fixture({
     userId: "user-1",
     status: "queued",
     trigger,
+    startedAt,
     leaseFence: 0,
   };
   const externalEffect = {
@@ -359,7 +362,9 @@ function fixture({
       update: vi.fn(async () => ({})),
     },
     message: {
-      findMany: vi.fn(async (): Promise<unknown[]> => []),
+      findMany: vi.fn(
+        async (_query?: { select?: { clientNonce?: boolean } }): Promise<unknown[]> => [],
+      ),
       findFirst: vi.fn(async (): Promise<unknown> => null),
       findUnique: vi.fn(async (): Promise<unknown> => null),
     },
@@ -1173,6 +1178,458 @@ describe("group peer dispatch across runtime modes", () => {
   });
 });
 
+describe("Run progress delivery", () => {
+  function publication() {
+    return vi
+      .spyOn(RunMessagesModule, "publishMessage")
+      .mockResolvedValue({ id: "posted" } as Awaited<
+        ReturnType<typeof RunMessagesModule.publishMessage>
+      >);
+  }
+
+  it("shares the minute boundary and three-message budget across narration and parallel tools", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00Z");
+    let now = startedAt.getTime() + 59_999;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const published = publication();
+    try {
+      const f = fixture({ builtin: true, startedAt });
+      f.runtimeRun.mockImplementation(async function* (request) {
+        const send = (id: string) =>
+          request.executeTool!("message_user", { message: `Update ${id}` }, id);
+        f.results.push(await send("too-soon"));
+        yield { type: "text", text: "A".repeat(80) };
+        yield { type: "tool", name: "list_files", args: {}, executionId: "list-early" };
+        now += 1;
+        yield { type: "text", text: "Found the input." };
+        yield { type: "tool", name: "list_files", args: {}, executionId: "list-late" };
+        f.results.push(...(await Promise.all([send("one"), send("two"), send("three")])));
+        f.results.push(await send("one"));
+        yield { type: "text", text: "Here is the complete result." };
+        yield { type: "done", text: "Here is the complete result." };
+      });
+      await f.run();
+
+      expect(f.results).toMatchObject([
+        { sent: false },
+        { ok: true },
+        { ok: true },
+        { sent: false },
+        { ok: true },
+      ]);
+      expect(published.mock.calls.map((call) => call[3])).toEqual([
+        [{ kind: "text", text: "Found the input." }],
+        [{ kind: "text", text: "Update one" }],
+        [{ kind: "text", text: "Update two" }],
+      ]);
+      expect(f.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lease: { owner: "worker-1", fence: 1 },
+          type: "thread.progress",
+          payload: {
+            reset: true,
+            text: `${"A".repeat(59)}…`,
+            activity: true,
+            narrationStatus: true,
+          },
+        }),
+      );
+      expect(f.finalizeRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "completed",
+          blocks: expect.arrayContaining([{ kind: "text", text: "Here is the complete result." }]),
+        }),
+      );
+    } finally {
+      published.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  it("reserves an immediate answer for granted steering and does not reset for ordinary steering", async () => {
+    const published = publication();
+    try {
+      const f = fixture({ builtin: true, startedAt: new Date() });
+      f.runtimeRun.mockImplementation(async function* (request) {
+        yield { type: "steered" };
+        f.results.push(await request.executeTool!("message_user", { message: "Blocked" }, "other"));
+        yield { type: "text", text: "The previous work is still in progress." };
+        yield { type: "steered", progressResetAt: new Date() };
+        yield { type: "text", text: "Checking your new instruction." };
+        f.results.push(
+          await request.executeTool!("message_user", { message: "Yes, I will adjust." }, "owner"),
+        );
+        f.results.push(
+          await request.executeTool!("message_user", { message: "Too soon again" }, "next"),
+        );
+        yield { type: "text", text: "Adjusted result." };
+        yield { type: "done", text: "Adjusted result." };
+      });
+      await f.run();
+      expect(f.results).toMatchObject([{ sent: false }, { ok: true }, { sent: false }]);
+      expect(published.mock.calls.map((call) => call[3])).toEqual([
+        [{ kind: "text", text: "Yes, I will adjust." }],
+      ]);
+    } finally {
+      published.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    "restores the owner reply allowance after a pause (already used=%s)",
+    async (used) => {
+      const published = publication();
+      try {
+        const f = fixture({ builtin: true, startedAt: new Date() });
+        f.runRecord.leaseFence = 1;
+        f.effects.push({
+          id: "reset-1",
+          kind: "runtime_progress_reset",
+          status: "runtime_progress_reset",
+          idempotencyKey: JSON.stringify(["runtime_progress_reset", "run-1"]),
+          request: {},
+          result: [{ steeringId: "owner-input", startedAtMs: Date.now(), startMessageSeq: 8 }],
+          runId: "run-1",
+          spaceId: "space-1",
+        });
+        if (used) {
+          f.prisma.message.findMany.mockImplementation(async (query) =>
+            query?.select?.clientNonce
+              ? [
+                  {
+                    blocks: [{ kind: "text", text: "Already sent." }],
+                    clientNonce: "user-progress:run-1:prior",
+                    seq: 8,
+                  },
+                ]
+              : [],
+          );
+        }
+        f.runtimeRun.mockImplementation(async function* (request) {
+          f.results.push(
+            await request.executeTool!("message_user", { message: "Resuming now." }, "resume"),
+          );
+          yield { type: "text", text: "Resumed result." };
+          yield { type: "done", text: "Resumed result." };
+        });
+        await f.run();
+        expect(f.results).toMatchObject(used ? [{ sent: false }] : [{ ok: true }]);
+        expect(published).toHaveBeenCalledTimes(used ? 0 : 1);
+      } finally {
+        published.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { assign: true, succeeds: true },
+    { assign: false, succeeds: true },
+    { assign: true, succeeds: false },
+  ])(
+    "exempts a preamble only alongside a committed connection card ($assign/$succeeds)",
+    async ({ assign, succeeds }) => {
+      const published = publication();
+      const persisted = vi.spyOn(RunMessagesModule, "persistMessageInTransaction");
+      const narration = "Please approve the connection to continue.";
+      const calls: MessageBlock[][] = [];
+      persisted.mockImplementation(async (_tx, _run, _role, blocks) => {
+        calls.push(blocks);
+        return {
+          message: {} as Awaited<
+            ReturnType<typeof RunMessagesModule.persistMessageInTransaction>
+          >["message"],
+          eventSeq: calls.length,
+          firstResponseRunId: undefined,
+        };
+      });
+      try {
+        const f = fixture({ builtin: true, startedAt: new Date() });
+        const create = vi.fn(async () => {
+          if (!succeeds) {
+            throw new DbModule.Prisma.PrismaClientKnownRequestError("Duplicate", {
+              code: "P2002",
+              clientVersion: "test",
+            });
+          }
+          return { id: "server-1", name: "Example tools", revision: 1 };
+        });
+        Object.assign(f.prisma, { mcpServer: { create } });
+        const args = {
+          name: "Example tools",
+          transport: "stdio",
+          command: "example-tools",
+          assign_to_self: assign,
+        };
+        f.runtimeRun.mockImplementation(async function* (request) {
+          yield { type: "text", text: narration };
+          yield { type: "tool", name: "add_mcp_server", args, executionId: "connect" };
+          f.results.push(await request.executeTool!("add_mcp_server", args, "connect"));
+          yield { type: "text", text: "Next step." };
+          yield { type: "done", text: "Next step." };
+        });
+        await f.run();
+        expect(create).toHaveBeenCalledOnce();
+        expect(published).not.toHaveBeenCalled();
+        if (assign && succeeds) {
+          expect(calls).toMatchObject([
+            [{ kind: "text", text: narration }],
+            [{ kind: "mcp_approval", status: "pending", serverId: "server-1" }],
+          ]);
+          expect(persisted.mock.calls[0]?.[0]).toBe(persisted.mock.calls[1]?.[0]);
+          expect(persisted.mock.calls[0]?.slice(5)).toEqual([
+            expect.stringMatching(/^user-progress:/),
+            false,
+            { owner: "worker-1", fence: 1, runId: "run-1" },
+          ]);
+        } else {
+          expect(calls).toEqual([]);
+        }
+      } finally {
+        persisted.mockRestore();
+        published.mockRestore();
+      }
+    },
+  );
+
+  it("does not apply the connection exception to a generic approval", async () => {
+    const published = publication();
+    try {
+      const f = fixture({
+        builtin: true,
+        startedAt: new Date(Date.now() - 60_000),
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "add_mcp_server" }],
+      });
+      const args = { name: "Example tools", transport: "stdio", command: "example-tools" };
+      f.runtimeRun.mockImplementation(async function* (request) {
+        yield { type: "text", text: "The next tool may need approval." };
+        yield { type: "tool", name: "add_mcp_server", args, executionId: "ask-first" };
+        const result = await request.executeTool!("add_mcp_server", args, "ask-first");
+        expect(isApprovalPausedResult(result)).toBe(true);
+      });
+      await f.run();
+      expect(published.mock.calls.map((call) => call[3])).toEqual([
+        [{ kind: "text", text: "The next tool may need approval." }],
+      ]);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(published.mock.invocationCallOrder[0]).toBeLessThan(
+        f.pauseRunForInput.mock.invocationCallOrder[0]!,
+      );
+    } finally {
+      published.mockRestore();
+    }
+  });
+
+  it("keeps working notes out of an empty terminal response", async () => {
+    const f = fixture({ builtin: true, startedAt: new Date() });
+    const note = "Looking up the source now.";
+    f.runtimeRun.mockImplementation(async function* () {
+      yield { type: "text", text: note };
+      yield { type: "tool", name: "list_files", args: {}, executionId: "listed" };
+      yield { type: "done", text: note };
+    });
+    await f.executor.continueRun(f.runRecord.id, "worker-1");
+    expect(f.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ narrationStatus: true, text: note }),
+      }),
+    );
+    expect(f.finalizeRun).toHaveBeenCalled();
+    expect(JSON.stringify(f.finalizeRun.mock.calls)).not.toContain(note);
+  });
+
+  it("keeps folded and split secrets out of progress status and the final reply", async () => {
+    const f = fixture({
+      builtin: true,
+      startedAt: new Date(),
+      secrets: ["synthetic secret", "fixture-secret-123"],
+    });
+    f.runtimeRun.mockImplementation(async function* () {
+      yield { type: "text", text: "Looking up synthetic\nsecret." };
+      yield { type: "tool", name: "list_files", args: {}, executionId: "list" };
+      yield { type: "text", text: "A partial fixture-se" };
+      yield { type: "tool", name: "read_file", args: {}, executionId: "read" };
+      yield { type: "text", text: "cret-123 was omitted." };
+      yield { type: "done", text: "cret-123 was omitted." };
+    });
+    await f.run();
+    const progress = f.append.mock.calls.map(([event]) => event.payload);
+    expect(progress).toContainEqual(
+      expect.objectContaining({ narrationStatus: true, text: "Looking up [redacted]." }),
+    );
+    expect(JSON.stringify(progress)).not.toContain("synthetic secret");
+    expect(f.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "completed",
+        blocks: expect.arrayContaining([{ kind: "text", text: "[redacted] was omitted." }]),
+      }),
+    );
+    expect(JSON.stringify(f.finalizeRun.mock.calls)).not.toContain("cret-123");
+  });
+
+  it.each([false, true])(
+    "keeps a split secret out of successive durable progress (resumed=%s)",
+    async (resumed) => {
+      const published = publication();
+      try {
+        const f = fixture({
+          builtin: true,
+          startedAt: new Date(Date.now() - 60_000),
+          secrets: ["fixture-secret-123"],
+        });
+        const first = "The identifier is fixture-se";
+        if (resumed) {
+          f.runRecord.leaseFence = 1;
+          f.prisma.message.findMany.mockImplementation(async (query) =>
+            query?.select?.clientNonce
+              ? [
+                  {
+                    blocks: [{ kind: "text", text: first }],
+                    clientNonce: "user-progress:run-1:prior",
+                    seq: 8,
+                  },
+                ]
+              : [],
+          );
+        }
+        f.runtimeRun.mockImplementation(async function* (request) {
+          if (!resumed) {
+            yield { type: "text", text: first };
+            yield { type: "tool", name: "list_files", args: {}, executionId: "list" };
+          }
+          f.results.push(
+            await request.executeTool!(
+              "message_user",
+              { message: "cret-123 was omitted." },
+              "more",
+            ),
+          );
+          yield { type: "text", text: "The final result." };
+          yield { type: "done", text: "The final result." };
+        });
+        await f.run();
+        const blocks = published.mock.calls.map((call) => call[3]);
+        expect(blocks).toEqual([
+          ...(resumed ? [] : [[{ kind: "text", text: first }]]),
+          [{ kind: "text", text: "[redacted] was omitted." }],
+        ]);
+      } finally {
+        published.mockRestore();
+      }
+    },
+  );
+
+  it.each(["durable", "live", "resumed"] as const)(
+    "protects a secret split across three output pieces (%s)",
+    async (destination) => {
+      const published = publication();
+      try {
+        const f = fixture({
+          builtin: true,
+          startedAt: new Date(Date.now() - 60_000),
+          secrets: ["fixture-secret-123"],
+        });
+        if (destination === "resumed") {
+          f.runRecord.leaseFence = 1;
+          f.prisma.message.findMany.mockImplementation(async (query) =>
+            query?.select?.clientNonce
+              ? ["fixture-", "secret-"].map((text, seq) => ({
+                  blocks: [{ kind: "text", text }],
+                  clientNonce: `user-progress:run-1:prior-${seq}`,
+                  seq,
+                }))
+              : [],
+          );
+        }
+        f.runtimeRun.mockImplementation(async function* (request) {
+          const send = (text: string) =>
+            request.executeTool!("message_user", { message: text }, text);
+          if (destination !== "resumed") {
+            yield { type: "text", text: "fixture-" };
+            yield { type: "tool", name: "list_files", args: {}, executionId: "list" };
+            await send("secret-");
+          }
+          if (destination === "durable") await send("123 hidden.");
+          const final = destination === "durable" ? "All done." : "123 hidden.";
+          yield { type: "text", text: final };
+          yield { type: "done", text: final };
+        });
+        await f.run();
+        const messages = published.mock.calls.map((call) => call[3]);
+        if (destination === "durable") {
+          expect(messages.at(-1)).toEqual([{ kind: "text", text: "[redacted] hidden." }]);
+        } else {
+          const progress = f.append.mock.calls
+            .map(([event]) => event.payload)
+            .map((payload) => String(payload?.text ?? payload?.delta ?? ""))
+            .join("");
+          expect(progress).toContain("[redacted] hidden.");
+          expect(progress).not.toContain("123 hidden.");
+          expect(JSON.stringify(f.finalizeRun.mock.calls)).not.toContain("123 hidden.");
+        }
+      } finally {
+        published.mockRestore();
+      }
+    },
+  );
+
+  it("keeps the short status boundary after a separate durable update", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00Z");
+    let now = startedAt.getTime() + 59_999;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const published = publication();
+    try {
+      const f = fixture({ builtin: true, startedAt, secrets: ["fixture-secret-123"] });
+      f.runtimeRun.mockImplementation(async function* (request) {
+        yield { type: "text", text: "Checking fixture-se" };
+        yield { type: "tool", name: "list_files", args: {}, executionId: "list" };
+        now += 1;
+        await request.executeTool!("message_user", { message: "Still working." }, "update");
+        yield { type: "text", text: "cret-123 was omitted." };
+        yield { type: "done", text: "cret-123 was omitted." };
+      });
+      await f.run();
+      expect(published.mock.calls.map((call) => call[3])).toEqual([
+        [{ kind: "text", text: "Still working." }],
+      ]);
+      const progress = f.append.mock.calls.map(([event]) => event.payload);
+      expect(progress).toContainEqual(
+        expect.objectContaining({ narrationStatus: true, text: "Checking fixture-se" }),
+      );
+      const liveText = progress
+        .map((payload) => String(payload?.text ?? payload?.delta ?? ""))
+        .join("");
+      expect(liveText).toContain("[redacted] was omitted.");
+      expect(liveText).not.toContain("cret-123");
+      expect(JSON.stringify(f.finalizeRun.mock.calls)).not.toContain("cret-123");
+    } finally {
+      published.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  it("fences a pending progress update once execution is stopped", async () => {
+    const shutdown = new AbortController();
+    const published = publication();
+    try {
+      const f = fixture({
+        builtin: true,
+        shutdownSignal: shutdown.signal,
+        startedAt: new Date(Date.now() - 60_000),
+      });
+      f.runtimeRun.mockImplementation(async function* (request) {
+        shutdown.abort();
+        await request.executeTool!("message_user", { message: "Late update" }, "after-stop");
+        yield { type: "done", text: "Late result" };
+      });
+      await f.executor.continueRun(f.runRecord.id, "worker-1");
+      expect(published).not.toHaveBeenCalled();
+      expect(f.append.mock.calls.some(([event]) => event.type === "thread.progress")).toBe(false);
+    } finally {
+      published.mockRestore();
+    }
+  });
+});
+
 describe("real Pi runtime control approval", () => {
   function sse(
     tool?:
@@ -1281,6 +1738,7 @@ describe("real Pi runtime control approval", () => {
         f.runtimeRun.mockImplementation(async function* (request, context) {
           yield* pi.run({ ...request, claimSteering: undefined }, context);
         });
+        f.runRecord.startedAt = new Date(Date.now() - 60_000);
         await runWithSlowToolAudit(f, "request_secret", ordered);
         expect(f.pauseRunForInput).toHaveBeenCalledOnce();
         expect(fetcher).toHaveBeenCalledOnce();
@@ -1582,6 +2040,7 @@ describe("real Pi runtime control approval", () => {
         f.runtimeRun.mockImplementation(async function* (request, context) {
           yield* pi.run({ ...request, claimSteering: undefined }, context);
         });
+        f.runRecord.startedAt = new Date(Date.now() - 60_000);
         if (outcome === "throw") {
           await f.executor.continueRun(f.runRecord.id, "worker-1");
           expect(f.finalizeRun).toHaveBeenCalledWith(
@@ -1805,6 +2264,7 @@ describe("real Pi runtime control approval", () => {
         .mockResolvedValue(undefined);
       try {
         const f = fixture({
+          startedAt: new Date(Date.now() - 60_000),
           builtin: true,
           deploymentModelKey: "synthetic-control-key",
           webProvider: {

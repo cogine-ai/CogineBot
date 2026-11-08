@@ -448,6 +448,10 @@ export interface AgentSteeringMessage {
   id: string;
   messageId: string;
   text: string;
+  /** The server verified that this message came directly from the Run owner. */
+  ownerInput?: true;
+  /** The server granted a progress reset in the same transaction as this live claim. */
+  progressResetAt?: Date;
   /** Persisted history text before attachment paths are appended. */
   historyText?: string;
   images?: AgentInputImage[];
@@ -611,7 +615,10 @@ export interface AgentRunRequest {
     result: AgentToolResultForHistory,
   ) => Promise<ToolResultHistoryReference | undefined>;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */
-  claimSteering?: (seenIds: string[]) => Promise<AgentSteeringMessage[]>;
+  claimSteering?: (
+    seenIds: string[],
+    options?: { liveProgressReset?: true },
+  ) => Promise<AgentSteeringMessage[]>;
 }
 
 export interface ScriptedTurn {
@@ -673,6 +680,8 @@ export interface ModelCallObserver {
 
 export type AgentRuntimeEvent =
   | { type: "text"; text: string }
+  /** A live turn boundary, after the initial or restored context has been sent. */
+  | { type: "steered"; progressResetAt?: Date }
   | {
       type: "progress";
       text: string;

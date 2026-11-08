@@ -1143,7 +1143,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       targetRunId = seeded.run.id;
       await handles.prisma.run.update({
         where: { id: targetRunId },
-        data: { trigger: "messaging" },
+        data: { trigger: "messaging", startedAt: new Date(Date.now() - 60_000) },
       });
       await handles.prisma.messagingIdentity.create({
         data: {

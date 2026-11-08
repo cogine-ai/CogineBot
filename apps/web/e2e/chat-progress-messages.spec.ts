@@ -29,3 +29,42 @@ test("chat shows mid-turn progress without Working…", async ({ page }, testInf
     }
   }
 });
+
+test("short narration stays in the working status until the Run settles", async ({
+  page,
+}, testInfo) => {
+  const fixture = "/e2e/fixtures/response-streaming.html?stream=off&narration=on";
+  const narration = "I’m looking up Portugal’s capital.";
+  const userMessage = page.getByTestId("message-user-bubble");
+  const botMessage = page.getByTestId("message-bot-bubble");
+  const status = page.getByRole("status");
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto(fixture);
+    await expect(status).toHaveText(narration);
+    await expect(status).toBeVisible();
+    await expect(page.getByText(narration, { exact: true })).toHaveCount(1);
+    await expect(botMessage).toHaveCount(0);
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
+    await captureScreenshot(page, testInfo, `narration-status-${viewport.name}`);
+
+    await page.getByRole("button", { name: "Finish reply" }).click();
+    await expect(botMessage).toHaveText("Lisbon is the capital of Portugal.");
+    await expect(userMessage).toHaveText("What's the capital of Portugal?");
+    await expect(status).toHaveCount(0);
+    await expect(page.getByText(narration, { exact: true })).toHaveCount(0);
+    await captureScreenshot(page, testInfo, `narration-finished-${viewport.name}`);
+  }
+
+  await page.goto(fixture);
+  await expect(status).toBeVisible();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(status).toHaveCount(0);
+  await expect(page.getByText(narration, { exact: true })).toHaveCount(0);
+  await expect(botMessage).toHaveCount(0);
+  await expect(userMessage).toBeVisible();
+  expect(errors).toEqual([]);
+});
