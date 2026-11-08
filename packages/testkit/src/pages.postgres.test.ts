@@ -1,12 +1,17 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Actor } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
+  deletePageShareSecrets,
+  IsolationError,
+  PAGE_SHARE_SECRET_KIND,
+  PageShareConflictError,
   provisionRuntimeRole,
   rlsBypassKey,
   runAsTenant,
+  swapPageShare,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -31,6 +36,17 @@ const postgres =
 const source = (text: string) =>
   `export default function App() { return <Page title="Example"><Text>${text}</Text></Page>; }`;
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
+const preparedShare = ({ botId, groupId }: { botId: string | null; groupId: string | null }) => {
+  const id = randomUUID();
+  const ciphertext = `sealed-fixture:${id}`;
+  return {
+    botId,
+    groupId,
+    tokenHash: createHash("sha256").update(id).digest("hex"),
+    secret: { id, ref: ciphertext, ciphertext },
+    unreadable: null,
+  };
+};
 
 function withTransaction(
   prisma: PrismaClient,
@@ -46,6 +62,30 @@ function withTransaction(
         wrap((next) => target.$transaction(next), work);
     },
   });
+}
+
+function afterPageRead(prisma: PrismaClient, observe: () => Promise<void>) {
+  return withTransaction(prisma, (next, work) =>
+    next((tx) =>
+      work(
+        new Proxy(tx, {
+          get(target, key) {
+            if (key !== "page") return Reflect.get(target, key, target);
+            return new Proxy(target.page, {
+              get(table, method) {
+                if (method !== "findFirst") return Reflect.get(table, method, table);
+                return async (args: Prisma.PageFindFirstArgs) => {
+                  const row = await table.findFirst(args);
+                  await observe();
+                  return row;
+                };
+              },
+            });
+          },
+        }),
+      ),
+    ),
+  );
 }
 
 postgres("private Pages operations (isolated PostgreSQL)", () => {
@@ -656,5 +696,172 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(tenant(() => removePage(client(), actor, a.id))).resolves.toEqual({ ok: true });
     expect(await admin().pageVersion.count(foreignVersions)).toBe(0);
+  });
+
+  it("commits one of two concurrent owner links, rotates the exact old link, and revokes it", async () => {
+    const { actor, seed, tenant } = await setup();
+    const page = await seed("Private plan");
+    const selector = { where: { id: page.id } };
+    const candidates = [preparedShare(page), preparedShare(page)];
+    const { promise: bothRead, resolve: resume } = Promise.withResolvers<void>();
+    let reads = 0;
+    const concurrent = afterPageRead(client(), async () => {
+      if (reads >= 2) return;
+      if (++reads === 2) resume();
+      await bothRead;
+    });
+    const outcomes = await Promise.all(
+      candidates.map((next) => tenant(() => swapPageShare(concurrent, actor, page.id, next))),
+    );
+    expect(reads).toBe(2);
+    expect(outcomes.map(({ kept }) => kept).sort()).toEqual([false, true]);
+    const winner = candidates[outcomes.findIndex(({ kept }) => !kept)]!;
+    const secretIds = candidates.map(({ secret }) => secret.id);
+    expect(
+      await admin().secret.findMany({ where: { id: { in: secretIds } }, select: { id: true } }),
+    ).toEqual([{ id: winner.secret.id }]);
+    await expect(admin().page.findUniqueOrThrow(selector)).resolves.toMatchObject({
+      visibility: "link",
+      shareTokenHash: winner.tokenHash,
+      shareSecretId: winner.secret.id,
+    });
+    // A stale observation of the prior generation cannot replace the winner.
+    await expect(
+      tenant(() =>
+        swapPageShare(client(), actor, page.id, {
+          ...preparedShare(page),
+          unreadable: randomUUID(),
+        }),
+      ),
+    ).resolves.toEqual({ kept: true });
+    const replacement = preparedShare(page);
+    await expect(
+      tenant(() =>
+        swapPageShare(client(), actor, page.id, { ...replacement, unreadable: winner.secret.id }),
+      ),
+    ).resolves.toEqual({ kept: false });
+    await expect(
+      admin().secret.findUnique({ where: { id: winner.secret.id } }),
+    ).resolves.toBeNull();
+    await expect(tenant(() => swapPageShare(client(), actor, page.id, null))).resolves.toEqual({
+      kept: false,
+    });
+    await expect(
+      admin().secret.findUnique({ where: { id: replacement.secret.id } }),
+    ).resolves.toBeNull();
+    await expect(tenant(() => swapPageShare(client(), actor, page.id, null))).resolves.toEqual({
+      kept: false,
+    });
+    await expect(admin().page.findUniqueOrThrow(selector)).resolves.toMatchObject({
+      visibility: "private",
+      shareTokenHash: null,
+      shareSecretId: null,
+      updatedAt: page.updatedAt,
+      currentVersion: page.currentVersion,
+    });
+  });
+
+  it("refuses a prepared link after Bot deletion detaches a retained private Page", async () => {
+    const { actor, bot, seed, tenant } = await setup();
+    const page = await seed("Retained private Page");
+    const staged = preparedShare(page);
+    let detached = false;
+    const duringDetach = afterPageRead(client(), async () => {
+      if (detached) return;
+      detached = true;
+      await admin().bot.delete({ where: { id: bot.id } });
+    });
+    await expect(
+      tenant(() => swapPageShare(duringDetach, actor, page.id, staged)),
+    ).rejects.toBeInstanceOf(PageShareConflictError);
+    await expect(
+      admin().secret.findUnique({ where: { id: staged.secret.id } }),
+    ).resolves.toBeNull();
+    const retained = await admin().page.findUniqueOrThrow({ where: { id: page.id } });
+    expect(retained).toMatchObject({
+      botId: null,
+      visibility: "private",
+      shareTokenHash: null,
+      shareSecretId: null,
+    });
+    await expect(
+      tenant(() => swapPageShare(client(), actor, page.id, preparedShare(retained))),
+    ).resolves.toEqual({ kept: false });
+  });
+
+  it("scopes share changes and terminal revocation to the Page owner's token", async () => {
+    const { actor, seed, tenant } = await setup();
+    const stranger = await setup();
+    const page = await seed("Owned");
+    const credentialPage = await seed("Wrong secret kind");
+    const foreignPage = await seed("Wrong secret owner");
+    const elsewhere = await stranger.seed("Another Space");
+    const next = preparedShare(page);
+    const other = preparedShare(elsewhere);
+    const scope = { spaceId: actor.spaceId, userId: actor.userId };
+    await expect(
+      stranger.tenant(() => swapPageShare(client(), actor, page.id, next)),
+    ).rejects.toBeInstanceOf(IsolationError);
+    await expect(
+      tenant(() =>
+        swapPageShare(client(), { ...scope, spaceId: stranger.actor.spaceId }, page.id, next),
+      ),
+    ).rejects.toBeInstanceOf(IsolationError);
+    await expect(admin().secret.findUnique({ where: { id: next.secret.id } })).resolves.toBeNull();
+    await tenant(() => swapPageShare(client(), actor, page.id, next));
+    await stranger.tenant(() => swapPageShare(client(), stranger.actor, elsewhere.id, other));
+
+    const credential = await admin().secret.create({
+      data: { ...scope, kind: "fixture_credential", ciphertext: "unrelated credential" },
+    });
+    const foreign = await admin().secret.create({
+      data: {
+        userId: stranger.actor.userId,
+        spaceId: stranger.actor.spaceId,
+        kind: PAGE_SHARE_SECRET_KIND,
+        ciphertext: "unrelated sealed token",
+      },
+    });
+    for (const [target, secret] of [
+      [credentialPage, credential],
+      [foreignPage, foreign],
+    ]) {
+      await admin().page.update({
+        where: { id: target.id },
+        data: {
+          visibility: "link",
+          shareTokenHash: preparedShare(target).tokenHash,
+          shareSecretId: secret.id,
+        },
+      });
+    }
+    const pageIds = [page.id, credentialPage.id, foreignPage.id];
+    await expect(
+      tenant(() =>
+        client().$transaction((tx) =>
+          deletePageShareSecrets(tx, { ...scope, id: { in: [...pageIds, elsewhere.id] } }),
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    const revoked = await admin().page.findMany({ where: { id: { in: pageIds } } });
+    expect(revoked).toHaveLength(3);
+    expect(
+      revoked.every(
+        ({ visibility, shareTokenHash, shareSecretId }) =>
+          visibility === "private" && shareTokenHash === null && shareSecretId === null,
+      ),
+    ).toBe(true);
+    await expect(
+      admin().page.findUniqueOrThrow({ where: { id: elsewhere.id } }),
+    ).resolves.toMatchObject({
+      visibility: "link",
+      shareTokenHash: other.tokenHash,
+      shareSecretId: other.secret.id,
+    });
+    const kept = await admin().secret.findMany({
+      where: { id: { in: [next.secret.id, credential.id, foreign.id] } },
+      select: { id: true },
+    });
+    expect(kept.map(({ id }) => id).sort()).toEqual([credential.id, foreign.id].sort());
   });
 });

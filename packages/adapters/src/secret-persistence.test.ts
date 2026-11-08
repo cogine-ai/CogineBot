@@ -50,6 +50,7 @@ type Hook = (input: {
   query: (args: Args) => Promise<unknown>;
 }) => Promise<unknown>;
 function database() {
+  let nextAcknowledgementError: Error | undefined;
   const tables = new Map<string, Row[]>([
     ["secret", []],
     ["botSecret", []],
@@ -215,17 +216,30 @@ function database() {
       const snapshot = new Map(
         [...tables].map(([name, rows]) => [name, rows.map((row) => ({ ...row }))]),
       );
+      let result: unknown;
       try {
-        return await (Array.isArray(callback) ? Promise.all(callback) : callback(extended));
+        result = await (Array.isArray(callback) ? Promise.all(callback) : callback(extended));
       } catch (error) {
         for (const [name, rows] of tables) rows.splice(0, rows.length, ...snapshot.get(name)!);
         throw error;
       }
+      if (nextAcknowledgementError) {
+        const error = nextAcknowledgementError;
+        nextAcknowledgementError = undefined;
+        throw error;
+      }
+      return result;
     };
     client.$transaction = extended.$transaction;
     return extended;
   };
-  return { prisma: client as unknown as PrismaClient, tables };
+  return {
+    prisma: client as unknown as PrismaClient,
+    tables,
+    failNextAcknowledgement(error: Error) {
+      nextAcknowledgementError = error;
+    },
+  };
 }
 
 describe("secret persistence cleanup", () => {
@@ -538,6 +552,32 @@ describe("secret persistence cleanup", () => {
       await store.close();
     }
   });
+
+  it.each(["standalone", "interactive"] as const)(
+    "cleans a retired Page link after a committed %s delete loses its acknowledgement",
+    async (mode) => {
+      const db = database();
+      const fake = infisicalFake();
+      const store = new InfisicalSecretStore(fake.options);
+      await store.start();
+      try {
+        const prisma = withSecretPersistence(db.prisma, store);
+        const old = await store.put("synthetic retired token", context, { recordId: "row" });
+        db.tables.get("secret")!.push({ id: "row", ciphertext: old.ref });
+        const lost = new Error("Synthetic lost commit acknowledgement");
+        db.failNextAcknowledgement(lost);
+        const remove = (client: Prisma.TransactionClient) =>
+          client.secret.deleteMany({ where: { id: "row" } });
+        await expect(
+          mode === "standalone" ? remove(prisma) : prisma.$transaction(remove),
+        ).rejects.toBe(lost);
+        expect(db.tables.get("secret")).toEqual([]);
+        expect(fake.values.size).toBe(0);
+      } finally {
+        await store.close();
+      }
+    },
+  );
   it("cleans cascade deletions and uses the integration configuration AAD", async () => {
     const fake = infisicalFake();
     const store = new InfisicalSecretStore(fake.options);

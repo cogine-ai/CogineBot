@@ -295,7 +295,9 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
             await cleanup([...state.old, ...state.written]);
             return result;
           } catch (error) {
-            await cleanup(state.written);
+            // A failed acknowledgement may follow a commit. The reference census
+            // keeps rolled-back old material and removes refs the commit retired.
+            await cleanup([...state.old, ...state.written]);
             throw error;
           }
         },
@@ -323,7 +325,7 @@ export function withSecretPersistence(prisma: PrismaClient, store: SecretStore):
           await cleanup([...state.old, ...state.written]);
           return result;
         } catch (error) {
-          await cleanup(state.written);
+          await cleanup([...state.old, ...state.written]);
           throw error;
         }
       };

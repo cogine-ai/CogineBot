@@ -22,6 +22,7 @@ const postgres =
     ? describe.sequential
     : describe.skip;
 const migration = "20261108000000_private_pages";
+const shareMigration = "20261108010000_page_share_links";
 const databasePackage = new URL("../../db/", import.meta.url);
 const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
@@ -86,10 +87,10 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     expect(await db().page.count()).toBe(0);
     await owner!.pool.query("DROP SCHEMA cogine_pages CASCADE");
     const removed = await owner!.pool.query(
-      "DELETE FROM public._prisma_migrations WHERE migration_name = $1 AND finished_at IS NOT NULL",
-      [migration],
+      "DELETE FROM public._prisma_migrations WHERE migration_name = ANY($1::text[]) AND finished_at IS NOT NULL",
+      [[migration, shareMigration]],
     );
-    expect(removed.rowCount).toBe(1);
+    expect(removed.rowCount).toBe(2);
     expect(await namespace()).toBe(false);
   }
 
@@ -370,6 +371,112 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     await verifyRestrictedPages();
   }, 150_000);
 
+  it("adds dormant share fields atomically without changing a private Page or its access", async () => {
+    const pool = owner!.pool;
+    const userId = `share-owner-${suffix}`;
+    const spaceId = `share-space-${suffix}`;
+    const orgId = `share-org-${suffix}`;
+    const pageId = `existing-private-page-${suffix}`;
+    await applyRowSecurityPolicies(ownerUrl!, runtimeUrl);
+    await db().user.create({ data: { id: userId, email: `${userId}@example.test`, name: userId } });
+    await db().space.create({
+      data: {
+        id: spaceId,
+        name: "Original Page Space",
+        organization: {
+          create: { id: orgId, slug: orgId, name: "Original Page Space", createdAt: new Date() },
+        },
+      },
+    });
+    await pool.query(
+      `ALTER TABLE cogine_pages.pages DROP COLUMN "shareTokenHash", DROP COLUMN "shareSecretId"`,
+    );
+    const removed = await pool.query(
+      "DELETE FROM public._prisma_migrations WHERE migration_name = $1 AND finished_at IS NOT NULL",
+      [shareMigration],
+    );
+    expect(removed.rowCount).toBe(1);
+    await pool.query(
+      `INSERT INTO cogine_pages.pages (id,"spaceId","userId",title,"updatedAt")
+       VALUES ($1,$2,$3,'Original private Page',CURRENT_TIMESTAMP)`,
+      [pageId, spaceId, userId],
+    );
+    await pool.query(
+      `INSERT INTO cogine_pages.page_versions (id,"pageId",version,title,source,code)
+       VALUES ($1,$2,1,'Original private Page','Original source','Original code')`,
+      [`version-${pageId}`, pageId],
+    );
+    const publicBefore = await catalog("public");
+    const pagesBefore = await catalog("cogine_pages");
+    const columns = async () =>
+      (
+        await pool.query(
+          `SELECT column_name, is_nullable FROM information_schema.columns
+           WHERE table_schema = 'cogine_pages' AND table_name = 'pages'
+             AND column_name IN ('shareSecretId', 'shareTokenHash')
+           ORDER BY column_name`,
+        )
+      ).rows;
+    const readLegacyPage = async () =>
+      (
+        await pool.query(
+          `SELECT p.title, p.visibility, p."currentVersion", v.source, v.code
+           FROM cogine_pages.pages p JOIN cogine_pages.page_versions v
+             ON v."pageId" = p.id AND v.version = p."currentVersion"
+           WHERE p.id=$1`,
+          [pageId],
+        )
+      ).rows;
+    const original = await readLegacyPage();
+    expect(original).toEqual([
+      {
+        title: "Original private Page",
+        visibility: "private",
+        currentVersion: 1,
+        source: "Original source",
+        code: "Original code",
+      },
+    ]);
+
+    // Force the last CREATE INDEX to fail after the column and FK statements.
+    await pool.query('CREATE INDEX "pages_shareSecretId_key" ON cogine_pages.pages (id)');
+    try {
+      const failed = await prismaCommand("deploy");
+      expect(failed.code, failed.output).not.toBe(0);
+      expect(failed.output).toContain(shareMigration);
+      expect(await columns()).toEqual([]);
+      expect(await readLegacyPage()).toEqual(original);
+      expect(await catalog("public")).toEqual(publicBefore);
+      expect(await catalog("cogine_pages")).toEqual(pagesBefore);
+      await expect(verify()).resolves.toMatchObject({ connectionEnforced: true });
+    } finally {
+      await pool.query('DROP INDEX cogine_pages."pages_shareSecretId_key"');
+    }
+    const rollback = await prismaCommand("resolve", "--rolled-back", shareMigration);
+    expect(rollback.code, rollback.output).toBe(0);
+    await deploy();
+
+    expect(await columns()).toEqual([
+      { column_name: "shareSecretId", is_nullable: "YES" },
+      { column_name: "shareTokenHash", is_nullable: "YES" },
+    ]);
+    expect(await readLegacyPage()).toEqual(original);
+    expect(await catalog("public")).toEqual(publicBefore);
+    expect(await catalog("cogine_pages")).toEqual(pagesBefore);
+    await expect(verify()).resolves.toMatchObject({ connectionEnforced: true });
+    const select = {
+      where: { id: pageId },
+      select: { visibility: true, shareTokenHash: true, shareSecretId: true },
+    } as const;
+    await expect(runtime!.prisma.page.findFirst(select)).resolves.toBeNull();
+    await expect(
+      runAsTenant(
+        { userId, spaceId, email: `${userId}@example.test`, isDeploymentOwner: false },
+        () => runtime!.prisma.page.findFirst(select),
+      ),
+    ).resolves.toEqual({ visibility: "private", shareTokenHash: null, shareSecretId: null });
+  }, 150_000);
+
   async function rejectsForeignGrant(
     publicBefore: Awaited<ReturnType<typeof catalog>>,
     role: string,
@@ -438,6 +545,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
       { target: "cogine_pages.pages", on_delete: "c" },
       { target: "public.bots", on_delete: "n" },
       { target: "public.chat_groups", on_delete: "c" },
+      { target: "public.secrets", on_delete: "n" },
       { target: "public.spaces", on_delete: "c" },
       { target: "public.user", on_delete: "c" },
     ]);

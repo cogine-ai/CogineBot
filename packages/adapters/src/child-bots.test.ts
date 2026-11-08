@@ -23,7 +23,9 @@ import type {
 } from "@rakazo/adapter-kit";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { browserProfilePathForScreen } from "@rakazo/core/node/desktop-runtime";
+import type * as dbModule from "@rakazo/db";
 import type { createRepos, PrismaClient } from "@rakazo/db";
+import { deletePageShareSecrets } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   archiveBot,
@@ -37,6 +39,12 @@ import { LocalAgentHomeStore } from "./home.js";
 
 const fsHooks = vi.hoisted(() => ({
   afterRealpath: undefined as ((resolved: string) => Promise<void>) | undefined,
+}));
+
+vi.mock("@rakazo/db", async (importOriginal) => ({
+  ...(await importOriginal<typeof dbModule>()),
+  deletePageShareSecrets: vi.fn(async () => undefined),
+  runAsSystemInTransaction: vi.fn(async (_tx, _reason, work) => work()),
 }));
 
 // Lets a test change the disk between a path check and the delete that follows it.
@@ -383,7 +391,10 @@ describe("destroyBot", () => {
     const transaction = vi
       .fn(async (callback: (tx: unknown) => Promise<void>) =>
         callback({
-          $queryRaw: vi.fn().mockResolvedValue([]),
+          $queryRaw: vi
+            .fn()
+            .mockResolvedValueOnce([{ id: "bot-1", webhookSecretId: null }])
+            .mockResolvedValue([]),
           chatGroup: {
             findMany: vi.fn().mockResolvedValue([]),
             deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -424,6 +435,11 @@ describe("destroyBot", () => {
     );
 
     expect(transaction).toHaveBeenCalledTimes(2);
+    expect(deletePageShareSecrets).toHaveBeenCalledWith(expect.any(Object), {
+      botId: "bot-1",
+      groupId: null,
+      spaceId: "workspace-1",
+    });
     expect(executeRaw.mock.invocationCallOrder[0]).toBeGreaterThan(
       transaction.mock.invocationCallOrder[1]!,
     );
@@ -570,7 +586,9 @@ describe("destroyBot", () => {
     );
 
     expect(deleteGroups).toHaveBeenCalledWith({ where: { id: { in: ["group-1", "group-3"] } } });
-    expect(deleteMemberships).toHaveBeenCalledWith({ where: { botId: "bot-1" } });
+    expect(deleteMemberships).toHaveBeenCalledWith({
+      where: { botId: "bot-1", group: { spaceId: "workspace-1" } },
+    });
     expect(deleteMemberships.mock.invocationCallOrder[0]!).toBeLessThan(
       deleteGroups.mock.invocationCallOrder[0]!,
     );

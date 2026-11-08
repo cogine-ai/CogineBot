@@ -23,8 +23,10 @@ import {
   computerScopeKey,
   createRepos,
   createThreadMessageInTransaction,
+  deletePageShareSecrets,
   expireComputerExecutionLeases,
   lockBotCreationIntro,
+  runAsSystemInTransaction,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -585,7 +587,13 @@ export async function destroyBot(
       await tx.artifact.deleteMany({
         where: { botId: bot.id, groupId: null, spaceId: bot.spaceId },
       });
-      const groupCleanup = await detachBotFromGroups(tx, bot.id);
+      // Personal Pages outlive the bot in private storage. Only their links are retired.
+      if (locked.length) {
+        await runAsSystemInTransaction(tx, "revoke Page links for a deleted bot", () =>
+          deletePageShareSecrets(tx, { botId: bot.id, groupId: null, spaceId: bot.spaceId }),
+        );
+      }
+      const groupCleanup = await detachBotFromGroups(tx, bot.id, bot.spaceId);
       await tx.computerExecutionLease.deleteMany({ where: { botId: bot.id } });
       await tx.computer.updateMany({
         where: {
@@ -669,17 +677,17 @@ export async function destroyBot(
   }
 }
 
-async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string) {
+async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string, spaceId: string) {
   await tx.$queryRaw<Array<{ id: string }>>`
     SELECT groups.id
     FROM chat_groups AS groups
     INNER JOIN chat_group_members AS members ON members."groupId" = groups.id
-    WHERE members."botId" = ${botId}
+    WHERE members."botId" = ${botId} AND groups."spaceId" = ${spaceId}
     ORDER BY groups.id
     FOR UPDATE OF groups
   `;
   const affectedGroups = await tx.chatGroup.findMany({
-    where: { members: { some: { botId } } },
+    where: { spaceId, members: { some: { botId } } },
     include: {
       members: {
         select: { botId: true, bot: { select: { archivedAt: true } } },
@@ -733,7 +741,7 @@ async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string) 
     });
   }
   if (affectedGroups.length) {
-    await tx.chatGroupMember.deleteMany({ where: { botId } });
+    await tx.chatGroupMember.deleteMany({ where: { botId, group: { spaceId } } });
   }
   const groupArtifacts = dissolvedGroupIds.length
     ? await tx.artifact.findMany({
@@ -742,6 +750,9 @@ async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string) 
       })
     : [];
   if (dissolvedGroupIds.length) {
+    await runAsSystemInTransaction(tx, "revoke Page links for dissolved groups", () =>
+      deletePageShareSecrets(tx, { groupId: { in: dissolvedGroupIds }, spaceId }),
+    );
     await tx.chatGroup.deleteMany({ where: { id: { in: dissolvedGroupIds } } });
   }
   return {

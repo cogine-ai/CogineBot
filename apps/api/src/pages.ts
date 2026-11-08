@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/server";
 import type { Actor, PageDetail, PageSummary } from "@rakazo/contracts";
 import { PageInputIdSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma } from "@rakazo/db";
+import { PAGE_SHARE_SECRET_KIND, Prisma } from "@rakazo/db";
 
 const DEFAULT_LIST_LIMIT = 30;
 
@@ -203,8 +203,19 @@ export async function pinPage(prisma: PrismaClient, actor: Actor, pageId: string
 }
 
 export async function removePage(prisma: PrismaClient, actor: Actor, pageId: string) {
-  await stillThere(
-    prisma.page.delete({ where: { id: pageId, ...ownerScope(actor) }, select: { id: true } }),
-  );
+  await prisma.$transaction(async (tx) => {
+    // Read the token attached at deletion, including one rotated by a concurrent owner.
+    const deleted = await stillThere(
+      tx.page.delete({
+        where: { id: pageId, ...ownerScope(actor) },
+        select: { shareSecretId: true },
+      }),
+    );
+    if (deleted.shareSecretId) {
+      await tx.secret.deleteMany({
+        where: { id: deleted.shareSecretId, ...ownerScope(actor), kind: PAGE_SHARE_SECRET_KIND },
+      });
+    }
+  });
   return { ok: true as const };
 }
