@@ -177,6 +177,46 @@ describe("Pi provider request budgets over HTTP", () => {
     },
   );
 
+  it("fits an unchanged compatible request by reducing only its output reservation", async () => {
+    const { runtime, calls, beforeCall } = fixture(400, {
+      code: "context_length_exceeded",
+      type: "invalid_request_error",
+      message: "This model's maximum context length is 4096 tokens. This request used 4500.",
+    });
+    const events = await run(runtime, request({ ...compatible, maxTokens: 4_096 }));
+
+    expect(events.at(-1)).toEqual({ type: "done", text: result });
+    expect(calls.map(({ payload }) => payload.max_completion_tokens ?? payload.max_tokens)).toEqual(
+      [4_096, 870],
+    );
+    expect(beforeCall.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual([4_096, 870]);
+    expect(beforeCall.mock.calls[1]![0].inputTokensEstimate).toBe(
+      beforeCall.mock.calls[0]![0].inputTokensEstimate,
+    );
+    expect(calls[1]?.payload.messages).toEqual(calls[0]?.payload.messages);
+    expect(calls[1]?.payload.tools).toEqual(calls[0]?.payload.tools);
+  });
+
+  it("does not retry a Groq TPM rejection when the input cannot shrink", async () => {
+    const { runtime, calls, beforeCall } = fixture(413, {
+      code: "rate_limit_exceeded",
+      type: "tokens",
+      message:
+        "Request too large for this model on tokens per minute (TPM): Limit 4096, Requested 4100, please reduce your message size.",
+    });
+    const model = {
+      ...compatible,
+      provider: "groq",
+      id: "llama-3.3-70b-versatile",
+      baseUrl: undefined,
+      maxTokens: 4_096,
+    };
+
+    await expect(run(runtime, request(model))).rejects.toThrow("leaves no smaller request to send");
+    expect(calls).toHaveLength(1);
+    expect(beforeCall).toHaveBeenCalledOnce();
+  });
+
   it("stops before a second request or reservation when required context cannot fit", async () => {
     const { runtime, calls, beforeCall } = fixture(400, {
       code: "context_length_exceeded",
@@ -210,6 +250,44 @@ describe("Pi provider request budgets over HTTP", () => {
     expect(beforeCall.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual([4_096, 768]);
     expect(calls[1]?.payload.messages).toEqual(calls[0]?.payload.messages);
     expect(calls[1]?.payload.tools).toEqual(calls[0]?.payload.tools);
+  });
+
+  it.each([
+    { name: "an unchanged quote", quotes: [768, 768], caps: [4_096, 768] },
+    { name: "the shared retry limit", quotes: [768, 384, 192, 96], caps: [4_096, 768, 384, 192] },
+  ])("honors lower credit quotes until $name", async ({ quotes, caps }) => {
+    const payloads: CompletionPayload[] = [];
+    const modelFetch: typeof fetch = async (input, init) => {
+      const payload = (await new Request(input, init).json()) as CompletionPayload;
+      const quote = quotes[payloads.length];
+      payloads.push(payload);
+      if (quote === undefined) throw new Error("Unexpected extra request");
+      return Response.json(
+        {
+          error: {
+            ...creditError,
+            message: `This request requires more credits, or fewer max_tokens. You requested up to ${payload.max_completion_tokens} tokens, but can only afford ${quote}.`,
+          },
+        },
+        { status: 402 },
+      );
+    };
+    const beforeCall = vi.fn<ModelCallObserver["beforeCall"]>();
+    const afterCall = vi.fn<ModelCallObserver["afterCall"]>();
+    const runtime = new PiAgentRuntime({
+      modelFetch,
+      modelCallObserver: { beforeCall, afterCall },
+    });
+
+    await expect(run(runtime, request(openRouter))).rejects.toThrow(
+      `can only afford ${quotes.at(-1)}`,
+    );
+    expect(payloads.map(({ max_completion_tokens }) => max_completion_tokens)).toEqual(caps);
+    expect(beforeCall.mock.calls.map(([call]) => call.maxOutputTokens)).toEqual(caps);
+    for (const payload of payloads.slice(1)) {
+      expect(payload.messages).toEqual(payloads[0]?.messages);
+      expect(payload.tools).toEqual(payloads[0]?.tools);
+    }
   });
 
   it("shares the HTTP retry limit across an affordability correction and later outages", async () => {

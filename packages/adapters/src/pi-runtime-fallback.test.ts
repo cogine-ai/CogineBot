@@ -2796,7 +2796,7 @@ describe("Pi provider-reported budget recovery", () => {
     providerState.stream
       .mockImplementationOnce(() => stream(target, message(target, [], "error", creditLimit())))
       .mockImplementationOnce(() =>
-        stream(target, message(target, [], "error", creditLimit(256, 128))),
+        stream(target, message(target, [], "error", "503 service unavailable")),
       )
       .mockImplementationOnce(() =>
         stream(target, message(target, [], "error", creditLimit(768, 192))),
@@ -2970,32 +2970,26 @@ describe("Pi provider-reported budget recovery", () => {
     expect(providerState.delay).not.toHaveBeenCalled();
   });
 
-  it.each([30_000, 4_000])(
-    "does not dispatch when a reported window of %s cannot shrink the input",
-    async (window) => {
-      const target = model("openai-compatible", "synthetic-window-target", 32_768);
-      providerState.models.set(
-        `${target.provider}/${target.id}`,
-        target as unknown as Record<string, unknown>,
-      );
-      const input = request();
-      input.model = {
-        provider: target.provider,
-        id: target.id,
-        apiKey: "fake-window-key",
-        maxTokens: 1_024,
-      };
-      providerState.stream.mockImplementation(() =>
-        stream(
-          target,
-          message(target, [], "error", `400 maximum context length is ${window} tokens`),
-        ),
-      );
-      await expect(run(input)).rejects.toThrow("leaves no smaller request to send");
-      expect(providerState.stream).toHaveBeenCalledOnce();
-      expect(providerState.delay).not.toHaveBeenCalled();
-    },
-  );
+  it("does not dispatch when a reported window changes neither input nor output", async () => {
+    const target = model("openai-compatible", "synthetic-window-target", 32_768);
+    providerState.models.set(
+      `${target.provider}/${target.id}`,
+      target as unknown as Record<string, unknown>,
+    );
+    const input = request();
+    input.model = {
+      provider: target.provider,
+      id: target.id,
+      apiKey: "fake-window-key",
+      maxTokens: 1_024,
+    };
+    providerState.stream.mockImplementation(() =>
+      stream(target, message(target, [], "error", "400 maximum context length is 30000 tokens")),
+    );
+    await expect(run(input)).rejects.toThrow("leaves no smaller request to send");
+    expect(providerState.stream).toHaveBeenCalledOnce();
+    expect(providerState.delay).not.toHaveBeenCalled();
+  });
 });
 
 describe("Pi runtime corrective dispatch deadlines", () => {

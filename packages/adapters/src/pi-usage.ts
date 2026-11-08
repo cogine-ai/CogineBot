@@ -239,7 +239,7 @@ export type PiDispatchBudget = {
 
 export type PiBudgetCorrection = {
   previous: PiDispatchBudget;
-  preserveInput: boolean;
+  kind: "request-input" | "context-window" | "output";
 };
 
 export function observedPiStream(
@@ -348,12 +348,14 @@ export function observedPiStream(
       };
       dispatchBudget = measuredBudget;
       if (hooks?.budgetCorrection) {
-        const { previous, preserveInput } = hooks.budgetCorrection;
+        const { previous, kind } = hooks.budgetCorrection;
         const measured = measuredBudget();
-        const reduced = preserveInput
-          ? measured.inputTokens === previous.inputTokens &&
-            measured.maxOutputTokens < previous.maxOutputTokens
-          : measured.inputTokens < previous.inputTokens;
+        const smallerOutputWithSameInput =
+          measured.inputTokens === previous.inputTokens &&
+          measured.maxOutputTokens < previous.maxOutputTokens;
+        const reduced =
+          (kind !== "output" && measured.inputTokens < previous.inputTokens) ||
+          (kind !== "request-input" && smallerOutputWithSameInput);
         if (!reduced) throw new Error(MODEL_BUDGET_UNCHANGED_ERROR);
       }
       reservation = observer

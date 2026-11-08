@@ -446,7 +446,7 @@ export class PiAgentRuntime implements AgentRuntime {
         ) => {
           const prepared = contextPolicy.prepareContext(ctx, model, {
             contextWindow: target.providerContextWindow,
-            preserveInput: correction?.preserveInput,
+            preserveInput: correction?.kind === "output",
           });
           sentContext = { context: prepared, sourceLength: ctx.messages.length };
           return prepared;
@@ -2102,7 +2102,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
               prepareContext: (input, model) =>
                 contextPolicy.prepareContext(input, model, {
                   contextWindow: target.providerContextWindow,
-                  preserveInput: correction?.preserveInput,
+                  preserveInput: correction?.kind === "output",
                 }),
               imageTokens: createPiImageTokenEstimator(target.model),
               recordUsage: host.request.onUsage,
@@ -3418,7 +3418,6 @@ function fallbackAwareModelStream(
             const recoveryAllowed = providerBudget && !blocksModelRecovery(errorFacts(event.error));
             if (
               recoveryAllowed &&
-              !sizingRetryError &&
               retries < MODEL_PROVIDER_RETRY_DELAYS_MS.length &&
               Date.now() - startedAt < timeoutMs
             ) {
@@ -3426,9 +3425,14 @@ function fallbackAwareModelStream(
               const contextWindow =
                 effectiveTarget.providerContextWindow ?? effectiveTarget.model.contextWindow;
               const error = event.error.errorMessage;
+              const requestWindow = sizingRetryError
+                ? undefined
+                : groqRequestContextWindow(provider, error, contextWindow);
               const reportedWindow =
-                groqRequestContextWindow(provider, error, contextWindow) ??
-                reportedContextWindow(provider, error, contextWindow);
+                requestWindow ??
+                (sizingRetryError
+                  ? undefined
+                  : reportedContextWindow(provider, error, contextWindow));
               const affordableOutput = affordableOpenRouterOutput(
                 provider,
                 error,
@@ -3455,7 +3459,12 @@ function fallbackAwareModelStream(
                 sizingRetryError = event;
                 nextCorrection = {
                   previous: providerBudget,
-                  preserveInput: affordableOutput !== undefined,
+                  kind:
+                    reportedWindow === undefined
+                      ? "output"
+                      : requestWindow === undefined
+                        ? "context-window"
+                        : "request-input",
                 };
                 buffered = [];
                 restart = true;
