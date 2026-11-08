@@ -512,6 +512,11 @@ describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => 
       },
     ]);
     try {
+      // This case verifies that already-eligible progress survives the pause and restart.
+      await f.app.prisma.run.update({
+        where: { id: f.sent.runId },
+        data: { startedAt: new Date(Date.now() - 60_000) },
+      });
       await f.continueRun("checkpoint-first-worker");
       const paused = await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } });
       expect(paused).toMatchObject({ status: "waiting_input", leaseFence: 1, leaseOwner: null });
@@ -554,7 +559,16 @@ describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => 
       ).toBe(false);
       expect(f.providerRequests).toHaveLength(1);
       expect(f.reservations).toBe(1);
-      await f.clientSnapshot();
+      expect(await f.clientSnapshot()).toContain(beforeText);
+      expect(
+        await f.app.prisma.message.count({
+          where: {
+            runId: f.sent.runId,
+            role: "bot",
+            blocks: { equals: [{ kind: "text", text: beforeText }] },
+          },
+        }),
+      ).toBe(1);
 
       const waitingSnapshot = async () => ({
         run: await f.app.prisma.run.findUniqueOrThrow({ where: { id: f.sent.runId } }),
@@ -663,7 +677,7 @@ describe.skipIf(!enabled)("durable Pi turn checkpoint product execution", () => 
         },
       ]);
       const client = await f.clientSnapshot();
-      expect(client).toContain(beforeText);
+      expect(client.split(beforeText)).toHaveLength(2);
       expect(client).toContain(afterText);
       expect(
         await f.app.prisma.run.count({

@@ -2100,10 +2100,10 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
-  it("does not repeat published pre-tool narration after effect setup fails", async () => {
+  it("retains unpublished pre-tool narration when effect setup fails", async () => {
     const { seeded, continuationRunId } = await seedSteeringContinuation(
-      "scripted-published-prefix-recovery",
-      "write this to the destination crm as a published-prefix recovery note",
+      "scripted-buffered-prefix-recovery",
+      "write this to the destination crm as a buffered-prefix recovery note",
     );
     const held = holdContinuationJobs(seeded.bot.id);
     const recordsBefore = handles.connector.records.length;
@@ -2111,7 +2111,11 @@ describeIntegration("run executor lifecycle", () => {
       .spyOn(handles.prisma.externalEffect, "create")
       .mockRejectedValueOnce(new ScriptedStateError());
     try {
-      await handles.executor.continueRun(continuationRunId, "interrupted-published-prefix-worker");
+      await handles.prisma.run.update({
+        where: { id: continuationRunId },
+        data: { startedAt: new Date(Date.now() - 60_000) },
+      });
+      await handles.executor.continueRun(continuationRunId, "interrupted-buffered-prefix-worker");
       expect(create.mock.calls[0]?.[0]).toMatchObject({
         data: { runId: continuationRunId, kind: "destination.write" },
       });
@@ -2122,21 +2126,13 @@ describeIntegration("run executor lifecycle", () => {
       const saved = parseStoredScriptedState(retained.scriptedState, continuationRunId);
       const prefix = saved.state.script[0]!.assistant;
       if (!prefix) throw new Error("Expected the selected script's narration");
-      expect(saved.output).toMatchObject({ assembled: "", currentTextSegment: "" });
-      expect(JSON.stringify(saved.output)).not.toContain(prefix);
+      expect(saved.output?.assembled).toContain(prefix);
       expect(handles.connector.records).toHaveLength(recordsBefore);
       const before = await handles.prisma.message.findMany({
         where: { runId: continuationRunId, role: "bot" },
       });
-      const beforeText = before
-        .flatMap((message) =>
-          MessageBlockSchema.array()
-            .parse(message.blocks)
-            .flatMap((block) => (block.kind === "text" ? [block.text] : [])),
-        )
-        .join("\n");
-      expect(beforeText.split(prefix).length - 1).toBe(1);
-      await handles.executor.continueRun(continuationRunId, "recovered-published-prefix-worker");
+      expect(before).toEqual([]);
+      await handles.executor.continueRun(continuationRunId, "recovered-buffered-prefix-worker");
       await expect(
         handles.prisma.run.findUniqueOrThrow({ where: { id: continuationRunId } }),
       ).resolves.toMatchObject({ status: "completed" });
@@ -2391,7 +2387,7 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
-  it.sequential("redacts buffered output before checkpoint, publication and retry", async () => {
+  it.sequential("redacts buffered output in the checkpoint and the recovered final reply", async () => {
     const originalHandles = handles;
     const originalPublisher = holdRunContinuePublications(originalHandles);
     const isolatedDir = mkdtempSync(path.join(tmpdir(), "rakazo-scripted-output-redaction-"));
@@ -2451,11 +2447,13 @@ describeIntegration("run executor lifecycle", () => {
         });
         expect(retained.status).toBe("queued");
         expect(JSON.stringify(retained)).not.toContain(secret);
+        expect(
+          parseStoredScriptedState(retained.scriptedState, continuationRunId).output?.assembled,
+        ).toContain(redactedMarker);
         const before = await handles.prisma.message.findMany({
           where: { runId: continuationRunId },
         });
-        expect(JSON.stringify(before)).not.toContain(secret);
-        expect(JSON.stringify(before)).toContain(redactedMarker);
+        expect(before).toEqual([]);
         await handles.executor.continueRun(continuationRunId, "recovered-output-redaction-worker");
         const completed = await handles.prisma.run.findUniqueOrThrow({
           where: { id: continuationRunId },
