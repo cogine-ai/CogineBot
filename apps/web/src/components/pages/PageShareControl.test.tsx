@@ -166,3 +166,50 @@ it("requires fresh consent for a renamed page even when the version did not chan
     { signal: expect.any(AbortSignal) },
   );
 });
+
+it.each([
+  { result: "the committed link", readback: replacement, published: true },
+  { result: "the unchanged private state", readback: privatePage, published: false },
+])("shows $result after losing the publication response", async ({ readback, published }) => {
+  await render(page, false);
+  state = privatePage;
+  await render({ ...page, sharedByLink: undefined });
+  const { getShare, setShare } = owner.store.client.pages;
+  getShare.mockClear();
+  setShare.mockImplementationOnce(async () => {
+    state = readback;
+    throw new Error("Publication response was lost");
+  });
+
+  await act(async () => radio("link").click());
+  const confirm = document.querySelector('[role="alertdialog"]')!;
+  await act(async () => button("Share", confirm)!.click());
+  expect(getShare).toHaveBeenCalledExactlyOnceWith(
+    { pageId: page.id },
+    { signal: expect.any(AbortSignal) },
+  );
+  expect(radio("link").checked).toBe(published);
+  expect(radio("private").checked).toBe(!published);
+  expect(Boolean(button("Copy link"))).toBe(published);
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+    published ? undefined : "Couldn't change who can view this page. Try again.",
+  );
+});
+
+it("shows private without a failure alert when the lost revocation response is confirmed", async () => {
+  const { getShare, setShare } = owner.store.client.pages;
+  getShare.mockClear();
+  setShare.mockImplementationOnce(async () => {
+    state = privatePage;
+    throw new Error("Revocation response was lost");
+  });
+
+  await act(async () => radio("private").click());
+  expect(getShare).toHaveBeenCalledExactlyOnceWith(
+    { pageId: page.id },
+    { signal: expect.any(AbortSignal) },
+  );
+  expect(radio("private").checked).toBe(true);
+  expect(button("Copy link")).toBeUndefined();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+});

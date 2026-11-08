@@ -152,7 +152,8 @@ function OpenPageShare({ page, drawn }: { page: PageDetail; drawn: boolean }) {
         const actual = await readShare(signal).catch(() => undefined);
         if (current()) {
           setState(actual);
-          setError(t`Couldn't change who can view this page. Try again.`);
+          if (actual?.visibility !== input.visibility)
+            setError(t`Couldn't change who can view this page. Try again.`);
         }
       } finally {
         if (current()) store.invalidate(pageId);
