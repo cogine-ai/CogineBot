@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createGroupRepos, groupMemberOrderBy } from "./groups.js";
+import type * as RowSecurityModule from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import type * as ThreadListingModule from "./thread-listing.js";
 import { loadThreadAttention } from "./thread-listing.js";
@@ -8,6 +9,10 @@ import { loadThreadAttention } from "./thread-listing.js";
 vi.mock("./thread-listing.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ThreadListingModule>()),
   loadThreadAttention: vi.fn(async () => new Map()),
+}));
+vi.mock("./row-security.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof RowSecurityModule>()),
+  runAsSystemInTransaction: vi.fn(async (_tx, _reason, work: () => Promise<unknown>) => work()),
 }));
 beforeEach(() => vi.mocked(loadThreadAttention).mockReset().mockResolvedValue(new Map()));
 
@@ -677,4 +682,97 @@ describe("updateGroup membership confirmation", () => {
       expect(cancel).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("removeGroup", () => {
+  it("records the exact cancelled Run's teardown before deleting its group", async () => {
+    const actor = {
+      spaceId: "space-1",
+      userId: "user-1",
+      email: "user@example.test",
+      isDeploymentOwner: false,
+    };
+    const run = { id: "run-1", botId: "bot-1", taskId: "task-1", status: "waiting_takeover" };
+    const computer = {
+      id: "computer-1",
+      homeKey: "home-1",
+      kind: "fake",
+      providerRef: "fixture-provider",
+      screenGeneration: 5,
+      executionRunId: run.id,
+      executionBotId: "bot-1" as string | null,
+      executionFence: 7,
+    };
+    const lease = { computerId: computer.id, botId: "bot-1", runId: run.id, fence: 4 };
+    const append = vi.fn(async () => 1);
+    const remove = vi.fn(async () => ({}));
+    const tx = {
+      $queryRaw: vi.fn(async (parts: TemplateStringsArray) =>
+        parts.join("").includes("public.computers") ? [computer] : [{ id: "scope" }],
+      ),
+      $executeRaw: append,
+      chatGroup: {
+        findUnique: vi.fn(async () => ({
+          artifacts: [],
+          members: [{ botId: "bot-1" }],
+          thread: { id: "thread-1" },
+        })),
+        delete: remove,
+      },
+      run: {
+        findMany: vi.fn(async () => [run]),
+        updateManyAndReturn: vi.fn(async () => [{ id: run.id, spaceId: actor.spaceId }]),
+      },
+      attempt: { updateMany: vi.fn() },
+      externalEffect: { deleteMany: vi.fn() },
+      task: { updateMany: vi.fn() },
+      computerExecutionLease: { findMany: vi.fn(async () => [lease]) },
+      computer: { findMany: vi.fn(async () => [computer]) },
+      page: { updateManyAndReturn: vi.fn(async () => []) },
+    };
+    const prisma = {
+      $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
+    } as unknown as PrismaClient;
+    const groups = createGroupRepos(prisma);
+
+    append.mockResolvedValueOnce(0);
+    await expect(groups.removeGroup(actor, "group-1")).rejects.toThrow(
+      "Could not record the cancelled Run's computer teardown",
+    );
+    expect(remove).not.toHaveBeenCalled();
+    append.mockClear();
+
+    await expect(groups.removeGroup(actor, "group-1")).resolves.toMatchObject({
+      teardowns: [
+        {
+          computerId: computer.id,
+          runId: run.id,
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+        },
+      ],
+    });
+    expect(append).toHaveBeenCalledBefore(remove);
+    const [, payload] = append.mock.calls[0] as unknown as [TemplateStringsArray, string];
+    expect(JSON.parse(payload)).toEqual({
+      [run.id]: {
+        userId: actor.userId,
+        botId: "bot-1",
+        canonicalFence: 4,
+        legacy: { botId: "bot-1", fence: 7 },
+        providerRef: "fixture-provider",
+        screenGeneration: 5,
+        providerDone: false,
+      },
+    });
+
+    computer.executionBotId = null;
+    tx.computerExecutionLease.findMany.mockResolvedValueOnce([]);
+    append.mockClear();
+    await expect(groups.removeGroup(actor, "group-1")).resolves.toHaveProperty("teardowns");
+    const [, partial] = append.mock.calls[0] as unknown as [TemplateStringsArray, string];
+    expect(JSON.parse(partial)).toMatchObject({
+      [run.id]: { botId: run.botId, canonicalFence: null, legacy: { botId: null, fence: 7 } },
+    });
+  });
 });

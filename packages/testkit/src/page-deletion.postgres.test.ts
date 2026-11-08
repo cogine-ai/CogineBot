@@ -4,12 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import { SandboxRateLimitError } from "@rakazo/adapter-kit";
-import { EncryptedSecretStore, LocalArtifactStore, withSecretPersistence } from "@rakazo/adapters";
+import {
+  createGroupRunTeardownRecovery,
+  EncryptedSecretStore,
+  LocalArtifactStore,
+  withSecretPersistence,
+} from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { Prisma } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
   createDb,
+  createGroupRepos,
   PAGE_SHARE_SECRET_KIND,
   provisionRuntimeRole,
   rlsBypassKey,
@@ -90,14 +96,19 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         computerExecutionLease: {
           async updateMany({ args, query }) {
             const runIds = args.where?.runId;
+            if (failLeaseRunId && runIds === failLeaseRunId) {
+              // Lose the result of the lease write inside the final transaction.
+              // The matching lease and the persisted work must roll back together.
+              await query(args);
+              throw leaseFailure;
+            }
             if (
               failLeaseRunId &&
               typeof runIds === "object" &&
               Array.isArray(runIds.in) &&
               runIds.in.includes(failLeaseRunId)
-            ) {
+            )
               throw leaseFailure;
-            }
             return query(args);
           },
         },
@@ -308,7 +319,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
     expect(physicalDeletes(surviving.secret.ciphertext)).toHaveLength(0);
   });
 
-  it("sweeps group Pages, sealed refs and files despite a post-delete lease failure", async () => {
+  it("sweeps files and Pages and recovers a post-delete takeover lease before expiry", async () => {
     const own = await account("Group owner");
     const other = await account("Other member");
     const first = await bot(own, "First");
@@ -360,7 +371,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         botId: first.id,
         threadId: chat.threadId,
         taskId: task.id,
-        status: "running",
+        status: "waiting_takeover",
         trigger: "user",
       },
     });
@@ -371,6 +382,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         homeKey: `fixture-${run.id}`,
         kind: "fake",
         providerRef: `fixture-${run.id}`,
+        state: "running",
       },
     });
     const lease = await admin().computerExecutionLease.create({
@@ -379,7 +391,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         botId: first.id,
         runId: run.id,
         fence: 1,
-        expiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       },
     });
     const removeFile = LocalArtifactStore.prototype.remove;
@@ -389,10 +401,42 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         if (id === failedArtifact.id) throw new Error("Synthetic artifact cleanup failure");
         return removeFile.call(this, id, operation);
       });
-    const screenRelease = vi.spyOn(handles!.sandbox, "releaseScreen");
+    let screenEntered!: () => void;
+    let allowScreenRelease!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      screenEntered = resolve;
+    });
+    const screenGate = new Promise<void>((resolve) => {
+      allowScreenRelease = resolve;
+    });
+    const releaseScreen = handles!.sandbox.releaseScreen!.bind(handles!.sandbox);
+    const screenRelease = vi
+      .spyOn(handles!.sandbox, "releaseScreen")
+      .mockImplementation(async (...args) => {
+        screenEntered();
+        await screenGate;
+        await releaseScreen(...args);
+      });
     failLeaseRunId = run.id;
+    const removing = raw(own.cookie, "groups/remove", { groupId: chat.id });
     try {
-      const removed = await raw(own.cookie, "groups/remove", { groupId: chat.id });
+      await Promise.race([
+        entered,
+        removing.then(() => {
+          throw new Error("No screen teardown");
+        }),
+      ]);
+      const concurrent = createGroupRunTeardownRecovery({
+        prisma: runtime!.prisma,
+        sandbox: handles!.sandbox,
+      });
+      await concurrent.reconcile();
+      expect(screenRelease).toHaveBeenCalledTimes(1);
+      expect(
+        await admin().computerExecutionLease.findUniqueOrThrow({ where: { id: lease.id } }),
+      ).toMatchObject({ expiresAt: lease.expiresAt });
+      allowScreenRelease();
+      const removed = await removing;
       expect(removed.status).toBe(429);
       expect((await removed.json()).json).toMatchObject({
         code: "TOO_MANY_REQUESTS",
@@ -404,6 +448,8 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
         { onlyIfRunning: true },
       );
     } finally {
+      allowScreenRelease();
+      await removing.catch(() => undefined);
       failLeaseRunId = undefined;
       artifactCleanup.mockRestore();
       screenRelease.mockRestore();
@@ -413,6 +459,12 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
     expect(
       await admin().computerExecutionLease.findUnique({ where: { id: lease.id } }),
     ).toMatchObject({ runId: run.id, expiresAt: lease.expiresAt });
+    expect(
+      await admin().$queryRaw`
+      SELECT "pendingGroupRunTeardowns" -> ${run.id}::text -> 'providerDone' AS done
+      FROM computers WHERE id = ${computer.id}
+    `,
+    ).toEqual([{ done: true }]);
     await expect(fileStore.get(stored.id, adapterContext)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -426,6 +478,24 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
     ).toBeGreaterThanOrEqual(400);
     expect(physicalDeletes(page.secret.ciphertext)).toHaveLength(1);
     expect(physicalDeletes(foreignPage.secret.ciphertext)).toHaveLength(1);
+
+    const retry = createGroupRunTeardownRecovery({
+      prisma: runtime!.prisma,
+      sandbox: handles!.sandbox,
+    });
+    const retriedRelease = vi.spyOn(handles!.sandbox, "releaseScreen");
+    try {
+      await retry.reconcile();
+      expect(retriedRelease).not.toHaveBeenCalled();
+      expect(
+        await admin().computerExecutionLease.findUniqueOrThrow({ where: { id: lease.id } }),
+      ).toMatchObject({ runId: run.id, fence: 1, expiresAt: new Date(0) });
+      retriedRelease.mockClear();
+      await retry.reconcile();
+      expect(retriedRelease).not.toHaveBeenCalled();
+    } finally {
+      retriedRelease.mockRestore();
+    }
   });
 
   it("recovers a failed archive lease after restore without touching a newer Run's lease or screen", async () => {
@@ -454,6 +524,7 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
           homeKey: `fixture-${run.id}`,
           kind: "fake",
           providerRef: `fixture-${run.id}`,
+          state: "running",
           executionRunId: run.id,
           executionBotId: run.botId,
           executionLeaseExpiresAt: expiresAt,
@@ -510,6 +581,129 @@ postgres("Page links on terminal deletion (isolated PostgreSQL)", () => {
       screenRelease.mockRestore();
     }
   });
+
+  it.each([false, true])(
+    "recovers a deletion interrupted before screen cleanup (successor: %s)",
+    async (hasSuccessor) => {
+      const own = await account("Stale teardown");
+      const first = await bot(own, "First");
+      const second = await bot(own, "Second");
+      const chat = await group(own, "Deleted group", [first.id, second.id]);
+      const scope = { ...scopeOf(own.actor), botId: first.id };
+      const task = await admin().task.create({
+        data: { ...scope, threadId: chat.threadId, prompt: "Fixture", status: "running" },
+      });
+      const run = await admin().run.create({
+        data: {
+          ...scope,
+          threadId: chat.threadId,
+          taskId: task.id,
+          trigger: "user",
+          status: "running",
+        },
+      });
+      const expiresAt = new Date(Date.now() + 60_000);
+      const computer = await admin().computer.create({
+        data: {
+          ...scopeOf(own.actor),
+          scopeKey: `fixture:${run.id}`,
+          homeKey: `fixture-${run.id}`,
+          kind: "fake",
+          state: "running",
+          providerRef: `fixture-${run.id}`,
+          executionRunId: run.id,
+          executionBotId: first.id,
+          executionFence: 3,
+          executionLeaseExpiresAt: expiresAt,
+        },
+      });
+      const oldLease = await admin().computerExecutionLease.create({
+        data: { computerId: computer.id, botId: first.id, runId: run.id, fence: 3, expiresAt },
+      });
+      const manualLease = await admin().computerExecutionLease.create({
+        data: {
+          computerId: computer.id,
+          botId: second.id,
+          runId: "manual-computer-fixture",
+          fence: 5,
+          expiresAt,
+        },
+      });
+      // Stop at the committed delete boundary, before any process attempts the teardown.
+      await runAsTenant(scopeOf(own.actor), () =>
+        createGroupRepos(runtime!.prisma).removeGroup(own.actor, chat.id),
+      );
+      expect(await admin().run.findUnique({ where: { id: run.id } })).toBeNull();
+      const thread = await admin().thread.findFirstOrThrow({
+        where: { botId: first.id, groupId: null },
+      });
+      const nextTask = await admin().task.create({
+        data: { ...scope, threadId: thread.id, prompt: "Next", status: "running" },
+      });
+      const successor = await admin().run.create({
+        data: {
+          ...scope,
+          threadId: thread.id,
+          taskId: nextTask.id,
+          trigger: "user",
+          status: "running",
+        },
+      });
+      const current = hasSuccessor
+        ? await admin().computerExecutionLease.update({
+            where: { id: oldLease.id },
+            data: { runId: successor.id, fence: 4 },
+          })
+        : oldLease;
+      if (hasSuccessor) {
+        await admin().computer.update({
+          where: { id: computer.id },
+          data: { executionRunId: successor.id, executionFence: 4 },
+        });
+      }
+      const screenRelease = vi.spyOn(handles!.sandbox, "releaseScreen");
+      const execute = vi.spyOn(handles!.sandbox, "execute");
+      try {
+        const restarted = createGroupRunTeardownRecovery({
+          prisma: runtime!.prisma,
+          sandbox: handles!.sandbox,
+        });
+        await restarted.reconcile();
+        if (hasSuccessor) expect(screenRelease).not.toHaveBeenCalled();
+        else
+          expect(screenRelease).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ providerRef: computer.providerRef }),
+            expect.objectContaining({
+              runId: run.id,
+              screenLeaseId: `${run.id}:3`,
+              cancelRunWork: true,
+            }),
+            { onlyIfRunning: true },
+          );
+        expect(execute).not.toHaveBeenCalled();
+        expect(
+          await admin().computerExecutionLease.findUnique({ where: { id: manualLease.id } }),
+        ).toEqual(manualLease);
+        const settled = await admin().computerExecutionLease.findUniqueOrThrow({
+          where: { id: current.id },
+        });
+        if (hasSuccessor) expect(settled).toEqual(current);
+        else expect(settled).toMatchObject({ runId: run.id, fence: 3, expiresAt: new Date(0) });
+        expect(await admin().computer.findUnique({ where: { id: computer.id } })).toMatchObject({
+          executionRunId: hasSuccessor ? successor.id : null,
+          executionFence: hasSuccessor ? 4 : 3,
+        });
+        expect(
+          await admin().$queryRaw`
+        SELECT "pendingGroupRunTeardowns" AS pending FROM computers WHERE id = ${computer.id}
+      `,
+        ).toEqual([{ pending: null }]);
+      } finally {
+        screenRelease.mockRestore();
+        execute.mockRestore();
+      }
+    },
+  );
 
   it("retires existing Space and account cascades through the production SecretStore wrapper", async () => {
     const own = await account("Terminal account");

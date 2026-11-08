@@ -20,6 +20,7 @@ import {
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
+  createGroupRunTeardownRecovery,
   createJobReconciler,
   createMessagingContextLoader,
   createPostgresReconciliationLeadership,
@@ -309,6 +310,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
     reconcileNativeEvents: () => nativeEvents.reconcile(),
   });
   let stopping = false;

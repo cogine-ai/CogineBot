@@ -110,6 +110,7 @@ export function createJobReconciler(
     notifications?: NotificationProvider;
     leadership?: ReconciliationLeadership;
     reconcileComputerUpdates?: () => Promise<void>;
+    reconcileGroupRunTeardowns?: () => Promise<void>;
     reconcileCloudAgents?: () => Promise<void>;
     reconcileNativeEvents?: () => Promise<void>;
   },
@@ -125,6 +126,7 @@ export function createJobReconciler(
   let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconciling: Promise<void> | undefined;
+  let reconcilingGroupRunTeardowns: Promise<void> | undefined;
   let lastCompletedAt = Date.now();
   let stuckCursor: Cursor | undefined;
   let runCursor: Cursor | undefined;
@@ -138,6 +140,15 @@ export function createJobReconciler(
     reconciling = (async () => {
       if (deps.leadership && !(await deps.leadership.tryAcquire())) return;
 
+      // Provider cleanup can take longer than a normal database reconciliation pass.
+      if (!reconcilingGroupRunTeardowns && deps.reconcileGroupRunTeardowns) {
+        reconcilingGroupRunTeardowns = Promise.resolve()
+          .then(deps.reconcileGroupRunTeardowns)
+          .catch((error) => getLogger().error("group run teardown reconciliation", error))
+          .finally(() => {
+            reconcilingGroupRunTeardowns = undefined;
+          });
+      }
       const auxiliary = await Promise.allSettled(
         [deps.reconcileCloudAgents, deps.reconcileComputerUpdates, deps.reconcileNativeEvents].map(
           async (reconcile) => reconcile?.(),
@@ -492,6 +503,7 @@ export function createJobReconciler(
       if (timer) clearInterval(timer);
       timer = undefined;
       await reconciling?.catch(() => undefined);
+      await reconcilingGroupRunTeardowns;
       await deps.leadership?.release();
     },
   };

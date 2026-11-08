@@ -279,6 +279,23 @@ describe("screen retention through supervisor routes", () => {
     expect(f.commands.slice(start)).toEqual([]);
   });
 
+  it("does not cancel an unregistered browser through the fenced release path", async () => {
+    const f = await fixture();
+    const start = f.commands.length;
+    expect((await f.release("a", "old-a:2", true, true)).status).toBe(200);
+    expect(f.commands.slice(start)).toEqual([]);
+    expect((await f.watch("a", "")).status).toBe(200);
+    const preview = f.commands.length;
+    expect((await f.release("a", "old-a:2", true, true)).status).toBe(200);
+    expect(f.commands.slice(preview)).toEqual([]);
+    expect((await f.watch("a", "new-a:3")).status).toBe(200);
+    const assigned = f.commands.length;
+    expect((await f.release("a", "old-a:2", true, true)).status).toBe(200);
+    expect(f.commands.slice(assigned)).toEqual([]);
+    expect((await f.release("a", "new-a:3", true, true)).status).toBe(200);
+    expect(f.commands.slice(assigned).join("\n")).toContain("Browser.close");
+  });
+
   it("fully stops only the cancelled screen and rejects a late old execution release", async () => {
     const f = await fixture();
     await f.watch();

@@ -1011,7 +1011,13 @@ app.delete("/computers/:id/screen", async (c) => {
         // A newer human grant can arrive after the executor's database check.
         // Control version alone is historical; current authority lives in the token.
         const slot = assigned?.get(screenId);
-        if (onlyIfRunning && (slot?.controlled || slot?.controlToken)) return;
+        // A restarted supervisor cannot attribute an unregistered browser to
+        // this old lease. Deferred teardown must never stop that browser.
+        if (
+          onlyIfRunning &&
+          (!slot || (screenLeaseId && !slot.leaseId) || slot.controlled || slot.controlToken)
+        )
+          return;
         const index = assigned
           ? releaseAssignedScreen(assigned, screenId, screenLeaseId)
           : undefined;

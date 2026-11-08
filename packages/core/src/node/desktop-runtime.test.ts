@@ -113,6 +113,15 @@ function fixture() {
 }
 
 describe("shared Linux desktop lifecycle", () => {
+  it("preserves a lease-less preview from a deferred release for an old Run", () => {
+    const f = fixture();
+    expect(f.run(managedDesktopCommand("a", undefined, env, "view-a")).status).toBe(0);
+    const slot = path.join(f.root, readdirSync(f.root).find((name) => name.endsWith(".slot"))!);
+    const before = readFileSync(slot, "utf8");
+    expect(f.run(releaseDesktopCommand("a", "old:2", env, false, true)).status).toBe(0);
+    expect(readFileSync(slot, "utf8")).toBe(before);
+  });
+
   it.each(["active", "revoking"])(
     "preserves %s human control when a retained attempt releases the screen",
     (state) => {
