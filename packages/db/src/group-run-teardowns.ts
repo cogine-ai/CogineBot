@@ -219,7 +219,7 @@ export async function loadPendingGroupRunTeardown(
     WHERE c.id = ${key.computerId} AND c."spaceId" = ${key.spaceId}
       AND (c."pendingGroupRunTeardowns" -> ${key.runId}::text ->> 'userId') = ${key.userId}
   `;
-  if (!row || !isMarker(row.marker) || row.marker.userId !== key.userId) return null;
+  if (!row || !isMarker(row.marker)) return null;
   const { marker, id, homeKey, kind, providerRef } = row;
   const stillOwns =
     marker.canonicalFence === null
