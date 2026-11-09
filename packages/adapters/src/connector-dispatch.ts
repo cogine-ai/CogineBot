@@ -1,9 +1,14 @@
 import type { LookupFunction } from "node:net";
 import type { Prisma } from "@rakazo/db";
 import { buildConnector } from "undici";
+import { NativeActionError } from "./native-connectors/action.js";
 
 /** The policy check refused admission before the next provider request. */
-export class ActionRuleDispatchError extends Error {}
+export class ActionRuleDispatchError extends NativeActionError {
+  constructor(message: string) {
+    super("action_rule_blocked", message);
+  }
+}
 
 /** Managed MCP already owns a dispatch transaction. Reuse it instead of borrowing another connection. */
 export const dispatchTransaction = Symbol("connector dispatch transaction");

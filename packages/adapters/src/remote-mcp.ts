@@ -22,6 +22,7 @@ import {
 } from "./network-address.js";
 import type { RemoteMcpToolSession } from "./remote-mcp-sessions.js";
 import { dispatcherFetch, fetchPairedWithDispatcher } from "./undici-fetch.js";
+import { withAbort } from "./web-ssrf.js";
 
 const MAX_MCP_TOOLS = 250;
 const MAX_MCP_PAGES = 20;
@@ -243,7 +244,8 @@ export function createSafeRemoteFetch(
         ? new UndiciClient(url.origin, {
             connect: guardedConnect(lookup, async () => {
               try {
-                await beforeDispatch();
+                init?.signal?.throwIfAborted();
+                await withAbort(beforeDispatch(), init?.signal ?? undefined);
               } catch (error) {
                 if (error instanceof ActionRuleDispatchError) refusal = error;
                 throw error;

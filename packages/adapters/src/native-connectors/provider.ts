@@ -17,7 +17,6 @@ import {
   connectionAuthorizationRevision,
   connectorAccountRevision,
 } from "../connector-account-binding.js";
-import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { asRecord } from "../connector-http.js";
 import { redactConnectorPayload } from "../connector-safety.js";
 import {
@@ -689,7 +688,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         data: redactConnectorPayload(await action.execute(call.args, actionContext), redactions),
       };
     } catch (error) {
-      if (error instanceof ActionRuleDispatchError) {
+      if (error instanceof NativeActionError && error.kind === "action_rule_blocked") {
         yield {
           type: "error",
           message: error.message,

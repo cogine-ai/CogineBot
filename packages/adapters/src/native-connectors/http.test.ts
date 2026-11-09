@@ -91,6 +91,49 @@ describe("native HTTP execution", () => {
     }
   });
 
+  it("closes a real socket when the dispatch check outlives the request signal", async () => {
+    const received = vi.fn();
+    const server = createServer((_request, response) => {
+      received();
+      response.end("{}");
+    });
+    const socketClosed = new Promise<void>((resolve) => {
+      server.once("connection", (socket) => socket.once("close", () => resolve()));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Fixture port unavailable");
+    const controller = new AbortController();
+    const reachedGuard = Promise.withResolvers<void>();
+    const client = new NativeHttpClient(
+      `http://127.0.0.1:${address.port}`,
+      async () => ({ kind: "bearer", value: "fixture-access" }),
+      {
+        signal: controller.signal,
+        readOnly: false,
+        allowPrivateEndpoint: true,
+        beforeDispatch: async () => {
+          reachedGuard.resolve();
+          await new Promise<void>(() => {});
+        },
+      },
+    );
+    try {
+      const request = client.request({ method: "POST", path: "/pages", body: {} });
+      const rejected = expect(request).rejects.toThrow();
+      await reachedGuard.promise;
+      controller.abort();
+      await Promise.all([rejected, socketClosed]);
+      expect(received).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await client.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it.each([410, 403, 404])(
     "distinguishes expired cursors from access failure %s",
     async (status) => {

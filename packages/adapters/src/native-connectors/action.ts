@@ -55,6 +55,7 @@ export interface NativeActionContext {
 }
 
 export type NativeErrorKind =
+  | "action_rule_blocked"
   | "not_configured"
   | "authorization_required"
   | "authorization_expired"

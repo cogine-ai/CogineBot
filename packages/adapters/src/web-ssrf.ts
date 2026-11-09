@@ -200,7 +200,7 @@ async function followRedirects(
   if (beforeRequest) {
     const check = async () => {
       state.signal.throwIfAborted();
-      await beforeRequest(validated.href);
+      await withAbort(Promise.resolve(beforeRequest(validated.href)), state.signal);
       state.signal.throwIfAborted();
     };
     if (state.baseFetch === dispatcherFetch) {
