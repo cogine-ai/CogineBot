@@ -36,6 +36,7 @@ const cases = [
   { mode: "allow", separator: ":" },
   { mode: "revoke", separator: "/" },
   { mode: "block", separator: ":" },
+  { mode: "deny-retry", separator: ":" },
   { mode: "intent", separator: "__" },
   { mode: "same-labels", separator: ":" },
   { mode: "reauthorize", separator: "/" },
@@ -156,6 +157,9 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
             } else if (mode === "block") {
               expect(result).toContain("action_rule_blocked");
               expect(mutations).toEqual([]);
+            } else if (mode === "deny-retry") {
+              expect(result).toContain("The user denied this action");
+              expect(mutations).toEqual([]);
             } else {
               expect(result).not.toContain('"outcome":"succeeded"');
               expect(result).toMatch(
@@ -164,8 +168,33 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
               expect(mutations).toEqual([]);
             }
           },
-          response: { type: "text", text: "Catalog approval fixture complete." },
+          response:
+            mode === "deny-retry"
+              ? () => ({
+                  type: "tool",
+                  id: "rephrased-mutation",
+                  name: "native_execute_tool",
+                  arguments: {
+                    id: canonical(0),
+                    arguments: {
+                      ...approved,
+                      event: { ...approved.event, summary: "Rephrased after denial" },
+                    },
+                  },
+                })
+              : { type: "text", text: "Catalog approval fixture complete." },
         },
+        ...(mode === "deny-retry"
+          ? [
+              {
+                expect(request: ModelEmulatorRequest) {
+                  expect(lastToolText(request)).toContain("The user denied this action");
+                  expect(mutations).toEqual([]);
+                },
+                response: { type: "text" as const, text: "The refused action was skipped." },
+              },
+            ]
+          : []),
       ];
       const model = await startModelEmulator({ apiKey: modelKey, steps });
       const dataDir = await mkdtemp(path.join(tmpdir(), "catalog-approval-"));
@@ -490,7 +519,7 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
           botId: bot.id,
           runId: sent.runId,
           messageId: card.id,
-          answer: "allow",
+          answer: mode === "deny-retry" ? "deny" : "allow",
         });
         await expect
           .poll(
@@ -498,33 +527,40 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
               (await handles.prisma.run.findUnique({ where: { id: sent.runId } }))?.status,
             { timeout: 15000, interval: 100 },
           )
-          .toBe(allowed || mode === "block" ? "completed" : "failed");
+          .toBe(allowed || mode === "block" || mode === "deny-retry" ? "completed" : "failed");
         model.assertComplete();
-        expect(model.requests).toHaveLength(mode === "same-labels" ? 5 : 4);
+        expect(model.requests).toHaveLength(
+          mode === "same-labels" || mode === "deny-retry" ? 5 : 4,
+        );
         expect(mutations).toHaveLength(allowed ? 1 : 0);
         const settled = await handles.prisma.externalEffect.findMany({
           where: { runId: sent.runId, kind: approvedToolName },
         });
-        expect(settled).toHaveLength(1);
-        expect(settled[0]!.id).toBe(effect.id);
-        expect(settled[0]!.idempotencyKey).toBe(effect.idempotencyKey);
-        expect(settled[0]!.request).toEqual(effect.request);
-        if (allowed) expect(settled[0]!.status).toBe("completed");
+        const original = settled.find((entry) => entry.id === effect.id)!;
+        expect(original.idempotencyKey).toBe(effect.idempotencyKey);
+        expect(original.request).toEqual(effect.request);
+        if (allowed) expect(original.status).toBe("completed");
         else if (mode === "block") {
-          expect(settled[0]).toMatchObject({
+          expect(original).toMatchObject({
             status: "completed",
             result: { code: "action_rule_blocked" },
           });
-        } else expect(settled[0]!.status).not.toBe("completed");
+        } else if (mode === "deny-retry") {
+          expect(original).toMatchObject({ status: "denied", result: null });
+        } else expect(original.status).not.toBe("completed");
         const allEffects = await handles.prisma.externalEffect.findMany({
           where: { runId: sent.runId },
         });
         const nativeEffects = allEffects.filter(
           (entry) => Array.isArray(entry.request) && entry.request[1] === "native_execute_tool",
         );
-        expect(nativeEffects).toHaveLength(1);
-        expect(nativeEffects[0]!.id).toBe(effect.id);
-        expect(nativeEffects[0]!.request).toEqual(effect.request);
+        expect(nativeEffects).toContainEqual(original);
+        const retries = nativeEffects.filter((entry) => entry.id !== effect.id);
+        if (mode === "deny-retry") {
+          expect(retries).toHaveLength(2);
+          for (const retry of retries)
+            expect(retry).toMatchObject({ status: "denied", result: { refused: "repeat" } });
+        } else expect(retries).toEqual([]);
         const siblings = await handles.prisma.connection.findMany({
           where: { id: { in: connections.slice(1) } },
         });

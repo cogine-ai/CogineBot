@@ -230,6 +230,7 @@ import {
   claimIntendedEffect,
   completeExternalEffect,
   createApprovedEffectReplayQueue,
+  DENIED_ACTION_ERROR,
   isToolPauseResult,
   parseCatalogApprovalTarget,
   replaceCompletedExternalEffectResult,
@@ -459,6 +460,11 @@ import {
   scriptedSteeringText,
 } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
+import {
+  loadDeniedActionTargets,
+  pageDenialTarget,
+  repeatsDeniedAction,
+} from "./run-denied-actions.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
 import { findRunRecoveryBlockers, pendingQuotaWaitExpired } from "./run-recovery.js";
 import {
@@ -5015,6 +5021,31 @@ export function createRunExecutor(deps: ExecutorDeps) {
         )
           throw new ScriptedStateInvalidError();
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
+        // Answering an approval ends the paused attempt. A resumed worker reloads its refusals.
+        let deniedActionTargets: ReturnType<typeof loadDeniedActionTargets> | undefined;
+        const loadRunDenials = () =>
+          (deniedActionTargets ??= deps.prisma.externalEffect
+            .findMany({
+              where: {
+                runId,
+                spaceId: run.spaceId,
+                status: "denied",
+                result: { equals: Prisma.AnyNull },
+              },
+              select: { kind: true, request: true, result: true },
+            })
+            .then((effects) =>
+              loadDeniedActionTargets(
+                effects,
+                async (id) =>
+                  (
+                    await deps.prisma.capabilityInstall.findFirst({
+                      where: { id, spaceId: run.spaceId, userId: run.userId },
+                      select: { kind: true },
+                    })
+                  )?.kind,
+              ),
+            ));
         const baseComputerInstruction = persistentComputerInstruction({
           heldForTakeover,
           graphicalToolsAllowed,
@@ -6205,13 +6236,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
-          const mcpBatchGroup =
+          const mcpServerGroup =
             liveRoute?.connectorId === "mcp" ? connectorTool?.route?.catalogGroup : undefined;
           const wrappers = batchActions
             ? [
                 ...new Set([name, wireToolName]),
-                ...(mcpBatchGroup
-                  ? batchActions.map(({ toolName }) => mcpToolName(mcpBatchGroup, toolName))
+                ...(mcpServerGroup
+                  ? batchActions.map(({ toolName }) => mcpToolName(mcpServerGroup, toolName))
                   : liveRoute?.connectorId === "installed"
                     ? batchActions.map(({ toolName }) =>
                         uniquifyInstalledToolName(liveRoute.resourceId, toolName),
@@ -6465,6 +6496,58 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
             throw error;
           }
+          if (
+            (!applied || applied.effect.status === "intended") &&
+            repeatsDeniedAction(
+              {
+                toolName: name,
+                route: liveRoute,
+                batch,
+                page: pageMode && pageDenialTarget(pageMode, args.pageId),
+                aliases: directAliases,
+                legacyBatchPrefix:
+                  liveRoute?.connectorId === "composio"
+                    ? ""
+                    : mcpServerGroup
+                      ? mcpToolName(mcpServerGroup, "")
+                      : undefined,
+                opaqueCode: name === "shell" ? "shell" : isCodeRoute ? "connector" : undefined,
+              },
+              await loadRunDenials(),
+            )
+          ) {
+            context.signal.throwIfAborted();
+            if (!applied) return { error: DENIED_ACTION_ERROR };
+            const effectId = applied.effect.id;
+            const refused = await deps.prisma.$transaction(async (tx) => {
+              // Keep the refusal write ordered with Stop, pause and worker transfer.
+              const locked = await tx.run.updateMany({
+                where: {
+                  id: runId,
+                  spaceId: run.spaceId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                },
+                data: { leaseFence: fence },
+              });
+              if (locked.count !== 1) return null;
+              return tx.externalEffect.updateMany({
+                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
+                data: { status: "denied", result: { refused: "repeat" } },
+              });
+            });
+            if (!refused) return pauseForApproval();
+            if (refused.count === 1) return { error: DENIED_ACTION_ERROR };
+            const current = await deps.prisma.externalEffect.findUnique({
+              where: { id: applied.effect.id },
+            });
+            if (current) {
+              const replay = resolveDuplicateEffectGate(current, name);
+              if (replay.action === "return") return replay.result;
+            }
+            return uncertainEffectResult(name);
+          }
           const sharedPageUpdate =
             pageMode === "write" && applied
               ? sharedPageUpdateRequest(applied.effect.request)
@@ -6657,7 +6740,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           };
 
-          if (applied && plan === "judge" && (injectedReview || checker)) {
+          if (
+            applied &&
+            applied.effect.status !== "denied" &&
+            plan === "judge" &&
+            (injectedReview || checker)
+          ) {
             if (!applied.duplicate) {
               await runAutoReview();
             } else {
