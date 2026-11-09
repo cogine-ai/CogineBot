@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { NativeHttpClient } from "./http.js";
 
 const clients: NativeHttpClient[] = [];
@@ -29,7 +30,7 @@ describe("native HTTP execution", () => {
     let revoked = false;
     const fetch = vi.fn(async () => json({ id: "should-not-exist" }));
     const beforeDispatch = vi.fn(async () => {
-      if (revoked) throw new Error("Approval revoked");
+      if (revoked) throw new ActionRuleDispatchError("Action blocked");
     });
     const client = new NativeHttpClient(
       "https://api.example.test",
@@ -48,7 +49,9 @@ describe("native HTTP execution", () => {
       },
     );
     clients.push(client);
-    await expect(client.request({ method: "POST", path: "/v1/pages", body: {} })).rejects.toThrow();
+    await expect(
+      client.request({ method: "POST", path: "/v1/pages", body: {} }),
+    ).rejects.toBeInstanceOf(ActionRuleDispatchError);
     expect(beforeDispatch).toHaveBeenCalledOnce();
     expect(fetch).not.toHaveBeenCalled();
   });

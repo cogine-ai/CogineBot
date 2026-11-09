@@ -31,6 +31,7 @@ export interface SafeWebFetchOptions {
   allowedPorts?: readonly number[];
   /** Caller authority for each redirect, checked before the next hop's DNS or HTTP request. */
   assertRedirectAllowed?: (url: string) => void | Promise<void>;
+  beforeRequest?: (url: string) => void | Promise<void>;
   /**
    * Test seam for dispatcher teardown. Defaults to `Agent.close()`.
    * Always raced against the shared operation deadline.
@@ -140,6 +141,7 @@ export async function fetchSafeWebBytes(
       truncate: options.truncate ?? false,
       allowedPorts: options.allowedPorts,
       assertRedirectAllowed: options.assertRedirectAllowed,
+      beforeRequest: options.beforeRequest,
     });
   } finally {
     // Race graceful close against the shared deadline. Do not wait unbounded on close().
@@ -171,6 +173,7 @@ async function followRedirects(
     truncate: boolean;
     allowedPorts?: readonly number[];
     assertRedirectAllowed?: (url: string) => void | Promise<void>;
+    beforeRequest?: (url: string) => void | Promise<void>;
     redirected?: boolean;
   },
 ): Promise<SafeWebResponse<Uint8Array>> {
@@ -184,6 +187,8 @@ async function followRedirects(
     state.allowedPorts,
     state.redirected ? state.assertRedirectAllowed : undefined,
   );
+  if (state.beforeRequest)
+    await withAbort(Promise.resolve(state.beforeRequest(validated.href)), state.signal);
   // Race fetch against the deadline — injected fetch may ignore init.signal.
   const response = await withAbort(
     state.baseFetch(validated.href, {

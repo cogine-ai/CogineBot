@@ -1097,7 +1097,8 @@ export const appContract = {
     set: oc
       .input(
         z.object({
-          effect: ActionApprovalRuleSchema.shape.effect,
+          // Publish new block rules only after all workers support the third effect.
+          effect: z.enum(["always_allow", "require_approval"]),
           matchKind: z.enum(["tool", "connector", "category", "site"]),
           matchValue: z.string().min(1),
         }),

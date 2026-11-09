@@ -33,6 +33,7 @@ export async function webFetchFromTool(
   context: AdapterContext,
   args: Record<string, unknown>,
   assertRedirectAllowed: NonNullable<WebFetchRequest["assertRedirectAllowed"]>,
+  beforeRequest?: WebFetchRequest["beforeRequest"],
 ) {
   const url = String(args.url ?? "").trim();
   if (!url) return { error: "url is required" };
@@ -47,6 +48,7 @@ export async function webFetchFromTool(
         ...(offset ? { offset } : {}),
         signal: context.signal,
         assertRedirectAllowed,
+        ...(beforeRequest ? { beforeRequest } : {}),
       },
       context,
     );

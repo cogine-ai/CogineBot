@@ -17,6 +17,7 @@ import {
   connectionAuthorizationRevision,
   connectorAccountRevision,
 } from "../connector-account-binding.js";
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { asRecord } from "../connector-http.js";
 import { redactConnectorPayload } from "../connector-safety.js";
 import {
@@ -432,6 +433,14 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
     let graphDownloads: NativeGraphFileDownloads | undefined;
     let discordDownloads: DiscordAttachmentDownloads | undefined;
     const redactions: string[] = [];
+    let admittedProviderRequest = false;
+    const checkDispatch = call.beforeDispatch;
+    const beforeProviderRequest = checkDispatch
+      ? async () => {
+          await checkDispatch();
+          admittedProviderRequest = true;
+        }
+      : undefined;
     try {
       const selected = assertBoundConnectorAccount(call, context);
       if (!selected || call.route?.connectorId !== "native")
@@ -544,7 +553,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
             network: this.options.network,
             signal: context.signal,
             readOnly: action.readOnly,
-            beforeDispatch: call.beforeDispatch,
+            beforeDispatch: beforeProviderRequest,
             allowPrivateEndpoint,
             headers:
               bound.config.appId === "notion"
@@ -586,7 +595,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           async () => (await credential()).value,
           context.signal,
           this.options.network,
-          call.beforeDispatch,
+          beforeProviderRequest,
         );
       if (isMicrosoftApp(bound.config.appId))
         graphDownloads = new NativeGraphFileDownloads(
@@ -627,7 +636,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
               context.userId,
               this.options.allowPrivateEndpoint ?? false,
             ),
-            call.beforeDispatch,
+            beforeProviderRequest,
           );
         },
         readArtifact: async (id) => {
@@ -678,6 +687,14 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
         data: redactConnectorPayload(await action.execute(call.args, actionContext), redactions),
       };
     } catch (error) {
+      if (error instanceof ActionRuleDispatchError) {
+        yield {
+          type: "error",
+          message: error.message,
+          ...(admittedProviderRequest ? { uncertain: true } : {}),
+        };
+        return;
+      }
       const failure =
         error instanceof NativeActionError
           ? error

@@ -341,7 +341,7 @@ import {
   refreshRunConnectorContext,
   selectExplicitConnectorAccounts,
 } from "./connector-account-binding.js";
-import { dispatchTransaction } from "./connector-dispatch.js";
+import { ActionRuleDispatchError, dispatchTransaction } from "./connector-dispatch.js";
 import {
   redactConnectorPayload,
   sanitizeConnectorError,
@@ -6224,7 +6224,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }))
             : [];
           const isCodeRoute =
-            isComposioCodeTool(wireToolName) &&
+            (isComposioCodeTool(wireToolName) ||
+              batchActions?.some(({ toolName }) => isComposioCodeTool(toolName))) &&
             (liveRoute?.connectorId === "composio" ||
               liveRoute?.connectorId === "mcp" ||
               (liveRoute?.connectorId === "installed" &&
@@ -6239,14 +6240,35 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     select: { id: true },
                   }),
                 )));
+          const directAliases =
+            !batchActions && liveRoute
+              ? [
+                  ...new Set([
+                    wireToolName,
+                    ...(liveRoute.connectorId === "installed"
+                      ? [uniquifyInstalledToolName(liveRoute.resourceId, wireToolName)]
+                      : []),
+                  ]),
+                ].filter((alias) => alias !== name)
+              : [];
           const resolveRules = (rules: ActionApprovalRule[]) => {
-            if (isCodeRoute) {
+            // An opaque batch or a known code tool can invoke an action this call cannot name.
+            if (isCodeRoute || batch?.complete === false) {
               const matchingRules = rules.filter(
                 (rule) => rule.effect === "deny" && rule.matchKind !== "site",
               );
               if (matchingRules.length > 0) {
                 return { decision: "deny" as const, source: "deny" as const, matchingRules };
               }
+            }
+            for (const alias of directAliases) {
+              const resolvedAlias = resolveActionApprovalDetail({
+                toolName: alias,
+                connectorKind,
+                readOnly: declaredReadOnly,
+                rules,
+              });
+              if (resolvedAlias.decision === "deny") return resolvedAlias;
             }
             return batchActions
               ? resolveBatchActionApproval({
@@ -6274,11 +6296,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const rulesBlockDispatch = async (tx?: Prisma.TransactionClient) =>
             resolveRules(await loadApprovalRules(tx, "deny")).decision === "deny";
           const settlePolicyBlock = async (
-            effect: { id: string } | undefined,
+            effect: { id: string },
             status: "approved" | "intended",
           ) => {
-            if (!effect) return policyBlock;
-            return (await completeEffect(
+            const completed = await completeEffect(
               deps,
               effect.id,
               status,
@@ -6286,26 +6307,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               status === "approved" && run.origin === "bot_peer"
                 ? approvedActionReceipt(policyBlock, "error")
                 : undefined,
-            ))
-              ? policyBlock
-              : uncertainEffectResult(name);
+            );
+            trust.invalidateDestinationTrust();
+            return completed ? policyBlock : uncertainEffectResult(name);
           };
-          if (approvalResolved.decision === "deny") {
-            if (restoredApprovalEffect?.status === "intended") {
-              return settlePolicyBlock(restoredApprovalEffect, "intended");
-            }
-            if (!restoredApprovalEffect || restoredApprovalEffect.status === "approved") {
-              const approved = approvedEffects.find(
-                (effect) => effect.idempotencyKey === nextApprovedKey,
-              );
-              return settlePolicyBlock(approved, "approved");
-            }
-          }
-          const autoReviewPref = requiresMandatoryApproval
-            ? false
-            : await loadAutoReviewPreference();
-          const injectedReview = requiresMandatoryApproval ? undefined : deps.autoReview;
-          const checker = requiresMandatoryApproval ? undefined : resolveAutoReviewChecker();
+          const blocked = approvalResolved.decision === "deny";
+          const reviewable = !requiresMandatoryApproval && !blocked;
+          const autoReviewPref = reviewable && (await loadAutoReviewPreference());
+          const injectedReview = reviewable ? deps.autoReview : undefined;
+          const checker = reviewable ? resolveAutoReviewChecker() : undefined;
           const checkerConfigured =
             autoReviewPref &&
             (Boolean(injectedReview) ||
@@ -6325,16 +6335,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ),
                   )
                 : false));
-          let plan = requiresMandatoryApproval
-            ? "ask"
-            : planActionGate({
-                resolved: approvalResolved,
-                consequential: requiresApprovalByDefault,
-                reviewOnly: connectorReadGated,
-                newDestination: siteGate === "new",
-                autoReviewEnabled: autoReviewPref,
-                checkerConfigured,
-              });
+          let plan =
+            requiresMandatoryApproval && !blocked
+              ? "ask"
+              : planActionGate({
+                  resolved: approvalResolved,
+                  consequential: requiresApprovalByDefault,
+                  reviewOnly: connectorReadGated,
+                  newDestination: siteGate === "new",
+                  autoReviewEnabled: autoReviewPref,
+                  checkerConfigured,
+                });
           if (
             plan === "allow" &&
             batch &&
@@ -6405,24 +6416,42 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : undefined;
           let applied: Awaited<ReturnType<typeof recordEffect>> | undefined;
           try {
-            applied = restoredApprovalEffect
-              ? { duplicate: true, effect: restoredApprovalEffect }
-              : (READ_ONLY_AGENT_TOOLS.has(name) || pageMode === "read" || pageMode === "help") &&
-                  !needsApprovalEarly &&
-                  siteGate !== "new" &&
-                  nextApprovedTool !== name &&
-                  !nextApprovedKey
-                ? undefined
-                : await recordEffect(
-                    deps,
-                    run,
-                    replayEffectToolName,
-                    effectKey,
-                    effectRequest,
-                    executionId,
-                    consumedEffectIds,
-                    prepareEffectRequest,
-                  );
+            if (blocked) {
+              const prior =
+                restoredApprovalEffect ??
+                (await findRecordedEffect(
+                  deps,
+                  run,
+                  replayEffectToolName,
+                  effectKey,
+                  effectRequest,
+                  executionId,
+                  consumedEffectIds,
+                ));
+              if (!prior) return policyBlock;
+              if (prior.status === "approved" || prior.status === "intended")
+                return settlePolicyBlock(prior, prior.status);
+              applied = { duplicate: true, effect: prior };
+            } else {
+              applied = restoredApprovalEffect
+                ? { duplicate: true, effect: restoredApprovalEffect }
+                : (READ_ONLY_AGENT_TOOLS.has(name) || pageMode === "read" || pageMode === "help") &&
+                    !needsApprovalEarly &&
+                    siteGate !== "new" &&
+                    nextApprovedTool !== name &&
+                    !nextApprovedKey
+                  ? undefined
+                  : await recordEffect(
+                      deps,
+                      run,
+                      replayEffectToolName,
+                      effectKey,
+                      effectRequest,
+                      executionId,
+                      consumedEffectIds,
+                      prepareEffectRequest,
+                    );
+            }
           } catch (error) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
             throw error;
@@ -6810,7 +6839,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           const requestApproval = async () => {
-            if (await rulesBlockDispatch()) return settlePolicyBlock(applied?.effect, "intended");
+            if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
             await flushConnectionNarration(executionId);
             const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForApproval();
@@ -6917,8 +6946,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : Promise.resolve(true);
           const finish = async (result: unknown, outcome?: "result" | "error") =>
             (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
+          const finishPolicyBlock = async () => {
+            const result = await finish(policyBlock, "error");
+            trust.invalidateDestinationTrust();
+            return result;
+          };
           if (!pendingPeerConnectorClaim && (await rulesBlockDispatch()))
-            return finish(policyBlock, "error");
+            return finishPolicyBlock();
           if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
@@ -7558,12 +7592,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "web_fetch") {
             const trustedSites = await trust.loadTrustedSites();
-            let blockedRedirect = false;
-            const result = await webFetchFromTool(web, context, args, async (url) => {
-              if (url.length > MAX_FETCH_URL_LENGTH)
-                throw new Error(`Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`);
-              const site = urlSite(url);
-              const rules = await loadApprovalRules();
+            let blockedRequest = false;
+            const resolveFetchRules = (site: string | undefined, rules: ActionApprovalRule[]) => {
               const resolved = resolveActionApprovalDetail({
                 toolName: name,
                 connectorKind,
@@ -7572,25 +7602,43 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 rules,
               });
               if (resolved.decision === "deny") {
-                blockedRedirect = true;
-                throw new Error(policyBlock.error);
+                blockedRequest = true;
+                throw new ActionRuleDispatchError(policyBlock.error);
               }
-              const siteAllowed =
-                site !== undefined &&
-                outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
-              // An exact search hit grants its URL. Site authority is separate.
-              if (site === fetchSite && siteAllowed) return;
-              if (
-                site &&
-                resolved.decision === "allow" &&
-                (searchResultUrls.has(url) || siteAllowed)
-              )
-                return;
-              throw new Error(
-                `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
-              );
-            });
-            return finish(blockedRedirect ? policyBlock : result);
+              return resolved;
+            };
+            const result = await webFetchFromTool(
+              web,
+              context,
+              args,
+              async (url) => {
+                if (url.length > MAX_FETCH_URL_LENGTH)
+                  throw new Error(
+                    `Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`,
+                  );
+                const site = urlSite(url);
+                const rules = await loadApprovalRules();
+                const resolved = resolveFetchRules(site, rules);
+                const siteAllowed =
+                  site !== undefined &&
+                  outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
+                // An exact search hit grants its URL. Site authority is separate.
+                if (site === fetchSite && siteAllowed) return;
+                if (
+                  site &&
+                  resolved.decision === "allow" &&
+                  (searchResultUrls.has(url) || siteAllowed)
+                )
+                  return;
+                throw new Error(
+                  `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
+                );
+              },
+              async (url) => {
+                resolveFetchRules(urlSite(url), await loadApprovalRules(undefined, "deny"));
+              },
+            );
+            return blockedRequest ? finishPolicyBlock() : finish(result);
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {
@@ -8902,7 +8950,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               if (await rulesBlockDispatch(tx)) {
                 blockedAtDispatch = true;
-                throw new Error(policyBlock.error);
+                throw new ActionRuleDispatchError(policyBlock.error);
               }
               context.signal.throwIfAborted();
             };
@@ -8966,7 +9014,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   result.uncertain === true
                 )
               )
-                return finish(policyBlock, "error");
+                return finishPolicyBlock();
             } else if (viaConnector && (!batch || batchAccounts?.complete === true)) {
               const trusted = await trust.loadTrustedConnectors();
               for (const key of connectorTrusts) trusted.add(key);
@@ -11275,7 +11323,7 @@ export function legacyPiToolCallId(executionId: string): string | undefined {
   return undefined;
 }
 
-export async function recordEffect(
+async function findRecordedEffect(
   deps: ExecutorDeps,
   run: { id: string; spaceId: string; threadId: string; botId: string },
   kind: string,
@@ -11283,7 +11331,6 @@ export async function recordEffect(
   request: unknown,
   legacyIdempotencyKey?: string,
   consumedIds?: Set<string>,
-  prepareRequest?: () => Promise<unknown>,
 ) {
   const existing = await deps.prisma.externalEffect.findUnique({
     where: { idempotencyKey },
@@ -11301,7 +11348,7 @@ export async function recordEffect(
       runId: run.id,
       payload: { executionId: idempotencyKey, kind },
     });
-    return { duplicate: true, effect: existing };
+    return existing;
   }
 
   // Pre-fix rows used bare provider ids or scoped keys that included the
@@ -11355,7 +11402,7 @@ export async function recordEffect(
           runId: run.id,
           payload: { executionId: candidate, kind, legacy: true },
         });
-        return { duplicate: true, effect: sameIdLegacy };
+        return sameIdLegacy;
       }
     }
   }
@@ -11394,8 +11441,32 @@ export async function recordEffect(
       runId: run.id,
       payload: { executionId: legacy.idempotencyKey, kind, legacy: true },
     });
-    return { duplicate: true, effect: legacy };
+    return legacy;
   }
+
+  return undefined;
+}
+
+export async function recordEffect(
+  deps: ExecutorDeps,
+  run: { id: string; spaceId: string; threadId: string; botId: string },
+  kind: string,
+  idempotencyKey: string,
+  request: unknown,
+  legacyIdempotencyKey?: string,
+  consumedIds?: Set<string>,
+  prepareRequest?: () => Promise<unknown>,
+) {
+  const prior = await findRecordedEffect(
+    deps,
+    run,
+    kind,
+    idempotencyKey,
+    request,
+    legacyIdempotencyKey,
+    consumedIds,
+  );
+  if (prior) return { duplicate: true, effect: prior };
 
   const effect = await deps.prisma.externalEffect.create({
     data: {

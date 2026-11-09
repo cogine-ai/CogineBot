@@ -375,6 +375,10 @@ export function createRunTrust(
     loadOwnerWords,
     loadTrustedSites,
     loadTrustedConnectors,
+    invalidateDestinationTrust() {
+      trustedSites = undefined;
+      trustedConnectors = undefined;
+    },
     routineSitePolicy,
   };
 }

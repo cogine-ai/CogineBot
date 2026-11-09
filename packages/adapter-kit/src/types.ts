@@ -1036,6 +1036,8 @@ export interface WebFetchRequest {
   signal?: AbortSignal;
   /** Run authority check before a redirect target is resolved or contacted. */
   assertRedirectAllowed?: (url: string) => void | Promise<void>;
+  /** Recheck caller authority after resolving a hop, before making its HTTP request. */
+  beforeRequest?: (url: string) => void | Promise<void>;
 }
 
 export interface WebFetchResult {

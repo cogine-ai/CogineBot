@@ -81,7 +81,7 @@ describe("account preferences", () => {
     return { update, deps, actor, handler: new RPCHandler(createRouter(deps)) };
   }
 
-  it.each(["always_allow", "require_approval", "deny"] as const)(
+  it.each(["always_allow", "require_approval"] as const)(
     "persists and returns a canonical site rule with the actor's scope (%s)",
     async (effect) => {
       const { deps, actor } = preferencesDeps("robot");
@@ -133,6 +133,21 @@ describe("account preferences", () => {
       });
     },
   );
+
+  it("leaves the rule writer closed to blocks during the worker compatibility phase", async () => {
+    const { deps, actor } = preferencesDeps("robot");
+    const upsert = vi.fn();
+    Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    await expect(
+      client.approvalRules.set({
+        effect: "deny",
+        matchKind: "tool",
+        matchValue: "demo_write",
+      } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
 
   it("rejects an invalid site before writing any rule", async () => {
     const { deps, actor } = preferencesDeps("robot");
