@@ -6,6 +6,8 @@ import { findPendingAsk } from "./messages.js";
 import { lockSpaceLifecycle } from "./spaces.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
+export const PROTECTED_APPROVAL_TOOLS = ["request_secret", "request_takeover"];
+
 export interface DelegatedApprovalSource {
   spaceId: string;
   userId: string;
@@ -380,6 +382,7 @@ export async function hasPeerApprovalDecision(
         id: ask.approvalEffectId,
         spaceId: input.spaceId,
         runId: run.id,
+        kind: { notIn: PROTECTED_APPROVAL_TOOLS },
         status:
           input.action === "deny"
             ? "denied"
@@ -462,6 +465,7 @@ export async function loadDelegatedApprovals(
     where: {
       id: { in: cards.map(({ block }) => block.approvalEffectId) },
       spaceId: source.spaceId,
+      kind: { notIn: PROTECTED_APPROVAL_TOOLS },
     },
     select: { id: true, runId: true, status: true, approvalReceipt: true },
   });

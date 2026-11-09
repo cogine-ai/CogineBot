@@ -45,7 +45,11 @@ import { Prisma } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { ownedConnectionSelection, updateTaskConnectionSelection } from "./connection-selection.js";
 import type { AnswerDelegatedApprovalInput } from "./delegated-approvals.js";
-import { lockDelegatedApproval, ordinaryApprovalCard } from "./delegated-approvals.js";
+import {
+  lockDelegatedApproval,
+  ordinaryApprovalCard,
+  PROTECTED_APPROVAL_TOOLS,
+} from "./delegated-approvals.js";
 import type { RunLease } from "./messages.js";
 import {
   assertRunCanWriteHistory,
@@ -954,7 +958,8 @@ async function commitAnswerRunInput(
         status: "intended",
       },
     });
-    if (!approvalEffect) return null;
+    if (!approvalEffect || (delegation && PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind)))
+      return null;
     const request = approvalEffect.request;
     const sharedPageRequest =
       approvalEffect.kind === "save_page" &&
@@ -1060,11 +1065,15 @@ async function commitAnswerRunInput(
     });
   }
 
+  const ordinaryApproval =
+    approvalEffect &&
+    ordinaryApprovalCard(pendingAsk) &&
+    !PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind);
   if (approvalAsk) {
     const allowed = input.answer === "allow" || input.answer === "always";
     const requiresPeerApprovalRecheck =
       allowed &&
-      ordinaryApprovalCard(pendingAsk) &&
+      ordinaryApproval &&
       Boolean(
         delegation ||
           (run.origin === "bot_peer" &&
@@ -1190,7 +1199,7 @@ async function commitAnswerRunInput(
   return {
     threadId: updated.threadId,
     seq: updated.seq,
-    ...(ordinaryApprovalCard(pendingAsk) ? { ordinaryApproval: true } : {}),
+    ...(ordinaryApproval ? { ordinaryApproval: true } : {}),
   };
 }
 
@@ -1238,7 +1247,12 @@ export async function answerDelegatedApproval(
           select: { blocks: true },
         }),
         tx.externalEffect.findFirst({
-          where: { id: input.effectId, spaceId: input.spaceId, runId: run.id },
+          where: {
+            id: input.effectId,
+            spaceId: input.spaceId,
+            runId: run.id,
+            kind: { notIn: PROTECTED_APPROVAL_TOOLS },
+          },
           select: { status: true },
         }),
       ]);

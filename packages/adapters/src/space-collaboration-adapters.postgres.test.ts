@@ -1245,7 +1245,7 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       await prisma.user.deleteMany({ where: { id: { in: [...approvalSpaces] } } });
       approvalSpaces.clear();
     });
-    async function delegatedFixture() {
+    async function delegatedFixture(initialKind = "destination.write") {
       const f = await approvalSpace();
       await expect(f.send()).resolves.toMatchObject({ ok: true });
       const [run] = await f.recipientRuns();
@@ -1316,7 +1316,7 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
         });
         return { effect, message, block, request };
       };
-      const { effect, message, block, request } = await pause();
+      const { effect, message, block, request } = await pause(initialKind);
       const target = {
         runId: run.id,
         messageId: message.id,
@@ -1524,34 +1524,58 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       expect(await t.recheck()).toBe(false);
     });
 
-    it("protects a pending ordinary approval carried forward from the previous schema", async () => {
-      const t = await delegatedFixture();
-      expect(await t.answer("allow")).toBe("accepted");
-      const sql = await readFile(
-        new URL(
-          "../../db/prisma/migrations/20261109000800_delegated_approval_receipts/migration.sql",
-          import.meta.url,
-        ),
-        "utf8",
-      );
-      const update = sql
-        .slice(sql.indexOf('UPDATE "external_effects"'), sql.lastIndexOf("COMMIT;"))
-        .trim();
-      const rollback = new Error("discard the legacy approval fixture");
-      await expect(
-        prisma.$transaction(async (tx) => {
-          await tx.externalEffect.update({
-            where: { id: t.effect.id },
-            data: { requiresPeerApprovalRecheck: false, delegatedApprovalNonce: null },
-          });
-          await tx.$executeRawUnsafe(update);
+    it.each(["destination.write", "request_secret", "request_takeover"])(
+      "keeps protected tool approvals in the execution chat when upgrading %s",
+      async (kind) => {
+        const t = await delegatedFixture(kind);
+        const ordinary = kind === "destination.write";
+        if (ordinary) {
+          expect(await t.answer("allow")).toBe("accepted");
+        } else {
+          expect(await t.query()).toEqual([]);
+          expect(await t.answer("allow")).toBe("conflict");
           expect(
-            await tx.externalEffect.findUniqueOrThrow({ where: { id: t.effect.id } }),
-          ).toMatchObject({ status: "approved", requiresPeerApprovalRecheck: true });
-          throw rollback;
-        }),
-      ).rejects.toBe(rollback);
-    });
+            await t.events.answerRunInput({
+              spaceId: t.source.spaceId,
+              threadId: t.run.threadId,
+              answeredByUserId: t.source.userId,
+              runId: t.run.id,
+              messageId: t.message.id,
+              answer: "allow",
+            }),
+          ).toBe(true);
+          expect(await t.answer("allow")).toBe("conflict");
+          expect(await t.query()).toEqual([]);
+          expect(
+            await prisma.externalEffect.findUniqueOrThrow({ where: { id: t.effect.id } }),
+          ).toMatchObject({ status: "approved", requiresPeerApprovalRecheck: false });
+        }
+        const sql = await readFile(
+          new URL(
+            "../../db/prisma/migrations/20261109000800_delegated_approval_receipts/migration.sql",
+            import.meta.url,
+          ),
+          "utf8",
+        );
+        const update = sql
+          .slice(sql.indexOf('UPDATE "external_effects"'), sql.lastIndexOf("COMMIT;"))
+          .trim();
+        const rollback = new Error("discard the legacy approval fixture");
+        await expect(
+          prisma.$transaction(async (tx) => {
+            await tx.externalEffect.update({
+              where: { id: t.effect.id },
+              data: { requiresPeerApprovalRecheck: false, delegatedApprovalNonce: null },
+            });
+            await tx.$executeRawUnsafe(update);
+            expect(
+              await tx.externalEffect.findUniqueOrThrow({ where: { id: t.effect.id } }),
+            ).toMatchObject({ status: "approved", requiresPeerApprovalRecheck: ordinary });
+            throw rollback;
+          }),
+        ).rejects.toBe(rollback);
+      },
+    );
 
     it("does not let a nonce from a previous decision authorize a second action", async () => {
       const t = await delegatedFixture();

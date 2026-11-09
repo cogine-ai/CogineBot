@@ -14,6 +14,7 @@ JOIN "threads" sender ON sender.id = parent."threadId"
 JOIN "threads" recipient ON recipient.id = peer."threadId"
 WHERE effect."runId" = peer.id AND effect."spaceId" = peer."spaceId"
   AND effect.status = 'approved'
+  AND effect.kind NOT IN ('request_secret', 'request_takeover')
   AND peer.origin = 'bot_peer' AND peer.status IN ('queued', 'leased', 'running', 'waiting_limit')
   AND peer."collaborationMessageId" IS NOT NULL
   AND peer."collaborationSourceBotId" = parent."botId"
