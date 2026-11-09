@@ -207,6 +207,7 @@ import {
   MAX_FETCH_URL_LENGTH,
 } from "./approval-ask.js";
 import {
+  ACTION_RULE_BLOCKED,
   approvalPausedToolResult,
   approvalReplayPathError,
   approvalReplayResourceError,
@@ -293,7 +294,7 @@ import { validCloudAgentArgs } from "./cloud-agent-tools.js";
 import { selectCloudAgentTools } from "./cloud-agent-tools-select.js";
 import { cloudflareGatewayProviderEnv } from "./cloudflare-ai-gateway.js";
 import { notifyCollaborationNotices, settlePeerDelivery } from "./collaboration-policy.js";
-import { connectorBatchActionNames } from "./composio-batch.js";
+import { connectorBatchActionNames, isComposioCodeTool } from "./composio-batch.js";
 import type { PluginConnectionRow } from "./composio-connector.js";
 import {
   collectLogIds,
@@ -4948,16 +4949,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const connectorTools = new Map(
           exposedConnectorTools.map((tool) => [tool.name, tool] as const),
         );
-        let approvalRulesPromise: Promise<ActionApprovalRule[]> | undefined;
-        const loadApprovalRules = () => {
-          approvalRulesPromise ??= deps.prisma.actionApprovalRule
-            .findMany({
-              where: { spaceId: run.spaceId, createdByUserId: run.userId },
-              select: { effect: true, matchKind: true, matchValue: true },
-            })
-            .then((rules) => rules as ActionApprovalRule[]);
-          return approvalRulesPromise;
-        };
+        const loadApprovalRules = async (
+          store: Pick<Prisma.TransactionClient, "actionApprovalRule"> = deps.prisma,
+          effect?: "deny",
+        ): Promise<ActionApprovalRule[]> =>
+          (await store.actionApprovalRule.findMany({
+            where: { spaceId: run.spaceId, createdByUserId: run.userId, effect },
+            select: { effect: true, matchKind: true, matchValue: true },
+          })) as ActionApprovalRule[];
         let autoReviewPreferencePromise: Promise<boolean> | undefined;
         const loadAutoReviewPreference = () => {
           autoReviewPreferencePromise ??= deps.prisma.actionAutoReviewPreference
@@ -6094,6 +6093,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             args = { ...args, url: fetchUrl };
             effectRequest = args;
           }
+          const rules = await loadApprovalRules();
           const siteGate =
             fetchUrl && fetchSite
               ? outboundSiteGate({
@@ -6101,7 +6101,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   trusted:
                     searchResultUrls.has(fetchUrl) ||
                     (await trust.loadTrustedSites()).has(fetchSite),
-                  rules: await loadApprovalRules(),
+                  rules,
                 })
               : "allow";
           const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
@@ -6161,7 +6161,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           const routineSitePolicy =
             name === "schedule_create"
-              ? await trust.routineSitePolicy(String(args.prompt ?? ""), await loadApprovalRules())
+              ? await trust.routineSitePolicy(String(args.prompt ?? ""), rules)
               : undefined;
           const routineSitesToReview = routineSitePolicy?.sitesToReview ?? [];
           const routineApproval =
@@ -6207,42 +6207,100 @@ export function createRunExecutor(deps: ExecutorDeps) {
             toolRequiresExplicitApproval(name);
           const mcpBatchGroup =
             liveRoute?.connectorId === "mcp" ? connectorTool?.route?.catalogGroup : undefined;
-          const approvalResolved = requiresMandatoryApproval
-            ? {
-                decision: "ask" as const,
-                source: "default" as const,
-                matchingRules: [],
+          const wrappers = batchActions
+            ? [
+                ...new Set([name, wireToolName]),
+                ...(mcpBatchGroup
+                  ? batchActions.map(({ toolName }) => mcpToolName(mcpBatchGroup, toolName))
+                  : liveRoute?.connectorId === "installed"
+                    ? batchActions.map(({ toolName }) =>
+                        uniquifyInstalledToolName(liveRoute.resourceId, toolName),
+                      )
+                    : []),
+              ].map((toolName) => ({
+                toolName,
+                connectorKind: connectorKindFromToolName(toolName, connectorProviders),
+                readOnly: declaredReadOnly,
+              }))
+            : [];
+          const isCodeRoute =
+            isComposioCodeTool(wireToolName) &&
+            (liveRoute?.connectorId === "composio" ||
+              liveRoute?.connectorId === "mcp" ||
+              (liveRoute?.connectorId === "installed" &&
+                Boolean(
+                  await deps.prisma.capabilityInstall.findFirst({
+                    where: {
+                      id: liveRoute.resourceId,
+                      spaceId: run.spaceId,
+                      userId: run.userId,
+                      kind: "mcp",
+                    },
+                    select: { id: true },
+                  }),
+                )));
+          const resolveRules = (rules: ActionApprovalRule[]) => {
+            if (isCodeRoute) {
+              const matchingRules = rules.filter(
+                (rule) => rule.effect === "deny" && rule.matchKind !== "site",
+              );
+              if (matchingRules.length > 0) {
+                return { decision: "deny" as const, source: "deny" as const, matchingRules };
               }
-            : batchActions
+            }
+            return batchActions
               ? resolveBatchActionApproval({
                   actions: batchActions,
-                  wrappers: [
-                    ...new Set([name, wireToolName]),
-                    ...(mcpBatchGroup
-                      ? batchActions.map(({ toolName }) => mcpToolName(mcpBatchGroup, toolName))
-                      : liveRoute?.connectorId === "installed"
-                        ? batchActions.map(({ toolName }) =>
-                            uniquifyInstalledToolName(liveRoute.resourceId, toolName),
-                          )
-                        : []),
-                  ].map((toolName) => ({
-                    toolName,
-                    connectorKind: connectorKindFromToolName(toolName, connectorProviders),
-                    readOnly: declaredReadOnly,
-                  })),
+                  wrappers,
                   // Generic MCP describes the shape without binding the server-side
                   // action or account. Keep its original wrapper review.
-                  rules: (await loadApprovalRules()).filter(
-                    (rule) => managedBatch || rule.effect === "require_approval",
-                  ),
+                  rules: managedBatch
+                    ? rules
+                    : rules.filter((rule) => rule.effect !== "always_allow"),
                 })
               : resolveActionApprovalDetail({
                   toolName: name,
                   connectorKind,
                   readOnly: declaredReadOnly,
                   site: fetchSite,
-                  rules: await loadApprovalRules(),
+                  rules,
                 });
+          };
+          const approvalResolved = resolveRules(rules);
+          const policyBlock = {
+            code: ACTION_RULE_BLOCKED,
+            error: `${name} is blocked by an action rule. Tell the user it is blocked and do not try it another way.`,
+          };
+          const rulesBlockDispatch = async (tx?: Prisma.TransactionClient) =>
+            resolveRules(await loadApprovalRules(tx, "deny")).decision === "deny";
+          const settlePolicyBlock = async (
+            effect: { id: string } | undefined,
+            status: "approved" | "intended",
+          ) => {
+            if (!effect) return policyBlock;
+            return (await completeEffect(
+              deps,
+              effect.id,
+              status,
+              policyBlock,
+              status === "approved" && run.origin === "bot_peer"
+                ? approvedActionReceipt(policyBlock, "error")
+                : undefined,
+            ))
+              ? policyBlock
+              : uncertainEffectResult(name);
+          };
+          if (approvalResolved.decision === "deny") {
+            if (restoredApprovalEffect?.status === "intended") {
+              return settlePolicyBlock(restoredApprovalEffect, "intended");
+            }
+            if (!restoredApprovalEffect || restoredApprovalEffect.status === "approved") {
+              const approved = approvedEffects.find(
+                (effect) => effect.idempotencyKey === nextApprovedKey,
+              );
+              return settlePolicyBlock(approved, "approved");
+            }
+          }
           const autoReviewPref = requiresMandatoryApproval
             ? false
             : await loadAutoReviewPreference();
@@ -6752,6 +6810,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           const requestApproval = async () => {
+            if (await rulesBlockDispatch()) return settlePolicyBlock(applied?.effect, "intended");
             await flushConnectionNarration(executionId);
             const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForApproval();
@@ -6844,11 +6903,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const early = await claimOrReturn("intended");
             if (early !== undefined) return early;
           }
-          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
-          if (viaConnector && (!batch || batchAccounts?.complete === true)) {
-            const trusted = await trust.loadTrustedConnectors();
-            for (const key of connectorTrusts) trusted.add(key);
-          }
           const persistEffectResult = (result: unknown, outcome?: "result" | "error") =>
             applied
               ? completeEffect(
@@ -6863,6 +6917,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : Promise.resolve(true);
           const finish = async (result: unknown, outcome?: "result" | "error") =>
             (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
+          if (!pendingPeerConnectorClaim && (await rulesBlockDispatch()))
+            return finish(policyBlock, "error");
+          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -7501,37 +7558,39 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "web_fetch") {
             const trustedSites = await trust.loadTrustedSites();
-            const rules = await loadApprovalRules();
-            return finish(
-              await webFetchFromTool(web, context, args, (url) => {
-                if (url.length > MAX_FETCH_URL_LENGTH)
-                  throw new Error(
-                    `Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`,
-                  );
-                const site = urlSite(url);
-                const siteAllowed =
-                  site !== undefined &&
-                  outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
-                // An exact search hit grants its URL. Site authority is separate.
-                if (site === fetchSite && siteAllowed) return;
-                const resolved = resolveActionApprovalDetail({
-                  toolName: name,
-                  connectorKind,
-                  readOnly: declaredReadOnly,
-                  site,
-                  rules,
-                });
-                if (
-                  site &&
-                  resolved.decision === "allow" &&
-                  (searchResultUrls.has(url) || siteAllowed)
-                )
-                  return;
-                throw new Error(
-                  `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
-                );
-              }),
-            );
+            let blockedRedirect = false;
+            const result = await webFetchFromTool(web, context, args, async (url) => {
+              if (url.length > MAX_FETCH_URL_LENGTH)
+                throw new Error(`Redirect URL must be at most ${MAX_FETCH_URL_LENGTH} characters`);
+              const site = urlSite(url);
+              const rules = await loadApprovalRules();
+              const resolved = resolveActionApprovalDetail({
+                toolName: name,
+                connectorKind,
+                readOnly: declaredReadOnly,
+                site,
+                rules,
+              });
+              if (resolved.decision === "deny") {
+                blockedRedirect = true;
+                throw new Error(policyBlock.error);
+              }
+              const siteAllowed =
+                site !== undefined &&
+                outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
+              // An exact search hit grants its URL. Site authority is separate.
+              if (site === fetchSite && siteAllowed) return;
+              if (
+                site &&
+                resolved.decision === "allow" &&
+                (searchResultUrls.has(url) || siteAllowed)
+              )
+                return;
+              throw new Error(
+                `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
+              );
+            });
+            return finish(blockedRedirect ? policyBlock : result);
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {
@@ -8823,28 +8882,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
               context.signal.throwIfAborted();
             }
             if (accountError !== undefined) return finish({ error: accountError });
-            const verifyDispatch = pendingPeerConnectorClaim
-              ? async (tx?: Prisma.TransactionClient) => {
-                  context.signal.throwIfAborted();
-                  const scope = {
-                    spaceId: run.spaceId,
-                    runId,
-                    effectId: applied!.effect.id,
-                    leaseOwner: workerId,
-                    leaseFence: fence,
-                  };
-                  const allowed = tx
-                    ? await recheckDelegatedApprovalDispatchInTransaction(tx, scope)
-                    : await runAsSystem("recheck the approved peer tool before dispatch", () =>
-                        recheckDelegatedApprovalDispatch(deps.prisma, scope),
-                      );
-                  if (!allowed) throw new Error("The delegated action is no longer authorized.");
-                  context.signal.throwIfAborted();
-                }
-              : undefined;
-            const beforeDispatch = verifyDispatch
-              ? Object.assign(() => verifyDispatch(), { [dispatchTransaction]: verifyDispatch })
-              : undefined;
+            let blockedAtDispatch = false;
+            const verifyDispatch = async (tx?: Prisma.TransactionClient) => {
+              context.signal.throwIfAborted();
+              if (pendingPeerConnectorClaim) {
+                const scope = {
+                  spaceId: run.spaceId,
+                  runId,
+                  effectId: applied!.effect.id,
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                };
+                const allowed = tx
+                  ? await recheckDelegatedApprovalDispatchInTransaction(tx, scope)
+                  : await runAsSystem("recheck the approved peer tool before dispatch", () =>
+                      recheckDelegatedApprovalDispatch(deps.prisma, scope),
+                    );
+                if (!allowed) throw new Error("The delegated action is no longer authorized.");
+              }
+              if (await rulesBlockDispatch(tx)) {
+                blockedAtDispatch = true;
+                throw new Error(policyBlock.error);
+              }
+              context.signal.throwIfAborted();
+            };
+            const beforeDispatch = Object.assign(() => verifyDispatch(), {
+              [dispatchTransaction]: verifyDispatch,
+            });
             let result: unknown = { error: `unknown tool ${name}` };
             let connectorOutcome: "result" | "error" = "error";
             for await (const event of deps.connector.execute(
@@ -8853,7 +8917,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 tool: name,
                 args,
                 executionId: effectKey,
-                ...(beforeDispatch ? { beforeDispatch } : {}),
+                beforeDispatch,
               },
               connectorContext,
             )) {
@@ -8891,6 +8955,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   });
                 }
               }
+            }
+            if (blockedAtDispatch) {
+              // A retry may be blocked after a previous request already reached the provider.
+              if (
+                !(
+                  result &&
+                  typeof result === "object" &&
+                  "uncertain" in result &&
+                  result.uncertain === true
+                )
+              )
+                return finish(policyBlock, "error");
+            } else if (viaConnector && (!batch || batchAccounts?.complete === true)) {
+              const trusted = await trust.loadTrustedConnectors();
+              for (const key of connectorTrusts) trusted.add(key);
             }
             if (
               connectorCall.route?.connectorId === "native" &&
@@ -11335,7 +11414,7 @@ export async function recordEffect(
 async function completeEffect(
   deps: ExecutorDeps,
   effectId: string,
-  expectedStatus: "intended" | "executing",
+  expectedStatus: "intended" | "approved" | "executing",
   result: unknown,
   approvalReceipt?: ReturnType<typeof approvedActionReceipt>,
 ) {

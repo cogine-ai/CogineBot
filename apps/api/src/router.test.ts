@@ -81,7 +81,7 @@ describe("account preferences", () => {
     return { update, deps, actor, handler: new RPCHandler(createRouter(deps)) };
   }
 
-  it.each(["always_allow", "require_approval"] as const)(
+  it.each(["always_allow", "require_approval", "deny"] as const)(
     "persists and returns a canonical site rule with the actor's scope (%s)",
     async (effect) => {
       const { deps, actor } = preferencesDeps("robot");

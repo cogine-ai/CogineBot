@@ -7,6 +7,7 @@ import { useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 
 function describeRule(rule: ActionApprovalRule): string {
+  if (rule.effect === "deny") return `${t`Blocked`} · ${rule.matchValue}`;
   if (rule.effect === "require_approval") {
     if (rule.matchKind === "category") {
       if (rule.matchValue === "email") return t`Ask before email actions`;

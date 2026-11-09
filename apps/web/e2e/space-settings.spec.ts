@@ -143,6 +143,11 @@ test("editing another Space saves its models and confirmations without moving th
   });
   expect((await inSpace<Me>(page, personal.id, "me")).defaultModel).toBe("personal-target-model");
 
+  await inSpace<ActionApprovalRule>(page, personal.id, "approvalRules/set", {
+    effect: "deny",
+    matchKind: "site",
+    matchValue: "https://reports.example.org/private",
+  });
   await settings.getByTestId("settings-nav-confirmations").click();
   const ruleSaved = page.waitForResponse(
     (response) => response.url().endsWith("/rpc/approvalRules/set") && response.ok(),
@@ -157,6 +162,7 @@ test("editing another Space saves its models and confirmations without moving th
   expect(await inSpace<ActionApprovalRule[]>(page, support.id, "approvalRules/list")).toEqual(
     originalRules,
   );
+  await expect(settings.getByText("Blocked · example.org", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "space-confirmations-target-personal");
 
   for (const [section, procedure] of [

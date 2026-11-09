@@ -328,6 +328,28 @@ describe("resolveActionApproval", () => {
     ).toBe("allow");
   });
 
+  it("blocks a narrower allow when a broader rule denies the connector", () => {
+    const rule: ActionApprovalRule = {
+      effect: "deny",
+      matchKind: "connector",
+      matchValue: "gmail",
+    };
+    const resolved = resolveActionApprovalDetail({
+      toolName: "gmail_send_email",
+      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "gmail_send_email" }, rule],
+    });
+    expect(resolved).toMatchObject({ decision: "deny", source: "deny" });
+    expect(
+      planActionGate({
+        resolved,
+        consequential: true,
+        autoReviewEnabled: true,
+        checkerConfigured: true,
+        newDestination: true,
+      }),
+    ).toBe("deny");
+  });
+
   it("labels always-allow vs default allow", () => {
     expect(
       resolveActionApprovalDetail({

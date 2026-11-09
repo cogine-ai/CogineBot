@@ -1097,7 +1097,7 @@ export const appContract = {
     set: oc
       .input(
         z.object({
-          effect: z.enum(["always_allow", "require_approval"]),
+          effect: ActionApprovalRuleSchema.shape.effect,
           matchKind: z.enum(["tool", "connector", "category", "site"]),
           matchValue: z.string().min(1),
         }),

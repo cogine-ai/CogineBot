@@ -3,6 +3,12 @@ import type { ConnectorBatchActionNames } from "@rakazo/core";
 
 export const COMPOSIO_MULTI_EXECUTE_TOOL = "COMPOSIO_MULTI_EXECUTE_TOOL";
 
+// These provider tools run code that can invoke any action.
+export function isComposioCodeTool(toolName: string): boolean {
+  const name = toolName.toUpperCase();
+  return name === "COMPOSIO_REMOTE_WORKBENCH" || name === "COMPOSIO_REMOTE_BASH_TOOL";
+}
+
 const COMPOSIO_BATCH: ToolBatch = { items: "tools", action: "tool_slug" };
 
 export function composioToolBatch(toolName: string): ToolBatch | undefined {

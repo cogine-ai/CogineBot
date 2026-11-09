@@ -30,7 +30,7 @@ export interface SafeWebFetchOptions {
   /** Refuse any hop, redirects included, whose port is not listed. */
   allowedPorts?: readonly number[];
   /** Caller authority for each redirect, checked before the next hop's DNS or HTTP request. */
-  assertRedirectAllowed?: (url: string) => void;
+  assertRedirectAllowed?: (url: string) => void | Promise<void>;
   /**
    * Test seam for dispatcher teardown. Defaults to `Agent.close()`.
    * Always raced against the shared operation deadline.
@@ -52,7 +52,7 @@ export async function assertSafeWebUrl(
   resolve: ResolveHostname = defaultResolveHostname,
   signal?: AbortSignal,
   allowedPorts?: readonly number[],
-  beforeResolve?: (url: string) => void,
+  beforeResolve?: (url: string) => void | Promise<void>,
 ): Promise<URL> {
   let url: URL;
   try {
@@ -74,7 +74,7 @@ export async function assertSafeWebUrl(
   if (isBlockedHostname(hostname)) {
     throw new Error("URL targets a private or internal host");
   }
-  beforeResolve?.(url.href);
+  if (beforeResolve) await withAbort(Promise.resolve(beforeResolve(url.href)), signal);
   assertPublicAddresses(await withAbort(resolve(hostname), signal));
   return url;
 }
@@ -170,7 +170,7 @@ async function followRedirects(
     redirectsRemaining: number;
     truncate: boolean;
     allowedPorts?: readonly number[];
-    assertRedirectAllowed?: (url: string) => void;
+    assertRedirectAllowed?: (url: string) => void | Promise<void>;
     redirected?: boolean;
   },
 ): Promise<SafeWebResponse<Uint8Array>> {

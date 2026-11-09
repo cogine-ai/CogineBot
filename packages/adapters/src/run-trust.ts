@@ -14,6 +14,7 @@ import { sitesInText, urlSite } from "@rakazo/core/egress";
 import { isPageCardMessage } from "@rakazo/core/message-quote";
 import type { ClaimedSteeringMessage, PrismaClient } from "@rakazo/db";
 import {
+  ACTION_RULE_BLOCKED,
   boundDirectApprovalDetails,
   catalogApprovalDetails,
   catalogApprovalInnerArgs,
@@ -24,6 +25,12 @@ import { loadReplySource, pageInputContext, resolveReplyContext } from "./reply-
 
 /** These reached the gate; they do not necessarily represent a successful external operation. */
 const PASSED_EFFECT_STATUSES = ["approved", "executing", "uncertain", "completed"];
+function wasBlockedByActionRule(result: unknown): boolean {
+  return Boolean(
+    result && typeof result === "object" && "code" in result && result.code === ACTION_RULE_BLOCKED,
+  );
+}
+
 type AuthoredMessage = { role: string; authorUserId?: string | null; blocks: unknown };
 
 function textBlocks(blocks: unknown): string {
@@ -294,7 +301,7 @@ export function createRunTrust(
           kind: "web_fetch",
           status: { in: PASSED_EFFECT_STATUSES },
         },
-        select: { request: true },
+        select: { request: true, result: true },
       })
       .then(async (rows) => {
         const sites = sitesInText(await loadInitialOwnerWords());
@@ -302,6 +309,7 @@ export function createRunTrust(
           for (const site of input.routineSites ?? []) sites.add(site);
         }
         for (const row of rows) {
+          if (wasBlockedByActionRule(row.result)) continue;
           const url = (row.request as { url?: unknown } | null)?.url;
           const site = typeof url === "string" ? urlSite(url) : undefined;
           if (site) sites.add(site);
@@ -336,11 +344,13 @@ export function createRunTrust(
     (trustedConnectors ??= prisma.externalEffect
       .findMany({
         where: { runId: run.id, spaceId: run.spaceId, status: { in: PASSED_EFFECT_STATUSES } },
-        select: { kind: true, request: true },
+        select: { kind: true, request: true, result: true },
       })
       .then((rows) => {
         const keys = rows
-          .filter((row) => !BUILTIN_AGENT_TOOL_NAMES.has(row.kind))
+          .filter(
+            (row) => !BUILTIN_AGENT_TOOL_NAMES.has(row.kind) && !wasBlockedByActionRule(row.result),
+          )
           .flatMap((row) => {
             const bound = boundDirectApprovalDetails(row.request, input.catalogApprovalMarker);
             const catalog = catalogApprovalDetails(row.request, input.catalogApprovalMarker);

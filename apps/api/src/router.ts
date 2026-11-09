@@ -139,6 +139,7 @@ import {
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
 import type {
+  ActionApprovalRule,
   Actor,
   BoardEvent,
   Bot,
@@ -7191,7 +7192,7 @@ export function createRouter(deps: RouterDeps) {
         });
         return rows.map((row) => ({
           id: row.id,
-          effect: row.effect as "always_allow" | "require_approval",
+          effect: row.effect as ActionApprovalRule["effect"],
           matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
@@ -7223,7 +7224,7 @@ export function createRouter(deps: RouterDeps) {
         });
         return {
           id: row.id,
-          effect: row.effect as "always_allow" | "require_approval",
+          effect: row.effect as ActionApprovalRule["effect"],
           matchKind: row.matchKind as "tool" | "connector" | "category" | "site",
           matchValue: row.matchValue,
           createdAt: row.createdAt.toISOString(),
