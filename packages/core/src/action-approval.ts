@@ -310,6 +310,42 @@ export function resolveActionApprovalDetail(input: {
   return { decision: "allow", source: "always_allow", matchingRules };
 }
 
+export type ConnectorBatchActionNames = { actions: string[]; complete: boolean };
+
+/** Return the stable rule identities only when the card displays the complete raw list. */
+export function displayedBatchApprovalRuleNames(
+  batch: ConnectorBatchActionNames,
+  detail?: string,
+): string[] | undefined {
+  return batch.complete &&
+    batch.actions.length > 0 &&
+    detail?.split("\n", 1)[0] === batch.actions.join(", ")
+    ? [...new Set(batch.actions.map((name) => name.toUpperCase()))]
+    : undefined;
+}
+
+/** Wrapper rules can require approval, while a saved allow must cover every inner action. */
+export function resolveBatchActionApproval(input: {
+  actions: ReadonlyArray<{ toolName: string; connectorKind: string; readOnly?: boolean }>;
+  wrappers: ReadonlyArray<{ toolName: string; connectorKind: string; readOnly?: boolean }>;
+  rules: ActionApprovalRule[];
+}): ActionApprovalResolved {
+  const actions = input.actions.map((tool) =>
+    resolveActionApprovalDetail({ ...tool, rules: input.rules }),
+  );
+  const wrapperRules = input.rules.filter((rule) => rule.effect === "require_approval");
+  const wrapperRequirements = input.wrappers
+    .map((tool) => resolveActionApprovalDetail({ ...tool, rules: wrapperRules }))
+    .filter((part) => part.decision === "ask");
+  const parts = [...actions, ...wrapperRequirements];
+  const matchingRules = [...new Set(parts.flatMap((part) => part.matchingRules))];
+  if (parts.some((part) => part.decision === "ask")) {
+    return { decision: "ask", source: "require_approval", matchingRules };
+  }
+  const allAllowed = actions.length > 0 && actions.every((part) => part.source === "always_allow");
+  return { decision: "allow", source: allAllowed ? "always_allow" : "default", matchingRules };
+}
+
 export function resolveActionApproval(input: {
   toolName: string;
   connectorKind?: string;

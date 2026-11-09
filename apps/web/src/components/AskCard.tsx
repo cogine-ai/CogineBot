@@ -33,11 +33,15 @@ function approvalActionLabel(
   fallback: string,
   outcome?: "created" | "cancelled",
   site?: string,
+  approvalScope?: AskBlock["approvalScope"],
 ): string {
   if (outcome === "created") return t`Create space`;
   if (outcome === "cancelled") return t`Cancel`;
   if (id === "allow") return t`Allow once`;
-  if (id === "always") return site ? t`Always allow ${site}` : t`Always allow this tool`;
+  if (id === "always") {
+    if (approvalScope === "connector_batch") return t`Always allow these actions`;
+    return site ? t`Always allow ${site}` : t`Always allow this tool`;
+  }
   if (id === "deny") return t`Deny`;
   return fallback;
 }
@@ -146,7 +150,13 @@ export function AskCard({
               {pendingAction === action.id ? (
                 <Trans>Sending…</Trans>
               ) : approvalActions ? (
-                approvalActionLabel(action.id, action.label, action.outcome, block.site)
+                approvalActionLabel(
+                  action.id,
+                  action.label,
+                  action.outcome,
+                  block.site,
+                  block.approvalScope,
+                )
               ) : (
                 action.label
               )}

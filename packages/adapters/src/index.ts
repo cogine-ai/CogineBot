@@ -1,7 +1,11 @@
 export * from "./agent-connections.js";
 export * from "./agent-environment.js";
 export * from "./ai-consent.js";
-export { boundDirectApprovalDetails, catalogApprovalDetails } from "./approval-effect.js";
+export {
+  boundDirectApprovalDetails,
+  catalogApprovalDetails,
+  connectorBatchApprovalFromEffect,
+} from "./approval-effect.js";
 export * from "./artifacts.js";
 export * from "./auto-review.js";
 export * from "./auto-review-factory.js";

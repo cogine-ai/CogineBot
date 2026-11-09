@@ -258,12 +258,21 @@ export interface SandboxCapabilities {
   multiScreen?: boolean;
 }
 
+/** In-process shape of a tool that dispatches multiple named actions. */
+export interface ToolBatch {
+  items: string;
+  action: string;
+}
+
 export interface ConnectorTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
   /** Declared effect. `false` forces approval; `true` never relaxes the name-based gate. */
   readOnly?: boolean;
+  /** Connector-declared batch shape and same-resource write declarations from catalog resolution. */
+  batch?: ToolBatch;
+  batchWriteActions?: readonly string[];
   /** In-process routing metadata. It is never exposed to the model. */
   route?: ConnectorRoute;
 }

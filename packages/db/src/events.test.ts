@@ -2112,6 +2112,56 @@ describe("answerRunInput", () => {
       matchValue: "destination.write",
     },
     {
+      scenario: "a routed batch allowance for the displayed inner actions",
+      kind: "mail__batch",
+      request: { fixture: "persisted batch" },
+      batch: {
+        actions: ["GMAIL_ARCHIVE_THREAD", "gmail_send_email", "GMAIL_SEND_EMAIL"],
+        complete: true,
+      },
+      approvalScope: "connector_batch",
+      detail: "GMAIL_ARCHIVE_THREAD, gmail_send_email, GMAIL_SEND_EMAIL",
+      matchKind: "tool",
+      matchValues: ["GMAIL_ARCHIVE_THREAD", "GMAIL_SEND_EMAIL"],
+    },
+    {
+      scenario: "a legacy batch card whose review reason resembles the action list",
+      kind: "legacy-batch",
+      request: { fixture: "persisted batch" },
+      batch: { actions: ["GMAIL_SEND_EMAIL"], complete: true },
+      detail: "GMAIL_SEND_EMAIL",
+      matchKind: null,
+      blocked: true,
+    },
+    {
+      scenario: "a batch card missing the complete scope",
+      kind: "batch-fixture",
+      request: { fixture: "persisted batch" },
+      batch: { actions: ["GMAIL_SEND_EMAIL", "GMAIL_ARCHIVE_THREAD"], complete: true },
+      approvalScope: "connector_batch",
+      detail: "GMAIL_SEND_EMAIL",
+      matchKind: null,
+      blocked: true,
+    },
+    {
+      scenario: "an incomplete batch with a stale Always choice",
+      kind: "COMPOSIO_MULTI_EXECUTE_TOOL",
+      request: { fixture: "persisted batch" },
+      batch: { actions: ["GMAIL_SEND_EMAIL"], complete: false },
+      approvalScope: "connector_batch",
+      detail: "GMAIL_SEND_EMAIL",
+      matchKind: null,
+      blocked: true,
+    },
+    {
+      scenario: "one-time approval for a legacy batch card",
+      kind: "COMPOSIO_MULTI_EXECUTE_TOOL",
+      request: { fixture: "persisted batch" },
+      batch: { actions: ["GMAIL_SEND_EMAIL"], complete: true },
+      answer: "allow",
+      matchKind: null,
+    },
+    {
       scenario: "a site allowance using the persisted destination",
       kind: "web_fetch",
       request: { url: "https://docs.EXAMPLE.com:443/submit?canary=private" },
@@ -2171,7 +2221,19 @@ describe("answerRunInput", () => {
     },
   ])(
     "honors $scenario without overwriting the task prompt",
-    async ({ kind, request, matchKind, matchValue, requiredSite, answer = "always", blocked }) => {
+    async ({
+      kind,
+      request,
+      detail,
+      batch,
+      approvalScope,
+      matchKind,
+      matchValue,
+      matchValues,
+      requiredSite,
+      answer = "always",
+      blocked,
+    }) => {
       const fanout = new TestFanout();
       const tx = {
         $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
@@ -2185,6 +2247,8 @@ describe("answerRunInput", () => {
                 text: "Review before writing",
                 status: "pending",
                 site: "unrelated.example",
+                detail,
+                approvalScope,
                 actions: [
                   { id: "allow", label: "Allow once" },
                   { id: "always", label: "Always allow" },
@@ -2235,6 +2299,12 @@ describe("answerRunInput", () => {
             answer,
           },
           fanout,
+          undefined,
+          (effect) => {
+            expect(effect.kind).toBe(kind);
+            expect(effect.request).toEqual(request);
+            return batch;
+          },
         ),
       ).resolves.toBe(!blocked);
 
@@ -2247,7 +2317,7 @@ describe("answerRunInput", () => {
           status: "intended",
         },
       });
-      if (matchKind === "site" || blocked) {
+      if (requiredSite && answer === "always") {
         expect(tx.actionApprovalRule.findMany).toHaveBeenCalledExactlyOnceWith({
           where: {
             spaceId: "workspace-1",
@@ -2276,25 +2346,22 @@ describe("answerRunInput", () => {
         expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
         return;
       }
-      expect(tx.actionApprovalRule.upsert).toHaveBeenCalledWith({
-        where: {
-          spaceId_createdByUserId_effect_matchKind_matchValue: {
-            spaceId: "workspace-1",
-            createdByUserId: "user-1",
-            effect: "always_allow",
-            matchKind,
-            matchValue,
-          },
-        },
-        create: {
+      const values = matchValues ?? [matchValue];
+      expect(tx.actionApprovalRule.upsert).toHaveBeenCalledTimes(values.length);
+      for (const value of values) {
+        const rule = {
           spaceId: "workspace-1",
           createdByUserId: "user-1",
           effect: "always_allow",
           matchKind,
-          matchValue,
-        },
-        update: {},
-      });
+          matchValue: value,
+        };
+        expect(tx.actionApprovalRule.upsert).toHaveBeenCalledWith({
+          where: { spaceId_createdByUserId_effect_matchKind_matchValue: rule },
+          create: rule,
+          update: {},
+        });
+      }
     },
   );
 

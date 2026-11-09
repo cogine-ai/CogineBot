@@ -10,6 +10,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { z } from "zod";
+import { composioToolBatch } from "./composio-batch.js";
 import {
   AuthSchema,
   applyCredential,
@@ -242,6 +243,7 @@ export class InstalledConnectorProvider implements ConnectorProvider {
         });
         return tools.map((tool) => ({
           ...tool,
+          batch: composioToolBatch(tool.name),
           route: {
             connectorId: "installed",
             resourceId: install.id,

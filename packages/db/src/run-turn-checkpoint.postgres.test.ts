@@ -143,6 +143,85 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     };
   }
 
+  it("commits a batch approval and its action rules once under concurrent answers", async () => {
+    const f = await seed();
+    const actions = ["GMAIL_ARCHIVE_THREAD", "GMAIL_SEND_EMAIL"];
+    const args = { tools: actions.map((tool_slug) => ({ tool_slug, arguments: {} })) };
+    const effect = await prisma.externalEffect.create({
+      data: {
+        spaceId,
+        runId: f.run.id,
+        kind: "mail__batch",
+        status: "intended",
+        idempotencyKey: `${f.run.id}:batch`,
+        request: args,
+      },
+    });
+    await expect(
+      pauseRunForInput(prisma, {
+        spaceId,
+        threadId: f.thread.id,
+        botId,
+        runId: f.run.id,
+        attemptId: f.attempt.id,
+        leaseOwner: "worker",
+        leaseFence: 7,
+        blocks: [
+          {
+            kind: "ask",
+            text: "Review before batch",
+            detail: actions.join(", "),
+            approvalScope: "connector_batch",
+            status: "pending",
+            approvalEffectId: effect.id,
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "always", label: "Always allow" },
+              { id: "deny", label: "Deny" },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toBe(true);
+    const card = await prisma.message.findFirstOrThrow({
+      where: { runId: f.run.id, role: "bot" },
+    });
+    const answer = {
+      spaceId,
+      threadId: f.thread.id,
+      runId: f.run.id,
+      messageId: card.id,
+      answeredByUserId: userId,
+      answer: "always",
+    };
+    const resolveBatch = (
+      stored: { kind: string; request: unknown },
+      { batchCard }: { batchCard: boolean },
+    ) => {
+      expect(stored.kind).toBe(effect.kind);
+      expect(stored.request).toEqual(args);
+      expect(batchCard).toBe(true);
+      return { actions, complete: true };
+    };
+    const receipts = await Promise.all([
+      answerRunInput(prisma, answer, undefined, undefined, resolveBatch),
+      answerRunInput(prisma, answer, undefined, undefined, resolveBatch),
+    ]);
+    expect(receipts.filter(Boolean)).toHaveLength(1);
+    expect(
+      await prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+    ).toMatchObject({
+      request: effect.request,
+      status: "approved",
+    });
+    const rules = await prisma.actionApprovalRule.findMany({
+      where: { spaceId, createdByUserId: userId, effect: "always_allow" },
+      select: { matchKind: true, matchValue: true },
+      orderBy: { matchValue: "asc" },
+    });
+    expect(rules).toEqual(actions.map((matchValue) => ({ matchKind: "tool", matchValue })));
+  });
+
   describe("durable provider quota waits", () => {
     const target: RunQuotaTarget = {
       provider: "openai",

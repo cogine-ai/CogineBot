@@ -17,6 +17,7 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { catalogToolPrefix } from "./approval-effect.js";
+import { composioToolBatch } from "./composio-batch.js";
 import {
   combineSignals,
   redactConnectorPayload,
@@ -147,6 +148,10 @@ function reportAllowlistDrift(
       missing: drift.missing.slice(0, 10),
     },
   );
+}
+
+export function mcpToolName(serverSlug: string, toolName: string): string {
+  return `mcp__${serverSlug}__${toolName}`;
 }
 
 export class McpConnector implements ConnectorProvider {
@@ -368,6 +373,9 @@ export class McpConnector implements ConnectorProvider {
     }
     if (!listed) return { tools: [unavailableTool(server)], health, checkedAt };
     reportAllowlistDrift(server, listed.tools, context);
+    const declaredWrites = listed.tools
+      .filter((tool) => tool.annotations?.readOnlyHint === false)
+      .map((tool) => tool.name.toUpperCase());
     const tools = listed.tools
       .filter(
         (tool) =>
@@ -377,9 +385,12 @@ export class McpConnector implements ConnectorProvider {
       )
       .map(
         (tool): ConnectorTool => ({
-          name: `mcp__${server.slug}__${tool.name}`,
+          name: mcpToolName(server.slug, tool.name),
           description: tool.description ?? tool.name,
           inputSchema: tool.inputSchema as Record<string, unknown>,
+          readOnly: tool.annotations?.readOnlyHint,
+          batch: composioToolBatch(tool.name),
+          batchWriteActions: composioToolBatch(tool.name) ? declaredWrites : undefined,
           route: {
             connectorId: "mcp",
             resourceId: server.id,

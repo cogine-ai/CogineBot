@@ -304,6 +304,22 @@ function assertSchemaSize(entry: CatalogEntry): void {
   if (schemaBytes > SELECTED_SCHEMA_MAX_BYTES) throw new Error("Tool schema is too large");
 }
 
+export function connectorBatchWriteActions(
+  resource: ConnectorRoute | undefined,
+  tools: readonly ConnectorTool[],
+): string[] {
+  if (!resource?.resourceId) return [];
+  return tools.flatMap(({ route, readOnly }) =>
+    readOnly === false &&
+    route?.connectorId === resource.connectorId &&
+    route.resourceId === resource.resourceId &&
+    route.resourceRevision === resource.resourceRevision &&
+    route.connectionId === resource.connectionId
+      ? [route.toolName.toUpperCase()]
+      : [],
+  );
+}
+
 export function resolveCatalogCall(
   call: ConnectorCall,
   entries: CatalogEntry[],
@@ -318,8 +334,17 @@ export function resolveCatalogCall(
     throw new Error("Tool arguments must be an object");
   }
   const parsed = parseArgs(entry.tool, args as Record<string, unknown>);
+  const batchWriteActions = entry.tool.batch
+    ? [
+        ...(entry.tool.batchWriteActions ?? []),
+        ...connectorBatchWriteActions(
+          entry.tool.route,
+          entries.map(({ tool }) => tool),
+        ),
+      ]
+    : [];
   return {
-    tool: entry.tool,
+    tool: batchWriteActions.length > 0 ? { ...entry.tool, batchWriteActions } : entry.tool,
     call: {
       ...call,
       tool: entry.tool.name,
