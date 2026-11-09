@@ -505,6 +505,12 @@ export interface CloudAgentProvider {
   describe(): AdapterDescriptor<CloudAgentCapabilities>;
   launch(request: CloudAgentLaunchRequest, context: AdapterContext): Promise<CloudAgentHandle>;
   get(id: string, context: AdapterContext, runId?: string): Promise<CloudAgentSnapshot>;
+  /** Observe the immediate successor in the provider's run list, without attributing it to a request. */
+  observeRunSuccessor(
+    id: string,
+    previousRunId: string | null,
+    context: AdapterContext,
+  ): Promise<string | null>;
   reply(
     id: string,
     request: CloudAgentReplyRequest,

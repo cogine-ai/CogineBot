@@ -5,6 +5,7 @@ import {
   appendEventInTransaction,
   type CloudAgent,
   createThreadMessageInTransaction,
+  type Prisma,
   type PrismaClient,
   type ThreadEvents,
 } from "@rakazo/db";
@@ -21,6 +22,15 @@ export interface CloudAgentDeps {
 
 export function cloudAgentBlock(agent: CloudAgent) {
   return cloudAgentBlockFromPayload({ ...agent, agentId: agent.id });
+}
+
+export function hasObservedFollowupRun(followup: Prisma.JsonValue) {
+  return (
+    followup !== null &&
+    typeof followup === "object" &&
+    !Array.isArray(followup) &&
+    followup.runObserved === true
+  );
 }
 
 /** Queue an intent only after scope and owner checks. The worker owns remote I/O. */
@@ -120,6 +130,8 @@ export async function executeCloudAgentTool(
         data: {
           followup,
           followupDispatching: false,
+          branch: null,
+          prUrl: null,
           status: "running",
           generation: { increment: 1 },
           version: { increment: 1 },
@@ -128,21 +140,32 @@ export async function executeCloudAgentTool(
         },
       });
       if (!updated.count) return { error: "Cloud agent changed; check its status and try again." };
-    } else if (name === "cloud_agent_cancel") {
-      await deps.prisma.cloudAgent.update({
-        where: { id: agent.id },
-        data: { cancelRequested: true, version: { increment: 1 }, nextPollAt: new Date() },
+    } else if (name === "cloud_agent_cancel" && agent.nextPollAt && !agent.cancelRequested) {
+      const canWithdrawLocally =
+        (!agent.remoteId && !agent.launchDispatched) ||
+        (agent.followup !== null && !agent.followupDispatching);
+      const updated = await deps.prisma.cloudAgent.updateMany({
+        where: { id: agent.id, version: agent.version, nextPollAt: { not: null } },
+        data: {
+          cancelRequested: true,
+          version: { increment: 1 },
+          ...(canWithdrawLocally ? { nextPollAt: new Date() } : {}),
+        },
       });
+      if (!updated.count) return { error: "Cloud agent changed; check its status and try again." };
     }
     agent = await deps.prisma.cloudAgent.findUniqueOrThrow({ where: { id: agent.id } });
   }
-  if (agent.nextPollAt) await enqueueCloudAgent(deps, agent.id);
+  if (agent.nextPollAt) await enqueueCloudAgent(deps, agent.id, agent.nextPollAt);
   const { kind: _kind, agentId, ...snapshot } = cloudAgentBlock(agent);
   return {
     id: agentId,
     ...snapshot,
     ...(agent.cancelRequested ? { cancellationPending: true } : {}),
     ...(agent.followupDispatching ? { followupPending: true } : {}),
+    ...(agent.followupDispatching && hasObservedFollowupRun(agent.followup)
+      ? { followupSuccessorObserved: true }
+      : {}),
   };
 }
 
@@ -160,12 +183,15 @@ export async function enqueueCloudAgent(
 export async function reconcileCloudAgents(
   deps: Pick<CloudAgentDeps, "prisma" | "jobs" | "cloudAgent">,
 ) {
-  if (!deps.cloudAgent) return;
+  const connection = deps.cloudAgent;
+  if (!connection || !cloudAgentsEnabled(connection, connection.spaceId ?? "")) return;
+  const now = new Date();
   const due = await deps.prisma.cloudAgent.findMany({
     where: {
-      providerKey: deps.cloudAgent.key,
-      nextPollAt: { lte: new Date() },
-      ...(deps.cloudAgent.spaceId ? { spaceId: deps.cloudAgent.spaceId } : {}),
+      providerKey: connection.key,
+      nextPollAt: { lte: now },
+      OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+      ...(connection.spaceId ? { spaceId: connection.spaceId } : {}),
     },
     orderBy: [{ nextPollAt: "asc" }, { id: "asc" }],
     take: 100,

@@ -8,8 +8,13 @@ import type {
   CloudAgentSnapshot,
   CloudAgentStatus,
 } from "@rakazo/adapter-kit";
-import { CloudAgentRequestRejected } from "@rakazo/adapter-kit";
+import {
+  CloudAgentRequestRejected,
+  CloudAgentRetryLater,
+  CloudAgentUnavailable,
+} from "@rakazo/adapter-kit";
 import { z } from "zod";
+import { providerRetryAfterAt } from "./provider-quota-reset.js";
 import { readBodyCapped } from "./web-ssrf.js";
 
 const agentSchema = z.object({
@@ -17,17 +22,20 @@ const agentSchema = z.object({
   name: z.string().optional(),
   status: z.string(),
   url: z.string().optional(),
-  latestRunId: z.string().optional(),
 });
 const runSchema = z.object({
   id: z.string().min(1),
-  status: z.enum(["CREATING", "RUNNING", "FINISHED", "ERROR", "CANCELLED", "EXPIRED"]),
+  agentId: z.string().min(1).optional(),
+  status: z.string(),
   git: z
     .object({
       branches: z.array(z.object({ branch: z.string().optional(), prUrl: z.string().optional() })),
     })
     .optional(),
 });
+
+const busyCode = z.object({ code: z.literal("agent_busy") });
+const busyErrorSchema = z.union([busyCode, z.object({ error: busyCode })]);
 
 export interface CursorCloudAgentOptions {
   apiKey: string;
@@ -76,14 +84,20 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
         ...(request.openPr !== undefined ? { autoCreatePR: request.openPr } : {}),
       },
       request.signal ?? context.signal,
-      true,
+      "reconcile",
     );
     if (response === null) {
       // A duplicate create may precede read visibility. Failure to observe it
       // is still ambiguous and must not terminate recovery of accepted work.
       try {
-        return await this.get(id, context);
-      } catch {
+        const agent = await this.agent(id, context.signal);
+        const { items, nextCursor } = await this.recentRuns(id, 2, context.signal);
+        if (items.length !== 1 || nextCursor) throw new Error("Cloud agent create run is unknown");
+        return this.handle(agent, items[0]!);
+      } catch (error) {
+        if (error instanceof CloudAgentRetryLater)
+          throw new CloudAgentRetryLater(error.reason, error.retryAfterMs, false);
+        if (error instanceof CloudAgentUnavailable && error.reason === "expired") throw error;
         throw new Error("Cloud agent create is awaiting reconciliation");
       }
     }
@@ -95,19 +109,46 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
 
   async get(id: string, context: AdapterContext, runId?: string): Promise<CloudAgentSnapshot> {
     const agent = await this.agent(id, context.signal);
-    const currentRunId = runId ?? agent.latestRunId;
-    if (!currentRunId) throw new Error("Cloud agent has no run to inspect");
+    if (runId === undefined) {
+      const {
+        items: [run],
+      } = await this.recentRuns(id, 1, context.signal);
+      if (!run) throw new Error("Cloud agent has no run to inspect");
+      return this.handle(agent, run);
+    }
     const parsed = runSchema.safeParse(
       await this.request(
         "GET",
-        `/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(currentRunId)}`,
+        `/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
         undefined,
         context.signal,
       ),
     );
-    if (!parsed.success || parsed.data.id !== currentRunId)
+    if (!parsed.success || parsed.data.id !== runId)
       throw new Error("Invalid cloud agent run response");
     return this.handle(agent, parsed.data);
+  }
+
+  async observeRunSuccessor(
+    id: string,
+    previousRunId: string | null,
+    context: AdapterContext,
+  ): Promise<string | null> {
+    await this.agent(id, context.signal);
+    if (!previousRunId) return null;
+    const { items: runs } = await this.recentRuns(id, 2, context.signal);
+    const [newest, previous] = runs;
+    // Adjacency proves ordering only. The list does not identify which request started a run.
+    if (
+      runs.length !== 2 ||
+      !newest ||
+      previous?.id !== previousRunId ||
+      newest.id === previousRunId ||
+      newest.id.includes(this.apiKey)
+    ) {
+      return null;
+    }
+    return newest.id;
   }
 
   async reply(
@@ -115,21 +156,34 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
     request: CloudAgentReplyRequest,
     context: AdapterContext,
   ): Promise<CloudAgentHandle> {
-    // Read metadata first: no fallible GET after a successful mutating POST.
-    const agent = await this.agent(id, request.signal ?? context.signal);
-    const parsed = z.object({ run: runSchema }).safeParse(
-      await this.request(
-        "POST",
-        `/v1/agents/${encodeURIComponent(id)}/runs`,
-        {
-          prompt: {
-            text: request.prompt,
-            ...(request.images?.length ? { images: request.images } : {}),
-          },
+    const signal = request.signal ?? context.signal;
+    // A failed metadata read happens before the follow-up mutation is sent.
+    const agent = await this.agent(id, signal).catch((error) => {
+      if (
+        error instanceof CloudAgentRequestRejected ||
+        error instanceof CloudAgentRetryLater ||
+        error instanceof CloudAgentUnavailable
+      ) {
+        throw error;
+      }
+      throw new CloudAgentRetryLater("unavailable");
+    });
+    if (signal.aborted) throw new CloudAgentRetryLater("unavailable");
+    const response = await this.request(
+      "POST",
+      `/v1/agents/${encodeURIComponent(id)}/runs`,
+      {
+        prompt: {
+          text: request.prompt,
+          ...(request.images?.length ? { images: request.images } : {}),
         },
-        request.signal ?? context.signal,
-      ),
+      },
+      signal,
+      "followup",
     );
+    // A conflict can be the first visible sign of an earlier accepted follow-up.
+    if (response === null) throw new Error("Cloud agent is busy with another run");
+    const parsed = z.object({ run: runSchema }).safeParse(response);
     if (!parsed.success) throw new Error("Invalid cloud agent follow-up response");
     return this.handle(agent, parsed.data.run);
   }
@@ -142,6 +196,7 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
       `/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(snapshot.latestRunId!)}/cancel`,
       {},
       context.signal,
+      "reconcile",
     );
     // Cancellation may still be in progress. Never report success before observing it.
     return this.get(id, context, snapshot.latestRunId);
@@ -152,6 +207,18 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
       await this.request("GET", `/v1/agents/${encodeURIComponent(id)}`, undefined, signal),
     );
     if (!parsed.success || parsed.data.id !== id) throw new Error("Invalid cloud agent response");
+    if (parsed.data.status === "ARCHIVED") throw new CloudAgentUnavailable("expired");
+    return parsed.data;
+  }
+
+  private async recentRuns(id: string, limit: 1 | 2, signal: AbortSignal) {
+    const path = `/v1/agents/${encodeURIComponent(id)}/runs?limit=${limit}`;
+    const parsed = z
+      .object({ items: z.array(runSchema), nextCursor: z.string().nullish() })
+      .safeParse(await this.request("GET", path, undefined, signal));
+    if (!parsed.success || parsed.data.items.some((run) => run.agentId && run.agentId !== id)) {
+      throw new Error("Invalid cloud agent run response");
+    }
     return parsed.data;
   }
 
@@ -159,24 +226,51 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
     agent: z.infer<typeof agentSchema>,
     run: z.infer<typeof runSchema>,
   ): CloudAgentSnapshot {
+    if (
+      (run.agentId && run.agentId !== agent.id) ||
+      agent.id.includes(this.apiKey) ||
+      run.id.includes(this.apiKey)
+    ) {
+      throw new Error("Invalid cloud agent response");
+    }
+    if (run.status === "EXPIRED" || agent.status === "ARCHIVED") {
+      throw new CloudAgentUnavailable("expired");
+    }
     const status: CloudAgentStatus =
       run.status === "FINISHED"
         ? "finished"
         : run.status === "CANCELLED"
           ? "cancelled"
-          : run.status === "ERROR" || run.status === "EXPIRED"
+          : run.status === "ERROR"
             ? "failed"
             : "running";
     const branch = run.git?.branches[0];
+    const branchName = this.publicText(branch?.branch);
+    const prUrl = this.publicLink(branch?.prUrl);
     return {
       id: agent.id,
-      title: agent.name || "Cloud agent",
+      title: this.publicText(agent.name) || "Cloud agent",
       status,
-      url: agent.url || `https://cursor.com/agents/${encodeURIComponent(agent.id)}`,
+      url:
+        this.publicLink(agent.url) || `https://cursor.com/agents/${encodeURIComponent(agent.id)}`,
       latestRunId: run.id,
-      ...(branch?.branch ? { branch: branch.branch } : {}),
-      ...(branch?.prUrl ? { prUrl: branch.prUrl } : {}),
+      ...(branchName ? { branch: branchName } : {}),
+      ...(prUrl ? { prUrl } : {}),
     };
+  }
+
+  private publicText(value?: string) {
+    return value?.includes(this.apiKey) ? undefined : value;
+  }
+
+  private publicLink(value?: string) {
+    const safeText = this.publicText(value);
+    if (!safeText) return undefined;
+    try {
+      return this.publicText(decodeURIComponent(safeText)) ? safeText : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async request(
@@ -184,33 +278,60 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
     path: string,
     body: unknown,
     signal: AbortSignal,
-    allowConflict = false,
+    conflict?: "reconcile" | "followup",
   ): Promise<unknown> {
     const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]);
-    const response = await this.fetchImpl(`https://api.cursor.com${path}`, {
-      method,
-      redirect: "error",
-      signal: boundedSignal,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        Accept: "application/json",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    if (boundedSignal.aborted) throw new CloudAgentRetryLater("unavailable");
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`https://api.cursor.com${path}`, {
+        method,
+        redirect: "error",
+        signal: boundedSignal,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          Accept: "application/json",
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch {
+      throw new Error("Cloud agent request did not complete");
+    }
     if (!response.ok) {
+      if (conflict === "followup" && response.status === 409) {
+        let busy = false;
+        try {
+          const bytes = await readBodyCapped(response, 16_384, boundedSignal);
+          busy = busyErrorSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes))).success;
+        } catch {
+          // An unreadable conflict does not prove that this request was refused.
+        }
+        if (busy) throw new CloudAgentRetryLater("unavailable");
+        return null;
+      }
       void response.body?.cancel().catch(() => undefined);
-      if (allowConflict && response.status === 409) return null;
-      if ([400, 401, 403, 404, 409, 422].includes(response.status))
-        throw new CloudAgentRequestRejected();
+      if (conflict && response.status === 409) return null;
+      if (response.status === 404) throw new CloudAgentUnavailable("not_found");
+      if (response.status === 401 || response.status === 403)
+        throw new CloudAgentRetryLater("credential");
+      if (response.status === 429) {
+        const now = Date.now();
+        const retryAt = providerRetryAfterAt(response.headers.get("retry-after"), now);
+        throw new CloudAgentRetryLater(
+          "rate_limit",
+          retryAt === undefined ? undefined : retryAt - now,
+        );
+      }
+      if ([400, 409, 422].includes(response.status)) throw new CloudAgentRequestRejected();
       throw new Error(`Cloud agent request failed (${response.status})`);
     }
     if (response.status === 204) {
       void response.body?.cancel().catch(() => undefined);
       return {};
     }
-    const bytes = await readBodyCapped(response, 1_000_000, boundedSignal);
     try {
+      const bytes = await readBodyCapped(response, 1_000_000, boundedSignal);
       return JSON.parse(new TextDecoder().decode(bytes));
     } catch {
       throw new Error("Invalid cloud agent response");
