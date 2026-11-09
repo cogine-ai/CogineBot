@@ -34,9 +34,13 @@ import {
   resolveCatalogCall,
 } from "./lazy-tool-catalog.js";
 import type { McpOAuthBroker, OAuthMaterial } from "./mcp-oauth.js";
-import { oauthMaterialSecrets } from "./mcp-oauth.js";
+import { oauthDiagnosticSecrets, oauthMaterialSecrets } from "./mcp-oauth.js";
 import type { McpHealthUpdate } from "./mcp-server-health.js";
-import { mcpHealthError, recordMcpServerHealth } from "./mcp-server-health.js";
+import {
+  McpOAuthClientRequiredError,
+  mcpHealthError,
+  recordMcpServerHealth,
+} from "./mcp-server-health.js";
 import { McpSession } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -80,16 +84,6 @@ type PendingSession = {
   invalidated?: boolean;
   ref?: string;
 };
-
-function diagnosticSecrets(material: OAuthMaterial): string[] {
-  // A custom header or environment variable can carry credentials under any name.
-  // Error diagnostics can echo configuration; mask every configured value there.
-  return [
-    ...oauthMaterialSecrets(material),
-    ...Object.values(material.headers ?? {}),
-    ...Object.values(material.env ?? {}),
-  ];
-}
 
 function hasAllowedTools(server: Pick<McpServer, "allowAllTools" | "allowedTools">): boolean {
   return (
@@ -335,7 +329,7 @@ export class McpConnector implements ConnectorProvider {
       context.signal.throwIfAborted();
       this.shutdown.signal.throwIfAborted();
       const reason = signal.aborted ? new Error("MCP tool discovery timed out") : error;
-      const secrets = entry ? diagnosticSecrets(entry.material) : [];
+      const secrets = entry ? oauthDiagnosticSecrets(entry.material) : [];
       health = mcpHealthError(reason, secrets);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
       await withAbort(
@@ -878,9 +872,9 @@ export class McpConnector implements ConnectorProvider {
       // the secrets: the session never reached `sessions`. Sanitizing per caller would
       // cover only whoever looked first.
       if (!material) throw error;
-      throw new Error(
-        mcpHealthError(error, diagnosticSecrets(material)).message ?? "MCP connection failed",
-      );
+      const health = mcpHealthError(error, oauthDiagnosticSecrets(material));
+      if (health.code) throw new McpOAuthClientRequiredError();
+      throw new Error(health.message ?? "MCP connection failed");
     }
   }
 }

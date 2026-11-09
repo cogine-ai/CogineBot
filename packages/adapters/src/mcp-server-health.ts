@@ -7,9 +7,10 @@ import { sanitizeConnectorError } from "./connector-safety.js";
 const REWRITE_MS = 60_000;
 const REGISTRATION_UNSUPPORTED =
   "Incompatible auth server: does not support dynamic client registration";
+const REGISTRATION_REQUIRED_MESSAGE = "This MCP server requires a pre-registered OAuth client.";
 
 export class McpOAuthClientRequiredError extends Error {
-  constructor(message = REGISTRATION_UNSUPPORTED) {
+  constructor(message = REGISTRATION_REQUIRED_MESSAGE) {
     super(message);
     this.name = "McpOAuthClientRequiredError";
   }
@@ -29,7 +30,7 @@ export function mcpHealthError(error: unknown, secrets: string[] = []): McpHealt
   const code = needsMcpOAuthClient(error) ? MCP_OAUTH_CLIENT_REQUIRED : null;
   return {
     status: "error",
-    message: code ? REGISTRATION_UNSUPPORTED : sanitizeConnectorError(error, secrets),
+    message: code ? REGISTRATION_REQUIRED_MESSAGE : sanitizeConnectorError(error, secrets),
     code,
     toolCount: null,
   };

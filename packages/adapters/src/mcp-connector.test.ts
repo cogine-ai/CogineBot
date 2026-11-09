@@ -278,22 +278,23 @@ describe("MCP discovery lifecycle", () => {
           secret: { findFirst: async () => ({ id: "secret-1", ciphertext: "encrypted" }) },
         } as never,
         {
-          load: async () => JSON.stringify({ headers: { "X-Partner-Code": credential } }),
+          load: async () => JSON.stringify({ headers: { "X-Partner-Code": `  ${credential}  ` } }),
         } as never,
         {
           network: {
             ...TEST_NETWORK,
             fetch: async (input, init) => {
-              if (phase === "connect")
-                return new Response(`Rejected code ${credential}`, { status: 500 });
               const request = new Request(input, init);
+              const received = request.headers.get("x-partner-code");
+              if (phase === "connect")
+                return new Response(`Rejected code ${received}`, { status: 500 });
               if (request.method === "POST") {
                 const message = await request.json();
                 if (message.method === "tools/list")
                   return Response.json({
                     jsonrpc: "2.0",
                     id: message.id,
-                    error: { code: -32000, message: `Rejected code ${credential}` },
+                    error: { code: -32000, message: `Rejected code ${received}` },
                   });
               }
               return healthy(input, init);

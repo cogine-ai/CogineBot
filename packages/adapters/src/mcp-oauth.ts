@@ -140,6 +140,15 @@ export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
   return [...new Set(values)];
 }
 
+/** Diagnostics can reflect any configured header or env value. Fetch trims header whitespace. */
+export function oauthDiagnosticSecrets(material: OAuthMaterial): string[] {
+  return [
+    ...oauthMaterialSecrets(material),
+    ...Object.values(material.headers ?? {}).flatMap((value) => [value, value.trim()]),
+    ...Object.values(material.env ?? {}),
+  ];
+}
+
 /** Headers whose values are credentials even when short (e.g. Cookie, X-Session). */
 function isAuthHeaderKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/-/g, "_");
@@ -575,7 +584,7 @@ function oauthFetch(
     close: () => safeFetch.close(),
     publicError: (error, message) => {
       if (error instanceof Error && networkErrors.has(error)) return error;
-      const secrets = oauthMaterialSecrets(material);
+      const secrets = oauthDiagnosticSecrets(material);
       const sdk = sanitizeConnectorError(error, secrets);
       const surfaced = rejection ? formatOAuthRejection(rejection, sdk, secrets) : undefined;
       getLogger().warn(`${message}: ${surfaced ?? sdk}`);

@@ -196,7 +196,7 @@ function chunkedBody(totalBytes: number, chunkBytes: number): ReadableStream<Uin
 }
 
 async function rejectedOAuthBegin(
-  register: () => Response | Promise<Response>,
+  register: (() => Response | Promise<Response>) | undefined,
   secret?: string,
 ): Promise<Error> {
   vi.stubGlobal(
@@ -225,13 +225,13 @@ async function rejectedOAuthBegin(
           issuer: "https://auth.example.test",
           authorization_endpoint: "https://auth.example.test/authorize",
           token_endpoint: "https://auth.example.test/token",
-          registration_endpoint: "https://auth.example.test/register",
+          ...(register ? { registration_endpoint: "https://auth.example.test/register" } : {}),
           response_types_supported: ["code"],
           grant_types_supported: ["authorization_code", "refresh_token"],
           code_challenge_methods_supported: ["S256"],
         });
       }
-      if (url === "https://auth.example.test/register" && request.method === "POST") {
+      if (register && url === "https://auth.example.test/register" && request.method === "POST") {
         return register();
       }
       throw new Error(`Unexpected request: ${request.method} ${url}`);
@@ -897,6 +897,12 @@ describe("MCP OAuth", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Could not start MCP OAuth");
     expect((error as Error).message).not.toContain("UPSTREAM_BODY_MARKER");
+  });
+
+  it("identifies authorization metadata without a registration endpoint", async () => {
+    const error = await rejectedOAuthBegin(undefined);
+    expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+    expect(error.message).toBe("This MCP server requires a pre-registered OAuth client.");
   });
 
   it("reports the HTTP status and OAuth error when registration is rejected", async () => {
