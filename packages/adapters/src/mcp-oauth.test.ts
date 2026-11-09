@@ -198,6 +198,7 @@ function chunkedBody(totalBytes: number, chunkBytes: number): ReadableStream<Uin
 async function rejectedOAuthBegin(
   register: (() => Response | Promise<Response>) | undefined,
   secret?: string,
+  writeHealth?: () => Promise<{ count: number }>,
 ): Promise<Error> {
   vi.stubGlobal(
     "fetch",
@@ -257,6 +258,7 @@ async function rejectedOAuthBegin(
   };
   const prisma = {
     mcpServer: {
+      updateMany: writeHealth ?? vi.fn().mockResolvedValue({ count: 1 }),
       findFirst: vi.fn().mockResolvedValue({
         id: "server-1",
         endpoint: "https://mcp.example.test/mcp",
@@ -905,6 +907,25 @@ describe("MCP OAuth", () => {
     expect(error.message).toBe("This MCP server requires a pre-registered OAuth client.");
   });
 
+  it("returns the typed OAuth error when the health write exceeds the handshake deadline", async () => {
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout;
+    const clock = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => (ms === 15_000 ? deadline.signal : timeout(ms)));
+    const writeHealth = vi.fn(async () => {
+      deadline.abort();
+      return new Promise<never>(() => {});
+    });
+    try {
+      const error = await rejectedOAuthBegin(undefined, undefined, writeHealth);
+      expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+      expect(writeHealth).toHaveBeenCalledOnce();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("reports the HTTP status and OAuth error when registration is rejected", async () => {
     vi.stubGlobal(
       "fetch",
@@ -968,7 +989,12 @@ describe("MCP OAuth", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
-    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    let healthPersisted = false;
+    const updateMany = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      healthPersisted = true;
+      return { count: 1 };
+    });
     const prisma = {
       mcpServer: {
         updateMany,
@@ -1008,6 +1034,7 @@ describe("MCP OAuth", () => {
     );
     expect((error as Error).message).not.toContain("[object Response]");
     expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+    expect(healthPersisted).toBe(true);
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

@@ -42,6 +42,7 @@ import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { persistPreparedSecret } from "./secret-persistence.js";
 import { reconcileSecretWrite } from "./secret-store-factory.js";
+import { withAbort } from "./web-ssrf.js";
 
 type OAuthState = {
   tokens?: OAuthTokens;
@@ -910,7 +911,10 @@ export class McpOAuthBroker {
           ? new McpOAuthClientRequiredError()
           : networkFetch.publicError(error, "Could not start MCP OAuth");
         if (needsMcpOAuthClient(failure))
-          void recordMcpServerHealth(this.prisma, server, mcpHealthError(failure), checkedAt, true);
+          await withAbort(
+            recordMcpServerHealth(this.prisma, server, mcpHealthError(failure), checkedAt, true),
+            signal,
+          ).catch(() => undefined);
         throw failure;
       }
     } finally {
