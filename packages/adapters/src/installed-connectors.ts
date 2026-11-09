@@ -55,6 +55,7 @@ import {
   createSafeRemoteFetch,
   listRemoteMcpTools,
 } from "./remote-mcp.js";
+import { remoteMcpToolSession } from "./remote-mcp-sessions.js";
 
 const ModelHeaderName = HeaderName.refine(
   (name) => !isSensitiveHeader(name),
@@ -102,6 +103,7 @@ type InstalledRow = {
   name: string;
   source: string;
   secretId: string | null;
+  revision: number;
   config: unknown;
 };
 
@@ -324,12 +326,26 @@ export class InstalledConnectorProvider implements ConnectorProvider {
       const remote = await this.remoteFor(context);
       if (install.kind === "mcp") {
         const config = McpConfigSchema.parse(install.config);
+        const session = remoteMcpToolSession(context, `installed:${install.id}`, install.revision, {
+          verify: async () => {
+            const current = await this.authorizedInstall(install.id, context);
+            if (
+              current?.kind !== "mcp" ||
+              current.revision !== install.revision ||
+              current.source !== install.source ||
+              (await this.loadCredential(current, context)) !== credential ||
+              (await this.remoteFor(context)).allowPrivateEndpoint !== remote.allowPrivateEndpoint
+            )
+              throw new Error("Installed connector authorization changed");
+          },
+        });
         const result = await callRemoteMcpTool(
           {
             ...remote,
             endpoint: install.source,
             headers: connectorHeaders(config, credential),
             signal: context.signal,
+            session,
           },
           call.route?.toolName ?? call.tool,
           call.args,

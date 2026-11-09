@@ -1217,6 +1217,7 @@ async function buildApp(
         await email?.drain?.();
         await reconciler?.stop();
         await runsStopped;
+        await executor.closeRemoteMcpSessions();
         await jobs.close();
         await deploymentTransfer.close();
         await secrets.close();

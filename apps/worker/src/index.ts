@@ -323,6 +323,7 @@ async function main() {
       try {
         await reconciler.stop();
         await jobHost.stop();
+        await executor.closeRemoteMcpSessions();
         await jobs.close();
         await secrets.close();
         await realtime.close();
