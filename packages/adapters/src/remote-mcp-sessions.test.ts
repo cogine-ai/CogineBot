@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import type { AdapterContext, ConnectorEvent } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it } from "vitest";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
@@ -251,7 +251,16 @@ describe("remote MCP tool sessions", () => {
   });
 
   it.each([
+    [404, ""],
     [404, "unknown session"],
+    [
+      404,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32001, message: "Session not found" },
+      }),
+    ],
     [
       400,
       JSON.stringify({
@@ -282,6 +291,59 @@ describe("remote MCP tool sessions", () => {
     });
     expect(fake.tools.map(({ session }) => session)).toEqual(["1", "2"]);
   });
+
+  it.each([
+    [
+      "a tool request ID",
+      (id: number) =>
+        Response.json(
+          { jsonrpc: "2.0", id, error: { code: -32000, message: "tool result unavailable" } },
+          { status: 404 },
+        ),
+    ],
+    [
+      "an unreadable body",
+      (id: number) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`{"jsonrpc":"2.0","id":${id},"result":`));
+              controller.error(new Error("response interrupted"));
+            },
+          }),
+          { status: 404 },
+        ),
+    ],
+    [
+      "an SSE tool reply",
+      (id: number) =>
+        new Response(`data: ${JSON.stringify({ jsonrpc: "2.0", id, result })}\n\n`, {
+          status: 404,
+          headers: { "content-type": "text/event-stream" },
+        }),
+    ],
+    [
+      "an unrecognized body",
+      (_id: number) => new Response("Tool result unavailable", { status: 404 }),
+    ],
+  ] as const)(
+    "retires an ambiguous HTTP 404 with %s without replaying it",
+    async (_label, reply) => {
+      pool = new RemoteMcpSessionPool();
+      const fake = server({
+        tool: (name, _session, id) => (name === "ambiguous" ? reply(id) : toolResult(id)),
+      });
+      const { context: bound } = pool.bind(context(), current);
+      await expect(invoke(bound, fake.fetch, {}, { name: "ambiguous" })).rejects.toMatchObject({
+        code: 404,
+      });
+      await expect(invoke(bound, fake.fetch, {}, { name: "next" })).resolves.toMatchObject(result);
+      expect(fake.tools).toEqual([
+        { name: "ambiguous", session: "1" },
+        { name: "next", session: "2" },
+      ]);
+    },
+  );
 
   it.each([
     ["stateless 404", true, (_id: number) => new Response("missing", { status: 404 })],
@@ -484,20 +546,37 @@ describe("remote MCP tool sessions", () => {
 
   it("checks authorization after the guarded socket DNS lookup with the default HTTP transport", async () => {
     pool = new RemoteMcpSessionPool();
-    const fake = server();
+    const fake = server({
+      tool: (name, _session, id) =>
+        name === "stream"
+          ? new Response(
+              `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id, result })}\n\n`,
+              {
+                headers: { "content-type": "text/event-stream" },
+              },
+            )
+          : toolResult(id),
+    });
+    const toolSockets = new Set<Socket>();
+    const controlSockets = new Set<Socket>();
     const lookingUpSocket = deferred();
     const finishLookup = deferred();
     const origin = createServer(async (request, response) => {
       const body: Buffer[] = [];
       for await (const chunk of request) body.push(chunk);
+      const payload = Buffer.concat(body).toString();
+      if (request.method === "POST") {
+        const { method } = JSON.parse(payload);
+        if (method === "tools/call") toolSockets.add(request.socket);
+        if (method === "notifications/initialized") controlSockets.add(request.socket);
+      }
       const reply = await fake.fetch("http://localhost/mcp", {
         method: request.method,
         headers: Object.entries(request.headers).map(
           ([key, value]) => [key, String(value)] as [string, string],
         ),
-        body: Buffer.concat(body).toString(),
+        body: payload,
       });
-      response.setHeader("connection", "close");
       for (const [key, value] of reply.headers) response.setHeader(key, value);
       response.writeHead(reply.status === 202 ? 200 : reply.status);
       response.end(Buffer.from(await reply.arrayBuffer()));
@@ -525,6 +604,10 @@ describe("remote MCP tool sessions", () => {
     };
     try {
       await expect(callRemoteMcpTool(options, "warm", {})).resolves.toMatchObject(result);
+      await expect(callRemoteMcpTool(options, "stream", {})).resolves.toMatchObject(result);
+      expect(toolSockets.size).toBe(2);
+      expect(controlSockets.size).toBe(1);
+      expect([...toolSockets].some((socket) => controlSockets.has(socket))).toBe(false);
       holdSocketLookup = true;
       const pending = callRemoteMcpTool(options, "revoked", {});
       const reachedSocketLookup = await Promise.race([
@@ -538,7 +621,10 @@ describe("remote MCP tool sessions", () => {
       authorized = false;
       finishLookup.resolve();
       await expect(pending).rejects.toThrow("authorization changed");
-      expect(fake.tools).toEqual([{ name: "warm", session: "1" }]);
+      expect(fake.tools).toEqual([
+        { name: "warm", session: "1" },
+        { name: "stream", session: "1" },
+      ]);
     } finally {
       await pool.close();
       await new Promise<void>((resolve) => origin.close(() => resolve()));

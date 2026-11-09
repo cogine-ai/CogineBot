@@ -199,10 +199,11 @@ export class RemoteMcpSessionPool {
             ),
           );
         } catch (error) {
-          if (sessionId && sessionGone(error)) {
+          const rejection = sessionId && rejectedSession(error);
+          if (rejection) {
             const wasCurrent = !entry.retired;
             this.retire(entry);
-            if (attempt === 0 && wasCurrent && !signal.aborted) continue;
+            if (rejection === "gone" && attempt === 0 && wasCurrent && !signal.aborted) continue;
           }
           if (
             session.disconnected ||
@@ -371,16 +372,7 @@ export class RemoteMcpSessionPool {
       setup,
     );
     setup.throwIfAborted();
-    const safeFetch = createSafeRemoteFetch(
-      options.fetch,
-      options.resolveHostname,
-      policy,
-      undefined,
-      () => {
-        const request = this.request.getStore();
-        return request?.verify(request.signal);
-      },
-    );
+    const safeFetch = createSafeRemoteFetch(options.fetch, options.resolveHostname, policy);
     let closeSignal: AbortSignal | undefined;
     const { transport, client } = createRemoteMcpClient(
       endpoint,
@@ -389,18 +381,20 @@ export class RemoteMcpSessionPool {
         try {
           // The SDK uses its transport signal for HTTP. Also cancel delayed tool
           // POSTs (such as DNS) with the individual request, without closing siblings.
-          const request =
-            init?.method === "POST" && guardedMcpRequest(init.body)
-              ? this.request.getStore()
-              : undefined;
+          const requiresGuard = init?.method === "POST" && guardedMcpRequest(init.body);
+          const request = requiresGuard ? this.request.getStore() : undefined;
+          if (requiresGuard && !request)
+            throw new RemoteMcpAuthorizationError("Remote MCP request has no Run authorization");
           const signal =
             init?.method === "DELETE" ? closeSignal : combineSignals(lifetime, request?.signal);
-          const fetch = () =>
-            safeFetch(input, {
+          return await safeFetch(
+            input,
+            {
               ...init,
               signal: combineSignals(signal, init?.signal ?? undefined),
-            });
-          return await (request ? fetch() : this.request.exit(fetch));
+            },
+            request && (() => request.verify(request.signal)),
+          );
         } catch (error) {
           const authorization = findAuthorizationError(error);
           if (authorization) throw authorization;
@@ -478,27 +472,43 @@ async function withRequestSignal<T>(
   }
 }
 
-/** Only a transport POST rejection of an assigned session proves the tool did not run. */
-function sessionGone(error: unknown): boolean {
+/** Match a pre-dispatch session rejection before replaying a tool. */
+function rejectedSession(error: unknown): "gone" | "ambiguous" | undefined {
   const prefix = "Streamable HTTP error: Error POSTing to endpoint: ";
-  if (!(error instanceof StreamableHTTPError) || !error.message.startsWith(prefix)) return false;
-  if (error.code === 404) return true;
-  if (error.code !== 400) return false;
+  if (!(error instanceof StreamableHTTPError) || !error.message.startsWith(prefix)) return;
+  if (error.code !== 400 && error.code !== 404) return;
 
   const body = error.message.slice(prefix.length).trim();
-  const missingSession =
-    /^Bad Request: (?:Server not initialized|No valid session ID(?: provided| or initialization request)?|Mcp-Session-Id header is required)$/i;
-  if (missingSession.test(body)) return true;
+  const notFound = error.code === 404;
+  const unresolved = notFound ? "ambiguous" : undefined;
+  const confirmsMissingSession = notFound
+    ? (message: string) => SESSION_NOT_FOUND_BODIES.has(message.trim().toLowerCase())
+    : (message: string) => SESSION_NOT_INITIALIZED.test(message);
+  if (confirmsMissingSession(body)) return "gone";
   try {
     const reply = JSON.parse(body);
-    return (
+    if (
       reply?.jsonrpc === "2.0" &&
       reply.id === null &&
-      reply.error?.code === -32000 &&
+      reply.error?.code === (notFound ? -32001 : -32000) &&
       typeof reply.error.message === "string" &&
-      missingSession.test(reply.error.message)
-    );
+      confirmsMissingSession(reply.error.message)
+    )
+      return "gone";
   } catch {
-    return false;
+    return unresolved;
   }
+  return unresolved;
 }
+
+const SESSION_NOT_FOUND_BODIES = new Set([
+  "",
+  "not found",
+  "404 not found",
+  "invalid session",
+  "session expired",
+  "session not found",
+  "unknown session",
+]);
+const SESSION_NOT_INITIALIZED =
+  /^Bad Request: (?:Server not initialized|No valid session ID(?: provided| or initialization request)?|Mcp-Session-Id header is required)$/i;
