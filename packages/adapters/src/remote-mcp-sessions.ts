@@ -402,7 +402,8 @@ export class RemoteMcpSessionPool {
             });
           return await (request ? fetch() : this.request.exit(fetch));
         } catch (error) {
-          if (error instanceof RemoteMcpAuthorizationError) throw error;
+          const authorization = findAuthorizationError(error);
+          if (authorization) throw authorization;
           throw new RemoteMcpNetworkError("Remote MCP transport failed", { cause: error });
         }
       },
@@ -439,6 +440,15 @@ export class RemoteMcpSessionPool {
 
 class RemoteMcpNetworkError extends Error {}
 class RemoteMcpAuthorizationError extends Error {}
+
+/** The HTTP transport wraps connection-time authorization failures in causes. */
+function findAuthorizationError(error: unknown): RemoteMcpAuthorizationError | undefined {
+  let cause = error;
+  for (let depth = 0; cause instanceof Error && depth < 6; depth++) {
+    if (cause instanceof RemoteMcpAuthorizationError) return cause;
+    cause = cause.cause;
+  }
+}
 
 /** Leave protocol responses and cancellation notifications outside the tool deadline. */
 function guardedMcpRequest(body: RequestInit["body"]): boolean {

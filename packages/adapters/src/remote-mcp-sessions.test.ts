@@ -537,7 +537,7 @@ describe("remote MCP tool sessions", () => {
       expect(reachedSocketLookup).toBe(true);
       authorized = false;
       finishLookup.resolve();
-      await expect(pending).rejects.toThrow();
+      await expect(pending).rejects.toThrow("authorization changed");
       expect(fake.tools).toEqual([{ name: "warm", session: "1" }]);
     } finally {
       await pool.close();
