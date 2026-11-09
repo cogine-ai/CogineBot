@@ -31,6 +31,12 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
 import { sanitizeConnectorError } from "./connector-safety.js";
+import {
+  McpOAuthClientRequiredError,
+  mcpHealthError,
+  needsMcpOAuthClient,
+  recordMcpServerHealth,
+} from "./mcp-server-health.js";
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -573,6 +579,8 @@ function oauthFetch(
       const sdk = sanitizeConnectorError(error, secrets);
       const surfaced = rejection ? formatOAuthRejection(rejection, sdk, secrets) : undefined;
       getLogger().warn(`${message}: ${surfaced ?? sdk}`);
+      if (surfaced && rejection?.code === "registration_not_supported")
+        return new McpOAuthClientRequiredError(`${message}: ${surfaced}`);
       return new Error(surfaced ? `${message}: ${surfaced}` : message);
     },
   };
@@ -884,10 +892,18 @@ export class McpOAuthBroker {
     });
     const client = new Client({ name: "rakazo-oauth", version: "0.1.0" });
     const signal = AbortSignal.timeout(15_000);
+    const checkedAt = new Date();
     try {
       await client.connect(transport, { signal, timeout: 15_000 });
     } catch (error) {
-      if (!authorizationUrl) throw networkFetch.publicError(error, "Could not start MCP OAuth");
+      if (!authorizationUrl) {
+        const failure = needsMcpOAuthClient(error)
+          ? new McpOAuthClientRequiredError()
+          : networkFetch.publicError(error, "Could not start MCP OAuth");
+        if (needsMcpOAuthClient(failure))
+          void recordMcpServerHealth(this.prisma, server, mcpHealthError(failure), checkedAt, true);
+        throw failure;
+      }
     } finally {
       await client.close().catch(() => undefined);
       await networkFetch.close().catch(() => undefined);

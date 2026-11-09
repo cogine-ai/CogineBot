@@ -8,6 +8,7 @@ import {
   McpReauthorizationRequiredError,
   StoredMcpOAuthProvider,
 } from "./mcp-oauth.js";
+import { McpOAuthClientRequiredError } from "./mcp-server-health.js";
 import { infisicalFake } from "./secret-store-fake.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -950,6 +951,7 @@ describe("MCP OAuth", () => {
       mcpServer: {
         findFirst: vi.fn().mockResolvedValue({
           endpoint: "https://mcp.example.test/mcp",
+          revision: 3,
           secretId: null,
         }),
         update: vi.fn().mockResolvedValue({}),
@@ -960,10 +962,15 @@ describe("MCP OAuth", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       mcpServer: {
+        updateMany,
         findFirst: vi.fn().mockResolvedValue({
           id: "server-1",
+          revision: 3,
+          spaceId: "workspace-1",
+          userId: "user-1",
           endpoint: "https://mcp.example.test/mcp",
           secretId: null,
         }),
@@ -994,6 +1001,18 @@ describe("MCP OAuth", () => {
       "Could not start MCP OAuth: HTTP 403 registration_not_supported: Dynamic client registration is not supported. Only pre-registered partners are allowed.",
     );
     expect((error as Error).message).not.toContain("[object Response]");
+    expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "server-1",
+          revision: 3,
+          spaceId: "workspace-1",
+          userId: "user-1",
+        }),
+        data: expect.objectContaining({ healthCode: "MCP_OAUTH_CLIENT_REQUIRED" }),
+      }),
+    );
   });
 
   it("reports the OAuth status and code when the description is redacted", async () => {

@@ -650,6 +650,7 @@ async function buildApp(
     integrationSettings,
     nativeConnectors: native,
     mcpOAuth,
+    mcpConnector: mcp,
     composio: stack.composio,
     connectors: stack.connector,
     remoteConnectors,

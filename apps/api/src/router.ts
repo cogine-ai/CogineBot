@@ -88,12 +88,15 @@ import {
   listPiCatalog,
   listScratchpadItems,
   loadStoredModelSecret,
+  type McpConnector,
   McpOAuthBroker,
   mapScratchpadItem,
+  mcpServerHealthDto,
   modelConnectionErrorMessage,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   nativeSourceJob,
+  needsMcpOAuthClient,
   normalizeSecretDestination,
   PluginMarketplaceCursorError,
   PushSessionEndedError,
@@ -160,6 +163,7 @@ import {
   foldComputerCommands,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
+  MCP_OAUTH_CLIENT_REQUIRED,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -550,6 +554,12 @@ function mcpServerDto(
     allowAllTools: boolean;
     allowedTools: unknown;
     revision: number;
+    healthRevision?: number | null;
+    healthStatus?: string;
+    healthMessage?: string | null;
+    healthCode?: string | null;
+    healthToolCount?: number | null;
+    healthCheckedAt?: Date | null;
     createdAt: Date;
     updatedAt: Date;
   },
@@ -578,6 +588,7 @@ function mcpServerDto(
     headerKeys,
     hasSecret: row.secretId !== null,
     oauthStatus,
+    health: mcpServerHealthDto(row),
     enabled: row.enabled,
     verbatimResults: row.verbatimResults ?? false,
     allowAllTools: row.allowAllTools,
@@ -710,6 +721,7 @@ export interface RouterDeps {
   nativeConnectors?: NativeConnectorProvider;
   composio?: ComposioProvider;
   mcpOAuth?: McpOAuthBroker;
+  mcpConnector?: Pick<McpConnector, "check">;
   connectors: ConnectorRegistry;
   remoteConnectors?: RemoteConnectorDependencies;
   artifacts: ArtifactStore;
@@ -4960,6 +4972,37 @@ export function createRouter(deps: RouterDeps) {
             }),
           );
         }),
+        check: authed.mcp.servers.check.handler(async ({ context, input }) => {
+          if (!deps.mcpConnector) throw new ORPCError("NOT_IMPLEMENTED");
+          const server = await deps.prisma.mcpServer.findFirst({
+            where: {
+              id: input.id,
+              spaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              enabled: true,
+            },
+          });
+          if (!server) throw new IsolationError();
+          const health = await deps.mcpConnector.check(
+            server,
+            connectionContext(context.actor, "mcp.servers.check", context.signal),
+          );
+          const current = await deps.prisma.mcpServer.findFirst({
+            where: {
+              id: server.id,
+              spaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              enabled: true,
+              revision: server.revision,
+            },
+            select: { id: true },
+          });
+          if (!current)
+            throw new ORPCError("CONFLICT", {
+              message: "MCP server changed during the check; retry",
+            });
+          return health;
+        }),
         create: authed.mcp.servers.create.handler(async ({ context, input }) => {
           await assertMcpRemoteEndpoint(
             "endpoint" in input ? input.endpoint : null,
@@ -5549,6 +5592,7 @@ export function createRouter(deps: RouterDeps) {
           } catch (error) {
             throw new ORPCError("BAD_REQUEST", {
               message: error instanceof Error ? error.message : "Could not start MCP OAuth",
+              ...(needsMcpOAuthClient(error) ? { data: { code: MCP_OAUTH_CLIENT_REQUIRED } } : {}),
             });
           }
         }),
