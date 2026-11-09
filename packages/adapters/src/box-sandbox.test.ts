@@ -57,10 +57,37 @@ describe("BoxSandboxProvider", () => {
       expect(events.at(-1)).toEqual({
         type: "exit",
         code: response === "timeout" ? 124 : 1,
-        terminalStateVerified: false,
       });
     },
   );
+
+  it.each([
+    { exitCode: 124, completed: false },
+    { exitCode: 124, completed: true },
+    { exitCode: 137, completed: false },
+    { exitCode: 137, completed: true },
+    { exitCode: 137, completed: false, probeTimedOut: true },
+  ])("distinguishes wrapper exits %j", async ({ exitCode, completed, probeTimedOut }) => {
+    const f = boxFixture();
+    f.command.mockResolvedValueOnce(finished({ exitCode }));
+    f.command.mockResolvedValueOnce(
+      finished({ exitCode: completed || probeTimedOut ? 0 : 1, timedOut: probeTimedOut ?? false }),
+    );
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, f.client);
+    const events = [];
+    for await (const event of provider.execute(
+      { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+      { argv: ["true"] },
+      context,
+    )) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toEqual({
+      type: "exit",
+      code: exitCode,
+      ...(completed ? { terminalStateVerified: true } : {}),
+    });
+  });
 
   it.each(["archived", "archiving", "unknown"])(
     "does not extend attendance on a %s box",
@@ -229,7 +256,7 @@ describe("BoxSandboxProvider", () => {
     }
     expect(events).toEqual([
       { type: "stdout", data: "hello\n" },
-      { type: "exit", code: 0 },
+      { type: "exit", code: 0, terminalStateVerified: true },
     ]);
     const executeRequest = fixture.command.mock.calls.find(([request]) =>
       request.commandRequest.command.includes("TEST_VALUE=works"),

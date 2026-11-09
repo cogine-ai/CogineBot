@@ -352,7 +352,7 @@ export class E2BSandboxProvider implements SandboxProvider {
       yield {
         type: "exit",
         code: result.exitCode ?? 0,
-        ...(result.exitCode == null ? { terminalStateVerified: false } : {}),
+        ...(Number.isInteger(result.exitCode) ? { terminalStateVerified: true } : {}),
       };
     } catch (error) {
       if (error instanceof TimeoutError) {
@@ -360,7 +360,7 @@ export class E2BSandboxProvider implements SandboxProvider {
           type: "stderr",
           data: `command timed out after ${timeoutMs} ms\n`,
         };
-        yield { type: "exit", code: 124, terminalStateVerified: false };
+        yield { type: "exit", code: 124 };
         return;
       }
       if (

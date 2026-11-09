@@ -151,7 +151,7 @@ export async function observeShellCommand(
         else if (event.type === "stderr") stderr += event.data;
         else if (event.type === "exit") {
           code = event.code;
-          if (event.terminalStateVerified !== false && Number.isInteger(code)) {
+          if (event.terminalStateVerified === true && Number.isInteger(code)) {
             options.onVerifiedExit?.(code);
           }
           break;

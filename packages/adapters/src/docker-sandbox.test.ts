@@ -52,7 +52,7 @@ describe("Docker sandbox", () => {
     expect(events).toEqual([
       { type: "stdout", data: "partial output\n" },
       { type: "stderr", data: "command timed out after 75 ms\n" },
-      { type: "exit", code: 124, terminalStateVerified: false },
+      { type: "exit", code: 124 },
     ]);
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       "x-rakazo-bot-id": "bot",
@@ -116,7 +116,10 @@ describe("Docker sandbox", () => {
     await Promise.resolve();
     expect(exitSeen).toBe(false);
     releaseExit();
-    await expect(rest).resolves.toEqual({ value: { type: "exit", code: 0 }, done: false });
+    await expect(rest).resolves.toEqual({
+      value: { type: "exit", code: 0, terminalStateVerified: true },
+      done: false,
+    });
   });
 
   it.each(["", '{"type":"exit","code":0}\n'])(
@@ -142,7 +145,7 @@ describe("Docker sandbox", () => {
       }
       expect(events).toEqual([
         { type: "stdout", data: "started" },
-        { type: "exit", code: terminal ? 0 : 1, terminalStateVerified: false },
+        { type: "exit", code: terminal ? 0 : 1 },
       ]);
     },
   );

@@ -2058,11 +2058,15 @@ async function runContainerCommand(
   }
   const inspect = await exec.inspect();
   const code = inspect.ExitCode ?? 0;
-  const completedWithExit124 =
-    code === 124 && completionMarker
-      ? await consumeCompletionMarker(container, completionMarker)
+  const needsCompletionMarker = Boolean(completionMarker) && (code === 124 || code === 137);
+  const completed =
+    completionMarker && needsCompletionMarker
+      ? await consumeCompletionMarker(container, completionMarker).catch((error: unknown) => {
+          if (code === 124) throw error;
+          return false;
+        })
       : false;
-  const timedOut = sandboxCommandTimedOut(code, completedWithExit124);
+  const timedOut = sandboxCommandTimedOut(code, completed);
   const output = demuxDockerStream(Buffer.concat(chunks));
   return {
     stdout: output.stdout,
@@ -2070,7 +2074,10 @@ async function runContainerCommand(
       ? `${output.stderr}${output.stderr.endsWith("\n") || output.stderr === "" ? "" : "\n"}command timed out after ${timeoutMs} ms\n`
       : output.stderr,
     code,
-    terminalStateVerified: inspect.Running === false && Number.isInteger(inspect.ExitCode),
+    terminalStateVerified:
+      inspect.Running === false &&
+      Number.isInteger(inspect.ExitCode) &&
+      (!needsCompletionMarker || completed),
   };
 }
 
@@ -2081,7 +2088,7 @@ async function consumeCompletionMarker(container: Docker.Container, marker: stri
     'if [ -f "$0" ]; then rm -f "$0"; exit 0; fi; exit 1',
     marker,
   ]);
-  return result.code === 0;
+  return result.code === 0 && result.terminalStateVerified;
 }
 
 async function applyContainerActions(

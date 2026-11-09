@@ -305,7 +305,7 @@ describe("CreateOSSandboxProvider", () => {
 
     expect(events).toEqual([
       { type: "stdout", data: "hello\n" },
-      { type: "exit", code: 0 },
+      { type: "exit", code: 0, terminalStateVerified: true },
     ]);
     const command = fixture.execs.at(-1)?.command ?? "";
     expect(command).toContain("cd '/home/desktop/rakazo-home/notes'");
@@ -325,7 +325,7 @@ describe("CreateOSSandboxProvider", () => {
       events.push(event);
     }
 
-    expect(events.at(-1)).toEqual({ type: "exit", code: 124, terminalStateVerified: false });
+    expect(events.at(-1)).toEqual({ type: "exit", code: 124 });
     expect(events[0]).toMatchObject({ type: "stderr" });
   });
 
@@ -525,7 +525,7 @@ describe("CreateOSSandboxProvider", () => {
       events.push(event);
     }
 
-    expect(events.at(-1)).toEqual({ type: "exit", code: 130, terminalStateVerified: false });
+    expect(events.at(-1)).toEqual({ type: "exit", code: 130 });
   });
 
   it.each([true, false])(
@@ -558,7 +558,6 @@ describe("CreateOSSandboxProvider", () => {
       expect(events.at(-1)).toEqual({
         type: "exit",
         code: reportedError ? 1 : 0,
-        terminalStateVerified: false,
       });
     },
   );

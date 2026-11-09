@@ -681,7 +681,7 @@ describe("sandbox supervisor input containment", () => {
         "2.5s",
         "sh",
         "-c",
-        '"$@"; status=$?; if [ "$status" -eq 124 ]; then : > "$0"; fi; exit "$status"',
+        '"$@"; status=$?; case "$status" in 124|137) : > "$0";; esac; exit "$status"',
         "/tmp/completed-124",
         "bash",
         "-lc",

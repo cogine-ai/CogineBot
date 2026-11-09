@@ -206,18 +206,18 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       );
       if (context.signal.aborted) {
         yield { type: "stderr", data: "command aborted\n" };
-        yield { type: "exit", code: 130, terminalStateVerified: false };
+        yield { type: "exit", code: 130 };
         return;
       }
       if (result.result) yield { type: "stdout", data: result.result };
-      yield { type: "exit", code: result.exitCode };
+      yield { type: "exit", code: result.exitCode, terminalStateVerified: true };
     } catch (error) {
       if (error instanceof DaytonaProcessExecutionTimeoutError) {
         yield {
           type: "stderr",
           data: `command timed out after ${timeoutMs} ms\n`,
         };
-        yield { type: "exit", code: 124, terminalStateVerified: false };
+        yield { type: "exit", code: 124 };
         return;
       }
       throw error;

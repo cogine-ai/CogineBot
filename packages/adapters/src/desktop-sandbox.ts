@@ -730,7 +730,7 @@ async function* streamLocalCommand(
     wake = undefined;
     notify?.();
   };
-  const finish = (code: number, stderrLine?: string, terminalStateVerified?: false) => {
+  const finish = (code: number, stderrLine?: string, terminalStateVerified?: true) => {
     if (settled) return;
     settled = true;
     clearTimeout(timeout);
@@ -739,7 +739,7 @@ async function* streamLocalCommand(
     push({
       type: "exit",
       code,
-      ...(terminalStateVerified === false ? { terminalStateVerified } : {}),
+      ...(terminalStateVerified ? { terminalStateVerified } : {}),
     });
     ended = true;
     const notify = wake;
@@ -750,7 +750,7 @@ async function* streamLocalCommand(
     killProcessTree(child.pid);
     child.stdout?.destroy();
     child.stderr?.destroy();
-    finish(code, message, false);
+    finish(code, message);
   };
   const abort = () => terminate("command aborted", 130);
   const timeout = setTimeout(
@@ -778,7 +778,7 @@ async function* streamLocalCommand(
     }
   });
   child.on("close", (code) => {
-    finish(code ?? 0, undefined, code === null ? false : undefined);
+    finish(code ?? 0, undefined, code === null ? undefined : true);
   });
   if (signal.aborted) abort();
   try {

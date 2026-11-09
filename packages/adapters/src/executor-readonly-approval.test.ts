@@ -596,6 +596,7 @@ describe("delegated shell approval receipts", () => {
     { code: undefined, receipt: "unknown" },
     { code: 0, unverified: true, receipt: "unknown" },
     { code: 1, unverified: true, receipt: "unknown" },
+    { code: 130, unverified: true, receipt: "unknown" },
     { code: 0, running: true, receipt: "succeeded" },
     { code: 2, running: true, receipt: "failed" },
     { code: 0, running: true, unverified: true, receipt: "unknown" },
@@ -617,7 +618,7 @@ describe("delegated shell approval receipts", () => {
           yield {
             type: "exit",
             code,
-            ...(unverified ? { terminalStateVerified: false } : {}),
+            ...(unverified ? {} : { terminalStateVerified: true }),
           };
       });
       const f = fixture({

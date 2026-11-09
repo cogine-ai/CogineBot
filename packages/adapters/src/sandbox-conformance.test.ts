@@ -144,7 +144,7 @@ describe("sandbox conformance", () => {
           ctx,
         ))
           events.push(event);
-        expect(events).toEqual([{ type: "exit", code: 1 }]);
+        expect(events).toEqual([{ type: "exit", code: 1, terminalStateVerified: true }]);
         await provider.destroy(computer, ctx);
       }
     } finally {

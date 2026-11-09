@@ -1146,7 +1146,7 @@ describe("DaytonaSandboxProvider", () => {
     }
     expect(events).toEqual([
       { type: "stdout", data: "hello\n" },
-      { type: "exit", code: 0 },
+      { type: "exit", code: 0, terminalStateVerified: true },
     ]);
     expect(fixture.executeCommand).toHaveBeenCalledWith(
       "'env' '-u' 'FAILED' '--' 'echo' 'hello'",

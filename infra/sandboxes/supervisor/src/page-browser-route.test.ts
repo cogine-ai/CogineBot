@@ -70,11 +70,21 @@ it.each([
   { ExitCode: 2, Running: false, verified: true },
   { ExitCode: 0, Running: true, verified: false },
   { ExitCode: null, Running: false, verified: false },
-])("preserves exec terminal evidence %j", async ({ ExitCode, Running, verified }) => {
+  { ExitCode: 124, Running: false, completed: false, verified: false },
+  { ExitCode: 124, Running: false, completed: true, verified: true },
+  { ExitCode: 137, Running: false, completed: false, verified: false },
+  { ExitCode: 137, Running: false, completed: true, verified: true },
+])("preserves exec terminal evidence %j", async ({ ExitCode, Running, completed, verified }) => {
   mock.exec.mockResolvedValueOnce({
     start: async () => new PassThrough().end(),
     inspect: async () => ({ ExitCode, Running }),
   });
+  if (completed !== undefined) {
+    mock.exec.mockResolvedValueOnce({
+      start: async () => new PassThrough().end(),
+      inspect: async () => ({ ExitCode: completed ? 0 : 1, Running: false }),
+    });
+  }
   const response = await supervisorApp.request("/computers/command-fixture/exec", {
     method: "POST",
     headers: {

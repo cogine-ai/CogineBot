@@ -205,7 +205,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     });
     if (!res.ok) {
       yield { type: "stderr", data: `exec failed: ${res.status}` };
-      yield { type: "exit", code: 1, terminalStateVerified: false };
+      yield { type: "exit", code: 1 };
       return;
     }
     const contentType = res.headers.get("content-type") ?? "";
@@ -225,7 +225,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     );
     if (body.stdout) yield { type: "stdout", data: body.stdout };
     if (body.stderr) yield { type: "stderr", data: body.stderr };
-    yield { type: "exit", code: body.code, terminalStateVerified: false };
+    yield { type: "exit", code: body.code };
   }
 
   async pageBrowser(
@@ -599,7 +599,7 @@ async function* readNdjsonProcessEvents(
   const reader = res.body?.getReader();
   if (!reader) {
     yield { type: "stderr", data: "exec failed: empty response\n" };
-    yield { type: "exit", code: 1, terminalStateVerified: false };
+    yield { type: "exit", code: 1 };
     return;
   }
   const decoder = new TextDecoder();
@@ -614,7 +614,7 @@ async function* readNdjsonProcessEvents(
       bytes += value.byteLength;
       if (bytes > MAX_SANDBOX_SUCCESS_RESPONSE_BYTES) {
         yield { type: "stderr", data: "exec failed: response too large\n" };
-        yield { type: "exit", code: 1, terminalStateVerified: false };
+        yield { type: "exit", code: 1 };
         await reader.cancel().catch(() => undefined);
         return;
       }
@@ -634,7 +634,7 @@ async function* readNdjsonProcessEvents(
         yield event;
       }
     }
-    if (!sawExit) yield { type: "exit", code: 1, terminalStateVerified: false };
+    if (!sawExit) yield { type: "exit", code: 1 };
   } finally {
     reader.releaseLock();
   }
@@ -677,7 +677,7 @@ function parseProcessLine(line: string): ProcessEvent | undefined {
     return {
       type: "exit",
       code: record.code,
-      ...(record.terminalStateVerified === true ? {} : { terminalStateVerified: false }),
+      ...(record.terminalStateVerified === true ? { terminalStateVerified: true } : {}),
     };
   }
   return undefined;

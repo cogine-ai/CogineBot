@@ -488,12 +488,12 @@ export class CreateOSSandboxProvider implements SandboxProvider {
     } catch (error) {
       if (context.signal.aborted) {
         yield { type: "stderr", data: "command aborted\n" };
-        yield { type: "exit", code: 130, terminalStateVerified: false };
+        yield { type: "exit", code: 130 };
         return;
       }
       if (!isTimeoutAbort(error)) throw error;
       yield { type: "stderr", data: `command timed out after ${timeoutMs} ms\n` };
-      yield { type: "exit", code: 124, terminalStateVerified: false };
+      yield { type: "exit", code: 124 };
       return;
     }
     if (result.result?.stdout) yield { type: "stdout", data: result.result.stdout };
@@ -503,7 +503,7 @@ export class CreateOSSandboxProvider implements SandboxProvider {
     yield {
       type: "exit",
       code: code ?? (result.result?.error ? 1 : 0),
-      ...(code == null ? { terminalStateVerified: false } : {}),
+      ...(Number.isInteger(code) ? { terminalStateVerified: true } : {}),
     };
   }
 

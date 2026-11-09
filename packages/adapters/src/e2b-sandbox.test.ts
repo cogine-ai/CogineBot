@@ -472,7 +472,13 @@ describe("E2B computer backend", () => {
     async (state) => {
       await withRetainedE2BServer({ state }, async (requests, backend) => {
         const events = await runCancellation(backend);
-        expect(events).toEqual([{ type: "exit", code: 0 }]);
+        expect(events).toEqual([
+          {
+            type: "exit",
+            code: 0,
+            ...(state === "running" ? { terminalStateVerified: true } : {}),
+          },
+        ]);
         const paths = requests.map(({ method, path }) => `${method} ${path}`);
         if (state === "running") {
           expect(paths).toEqual(["GET /sandboxes/existing", "POST /process.Process/Start"]);
@@ -678,7 +684,7 @@ describe("E2B computer backend", () => {
         {
           type: "exit",
           code: 0,
-          ...(exitCode === undefined ? { terminalStateVerified: false } : {}),
+          ...(exitCode === undefined ? {} : { terminalStateVerified: true }),
         },
       ]);
       expect(run).toHaveBeenCalledWith(
@@ -1204,7 +1210,7 @@ describe("E2B computer backend", () => {
     }
     expect(timeoutEvents).toEqual([
       { type: "stderr", data: "command timed out after 42 ms\n" },
-      { type: "exit", code: 124, terminalStateVerified: false },
+      { type: "exit", code: 124 },
     ]);
     expect(command).toHaveBeenCalledWith(
       "'hang'",

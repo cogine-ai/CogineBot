@@ -1240,7 +1240,13 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         "times in a row without making progress, so I stopped early",
       );
 
-      const unrelated = await seed(handles, "unrelated recovery");
+      const fixtureApp = handles;
+      const unrelated = await seed(fixtureApp, "unrelated recovery", undefined, async () => {
+        // The intro can reach a terminal Run state before releasing its lease.
+        // Stop the automatic reconciler before creating the row for the manual one.
+        await fixtureApp.awaitIdle?.();
+        await fixtureApp.stop();
+      });
       const recovery = createJobReconciler({ prisma: observer, jobs });
       await recovery.reconcileOnce();
       const enqueued = vi.mocked(jobs.enqueue).mock.calls.map(([job]) => job);
