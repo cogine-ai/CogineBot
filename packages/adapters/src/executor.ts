@@ -9036,6 +9036,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               result.uncertain === true &&
               applied
             ) {
+              if (blockedAtDispatch && !("recovery" in result)) {
+                // A later blocked request can follow a durable write checkpoint.
+                const current = await deps.prisma.externalEffect.findUnique({
+                  where: { id: applied.effect.id },
+                  select: { result: true },
+                });
+                const recovery = nativeCheckpointRecovery(current?.result);
+                if (recovery) result = { ...result, recovery };
+              }
               const changed = await deps.prisma.externalEffect.updateMany({
                 where: { id: applied.effect.id, status: claimedEffect ? "executing" : "intended" },
                 data: { status: "uncertain", result: result as never },

@@ -452,7 +452,7 @@ function fixture({
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   const append = vi.fn(async (_event: Parameters<ThreadEvents["append"]>[0]) => undefined);
   const notifyDelegatedApprovalParent = vi.fn(async (_runId: string) => undefined);
-  const execute = vi.fn(async function* (call: ConnectorCall) {
+  const execute = vi.fn<ConnectorProvider["execute"]>(async function* (call) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
   let calls: {
@@ -5424,6 +5424,30 @@ describe("connector batch approval", () => {
       }
     },
   );
+
+  it("preserves the native checkpoint when a later provider request is blocked", async () => {
+    const name = "mail_send_file";
+    const rules: ActionApprovalRule[] = [];
+    const f = fixture({ name, rules, readOnly: false });
+    f.tool.route!.connectorId = "native";
+    f.execute.mockImplementationOnce(async function* (call) {
+      await call.beforeDispatch!();
+      f.effects[0]!.result = { nativeRecovery: { file_id: "synthetic-file", stage: "completion" } };
+      rules.push(rule("deny", name));
+      try {
+        await call.beforeDispatch!();
+      } catch {
+        yield { type: "error", message: "Blocked before completion", uncertain: true };
+      }
+    });
+    await f.run();
+    const expected = {
+      uncertain: true,
+      recovery: { file_id: "synthetic-file", stage: "completion" },
+    };
+    expect(f.results.at(-1)).toMatchObject(expected);
+    expect(f.effects[0]).toMatchObject({ status: "uncertain", result: expected });
+  });
 
   it("closes a pending effect without showing a card when the rule changes during Auto Review", async () => {
     const rules: ActionApprovalRule[] = [];

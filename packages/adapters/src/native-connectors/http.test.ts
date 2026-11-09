@@ -105,7 +105,10 @@ describe("native HTTP execution", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Fixture port unavailable");
     const controller = new AbortController();
-    const reachedGuard = Promise.withResolvers<void>();
+    let enterGuard!: () => void;
+    const reachedGuard = new Promise<void>((resolve) => {
+      enterGuard = resolve;
+    });
     const client = new NativeHttpClient(
       `http://127.0.0.1:${address.port}`,
       async () => ({ kind: "bearer", value: "fixture-access" }),
@@ -114,7 +117,7 @@ describe("native HTTP execution", () => {
         readOnly: false,
         allowPrivateEndpoint: true,
         beforeDispatch: async () => {
-          reachedGuard.resolve();
+          enterGuard();
           await new Promise<void>(() => {});
         },
       },
@@ -122,7 +125,7 @@ describe("native HTTP execution", () => {
     try {
       const request = client.request({ method: "POST", path: "/pages", body: {} });
       const rejected = expect(request).rejects.toThrow();
-      await reachedGuard.promise;
+      await reachedGuard;
       controller.abort();
       await Promise.all([rejected, socketClosed]);
       expect(received).not.toHaveBeenCalled();
