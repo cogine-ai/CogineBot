@@ -90,6 +90,60 @@ async function runCostCall(
 }
 
 describe("provider cost evidence", () => {
+  it.each([
+    {
+      name: "completed",
+      interrupted: false,
+      reportedCost: undefined,
+      source: "pi-catalog-estimate",
+    },
+    { name: "interrupted", interrupted: true, reportedCost: undefined, source: null },
+    {
+      name: "reported before interruption",
+      interrupted: true,
+      reportedCost: 0.125,
+      source: "provider-reported",
+    },
+  ])("classifies Anthropic cost when $name", async ({ interrupted, reportedCost, source }) => {
+    const frames = [
+      {
+        type: "message_start",
+        message: {
+          id: "msg-cost-fixture",
+          type: "message",
+          role: "assistant",
+          model: "fixture",
+          content: [],
+          usage: { input_tokens: 10, output_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 2, ...(reportedCost === undefined ? {} : { cost: reportedCost }) },
+      },
+      interrupted
+        ? { type: "error", error: { type: "overloaded_error", message: "Fixture interrupted" } }
+        : { type: "message_stop" },
+    ];
+    const stream = frames
+      .map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`)
+      .join("");
+    const event = await runCostCall(
+      async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+      "https://model.example.test",
+      { provider: "anthropic", api: "anthropic-messages" },
+    );
+    expect(event).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 2,
+      pricingSnapshot: model.cost,
+      costSource: source,
+    });
+    if (source === null) expect(event.costUsd).toBeNull();
+    else expect(event.costUsd).toBeCloseTo(reportedCost ?? 0.000014, 12);
+  });
+
   it.each(["interrupted-json", "sse-error"] as const)(
     "does not trust a generation header against $0 identity evidence",
     async (format) => {

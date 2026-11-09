@@ -90,6 +90,7 @@ export function normalizePiUsage(
   usage: Partial<Usage> | undefined,
   model: Pick<Model<Api>, "cost">,
   reported: ReportedUsageFields = new Set(),
+  allowCatalogEstimate = true,
 ): AgentUsage {
   const evidence = usageEvidence.get(reported);
   const rejected = evidence?.rejected && !evidence.uncertain;
@@ -147,6 +148,7 @@ export function normalizePiUsage(
     (rates.cacheWrite === 0 || cacheWriteTokens !== null);
   const providerCost = reportedCosts.get(reported);
   const estimate =
+    allowCatalogEstimate &&
     costKnown &&
     typeof usage?.cost?.total === "number" &&
     Number.isFinite(usage.cost.total) &&
@@ -443,9 +445,9 @@ async function resolveUsage(
   model: Pick<Model<Api>, "cost">,
   reported: ReportedUsageFields,
   fetcher: typeof fetch,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; allowCatalogEstimate: boolean },
 ): Promise<AgentUsage> {
-  const measured = normalizePiUsage(usage, model, reported);
+  const measured = normalizePiUsage(usage, model, reported, options.allowCatalogEstimate);
   const evidence = usageEvidence.get(reported);
   const authorization =
     evidence?.authorization ??
@@ -468,7 +470,7 @@ async function resolveUsage(
     fetcher,
     evidence.generationId,
     authorization,
-    signal,
+    options.signal,
   );
   if (
     !recovered ||
@@ -890,7 +892,8 @@ export function observedPiStream(
               usageModel,
               reported,
               fetcher,
-              options?.signal,
+              // An error can carry partial token counts that Pi priced as if the call had finished.
+              { signal: options?.signal, allowCatalogEstimate: event.type === "done" },
             );
             await emitUsage(
               normalized,
@@ -929,13 +932,10 @@ export function observedPiStream(
       let terminalError = error;
       if (started && normalized === null) {
         try {
-          const failedUsage = await resolveUsage(
-            undefined,
-            usageModel,
-            reported,
-            fetcher,
-            options?.signal,
-          );
+          const failedUsage = await resolveUsage(undefined, usageModel, reported, fetcher, {
+            signal: options?.signal,
+            allowCatalogEstimate: false,
+          });
           if (failedUsage.costUsd != null || failedUsage.providerRequestId != null) {
             normalized = failedUsage;
           }
