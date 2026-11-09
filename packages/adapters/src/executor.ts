@@ -460,7 +460,11 @@ import {
   scriptedSteeringText,
 } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
-import { loadDeniedActionTargets, repeatsDeniedAction } from "./run-denied-actions.js";
+import {
+  loadDeniedActionTargets,
+  pageDenialTarget,
+  repeatsDeniedAction,
+} from "./run-denied-actions.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
 import { findRunRecoveryBlockers, pendingQuotaWaitExpired } from "./run-recovery.js";
 import {
@@ -6232,13 +6236,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
-          const mcpBatchGroup =
+          const mcpServerGroup =
             liveRoute?.connectorId === "mcp" ? connectorTool?.route?.catalogGroup : undefined;
           const wrappers = batchActions
             ? [
                 ...new Set([name, wireToolName]),
-                ...(mcpBatchGroup
-                  ? batchActions.map(({ toolName }) => mcpToolName(mcpBatchGroup, toolName))
+                ...(mcpServerGroup
+                  ? batchActions.map(({ toolName }) => mcpToolName(mcpServerGroup, toolName))
                   : liveRoute?.connectorId === "installed"
                     ? batchActions.map(({ toolName }) =>
                         uniquifyInstalledToolName(liveRoute.resourceId, toolName),
@@ -6494,16 +6498,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (
             (!applied || applied.effect.status === "intended") &&
-            pageMode !== "read" &&
-            pageMode !== "help" &&
             repeatsDeniedAction(
               {
                 toolName: name,
                 route: liveRoute,
                 batch,
-                pageId:
-                  pageMode === "write" && typeof args.pageId === "string" ? args.pageId : undefined,
+                page: pageMode && pageDenialTarget(pageMode, args.pageId),
                 aliases: directAliases,
+                legacyBatchPrefix:
+                  liveRoute?.connectorId === "composio"
+                    ? ""
+                    : mcpServerGroup
+                      ? mcpToolName(mcpServerGroup, "")
+                      : undefined,
                 opaqueCode: name === "shell" ? "shell" : isCodeRoute ? "connector" : undefined,
               },
               await loadRunDenials(),
@@ -6521,7 +6528,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   status: "running",
                   leaseOwner: workerId,
                   leaseFence: fence,
-                  leaseExpiresAt: { gt: new Date() },
                 },
                 data: { leaseFence: fence },
               });

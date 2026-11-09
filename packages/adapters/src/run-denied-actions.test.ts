@@ -1,6 +1,10 @@
 import { SHARED_PAGE_UPDATE_REQUEST_KIND } from "@rakazo/contracts";
 import { expect, it } from "vitest";
-import { loadDeniedActionTargets, repeatsDeniedAction } from "./run-denied-actions.js";
+import {
+  loadDeniedActionTargets,
+  pageDenialTarget,
+  repeatsDeniedAction,
+} from "./run-denied-actions.js";
 
 it("holds a shared Page refusal to the same Page", async () => {
   const denied = await loadDeniedActionTargets(
@@ -25,8 +29,12 @@ it("holds a shared Page refusal to the same Page", async () => {
     async () => undefined,
   );
   const save = { toolName: "save_page", aliases: [] };
-  expect(repeatsDeniedAction({ ...save, pageId: "page-a" }, denied)).toBe(true);
-  expect(repeatsDeniedAction({ ...save, pageId: "page-b" }, denied)).toBe(false);
+  expect(repeatsDeniedAction({ ...save, page: pageDenialTarget("write", "page-a") }, denied)).toBe(
+    true,
+  );
+  expect(repeatsDeniedAction({ ...save, page: pageDenialTarget("write", "page-b") }, denied)).toBe(
+    false,
+  );
   expect(repeatsDeniedAction(save, denied)).toBe(false);
 });
 
@@ -49,3 +57,27 @@ it("prevents Shell from replacing a refused file operation without fencing provi
     ),
   ).toBe(false);
 });
+
+it.each([
+  { mode: "read", request: { pageId: "page-a" } },
+  { mode: "write", request: { pageId: "page-a", source: "Proposed replacement" } },
+] as const)(
+  "matches an ordinary Page refusal by both $mode mode and Page",
+  async ({ mode, request }) => {
+    const denied = await loadDeniedActionTargets(
+      [{ kind: "save_page", result: null, request }],
+      async () => undefined,
+    );
+    const save = { toolName: "save_page", aliases: [] };
+    expect(repeatsDeniedAction({ ...save, page: pageDenialTarget(mode, "page-a") }, denied)).toBe(
+      true,
+    );
+    expect(repeatsDeniedAction({ ...save, page: pageDenialTarget(mode, "page-b") }, denied)).toBe(
+      false,
+    );
+    const otherMode = mode === "write" ? "read" : "write";
+    expect(
+      repeatsDeniedAction({ ...save, page: pageDenialTarget(otherMode, "page-a") }, denied),
+    ).toBe(false);
+  },
+);

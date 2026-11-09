@@ -5767,7 +5767,8 @@ describe("same-run refusal", () => {
     f.effects.push(denied(send, { id: "old" }));
     const update = f.prisma.run.updateMany.getMockImplementation()!;
     f.prisma.run.updateMany.mockImplementation(async (input) =>
-      input.where.leaseExpiresAt &&
+      input.where.status === "running" &&
+      input.where.leaseOwner === "worker-1" &&
       Object.keys(input.data).length === 1 &&
       "leaseFence" in input.data
         ? { count: 0 }
@@ -5874,6 +5875,29 @@ describe("same-run refusal", () => {
     expect(direct.results).toEqual([refused]);
     expect(direct.execute).not.toHaveBeenCalled();
   });
+
+  it.each(["mail", "other-mail"])(
+    "scopes legacy MCP batch overlap to its server (%s)",
+    async (priorServer) => {
+      const priorDirect = denied(`mcp__${priorServer}__${send}`, {});
+      const batch = batchFixture(priorDirect, [send]);
+      batch.tool.route!.connectorId = "mcp";
+      batch.tool.route!.catalogGroup = "mail";
+      await batch.run();
+
+      const direct = fixture({ name: `mcp__mail__${send}`, readOnly: false });
+      Object.assign(direct.tool.route!, route, { connectorId: "mcp", catalogGroup: "mail" });
+      direct.effects.push(
+        denied(`mcp__${priorServer}__${wrapper}`, { tools: [{ tool_slug: send }] }),
+      );
+      await direct.run();
+
+      for (const f of [batch, direct]) {
+        expect(f.execute).toHaveBeenCalledTimes(priorServer === "mail" ? 0 : 1);
+        if (priorServer === "mail") expect(f.results).toEqual([refused]);
+      }
+    },
+  );
 
   it("allows a disjoint batch and ignores machine-refused repeats as denial sources", async () => {
     const f = batchFixture(denied(wrapper, { tools: [{ tool_slug: send }] }), ["GMAIL_SEND_DRAFT"]);
