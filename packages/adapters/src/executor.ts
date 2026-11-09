@@ -6240,13 +6240,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     select: { id: true },
                   }),
                 )));
+          const installPrefix =
+            liveRoute?.connectorId === "installed"
+              ? uniquifyInstalledToolName(liveRoute.resourceId, "")
+              : undefined;
+          const exposedName =
+            installPrefix && name.startsWith(installPrefix)
+              ? name.slice(installPrefix.length)
+              : name;
           const directAliases =
             !batchActions && liveRoute
               ? [
                   ...new Set([
                     wireToolName,
-                    ...(liveRoute.connectorId === "installed"
-                      ? [uniquifyInstalledToolName(liveRoute.resourceId, wireToolName)]
+                    exposedName,
+                    ...(installPrefix
+                      ? [installPrefix + wireToolName, installPrefix + exposedName]
                       : []),
                   ]),
                 ].filter((alias) => alias !== name)
@@ -6264,7 +6273,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             for (const alias of directAliases) {
               const resolvedAlias = resolveActionApprovalDetail({
                 toolName: alias,
-                connectorKind,
+                connectorKind: connectorKindFromToolName(alias, connectorProviders),
                 readOnly: declaredReadOnly,
                 rules,
               });

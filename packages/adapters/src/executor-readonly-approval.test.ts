@@ -5271,14 +5271,36 @@ describe("connector batch approval", () => {
   });
 
   it.each([
-    { current: "installed__resource-1__send_mail", saved: "send_mail" },
-    { current: "send_mail", saved: "installed__resource-1__send_mail" },
-  ])(
-    "keeps a saved tool block after an installed name changes ($current)",
-    async ({ current, saved }) => {
-      const f = fixture({ name: current, readOnly: false, rules: [rule("deny", saved)] });
+    {
+      current: "installed__resource-1__send_mail",
+      kind: "tool",
+      saved: "send_mail",
+      wire: "send_mail",
+    },
+    {
+      current: "send_mail",
+      kind: "tool",
+      saved: "installed__resource-1__send_mail",
+      wire: "send_mail",
+    },
+    { current: "installed__resource-1__send_mail", kind: "tool", saved: "send_mail", wire: "op-a" },
+    { current: "send_mail", kind: "tool", saved: "installed__resource-1__send_mail", wire: "op-a" },
+    {
+      current: "installed__resource-1__stripe_refund",
+      kind: "connector",
+      saved: "stripe",
+      wire: "stripe_refund",
+    },
+  ] as const)(
+    "keeps a saved $kind block after an installed name changes ($current)",
+    async ({ current, kind, saved, wire }) => {
+      const f = fixture({
+        name: current,
+        readOnly: false,
+        rules: [{ effect: "deny", matchKind: kind, matchValue: saved }],
+      });
       f.tool.route!.connectorId = "installed";
-      f.tool.route!.toolName = "send_mail";
+      f.tool.route!.toolName = wire;
       await f.run();
       expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
       expect(f.execute).not.toHaveBeenCalled();

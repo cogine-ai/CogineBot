@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { NativeHttpClient } from "./http.js";
@@ -55,6 +57,40 @@ describe("native HTTP execution", () => {
     expect(beforeDispatch).toHaveBeenCalledOnce();
     expect(fetch).not.toHaveBeenCalled();
   });
+  it("keeps a real socket refusal distinct from an uncertain write outcome", async () => {
+    const received = vi.fn();
+    const server = createServer((_request, response) => {
+      received();
+      response.end("{}");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Fixture port unavailable");
+    const refusal = new ActionRuleDispatchError("Action blocked");
+    const client = new NativeHttpClient(
+      `http://127.0.0.1:${address.port}`,
+      async () => ({ kind: "bearer", value: "fixture-access" }),
+      {
+        signal: new AbortController().signal,
+        readOnly: false,
+        allowPrivateEndpoint: true,
+        beforeDispatch: async () => {
+          throw refusal;
+        },
+      },
+    );
+    try {
+      await expect(client.request({ method: "POST", path: "/pages", body: {} })).rejects.toBe(
+        refusal,
+      );
+      expect(received).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it.each([410, 403, 404])(
     "distinguishes expired cursors from access failure %s",
     async (status) => {

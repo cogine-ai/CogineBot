@@ -1,4 +1,5 @@
 import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { combineSignals } from "../connector-safety.js";
 import type { RemoteTransportDependencies } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
@@ -12,6 +13,7 @@ export class NativeGraphFileDownloads {
     private readonly revalidate: () => Promise<unknown>,
     private readonly signal: AbortSignal,
     network: RemoteTransportDependencies = {},
+    private readonly beforeDispatch?: () => Promise<void>,
   ) {
     this.fetch = createNativeFetch(network);
   }
@@ -47,8 +49,13 @@ export class NativeGraphFileDownloads {
     const signal = combineSignals(this.signal, AbortSignal.timeout(30_000));
     let response: Response;
     try {
-      response = await this.fetch(url, { method: "GET", redirect: "manual", signal });
-    } catch {
+      response = await this.fetch(
+        url,
+        { method: "GET", redirect: "manual", signal },
+        this.beforeDispatch,
+      );
+    } catch (error) {
+      if (error instanceof ActionRuleDispatchError) throw error;
       throw new NativeActionError(
         "temporarily_unavailable",
         "The Microsoft file could not be downloaded.",
