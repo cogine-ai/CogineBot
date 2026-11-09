@@ -132,6 +132,7 @@ import {
   redactSecrets,
   renderBotDirectory,
   resolveActionApprovalDetail,
+  resolveBatchActionApproval,
   sandboxCommandTimeoutMs,
   sanitizeJsonValue,
   toolRequiresApproval,
@@ -212,6 +213,7 @@ import {
   approvedReplayArgs,
   boundDirectApprovalDetails,
   boundDirectApprovalRequest,
+  CATALOG_APPROVAL_TOOL,
   catalogApprovalArguments,
   catalogApprovalConnectorId,
   catalogApprovalDetails,
@@ -287,6 +289,7 @@ import { validCloudAgentArgs } from "./cloud-agent-tools.js";
 import { selectCloudAgentTools } from "./cloud-agent-tools-select.js";
 import { cloudflareGatewayProviderEnv } from "./cloudflare-ai-gateway.js";
 import { notifyCollaborationNotices, settlePeerDelivery } from "./collaboration-policy.js";
+import { connectorBatchActionNames } from "./composio-batch.js";
 import type { PluginConnectionRow } from "./composio-connector.js";
 import {
   collectLogIds,
@@ -360,8 +363,10 @@ import {
   CATALOG_LOAD,
   CATALOG_SEARCH,
   catalogIdForRoute,
+  connectorBatchWriteActions,
   uniquifyInstalledToolName,
 } from "./lazy-tool-catalog.js";
+import { mcpToolName } from "./mcp-connector.js";
 import {
   buildMcpCredentialBlob,
   needsOAuthProbe,
@@ -3063,7 +3068,6 @@ export async function persistLivePluginConnections(
 }
 
 export const APPROVED_EFFECT_REPLAY_ORDER = [{ createdAt: "asc" as const }, { id: "asc" as const }];
-const CATALOG_APPROVAL_TOOL = "__rakazoCatalogTool";
 
 type BoundAgentConnectionRequest = Record<string, unknown> & {
   accept: boolean;
@@ -6069,9 +6073,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // Declared effect of the operation this call dispatches (installed API method and
           // flag). Install config is immutable per route resource, so it cannot drift before
           // execute; a catalog call uses the tool it was just resolved to.
-          const declaredReadOnly = viaConnector
-            ? (resolvedTool ?? connectorTools.get(name))?.readOnly
+          const connectorTool = viaConnector
+            ? (resolvedTool ?? connectorTools.get(name))
             : undefined;
+          const declaredReadOnly = connectorTool?.readOnly;
           const fetchUrl =
             name === "web_fetch" ? normalizedHttpUrl(String(args.url ?? "")) : undefined;
           const fetchSite = fetchUrl ? urlSite(fetchUrl) : undefined;
@@ -6096,24 +6101,58 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : "allow";
           const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
           const connectorKind = connectorKindFromToolName(name, connectorProviders);
-          const batch = connectorBatchActions(liveRoute?.toolName ?? name, args);
+          const wireToolName = liveRoute?.toolName ?? name;
+          const batch = connectorTool?.batch
+            ? connectorBatchActionNames(wireToolName, args, connectorTool.batch)
+            : undefined;
+          const managedBatch = Boolean(batch && liveRoute?.connectorId === "composio");
+          const batchAccounts = managedBatch
+            ? connectorBatchActions(wireToolName, args)
+            : undefined;
+          const batchProviders = batch
+            ? [
+                ...connectorProviders,
+                ...(connectorContext.connectedConnections ?? [])
+                  .filter((connection) => connection.connectorId === liveRoute?.connectorId)
+                  .map((connection) => connection.externalId),
+              ]
+            : connectorProviders;
+          const declaredBatchWrites = batch
+            ? new Set([
+                ...(connectorTool?.batchWriteActions ?? []),
+                ...connectorBatchWriteActions(liveRoute, exposedConnectorTools),
+              ])
+            : undefined;
+          const batchActions = batch?.actions.map((toolName) => ({
+            toolName,
+            connectorKind: connectorKindFromToolName(toolName, batchProviders),
+            readOnly:
+              declaredReadOnly === false || declaredBatchWrites?.has(toolName.toUpperCase())
+                ? false
+                : undefined,
+          }));
+          const approvalTools = batchActions ?? [
+            { toolName: name, connectorKind, readOnly: declaredReadOnly },
+          ];
           const connectorTrusts = connectorTrustKeys(
-            batch?.actions,
+            batchAccounts?.actions,
             liveRoute,
             connectorKind,
             connectorProviders,
           );
           const connectorReadGated =
             viaConnector &&
-            !(batch && !batch.complete) &&
-            (batch?.actions.map((action) => action.name) ?? [name]).every(
-              (tool) => !connectorToolRequiresApproval(tool, declaredReadOnly),
+            (!batch || batch.complete) &&
+            approvalTools.every(
+              (tool) => !connectorToolRequiresApproval(tool.toolName, tool.readOnly),
             ) &&
             connectorReadRequiresApproval({
               tainted: await trust.isTainted(),
-              connectorTrusted: await trust
-                .loadTrustedConnectors()
-                .then((trusted) => connectorTrusts.every((key) => trusted.has(key))),
+              connectorTrusted:
+                (!batch || batchAccounts?.complete === true) &&
+                (await trust
+                  .loadTrustedConnectors()
+                  .then((trusted) => connectorTrusts.every((key) => trusted.has(key)))),
             });
           const routineSitePolicy =
             name === "schedule_create"
@@ -6131,34 +6170,74 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? routineSiteApprovalRequest(args, routineSitesToReview)
               : { ...args };
           }
-          const requiresUnattendedApproval = unattendedTriggerToolRequiresApproval(
-            run.trigger,
-            name,
-            viaConnector,
-            declaredReadOnly,
-          );
+          const genericBatch = batch !== undefined && !managedBatch;
+          const requiresUnattendedApproval =
+            (genericBatch &&
+              unattendedTriggerToolRequiresApproval(
+                run.trigger,
+                wireToolName,
+                viaConnector,
+                declaredReadOnly,
+              )) ||
+            approvalTools.some((tool) =>
+              unattendedTriggerToolRequiresApproval(
+                run.trigger,
+                tool.toolName,
+                viaConnector,
+                tool.readOnly,
+              ),
+            );
           const requiresApprovalByDefault =
             requiresUnattendedApproval ||
             siteGate === "new" ||
-            toolRequiresApproval(name, viaConnector, declaredReadOnly);
+            (genericBatch && toolRequiresApproval(wireToolName, viaConnector, declaredReadOnly)) ||
+            approvalTools.some((tool) =>
+              toolRequiresApproval(tool.toolName, viaConnector, tool.readOnly),
+            );
           const gated = requiresApprovalByDefault || connectorReadGated;
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
+            (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
+          const mcpBatchGroup =
+            liveRoute?.connectorId === "mcp" ? connectorTool?.route?.catalogGroup : undefined;
           const approvalResolved = requiresMandatoryApproval
             ? {
                 decision: "ask" as const,
                 source: "default" as const,
                 matchingRules: [],
               }
-            : resolveActionApprovalDetail({
-                toolName: name,
-                connectorKind,
-                readOnly: declaredReadOnly,
-                site: fetchSite,
-                rules: await loadApprovalRules(),
-              });
+            : batchActions
+              ? resolveBatchActionApproval({
+                  actions: batchActions,
+                  wrappers: [
+                    ...new Set([name, wireToolName]),
+                    ...(mcpBatchGroup
+                      ? batchActions.map(({ toolName }) => mcpToolName(mcpBatchGroup, toolName))
+                      : liveRoute?.connectorId === "installed"
+                        ? batchActions.map(({ toolName }) =>
+                            uniquifyInstalledToolName(liveRoute.resourceId, toolName),
+                          )
+                        : []),
+                  ].map((toolName) => ({
+                    toolName,
+                    connectorKind: connectorKindFromToolName(toolName, connectorProviders),
+                    readOnly: declaredReadOnly,
+                  })),
+                  // Generic MCP describes the shape without binding the server-side
+                  // action or account. Keep its original wrapper review.
+                  rules: (await loadApprovalRules()).filter(
+                    (rule) => managedBatch || rule.effect === "require_approval",
+                  ),
+                })
+              : resolveActionApprovalDetail({
+                  toolName: name,
+                  connectorKind,
+                  readOnly: declaredReadOnly,
+                  site: fetchSite,
+                  rules: await loadApprovalRules(),
+                });
           const autoReviewPref = requiresMandatoryApproval
             ? false
             : await loadAutoReviewPreference();
@@ -6193,6 +6272,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 autoReviewEnabled: autoReviewPref,
                 checkerConfigured,
               });
+          if (
+            plan === "allow" &&
+            batch &&
+            gated &&
+            autoReviewPref &&
+            approvalResolved.source === "default"
+          ) {
+            // If Auto Review is on but has no checker, an uncovered batch needs a person.
+            plan = "ask";
+          }
           let reviewReason: string | undefined;
           const newSite = siteGate === "new" && fetchUrl !== undefined;
           if (plan === "judge") {
@@ -6603,6 +6692,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
                     reviewReason,
                     routineSiteDetail,
+                    batch,
+                    allowBatchAlways: managedBatch,
                     sharedPageUpdate: sharedPageUpdate && {
                       title: sharedPageUpdate.page.title,
                       detail: sharedPageUpdate.detail,
@@ -6731,7 +6822,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (early !== undefined) return early;
           }
           if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
-          if (viaConnector && !(batch && !batch.complete)) {
+          if (viaConnector && (!batch || batchAccounts?.complete === true)) {
             const trusted = await trust.loadTrustedConnectors();
             for (const key of connectorTrusts) trusted.add(key);
           }

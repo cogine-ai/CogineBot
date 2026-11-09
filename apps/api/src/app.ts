@@ -29,6 +29,7 @@ import {
   ChatSdkMessagingSurface,
   CodexCatalogCache,
   ComposioConnector,
+  connectorBatchApprovalFromEffect,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
@@ -272,6 +273,7 @@ async function buildApp(
   prisma = withSecretPersistence(prisma, secrets);
   const events = createThreadEvents(prisma, realtime, {
     runSecretWriter: createRunSecretWriter(secrets),
+    resolveApprovalBatch: connectorBatchApprovalFromEffect,
   });
   const ticketBoardEnabled = env.ticketBoardEnabled;
   const boardEvents = createBoardEvents(realtime);

@@ -111,6 +111,7 @@ function fixture({
   connectionIds = [],
   onConnectionRead,
   connectorProvider,
+  otherTools = [],
   catalogToolName = "demo_execute_tool",
   runtimeProvider,
   groupId = null,
@@ -144,6 +145,7 @@ function fixture({
   connectionIds?: string[];
   onConnectionRead?: (count: number) => void;
   connectorProvider?: ConnectorProvider;
+  otherTools?: ConnectorTool[];
   catalogToolName?: string;
   runtimeProvider?: AgentRuntime;
   groupId?: string | null;
@@ -485,9 +487,9 @@ function fixture({
                   route: { connectorId: "demo", toolName: "__catalog_execute" },
                 },
               ]
-            : [tool],
+            : [tool, ...otherTools],
       resolveCall: async (call: ConnectorCall) =>
-        catalog ? resolveCatalogCall(call, catalogEntries([tool])) : undefined,
+        catalog ? resolveCatalogCall(call, catalogEntries([tool, ...otherTools])) : undefined,
       execute,
     },
     sandbox: sandboxProvider ?? { describe: () => ({ capabilities: { graphical: false } }) },
@@ -4968,6 +4970,282 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
   });
+});
+
+describe("connector batch approval", () => {
+  beforeEach(() => reviewMock.mockReset());
+  const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+  const archive = "GMAIL_ARCHIVE_THREAD";
+  const send = "GMAIL_SEND_EMAIL";
+  const read = "GMAIL_LIST_THREADS";
+  const items = (...actions: (string | null)[]) => ({
+    tools: actions.map((tool_slug) => ({ tool_slug, arguments: {} })),
+  });
+  const rule = (effect: ActionApprovalRule["effect"], matchValue: string): ActionApprovalRule => ({
+    effect,
+    matchKind: "tool",
+    matchValue,
+  });
+
+  const batchFixture = (options: Parameters<typeof fixture>[0] = {}) => {
+    const f = fixture({ name: wrapper, ...options });
+    f.tool.route!.connectorId = "composio";
+    f.tool.batch = { items: "tools", action: "tool_slug" };
+    f.tool.inputSchema = {
+      type: "object",
+      properties: {
+        tools: { type: "array", items: { type: "object", additionalProperties: true } },
+      },
+      required: ["tools"],
+    };
+    return f;
+  };
+
+  it.each([false, true])(
+    "does not let a wrapper or partial action allow cover a batch (catalog %s)",
+    async (catalog) => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+      const f = batchFixture({
+        catalog,
+        autoReview: true,
+        rules: [rule("always_allow", wrapper), rule("always_allow", archive)],
+      });
+      f.setCalls([{ args: items(archive, send), executionId: "batch" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          blocks: [
+            expect.objectContaining({
+              detail: expect.stringContaining(`${archive}, ${send}`),
+            }),
+          ],
+        }),
+      );
+    },
+  );
+
+  it("runs a batch when every named action is allowed", async () => {
+    const f = batchFixture({
+      rules: [rule("always_allow", archive), rule("always_allow", send)],
+    });
+    f.setCalls([{ args: items(archive, send), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("honors an inner approval rule before an outer allow and before Auto Review", async () => {
+    const f = batchFixture({
+      autoReview: true,
+      rules: [rule("always_allow", wrapper), rule("require_approval", send)],
+    });
+    f.setCalls([{ args: items(archive, send), executionId: "batch" }]);
+    await f.run();
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("honors a canonical wrapper require rule through a routed alias", async () => {
+    const f = batchFixture({
+      name: "mcp__mail__BATCH",
+      rules: [rule("require_approval", wrapper), rule("always_allow", read)],
+    });
+    f.tool.route!.toolName = wrapper;
+    f.setCalls([{ args: items(read), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a wrapper connector requirement even when the wrapper name and every inner action are allowed", async () => {
+    const f = batchFixture({
+      rules: [
+        { effect: "require_approval", matchKind: "connector", matchValue: "composio" },
+        rule("always_allow", wrapper),
+        rule("always_allow", read),
+      ],
+    });
+    f.setCalls([{ args: items(read), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("does not grant batch privileges to an ordinary write with the wrapper name", async () => {
+    reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+    const f = batchFixture({
+      autoReview: true,
+      readOnly: false,
+      rules: [rule("always_allow", read)],
+    });
+    f.tool.route!.connectorId = "installed";
+    f.tool.batch = undefined;
+    f.setCalls([{ args: items(read), executionId: "write" }]);
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput.mock.calls[0]?.[0].blocks[0]).not.toHaveProperty("approvalScope");
+  });
+
+  it("keeps an identified batch eligible when Auto Review is off and no rule requires input", async () => {
+    const f = batchFixture();
+    f.setCalls([{ args: items(send), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("offers only one-time approval when an inner action cannot be identified", async () => {
+    const f = batchFixture({
+      autoReview: true,
+      rules: [rule("always_allow", wrapper), rule("always_allow", read)],
+    });
+    f.setCalls([{ args: items(read, null), executionId: "batch" }]);
+    await f.run();
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput.mock.calls[0]?.[0].blocks[0]).toMatchObject({
+      actions: [{ id: "allow" }, { id: "deny" }],
+    });
+  });
+
+  it.each([
+    { catalog: false, sameResource: false },
+    { catalog: false, sameResource: true },
+    { catalog: true, sameResource: false },
+    { catalog: true, sameResource: true },
+  ])(
+    "uses declared inner write metadata only from the batch resource (catalog $catalog, same $sameResource)",
+    async ({ catalog, sameResource }) => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+      const f = batchFixture({
+        autoReview: true,
+        catalog,
+        otherTools: [
+          {
+            name: "mail_list",
+            description: "Read-named action declared as a write",
+            inputSchema: { type: "object" },
+            readOnly: false,
+            route: {
+              connectorId: "composio",
+              resourceId: sameResource ? "resource-1" : "other",
+              toolName: read,
+            },
+          },
+        ],
+      });
+      f.setCalls([{ args: items(read), executionId: "batch" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledTimes(sameResource ? 1 : 0);
+      expect(f.execute).toHaveBeenCalledTimes(sameResource ? 0 : 1);
+      expect(f.pauseRunForInput).toHaveBeenCalledTimes(sameResource ? 1 : 0);
+    },
+  );
+
+  it("isolates tainted read trust by account and does not trust an unspecified account", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const f = batchFixture({ autoReview: true, attemptCount: 2 });
+    f.tool.route!.connectorId = "composio";
+    f.setCalls(
+      ["first", "first", "second", undefined].map((account, i) => ({
+        args: {
+          tools: [{ tool_slug: read, ...(account ? { account } : {}), arguments: { page: i } }],
+        },
+        executionId: `batch-${i}`,
+      })),
+    );
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledTimes(3);
+    expect(f.execute).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not let raw permanent rules bypass the generic MCP wrapper review", async () => {
+    reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+    const f = batchFixture({
+      autoReview: true,
+      rules: [rule("always_allow", read)],
+    });
+    f.tool.route!.connectorId = "mcp";
+    f.setCalls([{ args: items(read), executionId: "batch" }]);
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput.mock.calls[0]?.[0].blocks[0]).toMatchObject({
+      actions: [{ id: "allow" }, { id: "deny" }],
+    });
+  });
+
+  it("honors a server-scoped inner action requirement on the wrapper route", async () => {
+    const f = batchFixture({
+      rules: [rule("require_approval", "mcp__mail__GMAIL_SEND_EMAIL")],
+    });
+    f.tool.route!.connectorId = "mcp";
+    f.tool.route!.catalogGroup = "mail";
+    f.setCalls([{ args: items(send), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("honors an installed MCP action requirement qualified by the same installation", async () => {
+    const f = batchFixture({
+      rules: [rule("require_approval", "installed__resource-1__GMAIL_SEND_EMAIL")],
+    });
+    f.tool.route!.connectorId = "installed";
+    f.setCalls([{ args: items(send), executionId: "batch" }]);
+    await f.run();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it("does not establish reusable read trust from an arbitrary MCP account selector", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const f = batchFixture({ autoReview: true, attemptCount: 2 });
+    f.tool.route!.connectorId = "mcp";
+    f.setCalls(
+      [1, 2].map((page) => ({
+        args: { tools: [{ tool_slug: read, account: "shared-label", arguments: { page } }] },
+        executionId: `batch-${page}`,
+      })),
+    );
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledTimes(2);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])(
+    "replays the approved inner arguments only (catalog %s)",
+    async (catalog) => {
+      const f = batchFixture({ catalog, rules: [rule("require_approval", send)] });
+      const approved = items(archive, send);
+      f.setCalls([{ args: approved, executionId: "batch" }]);
+      await f.run();
+      expect(f.effects).toHaveLength(1);
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      f.effects[0]!.status = "approved";
+      f.setCalls([{ args: items("GMAIL_DELETE_MESSAGE"), executionId: "resumed-batch" }]);
+      await f.run();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.execute.mock.calls[0]?.[0].args).toEqual(approved);
+      expect(f.effects).toHaveLength(1);
+    },
+  );
+
+  it.each([true, false])(
+    "uses the inner read action and honors a declared wrapper write (%s)",
+    async (readOnly) => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+      const f = batchFixture({ readOnly, autoReview: true });
+      f.setCalls([{ args: items(read), executionId: "batch" }]);
+      await f.run();
+      expect(f.execute).toHaveBeenCalledTimes(readOnly ? 1 : 0);
+      expect(f.pauseRunForInput).toHaveBeenCalledTimes(readOnly ? 0 : 1);
+    },
+  );
 });
 
 describe("strict installed argument approval replay", () => {

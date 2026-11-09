@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { JobPublisher, JobWorkerHost } from "@rakazo/adapter-kit";
 import {
   ComposioConnector,
+  connectorBatchApprovalFromEffect,
   IntegrationProviderSettings,
   NativeConnectorProvider,
   NativeRoutineEventService,
@@ -116,6 +117,7 @@ async function main() {
   prisma = withSecretPersistence(prisma, secrets);
   const events = createThreadEvents(prisma, realtime, {
     runSecretWriter: createRunSecretWriter(secrets),
+    resolveApprovalBatch: connectorBatchApprovalFromEffect,
   });
   const ticketBoardEnabled = process.env.TICKET_BOARD_ENABLED === "true";
   const boardEvents = createBoardEvents(realtime);

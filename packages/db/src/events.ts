@@ -16,8 +16,10 @@ import {
 import {
   ACTIVE_RUN_STATUSES,
   blocksToAgentHistoryText,
+  type ConnectorBatchActionNames,
   callIdFromClientNonce,
   canonicalApprovalSite,
+  displayedBatchApprovalRuleNames,
   isApprovalAskBlock,
   isCallClientNonce,
   isConversationalRun,
@@ -314,13 +316,34 @@ export interface RunSecretWriter {
   }): Promise<void>;
 }
 
+export type ApprovalBatchResolutionContext = {
+  batchCard: boolean;
+  loadInstalledKind(resourceId: string): Promise<string | undefined>;
+};
+
+type ResolveApprovalBatch = (
+  effect: { kind: string; request: unknown },
+  context: ApprovalBatchResolutionContext,
+) => ConnectorBatchActionNames | undefined | Promise<ConnectorBatchActionNames | undefined>;
+
 export function createThreadEvents(
   prisma: PrismaClient,
   realtime?: RealtimeFanout,
-  options: { catchUpMs?: number; runSecretWriter?: RunSecretWriter } = {},
+  options: {
+    catchUpMs?: number;
+    runSecretWriter?: RunSecretWriter;
+    resolveApprovalBatch?: ResolveApprovalBatch;
+  } = {},
 ): ThreadEvents {
   return {
-    answerRunInput: (input) => answerRunInput(prisma, input, realtime, options.runSecretWriter),
+    answerRunInput: (input) =>
+      answerRunInput(
+        prisma,
+        input,
+        realtime,
+        options.runSecretWriter,
+        options.resolveApprovalBatch,
+      ),
     append: (input) => appendEvent(prisma, input, realtime),
     claimSteering: (input) => claimSteering(prisma, input),
     clearThread: (input) => clearThread(prisma, input, realtime),
@@ -833,6 +856,7 @@ async function commitAnswerRunInput(
   tx: Prisma.TransactionClient,
   input: AnswerRunInput,
   runSecretWriter?: RunSecretWriter,
+  resolveApprovalBatch?: ResolveApprovalBatch,
 ): Promise<{ threadId: string; seq: number } | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
@@ -880,6 +904,7 @@ async function commitAnswerRunInput(
   let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
   let approvalUserId: string | null = null;
   let approvalSite: string | undefined;
+  let approvalTools: string[] = [];
 
   if (approvalAsk) {
     if (!pendingAsk.actions?.some((action) => action.id === input.answer)) return null;
@@ -913,6 +938,25 @@ async function commitAnswerRunInput(
     if (input.answer === "always") {
       if (run.userId !== input.answeredByUserId) return null;
       approvalSite = alwaysAllowedSite(approvalEffect);
+      const batchCard = pendingAsk.approvalScope === "connector_batch";
+      const batch = await resolveApprovalBatch?.(approvalEffect, {
+        batchCard,
+        loadInstalledKind: async (id) =>
+          (
+            await tx.capabilityInstall.findFirst({
+              where: { id, spaceId: input.spaceId, userId: run.userId },
+              select: { kind: true },
+            })
+          )?.kind,
+      });
+      if (batch || batchCard) {
+        if (!batch || !batchCard) return null;
+        const names = displayedBatchApprovalRuleNames(batch, pendingAsk.detail);
+        if (!names) return null;
+        approvalTools = names;
+      } else if (!SITE_SENDING_TOOLS.has(approvalEffect.kind)) {
+        approvalTools = [approvalEffect.kind];
+      }
       if (approvalSite) {
         // An older card can still offer Always after the owner added a site rule.
         const requiredSites = await tx.actionApprovalRule.findMany({
@@ -984,11 +1028,8 @@ async function commitAnswerRunInput(
       where: { id: approvalEffect!.id },
       data: { status: allowed ? "approved" : "denied" },
     });
-    // A site's approval permits that destination, not every destination the tool can reach.
-    if (
-      input.answer === "always" &&
-      (approvalSite || !SITE_SENDING_TOOLS.has(approvalEffect!.kind))
-    ) {
+    // Save the approved destination or individual actions in the same transaction.
+    for (const matchValue of approvalSite ? [approvalSite] : approvalTools) {
       await tx.actionApprovalRule.upsert({
         where: {
           spaceId_createdByUserId_effect_matchKind_matchValue: {
@@ -996,7 +1037,7 @@ async function commitAnswerRunInput(
             createdByUserId: approvalUserId!,
             effect: "always_allow",
             matchKind: approvalSite ? "site" : "tool",
-            matchValue: approvalSite ?? approvalEffect!.kind,
+            matchValue,
           },
         },
         create: {
@@ -1004,7 +1045,7 @@ async function commitAnswerRunInput(
           createdByUserId: approvalUserId!,
           effect: "always_allow",
           matchKind: approvalSite ? "site" : "tool",
-          matchValue: approvalSite ?? approvalEffect!.kind,
+          matchValue,
         },
         update: {},
       });
@@ -1086,10 +1127,11 @@ export async function answerRunInput(
   input: AnswerRunInput,
   realtime?: RealtimeFanout,
   runSecretWriter?: RunSecretWriter,
+  resolveApprovalBatch?: ResolveApprovalBatch,
 ): Promise<boolean> {
   const commit = (writer = runSecretWriter) =>
     prisma.$transaction(async (tx: Prisma.TransactionClient) =>
-      commitAnswerRunInput(tx, input, writer),
+      commitAnswerRunInput(tx, input, writer, resolveApprovalBatch),
     );
   const committed = runSecretWriter?.withPrepared
     ? await runSecretWriter.withPrepared(prisma, input, commit)

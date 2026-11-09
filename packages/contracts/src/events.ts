@@ -117,6 +117,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("ask"),
     text: z.string(),
     approvalEffectId: Id.optional(),
+    /** The pending card presents an exact list of connector actions. */
+    approvalScope: z.literal("connector_batch").optional(),
     detail: z.string().optional(),
     /** This approval requires the full detail to be available on screen. */
     reviewMode: z.literal("screen").optional(),

@@ -1,7 +1,52 @@
 import { describe, expect, it } from "vitest";
 import { buildApprovalAskBlock } from "./approval-ask.js";
+import { connectorBatchActionNames } from "./composio-batch.js";
 
 describe("buildApprovalAskBlock", () => {
+  it("offers permanent approval only for the full list stored in the card", () => {
+    const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+    const actions = ["X".repeat(4_000)];
+    const batch = { actions, complete: true };
+    const offered = buildApprovalAskBlock("effect-batch", wrapper, {}, [], { batch });
+    const clipped = buildApprovalAskBlock("effect-batch", wrapper, {}, [], {
+      batch,
+      reviewReason: "This has a consequence",
+    });
+    expect(offered).toMatchObject({
+      kind: "ask",
+      approvalScope: "connector_batch",
+      actions: [{ id: "allow" }, { id: "always" }, { id: "deny" }],
+    });
+    expect(clipped).toMatchObject({ actions: [{ id: "allow" }, { id: "deny" }] });
+  });
+
+  it("does not transform a configured secret in an action name before redaction", () => {
+    const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+    const secret = "fixture-token";
+    const args = { tools: [{ tool_slug: `GMAIL_SEND_${secret}` }] };
+    const batch = connectorBatchActionNames(wrapper, args)!;
+    const block = buildApprovalAskBlock("effect-batch", wrapper, args, [secret], { batch });
+    expect(block).toMatchObject({
+      detail: "GMAIL_SEND_[redacted]",
+      actions: [{ id: "allow" }, { id: "deny" }],
+    });
+    expect(JSON.stringify(block)).not.toContain(secret.toUpperCase());
+  });
+
+  it("does not persist a batch rule whose canonical spelling reveals a known secret", () => {
+    const block = buildApprovalAskBlock(
+      "effect-batch",
+      "COMPOSIO_MULTI_EXECUTE_TOOL",
+      {},
+      ["FIXTURE-TOKEN"],
+      {
+        batch: { actions: ["gmail_send_fixture-token"], complete: true },
+      },
+    );
+    expect(block).toMatchObject({ actions: [{ id: "allow" }, { id: "deny" }] });
+    expect(JSON.stringify(block)).not.toContain("FIXTURE-TOKEN");
+  });
+
   it("presents the complete shared Page change for a one-time visual decision", () => {
     const detail = `- <Text>Before</Text>\n+ <Text>After</Text>\n${"x".repeat(3_958)}`;
 

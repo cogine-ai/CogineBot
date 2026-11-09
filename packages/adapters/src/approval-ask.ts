@@ -1,6 +1,9 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { sharedPageUpdateApprovalTitle } from "@rakazo/contracts";
 import {
+  type ConnectorBatchActionNames,
+  containsSecret,
+  displayedBatchApprovalRuleNames,
   messagingProviderName,
   redactSecrets,
   SITE_SENDING_TOOLS,
@@ -41,6 +44,8 @@ export function buildApprovalAskBlock(
     reviewReason?: string;
     allowSiteAlways?: boolean;
     routineSiteDetail?: string;
+    batch?: ConnectorBatchActionNames;
+    allowBatchAlways?: boolean;
     sharedPageUpdate?: SharedPageApprovalSummary;
   },
 ): MessageBlock {
@@ -95,20 +100,36 @@ export function buildApprovalAskBlock(
   const destination = siteSending && typeof args.url === "string" ? args.url : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
   const routineSiteApproval = options?.routineSiteDetail !== undefined;
+  const batch = options?.batch;
+  const batchSummary = batch?.actions.join(", ");
+  const summary = describeApprovalAction(toolName, args);
+  const detail = batch
+    ? [
+        batchSummary,
+        batch.complete ? undefined : "Some batch actions could not be identified.",
+        options?.reviewReason,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : formatApprovalDetail(
+        toolName,
+        args,
+        options?.reviewReason,
+        fetchSite ? destination : undefined,
+      );
+  const safeDetail =
+    options?.routineSiteDetail ?? (detail ? redactSecrets(detail, secrets) : undefined);
+  const displayedDetail = safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined;
+  const batchRules = batch && displayedBatchApprovalRuleNames(batch, displayedDetail);
   const alwaysLabel = siteSending
     ? fetchSite && options?.allowSiteAlways !== false
       ? `Always allow ${fetchSite}`
       : undefined
-    : "Always allow this tool";
-  const summary = describeApprovalAction(toolName, args);
-  const detail = formatApprovalDetail(
-    toolName,
-    args,
-    options?.reviewReason,
-    fetchSite ? destination : undefined,
-  );
-  const safeDetail =
-    options?.routineSiteDetail ?? (detail ? redactSecrets(detail, secrets) : undefined);
+    : batch
+      ? options?.allowBatchAlways !== false && batchRules && !containsSecret(batchRules, secrets)
+        ? "Always allow these actions"
+        : undefined
+      : "Always allow this tool";
   const text = routineSiteApproval
     ? "Allow this Routine to use these sites each time it runs?"
     : toolName === "create_space"
@@ -118,7 +139,8 @@ export function buildApprovalAskBlock(
     kind: "ask",
     approvalEffectId: effectId,
     text: truncate(redactSecrets(text, secrets), MAX_APPROVAL_SUMMARY_LENGTH),
-    detail: safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined,
+    detail: displayedDetail,
+    ...(batch ? { approvalScope: "connector_batch" } : {}),
     ...(fetchSite ? { site: fetchSite } : {}),
     status: "pending",
     actions:

@@ -1,5 +1,6 @@
 import type { AgentToolExecutionResult } from "@rakazo/adapter-kit";
-import type { Prisma } from "@rakazo/db";
+import type { ApprovalBatchResolutionContext, Prisma } from "@rakazo/db";
+import { COMPOSIO_MULTI_EXECUTE_TOOL, connectorBatchActionNames } from "./composio-batch.js";
 import { catalogIdForRoute } from "./lazy-tool-catalog.js";
 
 export type ApprovalPausedToolResult = AgentToolExecutionResult & { terminate: true };
@@ -101,6 +102,7 @@ export function approvedReplayArgs(
   return approvedRequest as Record<string, unknown>;
 }
 
+export const CATALOG_APPROVAL_TOOL = "__rakazoCatalogTool";
 export const DIRECT_APPROVAL_TAG = "direct";
 
 export type BoundApprovalRoute = {
@@ -337,6 +339,37 @@ export function catalogApprovalInnerArgs(catalog: {
   const inner = catalog.args.arguments;
   if (!inner || typeof inner !== "object" || Array.isArray(inner)) return undefined;
   return inner as Record<string, unknown>;
+}
+
+/** Derive the list from the persisted dispatch. A batch card comes from connector metadata. */
+export async function connectorBatchApprovalFromEffect(
+  effect: { kind: string; request: unknown },
+  { batchCard, loadInstalledKind }: ApprovalBatchResolutionContext,
+) {
+  const bound = boundDirectApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
+  const catalog = catalogApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
+  const route = bound?.route ?? catalog?.route;
+  if (bound || catalog) {
+    const connectorId =
+      route?.connectorId ?? (catalog && catalogApprovalConnectorId(catalog.toolName));
+    const name = route?.toolName ?? (catalog && parseCatalogApprovalTarget(catalog.args)?.toolName);
+    if (!name || name.toUpperCase() !== COMPOSIO_MULTI_EXECUTE_TOOL) return undefined;
+    if (!batchCard && connectorId === "installed") {
+      const kind = route && (await loadInstalledKind(route.resourceId));
+      if (kind && kind !== "mcp") return undefined;
+    } else if (!batchCard && connectorId !== "mcp" && connectorId !== "composio") {
+      return undefined;
+    }
+    const args = bound?.args ?? (catalog && catalogApprovalInnerArgs(catalog));
+    return connectorBatchActionNames(name, args);
+  }
+  if (
+    effect.kind.startsWith("mcp__") &&
+    effect.kind.toUpperCase().endsWith(`__${COMPOSIO_MULTI_EXECUTE_TOOL}`)
+  ) {
+    return { actions: [], complete: false };
+  }
+  return connectorBatchActionNames(effect.kind, effect.request);
 }
 
 export function approvalPausedToolResult(): ApprovalPausedToolResult {

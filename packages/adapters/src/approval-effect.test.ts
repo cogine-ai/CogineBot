@@ -7,6 +7,7 @@ import {
   approvedCatalogReplay,
   approvedReplayArgs,
   boundDirectApprovalRequest,
+  CATALOG_APPROVAL_TOOL,
   catalogApprovalConnectorId,
   catalogApprovalDetails,
   catalogApprovalMatchesLiveRoute,
@@ -16,6 +17,7 @@ import {
   claimApprovedEffect,
   claimIntendedEffect,
   completeExternalEffect,
+  connectorBatchApprovalFromEffect,
   createApprovedEffectReplayQueue,
   isApprovalPausedResult,
   isToolPauseResult,
@@ -23,6 +25,61 @@ import {
   resolveDuplicateEffectGate,
   settleUncertainEffect,
 } from "./approval-effect.js";
+
+describe("connectorBatchApprovalFromEffect", () => {
+  const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+  const args = {
+    tools: [{ tool_slug: "GMAIL_ARCHIVE_THREAD" }, { tool_slug: "gmail_send_email" }],
+  };
+  const route = { connectorId: "installed", resourceId: "fixture", toolName: wrapper };
+  const context = (batchCard: boolean, kind?: string) => ({
+    batchCard,
+    loadInstalledKind: vi.fn(async () => kind),
+  });
+
+  it("distinguishes a declared batch card from a same-named installed operation", async () => {
+    const effect = {
+      kind: wrapper,
+      request: boundDirectApprovalRequest(route, args, CATALOG_APPROVAL_TOOL),
+    };
+    const installedHttp = context(false, "api");
+    await expect(connectorBatchApprovalFromEffect(effect, installedHttp)).resolves.toBeUndefined();
+    expect(installedHttp.loadInstalledKind).toHaveBeenCalledExactlyOnceWith(route.resourceId);
+    const installedMcp = context(false, "mcp");
+    await expect(connectorBatchApprovalFromEffect(effect, installedMcp)).resolves.toMatchObject({
+      complete: true,
+    });
+    await expect(connectorBatchApprovalFromEffect(effect, context(true))).resolves.toEqual({
+      actions: ["GMAIL_ARCHIVE_THREAD", "gmail_send_email"],
+      complete: true,
+    });
+  });
+
+  it("keeps legacy MCP aliases from saving a wrapper-level allow", async () => {
+    await expect(
+      connectorBatchApprovalFromEffect(
+        { kind: `mcp__fixture__${wrapper}`, request: args },
+        context(false),
+      ),
+    ).resolves.toEqual({ actions: [], complete: false });
+  });
+
+  it("uses the canonical route and persisted inner catalog arguments", async () => {
+    const effect = {
+      kind: "mail__batch",
+      request: catalogApprovalRequest(
+        "connectors_execute_tool",
+        { id: "different:ordinary", arguments: args },
+        CATALOG_APPROVAL_TOOL,
+        { ...route, connectorId: "mcp" },
+      ),
+    };
+    await expect(connectorBatchApprovalFromEffect(effect, context(true))).resolves.toEqual({
+      actions: ["GMAIL_ARCHIVE_THREAD", "gmail_send_email"],
+      complete: true,
+    });
+  });
+});
 
 describe("approved effect replay", () => {
   it("rebuilds an old bound native wrapper ID without mutating approved arguments", () => {

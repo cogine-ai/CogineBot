@@ -19,6 +19,7 @@ import {
   catalogApprovalInnerArgs,
 } from "./approval-effect.js";
 import { BUILTIN_AGENT_TOOL_NAMES } from "./builtin-tools.js";
+import { connectorBatchActionNames } from "./composio-batch.js";
 import { loadReplySource, pageInputContext, resolveReplyContext } from "./reply-context.js";
 
 /** These reached the gate; they do not necessarily represent a successful external operation. */
@@ -167,9 +168,10 @@ export function connectorBatchActions(
   toolName: string,
   args: unknown,
 ): { actions: ConnectorBatchAction[]; complete: boolean } | undefined {
-  if (toolName.toUpperCase() !== "COMPOSIO_MULTI_EXECUTE_TOOL") return undefined;
-  const tools = (args as { tools?: unknown } | null)?.tools;
-  if (!Array.isArray(tools) || tools.length === 0) return { actions: [], complete: false };
+  const batch = connectorBatchActionNames(toolName, args);
+  if (!batch) return undefined;
+  if (!batch.complete) return { actions: [], complete: false };
+  const tools = (args as { tools: unknown[] }).tools;
   const actions = new Map<string, ConnectorBatchAction>();
   let complete = true;
   for (const item of tools) {
