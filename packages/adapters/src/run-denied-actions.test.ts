@@ -81,3 +81,34 @@ it.each([
     ).toBe(false);
   },
 );
+
+it("ignores a Page ID in help mode because help has no Page target", async () => {
+  const denied = await loadDeniedActionTargets(
+    [{ kind: "save_page", result: null, request: { help: true } }],
+    async () => undefined,
+  );
+  expect(
+    repeatsDeniedAction(
+      { toolName: "save_page", aliases: [], page: pageDenialTarget("help", "page-a") },
+      denied,
+    ),
+  ).toBe(true);
+});
+
+it("does not borrow a raw legacy denial from a longer MCP namespace", async () => {
+  const denied = await loadDeniedActionTargets(
+    [{ kind: "mcp__mail__work__GMAIL_SEND_EMAIL", result: null, request: {} }],
+    async () => undefined,
+  );
+  expect(
+    repeatsDeniedAction(
+      {
+        toolName: "mcp__mail__COMPOSIO_MULTI_EXECUTE_TOOL",
+        aliases: [],
+        legacyBatchPrefix: "mcp__mail__",
+        batch: { complete: true, actions: ["work__GMAIL_SEND_EMAIL"] },
+      },
+      denied,
+    ),
+  ).toBe(false);
+});

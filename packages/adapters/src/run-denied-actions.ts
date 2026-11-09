@@ -34,7 +34,10 @@ const SHELL_FILE_TOOLS = new Set([
 type PageMode = "help" | "read" | "write";
 
 export function pageDenialTarget(mode: PageMode, pageId: unknown) {
-  return { mode, pageId: typeof pageId === "string" ? pageId.trim() || undefined : undefined };
+  return {
+    mode,
+    pageId: mode !== "help" && typeof pageId === "string" ? pageId.trim() || undefined : undefined,
+  };
 }
 
 type Action = {
@@ -138,6 +141,9 @@ export function repeatsDeniedAction(
       if (prior.route || prefix === undefined || (!action.batch && !prior.batch)) return false;
       if (!prior.toolName.startsWith(prefix)) return false;
       const legacyWireName = prior.toolName.slice(prefix.length).toUpperCase();
+      // The namespace separator can also occur in a server slug. Don't infer cross-tool
+      // membership from a historical name that could belong to another server.
+      if (prefix && legacyWireName.includes("__")) return false;
       if (!prior.batch) return currentNames.includes(legacyWireName);
       return (
         legacyWireName === COMPOSIO_MULTI_EXECUTE_TOOL &&
