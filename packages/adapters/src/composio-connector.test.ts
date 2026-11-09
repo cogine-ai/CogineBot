@@ -26,6 +26,7 @@ const composioSdkState = vi.hoisted(() => ({
   created: [] as Array<{ userId: string; config: Record<string, unknown> }>,
   directoryFails: false,
   executions: [] as Array<{ tool: string; args: Record<string, unknown> }>,
+  executeError: null as Error | null,
   executeResult: null as null | { data: Record<string, unknown>; error: string | null },
   failTools: null as null | string[],
   logIds: null as null | string[],
@@ -136,6 +137,7 @@ vi.mock("@composio/core", () => ({
             : [],
         execute: async (tool: string, args: Record<string, unknown>) => {
           composioSdkState.executions.push({ tool, args });
+          if (composioSdkState.executeError) throw composioSdkState.executeError;
           const failed = composioSdkState.failTools?.includes(tool) ?? false;
           return {
             ...(failed
@@ -962,6 +964,90 @@ describe("composio tool mapping", () => {
       "COMPOSIO_MULTI_EXECUTE_TOOL",
       "DROPBOX_LIST_FILES_IN_FOLDER",
     ]);
+  });
+
+  it("checks a delegated approval after the provider session is available and before dispatch", async () => {
+    composioSdkState.created.length = 0;
+    composioSdkState.executions.length = 0;
+    composioSdkState.sessions.clear();
+    composioToolkitDirectory.invalidate();
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "peer-approval",
+      traceId: "peer-approval",
+      spaceId: "workspace",
+      userId: "user-1",
+      signal: new AbortController().signal,
+      connectedConnections: [
+        {
+          id: "connection-dropbox",
+          connectorId: "composio",
+          externalId: "dropbox",
+          displayName: "Dropbox",
+        },
+      ],
+    };
+    const beforeDispatch = vi.fn(async (): Promise<void> => {
+      expect(composioSdkState.created.some(({ userId }) => userId === context.userId)).toBe(true);
+      throw new Error("The delegated action is no longer authorized.");
+    });
+    const events: ConnectorEvent[] = [];
+    for await (const event of connector.execute(
+      {
+        tool: "DROPBOX_CREATE_FOLDER",
+        args: { path: "/Reviewed" },
+        executionId: "peer-approval",
+        beforeDispatch,
+      },
+      context,
+    ))
+      events.push(event);
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(composioSdkState.executions).toEqual([]);
+    expect(events).toEqual([
+      { type: "error", message: "The delegated action is no longer authorized." },
+    ]);
+    beforeDispatch.mockResolvedValueOnce(undefined);
+    composioSdkState.executeError = new Error("connection dropped before a response");
+    const unknown: ConnectorEvent[] = [];
+    try {
+      for await (const event of connector.execute(
+        {
+          tool: "DROPBOX_CREATE_FOLDER",
+          args: { path: "/Reviewed" },
+          executionId: "peer-approval-first-response-lost",
+          beforeDispatch,
+        },
+        context,
+      ))
+        unknown.push(event);
+      expect(composioSdkState.executions).toHaveLength(1);
+      expect(unknown).toEqual([
+        { type: "error", message: "connection dropped before a response", uncertain: true },
+      ]);
+    } finally {
+      composioSdkState.executeError = null;
+      composioSdkState.executions.length = 0;
+    }
+    beforeDispatch.mockResolvedValueOnce(undefined);
+    const partial: ConnectorEvent[] = [];
+    for await (const event of connector.execute(
+      {
+        tool: "COMPOSIO_MULTI_EXECUTE_TOOL",
+        args: {
+          tools: [
+            { tool_slug: "DROPBOX_CREATE_FOLDER", arguments: { path: "/Reviewed" } },
+            { tool_slug: "DROPBOX_LIST_FILES_IN_FOLDER", arguments: { path: "/Reviewed" } },
+          ],
+        },
+        executionId: "peer-approval-partial",
+        beforeDispatch,
+      },
+      context,
+    ))
+      partial.push(event);
+    expect(composioSdkState.executions).toHaveLength(1);
+    expect(partial).toEqual([expect.objectContaining({ type: "error", uncertain: true })]);
   });
 
   it("keeps earlier log ids when a later split call fails", async () => {

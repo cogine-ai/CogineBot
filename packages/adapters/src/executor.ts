@@ -156,6 +156,7 @@ import {
   authorizeCollaborationRunStart,
   BOT_COLLABORATION_ORIGINS,
   beginRoutineRetryExecution,
+  claimDelegatedApprovedEffect,
   claimRunQuotaResume,
   createSpaceForMember,
   effectiveMemoryScope,
@@ -173,6 +174,8 @@ import {
   RunHistoryWriteError,
   readHistory,
   readRunTimingFields,
+  recheckDelegatedApprovalDispatch,
+  recheckDelegatedApprovalDispatchInTransaction,
   recordUsage,
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
@@ -208,6 +211,7 @@ import {
   approvalReplayPathError,
   approvalReplayResourceError,
   approvalRoutesMatch,
+  approvedActionReceipt,
   approvedCatalogReplay,
   approvedEffectOccurrence,
   approvedReplayArgs,
@@ -336,6 +340,7 @@ import {
   refreshRunConnectorContext,
   selectExplicitConnectorAccounts,
 } from "./connector-account-binding.js";
+import { dispatchTransaction } from "./connector-dispatch.js";
 import {
   redactConnectorPayload,
   sanitizeConnectorError,
@@ -6599,6 +6604,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const needsApproval = gateDecision === "ask";
           const bypassApproval = gateDecision === "allow" && gated;
           let claimedEffect = false;
+          let claimedApproval = false;
+          let pendingPeerConnectorClaim = false;
           let approvedRoutineSites: string[] = [];
           const pageToolContext = (): PageToolContext => ({
             deps,
@@ -6645,9 +6652,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
-            const claim = from === "approved" ? claimApprovedEffect : claimIntendedEffect;
-            if (await claim(deps.prisma, applied!.effect.id)) {
+            const effect = applied!.effect;
+            const claimed =
+              from === "approved" && effect.requiresPeerApprovalRecheck
+                ? await claimDelegatedApprovedEffect(deps.prisma, {
+                    spaceId: run.spaceId,
+                    runId,
+                    effectId: effect.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                  })
+                : await (from === "approved" ? claimApprovedEffect : claimIntendedEffect)(
+                    deps.prisma,
+                    effect.id,
+                  );
+            if (claimed) {
               claimedEffect = true;
+              claimedApproval = from === "approved";
               return undefined;
             }
             const current = await deps.prisma.externalEffect.findUnique({
@@ -6801,7 +6822,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
-              if (name !== "request_takeover") {
+              if (applied.effect.requiresPeerApprovalRecheck && viaConnector && deps.connector) {
+                pendingPeerConnectorClaim = true;
+              } else if (name !== "request_takeover") {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
                 if (name === "schedule_create" && claimedEffect) {
@@ -6826,17 +6849,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const trusted = await trust.loadTrustedConnectors();
             for (const key of connectorTrusts) trusted.add(key);
           }
-          const persistEffectResult = (result: unknown) =>
+          const persistEffectResult = (result: unknown, outcome?: "result" | "error") =>
             applied
               ? completeEffect(
                   deps,
                   applied.effect.id,
                   claimedEffect ? "executing" : "intended",
                   result,
+                  claimedApproval && run.origin === "bot_peer"
+                    ? approvedActionReceipt(result, outcome)
+                    : undefined,
                 )
               : Promise.resolve(true);
-          const finish = async (result: unknown) =>
-            (await persistEffectResult(result)) ? result : uncertainEffectResult(name);
+          const finish = async (result: unknown, outcome?: "result" | "error") =>
+            (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -7177,6 +7203,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               exitCode: null,
               output: "",
             });
+            let terminalExitCode: number | undefined;
             try {
               let latestOutput = "";
               let lastPublishedAt = 0;
@@ -7238,6 +7265,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
                 {
                   secrets: runSecrets,
+                  onVerifiedExit: (code) => {
+                    terminalExitCode = code;
+                  },
                   onOutput: (snapshot) => {
                     const output = commandOutput(snapshot, true);
                     if (output) publishRunning(output);
@@ -7264,7 +7294,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   running: true,
                   notice: SHELL_STILL_RUNNING_NOTICE,
                 });
-                if (isRunningShellCommand(returned)) observer?.onShellStillRunning?.(completion);
+                if (isRunningShellCommand(returned)) {
+                  observer?.onShellStillRunning?.(completion);
+                  if (claimedApproval && run.origin === "bot_peer" && applied) {
+                    // Update the card after a verified exit, retaining the already-returned tool result.
+                    const effectId = applied.effect.id;
+                    void completion
+                      .catch(() => undefined)
+                      .then(async () => {
+                        if (terminalExitCode === undefined) return;
+                        const updated = await deps.prisma.externalEffect.updateMany({
+                          where: {
+                            id: effectId,
+                            runId,
+                            spaceId: run.spaceId,
+                            status: "completed",
+                            approvalReceipt: { equals: { state: "unknown" } },
+                          },
+                          data: {
+                            approvalReceipt: {
+                              state: terminalExitCode === 0 ? "succeeded" : "failed",
+                            },
+                          },
+                        });
+                        if (updated.count === 1) {
+                          await deps.events.notifyDelegatedApprovalParent(runId);
+                        }
+                      })
+                      .catch(() => undefined);
+                  }
+                }
                 return returned;
               }
               clearPublishTimer();
@@ -7275,17 +7334,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 exitCode: redacted.code,
                 output: commandOutput(redacted, false).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
-              return finish(redacted);
+              if (terminalExitCode === undefined) return finish(redacted);
+              return finish(redacted, terminalExitCode === 0 ? "result" : "error");
             } catch (error) {
+              const message = redactSecrets(
+                error instanceof Error ? error.message : "command failed",
+                runSecrets,
+              );
               await appendComputerCommand({
                 ...commandEvent,
                 status: "done",
-                exitCode: 1,
-                output: redactSecrets(
-                  error instanceof Error ? error.message : "command failed",
-                  runSecrets,
-                ).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
+                exitCode: terminalExitCode ?? 1,
+                output: message.slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
+              if (
+                terminalExitCode !== undefined &&
+                terminalExitCode !== 0 &&
+                claimedApproval &&
+                run.origin === "bot_peer"
+              ) {
+                await persistEffectResult({ error: message }, "error").catch(() => undefined);
+              }
               throw error;
             }
           }
@@ -8733,6 +8802,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return archived;
           }
           if (deps.connector) {
+            let accountError: string | undefined;
             if (revalidateManagedAccounts) {
               try {
                 connectorContext = await refreshRunConnectorContext(
@@ -8742,15 +8812,53 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 );
                 assertBoundConnectorAccount(connectorCall, connectorContext);
               } catch (error) {
-                return finish({ error: sanitizeConnectorError(error) });
+                accountError = sanitizeConnectorError(error);
               }
             }
+            if (pendingPeerConnectorClaim) {
+              context.signal.throwIfAborted();
+              // The approval claim follows account refresh and immediately precedes dispatch.
+              const early = await claimOrReturn("approved");
+              if (early !== undefined) return early;
+              context.signal.throwIfAborted();
+            }
+            if (accountError !== undefined) return finish({ error: accountError });
+            const verifyDispatch = pendingPeerConnectorClaim
+              ? async (tx?: Prisma.TransactionClient) => {
+                  context.signal.throwIfAborted();
+                  const scope = {
+                    spaceId: run.spaceId,
+                    runId,
+                    effectId: applied!.effect.id,
+                    leaseOwner: workerId,
+                    leaseFence: fence,
+                  };
+                  const allowed = tx
+                    ? await recheckDelegatedApprovalDispatchInTransaction(tx, scope)
+                    : await runAsSystem("recheck the approved peer tool before dispatch", () =>
+                        recheckDelegatedApprovalDispatch(deps.prisma, scope),
+                      );
+                  if (!allowed) throw new Error("The delegated action is no longer authorized.");
+                  context.signal.throwIfAborted();
+                }
+              : undefined;
+            const beforeDispatch = verifyDispatch
+              ? Object.assign(() => verifyDispatch(), { [dispatchTransaction]: verifyDispatch })
+              : undefined;
             let result: unknown = { error: `unknown tool ${name}` };
+            let connectorOutcome: "result" | "error" = "error";
             for await (const event of deps.connector.execute(
-              { ...connectorCall, tool: name, args, executionId: effectKey },
+              {
+                ...connectorCall,
+                tool: name,
+                args,
+                executionId: effectKey,
+                ...(beforeDispatch ? { beforeDispatch } : {}),
+              },
               connectorContext,
             )) {
               if (event.type === "result") {
+                connectorOutcome = "result";
                 result = event.data;
                 const logIds = collectLogIds(event.data);
                 for (const logId of logIds) {
@@ -8765,6 +8873,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
               if (event.type === "error") {
+                connectorOutcome = "error";
                 result = {
                   error: event.message,
                   ...(event.code ? { code: event.code } : {}),
@@ -8797,7 +8906,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               return changed.count === 1 ? result : uncertainEffectResult(name);
             }
-            return finish(result);
+            return finish(result, connectorOutcome);
           }
           return finish({ error: `unknown tool ${name}` });
         };
@@ -11228,6 +11337,7 @@ async function completeEffect(
   effectId: string,
   expectedStatus: "intended" | "executing",
   result: unknown,
+  approvalReceipt?: ReturnType<typeof approvedActionReceipt>,
 ) {
   const storedResult =
     result &&
@@ -11236,7 +11346,13 @@ async function completeEffect(
     "details" in result
       ? (result as { details: unknown }).details
       : result;
-  return completeExternalEffect(deps.prisma, effectId, expectedStatus, storedResult as never);
+  return completeExternalEffect(
+    deps.prisma,
+    effectId,
+    expectedStatus,
+    storedResult as never,
+    approvalReceipt,
+  );
 }
 
 function uncertainEffectError(toolName: string): Error {

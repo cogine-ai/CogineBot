@@ -168,6 +168,7 @@ export class NativeHttpClient {
       headers?: Record<string, string>;
       signal: AbortSignal;
       readOnly: boolean;
+      beforeDispatch?: () => Promise<void>;
       /** A trusted action constant, never a model argument. */
       timeoutMs?: number;
       /** Refresh only a definitively rejected token, fenced by its tokenVersion. */
@@ -249,7 +250,11 @@ export class NativeHttpClient {
         AbortSignal.timeout(this.options.timeoutMs ?? 30_000),
       );
       try {
-        response = await this.fetch(target, { method: request.method, headers, body, signal });
+        response = await this.fetch(
+          target,
+          { method: request.method, headers, body, signal },
+          this.options.beforeDispatch,
+        );
       } catch {
         if (readOnly && attempt === 0 && !this.options.signal.aborted) continue;
         throw new NativeActionError(

@@ -283,14 +283,22 @@ export class NativeMcpProtocol {
     const safe = createNativeFetch(this.dependencies, { allowPrivateEndpoint });
     let closing: Promise<void> | undefined;
     const network = Object.assign(
-      async (input: string | URL | Request, init?: RequestInit) => {
+      async (
+        input: string | URL | Request,
+        init?: RequestInit,
+        beforeDispatch?: () => Promise<void>,
+      ) => {
         const target = new URL(input instanceof Request ? input.url : String(input));
         if (target.origin !== endpoint.origin)
           throw unavailable("CogineX OAuth traffic cannot leave this source's authority.");
-        const response = await safe(input, {
-          ...init,
-          signal: combineSignals(bounded, init?.signal ?? undefined),
-        });
+        const response = await safe(
+          input,
+          {
+            ...init,
+            signal: combineSignals(bounded, init?.signal ?? undefined),
+          },
+          beforeDispatch,
+        );
         if (!jsonOnly || !response.body) return response;
         const bytes = await readBoundedResponseBytes(response, {
           maxBytes: 1_000_000,
@@ -557,6 +565,7 @@ export class NativeMcpProtocol {
     args: Record<string, unknown>,
     signal: AbortSignal,
     allowPrivateEndpoint = false,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<unknown> {
     if (!NATIVE_X_TOOLS.has(tool))
       throw new NativeActionError("invalid_input", "This CogineX tool is unavailable.");
@@ -592,6 +601,7 @@ export class NativeMcpProtocol {
           }),
         );
       },
+      beforeDispatch,
     );
   }
   private async withClient<T>(
@@ -600,6 +610,7 @@ export class NativeMcpProtocol {
     allowPrivateEndpoint: boolean,
     accessToken: (forceRefresh?: boolean) => Promise<string>,
     run: (client: Client, signal: AbortSignal) => Promise<T>,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<T> {
     const endpoint = endpointFor(config),
       bounded = combineSignals(signal, AbortSignal.timeout(30_000));
@@ -611,12 +622,16 @@ export class NativeMcpProtocol {
       const send = async (copy: Request, force = false) => {
         const headers = new Headers(copy.headers);
         headers.set("Authorization", `Bearer ${await accessToken(force)}`);
-        return network(copy.url, {
-          method: copy.method,
-          headers,
-          body: copy.body ? await copy.arrayBuffer() : undefined,
-          signal: bounded,
-        });
+        return network(
+          copy.url,
+          {
+            method: copy.method,
+            headers,
+            body: copy.body ? await copy.arrayBuffer() : undefined,
+            signal: bounded,
+          },
+          copy.method === "POST" ? beforeDispatch : undefined,
+        );
       };
       const response = await send(request);
       if (response.status !== 401) return response;

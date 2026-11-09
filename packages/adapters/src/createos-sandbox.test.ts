@@ -305,7 +305,7 @@ describe("CreateOSSandboxProvider", () => {
 
     expect(events).toEqual([
       { type: "stdout", data: "hello\n" },
-      { type: "exit", code: 0 },
+      { type: "exit", code: 0, terminalStateVerified: true },
     ]);
     const command = fixture.execs.at(-1)?.command ?? "";
     expect(command).toContain("cd '/home/desktop/rakazo-home/notes'");
@@ -528,30 +528,39 @@ describe("CreateOSSandboxProvider", () => {
     expect(events.at(-1)).toEqual({ type: "exit", code: 130 });
   });
 
-  it("fails a command that reports an error without an exit code", async () => {
-    const failing = (async (input: URL | RequestInfo) => {
-      if (String(input).endsWith("/exec")) {
+  it.each([true, false])(
+    "preserves terminal evidence without an exit code (error %s)",
+    async (reportedError) => {
+      const failing = (async (input: URL | RequestInfo) => {
+        if (String(input).endsWith("/exec")) {
+          return new Response(
+            JSON.stringify({
+              status: "success",
+              data: { result: reportedError ? { error: "no such file" } : {} },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
         return new Response(
-          JSON.stringify({ status: "success", data: { result: { error: "no such file" } } }),
-          { headers: { "content-type": "application/json" } },
+          JSON.stringify({ status: "success", data: { id: "sbx-1", status: "running" } }),
+          {
+            headers: { "content-type": "application/json" },
+          },
         );
+      }) as typeof fetch;
+      const target = new CreateOSSandboxProvider({ apiKey: "test-key", fetch: failing });
+
+      const events: ProcessEvent[] = [];
+      for await (const event of target.execute(computer, { argv: ["cat", "missing"] }, context)) {
+        events.push(event);
       }
-      return new Response(
-        JSON.stringify({ status: "success", data: { id: "sbx-1", status: "running" } }),
-        {
-          headers: { "content-type": "application/json" },
-        },
-      );
-    }) as typeof fetch;
-    const target = new CreateOSSandboxProvider({ apiKey: "test-key", fetch: failing });
 
-    const events: ProcessEvent[] = [];
-    for await (const event of target.execute(computer, { argv: ["cat", "missing"] }, context)) {
-      events.push(event);
-    }
-
-    expect(events.at(-1)).toEqual({ type: "exit", code: 1 });
-  });
+      expect(events.at(-1)).toEqual({
+        type: "exit",
+        code: reportedError ? 1 : 0,
+      });
+    },
+  );
 
   it("refuses a plaintext base url outside loopback", () => {
     expect(

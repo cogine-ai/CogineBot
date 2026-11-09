@@ -730,13 +730,17 @@ async function* streamLocalCommand(
     wake = undefined;
     notify?.();
   };
-  const finish = (code: number, stderrLine?: string) => {
+  const finish = (code: number, stderrLine?: string, terminalStateVerified?: true) => {
     if (settled) return;
     settled = true;
     clearTimeout(timeout);
     signal.removeEventListener("abort", abort);
     if (stderrLine) push({ type: "stderr", data: appendLine("", stderrLine) });
-    push({ type: "exit", code });
+    push({
+      type: "exit",
+      code,
+      ...(terminalStateVerified ? { terminalStateVerified } : {}),
+    });
     ended = true;
     const notify = wake;
     wake = undefined;
@@ -774,7 +778,7 @@ async function* streamLocalCommand(
     }
   });
   child.on("close", (code) => {
-    finish(code ?? 0);
+    finish(code ?? 0, undefined, code === null ? undefined : true);
   });
   if (signal.aborted) abort();
   try {

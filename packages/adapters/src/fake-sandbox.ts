@@ -96,7 +96,7 @@ export class FakeSandboxProvider implements SandboxProvider {
     if (request.argv[0] === "printenv") {
       const value = sandboxCommandEnvironment(request)[request.argv[1] ?? ""];
       if (value !== undefined) yield { type: "stdout", data: `${value}\n` };
-      yield { type: "exit", code: value === undefined ? 1 : 0 };
+      yield { type: "exit", code: value === undefined ? 1 : 0, terminalStateVerified: true };
       return;
     }
     // The shell tool wraps the model's command in a background-work launcher; answer the command.
@@ -114,7 +114,7 @@ export class FakeSandboxProvider implements SandboxProvider {
     } else {
       yield { type: "stdout", data: `ran ${cmd}\n` };
     }
-    yield { type: "exit", code: 0 };
+    yield { type: "exit", code: 0, terminalStateVerified: true };
   }
 
   async inspectBackgroundWork(

@@ -1,4 +1,5 @@
 import type { ProcessEvent } from "@rakazo/adapter-kit";
+import { SandboxCommandExitError } from "@rakazo/adapter-kit";
 import { redactSecrets } from "@rakazo/core";
 import { redactShellStreams } from "./agent-environment.js";
 import { automated } from "./automated-messages.js";
@@ -109,6 +110,7 @@ export async function observeShellCommand(
     secrets: string[];
     idleMs?: number;
     onOutput?: (snapshot: ShellCommandSnapshot) => void;
+    onVerifiedExit?: (code: number) => void;
   },
 ): Promise<{
   result: ShellCommandResult;
@@ -149,6 +151,9 @@ export async function observeShellCommand(
         else if (event.type === "stderr") stderr += event.data;
         else if (event.type === "exit") {
           code = event.code;
+          if (event.terminalStateVerified === true && Number.isInteger(code)) {
+            options.onVerifiedExit?.(code);
+          }
           break;
         } else continue;
         const published = redact({ stdout, stderr }, true);
@@ -162,6 +167,7 @@ export async function observeShellCommand(
     } catch (error) {
       // Providers may include command environment values in errors. Never expose the raw
       // error or its cause to runtime tool handling or a background completion observer.
+      if (error instanceof SandboxCommandExitError) options.onVerifiedExit?.(error.exitCode);
       throw new Error(
         redactSecrets(error instanceof Error ? error.message : String(error), options.secrets),
       );

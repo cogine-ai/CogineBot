@@ -942,6 +942,9 @@ model ExternalEffect {
   reviewDecision String?
   reviewReason   String?
   reviewModel    String?
+  delegatedApprovalNonce String?
+  requiresPeerApprovalRecheck Boolean @default(false)
+  approvalReceipt Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

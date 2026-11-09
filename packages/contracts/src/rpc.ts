@@ -133,7 +133,12 @@ import {
   VoiceStatusSchema,
   validateModelPinInput,
 } from "./domain.js";
-import { ComputerCommandSchema, ProductEventSchema } from "./events.js";
+import {
+  ComputerCommandSchema,
+  DelegatedApprovalAction,
+  DelegatedApprovalSchema,
+  ProductEventSchema,
+} from "./events.js";
 import { Id, IsoDate } from "./ids.js";
 import {
   IntegrationProviderConfigSchema,
@@ -580,6 +585,22 @@ export const appContract = {
       )
       .output(z.object({ ok: z.literal(true) })),
     clear: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    delegatedApprovals: oc
+      .input(botId.extend({ dispatchMessageIds: z.array(Id).max(100) }))
+      .output(z.array(DelegatedApprovalSchema)),
+    answerDelegatedApproval: oc
+      .input(
+        z.strictObject({
+          botId: Id,
+          dispatchMessageId: Id,
+          runId: Id,
+          messageId: Id,
+          effectId: Id,
+          action: DelegatedApprovalAction,
+          clientNonce: z.string().min(1).max(200),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
     answer: oc
       .input(
         threadTarget.safeExtend({

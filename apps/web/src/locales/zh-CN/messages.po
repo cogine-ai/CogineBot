@@ -7338,3 +7338,18 @@ msgstr "原分享链接将失效"
 #: src/components/pages/PageShareControl.tsx
 msgid "Who can open this page"
 msgstr "谁可以打开此页面"
+
+msgid "Action failed"
+msgstr "操作失败"
+
+msgid "Result unconfirmed"
+msgstr "结果待确认"
+
+msgid "Action completed"
+msgstr "操作已完成"
+
+msgid "View result"
+msgstr "查看结果"
+
+msgid "View execution chat"
+msgstr "查看执行对话"

@@ -661,7 +661,12 @@ function parseProcessLine(line: string): ProcessEvent | undefined {
     return { type: "stderr", data: `${trimmed}\n` };
   }
   if (!parsed || typeof parsed !== "object") return undefined;
-  const record = parsed as { type?: unknown; data?: unknown; code?: unknown };
+  const record = parsed as {
+    type?: unknown;
+    data?: unknown;
+    code?: unknown;
+    terminalStateVerified?: unknown;
+  };
   if (record.type === "stdout" && typeof record.data === "string") {
     return { type: "stdout", data: record.data };
   }
@@ -669,7 +674,11 @@ function parseProcessLine(line: string): ProcessEvent | undefined {
     return { type: "stderr", data: record.data };
   }
   if (record.type === "exit" && typeof record.code === "number" && Number.isFinite(record.code)) {
-    return { type: "exit", code: record.code };
+    return {
+      type: "exit",
+      code: record.code,
+      ...(record.terminalStateVerified === true ? { terminalStateVerified: true } : {}),
+    };
   }
   return undefined;
 }

@@ -1,6 +1,7 @@
 import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
+import { useDelegatedApprovals } from "@rakazo/chat-ui/delegated-approvals";
 import { ChatMarkdown, LinkifiedText } from "@rakazo/chat-ui/web";
 import type {
   AgentSkillCatalogEntry,
@@ -10,6 +11,7 @@ import type {
   ComputerStatus,
   Connection,
   ConnectionCatalogItem,
+  DelegatedApproval,
   Group,
   Me,
   ProductEvent,
@@ -28,6 +30,7 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
+  DelegatedApprovalAction,
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
@@ -157,6 +160,7 @@ import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
+import { DelegatedApprovalCard } from "../components/DelegatedApprovalCard";
 import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { LoadFailureNotice } from "../components/LoadFailureNotice";
@@ -564,6 +568,7 @@ export function ShellPage() {
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
   const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
+  const refreshDelegatedApprovals = useRef<() => void>(() => {});
   // Last-known computer/screen per bot, so switching back to an already-seen
   // bot paints its computer pane instantly instead of blanking it while the
   // thread + screen RPCs round-trip again (see refreshThread / refreshComputerScreen).
@@ -2061,11 +2066,15 @@ export function ShellPage() {
     }
     const abort = new AbortController();
     const reader = createThreadReader(abort);
+    const observeConnection = observeThreadConnection(`bot:${active.id}`, abort);
     void runThreadSubscription({
       signal: abort.signal,
       resume: reader.resume,
       onCursor: reader.onCursor,
-      onStatus: observeThreadConnection(`bot:${active.id}`, abort),
+      onStatus: (status, error) => {
+        observeConnection(status, error);
+        if (status === "ready" && reader.ownsReader()) refreshDelegatedApprovals.current();
+      },
       loadInitial: async () => {
         const primed = bootstrappedThread.current;
         bootstrappedThread.current = null;
@@ -2089,6 +2098,9 @@ export function ShellPage() {
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) =>
         rpc.threads.subscribe({ botId: active.id, cursor }, { signal: abort.signal }),
+      onHeartbeat: () => {
+        if (reader.ownsReader()) refreshDelegatedApprovals.current();
+      },
       beforeEvent: (event) => {
         if (isRunTerminalEvent(event) && event.runId) {
           terminalRunReceipts.current.add(event.runId);
@@ -2102,6 +2114,7 @@ export function ShellPage() {
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
         replyEventObserver.current(event);
+        if (event.type === "thread.message.updated") refreshDelegatedApprovals.current();
         const currentBot = botsRef.current.find((bot) => bot.id === active.id);
         notifyBrowserForEvent(
           event,
@@ -3150,6 +3163,48 @@ export function ShellPage() {
       ),
     [activeSnapshot?.messages],
   );
+  const readDelegatedApprovals = useCallback(
+    (dispatchMessageIds: string[], signal: AbortSignal) =>
+      active?.id
+        ? rpc.threads.delegatedApprovals({ botId: active.id, dispatchMessageIds }, { signal })
+        : Promise.resolve([]),
+    [active?.id],
+  );
+  const { byDispatch: delegatedApprovals, refresh: refreshDelegated } = useDelegatedApprovals(
+    !inGroup && session.data?.session.id && draftScopeKey && activeSnapshot?.threadId
+      ? JSON.stringify([
+          draftScopeKey,
+          session.data?.session.id,
+          currentSpaceSelectionGeneration(),
+          activeSnapshot.threadId,
+        ])
+      : undefined,
+    transcriptMessages,
+    readDelegatedApprovals,
+  );
+  useLayoutEffect(() => {
+    refreshDelegatedApprovals.current = refreshDelegated;
+    return () => {
+      refreshDelegatedApprovals.current = () => {};
+    };
+  }, [refreshDelegated]);
+  const answerDelegated = useCallback(async (approval: DelegatedApproval, action: string) => {
+    const botId = activeBotId.current;
+    if (!botId || activeGroupId.current) return;
+    try {
+      await rpc.threads.answerDelegatedApproval({
+        botId,
+        dispatchMessageId: approval.dispatchMessageId,
+        runId: approval.runId,
+        messageId: approval.messageId,
+        effectId: approval.effectId,
+        action: DelegatedApprovalAction.parse(action),
+        clientNonce: newClientNonce(),
+      });
+    } finally {
+      refreshDelegatedApprovals.current();
+    }
+  }, []);
   const workingNarrationStatus = liveNarrationStatusLine(
     transcriptMessages,
     workingRuns.filter((run) => run.status === "running").map((run) => run.id),
@@ -5827,6 +5882,8 @@ export function ShellPage() {
               onLoadOlder={loadOlder}
               onOpenBot={openBot}
               onAnswer={answerMessage}
+              delegatedApprovals={delegatedApprovals}
+              onAnswerDelegated={answerDelegated}
               onReply={(message) => {
                 setReplyTarget(message);
                 setReplyQuote(null);
@@ -7159,6 +7216,8 @@ const Transcript = memo(function Transcript({
   onLoadOlder,
   onOpenBot,
   onAnswer,
+  delegatedApprovals,
+  onAnswerDelegated,
   onReply,
   onQuote,
   onReact,
@@ -7196,6 +7255,8 @@ const Transcript = memo(function Transcript({
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  delegatedApprovals: ReadonlyMap<string, DelegatedApproval[]>;
+  onAnswerDelegated: (approval: DelegatedApproval, action: string) => Promise<void>;
   onReply: (message: ThreadMessage) => void;
   onQuote: (message: ThreadMessage, quote: string) => void;
   onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
@@ -7605,6 +7666,14 @@ const Transcript = memo(function Transcript({
                           )
                         }
                       />
+                      {delegatedApprovals.get(message.id)?.map((approval) => (
+                        <DelegatedApprovalCard
+                          key={approval.effectId}
+                          approval={approval}
+                          onAnswer={onAnswerDelegated}
+                          onOpenBot={onOpenBot}
+                        />
+                      ))}
                     </div>
                   </div>
                   {!peerReceipt && message.role !== "bot" && !message.id.startsWith("progress:") ? (

@@ -81,7 +81,11 @@ describe("Docker sandbox", () => {
                 ),
               );
               await exitGate;
-              controller.enqueue(encoder.encode(`${JSON.stringify({ type: "exit", code: 0 })}\n`));
+              controller.enqueue(
+                encoder.encode(
+                  `${JSON.stringify({ type: "exit", code: 0, terminalStateVerified: true })}\n`,
+                ),
+              );
               controller.close();
             },
           }),
@@ -112,8 +116,39 @@ describe("Docker sandbox", () => {
     await Promise.resolve();
     expect(exitSeen).toBe(false);
     releaseExit();
-    await expect(rest).resolves.toEqual({ value: { type: "exit", code: 0 }, done: false });
+    await expect(rest).resolves.toEqual({
+      value: { type: "exit", code: 0, terminalStateVerified: true },
+      done: false,
+    });
   });
+
+  it.each(["", '{"type":"exit","code":0}\n'])(
+    "keeps a missing or legacy terminal event unconfirmed (%j)",
+    async (terminal) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response('{"type":"stdout","data":"started"}\n' + terminal, {
+              headers: { "content-type": "application/x-ndjson" },
+            }),
+        ),
+      );
+      const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+      const events: ProcessEvent[] = [];
+      for await (const event of provider.execute(
+        { id: "computer", botId: "bot", kind: "docker", providerRef: "computer" },
+        { argv: ["true"] },
+        context,
+      )) {
+        events.push(event);
+      }
+      expect(events).toEqual([
+        { type: "stdout", data: "started" },
+        { type: "exit", code: terminal ? 0 : 1 },
+      ]);
+    },
+  );
 
   it("rejects a declared oversized success response without buffering it", async () => {
     const cancel = vi.fn();

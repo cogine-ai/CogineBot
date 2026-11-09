@@ -88,6 +88,7 @@ export class DestinationEmulator implements ConnectorProvider {
       yield { type: "error", message: `unknown tool ${call.tool}` };
       return;
     }
+    await call.beforeDispatch?.();
     const record: DestinationRecord = {
       id: `rec-${this.records.length + 1}`,
       collection: String(call.args.collection ?? "notes"),
@@ -105,10 +106,14 @@ export class DestinationEmulator implements ConnectorProvider {
         }),
       });
       const written = (await res.json()) as DestinationRecord;
-      yield { type: "result", data: { id: written.id, written: true } };
+      yield { type: "result", data: destinationReceipt(written.id) };
       return;
     }
     this.records.push(record);
-    yield { type: "result", data: { id: record.id, written: true } };
+    yield { type: "result", data: destinationReceipt(record.id) };
   }
+}
+
+function destinationReceipt(id: string) {
+  return { id, written: true, url: `https://example.test/records/${encodeURIComponent(id)}` };
 }

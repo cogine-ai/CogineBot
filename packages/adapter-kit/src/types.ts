@@ -111,7 +111,8 @@ export interface CommandRequest {
 export type ProcessEvent =
   | { type: "stdout"; data: string }
   | { type: "stderr"; data: string }
-  | { type: "exit"; code: number };
+  /** Providers mark observed termination explicitly. Compatibility codes can omit the marker. */
+  | { type: "exit"; code: number; terminalStateVerified?: true };
 
 export interface ScreenRequest {
   view: "stream" | "snapshot";
@@ -294,6 +295,8 @@ export interface ConnectorCall {
   connectionId?: string;
   executionId: string;
   route?: ConnectorRoute;
+  /** Executor-owned approval check at the adapter's external dispatch boundary. */
+  beforeDispatch?: () => Promise<void>;
 }
 
 export type ConnectorEvent =

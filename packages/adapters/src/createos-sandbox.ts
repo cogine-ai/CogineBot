@@ -499,7 +499,12 @@ export class CreateOSSandboxProvider implements SandboxProvider {
     if (result.result?.stdout) yield { type: "stdout", data: result.result.stdout };
     if (result.result?.stderr) yield { type: "stderr", data: result.result.stderr };
     if (result.result?.error) yield { type: "stderr", data: `${result.result.error}\n` };
-    yield { type: "exit", code: result.result?.exit_code ?? (result.result?.error ? 1 : 0) };
+    const code = result.result?.exit_code;
+    yield {
+      type: "exit",
+      code: code ?? (result.result?.error ? 1 : 0),
+      ...(Number.isInteger(code) ? { terminalStateVerified: true } : {}),
+    };
   }
 
   async connectScreen(

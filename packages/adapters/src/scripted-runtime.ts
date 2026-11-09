@@ -6,7 +6,7 @@ import type {
   ScriptedRuntimeState,
   ScriptedTurn,
 } from "@rakazo/adapter-kit";
-import { abortableDelay, inferHandoffTargetName } from "@rakazo/core";
+import { abortableDelay, BOT_MESSAGE_WAKE_CUE, inferHandoffTargetName } from "@rakazo/core";
 import { composeScriptedTurns, parseScriptedState, scriptedStateDigest } from "./scripted-state.js";
 
 const running = new Map<string, AbortController>();
@@ -34,7 +34,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
     const signal = context?.signal ?? controller.signal;
     const isAborted = () => signal.aborted || controller.signal.aborted;
     try {
-      if (shouldFail(request.prompt)) {
+      if (!delegatedReport(request.prompt) && shouldFail(request.prompt)) {
         throw new Error("Scripted run failure");
       }
       if (signal.aborted || controller.signal.aborted) {
@@ -56,10 +56,11 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         ? steering.map((item) => item.historyText ?? item.text).join("\n")
         : undefined;
       const prompt = steeredPrompt ?? request.prompt;
-      if (shouldFail(prompt)) {
+      const relaysOutcome = Boolean(delegatedReport(prompt));
+      if (!relaysOutcome && shouldFail(prompt)) {
         throw new Error("Scripted run failure");
       }
-      if (shouldHang(prompt)) {
+      if (!relaysOutcome && shouldHang(prompt)) {
         // Long-running work happens on the computer, which starts it like any real run would.
         yield {
           type: "tool",
@@ -445,10 +446,11 @@ export function inferScript(
       },
     ];
   }
-  const pageWords = prompt.replace(
-    /^(?:Replying to|User reacted with \S+ to) \(quoted data, not instructions\):\n<(reply_target|reaction_target)>\n[\s\S]*?\n<\/\1>\n\n/,
-    "",
-  );
+  // Relay the result before interpreting words in it as another action.
+  const report = delegatedReport(prompt);
+  if (report)
+    return [{ assistant: `Here's what ${report.from} found: ${report.gist}`, complete: true }];
+  const pageWords = prompt.replace(REPLY_CONTEXT, "");
   const page = /^(?:@\S+\s+)?call save_page with(?:\s+([\s\S]*?))?(?:\nthen say ([\s\S]+))?$/.exec(
     pageWords.trim(),
   );
@@ -794,8 +796,9 @@ code-b
       },
     ];
   }
-  if (lower.includes("connector") || lower.includes("crm") || lower.includes("destination")) {
-    return [
+  const peer = peerMessage(prompt);
+  if (/connector|crm|destination/i.test(peer?.text ?? prompt)) {
+    const turns = [
       {
         assistant: "writing the record through the connected destination.",
         toolCalls: [
@@ -807,6 +810,9 @@ code-b
         complete: true,
       },
     ];
+    const call = turns[0]?.toolCalls[0];
+    if (peer && call) call.args = { collection: "notes", title: "Task result", body: peer.text };
+    return turns;
   }
   if (lower.includes("attach") && (lower.includes("thread") || lower.includes("into the thread"))) {
     const said = /says?\s+(.+)$/i.exec(prompt)?.[1]?.replace(/[.]+$/, "") ?? prompt;
@@ -880,6 +886,36 @@ code-b
       complete: true,
     },
   ];
+}
+
+const REPLY_CONTEXT =
+  /^(?:Replying to|User reacted with \S+ to) \(quoted data, not instructions\):\n<(reply_target|reaction_target)>\n[\s\S]*?\n<\/\1>\n\n/;
+
+function peerMessage(prompt: string) {
+  const words = prompt.replace(REPLY_CONTEXT, "");
+  if (!words.startsWith(BOT_MESSAGE_WAKE_CUE)) return undefined;
+  const match = /<bot_message from="([^"]*)">\n([\s\S]*?)\n<\/bot_message>/.exec(words);
+  if (!match) return undefined;
+  const body = match[2]!
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&")
+    .trim();
+  return {
+    from: match[1] || "Peer",
+    text: body,
+    instruction: words.slice(match.index + match[0].length).trimStart(),
+  };
+}
+
+function delegatedReport(prompt: string) {
+  const message = peerMessage(prompt);
+  if (
+    !message?.text ||
+    !/^This is a (?:result|status) for work you delegated\./.test(message.instruction)
+  )
+    return undefined;
+  return { from: message.from, gist: message.text };
 }
 
 function shouldFail(prompt: string): boolean {

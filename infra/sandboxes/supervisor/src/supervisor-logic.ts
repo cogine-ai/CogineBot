@@ -478,7 +478,7 @@ export function sandboxTimeoutCommand(argv: string[], timeoutMs: number, complet
     `${timeoutMs / 1_000}s`,
     "sh",
     "-c",
-    '"$@"; status=$?; if [ "$status" -eq 124 ]; then : > "$0"; fi; exit "$status"',
+    '"$@"; status=$?; case "$status" in 124|137) : > "$0";; esac; exit "$status"',
     completionMarker,
     ...argv,
   ];

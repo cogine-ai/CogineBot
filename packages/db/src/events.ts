@@ -44,11 +44,18 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { ownedConnectionSelection, updateTaskConnectionSelection } from "./connection-selection.js";
+import type { AnswerDelegatedApprovalInput } from "./delegated-approvals.js";
+import {
+  lockDelegatedApproval,
+  ordinaryApprovalCard,
+  PROTECTED_APPROVAL_TOOLS,
+} from "./delegated-approvals.js";
 import type { RunLease } from "./messages.js";
 import {
   assertRunCanWriteHistory,
   assertRunIsCancelled,
   createThreadMessageInTransaction,
+  findPendingAsk,
   RunHistoryWriteError,
 } from "./messages.js";
 import {
@@ -88,6 +95,9 @@ export interface AppendEventInput {
 }
 
 export interface ThreadEvents {
+  answerDelegatedApproval(
+    input: AnswerDelegatedApprovalInput,
+  ): Promise<"accepted" | "already_answered" | "conflict">;
   answerRunInput(input: AnswerRunInput): Promise<boolean>;
   append(input: AppendEventInput): Promise<ProductEvent>;
   claimSteering(input: ClaimSteeringInput): Promise<ClaimedSteeringMessage[]>;
@@ -96,11 +106,22 @@ export interface ThreadEvents {
     input: FinalizeComputerControlReleaseInput,
   ): Promise<FinalizeComputerControlReleaseResult | false>;
   finalizeRun(input: FinalizeRunInput): Promise<FinalizeRunResult | false>;
-  notify(threadId: string, seq: number, firstResponseRunId?: string): Promise<void>;
+  notify(
+    threadId: string,
+    seq: number,
+    firstResponseRunId?: string,
+    cancelledRunIds?: string[],
+  ): Promise<void>;
+  notifyDelegatedApprovalParent(runId: string): Promise<void>;
   pauseRunForInput(input: PauseRunForInput): Promise<boolean>;
   pauseRunForTakeover(input: PauseRunForTakeover): Promise<boolean>;
   sendUserMessage(input: SendUserMessageInput): Promise<SendUserMessageResult>;
-  follow(threadId: string, cursor: number, signal?: AbortSignal): AsyncGenerator<ProductEvent>;
+  follow(
+    threadId: string,
+    cursor: number,
+    signal?: AbortSignal,
+    delegatedApprovalTarget?: { spaceId: string; botId: string },
+  ): AsyncGenerator<ProductEvent>;
 }
 
 export interface ClearThreadInput {
@@ -336,6 +357,8 @@ export function createThreadEvents(
   } = {},
 ): ThreadEvents {
   return {
+    answerDelegatedApproval: (input) =>
+      answerDelegatedApproval(prisma, input, realtime, options.resolveApprovalBatch),
     answerRunInput: (input) =>
       answerRunInput(
         prisma,
@@ -350,13 +373,27 @@ export function createThreadEvents(
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
     finalizeRun: (input) => finalizeRun(prisma, input, realtime),
-    notify: (threadId, seq, firstResponseRunId) =>
-      notifyCommittedEvent(prisma, realtime, threadId, seq, firstResponseRunId),
+    notify: async (threadId, seq, firstResponseRunId, cancelledRunIds = []) => {
+      await notifyCommittedEvent(prisma, realtime, threadId, seq, firstResponseRunId);
+      await Promise.all(
+        cancelledRunIds.map((runId) => notifyDelegatedApprovalParent(prisma, realtime, runId)),
+      );
+    },
+    notifyDelegatedApprovalParent: (runId) =>
+      notifyDelegatedApprovalParent(prisma, realtime, runId),
     pauseRunForInput: (input) => pauseRunForInput(prisma, input, realtime),
     pauseRunForTakeover: (input) => pauseRunForTakeover(prisma, input, realtime),
     sendUserMessage: (input) => sendUserMessage(prisma, input, realtime),
-    follow: (threadId, cursor, signal) =>
-      followThreadEvents(prisma, threadId, cursor, realtime, signal, options.catchUpMs),
+    follow: (threadId, cursor, signal, delegatedApprovalTarget) =>
+      followThreadEvents(
+        prisma,
+        threadId,
+        cursor,
+        realtime,
+        signal,
+        options.catchUpMs,
+        delegatedApprovalTarget,
+      ),
   };
 }
 
@@ -433,6 +470,11 @@ export async function clearThread(
     };
   });
   await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
+  await Promise.all(
+    committed.cancelledRunIds.map((runId) =>
+      notifyDelegatedApprovalParent(prisma, realtime, runId),
+    ),
+  );
   return {
     event: mapProductEvent(committed.event),
     cancelledRunIds: committed.cancelledRunIds,
@@ -814,31 +856,6 @@ export async function claimSteering(
   return withTransactionRetry(claim);
 }
 
-async function findPendingAsk(
-  tx: Prisma.TransactionClient,
-  input: { threadId: string; runId: string },
-) {
-  const messages = await tx.message.findMany({
-    where: {
-      threadId: input.threadId,
-      runId: input.runId,
-      role: "bot",
-    },
-    orderBy: { seq: "desc" },
-    take: 50,
-    select: { id: true, blocks: true },
-  });
-  for (const message of messages) {
-    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
-    if (!parsed.success) continue;
-    const pendingAsk = parsed.data.find(
-      (block) => block.kind === "ask" && block.status !== "answered",
-    );
-    if (pendingAsk?.kind === "ask") return { messageId: message.id, pendingAsk };
-  }
-  return null;
-}
-
 function matchesSharedPageApprovalCard(
   card: Extract<MessageBlock, { kind: "ask" }>,
   request: SharedPageUpdateRequest,
@@ -857,7 +874,8 @@ async function commitAnswerRunInput(
   input: AnswerRunInput,
   runSecretWriter?: RunSecretWriter,
   resolveApprovalBatch?: ResolveApprovalBatch,
-): Promise<{ threadId: string; seq: number } | null> {
+  delegation?: { effectId: string; nonceDigest: string },
+): Promise<{ threadId: string; seq: number; ordinaryApproval?: true } | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
@@ -868,7 +886,17 @@ async function commitAnswerRunInput(
       threadId: input.threadId,
       status: "waiting_input",
     },
-    select: { botId: true, userId: true, checkpoint: true, quotaWait: true },
+    select: {
+      botId: true,
+      userId: true,
+      origin: true,
+      parentRunId: true,
+      collaborationMessageId: true,
+      collaborationSourceBotId: true,
+      collaborationSourceSpaceId: true,
+      checkpoint: true,
+      quotaWait: true,
+    },
   });
   if (!run) return null;
   const message = await tx.message.findFirst({
@@ -885,6 +913,11 @@ async function commitAnswerRunInput(
     (block) => block.kind === "ask" && block.status !== "answered",
   );
   if (pendingAsk?.kind !== "ask") return null;
+  if (
+    delegation &&
+    (!ordinaryApprovalCard(pendingAsk) || pendingAsk.approvalEffectId !== delegation.effectId)
+  )
+    return null;
   const approvalAsk = isApprovalAskBlock(pendingAsk);
   if ((pendingAsk.approvalEffectId || pendingAsk.reviewMode) && !approvalAsk) return null;
   const secretAsk = isSecretAskBlock(pendingAsk);
@@ -908,6 +941,15 @@ async function commitAnswerRunInput(
 
   if (approvalAsk) {
     if (!pendingAsk.actions?.some((action) => action.id === input.answer)) return null;
+    if (run.origin === "bot_peer") {
+      if (run.userId !== input.answeredByUserId) return null;
+      const current = await findPendingAsk(tx, input);
+      if (
+        current?.messageId !== input.messageId ||
+        current.pendingAsk.approvalEffectId !== pendingAsk.approvalEffectId
+      )
+        return null;
+    }
     approvalEffect = await tx.externalEffect.findFirst({
       where: {
         id: pendingAsk.approvalEffectId,
@@ -916,7 +958,8 @@ async function commitAnswerRunInput(
         status: "intended",
       },
     });
-    if (!approvalEffect) return null;
+    if (!approvalEffect || (delegation && PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind)))
+      return null;
     const request = approvalEffect.request;
     const sharedPageRequest =
       approvalEffect.kind === "save_page" &&
@@ -1022,11 +1065,45 @@ async function commitAnswerRunInput(
     });
   }
 
+  const ordinaryApproval =
+    approvalEffect &&
+    ordinaryApprovalCard(pendingAsk) &&
+    !PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind);
   if (approvalAsk) {
     const allowed = input.answer === "allow" || input.answer === "always";
+    const requiresPeerApprovalRecheck =
+      allowed &&
+      ordinaryApproval &&
+      Boolean(
+        delegation ||
+          (run.origin === "bot_peer" &&
+            run.parentRunId &&
+            run.collaborationMessageId &&
+            run.collaborationSourceBotId &&
+            run.collaborationSourceSpaceId === input.spaceId &&
+            (await tx.run.findFirst({
+              where: {
+                id: run.parentRunId,
+                parentRunId: null,
+                spaceId: input.spaceId,
+                userId: run.userId,
+                botId: run.collaborationSourceBotId,
+                thread: {
+                  botId: run.collaborationSourceBotId,
+                  groupId: null,
+                  externalConversationId: null,
+                },
+              },
+              select: { id: true },
+            }))),
+      );
     await tx.externalEffect.update({
       where: { id: approvalEffect!.id },
-      data: { status: allowed ? "approved" : "denied" },
+      data: {
+        status: allowed ? "approved" : "denied",
+        ...(delegation ? { delegatedApprovalNonce: delegation.nonceDigest } : {}),
+        ...(requiresPeerApprovalRecheck ? { requiresPeerApprovalRecheck } : {}),
+      },
     });
     // Save the approved destination or individual actions in the same transaction.
     for (const matchValue of approvalSite ? [approvalSite] : approvalTools) {
@@ -1119,7 +1196,11 @@ async function commitAnswerRunInput(
         : {}),
     },
   });
-  return { threadId: updated.threadId, seq: updated.seq };
+  return {
+    threadId: updated.threadId,
+    seq: updated.seq,
+    ...(ordinaryApproval ? { ordinaryApproval: true } : {}),
+  };
 }
 
 export async function answerRunInput(
@@ -1139,7 +1220,83 @@ export async function answerRunInput(
 
   if (!committed) return false;
   await notifyRealtime(realtime, committed.threadId, committed.seq);
+  if (committed.ordinaryApproval)
+    await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
   return true;
+}
+
+export async function answerDelegatedApproval(
+  prisma: PrismaClient,
+  input: AnswerDelegatedApprovalInput,
+  realtime?: RealtimeFanout,
+  resolveApprovalBatch?: ResolveApprovalBatch,
+): Promise<"accepted" | "already_answered" | "conflict"> {
+  const result = await withTransactionRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const run = await lockDelegatedApproval(tx, input);
+      if (!run) return "conflict" as const;
+      const [message, effect] = await Promise.all([
+        tx.message.findFirst({
+          where: {
+            id: input.messageId,
+            threadId: run.threadId,
+            botId: run.botId,
+            runId: run.id,
+            role: "bot",
+          },
+          select: { blocks: true },
+        }),
+        tx.externalEffect.findFirst({
+          where: {
+            id: input.effectId,
+            spaceId: input.spaceId,
+            runId: run.id,
+            kind: { notIn: PROTECTED_APPROVAL_TOOLS },
+          },
+          select: { status: true },
+        }),
+      ]);
+      const parsed = MessageBlockSchema.array().safeParse(message?.blocks);
+      const ask = parsed.data
+        ?.filter(ordinaryApprovalCard)
+        .find((block) => block.approvalEffectId === input.effectId);
+      if (!ask || !effect) return "conflict" as const;
+      if (ask.status === "answered")
+        return ask.answer === input.action ? ("already_answered" as const) : ("conflict" as const);
+      if (
+        ask.status !== "pending" ||
+        effect.status !== "intended" ||
+        run.status !== "waiting_input"
+      )
+        return "conflict" as const;
+      const nonceDigest = createHash("sha256").update(input.clientNonce).digest("hex");
+      const priorNonce = await tx.externalEffect.findFirst({
+        where: { id: { not: input.effectId }, runId: run.id, delegatedApprovalNonce: nonceDigest },
+        select: { id: true },
+      });
+      if (priorNonce) return "conflict" as const;
+      return (
+        (await commitAnswerRunInput(
+          tx,
+          {
+            spaceId: input.spaceId,
+            threadId: run.threadId,
+            runId: run.id,
+            messageId: input.messageId,
+            answeredByUserId: input.userId,
+            answer: input.action,
+          },
+          undefined,
+          resolveApprovalBatch,
+          { effectId: input.effectId, nonceDigest },
+        )) ?? "conflict"
+      );
+    }),
+  );
+  if (typeof result === "string") return result;
+  await notifyRealtime(realtime, result.threadId, result.seq);
+  await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
+  return "accepted";
 }
 
 /** The caller holds the thread row lock acquired while accepting the new user message. */
@@ -1443,6 +1600,8 @@ export async function pauseRunForInput(
     committed.seq,
     committed.firstResponseRunId,
   );
+  if (input.blocks.some(ordinaryApprovalCard))
+    await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
   return true;
 }
 
@@ -1977,6 +2136,7 @@ export async function finalizeRun(
   const committed = await withTransactionRetry(() => finalizeRunOnce(prisma, input));
   if (!committed) return false;
   await notifyRealtime(realtime, committed.threadId, committed.seq);
+  await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
   const timing = await readRunTimingFields(prisma, input.runId);
   if (committed.firstResponse) {
     getLogger().info("run.first_response", { "run.id": input.runId, ...timing });
@@ -2354,6 +2514,37 @@ export async function notifyRealtime(
   await realtime?.publish(threadTopic(threadId), JSON.stringify({ cursor })).catch(() => undefined);
 }
 
+const DELEGATED_APPROVAL_PULSE = "delegated-approval-changed";
+
+async function notifyDelegatedApprovalParent(
+  prisma: PrismaClient,
+  realtime: RealtimeFanout | undefined,
+  runId: string,
+) {
+  if (!realtime) return;
+  try {
+    const run = await prisma.run.findFirst({
+      where: { id: runId, origin: "bot_peer", collaborationMessageId: { not: null } },
+      select: { parentRunId: true, collaborationSourceBotId: true, userId: true, spaceId: true },
+    });
+    if (!run?.parentRunId || !run.collaborationSourceBotId) return;
+    const parent = await prisma.run.findFirst({
+      where: {
+        id: run.parentRunId,
+        parentRunId: null,
+        spaceId: run.spaceId,
+        userId: run.userId,
+        botId: run.collaborationSourceBotId,
+      },
+      select: { threadId: true },
+    });
+    if (parent) await realtime.publish(threadTopic(parent.threadId), DELEGATED_APPROVAL_PULSE);
+  } catch (error) {
+    // The authenticated query is authoritative. The heartbeat repairs lost signals.
+    getLogger().error("delegated approval notification", error);
+  }
+}
+
 export async function eventsAfter(
   prisma: PrismaClient,
   threadId: string,
@@ -2386,17 +2577,34 @@ export async function* followThreadEvents(
   realtime?: RealtimeFanout,
   signal?: AbortSignal,
   catchUpMs = realtime ? PUSH_CATCH_UP_MS : POLL_ONLY_CATCH_UP_MS,
+  delegatedApprovalTarget?: { spaceId: string; botId: string },
 ): AsyncGenerator<ProductEvent> {
   let seq = cursor;
+  let approvalChanged = false;
   const latch = new ChangeLatch();
   const unsubscribe = realtime
     ? await realtime
-        .subscribe(threadTopic(threadId), () => latch.notify())
+        .subscribe(threadTopic(threadId), (payload) => {
+          if (payload === DELEGATED_APPROVAL_PULSE) approvalChanged = true;
+          latch.notify();
+        })
         .catch(() => async () => {})
     : async () => {};
   try {
     while (!signal?.aborted) {
       const observedGeneration = latch.generation;
+      if (approvalChanged && delegatedApprovalTarget) {
+        approvalChanged = false;
+        yield {
+          ...delegatedApprovalTarget,
+          threadId,
+          id: DELEGATED_APPROVAL_PULSE,
+          seq: 0,
+          type: "heartbeat",
+          createdAt: new Date().toISOString(),
+          payload: {},
+        };
+      }
       let batchSize = 0;
       do {
         const events = await eventsAfter(prisma, threadId, seq, EVENT_BATCH_SIZE);

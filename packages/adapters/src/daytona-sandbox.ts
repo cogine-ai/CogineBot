@@ -210,7 +210,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
         return;
       }
       if (result.result) yield { type: "stdout", data: result.result };
-      yield { type: "exit", code: result.exitCode };
+      yield { type: "exit", code: result.exitCode, terminalStateVerified: true };
     } catch (error) {
       if (error instanceof DaytonaProcessExecutionTimeoutError) {
         yield {

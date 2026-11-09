@@ -1,6 +1,84 @@
 import { expect, test } from "@playwright/test";
-import type { RunsListOutput, ThreadMessagePage, ThreadSnapshot } from "@rakazo/contracts";
+import type {
+  DelegatedApproval,
+  RunsListOutput,
+  ThreadMessagePage,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+
+test("the dispatch chat approves the executing Bot's original action", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await signup(page, `delegated-${Date.now()}@example.test`, "password12", "Approval fixture");
+  await completeOnboarding(page);
+  const source = activeBotId(page);
+  const worker = await rpc<{ id: string }>(page, "bots/create", {
+    name: "Reviewer",
+    title: "",
+    description: "",
+    instructions: "",
+    notifyOnFinish: false,
+  });
+  await rpc(page, "approvalRules/set", {
+    effect: "require_approval",
+    matchKind: "connector",
+    matchValue: "destination.write",
+  });
+  await rpc(page, "threads/send", {
+    botId: source,
+    text: "message the bot named Reviewer saying write this to the destination crm",
+  });
+  const card = page.getByTestId("delegated-approval");
+  await expect(card.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 35_000 });
+  await expect(card.getByText("Reviewer", { exact: true })).toBeVisible();
+  const dispatch = card.locator("xpath=ancestor::*[@data-message-id][1]");
+  const dispatchMessageId = (await dispatch.getAttribute("data-message-id"))!;
+  const [pending] = await rpc<DelegatedApproval[]>(page, "threads/delegatedApprovals", {
+    botId: source,
+    dispatchMessageIds: [dispatchMessageId],
+  });
+  expect(pending).toMatchObject({ state: "pending", botId: worker.id });
+  const workerThread = await rpc<ThreadSnapshot>(page, "threads/get", { botId: worker.id });
+  const ask = workerThread.messages.find((message) => message.id === pending?.messageId);
+  expect(ask?.blocks).toContainEqual(pending?.block);
+  const receipt = card.getByRole("link", { name: "View result" });
+  await expect(receipt).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "delegated-approval-pending");
+  await card.getByRole("button", { name: "Allow once" }).click();
+  await expect(card.getByText("Allowed once", { exact: true })).toBeVisible();
+  await expect(receipt).toHaveAttribute("href", /^https:\/\/example\.test\/records\/rec-\d+$/, {
+    timeout: 35_000,
+  });
+  await expect(page.getByTestId("transcript").getByText(/Here's what Reviewer found:/)).toBeVisible(
+    { timeout: 30_000 },
+  );
+  await expect(page.getByRole("button", { name: "Allow once" })).toHaveCount(0);
+  expect(activeBotId(page)).toBe(source);
+  await expect(
+    rpc(page, "threads/answer", {
+      botId: worker.id,
+      runId: pending!.runId,
+      messageId: pending!.messageId,
+      answer: "allow",
+    }),
+  ).resolves.toEqual({ ok: true });
+  await captureScreenshot(page, testInfo, "delegated-approval-receipt");
+  await page.reload();
+  await expect(receipt).toBeVisible();
+  await expect(card.getByRole("button", { name: "Allow once" })).toHaveCount(0);
+  const [settled] = await rpc<DelegatedApproval[]>(page, "threads/delegatedApprovals", {
+    botId: source,
+    dispatchMessageIds: [dispatchMessageId],
+  });
+  expect(settled).toMatchObject({
+    runId: pending?.runId,
+    effectId: pending?.effectId,
+    state: "succeeded",
+  });
+});
 
 test("peer sources open a live exchange inside the same chat shell", async ({ page }, testInfo) => {
   const browserErrors: string[] = [];

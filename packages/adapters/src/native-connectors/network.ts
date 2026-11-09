@@ -49,7 +49,11 @@ export function createNativeFetch(
   };
   let closed = false;
   const fetch: SafeRemoteFetch = Object.assign(
-    async (input: string | URL | Request, init?: RequestInit) => {
+    async (
+      input: string | URL | Request,
+      init?: RequestInit,
+      beforeDispatch?: () => Promise<void>,
+    ) => {
       if (closed) throw new Error("Native connector transport is closed");
       const signal = combineSignals(init?.signal ?? undefined, AbortSignal.timeout(timeoutMs));
       signal.throwIfAborted();
@@ -70,7 +74,10 @@ export function createNativeFetch(
       );
       transports.set(transport, undefined);
       try {
-        const response = await nativeAbortable(transport(input, { ...init, signal }), signal);
+        const response = await nativeAbortable(
+          transport(input, { ...init, signal }, beforeDispatch),
+          signal,
+        );
         // close() drains this request without blocking the caller's body reader.
         void drain(transport);
         return response;

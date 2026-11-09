@@ -576,6 +576,7 @@ export class ComposioConnector implements ComposioProvider {
 
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
     const executed = [];
+    let dispatchStarted = false;
     try {
       call = { ...call, args: await this.resolveAccountArgs(call, context) };
       const connections = connectedComposioConnections(context);
@@ -600,6 +601,9 @@ export class ComposioConnector implements ComposioProvider {
       const session = await this.sessionForExecute(context.userId, connections, selectedAccountIds);
       const planned = expandComposioMultiExecute(call.tool, call.args ?? {});
       for (const item of planned) {
+        await call.beforeDispatch?.();
+        context.signal.throwIfAborted();
+        dispatchStarted = true;
         const result = await session.execute(
           item.tool,
           item.args,
@@ -610,6 +614,7 @@ export class ComposioConnector implements ComposioProvider {
           yield {
             type: "error",
             message: sanitizeComposioError(composioResultError(result.error, result.data)),
+            ...(call.beforeDispatch && executed.length > 0 ? { uncertain: true } : {}),
             ...(logIds.length > 0 ? { logIds } : {}),
           };
           return;
@@ -635,6 +640,7 @@ export class ComposioConnector implements ComposioProvider {
       yield {
         type: "error",
         message: sanitizeComposioError(error),
+        ...(call.beforeDispatch && dispatchStarted ? { uncertain: true } : {}),
         ...(logIds.length > 0 ? { logIds } : {}),
       };
     }

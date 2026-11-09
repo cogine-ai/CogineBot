@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { MessageBlock } from "@rakazo/contracts";
+import type { DelegatedApproval, MessageBlock } from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act, createElement, forwardRef, useEffect, useImperativeHandle } from "react";
 import type { Root } from "react-dom/client";
@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn(), setParams: vi.fn() },
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
   params: { botId: "bot-a", spaceId: "space-a", name: "Writer", readOnly: "1" },
+  approvals: [] as DelegatedApproval[],
   block: {
     kind: "bot_message_sent",
     toBotId: "bot-b",
@@ -42,6 +43,10 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     rpc: state.rpc,
+    subscribeThread: async (...[, , , signal]: Parameters<typeof Api.subscribeThread>) =>
+      new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      ),
     currentApiBase: () => "https://api.example.test",
     currentApiBaseGeneration: () => 0,
     currentSpaceSelectionGeneration: () => 0,
@@ -260,6 +265,8 @@ let container: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
+  state.params.readOnly = "1";
+  state.approvals = [];
   state.router.push.mockReset();
   state.block = {
     kind: "bot_message_sent",
@@ -298,6 +305,15 @@ beforeEach(() => {
         { id: "bot-b", spaceId: "space-a", name: "Research", color: "green" },
       ];
     if (procedure === "voice/status") return { ready: false, transcribe: false };
+    if (procedure === "threads/delegatedApprovals") return state.approvals;
+    if (procedure === "threads/answerDelegatedApproval") {
+      state.approvals = state.approvals.map((card) => ({
+        ...card,
+        state: "allowed",
+        block: { ...card.block, status: "answered", answer: "allow" },
+      }));
+      return { ok: true };
+    }
     return [];
   });
   container = document.createElement("div");
@@ -316,6 +332,62 @@ it("shows stopped automatic collaboration on the actual sender receipt without r
   expect(container.textContent).toContain("Messaged Research");
   expect(container.textContent).toContain("Automatic collaboration stopped");
   expect(container.textContent).not.toContain("Private peer body");
+});
+
+it("answers the executing Bot's original approval using the native card", async () => {
+  state.params.readOnly = "0";
+  state.block = {
+    kind: "bot_message_sent",
+    toBotId: "bot-b",
+    toBotName: "Research",
+    text: "Peer request",
+    intent: "request",
+    deliveryStatus: "waiting_peer",
+  };
+  state.approvals = [
+    {
+      botId: "bot-b",
+      botName: "Research",
+      dispatchMessageId: "message-a",
+      runId: "run-b",
+      messageId: "message-b",
+      effectId: "effect-b",
+      state: "pending",
+      block: {
+        kind: "ask",
+        text: "Review before sending",
+        detail: "Reviewed action",
+        approvalEffectId: "effect-b",
+        status: "pending",
+        approvalScope: "connector_batch",
+        actions: [
+          { id: "allow", label: "Allow once" },
+          { id: "always", label: "Always allow these actions" },
+          { id: "deny", label: "Deny" },
+        ],
+      },
+    },
+  ];
+  await act(async () => root.render(<ThreadRoute />));
+  expect(container.textContent).toContain("Reviewed action");
+  expect(container.textContent).toContain("Always allow these actions");
+  const allow = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Allow once",
+  );
+  expect(allow).toBeDefined();
+  await act(async () => allow?.click());
+  expect(state.rpc).toHaveBeenCalledWith("threads/answerDelegatedApproval", {
+    botId: "bot-a",
+    dispatchMessageId: "message-a",
+    runId: "run-b",
+    messageId: "message-b",
+    effectId: "effect-b",
+    action: "allow",
+    clientNonce: expect.any(String),
+  });
+  expect(container.textContent).toContain("Allowed once");
+  expect(container.textContent).not.toContain("Action completed");
+  expect(state.rpc.mock.calls.some(([procedure]) => procedure === "threads/answer")).toBe(false);
 });
 
 it.each([

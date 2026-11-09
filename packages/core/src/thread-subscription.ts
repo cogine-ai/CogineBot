@@ -15,6 +15,7 @@ export async function runThreadSubscription(options: {
   currentSnapshot: () => ThreadHead | null;
   subscribe: (cursor: number) => Promise<AsyncIterable<ProductEvent>>;
   beforeEvent?: (event: ProductEvent) => void;
+  onHeartbeat?: () => void;
   applyEvent: (event: ProductEvent) => void;
   onEvent: (event: ProductEvent, initial: ThreadHead) => void;
   onStatus?: (status: "loading" | "recovering" | "ready", error?: unknown) => void;
@@ -192,7 +193,10 @@ export async function runThreadSubscription(options: {
           reportReady();
           if (signal.aborted) return;
           // Heartbeats only prove the socket is alive; they carry no state and no cursor.
-          if (event.type === "heartbeat") continue;
+          if (event.type === "heartbeat") {
+            options.onHeartbeat?.();
+            continue;
+          }
           if (
             tracksCursor &&
             (event.threadId !== head.threadId ||

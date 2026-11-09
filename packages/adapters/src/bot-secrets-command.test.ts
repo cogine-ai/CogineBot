@@ -426,7 +426,7 @@ describe("shell command environment", () => {
         context,
       ))
         events.push(event);
-      expect(events).toEqual([{ type: "exit", code: 0 }]);
+      expect(events).toEqual([{ type: "exit", code: 0, terminalStateVerified: true }]);
       await desktop.destroy(computer, context);
     } finally {
       vi.unstubAllEnvs();

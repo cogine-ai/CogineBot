@@ -544,6 +544,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
             network: this.options.network,
             signal: context.signal,
             readOnly: action.readOnly,
+            beforeDispatch: call.beforeDispatch,
             allowPrivateEndpoint,
             headers:
               bound.config.appId === "notion"
@@ -585,6 +586,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           async () => (await credential()).value,
           context.signal,
           this.options.network,
+          call.beforeDispatch,
         );
       if (isMicrosoftApp(bound.config.appId))
         graphDownloads = new NativeGraphFileDownloads(
@@ -625,6 +627,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
               context.userId,
               this.options.allowPrivateEndpoint ?? false,
             ),
+            call.beforeDispatch,
           );
         },
         readArtifact: async (id) => {
@@ -669,6 +672,7 @@ export class NativeConnectorProvider implements ManagedConnectorProvider {
           });
         },
       };
+      await call.beforeDispatch?.();
       yield {
         type: "result",
         data: redactConnectorPayload(await action.execute(call.args, actionContext), redactions),

@@ -1,5 +1,11 @@
 import { createServer } from "node:http";
-import { FileNotFoundError, Sandbox, SandboxNotFoundError, TimeoutError } from "@e2b/desktop";
+import {
+  CommandExitError,
+  FileNotFoundError,
+  Sandbox,
+  SandboxNotFoundError,
+  TimeoutError,
+} from "@e2b/desktop";
 import { describe, expect, it, vi } from "vitest";
 import { cancelComputerRunWorkArgv } from "./computer-idle.js";
 import { shouldSkipPortableWorkspaceFile } from "./computer-workspace.js";
@@ -466,7 +472,13 @@ describe("E2B computer backend", () => {
     async (state) => {
       await withRetainedE2BServer({ state }, async (requests, backend) => {
         const events = await runCancellation(backend);
-        expect(events).toEqual([{ type: "exit", code: 0 }]);
+        expect(events).toEqual([
+          {
+            type: "exit",
+            code: 0,
+            ...(state === "running" ? { terminalStateVerified: true } : {}),
+          },
+        ]);
         const paths = requests.map(({ method, path }) => `${method} ${path}`);
         if (state === "running") {
           expect(paths).toEqual(["GET /sandboxes/existing", "POST /process.Process/Start"]);
@@ -651,26 +663,54 @@ describe("E2B computer backend", () => {
     });
   });
 
-  it("removes inherited variables after the command environment overlay", async () => {
-    const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+  it.each([0, undefined])(
+    "removes inherited variables and preserves the reported exit state %s",
+    async (exitCode) => {
+      const run = vi.fn(async () => ({ stdout: "", stderr: "", exitCode }));
+      const provider = new E2BSandboxProvider("test-key", {
+        connect: vi.fn(async () => ({
+          sandboxId: "existing",
+          commands: { run },
+        })),
+      } as unknown as E2BSandboxSdk);
+      const events = [];
+      for await (const event of provider.execute(
+        { id: "existing", providerRef: "existing", kind: "e2b", botId: "bot" },
+        { argv: ["true"], env: { FAILED: "fake-space" }, unsetEnv: ["FAILED"] },
+        context,
+      ))
+        events.push(event);
+      expect(events).toEqual([
+        {
+          type: "exit",
+          code: 0,
+          ...(exitCode === undefined ? {} : { terminalStateVerified: true }),
+        },
+      ]);
+      expect(run).toHaveBeenCalledWith(
+        "'env' '-u' 'FAILED' '--' 'true'",
+        expect.objectContaining({ envs: { FAILED: "fake-space" } }),
+      );
+    },
+  );
+
+  it("preserves a verified exit from the SDK error channel", async () => {
+    const error = new CommandExitError({ exitCode: 2, stdout: "", stderr: "failed" });
     const provider = new E2BSandboxProvider("test-key", {
       connect: vi.fn(async () => ({
         sandboxId: "existing",
-        commands: { run },
+        commands: { run: vi.fn().mockRejectedValue(error) },
       })),
     } as unknown as E2BSandboxSdk);
-    const events = [];
-    for await (const event of provider.execute(
+    const result = provider.execute(
       { id: "existing", providerRef: "existing", kind: "e2b", botId: "bot" },
-      { argv: ["true"], env: { FAILED: "fake-space" }, unsetEnv: ["FAILED"] },
+      { argv: ["false"] },
       context,
-    ))
-      events.push(event);
-    expect(events).toEqual([{ type: "exit", code: 0 }]);
-    expect(run).toHaveBeenCalledWith(
-      "'env' '-u' 'FAILED' '--' 'true'",
-      expect.objectContaining({ envs: { FAILED: "fake-space" } }),
     );
+    await expect(result[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      exitCode: 2,
+      cause: error,
+    });
   });
 
   it("revokes an extra display's control without starting or waiting for its view", async () => {

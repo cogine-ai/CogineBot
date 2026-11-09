@@ -1,4 +1,5 @@
 import type { AgentToolExecutionResult } from "@rakazo/adapter-kit";
+import type { ApprovalReceipt } from "@rakazo/contracts";
 import type { ApprovalBatchResolutionContext, Prisma } from "@rakazo/db";
 import { COMPOSIO_MULTI_EXECUTE_TOOL, connectorBatchActionNames } from "./composio-batch.js";
 import { catalogIdForRoute } from "./lazy-tool-catalog.js";
@@ -535,19 +536,105 @@ export async function completeExternalEffect(
     externalEffect: {
       updateMany: (args: {
         where: { id: string; status: string };
-        data: { status: string; result: never };
+        data: { status: string; result: never; approvalReceipt?: ApprovalReceipt };
       }) => Promise<{ count: number }>;
     };
   },
   effectId: string,
   expectedStatus: "intended" | "executing",
   result: unknown,
+  approvalReceipt?: ApprovalReceipt,
 ): Promise<boolean> {
   const completed = await store.externalEffect.updateMany({
     where: { id: effectId, status: expectedStatus },
-    data: { status: "completed", result: result as never },
+    data: {
+      status: "completed",
+      result: result as never,
+      ...(approvalReceipt ? { approvalReceipt } : {}),
+    },
   });
   return completed.count === 1;
+}
+
+/** Translate the executed tool's receipt without changing the replayed tool result. */
+export function approvedActionReceipt(
+  result: unknown,
+  outcome?: "result" | "error",
+): ApprovalReceipt {
+  const bodies: Record<string, unknown>[] = [];
+  const pending = [result];
+  for (const value of pending) {
+    if (pending.length > 512) return { state: "unknown" };
+    if (Array.isArray(value)) {
+      if (value.length > 512 - pending.length) return { state: "unknown" };
+      pending.push(...value);
+    } else if (value && typeof value === "object") {
+      const body = value as Record<string, unknown>;
+      bodies.push(body);
+      for (const key of [
+        "data",
+        "structuredContent",
+        "results",
+        "response",
+        "issue",
+        "comment",
+        "link",
+        "file",
+        "event",
+      ]) {
+        if (body[key] && typeof body[key] === "object") pending.push(body[key]);
+      }
+    }
+  }
+  if (
+    bodies.some(
+      (body) =>
+        body.uncertain === true ||
+        body.deliveryVerified === false ||
+        body.terminalStateVerified === false ||
+        body.write_outcome === "accepted" ||
+        body.write_outcome === "partial" ||
+        body.outcome === "partial" ||
+        (body.accepted === true && body.write_outcome !== "confirmed") ||
+        body.status === 202,
+    )
+  )
+    return { state: "unknown" };
+  if (
+    outcome === "error" ||
+    bodies.some(
+      (body) =>
+        body.error ||
+        body.isError === true ||
+        body.ok === false ||
+        body.success === false ||
+        body.successful === false ||
+        (Array.isArray(body.errors) && body.errors.length > 0),
+    )
+  )
+    return { state: "failed" };
+  if (bodies.some((body) => body.truncated === true)) return { state: "unknown" };
+  const succeeded =
+    outcome === "result" ||
+    bodies.some((body) => body?.ok === true || body?.success === true || body?.successful === true);
+  if (!succeeded) return { state: "unknown" };
+  const links = new Set<string>();
+  for (const body of bodies) {
+    const href =
+      body.permalink ??
+      body.html_url ??
+      body.htmlLink ??
+      body.webUrl ??
+      body.web_url ??
+      body.webViewLink ??
+      body.url;
+    if (typeof href !== "string") continue;
+    const url = URL.parse(href);
+    // A receipt link may be shown in chat. Omit embedded auth and signed parameters.
+    if (url?.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash)
+      links.add(url.href);
+  }
+  return links.size === 1 ? { state: "succeeded", url: [...links][0] } : { state: "succeeded" };
 }
 
 export async function replaceCompletedExternalEffectResult(

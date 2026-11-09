@@ -35,6 +35,7 @@ export class NativeSlackFileTransfers {
     private readonly token: () => Promise<string>,
     private readonly signal: AbortSignal,
     network: RemoteTransportDependencies = {},
+    private readonly beforeDispatch?: () => Promise<void>,
   ) {
     this.fetch = createNativeFetch(network);
   }
@@ -57,12 +58,16 @@ export class NativeSlackFileTransfers {
     await this.token();
     let response: Response;
     try {
-      response = await this.fetch(url, {
-        method: "POST",
-        headers: { "content-type": input.contentType },
-        body: input.bytes as BodyInit,
-        signal: combineSignals(this.signal, AbortSignal.timeout(30_000)),
-      });
+      response = await this.fetch(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": input.contentType },
+          body: input.bytes as BodyInit,
+          signal: combineSignals(this.signal, AbortSignal.timeout(30_000)),
+        },
+        this.beforeDispatch,
+      );
     } catch {
       throw new NativeActionError("result_unknown", "File upload acknowledgement unavailable.", {
         uncertain: true,

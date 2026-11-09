@@ -1,4 +1,5 @@
 import type {
+  AgentHomeStore,
   AgentRunRequest,
   AgentRuntime,
   AutoReviewProvider,
@@ -9,7 +10,11 @@ import type {
   SandboxProvider,
   WebProvider,
 } from "@rakazo/adapter-kit";
-import { MEMORY_REVISION_CONFLICT_ERROR, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
+import {
+  MEMORY_REVISION_CONFLICT_ERROR,
+  SandboxCommandExitError,
+  SecretStoreUnavailableError,
+} from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
@@ -119,6 +124,7 @@ function fixture({
   outsideSteering = false,
   webProvider,
   sandboxProvider,
+  home,
   messagingIdentity = false,
   startedAt = null,
 }: {
@@ -153,6 +159,7 @@ function fixture({
   outsideSteering?: boolean;
   webProvider?: WebProvider;
   sandboxProvider?: Partial<SandboxProvider>;
+  home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
   startedAt?: Date | null;
 } = {}) {
@@ -444,6 +451,7 @@ function fixture({
   );
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   const append = vi.fn(async (_event: Parameters<ThreadEvents["append"]>[0]) => undefined);
+  const notifyDelegatedApprovalParent = vi.fn(async (_runId: string) => undefined);
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
@@ -493,6 +501,7 @@ function fixture({
       execute,
     },
     sandbox: sandboxProvider ?? { describe: () => ({ capabilities: { graphical: false } }) },
+    home,
     memory: {
       read: async (request: { scope: string; path?: string }) => {
         const documents =
@@ -520,6 +529,7 @@ function fixture({
     memoryProviders: { resolve: async () => null },
     events: {
       append,
+      notifyDelegatedApprovalParent,
       claimSteering: vi.fn(async () => steering),
       notify: vi.fn(async () => undefined),
       pauseRunForInput,
@@ -542,6 +552,7 @@ function fixture({
     runRecord: run,
     finalizeRun,
     append,
+    notifyDelegatedApprovalParent,
     runtimeRun,
     effects,
     results,
@@ -577,6 +588,142 @@ function fixture({
     },
   };
 }
+
+describe("delegated shell approval receipts", () => {
+  it.each([
+    { code: 0, receipt: "succeeded" },
+    { code: 2, receipt: "failed" },
+    { code: undefined, receipt: "unknown" },
+    { code: 0, unverified: true, receipt: "unknown" },
+    { code: 1, unverified: true, receipt: "unknown" },
+    { code: 130, unverified: true, receipt: "unknown" },
+    { code: 0, running: true, receipt: "succeeded" },
+    { code: 2, running: true, receipt: "failed" },
+    { code: 0, running: true, unverified: true, receipt: "unknown" },
+    { code: 2, reportedError: true, receipt: "failed" },
+  ])(
+    "records $receipt for shell result %j",
+    async ({ code, receipt, unverified, running, reportedError }) => {
+      let releaseExit!: () => void;
+      const exit = new Promise<void>((resolve) => {
+        releaseExit = resolve;
+      });
+      const execute = vi.fn<SandboxProvider["execute"]>(async function* () {
+        if (reportedError && code !== undefined) {
+          throw new SandboxCommandExitError(code, new Error("command exited"));
+        }
+        yield { type: "stdout", data: "fixture" };
+        if (running) await exit;
+        if (code !== undefined)
+          yield {
+            type: "exit",
+            code,
+            ...(unverified ? {} : { terminalStateVerified: true }),
+          };
+      });
+      const f = fixture({
+        name: "shell",
+        builtin: true,
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "shell" }],
+        home: { commit: async () => "fixture-revision" },
+        sandboxProvider: {
+          describe: () => ({
+            id: "desktop",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: {
+              graphical: false,
+              pty: true,
+              snapshots: false,
+              takeover: false,
+              persistentHome: true,
+            },
+          }),
+          execute,
+          async *exportWorkspace() {
+            yield* [];
+          },
+        },
+      });
+      const admit = vi
+        .spyOn(DbModule, "authorizeCollaborationRunStart")
+        .mockResolvedValue({ allowed: true, notices: [] });
+      Object.assign(f.runRecord, { origin: "bot_peer" });
+      Object.assign(f.prisma, { computer: { updateMany: vi.fn(async () => ({ count: 1 })) } });
+      const args = { command: "printf fixture" };
+      f.setCalls([{ args, executionId: "first" }]);
+      try {
+        await f.run();
+        expect(execute).not.toHaveBeenCalled();
+        const effect = f.effects.find((entry) => entry.kind === "shell");
+        expect(effect).toMatchObject({ status: "intended", request: args });
+        effect!.status = "approved";
+        f.setCalls([{ args, executionId: "approved" }]);
+        if (running) vi.useFakeTimers();
+        const execution = reportedError
+          ? (async () => {
+              f.runRecord.status = "queued";
+              await f.executor.continueRun(f.runRecord.id, "worker-1");
+              expect(f.finalizeRun).toHaveBeenCalledWith(
+                expect.objectContaining({ outcome: "failed", error: "command exited" }),
+              );
+              f.finalizeRun.mockClear();
+            })()
+          : f.run();
+        if (running) await vi.advanceTimersByTimeAsync(1_001);
+        await execution;
+        expect(execute).toHaveBeenCalledOnce();
+        const modelResult = reportedError
+          ? { error: "command exited" }
+          : { code: running ? null : (code ?? 0), stdout: "fixture", stderr: "" };
+        if (running) {
+          expect(effect).toMatchObject({
+            status: "completed",
+            result: { ...modelResult, running: true },
+            approvalReceipt: { state: "unknown" },
+          });
+          releaseExit();
+          await vi.waitFor(() =>
+            expect(f.append).toHaveBeenCalledWith(
+              expect.objectContaining({
+                type: "computer.command",
+                payload: expect.objectContaining({ status: "done", exitCode: code }),
+              }),
+            ),
+          );
+          await vi.waitFor(() =>
+            expect(effect).toMatchObject({ approvalReceipt: { state: receipt } }),
+          );
+          if (unverified) {
+            expect(f.prisma.externalEffect.updateMany).not.toHaveBeenCalledWith(
+              expect.objectContaining({
+                where: expect.objectContaining({ approvalReceipt: expect.anything() }),
+              }),
+            );
+          }
+        }
+        expect(effect).toMatchObject({
+          status: "completed",
+          result: modelResult,
+          approvalReceipt: { state: receipt },
+        });
+        if (running && !unverified) {
+          expect(f.notifyDelegatedApprovalParent).toHaveBeenCalledExactlyOnceWith(f.runRecord.id);
+        } else {
+          expect(f.notifyDelegatedApprovalParent).not.toHaveBeenCalled();
+        }
+        f.setCalls([{ args, executionId: "replay" }]);
+        await f.run();
+        expect(f.results.at(-1)).toMatchObject(modelResult);
+        expect(execute).toHaveBeenCalledOnce();
+      } finally {
+        releaseExit();
+        if (running) vi.useRealTimers();
+        admit.mockRestore();
+      }
+    },
+  );
+});
 
 describe("bound agent connection approval", () => {
   const name = "respond_agent_connection";

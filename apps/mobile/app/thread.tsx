@@ -1,14 +1,20 @@
 import type { MenuAction } from "@expo/ui/community/menu";
+import { useDelegatedApprovals } from "@rakazo/chat-ui/delegated-approvals";
 import { ChatMarkdown } from "@rakazo/chat-ui/native";
 import type {
   AgentSkillCatalogEntry,
   Connection,
   ConnectionCatalogItem,
+  DelegatedApproval,
   MessageBlock,
   MessageReaction,
   Routine,
 } from "@rakazo/contracts";
-import { canReactToThreadMessage, MESSAGE_REACTIONS } from "@rakazo/contracts";
+import {
+  canReactToThreadMessage,
+  DelegatedApprovalAction,
+  MESSAGE_REACTIONS,
+} from "@rakazo/contracts";
 import type { AnnouncementEvent, SlashActionId, ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
@@ -730,6 +736,7 @@ function Thread({
   const onCall = Boolean(botId) && call?.botId === botId;
   const voiceCallStarting = useRef(false);
   const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
+  const refreshDelegatedApprovals = useRef<() => void>(() => {});
   const scroll = useRef<FlatList<ThreadItem<MobileMessage>>>(null);
   const pinnedScroll = useRef<ScrollView>(null);
   const scrollBehavior = useRef(new ThreadScrollBehavior());
@@ -885,6 +892,47 @@ function Thread({
     [dismissedChoiceQuestions, userMessages],
   );
   const visibleMessages = reactionView.visibleMessages;
+  const readDelegatedApprovals = useCallback(
+    (dispatchMessageIds: string[], signal: AbortSignal) =>
+      rpc<DelegatedApproval[]>(
+        "threads/delegatedApprovals",
+        { botId, dispatchMessageIds },
+        { signal },
+      ),
+    [botId],
+  );
+  const { byDispatch: delegatedApprovals, refresh: refreshDelegated } = useDelegatedApprovals(
+    botId && !inGroup && !readOnly && !showingSaved && snap?.botId === botId
+      ? JSON.stringify([ownerUserId, sessionEpoch, spaceEpoch, snap.threadId])
+      : undefined,
+    visibleMessages,
+    readDelegatedApprovals,
+  );
+  useLayoutEffect(() => {
+    refreshDelegatedApprovals.current = refreshDelegated;
+    return () => {
+      refreshDelegatedApprovals.current = () => {};
+    };
+  }, [refreshDelegated]);
+  const answerDelegated = useCallback(
+    async (approval: DelegatedApproval, action: string) => {
+      if (!botId || readOnly || activeBotId.current !== botId) return;
+      try {
+        await rpc("threads/answerDelegatedApproval", {
+          botId,
+          dispatchMessageId: approval.dispatchMessageId,
+          runId: approval.runId,
+          messageId: approval.messageId,
+          effectId: approval.effectId,
+          action: DelegatedApprovalAction.parse(action),
+          clientNonce: newClientNonce(),
+        });
+      } finally {
+        refreshDelegatedApprovals.current();
+      }
+    },
+    [botId, readOnly],
+  );
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
   const composerRef = useRef<ThreadComposerHandle>(null);
@@ -1821,6 +1869,7 @@ function Thread({
       ) {
         try {
           liveSubscribed.current = true;
+          refreshDelegatedApprovals.current();
           await subscribeThread(
             groupId ? { groupId } : { botId: botId! },
             cursor,
@@ -1838,6 +1887,7 @@ function Thread({
               )
                 return;
               replyEventObserver.current(event);
+              if (event.type === "thread.message.updated") refreshDelegatedApprovals.current();
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
               if (
@@ -1884,6 +1934,7 @@ function Thread({
               }
             },
             abort.signal,
+            () => refreshDelegatedApprovals.current(),
           );
         } catch {
           // A full refresh reconciles visible state; the event cursor still resumes without gaps.
@@ -2707,6 +2758,8 @@ function Thread({
           onCall={onCall}
           canSpeak={canSpeak}
           canAnswer={!readOnly && message.id === answerableAskMessageId}
+          delegatedApprovals={delegatedApprovals.get(message.id)}
+          onAnswerDelegated={answerDelegated}
           highlighted={highlightedMessageId === message.id}
           separator={separatorIds.has(message.id)}
           replyAuthor={replyAuthor}
@@ -2742,6 +2795,8 @@ function Thread({
       onCall,
       canSpeak,
       answerableAskMessageId,
+      delegatedApprovals,
+      answerDelegated,
       highlightedMessageId,
       separatorIds,
       windowWidth,
@@ -3489,6 +3544,8 @@ type MessageRowProps = {
   onCall: boolean;
   canSpeak: boolean;
   canAnswer: boolean;
+  delegatedApprovals?: DelegatedApproval[];
+  onAnswerDelegated: (approval: DelegatedApproval, action: string) => Promise<void>;
   highlighted: boolean;
   separator: boolean;
   replyAuthor: string;
@@ -3518,6 +3575,8 @@ const MessageRow = memo(function MessageRow({
   onCall,
   canSpeak,
   canAnswer,
+  delegatedApprovals,
+  onAnswerDelegated,
   highlighted,
   separator,
   replyAuthor,
@@ -3844,6 +3903,54 @@ const MessageRow = memo(function MessageRow({
               </NewestPageCards.Provider>
             </ThreadReadOnlyContext.Provider>
           </MessageContextMenu>
+          {delegatedApprovals?.map((approval) => (
+            <View
+              key={approval.effectId}
+              testID="delegated-approval"
+              style={{ gap: 6, marginTop: 8 }}
+            >
+              <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+                {approval.botName}
+              </Text>
+              <ChoiceAskCard
+                ask={approval.block}
+                canAnswer={!readOnly && approval.state === "pending"}
+                onAnswer={(action) => onAnswerDelegated(approval, action)}
+              />
+              {approval.state === "inactive" && approval.block.status === "answered" ? (
+                <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+                  {t("No longer active")}
+                </Text>
+              ) : null}
+              {approval.state === "failed" ||
+              approval.state === "unknown" ||
+              (approval.state === "succeeded" && !approval.receiptUrl) ? (
+                <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+                  {approval.state === "failed"
+                    ? t("Action failed")
+                    : approval.state === "unknown"
+                      ? t("Result unconfirmed")
+                      : t("Action completed")}
+                </Text>
+              ) : null}
+              {approval.receiptUrl ? (
+                <Text
+                  accessibilityRole="link"
+                  style={{ color: tokens.foreground, fontSize: 13 }}
+                  onPress={() => void Linking.openURL(approval.receiptUrl!).catch(() => undefined)}
+                >
+                  {t("View result")}
+                </Text>
+              ) : null}
+              <Text
+                accessibilityRole="link"
+                style={{ color: tokens.mutedForeground, fontSize: 13 }}
+                onPress={() => actions.openBot(approval.botId, approval.botName)}
+              >
+                {t("View execution chat")}
+              </Text>
+            </View>
+          ))}
           {messageReactions ? (
             <View
               style={{
@@ -4248,72 +4355,12 @@ const MessageBubble = memo(function MessageBubble({
   if (askBlock?.kind === "ask" && askBlock.actions?.length) {
     return (
       <View style={{ gap: 8, width: "100%" }}>
-        <View
-          style={{
-            width: "90%",
-            borderRadius: 18,
-            borderWidth: 1,
-            borderColor: tokens.border,
-            backgroundColor: tokens.card,
-            paddingHorizontal: 16,
-            paddingVertical: 14,
-          }}
-        >
-          {askBlock.text ? (
-            <Text
-              {...actionProps}
-              style={{ color: tokens.foreground, fontSize: 15.5, lineHeight: 23 }}
-            >
-              {askBlock.text}
-            </Text>
-          ) : null}
-          {askBlock.detail ? (
-            <Text
-              {...(askBlock.text ? {} : actionProps)}
-              style={{
-                color: tokens.mutedForeground,
-                marginTop: askBlock.text ? 8 : 0,
-                fontSize: 12.5,
-                fontFamily: "Menlo",
-                lineHeight: 20,
-              }}
-            >
-              {askBlock.detail}
-            </Text>
-          ) : null}
-          {askBlock.status === "answered" ? (
-            <Text
-              {...actionProps}
-              style={{
-                color: tokens.success,
-                marginTop: 12,
-                fontSize: 13.5,
-                fontWeight: "600",
-              }}
-            >
-              {formatApprovalAnswer(
-                askBlock.answer,
-                askBlock.actions,
-                isApprovalAskBlock(askBlock),
-              )}
-            </Text>
-          ) : canAnswer && onAnswer ? (
-            <AskActions
-              site={askBlock.site}
-              actions={askBlock.actions}
-              accessibilityActions={actionProps.accessibilityActions}
-              onAccessibilityAction={actionProps.onAccessibilityAction}
-              onAnswer={(answer) => onAnswer(message, answer)}
-            />
-          ) : (
-            <Text
-              {...actionProps}
-              style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13.5 }}
-            >
-              {t("No longer active")}
-            </Text>
-          )}
-        </View>
+        <ChoiceAskCard
+          ask={askBlock}
+          canAnswer={canAnswer}
+          onAnswer={(answer) => onAnswer(message, answer)}
+          actionProps={actionProps}
+        />
         {appConnectBlocks.map((block, index) => (
           <AppConnectCard
             key={`${block.provider}-${index}`}
@@ -4689,6 +4736,84 @@ function AgentEventLabel({
         </View>
       ) : null}
     </Pressable>
+  );
+}
+
+function ChoiceAskCard({
+  ask,
+  canAnswer,
+  onAnswer,
+  actionProps,
+}: {
+  ask: Extract<MessageBlock, { kind: "ask" }>;
+  canAnswer: boolean;
+  onAnswer: (answer: string) => Promise<void>;
+  actionProps?: MessageActionProps;
+}) {
+  const tokens = useMobileTokens();
+  const { t } = useI18n();
+  const actions = ask.actions ?? [];
+  return (
+    <View
+      style={{
+        width: "90%",
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: tokens.border,
+        backgroundColor: tokens.card,
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+      }}
+    >
+      {ask.text ? (
+        <Text {...actionProps} style={{ color: tokens.foreground, fontSize: 15.5, lineHeight: 23 }}>
+          {ask.text}
+        </Text>
+      ) : null}
+      {ask.detail ? (
+        <Text
+          {...(ask.text ? {} : actionProps)}
+          style={{
+            color: tokens.mutedForeground,
+            marginTop: ask.text ? 8 : 0,
+            fontSize: 12.5,
+            fontFamily: "Menlo",
+            lineHeight: 20,
+          }}
+        >
+          {ask.detail}
+        </Text>
+      ) : null}
+      {ask.status === "answered" ? (
+        <Text
+          {...actionProps}
+          style={{
+            color: tokens.success,
+            marginTop: 12,
+            fontSize: 13.5,
+            fontWeight: "600",
+          }}
+        >
+          {formatApprovalAnswer(ask.answer, ask.actions, isApprovalAskBlock(ask))}
+        </Text>
+      ) : canAnswer ? (
+        <AskActions
+          site={ask.site}
+          approvalScope={ask.approvalScope}
+          actions={actions}
+          accessibilityActions={actionProps?.accessibilityActions}
+          onAccessibilityAction={actionProps?.onAccessibilityAction}
+          onAnswer={onAnswer}
+        />
+      ) : (
+        <Text
+          {...actionProps}
+          style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13.5 }}
+        >
+          {t("No longer active")}
+        </Text>
+      )}
+    </View>
   );
 }
 

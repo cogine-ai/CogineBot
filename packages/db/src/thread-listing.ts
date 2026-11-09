@@ -9,6 +9,7 @@ import {
   userVisibleMessages,
 } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "./client.js";
+import { findPendingAsk } from "./messages.js";
 
 /** Callers supply thread ids already resolved through their owned conversation lists/target. */
 export async function loadThreadAttention(
@@ -41,7 +42,7 @@ export async function loadThreadAttention(
         bot: { spaceId: thread.spaceId, userId: thread.userId },
       })),
     },
-    select: { id: true, threadId: true, spaceId: true, userId: true, botId: true },
+    select: { id: true, threadId: true, spaceId: true, userId: true, botId: true, origin: true },
   });
   const runs = new Map(waitingRuns.map((run) => [run.id, run]));
   const messages = await prisma.message.findMany({
@@ -63,7 +64,7 @@ export async function loadThreadAttention(
     const parsed = MessageBlockSchema.array().safeParse(message.blocks);
     return parsed.success ? [{ ...message, blocks: parsed.data }] : [];
   });
-  const asks = candidates.flatMap((message) => {
+  const candidateAsks = candidates.flatMap((message) => {
     const block = message.blocks.find(
       (candidate) => candidate.kind === "ask" && candidate.status !== "answered",
     );
@@ -80,6 +81,25 @@ export async function loadThreadAttention(
     )
       return [];
     return [{ message, run, effectId: block.approvalEffectId! }];
+  });
+  const peerRuns = new Map(
+    candidateAsks.filter(({ run }) => run.origin === "bot_peer").map(({ run }) => [run.id, run]),
+  );
+  const pendingPeerAsks = new Map(
+    await Promise.all(
+      [...peerRuns.values()].map(
+        async (run) =>
+          [
+            run.id,
+            await findPendingAsk(prisma, { threadId: run.threadId, runId: run.id }),
+          ] as const,
+      ),
+    ),
+  );
+  const asks = candidateAsks.filter(({ message, run, effectId }) => {
+    if (run.origin !== "bot_peer") return true;
+    const current = pendingPeerAsks.get(run.id);
+    return current?.messageId === message.id && current.pendingAsk.approvalEffectId === effectId;
   });
   const effects = asks.length
     ? await prisma.externalEffect.findMany({

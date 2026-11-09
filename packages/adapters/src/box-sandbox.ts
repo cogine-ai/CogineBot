@@ -67,6 +67,7 @@ interface BoxCommandResult {
   stderr: string;
   exitCode: number;
   timedOut: boolean;
+  terminalStateVerified?: true;
 }
 
 export class BoxSandboxProvider implements SandboxProvider {
@@ -283,7 +284,11 @@ export class BoxSandboxProvider implements SandboxProvider {
         return;
       }
       if (result.stderr) yield { type: "stderr", data: result.stderr };
-      yield { type: "exit", code: result.exitCode };
+      yield {
+        type: "exit",
+        code: result.exitCode,
+        ...(result.terminalStateVerified ? { terminalStateVerified: true } : {}),
+      };
     } catch (error) {
       if (context.signal.aborted || isAbortError(error)) {
         yield { type: "stderr", data: "command aborted\n" };
@@ -645,13 +650,18 @@ export class BoxSandboxProvider implements SandboxProvider {
       const result = isFinishedCommand(response)
         ? commandResponse(response)
         : await this.pollCommand(id, response.processId, timeoutMs + 10_000, signal);
-      if (result.exitCode !== 124 || result.timedOut) return result;
-      const completed = await this.rawCommand(id, `test -f ${shellQuote(marker)}`, 10);
-      if (completed.exitCode === 0) {
+      if (result.timedOut || (result.exitCode !== 124 && result.exitCode !== 137)) return result;
+      const completed = await this.rawCommand(id, `test -f ${shellQuote(marker)}`, 10).catch(
+        (error: unknown) => {
+          if (result.exitCode === 124) throw error;
+          return undefined;
+        },
+      );
+      if (completed?.exitCode === 0 && !completed.timedOut && completed.terminalStateVerified) {
         await this.rawCommand(id, `rm -f -- ${shellQuote(marker)}`, 10).catch(() => undefined);
         return result;
       }
-      return { ...result, timedOut: true };
+      return { ...result, terminalStateVerified: undefined, timedOut: result.exitCode === 124 };
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
         await this.terminateCommand(id, marker).catch(() => undefined);
@@ -679,6 +689,7 @@ export class BoxSandboxProvider implements SandboxProvider {
           stderr: status.stderr,
           exitCode: status.exitCode ?? 1,
           timedOut: false,
+          ...(Number.isInteger(status.exitCode) ? { terminalStateVerified: true } : {}),
         };
       }
       if (Date.now() >= deadline) {
@@ -791,7 +802,7 @@ function createBoxSdk(config: { apiKey: string; apiUrl?: string }): BoxSandboxSd
 function timeoutCommand(command: string, timeoutMs: number, marker: string): string {
   const seconds = Math.max(timeoutMs / 1_000, 0.001);
   const completionScript =
-    '"$@"; status=$?; if [ "$status" -eq 124 ]; then : > "$0"; fi; exit "$status"';
+    '"$@"; status=$?; case "$status" in 124|137) : > "$0";; esac; exit "$status"';
   return [
     "timeout",
     "--kill-after=1s",
@@ -818,6 +829,7 @@ function commandResponse(response: CommandResponse): BoxCommandResult {
     stderr: response.stderr,
     exitCode: response.exitCode ?? 1,
     timedOut: response.timedOut,
+    ...(Number.isInteger(response.exitCode) ? { terminalStateVerified: true } : {}),
   };
 }
 
