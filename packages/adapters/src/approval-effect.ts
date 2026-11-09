@@ -613,6 +613,7 @@ export function approvedActionReceipt(
     )
   )
     return { state: "failed" };
+  if (bodies.some((body) => body.truncated === true)) return { state: "unknown" };
   const succeeded =
     outcome === "result" ||
     bodies.some((body) => body?.ok === true || body?.success === true || body?.successful === true);

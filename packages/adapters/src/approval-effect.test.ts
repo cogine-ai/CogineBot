@@ -109,6 +109,19 @@ describe("approval execution receipts", () => {
       url,
     });
   });
+
+  it("keeps a truncated successful response unconfirmed and preserves a known failure", () => {
+    expect(
+      approvedActionReceipt({ status: 200, data: { url }, truncated: true }, "result"),
+    ).toEqual({ state: "unknown" });
+    expect(
+      approvedActionReceipt(
+        { status: 429, error: true, data: "partial", truncated: true },
+        "result",
+      ),
+    ).toEqual({ state: "failed" });
+    expect(approvedActionReceipt({ truncated: true }, "error")).toEqual({ state: "failed" });
+  });
 });
 
 describe("connectorBatchApprovalFromEffect", () => {

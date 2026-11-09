@@ -26,6 +26,7 @@ const composioSdkState = vi.hoisted(() => ({
   created: [] as Array<{ userId: string; config: Record<string, unknown> }>,
   directoryFails: false,
   executions: [] as Array<{ tool: string; args: Record<string, unknown> }>,
+  executeError: null as Error | null,
   executeResult: null as null | { data: Record<string, unknown>; error: string | null },
   failTools: null as null | string[],
   logIds: null as null | string[],
@@ -136,6 +137,7 @@ vi.mock("@composio/core", () => ({
             : [],
         execute: async (tool: string, args: Record<string, unknown>) => {
           composioSdkState.executions.push({ tool, args });
+          if (composioSdkState.executeError) throw composioSdkState.executeError;
           const failed = composioSdkState.failTools?.includes(tool) ?? false;
           return {
             ...(failed
@@ -1003,11 +1005,30 @@ describe("composio tool mapping", () => {
     expect(beforeDispatch).toHaveBeenCalledOnce();
     expect(composioSdkState.executions).toEqual([]);
     expect(events).toEqual([
-      expect.objectContaining({
-        type: "error",
-        message: "The delegated action is no longer authorized.",
-      }),
+      { type: "error", message: "The delegated action is no longer authorized." },
     ]);
+    beforeDispatch.mockResolvedValueOnce(undefined);
+    composioSdkState.executeError = new Error("connection dropped before a response");
+    const unknown: ConnectorEvent[] = [];
+    try {
+      for await (const event of connector.execute(
+        {
+          tool: "DROPBOX_CREATE_FOLDER",
+          args: { path: "/Reviewed" },
+          executionId: "peer-approval-first-response-lost",
+          beforeDispatch,
+        },
+        context,
+      ))
+        unknown.push(event);
+      expect(composioSdkState.executions).toHaveLength(1);
+      expect(unknown).toEqual([
+        { type: "error", message: "connection dropped before a response", uncertain: true },
+      ]);
+    } finally {
+      composioSdkState.executeError = null;
+      composioSdkState.executions.length = 0;
+    }
     beforeDispatch.mockResolvedValueOnce(undefined);
     const partial: ConnectorEvent[] = [];
     for await (const event of connector.execute(
