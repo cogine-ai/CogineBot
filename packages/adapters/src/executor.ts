@@ -235,9 +235,12 @@ import {
   autoReviewTimeoutMs,
   deploymentAutoReviewDefault,
   isAutoReviewCheckerConfigured,
+  MAX_REVIEW_ARGS_CHARS,
   redactToolArgsForReview,
   resolveAutoReviewChecker,
   resolveAutoReviewProviderKind,
+  reviewArgsJson,
+  TOO_LONG_TO_REVIEW,
 } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
 import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.js";
@@ -6191,6 +6194,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 checkerConfigured,
               });
           let reviewReason: string | undefined;
+          const newSite = siteGate === "new" && fetchUrl !== undefined;
+          if (plan === "judge") {
+            const rawArgsJson = reviewArgsJson(args);
+            if (rawArgsJson === undefined) {
+              // Without exact JSON there is no safe request to attach to an approval.
+              return { error: "Tool arguments must be valid JSON before requesting approval." };
+            }
+            if (rawArgsJson.length > MAX_REVIEW_ARGS_CHARS) {
+              plan = "ask";
+              reviewReason = TOO_LONG_TO_REVIEW;
+            }
+          }
           const needsApprovalEarly = plan === "ask" || plan === "judge";
           // A resumed approval keeps its key even if "Always allow" changed the policy.
           const usesApprovalKey =
@@ -6302,22 +6317,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
             try {
-              const newSite = siteGate === "new" && fetchUrl !== undefined;
-              const reviewRequest: AutoReviewRequest = {
-                toolName: name,
-                connectorKind,
-                args: redactToolArgsForReview(newSite ? { url: fetchUrl } : args, runSecrets),
-                userTask: redactSecrets(
-                  newSite || trust.state.pageInput ? await trust.loadOwnerWords() : ownerTaskPrompt,
-                  runSecrets,
-                ),
-                ...(newSite ? { newSite: true } : {}),
-                botDescription: redactSecrets(
-                  `${bot.name}: ${bot.title}\n${bot.description}`,
-                  runSecrets,
-                ),
-                matchingRules: approvalResolved.matchingRules,
-              };
+              const task =
+                newSite || trust.state.pageInput ? await trust.loadOwnerWords() : ownerTaskPrompt;
               const reviewContext: AdapterContext = {
                 operationId: `auto-review:${runId}`,
                 traceId: `auto-review:${runId}`,
@@ -6351,6 +6352,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     checker!.model,
                     (values) => runSecrets.push(...values),
                   );
+                  runSecrets.push(...judgeKey.redact);
                   provider = createAutoReviewProvider("llm", {
                     llm: {
                       onUsage: (event) =>
@@ -6395,6 +6397,35 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   });
                 }
               }
+              // Resolve checker credentials first so all currently known secrets are redacted.
+              const reviewArgs = redactToolArgsForReview(
+                newSite ? { url: fetchUrl } : args,
+                runSecrets,
+              );
+              const redactedArgsJson = reviewArgs && reviewArgsJson(reviewArgs);
+              if (
+                !reviewArgs ||
+                redactedArgsJson === undefined ||
+                redactedArgsJson.length > MAX_REVIEW_ARGS_CHARS
+              ) {
+                reviewReason = reviewArgs
+                  ? TOO_LONG_TO_REVIEW
+                  : "Tool arguments could not be shown in full.";
+                gateDecision = "ask";
+                return;
+              }
+              const reviewRequest: AutoReviewRequest = {
+                toolName: name,
+                connectorKind,
+                args: reviewArgs,
+                userTask: redactSecrets(task, runSecrets),
+                ...(newSite ? { newSite: true } : {}),
+                botDescription: redactSecrets(
+                  `${bot.name}: ${bot.title}\n${bot.description}`,
+                  runSecrets,
+                ),
+                matchingRules: approvalResolved.matchingRules,
+              };
               const judge = await provider.review(reviewRequest, reviewContext);
               if (context.signal.aborted) return;
               reviewReason = judge.reason;
@@ -6447,13 +6478,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ? applied.effect.reviewReason
                     : undefined;
                 gateDecision = "ask";
-              } else if (priorDecision === "pass") {
+              } else if (priorDecision === "pass" && applied.effect.status !== "intended") {
                 reviewReason =
                   typeof applied.effect.reviewReason === "string"
                     ? applied.effect.reviewReason
                     : undefined;
                 gateDecision = "allow";
               } else {
+                // Stored passes do not say whether the reviewer saw the full request.
                 await runAutoReview();
               }
             }

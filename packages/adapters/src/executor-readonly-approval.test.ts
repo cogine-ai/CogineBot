@@ -4826,6 +4826,106 @@ describe("connector read-only metadata and approval enforcement", () => {
       },
     );
 
+    it.each([8_000, 8_001])(
+      "reviews an action only when its complete JSON fits the budget (%s characters)",
+      async (size) => {
+        reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+        const args = { id: `${"x".repeat(size - 13)}tail` };
+        expect(JSON.stringify(args)).toHaveLength(size);
+        const f = fixture({ catalog, name: "demo_send_message", autoReview: true });
+        f.setCalls([{ args, executionId: "call-1" }]);
+        await f.run();
+        if (size === 8_000) {
+          expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ args }),
+            expect.anything(),
+          );
+          expect(f.execute).toHaveBeenCalledOnce();
+          expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        } else {
+          expect(reviewMock).not.toHaveBeenCalled();
+          expect(f.execute).not.toHaveBeenCalled();
+          expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+          expect(isApprovalPausedResult(f.results[0])).toBe(true);
+        }
+      },
+    );
+
+    it("uses the raw action budget before redacting run secrets", async () => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const secret = "secret-".repeat(1_200);
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        secrets: [secret],
+      });
+      f.setCalls([{ args: { id: secret }, executionId: "call-1" }]);
+      await f.run();
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    });
+
+    it("asks when redaction expands otherwise bounded JSON past the checker limit", async () => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        secrets: ["xyz"],
+      });
+      f.setCalls([{ args: { id: "xyz".repeat(810) }, executionId: "call-1" }]);
+      await f.run();
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { size: 1_200, reviews: 1, executes: 0 },
+      { size: 1_201, reviews: 1, executes: 0 },
+      { size: 8_001, reviews: 0, executes: 0 },
+    ])("rechecks an unfinished prior pass when needed ($size characters)", async (test) => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+      const args = { id: "x".repeat(test.size - 9) };
+      const f = fixture({ catalog, name: "demo_send_message", autoReview: true });
+      f.setCalls([{ args, executionId: "initial-call" }]);
+      await f.run();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]?.status).toBe("intended");
+      f.effects[0]!.reviewDecision = "pass";
+      reviewMock.mockClear();
+      f.pauseRunForInput.mockClear();
+
+      f.setCalls([{ args, executionId: "resumed-call" }]);
+      await f.run();
+      expect(f.effects).toHaveLength(1);
+      expect(reviewMock).toHaveBeenCalledTimes(test.reviews);
+      expect(f.execute).toHaveBeenCalledTimes(test.executes);
+      expect(f.pauseRunForInput).toHaveBeenCalledTimes(1 - test.executes);
+    });
+
+    it("asks before executing if secret redaction would merge argument keys", async () => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        secrets: ["fixture-value"],
+      });
+      f.setCalls([
+        {
+          args: { id: "item-1", "key-fixture-value": "first", "key-[redacted]": "second" },
+          executionId: "call-1",
+        },
+      ]);
+      await f.run();
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    });
+
     it("redacts run secrets from automatic review task and bot context", async () => {
       reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
       const f = fixture({
