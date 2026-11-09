@@ -3479,6 +3479,10 @@ msgstr "Модель \"{modelId}\" отсутствует в списке."
 msgid "Model id"
 msgstr "Идентификатор модели"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "Достигнут лимит модели. Работа продолжится в {time}."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "Варианты модели"
@@ -5658,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr "Ждём возвращения API…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "Ожидание готовности компьютера перед повторной попыткой."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "Ожидание в очереди…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "Ожидание продолжения"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

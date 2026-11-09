@@ -815,6 +815,7 @@ model Run {
   routineRetryAt       DateTime?
   startedAt            DateTime?
   wakeAt               DateTime?
+  quotaWait            Json?
   firstResponseAt      DateTime?
   completedAt          DateTime?
   botOutcomeReturnedAt DateTime?

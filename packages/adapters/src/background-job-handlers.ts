@@ -133,7 +133,14 @@ export function createBackgroundJobHandlers(deps: {
       await deps.nativeEvents.notionSignal(payload, new AbortController().signal);
     }),
     "run.continue": asOwner(run, async (payload, execution) => {
-      if (execution)
+      if (payload.quotaWaitRevision !== undefined)
+        await deps.executor.continueRun(
+          payload.runId,
+          deps.workerId,
+          execution?.onRunStarted,
+          payload.quotaWaitRevision,
+        );
+      else if (execution)
         await deps.executor.continueRun(payload.runId, deps.workerId, execution.onRunStarted);
       else await deps.executor.continueRun(payload.runId, deps.workerId);
       // Automatic messaging mirror: once the run's bot messages are durable,

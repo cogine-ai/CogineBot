@@ -3479,6 +3479,10 @@ msgstr "Model \"{modelId}\" was not listed."
 msgid "Model id"
 msgstr "Model id"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "Model limit reached. Resuming at {time}."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "Model options"
@@ -5658,9 +5662,18 @@ msgstr "Waiting for Notion"
 msgid "Waiting for the API to come back…"
 msgstr "Waiting for the API to come back…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "Waiting for the computer before retrying."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "Waiting in line…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "Waiting to resume"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

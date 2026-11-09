@@ -4388,6 +4388,91 @@ describe("mobile thread event reduction", () => {
     ]);
   });
 
+  it("updates and clears a quota wait without interrupting another group run", () => {
+    const other = { id: "run-a", botId: "bot-a", status: "running" };
+    const run = { id: "run-b", botId: "bot-b", status: "running" };
+    const initial: MobileSnapshot = {
+      ...snapshot([
+        { ...mobileMessage("progress:run-a", [{ kind: "progress", text: "A" }]), runId: other.id },
+        { ...mobileMessage("progress:run-b", [{ kind: "progress", text: "B" }]), runId: run.id },
+      ]),
+      groupId: "group-1",
+      run: other,
+      activeRuns: [other, run],
+    };
+    const event = {
+      type: "run.waiting_limit",
+      seq: 4,
+      runId: run.id,
+      botId: run.botId,
+      payload: { until: "2026-11-09T09:00:00.000Z" },
+    };
+    const waiting = applyMobileThreadEvent(initial, event);
+    expect(waiting?.run).toEqual(other);
+    expect(waiting?.messages.map((message) => message.id)).toEqual(["progress:run-a"]);
+    expect(waiting?.activeRuns).toMatchObject([
+      other,
+      { ...run, status: "waiting_limit", quotaWaitUntil: event.payload.until },
+    ]);
+
+    const until = "2026-11-09T10:00:00.000Z";
+    const updated = applyMobileThreadEvent(waiting, { ...event, seq: 5, payload: { until } });
+    expect(updated?.activeRuns?.[1]?.quotaWaitUntil).toBe(until);
+    const deferred = applyMobileThreadEvent(updated, {
+      ...event,
+      seq: 6,
+      payload: { until, waitingForComputer: true },
+    });
+    expect(deferred?.run).toEqual(other);
+    expect(deferred?.activeRuns?.[1]).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until,
+      quotaWaitForComputer: true,
+    });
+    const newProviderWait = applyMobileThreadEvent(deferred, { ...event, seq: 7 });
+    expect(newProviderWait?.activeRuns?.[1]?.quotaWaitForComputer).toBeUndefined();
+
+    const resumed = applyMobileThreadEvent(deferred, {
+      type: "run.started",
+      seq: 7,
+      runId: run.id,
+      botId: run.botId,
+    });
+    expect(resumed?.activeRuns).toMatchObject([other, run]);
+    expect(resumed?.activeRuns?.[1]?.quotaWaitUntil).toBeUndefined();
+    expect(resumed?.activeRuns?.[1]?.quotaWaitForComputer).toBeUndefined();
+    expect(applyMobileThreadEvent(resumed, event)).toBe(resumed);
+
+    const failed = applyMobileThreadEvent(deferred, {
+      type: "run.failed",
+      seq: 7,
+      runId: run.id,
+      botId: run.botId,
+      payload: { error: "Model unavailable" },
+    });
+    expect(failed?.run).toMatchObject({ id: run.id, status: "failed", error: "Model unavailable" });
+    expect(failed?.run?.quotaWaitForComputer).toBeUndefined();
+    expect(failed?.activeRuns).toEqual([other]);
+  });
+
+  it("keeps an actionable direct run and its supplemental quota wait", () => {
+    const ask = { id: "ask", botId: "bot-a", status: "waiting_input" };
+    const initial: MobileSnapshot = { ...snapshot([]), run: ask, activeRuns: [ask] };
+    const waiting = applyMobileThreadEvent(initial, {
+      type: "run.waiting_limit",
+      seq: 4,
+      runId: "quota",
+      botId: ask.botId,
+      payload: { until: "2026-11-09T09:00:00.000Z" },
+    });
+    expect(waiting?.run).toEqual(ask);
+    expect(waiting?.activeRuns).toMatchObject([
+      ask,
+      { id: "quota", status: "waiting_limit", quotaWaitUntil: "2026-11-09T09:00:00.000Z" },
+    ]);
+  });
+
   it("clears only the terminal run's live progress", () => {
     const runA = { id: "run-a", status: "running" };
     const runB = { id: "run-b", status: "running" };

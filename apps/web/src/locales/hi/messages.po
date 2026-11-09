@@ -3479,6 +3479,10 @@ msgstr "मॉडल \"{modelId}\" सूची में नहीं था।
 msgid "Model id"
 msgstr "मॉडल आईडी"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "मॉडल की सीमा पूरी हो गई है। {time} पर फिर शुरू होगा।"
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "मॉडल विकल्प"
@@ -5658,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr ""
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "फिर से कोशिश करने से पहले कंप्यूटर के उपलब्ध होने की प्रतीक्षा है।"
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "कतार में प्रतीक्षा…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "फिर से शुरू होने की प्रतीक्षा"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

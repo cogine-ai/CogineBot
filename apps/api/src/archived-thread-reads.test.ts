@@ -54,7 +54,7 @@ function fixture() {
     message: { findMany: findMessages },
     thread: { findMany: vi.fn(async () => []) },
     event: { findFirst: vi.fn(async () => null) },
-    run: { findFirst: vi.fn(async () => null) },
+    run: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
     $transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(prisma)),
   };
   const deps = {

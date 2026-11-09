@@ -176,7 +176,11 @@ export async function listModelConnectionReferences(
   prisma: ReferenceClient,
   userId: string,
   credentialId?: string,
+  options?: { includeQuotaWaits: boolean },
 ): Promise<ModelConnectionReference[]> {
+  const liveStatuses = ACTIVE_RUN_STATUSES.filter(
+    (status) => options?.includeQuotaWaits !== false || status !== "waiting_limit",
+  );
   const pin = { spaceId: true, modelId: true, modelCredentialId: true } as const;
   const where = {
     userId,
@@ -199,7 +203,7 @@ export async function listModelConnectionReferences(
       select: { spaceId: true, id: true, modelId: true, credentialId: true },
     }),
     prisma.run.findMany({
-      where: { ...where, status: { in: [...ACTIVE_RUN_STATUSES] } },
+      where: { ...where, status: { in: liveStatuses } },
       select: { ...pin, id: true, modelProvider: true, bot: { select: { name: true } } },
     }),
     prisma.steeringMessage.findMany({
@@ -209,7 +213,7 @@ export async function listModelConnectionReferences(
         modelId: { not: null },
         ...(credentialId ? { modelCredentialId: credentialId } : {}),
         // Claimed context can be released after recovery until the run finishes.
-        OR: [{ runId: null }, { run: { status: { in: [...ACTIVE_RUN_STATUSES] } } }],
+        OR: [{ runId: null }, { run: { status: { in: liveStatuses } } }],
       },
       select: {
         id: true,

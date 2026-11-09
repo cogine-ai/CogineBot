@@ -19,6 +19,172 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("a model quota wait survives reload and can be stopped", async ({ page }, info) => {
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.VERIFY_DATABASE).toBe("1");
+  const isolatedDatabase = process.env.VERIFY_ISOLATED_DATABASE;
+  expect(isolatedDatabase).toBeTruthy();
+  const connection = new URL(process.env.DATABASE_URL!);
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(connection.hostname);
+  expect(Number(connection.port)).toBeGreaterThan(1024);
+  expect(connection.port).not.toBe("5432");
+  expect(connection.pathname).toBe(`/${isolatedDatabase}`);
+  expect(connection.search).toBe("");
+  const { botId } = await account(page, "quota-wait");
+  const actor = await rpc<Me>(page, "me", {});
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  const { PostgresRealtimeFanout } = await import("../../../packages/adapters/src/realtime");
+  const { createDb } = await import("../../../packages/db/src/client");
+  const { appendEventInTransaction, notifyRealtime } = await import(
+    "../../../packages/db/src/events"
+  );
+  const { createThreadMessageInTransaction } = await import("../../../packages/db/src/messages");
+  const db = createDb(connection.toString(), {
+    poolMax: 2,
+    applicationName: "quota-wait-browser-fixture",
+  });
+  const realtime = new PostgresRealtimeFanout({
+    connectionString: connection.toString(),
+    publisher: db.pool,
+  });
+  try {
+    const [identity] = await db.prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT current_database() AS name
+    `;
+    expect(identity?.name).toBe(isolatedDatabase);
+    const scope = {
+      spaceId: actor.spaceId,
+      userId: actor.userId,
+      botId,
+      threadId: thread.threadId,
+    };
+    const prompt = "Summarize today's synthetic notes.";
+    const progressText = "Synthetic working copy before the wait";
+    const beganAt = new Date();
+    const until = new Date(beganAt.getTime() + 60 * 60_000);
+    // Scheduler retries can move wakeAt without changing the provider reset time.
+    const wakeAt = new Date(until.getTime() + 5 * 60_000);
+    const quotaWait = {
+      beganAt: beganAt.toISOString(),
+      until: until.toISOString(),
+      revision: 1,
+      dispatchedFence: null,
+      target: {
+        provider: "openai",
+        modelId: "fixture-model",
+        modelCredentialId: null,
+        connectionRevision: null,
+        endpointDigest: "0".repeat(64),
+        costOwner: "deployment",
+      },
+    };
+    const run = await db.prisma.$transaction(async (tx) => {
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: scope.threadId,
+        role: "user",
+        authorUserId: actor.userId,
+        blocks: [{ kind: "text", text: prompt }],
+      });
+      const task = await tx.task.create({
+        data: { ...scope, prompt, status: "running" },
+      });
+      const waiting = await tx.run.create({
+        data: {
+          ...scope,
+          taskId: task.id,
+          sourceMessageId: message.id,
+          trigger: "user",
+          status: "waiting_limit",
+          startedAt: beganAt,
+          wakeAt,
+          quotaWait,
+        },
+      });
+      await tx.message.update({ where: { id: message.id }, data: { runId: waiting.id } });
+      // A progress event from before the wait remains in the audit history only.
+      await appendEventInTransaction(tx, {
+        ...scope,
+        runId: waiting.id,
+        type: "thread.progress",
+        payload: { reset: true, activity: true, narrationStatus: true, text: progressText },
+      });
+      return waiting;
+    });
+
+    const fresh = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+    expect(fresh.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until.toISOString(),
+    });
+    expect(fresh.run).not.toHaveProperty("quotaWait");
+    expect(fresh.messages.some((message) => message.id === `progress:${run.id}`)).toBe(false);
+
+    await page.reload();
+    const wait = page.getByRole("status").filter({ hasText: "Model limit reached." });
+    await expect(wait).toHaveText(/Model limit reached\. Resuming at .*\d{1,2}:\d{2}.*\./);
+    await expect(page.getByTestId("message-user-bubble").filter({ hasText: prompt })).toBeVisible();
+    await expect(page.getByText(progressText)).toBeHidden();
+    const stop = page.getByRole("button", { name: "Stop", exact: true });
+    await expect(stop).toBeEnabled();
+    await expect(page.getByTestId("connection-status")).toBeHidden({ timeout: 30_000 });
+    await captureScreenshot(page, info, "b5-provider-quota-wait");
+
+    // Drive the computer wait through the same durable event and snapshot used by the UI.
+    const deferred = await db.prisma.$transaction(async (tx) => {
+      await tx.run.update({
+        where: { id: run.id },
+        data: { quotaWait: { ...quotaWait, waitingForComputer: true } },
+      });
+      return appendEventInTransaction(tx, {
+        ...scope,
+        runId: run.id,
+        type: "run.waiting_limit",
+        payload: { until: quotaWait.until, waitingForComputer: true },
+      });
+    });
+    await notifyRealtime(realtime, scope.threadId, deferred.seq);
+    const computerWait = page.getByRole("status").filter({
+      hasText: "Waiting for the computer before retrying.",
+    });
+    await expect(computerWait).toBeVisible();
+    await expect(wait).toBeHidden();
+    await expect(stop).toBeEnabled();
+
+    const deferredSnapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+    expect(deferredSnapshot.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until.toISOString(),
+      quotaWaitForComputer: true,
+    });
+    expect(deferredSnapshot.run).not.toHaveProperty("quotaWait");
+    await captureScreenshot(page, info, "b5-provider-quota-computer-wait");
+
+    await page.reload();
+    await expect(computerWait).toBeVisible();
+    await expect(wait).toBeHidden();
+    await expect(stop).toBeEnabled();
+    await stop.click();
+    await expect(computerWait).toBeHidden();
+    await expect
+      .poll(async () => {
+        const row = await db.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
+        return row.status;
+      })
+      .toBe("cancelled");
+    const stopped = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+    expect(stopped.run?.status).not.toBe("waiting_limit");
+    expect(stopped.run?.quotaWaitUntil).toBeUndefined();
+    expect(stopped.run?.quotaWaitForComputer).toBeUndefined();
+  } finally {
+    await realtime.close();
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+});
+
 test("an unseen stored failure keeps cleaned diagnostics beyond 300 characters after reload", async ({
   page,
   context,

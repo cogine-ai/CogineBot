@@ -8,6 +8,7 @@ import {
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
   type ProductEvent,
+  runQuotaWaitStateSchema,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   SharedPageUpdateRequestSchema,
   sharedPageUpdateApprovalTitle,
@@ -21,6 +22,7 @@ import {
   isCallClientNonce,
   isConversationalRun,
   isSecretAskBlock,
+  messageBypassesQuotaWait,
   messageBypassesTakeoverWait,
   messageReaction,
   messagingChannelId,
@@ -30,6 +32,7 @@ import {
   SITE_SENDING_TOOLS,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
+  THREAD_HIDDEN_RUN_TRIGGERS,
 } from "@rakazo/core";
 import { urlSite } from "@rakazo/core/egress";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
@@ -355,7 +358,7 @@ export async function clearThread(
         spaceId: input.spaceId,
         threadId: input.threadId,
         ...(input.groupId ? {} : { botId: input.botId }),
-        status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+        status: { in: [...ACTIVE_RUN_STATUSES] },
       },
       select: { id: true, taskId: true },
     });
@@ -544,19 +547,23 @@ export async function sendUserMessage(
               where: {
                 threadId: input.threadId,
                 botId: input.botId,
-                status: {
-                  in: ["running", "queued", "leased", "waiting_input", "waiting_takeover"],
-                },
+                status: { in: [...ACTIVE_RUN_STATUSES] },
               },
               select: { id: true, taskId: true, trigger: true, status: true },
             })
           : [];
       const holdingRuns = activeRuns.filter(
-        (run) => !messageBypassesTakeoverWait(run, input.trigger !== "webhook"),
+        (run) =>
+          !messageBypassesQuotaWait(run) &&
+          !messageBypassesTakeoverWait(run, input.trigger !== "webhook"),
       );
       // Steer a conversational run when there is one; a routine, webhook, or intro turn only holds the queue.
       const busy =
-        holdingRuns.find((run) => isConversationalRun(run.trigger)) ?? holdingRuns[0] ?? null;
+        holdingRuns.find(
+          (run) => run.status !== "waiting_limit" && isConversationalRun(run.trigger),
+        ) ??
+        holdingRuns[0] ??
+        null;
       let task = null;
       let run = null;
       if (createRun && !busy) {
@@ -597,7 +604,7 @@ export async function sendUserMessage(
           await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
         }
       } else if (createRun && busy) {
-        const held = !isConversationalRun(busy.trigger);
+        const held = busy.status === "waiting_limit" || !isConversationalRun(busy.trigger);
         await tx.steeringMessage.create({
           data: {
             messageId: message.id,
@@ -837,7 +844,7 @@ async function commitAnswerRunInput(
       threadId: input.threadId,
       status: "waiting_input",
     },
-    select: { botId: true, userId: true, checkpoint: true },
+    select: { botId: true, userId: true, checkpoint: true, quotaWait: true },
   });
   if (!run) return null;
   const message = await tx.message.findFirst({
@@ -924,6 +931,8 @@ async function commitAnswerRunInput(
     }
   }
 
+  const quotaWait =
+    run.quotaWait == null ? undefined : runQuotaWaitStateSchema.safeParse(run.quotaWait).data;
   const queued = await tx.run.updateMany({
     where: {
       id: input.runId,
@@ -935,6 +944,9 @@ async function commitAnswerRunInput(
       status: "queued",
       wakeAt: new Date(),
       ...(choiceAsk ? { checkpoint: null } : {}),
+      ...(quotaWait && quotaWait.dispatchedFence !== null
+        ? { quotaWait: { ...quotaWait, humanResume: "input" } }
+        : {}),
     },
   });
   if (queued.count !== 1) return null;
@@ -2126,7 +2138,8 @@ export async function createPendingSteeringRun(
     where: {
       threadId: input.threadId,
       botId: input.botId,
-      status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+      status: { in: [...ACTIVE_RUN_STATUSES] },
+      NOT: { status: "waiting_limit", trigger: { in: [...THREAD_HIDDEN_RUN_TRIGGERS] } },
     },
     select: { id: true },
   });

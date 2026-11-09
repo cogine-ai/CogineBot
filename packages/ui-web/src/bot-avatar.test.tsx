@@ -10,15 +10,18 @@ import {
 } from "./bot-avatar.js";
 
 describe("companion avatars", () => {
-  it.each([...ACTIVE_RUN_STATUSES])("uses existing active Run status %s", (status) => {
-    const html = renderToString(
-      <BotAvatar color="#62A8EC" identity="companion-a" status={status} />,
-    );
-    expect(html).toContain('data-working="true"');
-    // Server rendering always includes the static identity; animation starts only in a visible browser.
-    expect(html).toContain("rakazo-gaze-avatar");
-  });
-  it.each([undefined, "idle", "completed", "failed", "waiting_approval"])(
+  it.each(ACTIVE_RUN_STATUSES.filter((status) => status !== "waiting_limit"))(
+    "animates working Run status %s",
+    (status) => {
+      const html = renderToString(
+        <BotAvatar color="#62A8EC" identity="companion-a" status={status} />,
+      );
+      expect(html).toContain('data-working="true"');
+      // Server rendering always includes the static identity; animation starts only in a visible browser.
+      expect(html).toContain("rakazo-gaze-avatar");
+    },
+  );
+  it.each([undefined, "idle", "completed", "failed", "waiting_approval", "waiting_limit"])(
     "keeps %s static",
     (status) => {
       const html = renderToString(

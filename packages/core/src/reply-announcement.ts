@@ -1,7 +1,7 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { visibleTextFromMarkdown } from "./message-quote.js";
 import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
-import { isBackgroundRunTrigger } from "./run-state.js";
+import { ACTIVE_RUN_STATUSES, isBackgroundRunTrigger } from "./run-state.js";
 
 export type AnnouncementSnapshot = {
   threadId: string;
@@ -17,7 +17,7 @@ export type AnnouncementEvent = {
   runId?: string;
   payload?: Record<string, unknown>;
 };
-const ACTIVE = new Set(["queued", "leased", "running", "waiting_input", "waiting_takeover"]);
+const ACTIVE = new Set<string>(ACTIVE_RUN_STATUSES);
 
 /** A view consumes explicit durable completion receipts, never infers success from disappearance. */
 export class ReplyAnnouncements {

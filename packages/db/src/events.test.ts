@@ -1,5 +1,6 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import { encodeLoginSecret } from "@rakazo/contracts";
+import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
@@ -3408,6 +3409,15 @@ describe("sendUserMessage", () => {
     { trigger: "user", incoming: "webhook" as const, status: "waiting_takeover", newRun: true },
     { trigger: "user", incoming: "webhook" as const, status: "running", newRun: false },
     { trigger: "user", incoming: "messaging" as const, status: "waiting_input", newRun: false },
+    { trigger: "user", incoming: "messaging" as const, status: "waiting_limit", newRun: false },
+    { trigger: "user", incoming: "webhook" as const, status: "waiting_limit", newRun: false },
+    {
+      trigger: "bot_message",
+      incoming: "messaging" as const,
+      status: "waiting_limit",
+      newRun: true,
+    },
+    { trigger: "tickets", incoming: "webhook" as const, status: "waiting_limit", newRun: true },
     ...(
       [
         "routine",
@@ -3428,9 +3438,11 @@ describe("sendUserMessage", () => {
   ])(
     "routes message producers around paused work ($trigger/$status <- $incoming)",
     async ({ trigger, incoming, status, newRun }) => {
-      const held = ["routine", "webhook", "created", "bot_message", "tickets"].some(
-        (value) => value === trigger,
-      );
+      const held =
+        status === "waiting_limit" ||
+        ["routine", "webhook", "created", "bot_message", "tickets"].some(
+          (value) => value === trigger,
+        );
       const waiting = { id: "old-run", taskId: "old-task", trigger, status };
       const tx = {
         thread: {
@@ -3526,7 +3538,7 @@ describe("sendUserMessage", () => {
           where: {
             threadId: "thread-1",
             botId: "bot-1",
-            status: { in: ["running", "queued", "leased", "waiting_input", "waiting_takeover"] },
+            status: { in: [...ACTIVE_RUN_STATUSES] },
           },
           select: { id: true, taskId: true, trigger: true, status: true },
         });
@@ -4485,6 +4497,15 @@ describe("steering connection selection metadata", () => {
         botId: "bot-1",
       }),
     ).toBe("continuation-run");
+    expect(tx.run.findFirst).toHaveBeenCalledWith({
+      where: {
+        threadId: "thread-1",
+        botId: "bot-1",
+        status: { in: [...ACTIVE_RUN_STATUSES] },
+        NOT: { status: "waiting_limit", trigger: { in: ["bot_message", "tickets"] } },
+      },
+      select: { id: true },
+    });
     expect(tx.task.create).toHaveBeenCalledWith({
       data: {
         ...scope,

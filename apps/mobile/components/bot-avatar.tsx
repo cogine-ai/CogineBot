@@ -33,7 +33,9 @@ export const BotAvatar = memo(function BotAvatar({
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
-  const isWorking = ACTIVE_RUN_STATUSES.some((activeStatus) => activeStatus === status);
+  const isWorking =
+    status !== "waiting_limit" &&
+    ACTIVE_RUN_STATUSES.some((activeStatus) => activeStatus === status);
   const parsed = mobileBotAvatarPresentation(color, identity);
   const picture =
     parsed.kind === "image" ? (

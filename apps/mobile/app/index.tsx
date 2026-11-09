@@ -1758,10 +1758,13 @@ const BotRow = memo(function BotRow({
   onLongPress?: (bot: MobileBot | SpaceBot) => void;
 }) {
   const { t } = useI18n();
-  const preview = previewSnippet(bot.preview, 40) || bot.title || t("No messages yet");
+  const waitingForQuota = bot.status === "waiting_limit";
+  const preview = waitingForQuota
+    ? t("Waiting to resume")
+    : previewSnippet(bot.preview, 40) || bot.title || t("No messages yet");
   const time = bot.updatedAt ? formatThreadTime(bot.updatedAt, new Date(day)) : "";
   const tag = botTag(bot.title, bot.name);
-  const working = ACTIVE_RUN_STATUSES.some((status) => status === bot.status);
+  const working = !waitingForQuota && ACTIVE_RUN_STATUSES.some((status) => status === bot.status);
   // Only flat avatars carry a usable color; image avatars fall back to the muted dot.
   const presentation = mobileBotAvatarPresentation(bot.color || FALLBACK_COLOR);
   const tint =

@@ -238,6 +238,12 @@ describe("Android mobile platform contract", () => {
     expect(thread).toContain("workingGroupBots.map");
     expect(thread).toContain("inGroup && workingGroupBots.length > 0 ?");
     expect(thread).toContain("workingGroupBots.length - index");
+    // A quota wait must not take the avatar slot from a running turn of the same agent.
+    const groupBots = thread.slice(
+      thread.indexOf("const workingGroupBots"),
+      thread.indexOf("const quotaWaits"),
+    );
+    expect(groupBots).toMatch(/run\.status === "waiting_limit"[\s\S]*seen\.add\(run\.botId\)/);
     expect(thread).toContain("agents working");
     // Keep the generic working copy accessible and show only an explicit narration note.
     expect(thread).toMatch(
@@ -257,6 +263,9 @@ describe("Android mobile platform contract", () => {
     expect(stopStart).toBeGreaterThan(-1);
     expect(composer).toContain('accessibilityLabel={t("Send")}');
     expect(composer).toContain('accessibilityLabel={t("Stop")}');
+    expect(thread).toMatch(
+      /const working =\s*\(inGroup \? workingGroupBots\.length > 0 : isWorkingStatus\(currentBotStatus\)\) \|\|\s*quotaWaits\.length > 0/,
+    );
     expect(thread).not.toContain("Messages sent now guide the next turn.");
     expect(thread).not.toContain("Steer ");
     expect(thread).not.toContain("steering message");

@@ -1123,6 +1123,92 @@ describe("thread event reduction", () => {
     expect(waiting?.activeRuns?.[0]?.status).toBe("waiting_input");
   });
 
+  it("refreshes the quota wait deadline and clears it when the same run starts", () => {
+    const run = threadRun("run-1");
+    const initial: ThreadSnapshot = {
+      ...snapshot([
+        { ...message("progress:run-1", [{ kind: "progress", text: "working…" }]), runId: run.id },
+      ]),
+      run,
+      activeRuns: [run],
+    };
+    const wait = event({
+      type: "run.waiting_limit",
+      seq: 6,
+      runId: run.id,
+      payload: { until: "2026-11-09T09:00:00.000Z" },
+    });
+    const waiting = reduceThreadSnapshot(initial, wait);
+    expect(waiting?.messages).toEqual([]);
+    expect(waiting?.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: wait.payload.until,
+    });
+
+    const until = "2026-11-09T10:00:00.000Z";
+    const updated = reduceThreadSnapshot(waiting, { ...wait, seq: 7, payload: { until } });
+    expect(updated?.activeRuns?.[0]?.quotaWaitUntil).toBe(until);
+    const deferred = reduceThreadSnapshot(updated, {
+      ...wait,
+      seq: 8,
+      payload: { until, waitingForComputer: true },
+    });
+    expect(deferred?.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until,
+      quotaWaitForComputer: true,
+    });
+    expect(deferred?.activeRuns?.[0]?.quotaWaitForComputer).toBe(true);
+    const newProviderWait = reduceThreadSnapshot(deferred, { ...wait, seq: 9 });
+    expect(newProviderWait?.run?.quotaWaitForComputer).toBeUndefined();
+
+    const resumed = reduceThreadSnapshot(
+      deferred,
+      event({ type: "run.started", seq: 9, runId: run.id }),
+    );
+    expect(resumed?.run).toMatchObject({ id: run.id, status: "running" });
+    expect(resumed?.run?.quotaWaitUntil).toBeUndefined();
+    expect(resumed?.run?.quotaWaitForComputer).toBeUndefined();
+    expect(reduceThreadSnapshot(resumed, wait)).toBe(resumed);
+
+    const failed = reduceThreadSnapshot(
+      deferred,
+      event({ type: "run.failed", seq: 9, runId: run.id, payload: { error: "Model unavailable" } }),
+    );
+    expect(failed?.run).toMatchObject({ id: run.id, status: "failed", error: "Model unavailable" });
+    expect(failed?.run?.quotaWaitUntil).toBeUndefined();
+    expect(failed?.run?.quotaWaitForComputer).toBeUndefined();
+
+    const ask = { ...threadRun("run-ask"), status: "waiting_input" as const };
+    const whileAsked = reduceThreadSnapshot({ ...initial, run: ask }, wait);
+    expect(whileAsked?.run).toBe(ask);
+    expect(whileAsked?.activeRuns?.map(({ id }) => id)).toEqual([ask.id, run.id]);
+  });
+
+  it("keeps a direct quota wait after a different run starts and fails", () => {
+    const quota = {
+      ...threadRun("quota"),
+      status: "waiting_limit" as const,
+      quotaWaitUntil: "2026-11-09T09:00:00.000Z",
+    };
+    const initial = { ...snapshot([]), run: quota, activeRuns: [quota] };
+    const started = reduceThreadSnapshot(
+      initial,
+      event({ type: "run.started", seq: 6, runId: "routine", payload: { trigger: "routine" } }),
+    );
+    expect(started?.run?.id).toBe("routine");
+    expect(started?.activeRuns).toContainEqual(quota);
+
+    const failed = reduceThreadSnapshot(
+      started,
+      event({ type: "run.failed", seq: 7, runId: "routine", payload: { error: "Run failed" } }),
+    );
+    expect(failed?.run).toMatchObject({ id: "routine", status: "failed" });
+    expect(failed?.activeRuns).toEqual([quota]);
+  });
+
   it("accumulates tool-call steps and collapses repeats into a count", () => {
     const initial = snapshot([]);
 

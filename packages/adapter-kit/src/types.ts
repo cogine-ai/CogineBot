@@ -7,6 +7,7 @@ import type {
   NativeSlackLifecycleJobPayload,
   NativeSlackSignalJobPayload,
   NativeSourceJobPayload,
+  RunQuotaTarget,
   SandboxKind,
 } from "@rakazo/contracts";
 
@@ -467,6 +468,8 @@ export interface AgentRunModel {
   provider: string;
   id: string;
   modelCredentialId?: string | null;
+  /** Exact model-connection revision. Null binds a deployment-funded route. */
+  quotaConnectionRevision?: number | null;
   apiKey?: string;
   /** Cloudflare account id stored with a gateway BYOK credential. */
   accountId?: string;
@@ -564,6 +567,8 @@ export interface AgentRunRequest {
   currentTurnImages?: AgentInputImage[];
   tools: ConnectorTool[];
   model: AgentRunModel;
+  /** Bind resumed model work, or an explicitly approved checkpoint, to its original route. */
+  quotaResume?: { target: RunQuotaTarget; claim: () => Promise<void>; humanResume?: true };
   /** Ordered, user-selected models eligible after provider unavailability. */
   fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id" | "modelCredentialId">>;
   /** Resolve one configured backup lazily so healthy primary turns do no extra auth work. */
@@ -786,7 +791,7 @@ export interface BackgroundJobPayloads {
   "native.discord.signal": NativeDiscordSignalJob;
   "native.slack.signal": NativeSlackSignalJobPayload;
   "native.slack.lifecycle": NativeSlackLifecycleJobPayload;
-  "run.continue": { runId: string };
+  "run.continue": { runId: string; quotaWaitRevision?: number };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "routine.retry": { runId: string };
   "computer.sleep": { computerId: string };

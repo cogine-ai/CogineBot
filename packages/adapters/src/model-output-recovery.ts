@@ -1,3 +1,4 @@
+import type { RunQuotaTarget } from "@rakazo/contracts";
 import { createStreamingRedactor, protectedContinuationLength } from "@rakazo/core";
 
 /** A failed output recovery can keep the reply text already shown to the user. */
@@ -5,6 +6,17 @@ export class ModelOutputRecoveryError extends Error {}
 
 /** A provider failure that can clear without changing the request or account. */
 export class TransientModelError extends Error {}
+
+/** A verified provider refusal with a timed reset and an exact dispatch target. */
+export class ModelQuotaWaitError extends Error {
+  constructor(
+    message: string,
+    readonly until: Date,
+    readonly target: RunQuotaTarget,
+  ) {
+    super(message);
+  }
+}
 
 /** Mask a credential tail that the live redactor had not released when output stopped. */
 export function redactInterruptedOutput(

@@ -6,7 +6,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { computerSleepJob } from "@rakazo/adapter-kit";
-import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
+import { COMPUTER_ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
 import { toComputerRef } from "./computer-lifecycle.js";
@@ -208,8 +208,8 @@ export async function sleepComputerIfIdle(
   }
 
   const activeStatuses = hasActiveComputerControl(computer)
-    ? [...ACTIVE_RUN_STATUSES]
-    : ACTIVE_RUN_STATUSES.filter((status) => status !== "waiting_takeover");
+    ? [...COMPUTER_ACTIVE_RUN_STATUSES]
+    : COMPUTER_ACTIVE_RUN_STATUSES.filter((status) => status !== "waiting_takeover");
   if (await findActiveRun(deps.prisma, computerId, activeStatuses)) {
     scheduleComputerSleep(deps.jobs, computerId);
     return;
@@ -395,7 +395,7 @@ function findActiveRun(prisma: PrismaClient, computerId: string, statuses: reado
   return prisma.run.findFirst({
     where: {
       bot: { computerId },
-      status: { in: statuses as (typeof ACTIVE_RUN_STATUSES)[number][] },
+      status: { in: statuses as (typeof COMPUTER_ACTIVE_RUN_STATUSES)[number][] },
     },
     select: { id: true },
   });

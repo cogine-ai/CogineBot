@@ -18,7 +18,8 @@ export function statusTone(status: RunActivityRow["status"], updatedAt?: string)
   if (status === "failed") return "text-destructive";
   if (status === "cancelled") return "text-muted-foreground";
   if (status === "completed") return "text-success";
-  if (status === "waiting_input" || status === "waiting_takeover") return "text-warning";
+  if (status === "waiting_input" || status === "waiting_takeover" || status === "waiting_limit")
+    return "text-warning";
   if (updatedAt && isAgedStuckWork(status, updatedAt)) return "text-warning";
   return "text-foreground";
 }
@@ -172,6 +173,7 @@ const STATUS_FILTERS: RunStatus[] = [
   "leased",
   "waiting_input",
   "waiting_takeover",
+  "waiting_limit",
   "completed",
   "failed",
   "cancelled",
@@ -416,6 +418,8 @@ export function statusLabel(status: RunActivityRow["status"]): string {
       return t`Needs input`;
     case "waiting_takeover":
       return t`Needs takeover`;
+    case "waiting_limit":
+      return t`Waiting to resume`;
     case "completed":
       return t`Done`;
     case "failed":

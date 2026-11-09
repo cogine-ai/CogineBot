@@ -8,7 +8,7 @@ import {
   isCloudflareAiGatewayProvider,
 } from "./cloudflare-ai-gateway.js";
 import { ThreadMessageSchema } from "./events.js";
-import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
+import { Id, IsoDate, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
 import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
 import { ModelHeadersSchema } from "./model-headers.js";
 import { NativeRoutineTriggerSchema, NativeRoutineTriggersInputSchema } from "./native-events.js";
@@ -1043,6 +1043,8 @@ export const RunSchema = z.object({
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
   createdAt: z.string(),
+  quotaWaitUntil: IsoDate.optional(),
+  quotaWaitForComputer: z.literal(true).optional(),
 });
 export type Run = z.infer<typeof RunSchema>;
 

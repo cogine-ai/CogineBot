@@ -17,19 +17,21 @@ import {
   GROUP_MEMBER_MIN,
   MessageBlock as MessageBlockSchema,
   PageTitleSchema,
+  runQuotaWaitStateSchema,
 } from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
-  BACKGROUND_RUN_TRIGGERS,
   callIdFromClientNonce,
   isActive,
   isConversationalRun,
+  messageBypassesQuotaWait,
   messageBypassesTakeoverWait,
   pageReplyTaskPrompt,
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
   sanitizeRunErrorDetails,
+  THREAD_HIDDEN_RUN_TRIGGERS,
   withPageReplyContext,
 } from "@rakazo/core";
 import { deriveMessageQuote, messageReplyPreview } from "@rakazo/core/message-quote";
@@ -93,8 +95,13 @@ const STEERABLE_RUN_STATUSES = new Set(["queued", "leased", "running", "waiting_
  * webhook question. Other ordinary questions may retire; protected cards stay pending.
  * Remaining messages use the existing conversational steering or new-work route.
  */
-function steersUserMessage(run: { status: string; trigger?: string | null }) {
+export function steersUserMessage(run: { status: string; trigger?: string | null }) {
   return STEERABLE_RUN_STATUSES.has(run.status) && isConversationalRun(run.trigger);
+}
+
+function holdsThreadMessage(run: { status: string; trigger?: string | null }): boolean {
+  if (run.status === "waiting_limit") return !messageBypassesQuotaWait(run);
+  return STEERABLE_RUN_STATUSES.has(run.status) && !messageBypassesTakeoverWait(run);
 }
 
 type MentionTargetInput = string | { kind: "bot" | "group" | "routine" | "connector"; id: string };
@@ -366,37 +373,47 @@ export async function threadSnapshot(
       deps.prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
-          const [messagePage, last, waitingRun, busyOrFailed, attention] = await Promise.all([
-            loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
-            tx.event.findFirst({
-              where: { threadId: target.threadId },
-              orderBy: { seq: "desc" },
-              select: { seq: true },
-            }),
-            // Waiting asks win over a concurrent busy run, including peer bot_message
-            // and ticket runs. Busy ticket work stays off the transcript below.
-            tx.run.findFirst({
-              where: {
-                botId: target.botId,
-                threadId: target.threadId,
-                status: { in: ["waiting_input", "waiting_takeover"] },
-              },
-              orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            }),
-            tx.run.findFirst({
-              where: {
-                botId: target.botId,
-                threadId: target.threadId,
-                // Hide peer bot_message and background ticket busy/failed noise; waiting is handled above.
-                trigger: { notIn: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] },
-                status: { in: [...ACTIVE_RUN_STATUSES, "failed"] },
-              },
-              // The id tiebreak keeps ordering deterministic under equal
-              // timestamps, matching the supersession probe below.
-              orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            }),
-            loadThreadAttention(tx, [target.threadId]),
-          ]);
+          const [messagePage, last, waitingRun, busyOrFailed, quotaRuns, attention] =
+            await Promise.all([
+              loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
+              tx.event.findFirst({
+                where: { threadId: target.threadId },
+                orderBy: { seq: "desc" },
+                select: { seq: true },
+              }),
+              // Waiting asks win over a concurrent busy run, including peer bot_message
+              // and ticket runs. Busy ticket work stays off the transcript below.
+              tx.run.findFirst({
+                where: {
+                  botId: target.botId,
+                  threadId: target.threadId,
+                  status: { in: ["waiting_input", "waiting_takeover"] },
+                },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+              }),
+              tx.run.findFirst({
+                where: {
+                  botId: target.botId,
+                  threadId: target.threadId,
+                  // Hide peer bot_message and background ticket busy/failed noise; waiting is handled above.
+                  trigger: { notIn: [...THREAD_HIDDEN_RUN_TRIGGERS] },
+                  status: { in: [...ACTIVE_RUN_STATUSES, "failed"] },
+                },
+                // The id tiebreak keeps ordering deterministic under equal
+                // timestamps, matching the supersession probe below.
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+              }),
+              tx.run.findMany({
+                where: {
+                  botId: target.botId,
+                  threadId: target.threadId,
+                  trigger: { notIn: [...THREAD_HIDDEN_RUN_TRIGGERS] },
+                  status: "waiting_limit",
+                },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+              }),
+              loadThreadAttention(tx, [target.threadId]),
+            ]);
           const run = waitingRun ?? busyOrFailed;
           // A failed run is only the thread's word while it is still the newest
           // terminal run; otherwise a stale failure would resurface in the
@@ -411,7 +428,7 @@ export async function threadSnapshot(
                     botId: target.botId,
                     threadId: target.threadId,
                     // Peer bot_message and background failures must not bury a user-visible failure.
-                    trigger: { notIn: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] },
+                    trigger: { notIn: [...THREAD_HIDDEN_RUN_TRIGGERS] },
                     status: { in: ["failed", "completed", "cancelled"] },
                   },
                   orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -420,7 +437,9 @@ export async function threadSnapshot(
               : null;
           const currentRun = run?.status === "failed" && newestTerminal?.id !== run.id ? null : run;
           const liveEvents =
-            currentRun && isActive(currentRun.status as RunStatus)
+            currentRun &&
+            currentRun.status !== "waiting_limit" &&
+            isActive(currentRun.status as RunStatus)
               ? await tx.event.findMany({
                   where: {
                     threadId: target.threadId,
@@ -437,18 +456,26 @@ export async function threadSnapshot(
                   orderBy: { seq: "asc" },
                 })
               : [];
-          return { messagePage, last, run: currentRun, liveEvents, attention };
+          return { messagePage, last, run: currentRun, quotaRuns, liveEvents, attention };
         },
         { timeout: 15_000, maxWait: 5_000 },
       ),
     ]);
+    const run = core.run ? mapRun(core.run) : null;
+    // Keep the action/error primary while exposing other waits the user can still stop.
+    const supplementalWaits = core.quotaRuns
+      .filter((waiting) => waiting.id !== run?.id)
+      .map(mapRun);
+    const activeRuns =
+      run && isActive(run.status) ? [run, ...supplementalWaits] : supplementalWaits;
     return {
       botId: target.botId,
       threadId: target.threadId,
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
-      run: core.run ? mapRun(core.run) : null,
+      run,
+      ...(supplementalWaits.length ? { activeRuns } : {}),
       attentionMessageId: core.attention.get(target.threadId)?.attentionMessageId ?? null,
       answerableApprovalMessageIds:
         core.attention.get(target.threadId)?.answerableApprovalMessageIds ?? [],
@@ -473,7 +500,7 @@ export async function threadSnapshot(
             // Waiting peer and ticket asks stay answerable. Busy ticket runs stay off
             // the transcript; only their waiting_input / waiting_takeover states surface.
             OR: [
-              { trigger: { notIn: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] } },
+              { trigger: { notIn: [...THREAD_HIDDEN_RUN_TRIGGERS] } },
               { status: { in: ["waiting_input", "waiting_takeover"] } },
             ],
           },
@@ -484,7 +511,7 @@ export async function threadSnapshot(
         tx.run.findMany({
           where: {
             threadId: target.threadId,
-            trigger: { notIn: ["bot_message", ...BACKGROUND_RUN_TRIGGERS] },
+            trigger: { notIn: [...THREAD_HIDDEN_RUN_TRIGGERS] },
             status: { in: ["failed", "completed", "cancelled"] },
           },
           orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
@@ -492,12 +519,15 @@ export async function threadSnapshot(
         }),
         loadThreadAttention(tx, [target.threadId]),
       ]);
+      const liveRunIds = activeRuns
+        .filter((run) => run.status !== "waiting_limit")
+        .map((run) => run.id);
       const liveEvents =
-        activeRuns.length > 0
+        liveRunIds.length > 0
           ? await tx.event.findMany({
               where: {
                 threadId: target.threadId,
-                runId: { in: activeRuns.map((run) => run.id) },
+                runId: { in: liveRunIds },
                 type: {
                   in: [
                     "thread.progress",
@@ -609,6 +639,7 @@ function mapRun(run: {
   startedAt: Date | null;
   completedAt: Date | null;
   createdAt: Date;
+  quotaWait: Prisma.JsonValue;
 }) {
   const diagnostic =
     run.status === "failed"
@@ -617,6 +648,10 @@ function mapRun(run: {
           { preserveDetails: true },
         )
       : run.error;
+  const quotaWait =
+    run.status === "waiting_limit"
+      ? runQuotaWaitStateSchema.safeParse(run.quotaWait).data
+      : undefined;
   return {
     id: run.id,
     botId: run.botId,
@@ -633,6 +668,8 @@ function mapRun(run: {
     startedAt: run.startedAt?.toISOString() ?? null,
     completedAt: run.completedAt?.toISOString() ?? null,
     createdAt: run.createdAt.toISOString(),
+    ...(quotaWait ? { quotaWaitUntil: quotaWait.until } : {}),
+    ...(quotaWait?.waitingForComputer ? { quotaWaitForComputer: true as const } : {}),
   };
 }
 
@@ -849,9 +886,7 @@ export async function sendThreadMessage(
           });
           return { message, runs: answered, eventSeq: event.seq };
         }
-        const holdingRuns = activeRuns.filter(
-          (run) => STEERABLE_RUN_STATUSES.has(run.status) && !messageBypassesTakeoverWait(run),
-        );
+        const holdingRuns = activeRuns.filter(holdsThreadMessage);
         const active = holdingRuns.find(steersUserMessage) ?? holdingRuns[0];
         if (active) {
           await tx.steeringMessage.create({
@@ -1018,7 +1053,7 @@ export async function sendThreadMessage(
           }
           continue;
         }
-        if (!STEERABLE_RUN_STATUSES.has(run.status) || messageBypassesTakeoverWait(run)) continue;
+        if (!holdsThreadMessage(run)) continue;
         const current = activeByBotId.get(run.botId);
         if (!current || (!steersUserMessage(current) && steersUserMessage(run)))
           activeByBotId.set(run.botId, run);

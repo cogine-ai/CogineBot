@@ -45,10 +45,12 @@ export function ActiveBotGlyph({
   bots,
   label,
   narrationStatus,
+  wrapNarration = false,
 }: {
   bots: GroupAvatarMember[];
   label: string;
   narrationStatus?: string;
+  wrapNarration?: boolean;
 }) {
   const avatar = <GroupAvatar members={bots} size={28} />;
   return (
@@ -56,7 +58,10 @@ export function ActiveBotGlyph({
       {narrationStatus ? (
         <div role="status" className="flex min-w-0 items-center gap-2.5">
           {avatar}
-          <span dir="auto" className="min-w-0 truncate text-[15px] text-muted-foreground">
+          <span
+            dir="auto"
+            className={`min-w-0 text-[15px] text-muted-foreground ${wrapNarration ? "break-words" : "truncate"}`}
+          >
             {narrationStatus}
           </span>
         </div>

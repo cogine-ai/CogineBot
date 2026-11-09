@@ -3177,6 +3177,21 @@ export function ShellPage() {
       status: run.status,
     };
   });
+  const quotaWaits = currentRuns.flatMap((run) => {
+    if (run.status !== "waiting_limit" || !run.quotaWaitUntil) return [];
+    const bot = resolveTranscriptBot(run.botId);
+    const time = formatMessageTime(run.quotaWaitUntil, i18n.locale || "en");
+    if (!time) return [];
+    return [
+      {
+        id: run.id,
+        bot: { botId: run.botId, color: bot?.color ?? FALLBACK_BOT_COLOR, name: bot?.name },
+        label: run.quotaWaitForComputer
+          ? t`Waiting for the computer before retrying.`
+          : t`Model limit reached. Resuming at ${time}.`,
+      },
+    ];
+  });
   const resolveTranscriptMemberName = useCallback(
     (botId: string | undefined) => memberName(transcriptMembers, botId),
     [transcriptMembers],
@@ -5808,6 +5823,7 @@ export function ShellPage() {
               running={transcriptRunning}
               workingBots={workingBots}
               workingNarrationStatus={workingNarrationStatus}
+              quotaWaits={quotaWaits}
               onLoadOlder={loadOlder}
               onOpenBot={openBot}
               onAnswer={answerMessage}
@@ -7139,6 +7155,7 @@ const Transcript = memo(function Transcript({
   running,
   workingBots,
   workingNarrationStatus,
+  quotaWaits,
   onLoadOlder,
   onOpenBot,
   onAnswer,
@@ -7175,6 +7192,7 @@ const Transcript = memo(function Transcript({
   running: boolean;
   workingBots: GroupAvatarMember[];
   workingNarrationStatus?: string;
+  quotaWaits: { id: string; bot: GroupAvatarMember; label: string }[];
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
@@ -7650,6 +7668,15 @@ const Transcript = memo(function Transcript({
               narrationStatus={workingNarrationStatus}
             />
           ) : null}
+          {quotaWaits.map(({ id, bot, label }) => (
+            <ActiveBotGlyph
+              key={id}
+              bots={[bot]}
+              label={label}
+              narrationStatus={label}
+              wrapNarration
+            />
+          ))}
         </div>
       </div>
       {!paused && quoteDraft ? (

@@ -90,6 +90,17 @@ describe("executionBlocksUserTakeover", () => {
     ).toBe(false);
   });
 
+  it("allows takeover when the quota wait has released its execution lease", () => {
+    expect(
+      executionBlocksUserTakeover({
+        hasLease: true,
+        leaseExpiresAt: new Date(now - 1),
+        runStatus: "waiting_limit",
+        now,
+      }),
+    ).toBe(false);
+  });
+
   it("blocks takeover for an active lease or active run", () => {
     expect(
       executionBlocksUserTakeover({

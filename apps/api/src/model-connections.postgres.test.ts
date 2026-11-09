@@ -1291,6 +1291,75 @@ describePostgres("model connection HTTP acceptance", () => {
     },
   );
 
+  it("lets users disconnect a credential once its only active use is a quota wait", async () => {
+    const { cookie, actor } = await account();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    const target = await bot(cookie);
+    const thread = await handles.prisma.thread.findFirstOrThrow({
+      where: { botId: target.id, spaceId: actor.spaceId },
+    });
+    const scope = { ...actor, botId: target.id, threadId: thread.id };
+    const task = await handles.prisma.task.create({
+      data: { ...scope, prompt: "Synthetic parked work", status: "running" },
+    });
+    const run = await handles.prisma.run.create({
+      data: {
+        ...scope,
+        modelProvider: provider,
+        modelId: "same-model",
+        modelCredentialId: credential.id,
+        taskId: task.id,
+        trigger: "tickets",
+        status: "running",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const remove = () =>
+      raw(cookie, "models/disconnect", {
+        provider,
+        credentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
+      });
+    const references = () =>
+      rpc<{ references: Array<{ kind: string; id: string }> }>(cookie, "models/references", {
+        credentialId: credential.id,
+      });
+    const activeReferences = (await references()).references;
+    expect(activeReferences).toContainEqual(expect.objectContaining({ kind: "run", id: run.id }));
+    expect((await remove()).status).toBe(400);
+    const beganAt = new Date();
+    const until = new Date(beganAt.getTime() + 60_000);
+    await handles.prisma.run.update({
+      where: { id: run.id },
+      data: {
+        status: "waiting_limit",
+        wakeAt: until,
+        leaseExpiresAt: null,
+        quotaWait: {
+          beganAt: beganAt.toISOString(),
+          until: until.toISOString(),
+          revision: 1,
+          dispatchedFence: null,
+          target: {
+            provider,
+            modelId: "same-model",
+            modelCredentialId: credential.id,
+            connectionRevision: credential.connectionRevision,
+            endpointDigest: "a".repeat(64),
+            costOwner: "user",
+          },
+        },
+      },
+    });
+    expect((await references()).references).toEqual(
+      activeReferences.filter((reference) => reference.kind !== "run" || reference.id !== run.id),
+    );
+    expect((await remove()).status).toBe(200);
+    expect(
+      await handles.prisma.userModelCredential.findUnique({ where: { id: credential.id } }),
+    ).toBeNull();
+  });
+
   it("protects another Space's active default and never copies a key to an edited address", async () => {
     const { cookie, actor } = await account();
     const credential = await rpc<ModelCredential>(cookie, "models/connect", input());

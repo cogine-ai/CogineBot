@@ -8,7 +8,7 @@ import type {
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { RUN_TRIGGERS } from "@rakazo/contracts";
+import { IsoDate, RUN_TRIGGERS } from "@rakazo/contracts";
 import {
   isActive,
   isBackgroundRunTrigger,
@@ -305,6 +305,7 @@ export function isThreadSnapshotEvent(event: ProductEvent): boolean {
     event.type === "thread.message.reaction" ||
     event.type === "run.started" ||
     event.type === "run.waiting_input" ||
+    event.type === "run.waiting_limit" ||
     event.type === "computer.takeover.requested" ||
     event.type === "computer.takeover.released" ||
     isRunTerminalEvent(event)
@@ -381,8 +382,10 @@ export function reduceThreadSnapshot(
     const without = (prev.activeRuns ?? (prev.run ? [prev.run] : [])).filter(
       (candidate) => candidate.id !== run.id,
     );
-    // Bot threads keep a single primary run; groups accumulate concurrent member runs.
-    const activeRuns = prev.groupId ? [...without, run] : [run];
+    // Keep parked waits visible while another Run starts in the same bot thread.
+    const activeRuns = prev.groupId
+      ? [...without, run]
+      : [run, ...without.filter((candidate) => candidate.status === "waiting_limit")];
     return {
       ...prev,
       cursor,
@@ -390,6 +393,40 @@ export function reduceThreadSnapshot(
       // A group failure lives only in run; keep it until dismiss so a late member start
       // cannot wipe the banner (activeRuns still tracks the new work).
       run: prev.groupId && prev.run?.status === "failed" && prev.run.id !== run.id ? prev.run : run,
+      activeRuns,
+    };
+  }
+  if (event.type === "run.waiting_limit") {
+    const until = IsoDate.safeParse(event.payload.until);
+    const runId = event.runId;
+    if (!runId || !until.success) return { ...prev, cursor };
+    const primary = prev.run;
+    const keepPrimary =
+      primary &&
+      primary.id !== runId &&
+      (prev.groupId || primary.status === "waiting_input" || primary.status === "waiting_takeover");
+    const previousRuns = activeThreadRuns(prev);
+    const known = previousRuns.find((candidate) => candidate.id === runId);
+    const waiting: Run = {
+      ...runFromStartedEvent(event, known),
+      status: "waiting_limit",
+      quotaWaitUntil: until.data,
+      ...(event.payload.waitingForComputer === true ? { quotaWaitForComputer: true } : {}),
+    };
+    const otherRuns = previousRuns.filter(
+      (candidate) => candidate.id !== runId && isActive(candidate.status as RunStatus),
+    );
+    if (keepPrimary && !otherRuns.some((candidate) => candidate.id === primary.id)) {
+      otherRuns.unshift(primary);
+    }
+    const activeRuns =
+      prev.groupId || keepPrimary ? [...otherRuns, waiting] : [waiting, ...otherRuns];
+    return {
+      ...prev,
+      cursor,
+      members: updateMemberStatus(prev.members, event.botId, waiting.status),
+      messages: prev.messages.filter((message) => message.id !== progressMessageId(event)),
+      run: keepPrimary ? primary : waiting,
       activeRuns,
     };
   }
@@ -511,7 +548,13 @@ export function reduceThreadSnapshot(
       // why it stopped, matching what threads.get returns on the next load.
       run:
         endedRun && failure
-          ? { ...endedRun, status: "failed", error: failure }
+          ? {
+              ...endedRun,
+              status: "failed",
+              error: failure,
+              quotaWaitUntil: undefined,
+              quotaWaitForComputer: undefined,
+            }
           : primaryEnded
             ? (activeRuns?.[0] ?? null)
             : prev.run,
@@ -664,7 +707,7 @@ export function computerTakeoverBlocked(
   if (!computer?.busyBotName) return false;
   // waiting_takeover is the bot asking for control; terminal/idle clears the block even if
   // busyBotName is briefly stale while the executor still holds the lease in finally.
-  if (!runStatus || runStatus === "waiting_takeover") return false;
+  if (!runStatus || runStatus === "waiting_takeover" || runStatus === "waiting_limit") return false;
   return isActive(runStatus as RunStatus);
 }
 

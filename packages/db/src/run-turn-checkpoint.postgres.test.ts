@@ -1,23 +1,28 @@
 import { readFile } from "node:fs/promises";
-import type { MessageBlock } from "@rakazo/contracts";
+import type { MessageBlock, RunQuotaTarget } from "@rakazo/contracts";
+import { RUN_QUOTA_WAIT_MAX_MS, runQuotaWaitStateSchema } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
 import {
+  answerRunInput,
   appendEventInTransaction,
   beginRoutineRetryExecution,
   claimSteering,
   finalizeRun,
+  pauseRunForInput,
 } from "./events.js";
 import { expireStuckRun } from "./expire-stuck-run.js";
 import { createThreadMessage } from "./messages.js";
+import { replaceSpaceBackupModels } from "./model-backups.js";
 import {
   claimRoutineRetry,
   lockRoutineRetryThread,
   revokePendingRoutineRetries,
 } from "./routine-retry.js";
 import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
+import { claimRunQuotaResume, parkRunQuotaWait } from "./run-quota-wait.js";
 import { reserveRunSelfRecovery } from "./run-self-recovery.js";
 import {
   clearRunTurnCheckpoints,
@@ -137,6 +142,372 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       blocks: [],
     };
   }
+
+  describe("durable provider quota waits", () => {
+    const target: RunQuotaTarget = {
+      provider: "openai",
+      modelId: "synthetic-quota-model",
+      modelCredentialId: null,
+      connectionRevision: null,
+      endpointDigest: "0".repeat(64),
+      costOwner: "deployment",
+    };
+    const HOUR = 60 * 60_000;
+
+    async function quotaRun() {
+      const f = await seed();
+      const beganAt = new Date();
+      const until = new Date(beganAt.getTime() + HOUR);
+      return { ...f, beganAt, park: { ...finishInput(f), target, until } };
+    }
+
+    async function installLease(runId: string, leaseFence: number, at: Date) {
+      const lease = { runId, leaseOwner: "resumed-worker", leaseFence };
+      await prisma.run.update({
+        where: { id: runId },
+        data: {
+          status: "running",
+          wakeAt: null,
+          leaseOwner: lease.leaseOwner,
+          leaseFence,
+          leaseExpiresAt: new Date(at.getTime() + 60_000),
+        },
+      });
+      const attempt = await prisma.attempt.create({
+        data: { runId, fence: leaseFence, status: "running" },
+      });
+      return { ...lease, attemptId: attempt.id };
+    }
+
+    it("publishes only the wait time and permits one dispatch per revision up to three", async () => {
+      const f = await quotaRun();
+      let park = f.park;
+      let at = f.beganAt;
+      for (const revision of [1, 2, 3]) {
+        const parked = await parkRunQuotaWait(prisma, park, at);
+        expect(parked).toMatchObject({ revision, until: park.until });
+        const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+        expect(waiting).toMatchObject({
+          status: "waiting_limit",
+          wakeAt: park.until,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          selfRecoveries: 0,
+        });
+        const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+        expect(state).toEqual({
+          revision,
+          beganAt: f.beganAt.toISOString(),
+          until: park.until.toISOString(),
+          target,
+          dispatchedFence: null,
+        });
+        expect(
+          await prisma.attempt.findUniqueOrThrow({ where: { id: park.attemptId } }),
+        ).toMatchObject({
+          status: "failed",
+          finishedAt: at,
+        });
+        const event = await prisma.event.findFirstOrThrow({
+          where: { runId: f.run.id, type: "run.waiting_limit", seq: parked!.eventSeq },
+        });
+        expect(event.payload).toEqual({ until: state.until });
+        at = park.until;
+        const lease = await installLease(f.run.id, park.leaseFence + 1, at);
+        await expect(
+          claimRunQuotaResume(prisma, { ...lease, state }, new Date(at.getTime() - 1)),
+        ).resolves.toBe(false);
+        const dispatches = await Promise.all([
+          claimRunQuotaResume(prisma, { ...lease, state }, at),
+          claimRunQuotaResume(prisma, { ...lease, state }, at),
+        ]);
+        expect(dispatches.filter(Boolean)).toHaveLength(1);
+        park = { ...park, ...lease, until: new Date(at.getTime() + HOUR) };
+      }
+      await expect(parkRunQuotaWait(prisma, park, at)).resolves.toBeNull();
+      expect(await prisma.run.count({ where: { threadId: f.thread.id } })).toBe(1);
+    });
+
+    it("rejects a reset beyond the first day and refuses dispatch after the deadline", async () => {
+      const f = await quotaRun();
+      const deadline = new Date(f.beganAt.getTime() + RUN_QUOTA_WAIT_MAX_MS);
+      await expect(
+        parkRunQuotaWait(prisma, { ...f.park, until: new Date(deadline.getTime() + 1) }, f.beganAt),
+      ).resolves.toBeNull();
+      await expect(
+        parkRunQuotaWait(prisma, { ...f.park, until: deadline }, f.beganAt),
+      ).resolves.toMatchObject({ revision: 1, until: deadline });
+      const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+      const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+      const late = new Date(deadline.getTime() + 1);
+      const lease = await installLease(f.run.id, 8, late);
+      await expect(claimRunQuotaResume(prisma, { ...lease, state }, late)).resolves.toBe(false);
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        quotaWait: state,
+      });
+      await expect(claimRunQuotaResume(prisma, { ...lease, state }, deadline)).resolves.toBe(true);
+    });
+
+    it("keeps a cancelled wait terminal for a late resume or park", async () => {
+      const f = await quotaRun();
+      await expect(parkRunQuotaWait(prisma, f.park, f.beganAt)).resolves.toMatchObject({
+        revision: 1,
+      });
+      const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+      const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+      await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [waiting], f.beganAt));
+      await expect(claimRunQuotaResume(prisma, { ...f.park, state }, f.park.until)).resolves.toBe(
+        false,
+      );
+      await expect(parkRunQuotaWait(prisma, f.park, f.beganAt)).resolves.toBeNull();
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        status: "cancelled",
+        leaseOwner: null,
+      });
+    });
+
+    it("does not park a Run with an earlier external effect", async () => {
+      const f = await quotaRun();
+      await prisma.externalEffect.create({
+        data: {
+          runId: f.run.id,
+          spaceId,
+          kind: "synthetic-effect",
+          idempotencyKey: f.run.id,
+          status: "intended",
+          request: {},
+        },
+      });
+      await expect(parkRunQuotaWait(prisma, f.park, f.beganAt)).resolves.toBeNull();
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        status: "running",
+        quotaWait: null,
+        wakeAt: null,
+      });
+      expect(await prisma.attempt.findUniqueOrThrow({ where: { id: f.attempt.id } })).toMatchObject(
+        {
+          status: "running",
+        },
+      );
+    });
+
+    it.each([
+      { payload: { streaming: true, text: "Provisional reply." }, historical: false },
+      { payload: { streaming: true, delta: "Provisional continuation." }, historical: true },
+    ])(
+      "does not replay provisional text from a previous lease ($historical)",
+      async ({ payload, historical }) => {
+        const f = await quotaRun();
+        await prisma.$transaction((tx) =>
+          appendEventInTransaction(tx, {
+            spaceId,
+            threadId: f.thread.id,
+            botId,
+            runId: f.run.id,
+            type: "thread.progress",
+            payload,
+          }),
+        );
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+          firstResponseAt: expect.any(Date),
+        });
+        if (historical) {
+          await prisma.run.update({
+            where: { id: f.run.id },
+            data: { firstResponseAt: null },
+          });
+        }
+        const successor = await installLease(f.run.id, 8, f.beganAt);
+        await expect(
+          parkRunQuotaWait(prisma, { ...f.park, ...successor }, f.beganAt),
+        ).resolves.toBeNull();
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+          status: "running",
+          quotaWait: null,
+        });
+      },
+    );
+
+    it("still parks after activity and empty streaming progress", async () => {
+      const f = await quotaRun();
+      for (const payload of [
+        { text: "Working…", activity: true },
+        { text: "Connected to the provider." },
+        { streaming: true, text: "", delta: "\n " },
+        { streaming: true, text: "Working…", activity: true },
+      ]) {
+        await prisma.$transaction((tx) =>
+          appendEventInTransaction(tx, {
+            spaceId,
+            threadId: f.thread.id,
+            botId,
+            runId: f.run.id,
+            type: "thread.progress",
+            payload,
+          }),
+        );
+      }
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        firstResponseAt: null,
+      });
+      await expect(parkRunQuotaWait(prisma, f.park, f.beganAt)).resolves.toMatchObject({
+        revision: 1,
+      });
+    });
+
+    it("refuses the old credential revision after the owner edits the connection", async () => {
+      const f = await quotaRun();
+      const credential = await prisma.userModelCredential.create({
+        data: { userId, provider: target.provider, label: "Quota fixture", secretId: f.run.id },
+      });
+      const bound = {
+        ...target,
+        modelCredentialId: credential.id,
+        connectionRevision: credential.connectionRevision,
+        costOwner: "user" as const,
+      };
+      await expect(
+        parkRunQuotaWait(prisma, { ...f.park, target: bound }, f.beganAt),
+      ).resolves.toMatchObject({ revision: 1 });
+      const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+      const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+      const lease = await installLease(f.run.id, 8, f.park.until);
+      await prisma.userModelCredential.update({
+        where: { id: credential.id },
+        data: { connectionRevision: { increment: 1 } },
+      });
+      await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(
+        false,
+      );
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+        quotaWait: state,
+      });
+    });
+
+    it("requires the same authorized backup connection when a quota wait resumes", async () => {
+      const f = await quotaRun();
+      const createCredential = (label: string) =>
+        prisma.userModelCredential.create({
+          data: { userId, provider: target.provider, label, secretId: `${f.run.id}-${label}` },
+        });
+      const [original, replacement] = await Promise.all([
+        createCredential("original"),
+        createCredential("replacement"),
+      ]);
+      const saved = {
+        provider: target.provider,
+        modelId: target.modelId,
+        modelCredentialId: original.id,
+      };
+      const bound = {
+        ...target,
+        ...saved,
+        connectionRevision: original.connectionRevision,
+        costOwner: "user" as const,
+        backup: true as const,
+      };
+      const scope = { spaceId, userId };
+      await replaceSpaceBackupModels(prisma, scope, [saved]);
+      try {
+        await expect(
+          parkRunQuotaWait(prisma, { ...f.park, target: bound }, f.beganAt),
+        ).resolves.toMatchObject({ revision: 1 });
+        const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+        const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+        const lease = await installLease(f.run.id, 8, f.park.until);
+        await replaceSpaceBackupModels(prisma, scope, []);
+        await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(
+          false,
+        );
+        await replaceSpaceBackupModels(prisma, scope, [
+          { ...saved, modelCredentialId: replacement.id },
+        ]);
+        await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(
+          false,
+        );
+        await replaceSpaceBackupModels(prisma, scope, [saved]);
+        await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(
+          true,
+        );
+        const dispatched = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+        const receipt = runQuotaWaitStateSchema.parse(dispatched.quotaWait);
+        expect(receipt.dispatchedFence).toBe(lease.leaseFence);
+        await expect(
+          claimRunQuotaResume(prisma, { ...lease, state: receipt }, f.park.until),
+        ).resolves.toBe(false);
+        await expect(
+          pauseRunForInput(prisma, {
+            ...lease,
+            spaceId,
+            threadId: f.thread.id,
+            botId,
+            blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+          }),
+        ).resolves.toBe(true);
+        const card = await prisma.message.findFirstOrThrow({
+          where: { runId: f.run.id, role: "bot" },
+        });
+        const answer = {
+          spaceId,
+          threadId: f.thread.id,
+          runId: f.run.id,
+          messageId: card.id,
+          answeredByUserId: userId,
+          answer: "Taipei",
+        };
+        await expect(answerRunInput(prisma, { ...answer, messageId: "stale" })).resolves.toBe(
+          false,
+        );
+        await expect(answerRunInput(prisma, answer)).resolves.toBe(true);
+        await expect(answerRunInput(prisma, answer)).resolves.toBe(false);
+        const answered = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+        const checkpointState = runQuotaWaitStateSchema.parse(answered.quotaWait);
+        expect(checkpointState).toEqual({ ...receipt, humanResume: "input" });
+        const humanAt = new Date(f.beganAt.getTime() + RUN_QUOTA_WAIT_MAX_MS + 1);
+        const humanLease = await installLease(f.run.id, 9, humanAt);
+        const checkpoint = { ...humanLease, state: checkpointState };
+        await expect(
+          claimRunQuotaResume(prisma, { ...humanLease, state: receipt }, humanAt),
+        ).resolves.toBe(false);
+        await replaceSpaceBackupModels(prisma, scope, []);
+        await expect(claimRunQuotaResume(prisma, checkpoint, humanAt)).resolves.toBe(false);
+        await replaceSpaceBackupModels(prisma, scope, [saved]);
+        const dispatches = await Promise.all([
+          claimRunQuotaResume(prisma, checkpoint, humanAt),
+          claimRunQuotaResume(prisma, checkpoint, humanAt),
+        ]);
+        expect(dispatches.filter(Boolean)).toHaveLength(1);
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+          quotaWait: receipt,
+        });
+      } finally {
+        await replaceSpaceBackupModels(prisma, scope, []);
+      }
+    });
+
+    it("refuses to dispatch after the Run owner has left the Space", async () => {
+      const f = await quotaRun();
+      await expect(parkRunQuotaWait(prisma, f.park, f.beganAt)).resolves.toMatchObject({
+        revision: 1,
+      });
+      const waiting = await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } });
+      const state = runQuotaWaitStateSchema.parse(waiting.quotaWait);
+      const lease = await installLease(f.run.id, 8, f.park.until);
+      const member = await prisma.spaceMember.delete({
+        where: { spaceId_userId: { spaceId, userId } },
+      });
+      try {
+        await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(
+          false,
+        );
+        expect(await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({
+          quotaWait: state,
+        });
+      } finally {
+        await prisma.spaceMember.create({ data: member });
+      }
+    });
+  });
 
   async function seedRetry() {
     const f = await seed();

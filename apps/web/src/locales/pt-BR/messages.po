@@ -3479,6 +3479,10 @@ msgstr "O modelo \"{modelId}\" não foi listado."
 msgid "Model id"
 msgstr "ID do modelo"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "Limite do modelo atingido. A tarefa será retomada às {time}."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "Opções do modelo"
@@ -5658,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr ""
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "Aguardando o computador ficar disponível para tentar novamente."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "Aguardando na fila…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "Aguardando retomada"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

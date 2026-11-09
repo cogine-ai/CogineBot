@@ -18,6 +18,7 @@ import {
   buildComposerMentionOptions,
   cloudAgentHttpsUrl,
   formatFileSize,
+  formatMessageTime,
   forwardProbeAfterPage,
   groupVoiceChats,
   isApprovalAskBlock,
@@ -171,7 +172,7 @@ import { transparentColor } from "../lib/color";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { available as dictationAvailable } from "../lib/dictation";
 import { cancelFocusPrompt, focusPromptThreadActive } from "../lib/focus-prompt";
-import { t, useI18n } from "../lib/i18n";
+import { dateLocaleForUi, t, useI18n } from "../lib/i18n";
 import { isInlineImageMimeType } from "../lib/inline-image";
 import { integrationsCacheScope, isIntegrationsScopeCurrent } from "../lib/integrations-cache";
 import { KeyboardScrollBack } from "../lib/keyboard-scroll-back";
@@ -302,7 +303,8 @@ function isWorkingStatus(status: string | undefined): boolean {
     status === "leased" ||
     status === "running" ||
     status === "waiting_input" ||
-    status === "waiting_takeover"
+    status === "waiting_takeover" ||
+    status === "waiting_limit"
   );
 }
 
@@ -1006,14 +1008,38 @@ function Thread({
     const seen = new Set<string>();
     const working = snap?.activeRuns ?? (snap?.run ? [snap.run] : []);
     return working.flatMap((run) => {
-      if (!run.botId || seen.has(run.botId) || !isWorkingStatus(run.status)) return [];
+      if (
+        run.status === "waiting_limit" ||
+        !run.botId ||
+        seen.has(run.botId) ||
+        !isWorkingStatus(run.status)
+      )
+        return [];
       const member = snap?.members?.find((candidate) => candidate.botId === run.botId);
       if (!member) return [];
       seen.add(run.botId);
       return [{ ...member, status: run.status }];
     });
   }, [inGroup, snap?.activeRuns, snap?.members, snap?.run]);
-  const working = inGroup ? workingGroupBots.length > 0 : isWorkingStatus(currentBotStatus);
+  const quotaWaits = (snap?.activeRuns ?? (snap?.run ? [snap.run] : [])).flatMap((run) => {
+    if (run.status !== "waiting_limit" || !run.quotaWaitUntil) return [];
+    const bot = inGroup ? snap?.members?.find((member) => member.botId === run.botId) : currentBot;
+    const time = formatMessageTime(run.quotaWaitUntil, dateLocaleForUi(locale));
+    if (!time) return [];
+    return [
+      {
+        id: run.id,
+        bot,
+        botId: run.botId,
+        label: run.quotaWaitForComputer
+          ? t("Waiting for the computer before retrying.")
+          : t("Model limit reached. Resuming at {time}.", { time }),
+      },
+    ];
+  });
+  const working =
+    (inGroup ? workingGroupBots.length > 0 : isWorkingStatus(currentBotStatus)) ||
+    quotaWaits.length > 0;
 
   const [stopReplyAnnouncements, observeReplyEvent] = useReplyAnnouncements(
     JSON.stringify([ownerUserId, sessionEpoch, profileScope, snap?.threadId]),
@@ -1825,6 +1851,8 @@ function Thread({
                 event.type === "thread.cloud_agent" ||
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
+                event.type === "run.waiting_limit" ||
+                event.type === "run.started" ||
                 event.type === "computer.takeover.requested" ||
                 event.type === "computer.takeover.released" ||
                 isRunTerminalEvent(event)
@@ -2743,8 +2771,12 @@ function Thread({
     [headerHeight, readOnly, insets.bottom],
   );
 
-  const workingFooter =
-    !inGroup && currentBot && isWorkingStatus(currentBotStatus) && !hasLiveProgress ? (
+  const activeWorkFooter =
+    !inGroup &&
+    currentBot &&
+    isWorkingStatus(currentBotStatus) &&
+    currentBotStatus !== "waiting_limit" &&
+    !hasLiveProgress ? (
       <View
         accessibilityLabel={
           workingNarrationStatus ?? t("{name} is working", { name: currentBot.name })
@@ -2798,6 +2830,20 @@ function Thread({
         <WorkingIndicator label={workingNarrationStatus} />
       </View>
     ) : null;
+  const workingFooter = (
+    <>
+      {activeWorkFooter}
+      {quotaWaits.map(({ id, bot, botId, label }) => (
+        <View
+          key={id}
+          style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 }}
+        >
+          {bot ? <BotAvatar color={bot.color} identity={botId} size={28} /> : null}
+          <WorkingIndicator label={label} wrapLabel />
+        </View>
+      ))}
+    </>
+  );
 
   const loadEarlierControl =
     snap?.olderCursor != null ? (

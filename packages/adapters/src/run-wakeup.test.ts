@@ -1,5 +1,5 @@
 import type { BackgroundJobHandlers, JobPublisher } from "@rakazo/adapter-kit";
-import { runContinueJob } from "@rakazo/adapter-kit";
+import { runContinueJob, runQuotaResumeJob } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
@@ -107,7 +107,7 @@ describe("durable direct run wakeups", () => {
   });
 
   it.each(
-    (["waiting_input", "waiting_takeover"] as const).flatMap((status) =>
+    (["waiting_input", "waiting_takeover", "waiting_limit"] as const).flatMap((status) =>
       (["null", "due", "future"] as const).map((schedule) => ({ status, schedule })),
     ),
   )(
@@ -145,6 +145,67 @@ describe("durable direct run wakeups", () => {
       }
     },
   );
+
+  it("carries the wait revision through direct scheduling without rewriting wakeAt", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const until = new Date(Date.now() + 1_000);
+    const handler = vi.fn(async () => undefined);
+    f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
+    try {
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, until));
+      expect(f.updateMany).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(handler).toHaveBeenCalledExactlyOnceWith(
+        { runId: "limited", quotaWaitRevision: 2 },
+        expect.objectContaining({ onRunStarted: expect.any(Function) }),
+      );
+    } finally {
+      await f.starter.stop();
+    }
+  });
+
+  it("keeps a timed quota retry scheduled while the same revision is still executing", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const retryAt = new Date(Date.now() + 500);
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let completeScheduling!: () => void;
+    const scheduled = new Promise<void>((resolve) => {
+      completeScheduling = resolve;
+    });
+    const handler = vi.fn(async () => {
+      if (handler.mock.calls.length !== 1) return;
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, retryAt));
+      completeScheduling();
+      await active;
+    });
+    f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
+    try {
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, new Date()));
+      await scheduled;
+      await vi.advanceTimersByTimeAsync(499);
+      expect(handler).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenLastCalledWith(
+        { runId: "limited", quotaWaitRevision: 2 },
+        expect.objectContaining({ onRunStarted: expect.any(Function) }),
+      );
+      expect(f.background.enqueue).not.toHaveBeenCalled();
+      expect(f.updateMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await f.starter.stop();
+    }
+  });
 
   it.each(["due", "future"] as const)(
     "preserves a queued %s schedule when ordinary or explicit hints arrive late",

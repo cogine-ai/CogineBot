@@ -238,16 +238,19 @@ describe("sandbox idle", () => {
     expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
   });
 
-  it("does not let an abandoned waiting takeover prevent idle suspension", async () => {
-    const harness = idleHarness();
-    harness.prisma.run.findFirst.mockImplementation(async ({ where }) =>
-      where.status.in.includes("waiting_takeover") ? { id: "waiting" } : null,
-    );
+  it.each(["waiting_takeover", "waiting_limit"])(
+    "does not let %s without a lease prevent idle suspension",
+    async (status) => {
+      const harness = idleHarness();
+      harness.prisma.run.findFirst.mockImplementation(async ({ where }) =>
+        where.status.in.includes(status) ? { id: "waiting" } : null,
+      );
 
-    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
 
-    expect(harness.sandbox.stop).toHaveBeenCalledOnce();
-  });
+      expect(harness.sandbox.stop).toHaveBeenCalledOnce();
+    },
+  );
 
   it("claims the lease boundary before any checkpoint export", async () => {
     const harness = idleHarness();

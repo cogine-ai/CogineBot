@@ -69,6 +69,11 @@ export {
   ROW_SECURITY_POLICIES,
 } from "./row-security-policies.js";
 export { loadRunProgressReset } from "./run-progress.js";
+export {
+  claimRunQuotaResume,
+  parkRunQuotaWait,
+  reparkRunQuotaWaitForComputer,
+} from "./run-quota-wait.js";
 export { MAX_SELF_RECOVERIES_PER_RUN, reserveRunSelfRecovery } from "./run-self-recovery.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";

@@ -73,7 +73,8 @@ export const BotAvatar = memo(function BotAvatar({
 }: BotAvatarProps) {
   const parsed = parseBotAvatar(color);
   const effectiveIdentity = identity || "companion";
-  const working = ACTIVE_RUN_STATUSES.some((active) => active === status);
+  const working =
+    status !== "waiting_limit" && ACTIVE_RUN_STATUSES.some((active) => active === status);
   const bodyColor = resolvePersonaColorDef(effectiveIdentity, parsed.color).hex;
   const gaze = resolveGazeAvatar(effectiveIdentity, parsed.shapeIndex);
   const artwork = (

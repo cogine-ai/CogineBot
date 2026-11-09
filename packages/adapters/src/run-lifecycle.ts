@@ -1,4 +1,5 @@
-import { runContinueJob } from "@rakazo/adapter-kit";
+import { runContinueJob, runQuotaResumeJob } from "@rakazo/adapter-kit";
+import { runQuotaWaitStateSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { ExecutorDeps } from "./executor.js";
@@ -58,26 +59,47 @@ export function providerOutageRetryDelay(priorFailures: number): number {
 }
 
 /**
- * A bot uses its computer for one run at a time, and runs that found it held wait without
- * a retry timer. The run releasing it starts the next one due. Runs backing off after a
- * failure keep their delay.
+ * A bot uses its computer for one run at a time. On release, start the oldest
+ * other run already due, including a quota wait parked on the computer.
  */
 export async function startNextWaitingRun(
-  deps: ExecutorDeps,
+  { prisma, jobs }: Pick<ExecutorDeps, "prisma" | "jobs">,
   botId: string,
   releasedBy: string,
 ): Promise<void> {
-  const next = await deps.prisma.run.findFirst({
+  const now = new Date();
+  const scope = { botId, id: { not: releasedBy } };
+  const orderBy = [{ createdAt: "asc" as const }, { id: "asc" as const }];
+  const queued = {
+    status: "queued",
+    OR: [{ wakeAt: null }, { wakeAt: { lte: now } }],
+  };
+  const next = await prisma.run.findFirst({
     where: {
-      botId,
-      status: "queued",
-      id: { not: releasedBy },
-      OR: [{ wakeAt: null }, { wakeAt: { lte: new Date() } }],
+      ...scope,
+      OR: [queued, { status: "waiting_limit", wakeAt: { lte: now } }],
     },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    orderBy,
+    select: { id: true, status: true, wakeAt: true, quotaWait: true },
+  });
+  if (!next) return;
+  if (next.status !== "waiting_limit") {
+    await jobs.enqueue(runContinueJob(next.id));
+    return;
+  }
+
+  const state = runQuotaWaitStateSchema.safeParse(next.quotaWait).data;
+  if (state?.dispatchedFence === null && next.wakeAt && Date.parse(state.until) <= now.getTime()) {
+    await jobs.enqueue(runQuotaResumeJob(next.id, state.revision, next.wakeAt));
+    return;
+  }
+  // An invalid or stale wait must not prevent another queued run from using the computer.
+  const fallback = await prisma.run.findFirst({
+    where: { ...scope, ...queued },
+    orderBy,
     select: { id: true },
   });
-  if (next) await deps.jobs.enqueue(runContinueJob(next.id));
+  if (fallback) await jobs.enqueue(runContinueJob(fallback.id));
 }
 
 /** Open the model only while this worker still owns the running lease. */

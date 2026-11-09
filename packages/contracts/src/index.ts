@@ -35,6 +35,7 @@ export * from "./pages.js";
 export * from "./plugins.js";
 export * from "./reactions.js";
 export * from "./rpc.js";
+export * from "./run-quota-wait.js";
 export * from "./runs.js";
 export * from "./search.js";
 export * from "./terminal.js";

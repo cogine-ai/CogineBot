@@ -13,7 +13,7 @@ import {
   SandboxUnresponsiveError,
 } from "@rakazo/adapter-kit";
 import type { ComputerUpdate } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, parseScreenLeaseId, screenLeaseId } from "@rakazo/core";
+import { COMPUTER_ACTIVE_RUN_STATUSES, parseScreenLeaseId, screenLeaseId } from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerExecutionLeases, parseComputerMode } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -130,7 +130,7 @@ async function hasLiveForeignRunLease(
 ): Promise<boolean> {
   const live = await prisma.run.findFirst({
     where: {
-      status: { in: [...ACTIVE_RUN_STATUSES] },
+      status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
       bot: { computerId },
       leaseExpiresAt: { gt: new Date() },
       ...(exceptRunId ? { id: { not: exceptRunId } } : {}),
@@ -819,7 +819,7 @@ export async function replaceComputer(
     }
     const activeBootRun = await deps.prisma.run.findFirst({
       where: {
-        status: { in: [...ACTIVE_RUN_STATUSES] },
+        status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
         bot: { computerId },
       },
       select: { id: true },
@@ -888,7 +888,7 @@ export async function replaceComputer(
   // Re-check after the claim in case a run started between the pre-check and CAS.
   const activeRun = await deps.prisma.run.findFirst({
     where: {
-      status: { in: [...ACTIVE_RUN_STATUSES] },
+      status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
       bot: { computerId },
     },
     select: { id: true },

@@ -5,8 +5,10 @@ import {
   routineRetryJob,
   routineWakeupJob,
   runContinueJob,
+  runQuotaResumeJob,
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
+import { runQuotaWaitStateSchema } from "@rakazo/contracts";
 import { normalizeRunError, stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { BOT_COLLABORATION_ORIGINS } from "@rakazo/db";
@@ -249,6 +251,7 @@ export function createJobReconciler(
               {
                 OR: [
                   { status: "queued" },
+                  { status: "waiting_limit" },
                   {
                     status: { in: ["leased", "running"] },
                     leaseExpiresAt: { lte: now },
@@ -264,6 +267,8 @@ export function createJobReconciler(
             id: true,
             status: true,
             updatedAt: true,
+            wakeAt: true,
+            quotaWait: true,
             botId: true,
             bot: { select: { computerId: true } },
           },
@@ -401,13 +406,27 @@ export function createJobReconciler(
       await publishAll([
         ...runs
           .filter((run) => !blockers.has(run.id))
-          .map((run) =>
-            deps.jobs.enqueue({
-              ...runContinueJob(run.id),
-              keepExisting: true,
-              replaceLockedBefore: run.status === "queued" ? abandonedQueuedLockAt : now,
-            }),
-          ),
+          .flatMap((run) => {
+            if (run.status === "waiting_limit") {
+              const state = runQuotaWaitStateSchema.safeParse(run.quotaWait).data;
+              if (state?.dispatchedFence !== null || !run.wakeAt) return [];
+              // Scan waits from parking time so an updatedAt cursor cannot pass
+              // a row that only becomes eligible when the clock reaches wakeAt.
+              return [
+                deps.jobs.enqueue({
+                  ...runQuotaResumeJob(run.id, state.revision, run.wakeAt),
+                  replaceLockedBefore: abandonedQueuedLockAt,
+                }),
+              ];
+            }
+            return [
+              deps.jobs.enqueue({
+                ...runContinueJob(run.id),
+                keepExisting: true,
+                replaceLockedBefore: run.status === "queued" ? abandonedQueuedLockAt : now,
+              }),
+            ];
+          }),
         ...(dueOutbound ? [deps.jobs.enqueue(messagingDeliverJob())] : []),
         ...unmirroredMessagingRuns.map((run) => deps.jobs.enqueue(messagingDeliverJob(run.id))),
       ]);

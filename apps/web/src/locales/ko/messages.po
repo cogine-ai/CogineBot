@@ -3479,6 +3479,10 @@ msgstr "\"{modelId}\" 모델이 목록에 없습니다."
 msgid "Model id"
 msgstr "모델 ID"
 
+#: src/pages/Shell.tsx
+msgid "Model limit reached. Resuming at {time}."
+msgstr "모델 한도에 도달했습니다. {time}에 다시 시작합니다."
+
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Model options"
 msgstr "모델 선택지"
@@ -5658,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr "API가 다시 작동하기를 기다리는 중…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "다시 시도하기 전에 컴퓨터가 준비되기를 기다리는 중입니다."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "줄에서 기다리는 중…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "다시 시작 대기 중"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

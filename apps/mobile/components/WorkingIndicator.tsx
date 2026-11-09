@@ -54,10 +54,12 @@ export function WorkingIndicator({
   compact = false,
   tint,
   label,
+  wrapLabel = false,
 }: {
   compact?: boolean;
   tint?: string;
   label?: string;
+  wrapLabel?: boolean;
 }) {
   const tokens = useMobileTokens();
   const { t } = useI18n();
@@ -106,7 +108,7 @@ export function WorkingIndicator({
     >
       {label ? (
         <Text
-          numberOfLines={1}
+          numberOfLines={wrapLabel ? undefined : 1}
           style={{ flexShrink: 1, color: tokens.mutedForeground, fontSize: 13 }}
         >
           {label}

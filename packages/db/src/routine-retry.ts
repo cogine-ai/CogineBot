@@ -2,6 +2,7 @@ import { isOneShotRoutineCrons } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "./client.js";
 import { lockOwnedGroup } from "./groups.js";
 import { lockBotCreationIntro } from "./repos.js";
+import { hasPriorRunWork } from "./run-prior-work.js";
 import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
@@ -181,7 +182,7 @@ async function retryAuthorizationIsCurrent(
   if (
     !original.routineId ||
     !(await retryThreadIsCurrent(tx, target)) ||
-    (await hasPriorWork(tx, original))
+    (await hasPriorRunWork(tx, original))
   )
     return false;
   if (original.clientNonce?.startsWith("native-event:")) {
@@ -196,28 +197,6 @@ async function retryAuthorizationIsCurrent(
     );
   }
   return lockRetryOwner(tx, target);
-}
-
-async function hasPriorWork(tx: Prisma.TransactionClient, source: RetrySource): Promise<boolean> {
-  const [tool, message, effect, steering] = await Promise.all([
-    tx.event.findFirst({
-      where: { runId: source.id, spaceId: source.spaceId, type: "agent.tool.called" },
-      select: { id: true },
-    }),
-    tx.message.findFirst({
-      where: { runId: source.id, threadId: source.threadId, role: "bot" },
-      select: { id: true },
-    }),
-    tx.externalEffect.findFirst({
-      where: { runId: source.id, spaceId: source.spaceId },
-      select: { id: true },
-    }),
-    tx.steeringMessage.findFirst({
-      where: { runId: source.id, botId: source.botId, claimedAt: { not: null } },
-      select: { id: true },
-    }),
-  ]);
-  return Boolean(tool || message || effect || steering);
 }
 
 /** The failed Run is the outbox. Call while its terminal transaction still owns its fence. */
@@ -235,7 +214,7 @@ export async function planRoutineRetryInTransaction(
   // Do not lock Routine after the terminal transaction has locked Thread and Run.
   // The delayed consumer takes the Routine lock and repeats every eligibility check.
   if (!canRetryRoutine(await readRetryRoutine(tx, source), source.id, at)) return;
-  if (await hasPriorWork(tx, source)) return;
+  if (await hasPriorRunWork(tx, source)) return;
   await tx.run.update({ where: { id: source.id }, data: { routineRetryAt: at } });
   return at;
 }

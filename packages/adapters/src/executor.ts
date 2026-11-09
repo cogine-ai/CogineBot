@@ -65,6 +65,7 @@ import {
   routineRetryJob,
   routineWakeupJob,
   runContinueJob,
+  runQuotaResumeJob,
   SandboxRateLimitError,
   SandboxUnavailableError,
   SandboxUnresponsiveError,
@@ -84,6 +85,8 @@ import {
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  RUN_QUOTA_WAIT_MAX_MS,
+  runQuotaWaitStateSchema,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
@@ -151,6 +154,7 @@ import {
   authorizeCollaborationRunStart,
   BOT_COLLABORATION_ORIGINS,
   beginRoutineRetryExecution,
+  claimRunQuotaResume,
   createSpaceForMember,
   effectiveMemoryScope,
   failScriptedRunPreservingSteering,
@@ -162,11 +166,13 @@ import {
   loadRunProgressReset,
   loadRunTurnCheckpoint,
   Prisma,
+  parkRunQuotaWait,
   parseComputerMode,
   RunHistoryWriteError,
   readHistory,
   readRunTimingFields,
   recordUsage,
+  reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
   retireModelCredential,
   runAsSystem,
@@ -362,6 +368,7 @@ import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
 import {
   ModelOutputRecoveryError,
+  ModelQuotaWaitError,
   redactInterruptedOutput,
   TransientModelError,
 } from "./model-output-recovery.js";
@@ -437,7 +444,7 @@ import {
 } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
-import { findRunRecoveryBlockers } from "./run-recovery.js";
+import { findRunRecoveryBlockers, pendingQuotaWaitExpired } from "./run-recovery.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -2799,6 +2806,7 @@ export function desktopProtectionGuardMessage(reason: string): string {
 /** Cap the roster so a large Space cannot flood the prompt. */
 const BOT_DIRECTORY_LIMIT = 40;
 const MISSING_MODEL_MESSAGE = "Connect a model in Settings before running bots.";
+const MODEL_LIMIT_RECOVERY_UNAVAILABLE = "Model limit recovery is no longer available. Try again.";
 
 function runtimeFallbackModel(runtime: AgentRuntime) {
   return runtime.describe().capabilities.scripted ? { provider: "scripted", id: "scripted" } : null;
@@ -3321,6 +3329,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       id: modelId,
       authorize: resolved.authorize,
       modelCredentialId: resolved.modelCredentialId,
+      quotaConnectionRevision: credential.connectionRevision,
       apiKey: resolved.oauth ? undefined : resolved.apiKey,
       ...cloudflareRunFields(resolved),
       baseUrl: resolved.baseUrl,
@@ -3643,11 +3652,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
       }
     },
 
-    async continueRun(runId: string, workerId: string, onRunStarted?: () => void) {
+    async continueRun(
+      runId: string,
+      workerId: string,
+      onRunStarted?: () => void,
+      quotaWaitRevision?: number,
+    ) {
       let deps = baseDeps;
       if (deps.shutdownSignal?.aborted) return;
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
+      const quotaWait =
+        run.quotaWait === null ? undefined : runQuotaWaitStateSchema.safeParse(run.quotaWait).data;
+      if (
+        quotaWaitRevision !== undefined &&
+        (run.status !== "waiting_limit" || quotaWait?.revision !== quotaWaitRevision)
+      )
+        return;
+      if (quotaWait?.dispatchedFence === null && Date.parse(quotaWait.until) > Date.now()) return;
       enrichLogContext({
         "run.id": runId,
         "bot.id": run.botId,
@@ -3672,8 +3694,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
         (!run.leaseExpiresAt || run.leaseExpiresAt.getTime() > Date.now())
       )
         return;
+      const quotaResumeKind = quotaWait?.humanResume;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
-        takeoverContinuePlan(run);
+        takeoverContinuePlan({
+          status: quotaResumeKind === "takeover-held" ? "waiting_takeover" : run.status,
+          checkpoint: run.checkpoint ?? takeoverCheckpointOf(quotaResumeKind),
+        });
+      const takeoverAdmission =
+        resumeCheckpoint ??
+        (heldForTakeover && run.wakeAt !== null ? ("takeover-held" as const) : null);
+      const quotaAdmissionWait =
+        quotaWait?.dispatchedFence != null &&
+        takeoverAdmission &&
+        takeoverAdmission !== quotaResumeKind
+          ? { ...quotaWait, humanResume: takeoverAdmission }
+          : quotaWait;
       const scripted = deps.runtime.describe().capabilities.scripted;
       const isSteeringContinuation =
         scripted &&
@@ -3736,6 +3771,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: {
             id: runId,
             ...continueRunClaimFence(run),
+            ...(quotaWait ? { leaseFence: run.leaseFence, quotaWait: { equals: quotaWait } } : {}),
             ...(isSteeringContinuation
               ? {
                   leaseFence: run.leaseFence,
@@ -3749,18 +3785,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               {
                 OR: [
                   {
-                    status: { in: ["waiting_input", "waiting_takeover"] },
+                    status: { in: ["waiting_input", "waiting_takeover", "waiting_limit"] },
                     wakeAt: { lte: now },
                   },
                   {
-                    status: { notIn: ["waiting_input", "waiting_takeover"] },
+                    status: { notIn: ["waiting_input", "waiting_takeover", "waiting_limit"] },
                     OR: [{ wakeAt: null }, { wakeAt: { lte: now } }],
                   },
                 ],
               },
             ],
             OR: [
-              { status: { in: ["queued", "waiting_input", "waiting_takeover"] } },
+              { status: { in: ["queued", "waiting_input", "waiting_takeover", "waiting_limit"] } },
               {
                 status: { in: ["leased", "running"] },
                 leaseExpiresAt: { lte: now },
@@ -3775,6 +3811,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error: null,
             checkpoint: null,
             wakeAt: null,
+            ...(quotaAdmissionWait && quotaAdmissionWait !== quotaWait
+              ? { quotaWait: quotaAdmissionWait }
+              : {}),
           },
         });
         if (leased.count !== 1) return false;
@@ -3857,60 +3896,98 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         return;
       }
-      const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
-        where: { id: run.botId },
-        select: {
-          computerId: true,
-          computerSwitching: true,
-          computer: { select: { scope: true } },
-        },
-      });
-      if (!leaseTarget.computerId) throw new Error("Bot has no computer");
-      if (leaseTarget.computerSwitching) {
-        await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
-        return;
-      }
-      try {
-        await settleTakeoverCards();
-      } catch (error) {
-        if (error instanceof RunHistoryWriteError) return;
-        throw error;
-      }
+      const expiredQuotaWait = pendingQuotaWaitExpired(quotaWait, Date.now());
       let computerLease: ComputerExecutionLease | null = null;
-      try {
-        computerLease = await acquireComputerExecutionLease(deps.prisma, {
-          computerId: leaseTarget.computerId,
-          runId,
-          botId: run.botId,
-          workerId,
-          runFence: fence,
+      if (!expiredQuotaWait) {
+        const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
+          where: { id: run.botId },
+          select: {
+            computerId: true,
+            computerSwitching: true,
+            computer: { select: { scope: true } },
+          },
         });
-        if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
-          computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+        if (!leaseTarget.computerId) throw new Error("Bot has no computer");
+        const computerRun = {
+          id: runId,
+          botId: run.botId,
+          bot: { computerId: leaseTarget.computerId },
+        };
+        const isComputerBlocked = async () =>
+          (await findRunRecoveryBlockers(deps.prisma, [computerRun], new Date())).has(runId);
+        const waitForComputer = async (untilReleased = false) => {
+          if (quotaWait?.dispatchedFence !== null) {
+            await requeueComputerRun(
+              deps,
+              runId,
+              workerId,
+              fence,
+              resumeCheckpoint,
+              heldForTakeover,
+              untilReleased,
+            );
+            return;
+          }
+          const now = Date.now();
+          const retryAt = new Date(
+            untilReleased
+              ? now
+              : Math.min(
+                  now + computerRetryDelay(fence),
+                  Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
+                ),
+          );
+          const waiting = await reparkRunQuotaWaitForComputer(deps.prisma, {
+            runId,
+            spaceId: run.spaceId,
+            threadId: run.threadId,
+            botId: run.botId,
+            leaseOwner: workerId,
+            leaseFence: fence,
+            state: quotaWait,
+            wakeAt: retryAt,
+          });
+          if (!waiting) return;
+          if (waiting.eventSeq !== null) {
+            await deps.events.notify(run.threadId, waiting.eventSeq).catch(() => undefined);
+          }
+          // Recheck once after parking: a release just before the write cannot see this wait.
+          if (untilReleased ? !(await isComputerBlocked()) : retryAt.getTime() > Date.now()) {
+            await deps.jobs.enqueue(runQuotaResumeJob(runId, quotaWait.revision, retryAt));
+          }
+        };
+        if (leaseTarget.computerSwitching) {
+          await waitForComputer();
+          return;
+        }
+        try {
+          await settleTakeoverCards();
+        } catch (error) {
+          if (error instanceof RunHistoryWriteError) return;
+          throw error;
+        }
+        try {
+          computerLease = await acquireComputerExecutionLease(deps.prisma, {
             computerId: leaseTarget.computerId,
             runId,
             botId: run.botId,
             workerId,
             runFence: fence,
           });
+          if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
+            computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+              computerId: leaseTarget.computerId,
+              runId,
+              botId: run.botId,
+              workerId,
+              runFence: fence,
+            });
+          }
+        } catch (error) {
+          if (!(error instanceof ComputerBusyError)) throw error;
+          await waitForComputer(await isComputerBlocked());
+          return;
         }
-      } catch (error) {
-        if (!(error instanceof ComputerBusyError)) throw error;
-        const blockers = await findRunRecoveryBlockers(
-          deps.prisma,
-          [{ id: runId, botId: run.botId, bot: { computerId: leaseTarget.computerId } }],
-          new Date(),
-        );
-        await requeueComputerRun(
-          deps,
-          runId,
-          workerId,
-          fence,
-          resumeCheckpoint,
-          heldForTakeover,
-          blockers.has(runId),
-        );
-        return;
       }
       const progressRunStartedAt = run.startedAt ?? new Date();
       let attempt: { id: string };
@@ -4113,9 +4190,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
       };
       let dispatchHandedOff = false;
+      let quotaAdmissionConsumed = false;
       try {
         onRunStarted?.();
         dispatchHandedOff = Boolean(onRunStarted);
+        if (expiredQuotaWait) {
+          await settleRunFailure(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
+          return;
+        }
         const sourceMessage = run.sourceMessageId
           ? await deps.prisma.message.findUnique({
               where: { id: run.sourceMessageId, threadId: run.threadId },
@@ -4252,10 +4334,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ...initialBotCommandEnvironment,
         });
         // modelPinned distinguishes the captured choice from an attempt's recorded model.
-        const modelChoice = runModelChoice(run, bot);
+        const preferredModel = runModelChoice(run, bot);
+        const quotaTarget = quotaWait?.target;
+        const modelChoice = quotaTarget
+          ? {
+              modelProvider: quotaTarget.provider,
+              modelId: quotaTarget.modelId,
+              modelCredentialId: quotaTarget.modelCredentialId,
+              thinkingLevel:
+                preferredModel.modelProvider === quotaTarget.provider &&
+                preferredModel.modelId === quotaTarget.modelId &&
+                preferredModel.modelCredentialId === quotaTarget.modelCredentialId
+                  ? preferredModel.thinkingLevel
+                  : null,
+            }
+          : preferredModel;
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);
         const overrideCredential =
-          hasModelOverride && modelChoice.modelProvider
+          hasModelOverride && modelChoice.modelProvider && quotaTarget?.modelCredentialId !== null
             ? await findConnectedModelCredential(
                 deps.prisma,
                 run,
@@ -4491,9 +4587,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const runDeployment = deps.deploymentModelConfigured ? resolveDeploymentModel() : null;
         const runtimeFallback = runtimeFallbackModel(deps.runtime);
-        const pinError = hasModelOverride
-          ? pinnedModelCredentialError(modelChoice, overrideCredential)
-          : undefined;
+        const pinError =
+          hasModelOverride && quotaTarget?.modelCredentialId !== null
+            ? pinnedModelCredentialError(modelChoice, overrideCredential)
+            : undefined;
         const selected = selectConfiguredModel({
           override: modelChoice,
           overrideCredential,
@@ -4547,12 +4644,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
         };
+        if (
+          (run.quotaWait != null && !quotaWait) ||
+          (run.status === "waiting_limit" && !quotaWait) ||
+          (quotaAdmissionWait?.dispatchedFence != null && !quotaAdmissionWait.humanResume) ||
+          pendingQuotaWaitExpired(quotaWait, Date.now())
+        ) {
+          await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
+          return;
+        }
         if (pinError) {
           await failRunBeforeModel(pinError);
           return;
         }
         if (
-          run.modelPinned &&
+          (run.modelPinned || quotaTarget) &&
           (selected.provider !== modelChoice.modelProvider || selected.id !== modelChoice.modelId)
         ) {
           await failRunBeforeModel("Connect that model provider first");
@@ -4574,7 +4680,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             runModelProvider,
             runModelId,
             (values) => runSecrets.push(...values),
-            hasModelOverride,
+            quotaTarget ? quotaTarget.modelCredentialId !== null : hasModelOverride,
           );
         } catch (error) {
           // A dead or account-switched credential is already deleted. Retrying
@@ -4586,6 +4692,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
         runSecrets.push(...resolved.redact);
+        if (
+          quotaTarget &&
+          (resolved.modelCredentialId !== quotaTarget.modelCredentialId ||
+            (credential?.connectionRevision ?? null) !== quotaTarget.connectionRevision)
+        ) {
+          await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
+          return;
+        }
         // A pin stays as it was created. Unpinned runs still record the model they
         // used; modelPinned is what keeps that record from becoming the next choice.
         if (!run.modelPinned) {
@@ -8805,7 +8919,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           modelId: string;
           modelCredentialId: string | null;
         }[] = [];
-        if (!scripted) {
+        if (!scripted && !quotaTarget) {
           try {
             fallbackModels = await deps.prisma.spaceBackupModel.findMany({
               where: { userId: run.userId, spaceId: run.spaceId },
@@ -8896,11 +9010,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
               history: runtimeHistory,
               currentTurnImages,
               tools,
+              ...(quotaAdmissionWait
+                ? {
+                    quotaResume: {
+                      target: quotaAdmissionWait.target,
+                      ...(quotaAdmissionWait.humanResume ? { humanResume: true as const } : {}),
+                      claim: async () => {
+                        context.signal.throwIfAborted();
+                        const claimed = await claimRunQuotaResume(deps.prisma, {
+                          runId,
+                          leaseOwner: workerId,
+                          leaseFence: fence,
+                          state: quotaAdmissionWait,
+                        });
+                        if (!claimed) throw new Error(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
+                        quotaAdmissionConsumed = true;
+                        context.signal.throwIfAborted();
+                      },
+                    },
+                  }
+                : {}),
               model: {
                 provider: runModelProvider,
                 id: runModelId,
                 authorize: resolved.authorize,
                 modelCredentialId: resolved.modelCredentialId,
+                ...(resolved.modelCredentialId !== null
+                  ? { quotaConnectionRevision: credential?.connectionRevision }
+                  : resolved.apiKey
+                    ? { quotaConnectionRevision: null }
+                    : {}),
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 ...cloudflareRunFields(resolved),
                 baseUrl: resolved.baseUrl,
@@ -9768,6 +9907,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
             runSecrets,
           );
           let partialText: string | undefined;
+          if (error instanceof ModelQuotaWaitError && leaseValid && !handedOff && !assembled) {
+            const wait = await parkRunQuotaWait(deps.prisma, {
+              runId,
+              attemptId: attempt.id,
+              spaceId: run.spaceId,
+              threadId: run.threadId,
+              botId: run.botId,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              until: error.until,
+              target: error.target,
+            });
+            if (wait) {
+              stopHeartbeatAfterCompletion();
+              await deps.events.notify(run.threadId, wait.eventSeq).catch(() => undefined);
+              await deps.jobs
+                .enqueue(runQuotaResumeJob(runId, wait.revision, wait.until))
+                .catch((error) => getLogger().error("quota resume wake enqueue", error));
+              return;
+            }
+          }
           if (
             error instanceof ModelOutputRecoveryError &&
             !handedOff &&
@@ -9792,6 +9952,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
       } catch (setupError) {
         if (deps.shutdownSignal?.aborted || setupError instanceof RunHistoryWriteError) return;
+        if (quotaAdmissionConsumed) {
+          // The admitted provider/tool episode is already spent. Requeuing its earlier
+          // takeover checkpoint would grant a second admission for the same handback.
+          await settleRunFailure(
+            redactSecrets(
+              setupError instanceof Error ? setupError.message : String(setupError),
+              runSecrets,
+            ),
+          );
+          return;
+        }
         if (
           setupError instanceof ScriptedStateInvalidError ||
           setupError instanceof MemoryCommitIdentityError ||

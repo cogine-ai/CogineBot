@@ -21,6 +21,7 @@ export const ProductEventType = z.enum([
   "run.started",
   "run.checkpointed",
   "run.waiting_input",
+  "run.waiting_limit",
   "run.completed",
   "run.failed",
   "run.cancelled",
