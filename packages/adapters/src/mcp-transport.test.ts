@@ -80,10 +80,13 @@ describe("MCP transport seam", () => {
   it("aborts a legacy SSE handshake that never announces an endpoint", async () => {
     const session = new McpSession();
     const abort = new AbortController();
-    const started = Promise.withResolvers<AbortSignal>();
+    let entered!: (signal: AbortSignal) => void;
+    const started = new Promise<AbortSignal>((resolve) => {
+      entered = resolve;
+    });
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
       const request = new Request(input, init);
-      started.resolve(request.signal);
+      entered(request.signal);
       return new Response(new ReadableStream(), {
         headers: { "content-type": "text/event-stream" },
       });
@@ -95,7 +98,7 @@ describe("MCP transport seam", () => {
         network: { ...TEST_NETWORK, fetch },
         signal: abort.signal,
       });
-      const observed = await started.promise;
+      const observed = await started;
       abort.abort(new Error("handshake cancelled"));
       await expect(connecting).rejects.toThrow("handshake cancelled");
       expect(observed.aborted).toBe(true);

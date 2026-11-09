@@ -174,19 +174,28 @@ describe("MCP discovery lifecycle", () => {
   });
 
   it("preserves the remaining observation when a newer discovery is cancelled", async () => {
-    const startedFirst = Promise.withResolvers<void>();
-    const startedSecond = Promise.withResolvers<void>();
-    const first = Promise.withResolvers<never>();
-    const second = Promise.withResolvers<never>();
+    let enteredFirst!: () => void;
+    let enteredSecond!: () => void;
+    let failFirst!: (error: Error) => void;
+    const startedFirst = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    const startedSecond = new Promise<void>((resolve) => {
+      enteredSecond = resolve;
+    });
+    const first = new Promise<never>((_, reject) => {
+      failFirst = reject;
+    });
+    const second = new Promise<never>(() => {});
     const list = vi
       .spyOn(McpSession.prototype, "listTools")
       .mockImplementationOnce(() => {
-        startedFirst.resolve();
-        return first.promise;
+        enteredFirst();
+        return first;
       })
       .mockImplementationOnce(() => {
-        startedSecond.resolve();
-        return second.promise;
+        enteredSecond();
+        return second;
       });
     const cancelled = new AbortController();
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
@@ -197,12 +206,12 @@ describe("MCP discovery lifecycle", () => {
     );
     try {
       const remaining = connector.discoverTools(context);
-      await startedFirst.promise;
+      await startedFirst;
       const leaving = connector.discoverTools({ ...context, signal: cancelled.signal });
-      await startedSecond.promise;
+      await startedSecond;
       cancelled.abort();
       await leaving;
-      first.reject(new Error("fixture discovery failure"));
+      failFirst(new Error("fixture discovery failure"));
       await expect(remaining).resolves.toMatchObject([{ name: "mcp__demo__unavailable" }]);
       await expect(connector.discoverTools(context)).resolves.toMatchObject([
         { name: "mcp__demo__unavailable" },
