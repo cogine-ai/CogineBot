@@ -1000,6 +1000,8 @@ export interface WebFetchCapabilities {
   fetch: boolean;
   /** True when readable extraction runs without executing page JavaScript. */
   readability: boolean;
+  /** Accepts offsets and returns continuation positions for the same page. */
+  pagination?: boolean;
 }
 
 export interface WebSearchRequest {
@@ -1017,6 +1019,8 @@ export interface WebSearchHit {
 export interface WebFetchRequest {
   url: string;
   maxChars?: number;
+  /** UTF-16 position in the extracted page text. Defaults to the beginning. */
+  offset?: number;
   signal?: AbortSignal;
   /** Synchronous Run authority check before a redirect target is resolved or contacted. */
   assertRedirectAllowed?: (url: string) => void;
@@ -1027,6 +1031,10 @@ export interface WebFetchResult {
   title: string;
   text: string;
   truncated: boolean;
+  /** Present when the provider supports pagination. */
+  offset?: number;
+  /** When truncated, the next position if the provider can read further. */
+  nextOffset?: number;
 }
 
 /** Page-level browser on the bot computer (DOM refs), not a hosted browser vendor. */

@@ -8,7 +8,7 @@ import type {
   WebSearchRequest,
 } from "@rakazo/adapter-kit";
 import { JSDOM } from "jsdom";
-import { clampMaxChars, clampMaxResults } from "./web-limits.js";
+import { clampMaxChars, clampMaxResults, clampOffset, readWebPage } from "./web-limits.js";
 import { fetchSafeWebText, type ResolveHostname } from "./web-ssrf.js";
 
 export {
@@ -82,6 +82,7 @@ export class KeylessHttpWebProvider implements WebProvider {
         keyless: true,
         native: false,
         readability: true,
+        pagination: true,
       },
     };
   }
@@ -105,7 +106,8 @@ export class KeylessHttpWebProvider implements WebProvider {
 
   async fetch(request: WebFetchRequest, context: AdapterContext): Promise<WebFetchResult> {
     const maxChars = clampMaxChars(request.maxChars);
-    const { url, body } = await fetchSafeWebText(request.url, {
+    const offset = clampOffset(request.offset);
+    const { url, body, contentType } = await fetchSafeWebText(request.url, {
       fetch: this.fetchImpl,
       resolveHostname: this.resolveHostname,
       timeoutMs: this.fetchTimeoutMs,
@@ -115,16 +117,12 @@ export class KeylessHttpWebProvider implements WebProvider {
       assertRedirectAllowed: request.assertRedirectAllowed,
     });
     if (!body.trim()) throw new Error(`Failed to fetch content from ${url}`);
-    const extracted = extractReadableText(body, url);
-    const truncated = extracted.text.length > maxChars;
-    return {
-      url,
-      title: extracted.title,
-      text: truncated
-        ? `${extracted.text.slice(0, maxChars)}\n\n[Content truncated]`
-        : extracted.text,
-      truncated,
-    };
+    const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase();
+    const extracted =
+      mediaType === "text/plain" || mediaType === "text/markdown"
+        ? { title: "Untitled", text: body }
+        : extractReadableText(body, url);
+    return { url, title: extracted.title, ...readWebPage(extracted.text, maxChars, offset) };
   }
 }
 

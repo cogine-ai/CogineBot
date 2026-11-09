@@ -3,6 +3,7 @@ import type {
   AgentContextStrategy,
   CacheCapabilities,
   ToolResultHistoryReference,
+  WebFetchResult,
 } from "@rakazo/adapter-kit";
 
 import {
@@ -20,6 +21,7 @@ import {
   mcpToolResultRoute,
   toolCallIdentity,
 } from "./verbatim-mcp-result.js";
+import { MAX_WEB_FETCH_OFFSET, pageWindow } from "./web-limits.js";
 
 export type ContextStrategy = AgentContextStrategy;
 export interface ContextMessage {
@@ -573,6 +575,51 @@ interface ToolResultBoundOptions {
   afterUse?: boolean;
 }
 
+type OffsetWebPage = WebFetchResult & { offset: number };
+
+function isOffsetWebPage(value: unknown): value is OffsetWebPage {
+  if (!value || typeof value !== "object") return false;
+  const page = value as Partial<OffsetWebPage>;
+  return (
+    typeof page.url === "string" &&
+    typeof page.title === "string" &&
+    typeof page.text === "string" &&
+    typeof page.truncated === "boolean" &&
+    typeof page.offset === "number" &&
+    Number.isInteger(page.offset) &&
+    page.offset >= 0 &&
+    page.offset <= MAX_WEB_FETCH_OFFSET
+  );
+}
+
+/** Keep an unread page's contiguous prefix and advance only by the text delivered. */
+function shortenWebFetchPage(
+  original: unknown,
+  size: number,
+  wrap: (value: unknown) => unknown,
+): unknown {
+  const envelope =
+    original && typeof original === "object" && "result" in original ? original : undefined;
+  const page = envelope ? envelope.result : original;
+  if (!isOffsetWebPage(page)) return undefined;
+  const title = truncatePlainText(page.title, Math.min(1_000, Math.floor(size / 4)));
+  const build = (limit: number) => {
+    const window = pageWindow(page.text, limit, page.offset);
+    const bounded = window.truncated ? { url: page.url, title, ...window } : { ...page, title };
+    return wrap(envelope ? { ...envelope, result: bounded } : bounded);
+  };
+  const full = build(page.text.length);
+  if (JSON.stringify(full).length <= size) return full;
+  let low = 0;
+  let high = Math.min(size, page.text.length);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (JSON.stringify(build(middle)).length <= size) low = middle;
+    else high = middle - 1;
+  }
+  return truncatePlainText(page.text, low) ? build(low) : null;
+}
+
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
 export function boundToolResultText(
   source: string,
@@ -656,6 +703,12 @@ export function boundToolResult(
         ? { ...original, ...evidence }
         : { result: original, ...evidence };
     if (JSON.stringify(complete).length <= size) return encode(complete);
+  }
+  if (tool.name === "web_fetch" && !tool.afterUse) {
+    const page = shortenWebFetchPage(original, size, wrap);
+    if (page === null)
+      return encode({ contextTruncated: true, error: "budget_error", ...evidence });
+    if (page !== undefined) return encode(page);
   }
   const overhead = JSON.stringify(wrap({})).length;
   try {

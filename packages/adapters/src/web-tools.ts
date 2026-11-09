@@ -4,7 +4,7 @@ import type {
   WebFetchRequest,
   WebSearchProvider,
 } from "@rakazo/adapter-kit";
-import { clampMaxChars, clampMaxResults } from "./web-limits.js";
+import { clampMaxChars, clampMaxResults, clampOffset } from "./web-limits.js";
 
 export async function webSearchFromTool(
   search: WebSearchProvider,
@@ -37,10 +37,14 @@ export async function webFetchFromTool(
   const url = String(args.url ?? "").trim();
   if (!url) return { error: "url is required" };
   try {
+    const offset = clampOffset(args.offset);
+    if (offset && !fetchProvider.describe().capabilities.pagination)
+      return { error: "This web provider does not support page offsets." };
     const result = await fetchProvider.fetch(
       {
         url,
         maxChars: clampMaxChars(args.maxChars),
+        ...(offset ? { offset } : {}),
         signal: context.signal,
         assertRedirectAllowed,
       },

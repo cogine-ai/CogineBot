@@ -11,6 +11,7 @@ import {
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
 import { BROWSER_ACT_KINDS } from "./browser-tools.js";
+import { MAX_WEB_FETCH_OFFSET } from "./web-limits.js";
 
 // The owner flag can land in process.env after static imports run (loadRootEnv
 // parses .env once the entry module is already executing), so the model-facing
@@ -576,14 +577,19 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "web_fetch",
     description:
-      "Fetch a public http(s) page and return readable text (title + content). Read-only; no JavaScript. Use after web_search when you need the page itself.",
+      "Fetch a public http(s) page and return readable text. If truncated, pass the returned nextOffset with the same URL to continue. A truncated page without a nextOffset has reached its read limit. Read-only; no JavaScript.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "Page URL (http or https)." },
         maxChars: {
           type: "number",
-          description: "Max characters of body text (default 8000).",
+          description: "Max characters of body text (default 8000, max 50000).",
+        },
+        offset: {
+          type: "number",
+          maximum: MAX_WEB_FETCH_OFFSET,
+          description: "Position in the extracted text. Use nextOffset from the previous page.",
         },
       },
       required: ["url"],

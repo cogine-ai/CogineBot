@@ -3516,7 +3516,9 @@ describe("connector read-only metadata and approval enforcement", () => {
             requested.push(url);
             return url === start
               ? new Response(null, { status: 302, headers: { location: destination } })
-              : new Response("<html><body>Approved result</body></html>");
+              : new Response("<html><body>Approved result</body></html>", {
+                  headers: { "content-type": "text/html" },
+                });
           },
         }),
       });
@@ -3589,7 +3591,9 @@ describe("connector read-only metadata and approval enforcement", () => {
         requested.push(url);
         return url === start
           ? new Response(null, { status: 302, headers: { location: scenario.location } })
-          : new Response("<html><body>Authorized result</body></html>");
+          : new Response("<html><body>Authorized result</body></html>", {
+              headers: { "content-type": "text/html" },
+            });
       },
     });
     const f = fixture({
@@ -3804,7 +3808,9 @@ describe("connector read-only metadata and approval enforcement", () => {
           resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
           fetch: async (input) => {
             requested.push(String(input));
-            return new Response("<html><body>Authorized result</body></html>");
+            return new Response("<html><body>Authorized result</body></html>", {
+              headers: { "content-type": "text/html" },
+            });
           },
         }),
       });
@@ -3843,7 +3849,9 @@ describe("connector read-only metadata and approval enforcement", () => {
           requested.push(url);
           return url.endsWith("/start")
             ? new Response(null, { status: 302, headers: { location: "/final" } })
-            : new Response("<html><body>Authorized result</body></html>");
+            : new Response("<html><body>Authorized result</body></html>", {
+                headers: { "content-type": "text/html" },
+              });
         },
       }),
     });

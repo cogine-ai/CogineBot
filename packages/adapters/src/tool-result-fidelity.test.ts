@@ -50,6 +50,46 @@ describe("tool result fidelity", () => {
     },
   );
 
+  it("advances an unread web page only by the contiguous text that fits the model budget", () => {
+    const page = {
+      url: "https://example.test/doc",
+      title: "Fixture",
+      text: '"\n\u0000😀'.repeat(6_000),
+      offset: 101,
+      truncated: false,
+    };
+    const serialized = serializeToolResult(page, "current", "web_fetch", {}, reference);
+    const result = parse(serialized);
+    const first = result.result as typeof page & { nextOffset: number };
+    expect(first).toMatchObject({ offset: 101, truncated: true });
+    expect(first.text.length).toBeGreaterThan(0);
+    expect(first.text.length).toBeLessThan(page.text.length);
+    expect(first.text).toBe(page.text.slice(0, first.text.length));
+    expect(first.text).not.toMatch(/[\uD800-\uDBFF]$/);
+    expect(first.nextOffset).toBe(101 + first.text.length);
+    expect(result.historyReference).toEqual(reference);
+
+    const squeezed = parse(
+      boundToolResultText(
+        serialized,
+        600,
+        {
+          name: "web_fetch",
+          retained: true,
+          wrapped: true,
+        },
+        reference,
+      ),
+      600,
+    );
+    const shorter = squeezed.result as typeof first;
+    expect(shorter.text.length).toBeGreaterThan(0);
+    expect(shorter.text.length).toBeLessThan(first.text.length);
+    expect(shorter.text).toBe(page.text.slice(0, shorter.text.length));
+    expect(shorter.nextOffset).toBe(101 + shorter.text.length);
+    expect(squeezed.historyReference).toEqual(reference);
+  });
+
   it("preserves JSON in every MCP text part and duplicated structured content", () => {
     const envelope = {
       content: [
