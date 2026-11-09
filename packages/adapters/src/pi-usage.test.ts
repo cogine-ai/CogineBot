@@ -1,12 +1,13 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { Api, Context, Model, Usage } from "@earendil-works/pi-ai";
-import { calculateCost } from "@earendil-works/pi-ai";
+import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
+import type { AgentRuntimeEvent, AgentUsage } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
+import { lookupOpenRouterUsage } from "./openrouter-usage.js";
 import { createOpenAiCompatibleFetch } from "./pi-openai-compatible-provider.js";
-import { PiAgentRuntime } from "./pi-runtime.js";
+import { PiAgentRuntime, reliableModelStream } from "./pi-runtime.js";
 import { normalizePiUsage, observedPiStream, usageReportingFetch } from "./pi-usage.js";
 
 const model: Model<Api> = {
@@ -54,6 +55,488 @@ async function run(usage?: object, selectedModel = model) {
   }
   return { events, beforeCall, afterCall, result: await stream.result() };
 }
+
+async function runCostCall(
+  fetch: typeof globalThis.fetch,
+  baseUrl = "https://openrouter.ai/api/v1",
+  overrides: Partial<Model<Api>> = {},
+) {
+  const recordUsage = vi.fn();
+  const models = builtinModels();
+  const selected = { ...model, baseUrl, ...overrides };
+  const context: Context = { messages: [{ role: "user", content: "Test cost", timestamp: 1 }] };
+  const stream = reliableModelStream(
+    models,
+    selected,
+    context,
+    { apiKey: "fixture-connection-key", fetch, maxRetries: 0 },
+    undefined,
+    undefined,
+    (options) =>
+      observedPiStream(
+        models,
+        selected,
+        context,
+        options,
+        () => undefined,
+        undefined,
+        { operationKind: "answer", modelCredentialId: "fixture-connection" },
+        { recordUsage },
+      ),
+  );
+  await stream.result();
+  expect(recordUsage).toHaveBeenCalledTimes(1);
+  return recordUsage.mock.calls[0]?.[0];
+}
+
+describe("provider cost evidence", () => {
+  it.each([
+    {
+      name: "completed",
+      interrupted: false,
+      reportedCost: undefined,
+      source: "pi-catalog-estimate",
+    },
+    { name: "interrupted", interrupted: true, reportedCost: undefined, source: null },
+    {
+      name: "reported before interruption",
+      interrupted: true,
+      reportedCost: 0.125,
+      source: "provider-reported",
+    },
+  ])("classifies Anthropic cost when $name", async ({ interrupted, reportedCost, source }) => {
+    const frames = [
+      {
+        type: "message_start",
+        message: {
+          id: "msg-cost-fixture",
+          type: "message",
+          role: "assistant",
+          model: "fixture",
+          content: [],
+          usage: { input_tokens: 10, output_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 2, ...(reportedCost === undefined ? {} : { cost: reportedCost }) },
+      },
+      interrupted
+        ? { type: "error", error: { type: "overloaded_error", message: "Fixture interrupted" } }
+        : { type: "message_stop" },
+    ];
+    const stream = frames
+      .map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`)
+      .join("");
+    const event = await runCostCall(
+      async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+      "https://model.example.test",
+      { provider: "anthropic", api: "anthropic-messages" },
+    );
+    expect(event).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 2,
+      pricingSnapshot: model.cost,
+      costSource: source,
+    });
+    if (source === null) expect(event.costUsd).toBeNull();
+    else expect(event.costUsd).toBeCloseTo(reportedCost ?? 0.000014, 12);
+  });
+
+  it.each(["interrupted-json", "sse-error"] as const)(
+    "does not trust a generation header against $0 identity evidence",
+    async (format) => {
+      const conflict = JSON.stringify({
+        error: { message: "Fixture", metadata: { generation_id: "gen-current" } },
+      });
+      let sent = false;
+      const body =
+        format === "sse-error"
+          ? `data: ${conflict}\n\n`
+          : new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (!sent) {
+                  sent = true;
+                  controller.enqueue(new TextEncoder().encode(conflict));
+                  return;
+                }
+                controller.error(new Error("Fixture connection reset"));
+              },
+            });
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+        new Response(body, {
+          status: format === "sse-error" ? 200 : 400,
+          headers: {
+            "content-type": format === "sse-error" ? "text/event-stream" : "application/json",
+            "x-generation-id": "gen-other",
+          },
+        }),
+      );
+      expect(await runCostCall(fetch)).toMatchObject({ providerRequestId: null, costUsd: null });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not reconcile conflicting generation IDs in the HTTP error header and body", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { message: "Fixture", metadata: { generation_id: "gen-current" } } },
+          { status: 429, headers: { "x-generation-id": "gen-other" } },
+        ),
+      );
+    expect(await runCostCall(fetch)).toMatchObject({ providerRequestId: null, costUsd: null });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", '{"error":{"message":"Fixture"}}'])(
+    "keeps an interrupted HTTP error body unknown even with preserved status",
+    async (prefix) => {
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (prefix && !sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode(prefix));
+            return;
+          }
+          controller.error(new Error("Fixture connection reset"));
+        },
+      });
+      const event = await runCostCall(
+        async () =>
+          new Response(body, {
+            status: 400,
+            headers: { "content-type": "application/json", "x-request-id": "req-fixture" },
+          }),
+      );
+      expect(event).toMatchObject({
+        providerRequestId: "req-fixture",
+        costUsd: null,
+        costSource: null,
+      });
+    },
+  );
+
+  it("keeps a redirected error unknown through the normal runtime's bounded response", async () => {
+    const response = Object.defineProperties(
+      Response.json(
+        { error: "Fixture" },
+        {
+          status: 429,
+          headers: { "x-generation-id": "gen-other" },
+        },
+      ),
+      {
+        url: { value: "https://other.example.test/api/v1/chat/completions" },
+        redirected: { value: true },
+      },
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response);
+    expect(await runCostCall(fetch)).toMatchObject({ providerRequestId: null, costUsd: null });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a compatible HTTP rejection with explicit generation metadata unknown", async () => {
+    const event = await runCostCall(
+      async () =>
+        Response.json(
+          { error: { message: "Fixture", metadata: { generation_id: "gen-assigned" } } },
+          { status: 429 },
+        ),
+      "https://proxy.example.test/api/v1",
+    );
+    expect(event).toMatchObject({ providerRequestId: "gen-assigned", costUsd: null });
+  });
+
+  it("does not reconcile when two generation IDs for one request conflict", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+      new Response(sse().replaceAll('"id":"test"', '"id":"gen-current"'), {
+        headers: { "content-type": "text/event-stream", "x-generation-id": "gen-other" },
+      }),
+    );
+    expect(await runCostCall(fetch)).toMatchObject({ providerRequestId: null, costUsd: null });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the exact Anthropic request key for a verified OpenRouter generation", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { message: "Fixture" } },
+          {
+            status: 429,
+            headers: { "x-generation-id": "gen-anthropic" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          data: { id: "gen-anthropic", is_byok: false, total_cost: 0.25 },
+        }),
+      );
+    const event = await runCostCall(fetch, "https://openrouter.ai/api", {
+      api: "anthropic-messages",
+    });
+    const [initial, request] = fetch.mock.calls[0]!;
+    expect(new URL(String(initial)).pathname).toBe("/api/v1/messages");
+    const headers = new Headers(request?.headers);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("x-api-key")).toBe("fixture-connection-key");
+    expect(new Headers(fetch.mock.calls[1]?.[1]?.headers).get("authorization")).toBe(
+      "Bearer fixture-connection-key",
+    );
+    expect(event).toMatchObject({ providerRequestId: "gen-anthropic", costUsd: 0.25 });
+  });
+
+  it("keeps the native SDK response ID without installing a Google fetch override", async () => {
+    const models = builtinModels();
+    const selected = { ...model, api: "google-generative-ai", provider: "google" };
+    vi.spyOn(models, "streamSimple").mockImplementation((_model, _context, options) => {
+      expect(options?.fetch).toBeUndefined();
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        api: selected.api,
+        provider: selected.provider,
+        model: selected.id,
+        content: [],
+        responseId: "google-response-fixture",
+        stopReason: "stop" as const,
+        timestamp: 1,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end(message);
+      return stream;
+    });
+    const recordUsage = vi.fn();
+    await observedPiStream(
+      models,
+      selected,
+      { messages: [] },
+      undefined,
+      vi.fn(),
+      undefined,
+      undefined,
+      { recordUsage },
+    ).result();
+    expect(recordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerRequestId: "google-response-fixture",
+        costUsd: null,
+      }),
+    );
+  });
+
+  it.each([
+    { status: 429, cost: 0, source: "provider-rejection" },
+    { status: 502, cost: null, source: null },
+  ])(
+    "records a verified refusal but keeps a $status outcome appropriately classified",
+    async ({ status, cost, source }) => {
+      const event = await runCostCall(async () =>
+        Response.json(
+          { error: { message: "Fixture" } },
+          {
+            status,
+            headers: { "x-request-id": "req-fixture" },
+          },
+        ),
+      );
+      expect(event).toMatchObject({
+        providerRequestId: "req-fixture",
+        modelCredentialId: "fixture-connection",
+        costOwner: "user",
+        costUsd: cost,
+        costSource: source,
+        pricingSnapshot: model.cost,
+        inputTokens: null,
+        outputTokens: null,
+      });
+    },
+  );
+
+  it("does not convert a lost earlier attempt into zero after a subsequent refusal", async () => {
+    const reported = new Set<keyof AgentUsage>();
+    const fetch = usageReportingFetch(
+      vi
+        .fn<typeof globalThis.fetch>()
+        .mockRejectedValueOnce(new Error("Connection closed"))
+        .mockResolvedValueOnce(Response.json({ error: "Fixture" }, { status: 429 })),
+      reported,
+    );
+    await expect(fetch("https://model.example.test")).rejects.toThrow("Connection closed");
+    await fetch("https://model.example.test");
+    expect(normalizePiUsage(undefined, model, reported)).toMatchObject({
+      costUsd: null,
+      costSource: null,
+      providerRequestId: null,
+    });
+  });
+
+  it("separates BYOK charges from a directly reported stream and skips the lookup", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+      new Response(
+        sse({
+          prompt_tokens: 2,
+          completion_tokens: 1,
+          cost: 0,
+          is_byok: true,
+          cost_details: { upstream_inference_cost: 0.125 },
+        }),
+        { headers: { "content-type": "text/event-stream", "x-generation-id": "gen-fixture" } },
+      ),
+    );
+    const previous = process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC;
+    process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC = "1";
+    try {
+      const runtime = new PiAgentRuntime({ modelFetch: fetch });
+      const recordUsage = vi.fn();
+      for await (const _event of runtime.run(
+        {
+          botId: "fixture-bot",
+          threadId: "fixture-thread",
+          runId: "fixture-cost-run",
+          prompt: "Test cost",
+          instructions: "Fixture",
+          history: [],
+          tools: [],
+          onUsage: recordUsage,
+          model: {
+            provider: "openai-compatible",
+            id: "fixture",
+            apiProtocol: "chat-completions",
+            apiKey: "fixture-connection-key",
+            modelCredentialId: "fixture-connection",
+            baseUrl: "https://openrouter.ai/api/v1",
+            contextWindow: 4096,
+            maxTokens: 256,
+          },
+        },
+        { signal: AbortSignal.timeout(5000) },
+      )) {
+        // The real compatible transport consumes only injected responses.
+      }
+      expect(recordUsage).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          providerRequestId: "gen-fixture",
+          modelCredentialId: "fixture-connection",
+          costUsd: 0.125,
+          costSource: "provider-reported",
+          openRouterFeeUsd: 0,
+          upstreamInferenceCostUsd: 0.125,
+        }),
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previous === undefined) delete process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC;
+      else process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC = previous;
+    }
+  });
+
+  it.each(["verified", "other-id", "unavailable", "compatible", "conflicting-byok"] as const)(
+    "limits generation lookup and settlement to a verified request (%s)",
+    async (result) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(
+          new Response(
+            sse({ prompt_tokens: 10, completion_tokens: 2, cost: 0.125, is_byok: true }),
+            { headers: { "content-type": "text/event-stream", "x-generation-id": "gen-current" } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          result === "unavailable"
+            ? new Response(null, { status: 404 })
+            : Response.json({
+                data: {
+                  id: result === "other-id" ? "gen-other" : "gen-current",
+                  is_byok: result !== "conflicting-byok",
+                  total_cost: 0.125,
+                  upstream_inference_cost: 0.25,
+                },
+              }),
+        );
+      const event = await runCostCall(
+        fetch,
+        result === "compatible" ? "https://proxy.example.test/api/v1" : undefined,
+      );
+      if (result === "compatible") {
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(event.providerRequestId).not.toBe("gen-current");
+        expect(event.upstreamInferenceCostUsd).toBeUndefined();
+        return;
+      }
+      expect(fetch).toHaveBeenCalledTimes(2);
+      const [url, options] = fetch.mock.calls[1]!;
+      expect(url).toBe("https://openrouter.ai/api/v1/generation?id=gen-current");
+      expect(options?.redirect).toBe("error");
+      expect(new Headers(options?.headers).get("authorization")).toBe(
+        new Headers(fetch.mock.calls[0]?.[1]?.headers).get("authorization"),
+      );
+      expect(event).toMatchObject({
+        providerRequestId: "gen-current",
+        costUsd: result === "verified" ? 0.375 : null,
+        openRouterFeeUsd: 0.125,
+      });
+      if (result === "verified")
+        expect(event).toMatchObject({
+          upstreamInferenceCostUsd: 0.25,
+          usageSource: "provider-reconciled",
+        });
+    },
+  );
+
+  it("retains an assigned generation as unknown when a rejection cannot prove it was unused", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: "Fixture" },
+          {
+            status: 429,
+            headers: { "x-generation-id": "gen-assigned" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const event = await runCostCall(fetch);
+    expect(event).toMatchObject({
+      providerRequestId: "gen-assigned",
+      costUsd: null,
+      costSource: null,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a stalled lookup even when the transport ignores cancellation", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(controller.signal);
+    try {
+      const lookup = lookupOpenRouterUsage(
+        () => new Promise<Response>(() => {}),
+        "gen-fixture",
+        "Bearer fixture-key",
+      );
+      controller.abort();
+      await expect(lookup).resolves.toBeNull();
+      expect(timeout).toHaveBeenCalledWith(5_000);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+});
 
 describe("Pi usage accounting", () => {
   it.each([false, true])(

@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator } from "@rakazo/adapters";
-import type { ModelCredential } from "@rakazo/contracts";
-import { recordUsage } from "@rakazo/db";
+import type { ModelCredential, UsageRecord } from "@rakazo/contracts";
+import { clearThread, createDb, recordUsage } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { runAutoReviewJudge } from "../../adapters/src/auto-review.js";
 import { compactHistory } from "../../adapters/src/history-compaction.js";
@@ -252,6 +252,18 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
       expect(failedCalls).toHaveLength(1);
       expect(failedCalls[0]).toMatchObject({ runId: failed.runId, operationKind: "answer" });
       const delivered = rows[0]!;
+      expect(delivered).toMatchObject({
+        modelCredentialId: credential.id,
+        costOwner: "user",
+        providerRequestId: expect.any(String),
+        pricingSnapshot: expect.objectContaining({ input: expect.any(Number) }),
+      });
+      const visibleUsage = await rpc<UsageRecord[]>("usage/list");
+      expect(visibleUsage.find((row) => row.id === delivered.id)).toMatchObject({
+        providerRequestId: delivered.providerRequestId,
+        costOwner: "user",
+        pricingSnapshot: delivered.pricingSnapshot,
+      });
       const replayEvent = {
         type: "usage" as const,
         provider: delivered.provider,
@@ -331,4 +343,84 @@ describe.skipIf(!enabled)("persisted Pi usage accounting", () => {
       await rm(dataDir, { recursive: true, force: true });
     }
   }, 45000);
+});
+
+describe.skipIf(!enabled)("durable provider cost facts", () => {
+  it("deduplicates concurrent delivery and preserves attribution after clearing chat", async () => {
+    const { prisma, pool } = createDb(process.env.DATABASE_URL!);
+    const id = randomUUID();
+    try {
+      await prisma.user.create({
+        data: { id, name: "Usage fixture", email: `${id}@example.test`, emailVerified: true },
+      });
+      await prisma.organization.create({
+        data: { id, name: "Usage fixture", slug: id, createdAt: new Date() },
+      });
+      await prisma.space.create({
+        data: { id, organizationId: id, name: "Usage fixture", isDefault: true },
+      });
+      const { id: botId } = await prisma.bot.create({
+        data: { spaceId: id, userId: id, name: "Usage fixture", color: "test-color" },
+      });
+      const { id: threadId } = await prisma.thread.create({
+        data: { spaceId: id, userId: id, botId },
+      });
+      const { id: taskId } = await prisma.task.create({
+        data: { spaceId: id, userId: id, botId, threadId, prompt: "Fixture", status: "completed" },
+      });
+      const { id: runId } = await prisma.run.create({
+        data: {
+          spaceId: id,
+          userId: id,
+          botId,
+          threadId,
+          taskId,
+          status: "completed",
+          trigger: "user",
+        },
+      });
+      const attribution = { spaceId: id, userId: id, botId, runId };
+      const event = {
+        type: "usage" as const,
+        provider: "openrouter",
+        model: "fixture",
+        modelCredentialId: "selected-backup-credential",
+        costOwner: "user" as const,
+        callId: randomUUID(),
+        providerRequestId: "gen-fixture",
+        inputTokens: 20,
+        outputTokens: 3,
+        costUsd: 0.125,
+        openRouterFeeUsd: 0,
+        upstreamInferenceCostUsd: 0.125,
+        pricingSnapshot: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+        costSource: "provider-reported",
+      };
+      await Promise.all([
+        recordUsage(prisma, event, attribution),
+        recordUsage(prisma, event, attribution),
+      ]);
+      await clearThread(prisma, { spaceId: id, threadId, botId });
+      await prisma.run.delete({ where: { id: runId } });
+      const rows = await prisma.usageRecord.findMany({ where: { callId: event.callId } });
+      expect(rows).toHaveLength(1);
+      const { type: _type, ...facts } = event;
+      expect(rows[0]).toMatchObject({
+        ...facts,
+        spaceId: id,
+        userId: id,
+        botId,
+        runId: null,
+        parentRunId: runId,
+      });
+    } finally {
+      try {
+        await prisma.organization.deleteMany({ where: { id } });
+        await prisma.user.deleteMany({ where: { id } });
+      } finally {
+        await prisma.$disconnect();
+        await pool.end();
+      }
+    }
+  });
 });

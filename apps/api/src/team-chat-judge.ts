@@ -269,6 +269,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
         model: {
           provider,
           id: modelId,
+          modelCredentialId: null,
           authorize:
             provider === LOCAL_PROVIDER_ID
               ? undefined

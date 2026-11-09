@@ -15,12 +15,19 @@ import type {
   ModelCallObserver,
   UsageOperationKind,
 } from "@rakazo/adapter-kit";
+import { UsagePricingSnapshotSchema } from "@rakazo/contracts";
 import { Agent } from "undici";
 import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
 import type { ContextBudget } from "./context-selection.js";
 import { withGoogleToolHistory } from "./google-tool-history.js";
 import { modelConnectionStreamErrorMessage } from "./model-connection-errors.js";
 import { estimateModelContextTokens } from "./model-context.js";
+import {
+  isOpenRouterGenerationId,
+  lookupOpenRouterUsage,
+  openRouterCosts,
+  openRouterInferencePath,
+} from "./openrouter-usage.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
 import { effectivePiOutputTokens, finalPiOutputPayload } from "./pi-output-budget.js";
 import { MODEL_BUDGET_UNCHANGED_ERROR } from "./pi-runtime-limits.js";
@@ -35,12 +42,61 @@ import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 export type ReportedUsageFields = Set<keyof AgentUsage>;
 const reportedCosts = new WeakMap<ReportedUsageFields, number>();
 const reportedValues = new WeakMap<ReportedUsageFields, Map<keyof AgentUsage, number>>();
+
+type UsageEvidence = {
+  attempts: number;
+  rejected: boolean;
+  uncertain: boolean;
+  errorBodyPending: boolean;
+  requestId?: string;
+  headerId?: string;
+  generationId?: string;
+  authorization?: string | null;
+  apiKey?: string | null;
+  configuredKey?: string;
+  openRouter?: string;
+  openRouterCost?: ReturnType<typeof openRouterCosts>;
+};
+type ProviderUsageEvent = {
+  id?: unknown;
+  generation_id?: unknown;
+  usage?: unknown;
+  response?: { id?: unknown; usage?: unknown };
+  message?: { id?: unknown; usage?: unknown };
+  error?: { metadata?: { generation_id?: unknown } };
+};
+const usageEvidence = new WeakMap<ReportedUsageFields, UsageEvidence>();
+
+function evidenceFor(reported: ReportedUsageFields): UsageEvidence {
+  const existing = usageEvidence.get(reported);
+  if (existing) return existing;
+  const evidence = { attempts: 0, rejected: false, uncertain: false, errorBodyPending: false };
+  usageEvidence.set(reported, evidence);
+  return evidence;
+}
+
+function safeRequestId(value: unknown, evidence: UsageEvidence): string | undefined {
+  const secret = evidence.authorization?.replace(/^Bearer\s+/i, "");
+  return typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value) &&
+    (!secret || !value.includes(secret)) &&
+    (!evidence.apiKey || !value.includes(evidence.apiKey)) &&
+    (!evidence.configuredKey || !value.includes(evidence.configuredKey))
+    ? value
+    : undefined;
+}
+
 export function normalizePiUsage(
   usage: Partial<Usage> | undefined,
   model: Pick<Model<Api>, "cost">,
   reported: ReportedUsageFields = new Set(),
+  allowCatalogEstimate = true,
 ): AgentUsage {
+  const evidence = usageEvidence.get(reported);
+  const rejected = evidence?.rejected && !evidence.uncertain;
   const token = (value: number | undefined, key: keyof AgentUsage) =>
+    !evidence?.uncertain &&
+    !rejected &&
     typeof value === "number" &&
     Number.isSafeInteger(value) &&
     value >= 0 &&
@@ -91,7 +147,37 @@ export function normalizePiUsage(
     (rates.cacheRead === 0 || cacheReadTokens !== null) &&
     (rates.cacheWrite === 0 || cacheWriteTokens !== null);
   const providerCost = reportedCosts.get(reported);
+  const estimate =
+    allowCatalogEstimate &&
+    costKnown &&
+    typeof usage?.cost?.total === "number" &&
+    Number.isFinite(usage.cost.total) &&
+    usage.cost.total >= 0
+      ? usage.cost.total
+      : null;
+  const costUsd =
+    evidence?.uncertain || evidence?.errorBodyPending
+      ? null
+      : rejected
+        ? 0
+        : evidence?.openRouter
+          ? (evidence.openRouterCost?.costUsd ?? null)
+          : (providerCost ?? estimate);
+  const costSource =
+    costUsd === null
+      ? null
+      : rejected
+        ? "provider-rejection"
+        : evidence?.openRouter || providerCost !== undefined
+          ? "provider-reported"
+          : "pi-catalog-estimate";
   return {
+    providerRequestId: evidence?.uncertain
+      ? null
+      : evidence?.errorBodyPending
+        ? (evidence.headerId ?? null)
+        : (evidence?.generationId ?? evidence?.requestId ?? evidence?.headerId ?? null),
+    pricingSnapshot: UsagePricingSnapshotSchema.safeParse(model.cost).data ?? null,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -99,16 +185,97 @@ export function normalizePiUsage(
     cacheWrite1hTokens: token(usage?.cacheWrite1h, "cacheWrite1hTokens"),
     reasoningTokens: token(usage?.reasoning, "reasoningTokens"),
     totalTokens,
-    costUsd:
-      providerCost ??
-      (costKnown && typeof usage?.cost?.total === "number" && Number.isFinite(usage.cost.total)
-        ? usage.cost.total
-        : null),
-    costSource:
-      providerCost !== undefined ? "provider-reported" : costKnown ? "pi-catalog-estimate" : null,
-    pricingVersion: providerCost !== undefined ? null : costKnown ? "pi-ai-1.3.0" : null,
-    usageSource: reported.size ? "provider-reported-via-pi" : "pi-normalized",
+    ...(!evidence?.uncertain && !rejected ? evidence?.openRouterCost : undefined),
+    costUsd,
+    costSource,
+    pricingVersion: costSource === "pi-catalog-estimate" ? "pi-ai-1.3.0" : null,
+    usageSource: rejected
+      ? "provider-rejected"
+      : reported.size
+        ? "provider-reported-via-pi"
+        : "pi-normalized",
   };
+}
+
+function observeRequestId(raw: unknown, evidence: UsageEvidence) {
+  const id = safeRequestId(raw, evidence);
+  if (id === undefined) return;
+  evidence.requestId ??= id;
+  if (evidence.openRouter && isOpenRouterGenerationId(id)) {
+    if (evidence.generationId && evidence.generationId !== id) evidence.uncertain = true;
+    evidence.generationId ??= id;
+  }
+}
+
+function observeEventIdentity(event: ProviderUsageEvent | null, evidence: UsageEvidence): boolean {
+  const ids = [
+    event?.generation_id,
+    event?.error?.metadata?.generation_id,
+    event?.response?.id,
+    event?.message?.id,
+  ].filter((id) => id != null);
+  for (const id of ids) observeRequestId(id, evidence);
+  observeRequestId(event?.id, evidence);
+  return (
+    ids.length > 0 ||
+    (typeof event?.id === "string" && /^(gen[-_]|resp_|chatcmpl-|msg_)/.test(event.id)) ||
+    event?.usage != null ||
+    event?.response?.usage != null ||
+    event?.message?.usage != null
+  );
+}
+
+const rejectedBeforeGeneration = new Set([400, 401, 402, 403, 404, 405, 406, 413, 415, 422, 429]);
+/** A bounded error body can preserve the HTTP status after its transport was interrupted. */
+export const incompleteModelErrorBodies = new WeakSet<Response>();
+
+/** Inspect only what the SDK reads. An unread, incomplete, or billable response stays uncertain. */
+function observeRejectionBody(response: Response, evidence: UsageEvidence): Response {
+  const canReject = rejectedBeforeGeneration.has(response.status);
+  const isJson = response.headers.get("content-type")?.toLowerCase().includes("json");
+  if (!response.body) {
+    evidence.rejected = canReject && !isJson && !evidence.generationId;
+    return response;
+  }
+  evidence.errorBodyPending = true;
+  const attempt = evidence.attempts;
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  const body = response.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytes += chunk.byteLength;
+        if (bytes <= 64 * 1024) text += decoder.decode(chunk, { stream: true });
+        controller.enqueue(chunk);
+      },
+      flush() {
+        if (
+          attempt !== evidence.attempts ||
+          incompleteModelErrorBodies.has(response) ||
+          bytes > 64 * 1024 ||
+          (isJson && bytes === 0)
+        )
+          return;
+        text += decoder.decode();
+        let event: ProviderUsageEvent | null;
+        try {
+          event = text.trim() ? JSON.parse(text) : null;
+        } catch {
+          if (isJson) return;
+          event = null;
+        }
+        evidence.errorBodyPending = false;
+        const hasGenerationEvidence = observeEventIdentity(event, evidence);
+        evidence.rejected = canReject && !evidence.generationId && !hasGenerationEvidence;
+      },
+    }),
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 /** Read only bounded SSE frames, retaining field presence, never provider text or payloads. */
@@ -117,18 +284,59 @@ export function usageReportingFetch(
   reported: ReportedUsageFields,
 ): typeof fetch {
   return async (input, init) => {
+    const evidence = evidenceFor(reported);
+    // A second transport attempt can replace only a proven no-generation attempt.
+    if (evidence.attempts++ > 0 && !evidence.rejected) evidence.uncertain = true;
+    evidence.rejected = false;
+    evidence.errorBodyPending = false;
+    evidence.requestId = undefined;
+    evidence.headerId = undefined;
+    evidence.generationId = undefined;
+    evidence.openRouterCost = undefined;
+    const request = input instanceof Request ? input : undefined;
+    const headers = new Headers(init?.headers ?? request?.headers);
+    evidence.authorization = headers.get("authorization");
+    evidence.apiKey = headers.get("x-api-key");
+    evidence.openRouter =
+      (init?.method ?? request?.method ?? "GET").toUpperCase() === "POST"
+        ? openRouterInferencePath(request?.url ?? String(input))
+        : undefined;
+    reported.clear();
+    reportedCosts.delete(reported);
+    reportedValues.delete(reported);
     // Keep the package Agent paired after this wrapper hides the default fetch identity.
     const transport =
       init && "dispatcher" in init && init.dispatcher instanceof Agent
         ? fetchPairedWithDispatcher(fetcher)
         : fetcher;
     const response = await transport(input, init);
-    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream"))
-      return response;
+    if (
+      response.redirected ||
+      (evidence.openRouter &&
+        response.url &&
+        openRouterInferencePath(response.url) !== evidence.openRouter)
+    ) {
+      evidence.uncertain = true;
+      evidence.openRouter = undefined;
+    }
+    const sse = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
+    if (evidence.openRouter) {
+      const id = safeRequestId(response.headers.get("x-generation-id"), evidence);
+      if (isOpenRouterGenerationId(id)) evidence.generationId = id;
+    }
+    evidence.headerId = safeRequestId(
+      response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+      evidence,
+    );
+    if (!sse && !response.ok && !evidence.uncertain)
+      return observeRejectionBody(response, evidence);
+    if (!response.body || !sse) return response;
+    const attempt = evidence.attempts;
     let buffer = "";
     let dropping = false;
     const decoder = new TextDecoder();
     const observe = (frame: string) => {
+      if (attempt !== evidence.attempts) return;
       const data = frame
         .split(/\r?\n/)
         .filter((line) => line.startsWith("data:"))
@@ -137,6 +345,7 @@ export function usageReportingFetch(
       if (!data || data === "[DONE]") return;
       try {
         const event = JSON.parse(data);
+        observeEventIdentity(event, evidence);
         const usage = event.usage ?? event.response?.usage ?? event.message?.usage;
         if (!usage || typeof usage !== "object") return;
         const mark = (value: unknown, key: keyof AgentUsage) => {
@@ -173,8 +382,24 @@ export function usageReportingFetch(
         );
         mark(usage.completion_tokens ?? usage.output_tokens, "outputTokens");
         mark(usage.total_tokens, "totalTokens");
-        if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0)
+        if (
+          evidence.openRouter &&
+          (usage.cost !== undefined ||
+            usage.is_byok !== undefined ||
+            usage.cost_details !== undefined)
+        ) {
+          evidence.openRouterCost = openRouterCosts(
+            usage.cost,
+            usage.is_byok,
+            usage.cost_details?.upstream_inference_cost,
+          );
+        } else if (
+          typeof usage.cost === "number" &&
+          Number.isFinite(usage.cost) &&
+          usage.cost >= 0
+        ) {
           reportedCosts.set(reported, usage.cost);
+        }
         mark(rawRead ?? usage.cache_read_input_tokens, "cacheReadTokens");
         mark(rawWrite ?? usage.cache_creation_input_tokens, "cacheWriteTokens");
         mark(usage.cache_creation?.ephemeral_1h_input_tokens, "cacheWrite1hTokens");
@@ -212,6 +437,65 @@ export function usageReportingFetch(
       statusText: response.statusText,
       headers: response.headers,
     });
+  };
+}
+
+async function resolveUsage(
+  usage: Partial<Usage> | undefined,
+  model: Pick<Model<Api>, "cost">,
+  reported: ReportedUsageFields,
+  fetcher: typeof fetch,
+  options: { signal?: AbortSignal; allowCatalogEstimate: boolean },
+): Promise<AgentUsage> {
+  const measured = normalizePiUsage(usage, model, reported, options.allowCatalogEstimate);
+  const evidence = usageEvidence.get(reported);
+  const authorization =
+    evidence?.authorization ??
+    (evidence?.openRouter === "/api/v1/messages" && evidence.apiKey
+      ? `Bearer ${evidence.apiKey}`
+      : undefined);
+  if (
+    measured.costUsd != null ||
+    !evidence?.openRouter ||
+    evidence.uncertain ||
+    evidence.errorBodyPending ||
+    !evidence.generationId ||
+    !authorization ||
+    !/^Bearer [A-Za-z0-9._~+/=-]+$/i.test(authorization) ||
+    (evidence.apiKey && authorization.slice(7) !== evidence.apiKey)
+  )
+    return measured;
+
+  const recovered = await lookupOpenRouterUsage(
+    fetcher,
+    evidence.generationId,
+    authorization,
+    options.signal,
+  );
+  if (
+    !recovered ||
+    (measured.openRouterFeeUsd !== undefined &&
+      recovered.costUsd != null &&
+      recovered.openRouterFeeUsd === undefined)
+  )
+    return measured;
+  return {
+    ...measured,
+    inputTokens: measured.inputTokens ?? recovered.inputTokens ?? null,
+    outputTokens: measured.outputTokens ?? recovered.outputTokens ?? null,
+    cacheReadTokens: measured.cacheReadTokens ?? recovered.cacheReadTokens ?? null,
+    reasoningTokens: measured.reasoningTokens ?? recovered.reasoningTokens ?? null,
+    totalTokens: measured.totalTokens ?? recovered.totalTokens ?? null,
+    openRouterFeeUsd: recovered.openRouterFeeUsd ?? measured.openRouterFeeUsd,
+    upstreamInferenceCostUsd:
+      recovered.upstreamInferenceCostUsd ?? measured.upstreamInferenceCostUsd,
+    ...(recovered.costUsd != null
+      ? {
+          costUsd: recovered.costUsd,
+          costSource: "provider-reported",
+          usageSource: "provider-reconciled",
+        }
+      : {}),
   };
 }
 
@@ -279,6 +563,9 @@ export function observedPiStream(
 ) {
   const stream = createAssistantMessageEventStream();
   const reported: ReportedUsageFields = new Set();
+  evidenceFor(reported).configuredKey = options?.apiKey;
+  const usageModel = { cost: structuredClone(model.cost) };
+  const fetcher = options?.fetch ?? globalThis.fetch;
   const callId = randomUUID();
   const emitUsage = async (usage: AgentUsage, operationKind = attribution.operationKind) => {
     const event = {
@@ -288,6 +575,12 @@ export function observedPiStream(
       model: model.id,
       callId,
       ...attribution,
+      ...(attribution.modelCredentialId === undefined
+        ? {}
+        : {
+            costOwner:
+              attribution.modelCredentialId === null ? ("deployment" as const) : ("user" as const),
+          }),
       operationKind,
     };
     try {
@@ -502,13 +795,19 @@ export function observedPiStream(
       };
       let upstream: ReturnType<Models["streamSimple"]>;
       try {
-        const usageFetch = usageReportingFetch(streamOptions.fetch ?? globalThis.fetch, reported);
+        const usageFetch = usageReportingFetch(fetcher, reported);
         upstream = models.streamSimple(
           model,
           preparedContext,
           collectRawUsage
             ? {
                 ...streamOptions,
+                onProviderStreamEvent: (data, eventModel) => {
+                  const evidence = evidenceFor(reported);
+                  if (data && typeof data === "object")
+                    observeEventIdentity(data as ProviderUsageEvent, evidence);
+                  return streamOptions.onProviderStreamEvent?.(data, eventModel);
+                },
                 fetch:
                   deadlineController || hooks?.onProviderError
                     ? async (input, init) => {
@@ -587,7 +886,15 @@ export function observedPiStream(
           }
           if (event.type === "done" || event.type === "error") {
             const message = event.type === "done" ? event.message : event.error;
-            normalized = normalizePiUsage(message.usage, model, reported);
+            observeRequestId(message.responseId, evidenceFor(reported));
+            normalized = await resolveUsage(
+              message.usage,
+              usageModel,
+              reported,
+              fetcher,
+              // An error can carry partial token counts that Pi priced as if the call had finished.
+              { signal: options?.signal, allowCatalogEstimate: event.type === "done" },
+            );
             await emitUsage(
               normalized,
               usageOperationKind(attribution.operationKind, preparedContext, message),
@@ -625,7 +932,14 @@ export function observedPiStream(
       let terminalError = error;
       if (started && normalized === null) {
         try {
-          await emitUsage(normalizePiUsage(undefined, model));
+          const failedUsage = await resolveUsage(undefined, usageModel, reported, fetcher, {
+            signal: options?.signal,
+            allowCatalogEstimate: false,
+          });
+          if (failedUsage.costUsd != null || failedUsage.providerRequestId != null) {
+            normalized = failedUsage;
+          }
+          await emitUsage(failedUsage);
         } catch (accountingError) {
           terminalError = accountingError;
         }

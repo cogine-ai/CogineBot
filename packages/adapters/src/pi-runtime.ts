@@ -131,7 +131,7 @@ import {
 import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
 import type { PiBudgetCorrection, PiDispatchBudget } from "./pi-usage.js";
-import { observedPiStream } from "./pi-usage.js";
+import { incompleteModelErrorBodies, observedPiStream } from "./pi-usage.js";
 import { reportedContextWindow } from "./reported-context-window.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-context.js";
@@ -4574,12 +4574,14 @@ function boundModelErrorBody(
       }
       if (outcome.kind === "timeout") {
         const error = new Error(MODEL_STREAM_IDLE_TIMEOUT_MESSAGE);
+        incompleteModelErrorBodies.add(bounded);
         void reader.cancel(error).catch(() => undefined);
         if (keepHttpStatus) controller.close();
         else controller.error(error);
         return;
       }
       if (outcome.kind === "error") {
+        incompleteModelErrorBodies.add(bounded);
         if (keepHttpStatus) controller.close();
         else controller.error(outcome.error);
         return;
@@ -4596,10 +4598,15 @@ function boundModelErrorBody(
   const headers = new Headers(response.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
-  return new Response(body, {
+  const bounded = new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers,
+  });
+  // The usage observer needs the original transport provenance after replacing the body.
+  return Object.defineProperties(bounded, {
+    url: { value: response.url },
+    redirected: { value: response.redirected },
   });
 }
 

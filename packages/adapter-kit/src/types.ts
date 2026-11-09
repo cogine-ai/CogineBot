@@ -9,6 +9,7 @@ import type {
   NativeSourceJobPayload,
   RunQuotaTarget,
   SandboxKind,
+  UsagePricingSnapshot,
 } from "@rakazo/contracts";
 
 export interface AdapterContext {
@@ -658,6 +659,8 @@ export interface ScriptedRuntimeState {
  * Input excludes cache buckets. Reasoning is already included in output.
  */
 export interface AgentUsage {
+  providerRequestId?: string | null;
+  pricingSnapshot?: UsagePricingSnapshot | null;
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens?: number | null;
@@ -666,6 +669,8 @@ export interface AgentUsage {
   reasoningTokens?: number | null;
   totalTokens?: number | null;
   costUsd?: number | null;
+  openRouterFeeUsd?: number | null;
+  upstreamInferenceCostUsd?: number | null;
   costSource?: string | null;
   pricingVersion?: string | null;
   usageSource?: string | null;
@@ -718,6 +723,7 @@ export type AgentRuntimeEvent =
       provider: string;
       model: string;
       modelCredentialId?: string | null;
+      costOwner?: "deployment" | "user";
       callId?: string;
       operationKind?: UsageOperationKind;
       agentId?: string;
