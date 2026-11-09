@@ -24,7 +24,13 @@ import type { ClaimedSteeringMessage, ThreadEvents } from "@rakazo/db";
 import * as DbModule from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as AgentConnections from "./agent-connections.js";
-import { isApprovalPausedResult } from "./approval-effect.js";
+import {
+  boundDirectApprovalRequest,
+  CATALOG_APPROVAL_TOOL,
+  catalogApprovalRequest,
+  DENIED_ACTION_ERROR,
+  isApprovalPausedResult,
+} from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -5687,6 +5693,192 @@ describe("connector batch approval", () => {
       expect(f.pauseRunForInput).toHaveBeenCalledTimes(readOnly ? 0 : 1);
     },
   );
+});
+
+describe("same-run refusal", () => {
+  const refused = { error: DENIED_ACTION_ERROR };
+  const send = "GMAIL_SEND_EMAIL";
+  const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+  const route = { connectorId: "composio", resourceId: "resource-1", toolName: send };
+
+  function denied(kind: string, request: unknown, extra: Partial<Effect> = {}): Effect {
+    return {
+      id: `denied-${kind}`,
+      idempotencyKey: `denied-${kind}`,
+      kind,
+      request,
+      status: "denied",
+      runId: "run-1",
+      spaceId: "space-1",
+      ...extra,
+    };
+  }
+
+  function batchFixture(prior: Effect, actions: string[]) {
+    const f = fixture({ name: wrapper, readOnly: false });
+    f.tool.route!.connectorId = "composio";
+    f.tool.batch = { items: "tools", action: "tool_slug" };
+    f.tool.inputSchema = {
+      type: "object",
+      properties: { tools: { type: "array", items: { type: "object" } } },
+      required: ["tools"],
+    };
+    f.effects.push(prior);
+    f.setCalls([
+      {
+        args: { tools: actions.map((tool_slug) => ({ tool_slug, arguments: {} })) },
+        executionId: "later",
+      },
+    ]);
+    return f;
+  }
+
+  it("blocks the same action with changed parameters before auto review or another card", async () => {
+    reviewMock.mockClear();
+    const f = fixture({ name: send, readOnly: false, autoReview: true });
+    f.effects.push(denied(send, { id: "old" }));
+    await f.run();
+    expect(f.results).toEqual([refused]);
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects.at(-1)).toMatchObject({ status: "denied", result: { refused: "repeat" } });
+  });
+
+  it("matches a refused catalog action after it becomes a direct alias", async () => {
+    const f = fixture({ name: "exposed_send_mail", readOnly: false });
+    Object.assign(f.tool.route!, route, { resourceRevision: 2, connectionId: "other-account" });
+    f.effects.push(
+      denied(
+        "old_send_alias",
+        catalogApprovalRequest(
+          "composio_execute_tool",
+          { arguments: { id: "old" } },
+          CATALOG_APPROVAL_TOOL,
+          { ...route, resourceRevision: 1, connectionId: "prior-account" },
+        ),
+      ),
+    );
+    await f.run();
+    expect(f.results).toEqual([refused]);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("blocks a direct refusal retried through a batch with a padded action slug", async () => {
+    const f = batchFixture(
+      denied(send, boundDirectApprovalRequest(route, {}, CATALOG_APPROVAL_TOOL)),
+      ["GMAIL_LIST_THREADS", ` ${send.toLowerCase()} `],
+    );
+    await f.run();
+    expect(f.results).toEqual([refused]);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("blocks a refused batch item retried through a direct alias", async () => {
+    const f = fixture({ name: "exposed_send_mail", readOnly: false });
+    Object.assign(f.tool.route!, route);
+    f.effects.push(
+      denied(
+        wrapper,
+        boundDirectApprovalRequest(
+          { ...route, toolName: wrapper },
+          { tools: [{ tool_slug: send }] },
+          CATALOG_APPROVAL_TOOL,
+        ),
+      ),
+    );
+    await f.run();
+    expect(f.results).toEqual([refused]);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("allows a disjoint batch and ignores machine-refused repeats as denial sources", async () => {
+    const f = batchFixture(denied(wrapper, { tools: [{ tool_slug: send }] }), ["GMAIL_SEND_DRAFT"]);
+    f.effects.push(
+      denied(
+        wrapper,
+        { tools: [{ tool_slug: "GMAIL_SEND_DRAFT" }] },
+        {
+          id: "denied-repeat",
+          result: { refused: "repeat" },
+        },
+      ),
+    );
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
+
+  it("does not carry a refusal to another Run or another connector resource", async () => {
+    const f = fixture({ name: send, readOnly: false });
+    Object.assign(f.tool.route!, route);
+    f.effects.push(
+      denied(
+        send,
+        boundDirectApprovalRequest(
+          { ...route, resourceId: "other-resource" },
+          {},
+          CATALOG_APPROVAL_TOOL,
+        ),
+      ),
+      denied(send, { id: "same" }, { id: "other-run", runId: "run-other" }),
+    );
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(["shell", "mcp__mail__COMPOSIO_REMOTE_WORKBENCH"])(
+    "refuses an opaque retry through %s without executing it",
+    async (name) => {
+      const shell = name === "shell";
+      const executeShell = vi.fn();
+      const f = fixture({
+        name,
+        builtin: shell,
+        sandboxProvider: {
+          describe: () => ({
+            id: "fixture",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: {
+              graphical: false,
+              pty: false,
+              snapshots: false,
+              takeover: false,
+              persistentHome: false,
+            },
+          }),
+          execute: executeShell,
+        },
+      });
+      if (!shell) {
+        f.tool.route!.connectorId = "mcp";
+        f.tool.route!.toolName = "COMPOSIO_REMOTE_WORKBENCH";
+      }
+      f.effects.push(denied(send, boundDirectApprovalRequest(route, {}, CATALOG_APPROVAL_TOOL)));
+      if (shell) f.setCalls([{ args: { command: "synthetic-send" }, executionId: "later" }]);
+      await f.run();
+      expect(f.results).toEqual([refused]);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(executeShell).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it("replays a separately approved action even after another refusal of the same tool", async () => {
+    const f = fixture({
+      name: send,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: send }],
+    });
+    await f.run();
+    const approved = f.effects[0]!;
+    approved.status = "approved";
+    f.effects.push(denied(send, { id: "other" }));
+    f.setCalls([{ args: { id: "new" }, executionId: "resume" }]);
+    await f.run();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.execute.mock.calls[0]![0].args).toEqual({ id: "item-1" });
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
 });
 
 describe("strict installed argument approval replay", () => {

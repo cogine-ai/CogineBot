@@ -230,6 +230,7 @@ import {
   claimIntendedEffect,
   completeExternalEffect,
   createApprovedEffectReplayQueue,
+  DENIED_ACTION_ERROR,
   isToolPauseResult,
   parseCatalogApprovalTarget,
   replaceCompletedExternalEffectResult,
@@ -459,6 +460,7 @@ import {
   scriptedSteeringText,
 } from "./reply-context.js";
 import { lazyRunComputer } from "./run-computer.js";
+import { loadDeniedActionTargets, repeatsDeniedAction } from "./run-denied-actions.js";
 import { loadRunVerbatimMcpServers, restoreRunMcpResultRoute } from "./run-mcp-context.js";
 import { findRunRecoveryBlockers, pendingQuotaWaitExpired } from "./run-recovery.js";
 import {
@@ -5015,6 +5017,31 @@ export function createRunExecutor(deps: ExecutorDeps) {
         )
           throw new ScriptedStateInvalidError();
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
+        // Answering an approval ends the paused attempt. A resumed worker reloads its refusals.
+        let deniedActionTargets: ReturnType<typeof loadDeniedActionTargets> | undefined;
+        const loadRunDenials = () =>
+          (deniedActionTargets ??= deps.prisma.externalEffect
+            .findMany({
+              where: {
+                runId,
+                spaceId: run.spaceId,
+                status: "denied",
+                result: { equals: Prisma.AnyNull },
+              },
+              select: { kind: true, request: true, result: true },
+            })
+            .then((effects) =>
+              loadDeniedActionTargets(
+                effects,
+                async (id) =>
+                  (
+                    await deps.prisma.capabilityInstall.findFirst({
+                      where: { id, spaceId: run.spaceId, userId: run.userId },
+                      select: { kind: true },
+                    })
+                  )?.kind,
+              ),
+            ));
         const baseComputerInstruction = persistentComputerInstruction({
           heldForTakeover,
           graphicalToolsAllowed,
@@ -6464,6 +6491,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
           } catch (error) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
             throw error;
+          }
+          if (
+            applied?.effect.status === "intended" &&
+            repeatsDeniedAction(
+              {
+                toolName: name,
+                route: liveRoute,
+                batch,
+                aliases: directAliases,
+                opaqueCode: name === "shell" || Boolean(isCodeRoute),
+              },
+              await loadRunDenials(),
+            )
+          ) {
+            const refused = await deps.prisma.externalEffect.updateMany({
+              where: { id: applied.effect.id, status: "intended" },
+              data: { status: "denied", result: { refused: "repeat" } },
+            });
+            if (refused.count === 1) return { error: DENIED_ACTION_ERROR };
+            const current = await deps.prisma.externalEffect.findUnique({
+              where: { id: applied.effect.id },
+            });
+            if (current) {
+              const replay = resolveDuplicateEffectGate(current, name);
+              if (replay.action === "return") return replay.result;
+            }
+            return uncertainEffectResult(name);
           }
           const sharedPageUpdate =
             pageMode === "write" && applied
