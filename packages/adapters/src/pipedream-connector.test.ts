@@ -6,6 +6,7 @@ import {
   PipedreamConnector,
   pipedreamConfigFromEnv,
 } from "./pipedream-connector.js";
+import { RemoteMcpSessionPool } from "./remote-mcp-sessions.js";
 import { ThirdPartyConnectorEmulator } from "./third-party-connector-emulator.js";
 
 const context: AdapterContext = {
@@ -595,6 +596,48 @@ describe("PipedreamConnector", () => {
         }),
       }),
     );
+  });
+
+  it("checks the selected account again before sending a pooled tool POST", async () => {
+    const calls: Array<{ app: string | null; name: string; args: unknown }> = [];
+    const connector = new PipedreamConnector(FAKE_CONFIG, {
+      ...TEST_NETWORK,
+      fetch: pipedreamMcpFetch({ gmail: ["send_email"] }, calls),
+    });
+    const owner = connectedContext("gmail");
+    const [tool] = await connector.discoverTools(owner);
+    const pool = new RemoteMcpSessionPool();
+    let authorized = true;
+    const checkAccount = vi.fn(async () => {
+      if (!authorized) throw new Error("Connector account authorization changed");
+    });
+    const bound = pool.bind({ ...owner, runId: "test-run" }, async () => {}, checkAccount);
+    const call = {
+      tool: tool!.name,
+      args: { text: "hello" },
+      executionId: "write",
+      route: tool!.route,
+    };
+    try {
+      await expect(
+        connector.execute(call, bound.context)[Symbol.asyncIterator]().next(),
+      ).resolves.toMatchObject({ value: { type: "result" } });
+      authorized = false;
+      await expect(
+        connector.execute(call, bound.context)[Symbol.asyncIterator]().next(),
+      ).resolves.toMatchObject({
+        value: { type: "error", message: "Connector account authorization changed" },
+      });
+      expect(checkAccount).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          connectionId: "connection-gmail",
+          route: expect.objectContaining({ resourceRevision: expect.any(String) }),
+        }),
+      );
+      expect(calls).toEqual([{ app: "gmail", name: "send_email", args: { text: "hello" } }]);
+    } finally {
+      await pool.close();
+    }
   });
 
   it("runs catalog, connection, discovery, execution, and revoke against the protocol emulator", async () => {

@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost, isPrivateNetworkHost } from "@rakazo/contracts";
-import { Agent } from "undici";
+import { Agent, buildConnector, Client as UndiciClient } from "undici";
 import { combineSignals } from "./connector-safety.js";
 import { boundToolResultText } from "./context-selection.js";
 import {
@@ -19,11 +19,12 @@ import {
   type ResolveHostname,
   withPinnedDnsLookup,
 } from "./network-address.js";
+import type { RemoteMcpToolSession } from "./remote-mcp-sessions.js";
 import { dispatcherFetch, fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 const MAX_MCP_TOOLS = 250;
 const MAX_MCP_PAGES = 20;
-const MCP_TIMEOUT_MS = 30_000;
+export const MCP_TIMEOUT_MS = 30_000;
 const MAX_RESULT_BYTES = 1_000_000;
 
 export type { ResolveHostname } from "./network-address.js";
@@ -42,11 +43,16 @@ export interface RemoteMcpOptions extends RemoteTransportDependencies, RemoteUrl
   endpoint: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  session?: RemoteMcpToolSession;
 }
 
 export interface SafeRemoteFetch {
-  (input: string | URL | Request, init?: RequestInit): Promise<Response>;
-  close(): Promise<void>;
+  (
+    input: string | URL | Request,
+    init?: RequestInit,
+    beforeDispatch?: () => Promise<void>,
+  ): Promise<Response>;
+  close(force?: boolean): Promise<void>;
 }
 
 const resolveHostname: ResolveHostname = (hostname) =>
@@ -82,7 +88,7 @@ export async function callRemoteMcpTool(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  return withRemoteMcpClient(options, async (client, signal) => {
+  const call = async (client: Client, signal: AbortSignal) => {
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
       signal,
       timeout: MCP_TIMEOUT_MS,
@@ -93,7 +99,8 @@ export async function callRemoteMcpTool(
       isError: result.isError ?? false,
       _meta: result._meta,
     });
-  });
+  };
+  return options.session ? options.session.use(options, call) : withRemoteMcpClient(options, call);
 }
 
 async function withRemoteMcpClient<T>(
@@ -112,15 +119,7 @@ async function withRemoteMcpClient<T>(
     options.resolveHostname ?? resolveHostname,
     policy,
   );
-  const transport = new StreamableHTTPClientTransport(endpoint, {
-    requestInit: {
-      headers: options.headers,
-      redirect: "manual",
-      signal,
-    },
-    fetch: safeFetch,
-  });
-  const client = new Client({ name: "rakazo", version: "0.1.0" }, { capabilities: {} });
+  const { client, transport } = createRemoteMcpClient(endpoint, options.headers, safeFetch, signal);
   try {
     await client.connect(transport, { signal, timeout: MCP_TIMEOUT_MS });
     return await run(client, signal);
@@ -128,6 +127,20 @@ async function withRemoteMcpClient<T>(
     await client.close().catch(() => undefined);
     await safeFetch.close().catch(() => undefined);
   }
+}
+
+export function createRemoteMcpClient(
+  endpoint: URL,
+  headers: RemoteMcpOptions["headers"],
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+  signal?: AbortSignal,
+) {
+  const transport = new StreamableHTTPClientTransport(endpoint, {
+    requestInit: { headers, redirect: "manual", signal },
+    fetch,
+  });
+  const client = new Client({ name: "rakazo", version: "0.1.0" }, { capabilities: {} });
+  return { client, transport };
 }
 
 export async function assertSafeRemoteUrl(
@@ -197,23 +210,40 @@ export function createSafeRemoteFetch(
   /** Backend-only protocol acknowledgement; requests remain redirect:manual and never follow Location. */
   acceptManualStatus?: (url: URL, method: string, status: number) => boolean,
 ): SafeRemoteFetch {
-  const dispatcher = new Agent({ connect: { lookup: createSafeLookup(resolve, policy) } });
+  const lookup = createSafeLookup(resolve, policy);
+  const dispatcher = new Agent({ connect: { lookup } });
+  const guardedClients = new Set<UndiciClient>();
   // Injected fetches are not given this Agent; they keep the original hostname
   // for TLS/SNI and pin TCP to the already-validated address through dns.lookup.
   const usePackageFetch = fetchPairedWithDispatcher(baseFetch) === dispatcherFetch;
-  const safeFetch = async (input: string | URL | Request, init?: RequestInit) => {
+  const safeFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+    beforeDispatch?: () => Promise<void>,
+  ) => {
     if (typeof input !== "string" && !(input instanceof URL)) {
       throw new Error("Connector fetch requires a URL, not a Request");
     }
+    init?.signal?.throwIfAborted();
     const { url, addresses } = await inspectSafeRemoteUrl(String(input), resolve, policy);
+    if (beforeDispatch && !usePackageFetch) await beforeDispatch();
+    init?.signal?.throwIfAborted();
+    const guardedClient =
+      beforeDispatch && usePackageFetch
+        ? new UndiciClient(url.origin, {
+            connect: guardedConnect(lookup, beforeDispatch),
+            pipelining: 0,
+          })
+        : undefined;
+    if (guardedClient) guardedClients.add(guardedClient);
     let response: Response;
     try {
       const requestInit = { ...init, redirect: "manual" as const };
       response = usePackageFetch
         ? await dispatcherFetch(url, {
             ...requestInit,
-            dispatcher,
-          } as RequestInit & { dispatcher: Agent })
+            dispatcher: guardedClient ?? dispatcher,
+          } as RequestInit & { dispatcher: Agent | UndiciClient })
         : await withPinnedDnsLookup(url.hostname, addresses, () =>
             baseFetch!(url, requestInitWithHost(url, requestInit)),
           );
@@ -222,6 +252,13 @@ export function createSafeRemoteFetch(
       throw new Error(`Could not reach ${url.host}${detail ? `: ${detail}` : ""}`, {
         cause: error,
       });
+    } finally {
+      if (guardedClient) {
+        void guardedClient
+          .close()
+          .catch(() => undefined)
+          .finally(() => guardedClients.delete(guardedClient));
+      }
     }
     if (
       response.status >= 300 &&
@@ -233,8 +270,38 @@ export function createSafeRemoteFetch(
     return response;
   };
   const result = safeFetch as SafeRemoteFetch;
-  result.close = () => dispatcher.close();
+  result.close = async (force) => {
+    await Promise.all(
+      [dispatcher, ...guardedClients].map((client) => (force ? client.destroy() : client.close())),
+    );
+  };
   return result;
+}
+
+/** Only this POST owns the connection, so its guard also covers any replacement socket. */
+function guardedConnect(
+  lookup: LookupFunction,
+  beforeDispatch: () => Promise<void>,
+): buildConnector.connector {
+  const connect = buildConnector({ lookup });
+  return (options, callback) => {
+    connect(options, (...[error, socket]) => {
+      if (error) {
+        callback(error, null);
+        return;
+      }
+      // Recheck after DNS and TCP/TLS, before handing the socket over for the write.
+      void Promise.resolve()
+        .then(beforeDispatch)
+        .then(
+          () => callback(null, socket),
+          (reason: unknown) => {
+            socket.destroy();
+            callback(reason instanceof Error ? reason : new Error(String(reason)), null);
+          },
+        );
+    });
+  };
 }
 
 function assertPrivateAddresses(addresses: ResolvedAddress[]): void {

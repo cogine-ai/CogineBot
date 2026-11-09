@@ -91,6 +91,7 @@ import {
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
 import {
+  ACTIVE_RUN_STATUSES,
   AGENT_CONNECTION_RESPONSE_TOOL,
   appendTextSegment,
   appendToolCallSegment,
@@ -434,6 +435,7 @@ import {
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
+import { RemoteMcpSessionPool } from "./remote-mcp-sessions.js";
 import {
   loadReplyContext,
   messageToAgentHistory,
@@ -3285,6 +3287,20 @@ class RunCompletionValidationError extends Error {
 
 export function createRunExecutor(deps: ExecutorDeps) {
   const baseDeps = deps;
+  const remoteMcpSessions = new RemoteMcpSessionPool({
+    activeRuns: async (scopes) => {
+      const rows = await runAsSystem("check active runs for local MCP sessions", () =>
+        baseDeps.prisma.run.findMany({
+          where: {
+            id: { in: scopes.map((scope) => scope.runId) },
+            status: { in: [...ACTIVE_RUN_STATUSES] },
+          },
+          select: { id: true, spaceId: true, userId: true },
+        }),
+      );
+      return rows.map(({ id: runId, spaceId, userId }) => ({ runId, spaceId, userId }));
+    },
+  });
   const contextStrategy = deps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = deps.web ?? createWebProvider();
   const browser = deps.browser ?? createBrowserProvider(undefined, { sandbox: deps.sandbox });
@@ -3361,6 +3377,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
   return {
     resolveConnectedModel,
     contextStrategy,
+    closeRemoteMcpSessions: () => remoteMcpSessions.close(),
     async resolveModel(scope: {
       userId: string;
       spaceId: string;
@@ -4055,6 +4072,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
+      let releaseRemoteMcpBinding: (() => void) | undefined;
       const heartbeat = setInterval(() => {
         if (leaseCompleted) return;
         void Promise.all([
@@ -4079,6 +4097,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         leaseCompleted = true;
         clearInterval(heartbeat);
       };
+      const endRunAfterFinalization = () => {
+        stopHeartbeatAfterCompletion();
+        remoteMcpSessions.endRun({ spaceId: run.spaceId, userId: run.userId, runId });
+      };
 
       const runSecrets = [...deps.secrets];
       const settleRunFailure = async (
@@ -4102,7 +4124,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ...(retryRoutine ? { retryRoutine } : {}),
         });
         if (!failed) return;
-        stopHeartbeatAfterCompletion();
+        endRunAfterFinalization();
         if (failed.routineRetryAt) {
           await deps.jobs.enqueue(routineRetryJob(runId, failed.routineRetryAt)).catch(() => {
             // Finalization committed the intent. The reconciler republishes a lost wake.
@@ -4157,6 +4179,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           error: redactSecrets(error instanceof Error ? error.message : String(error), runSecrets),
         });
         if (failed) {
+          endRunAfterFinalization();
           await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
           await settleLocalPeerDelivery();
         }
@@ -4400,25 +4423,49 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ),
           task.connectionIds ?? [],
         );
-        const context = {
-          operationId: runId,
-          traceId: runId,
-          spaceId: run.spaceId,
-          userId: run.userId,
-          botId: bot.id,
-          runId,
-          screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
-          signal: AbortSignal.any([ownerSignal, runtimeAbortController.signal]),
-          connectedConnections: connectedPlugins.map((row) => ({
-            id: row.id,
-            connectorId: row.connectorId,
-            externalId: row.provider,
-            displayName: row.displayName,
-            providerRef: row.providerRef ?? undefined,
-            revision: connectionAuthorizationRevision(row),
-          })),
-          connectedProviders: connectedComposio.map((row) => row.provider),
-        };
+        const mcpBinding = remoteMcpSessions.bind(
+          {
+            operationId: runId,
+            traceId: runId,
+            spaceId: run.spaceId,
+            userId: run.userId,
+            botId: bot.id,
+            runId,
+            screenLeaseId: screenLeaseIdForRun(computerLease, runId, fence),
+            signal: AbortSignal.any([ownerSignal, runtimeAbortController.signal]),
+            connectedConnections: connectedPlugins.map((row) => ({
+              id: row.id,
+              connectorId: row.connectorId,
+              externalId: row.provider,
+              displayName: row.displayName,
+              providerRef: row.providerRef ?? undefined,
+              revision: connectionAuthorizationRevision(row),
+            })),
+            connectedProviders: connectedComposio.map((row) => row.provider),
+          },
+          async () => {
+            const held =
+              leaseValid &&
+              !leaseCompleted &&
+              (await deps.prisma.run.findFirst({
+                where: {
+                  id: runId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  leaseExpiresAt: { gt: new Date() },
+                },
+                select: { id: true },
+              }));
+            if (!held) throw new Error("Run lease expired before remote MCP dispatch");
+          },
+          async (call) => {
+            const fresh = await refreshRunConnectorContext(deps.prisma, context, run.taskId);
+            assertBoundConnectorAccount(call, fresh);
+          },
+        );
+        const context = mcpBinding.context;
+        releaseRemoteMcpBinding = mcpBinding.release;
         const retainedComputerKind =
           resumeHeldLease && bot.computer?.providerRef
             ? ((await deps.sandbox.provisionKind?.()) ?? deps.sandbox.describe().id)
@@ -4615,7 +4662,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             error: message,
           });
           if (!failed) return;
-          stopHeartbeatAfterCompletion();
+          endRunAfterFinalization();
           await settleLocalPeerDelivery();
           if (failed.continuationRunId) {
             await deps.jobs
@@ -9641,7 +9688,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : [{ kind: "text", text: toolLoopStopText }],
             });
             if (!stopped) return;
-            stopHeartbeatAfterCompletion();
+            endRunAfterFinalization();
             await settleLocalPeerDelivery();
             if (stopped.continuationRunId) {
               await deps.jobs
@@ -9816,7 +9863,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             markUnread: completionMarksUnread(run.trigger, text),
           });
           if (!completed) return;
-          stopHeartbeatAfterCompletion();
+          endRunAfterFinalization();
           await settleLocalPeerDelivery();
           if (completed.continuationRunId) {
             await deps.jobs
@@ -10045,6 +10092,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : new Error(setupFailureMessage);
         }
       } finally {
+        releaseRemoteMcpBinding?.();
         detachShutdown?.();
         clearInterval(heartbeat);
         if (!retainComputerLease) {

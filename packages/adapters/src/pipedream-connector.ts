@@ -35,6 +35,7 @@ import {
   listRemoteMcpTools,
   type RemoteTransportDependencies,
 } from "./remote-mcp.js";
+import { remoteMcpToolSession } from "./remote-mcp-sessions.js";
 import { isVitestRuntime } from "./test-runtime.js";
 import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
@@ -419,6 +420,12 @@ export class PipedreamConnector implements ManagedConnectorProvider {
           endpoint: MCP_ENDPOINT,
           headers: this.mcpHeaders(context, app, token, this.accountRef(connection)),
           signal: context.signal,
+          session: remoteMcpToolSession(
+            context,
+            `pipedream:${connection.id}`,
+            connectorAccountRevision(connection),
+            { account: call },
+          ),
           fetch: this.dependencies.fetch,
           resolveHostname: this.dependencies.resolveHostname,
         },
