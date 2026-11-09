@@ -6493,22 +6493,45 @@ export function createRunExecutor(deps: ExecutorDeps) {
             throw error;
           }
           if (
-            applied?.effect.status === "intended" &&
+            (!applied || applied.effect.status === "intended") &&
+            pageMode !== "read" &&
+            pageMode !== "help" &&
             repeatsDeniedAction(
               {
                 toolName: name,
                 route: liveRoute,
                 batch,
+                pageId:
+                  pageMode === "write" && typeof args.pageId === "string" ? args.pageId : undefined,
                 aliases: directAliases,
-                opaqueCode: name === "shell" || Boolean(isCodeRoute),
+                opaqueCode: name === "shell" ? "shell" : isCodeRoute ? "connector" : undefined,
               },
               await loadRunDenials(),
             )
           ) {
-            const refused = await deps.prisma.externalEffect.updateMany({
-              where: { id: applied.effect.id, status: "intended" },
-              data: { status: "denied", result: { refused: "repeat" } },
+            context.signal.throwIfAborted();
+            if (!applied) return { error: DENIED_ACTION_ERROR };
+            const effectId = applied.effect.id;
+            const refused = await deps.prisma.$transaction(async (tx) => {
+              // Keep the refusal write ordered with Stop, pause and worker transfer.
+              const locked = await tx.run.updateMany({
+                where: {
+                  id: runId,
+                  spaceId: run.spaceId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  leaseExpiresAt: { gt: new Date() },
+                },
+                data: { leaseFence: fence },
+              });
+              if (locked.count !== 1) return null;
+              return tx.externalEffect.updateMany({
+                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
+                data: { status: "denied", result: { refused: "repeat" } },
+              });
             });
+            if (!refused) return pauseForApproval();
             if (refused.count === 1) return { error: DENIED_ACTION_ERROR };
             const current = await deps.prisma.externalEffect.findUnique({
               where: { id: applied.effect.id },
@@ -6711,7 +6734,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           };
 
-          if (applied && plan === "judge" && (injectedReview || checker)) {
+          if (
+            applied &&
+            applied.effect.status !== "denied" &&
+            plan === "judge" &&
+            (injectedReview || checker)
+          ) {
             if (!applied.duplicate) {
               await runAutoReview();
             } else {
