@@ -12,6 +12,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { AutoReviewJudgeDecision } from "@rakazo/core";
 import { redactSecrets } from "@rakazo/core";
+import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
@@ -19,10 +20,8 @@ import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 const DEFAULT_TIMEOUT_MS = 1_500;
 const MAX_TASK_CHARS = 400;
 const MAX_BOT_CHARS = 240;
-const MAX_ARGS_CHARS = 1_200;
-// The new-site request contains only a redacted URL. Allow its whole bounded value
-// (including JSON escaping) so the checker can assess path and query disclosure.
-export const MAX_SITE_REVIEW_ARGS_CHARS = 8_000;
+export const MAX_REVIEW_ARGS_CHARS = 8_000;
+export const TOO_LONG_TO_REVIEW = "Too long to review.";
 export const MAX_SITE_REVIEW_TASK_CHARS = 2_000;
 export const SITE_REVIEW_PASS =
   "The owner's words or the bot's role clearly call for this site, and the URL carries only the data needed";
@@ -179,33 +178,28 @@ export function isAutoReviewCheckerConfigured(input: {
 export function redactToolArgsForReview(
   args: Record<string, unknown>,
   secrets: string[],
-): Record<string, unknown> {
-  const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    const redactedKey = redactSecrets(key, secrets);
-    if (SENSITIVE_REVIEW_ARG_KEY.test(key)) {
-      redacted[redactedKey] = "[redacted]";
-      continue;
-    }
-    if (typeof value === "string") {
-      redacted[redactedKey] = redactSecrets(value, secrets);
-      continue;
-    }
-    if (value == null || typeof value === "number" || typeof value === "boolean") {
-      redacted[redactedKey] = value;
-      continue;
-    }
-    try {
-      const serialized = JSON.stringify(value);
-      redacted[redactedKey] =
-        serialized === undefined
-          ? "[unserializable]"
-          : redactNestedReviewValue(JSON.parse(serialized), secrets);
-    } catch {
-      redacted[redactedKey] = "[unserializable]";
-    }
+): Record<string, unknown> | undefined {
+  try {
+    return redactReviewObject(args, secrets);
+  } catch {
+    // Colliding redacted keys cannot represent every argument.
+    return undefined;
   }
-  return redacted;
+}
+
+function redactReviewObject(value: object, secrets: string[]): Record<string, unknown> {
+  const entries = new Map<string, unknown>();
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const redactedKey = redactSecrets(key, secrets);
+    if (entries.has(redactedKey)) throw new Error("Review argument keys collide after redaction.");
+    entries.set(
+      redactedKey,
+      SENSITIVE_REVIEW_ARG_KEY.test(key)
+        ? "[redacted]"
+        : redactNestedReviewValue(nestedValue, secrets),
+    );
+  }
+  return Object.fromEntries(entries);
 }
 
 function redactNestedReviewValue(value: unknown, secrets: string[]): unknown {
@@ -213,15 +207,17 @@ function redactNestedReviewValue(value: unknown, secrets: string[]): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => redactNestedReviewValue(item, secrets));
   }
-  if (value == null || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, nestedValue]) => [
-      redactSecrets(key, secrets),
-      SENSITIVE_REVIEW_ARG_KEY.test(key)
-        ? "[redacted]"
-        : redactNestedReviewValue(nestedValue, secrets),
-    ]),
-  );
+  if (value !== null && typeof value === "object") return redactReviewObject(value, secrets);
+  const literal = String(value);
+  return redactSecrets(literal, secrets) === literal ? value : "[redacted]";
+}
+
+export function reviewArgsJson(args: AutoReviewRequest["args"]): string | undefined {
+  try {
+    return stableJsonValue(args);
+  } catch {
+    return undefined;
+  }
 }
 
 function truncate(value: string, max: number): string {
@@ -266,11 +262,10 @@ export function parseAutoReviewJudgeText(text: string): {
   return { decision: "error" };
 }
 
-export function buildAutoReviewPrompt(input: AutoReviewRequest): string {
-  const argsJson = truncate(
-    JSON.stringify(input.args),
-    input.newSite ? MAX_SITE_REVIEW_ARGS_CHARS : MAX_ARGS_CHARS,
-  );
+export function buildAutoReviewPrompt(
+  input: AutoReviewRequest,
+  argsJson = stableJsonValue(input.args),
+): string {
   const rules =
     input.matchingRules.length === 0
       ? "none"
@@ -443,10 +438,18 @@ export class LlmAutoReviewProvider implements AutoReviewProvider {
     };
   }
 
-  review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult> {
+  async review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult> {
+    const argsJson = reviewArgsJson(request.args);
+    if (argsJson === undefined || argsJson.length > MAX_REVIEW_ARGS_CHARS) {
+      return {
+        decision: "ask",
+        model: `${this.options.checker.provider}/${this.options.checker.model}`,
+        reason: TOO_LONG_TO_REVIEW,
+      };
+    }
     return runAutoReviewJudge({
       ...this.options,
-      prompt: buildAutoReviewPrompt(request),
+      prompt: buildAutoReviewPrompt(request, argsJson),
       signal: context.signal,
     });
   }

@@ -5,11 +5,13 @@ import {
   buildAutoReviewPrompt,
   deploymentAutoReviewDefault,
   isAutoReviewCheckerConfigured,
+  LlmAutoReviewProvider,
   parseAutoReviewJudgeText,
   redactToolArgsForReview,
   resolveAutoReviewChecker,
   resolveAutoReviewProviderKind,
 } from "./auto-review.js";
+import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 describe("resolveAutoReviewChecker", () => {
   it("prefers explicit env overrides", () => {
@@ -251,6 +253,27 @@ describe("redactToolArgsForReview", () => {
   });
 });
 
+describe("complete redacted arguments", () => {
+  it("keeps a JSON property named __proto__", () => {
+    const args = JSON.parse('{"__proto__":{"mode":"preview"},"id":"item-1"}');
+    const redacted = redactToolArgsForReview(args, []);
+    expect(JSON.stringify(redacted)).toBe(JSON.stringify(args));
+  });
+
+  it("redacts known secrets represented as numeric JSON values", () => {
+    const args = { code: 654321, nested: [654321, 123456] };
+    expect(redactToolArgsForReview(args, ["654321"])).toEqual({
+      code: "[redacted]",
+      nested: ["[redacted]", 123456],
+    });
+  });
+
+  it("rejects collisions in nested redacted keys", () => {
+    const args = { nested: { "key-fixture-value": "first", "key-[redacted]": "second" } };
+    expect(redactToolArgsForReview(args, ["fixture-value"])).toBeUndefined();
+  });
+});
+
 describe("buildAutoReviewPrompt", () => {
   it("includes tool context without tools instructions", () => {
     const prompt = buildAutoReviewPrompt({
@@ -285,7 +308,7 @@ describe("buildAutoReviewPrompt", () => {
     expect(site).toContain("last owner instruction");
     expect(site).toContain("path or query");
     const generic = buildAutoReviewPrompt(input);
-    expect(generic).not.toContain("outside-context");
+    expect(generic).toContain(url.replace("&", "&amp;"));
     expect(generic).not.toContain("last owner instruction");
     expect(generic).not.toContain("path or query");
   });
@@ -305,6 +328,48 @@ describe("buildAutoReviewPrompt", () => {
     expect(taskBlock?.[1]).toBe(injection);
     expect(prompt.indexOf("untrusted data")).toBeLessThan(prompt.indexOf("<user_task>"));
     expect(prompt).toContain('"decision":"pass"|"ask"');
+  });
+});
+
+describe("LLM Auto Review argument budget", () => {
+  it("asks without starting the runtime for oversized or unserializable arguments", async () => {
+    const runtime = new ScriptedAgentRuntime();
+    const run = vi.spyOn(runtime, "run");
+    const provider = new LlmAutoReviewProvider({
+      runtime,
+      checker: { provider: "scripted", model: "review" },
+      runId: "run",
+      spaceId: "space",
+      userId: "user",
+      botId: "bot",
+      threadId: "thread",
+    });
+    const request = {
+      toolName: "demo_send_message",
+      connectorKind: "demo",
+      userTask: "Send a reply",
+      botDescription: "Assistant",
+      matchingRules: [],
+    };
+    const context = {
+      operationId: "review",
+      traceId: "review",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+    };
+    for (const args of [
+      { text: "x".repeat(8_000) },
+      { value: 1n },
+      { value: undefined },
+      { value: Infinity },
+    ]) {
+      await expect(provider.review({ ...request, args }, context)).resolves.toMatchObject({
+        decision: "ask",
+        reason: "Too long to review.",
+      });
+    }
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

@@ -11,11 +11,13 @@ import {
   autoReviewMinConfidence,
   autoReviewTimeoutMs,
   DEFAULT_JEV_MODEL,
-  MAX_SITE_REVIEW_ARGS_CHARS,
+  MAX_REVIEW_ARGS_CHARS,
   MAX_SITE_REVIEW_TASK_CHARS,
+  reviewArgsJson,
   SITE_REVIEW_ASK,
   SITE_REVIEW_PASS,
   sanitizeAutoReviewReason,
+  TOO_LONG_TO_REVIEW,
 } from "./auto-review.js";
 import { readBodyCapped } from "./web-ssrf.js";
 
@@ -23,7 +25,6 @@ const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 const MAX_JSON_BYTES = 64_000;
 const MAX_TASK_CHARS = 400;
 const MAX_BOT_CHARS = 240;
-const MAX_ARGS_CHARS = 1_200;
 
 const choiceAnswerSchema = z.object({
   type: z.literal("choice"),
@@ -50,16 +51,6 @@ function truncate(value: string, max: number): string {
   const trimmed = value.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1)}…`;
-}
-
-function boundArgs(args: Record<string, unknown>, max: number): Record<string, unknown> {
-  try {
-    const serialized = JSON.stringify(args);
-    if (serialized !== undefined && serialized.length <= max) return args;
-    return { _truncated: truncate(serialized ?? "", max) };
-  } catch {
-    return { _unserializable: true };
-  }
 }
 
 function errorResult(model: string, reason: string): AutoReviewResult {
@@ -98,6 +89,10 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
 
   async review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult> {
     const modelLabel = `jev/${this.model}`;
+    const argsJson = reviewArgsJson(request.args);
+    if (argsJson === undefined || argsJson.length > MAX_REVIEW_ARGS_CHARS) {
+      return { decision: "ask", model: modelLabel, reason: TOO_LONG_TO_REVIEW };
+    }
     const boundedSignal = AbortSignal.any([context.signal, AbortSignal.timeout(this.timeoutMs)]);
     let response: Response;
     try {
@@ -115,10 +110,7 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
           state: {
             toolName: request.toolName,
             connectorKind: request.connectorKind,
-            args: boundArgs(
-              request.args,
-              request.newSite ? MAX_SITE_REVIEW_ARGS_CHARS : MAX_ARGS_CHARS,
-            ),
+            args: JSON.parse(argsJson),
             userTask: truncate(
               request.userTask,
               request.newSite ? MAX_SITE_REVIEW_TASK_CHARS : MAX_TASK_CHARS,

@@ -60,7 +60,7 @@ describe("JevAutoReviewProvider", () => {
     expect(JSON.stringify(body)).not.toContain("ts-key");
   });
 
-  it("sends the full new-site URL and disclosure criteria while keeping the generic request bounded", async () => {
+  it("sends complete arguments and scopes the new-site disclosure criteria", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const provider = new JevAutoReviewProvider({
       apiKey: "ts-key",
@@ -78,9 +78,26 @@ describe("JevAutoReviewProvider", () => {
       state: { newSite: true, args: { url }, userTask },
       questions: { decision: { criteria: { ask: expect.stringContaining("path or query") } } },
     });
-    expect(JSON.stringify(seen[1])).not.toMatch(
-      /outside-context|last owner instruction|path or query|newSite/,
-    );
+    expect(seen[1]).toMatchObject({ state: { args: { url } } });
+    expect(JSON.stringify(seen[1])).not.toMatch(/last owner instruction|path or query|newSite/);
+  });
+
+  it("asks without contacting the checker for oversized or unserializable arguments", async () => {
+    const sent: RequestInit[] = [];
+    const provider = new JevAutoReviewProvider({
+      apiKey: "ts-key",
+      fetch: async (_url, init) => {
+        if (init) sent.push(init);
+        return jsonResponse({ answers: { decision: { type: "choice", choice: "pass" } } });
+      },
+    });
+    for (const args of [{ body: "x".repeat(8_000) }, { value: 1n }]) {
+      await expect(provider.review({ ...request, args }, context)).resolves.toMatchObject({
+        decision: "ask",
+        reason: "Too long to review.",
+      });
+    }
+    expect(sent).toHaveLength(0);
   });
 
   it("maps an ask choice to ask", async () => {
