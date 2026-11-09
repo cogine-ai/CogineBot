@@ -600,7 +600,9 @@ function shortenWebFetchPage(
   trustedEnvelope: boolean,
 ): unknown {
   const envelope =
-    original && typeof original === "object" && "result" in original ? original : undefined;
+    !isOffsetWebPage(original) && original && typeof original === "object" && "result" in original
+      ? original
+      : undefined;
   const page = envelope ? envelope.result : original;
   if (!isOffsetWebPage(page)) return undefined;
   const project = (result: WebFetchResult) =>
@@ -639,10 +641,14 @@ function shortenWebFetchPage(
     if (fits(middle)) low = middle;
     else high = middle - 1;
   }
-  const window = pageWindow(page.text, low, page.offset, maxOffset);
-  return window.text
+  // The exact first character can still fit when reserving the largest cursor leaves no room.
+  const firstLength = (page.text.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+  const window = pageWindow(page.text, low || firstLength, page.offset, maxOffset);
+  if (!window.text) return null;
+  const result = window.truncated
     ? project({ ...page, title, text: window.text, truncated: true, nextOffset: window.nextOffset })
-    : null;
+    : project({ ...page, title });
+  return JSON.stringify(result).length <= size ? result : null;
 }
 
 /** A final model-facing bound. Structured results are never cut into partial JSON. */

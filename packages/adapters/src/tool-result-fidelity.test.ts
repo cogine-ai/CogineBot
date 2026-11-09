@@ -150,6 +150,50 @@ describe("tool result fidelity", () => {
     expect(bounded.historyReference).toEqual(reference);
   });
 
+  it("keeps a single fitting character when the context budget is tight", () => {
+    const page = {
+      url: "https://example.test/page",
+      title: "",
+      text: "a".repeat(5_000),
+      offset: 0,
+      truncated: false,
+    };
+    const expected = {
+      contextTruncated: true,
+      historyUnavailable: true,
+      result: { ...page, text: "a", truncated: true, nextOffset: 1 },
+    };
+    const size = JSON.stringify(expected).length;
+    const result = parse(
+      boundToolResultText(JSON.stringify(page), size, {
+        name: "web_fetch",
+        fresh: true,
+      }),
+      size,
+    );
+    expect(result).toEqual(expected);
+  });
+
+  it("recognizes a fresh page before considering an optional result extension", () => {
+    const page = {
+      url: "https://example.test/page",
+      title: "Fixture",
+      text: "a".repeat(5_000),
+      offset: 0,
+      truncated: false,
+      result: { kind: "fixture" },
+    };
+    const result = parse(
+      boundToolResultText(JSON.stringify(page), 500, {
+        name: "web_fetch",
+        fresh: true,
+      }),
+      500,
+    ).result as typeof page & { nextOffset: number };
+    expect(result.text).toBe(page.text.slice(0, result.nextOffset));
+    expect(result.nextOffset).toBeGreaterThan(0);
+  });
+
   it("preserves JSON in every MCP text part and duplicated structured content", () => {
     const envelope = {
       content: [
