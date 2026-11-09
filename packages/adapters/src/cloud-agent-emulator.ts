@@ -65,6 +65,15 @@ export class EmulatorCloudAgentProvider implements CloudAgentProvider {
     return { ...run };
   }
 
+  async observeRunSuccessor(id: string, previousRunId: string | null, context: AdapterContext) {
+    context.signal.throwIfAborted();
+    const runIds = [...this.require(id).runs.keys()];
+    const newest = runIds.at(-1);
+    if (!previousRunId || !newest || newest === previousRunId || runIds.at(-2) !== previousRunId)
+      return null;
+    return newest;
+  }
+
   async reply(id: string, request: CloudAgentReplyRequest, context: AdapterContext) {
     context.signal.throwIfAborted();
     const agent = this.require(id);

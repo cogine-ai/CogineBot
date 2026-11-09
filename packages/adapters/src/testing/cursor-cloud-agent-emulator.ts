@@ -8,6 +8,7 @@ export class CursorCloudAgentEmulator {
   readonly ids = new Map<string, string>();
   readonly requests: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
   staleLatestRunId: string | undefined;
+  staleRunListId: string | undefined;
   loseNextLaunchResponse = false;
   loseNextReplyResponse = false;
   failNextRequest: number | undefined;
@@ -59,6 +60,17 @@ export class CursorCloudAgentEmulator {
     if (!internalId) return new Response(null, { status: 404 });
     try {
       if (method === "GET" && !url.pathname.includes("/runs")) return Response.json(this.agent(id));
+      if (method === "GET" && !match[2]) {
+        const agent = this.provider.agents.get(internalId)!;
+        const limit = Number(url.searchParams.get("limit") ?? 1);
+        const runIds = this.staleRunListId
+          ? [this.staleRunListId]
+          : [...agent.runs.keys()].reverse().slice(0, limit);
+        const runs = await Promise.all(
+          runIds.map((runId) => this.provider.get(internalId, context, runId)),
+        );
+        return Response.json({ items: runs.map((run) => this.run(run)) });
+      }
       if (method === "GET")
         return Response.json(this.run(await this.provider.get(internalId, context, match[2])));
       if (match[3]) {
