@@ -77,6 +77,34 @@ describe("MCP transport seam", () => {
     await expect(session.callTool("echo")).rejects.toThrow("not connected");
   });
 
+  it("aborts a legacy SSE handshake that never announces an endpoint", async () => {
+    const session = new McpSession();
+    const abort = new AbortController();
+    const started = Promise.withResolvers<AbortSignal>();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      started.resolve(request.signal);
+      return new Response(new ReadableStream(), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    try {
+      const connecting = session.connectRemote({
+        url: "https://mcp.example.test/mcp",
+        transport: "sse",
+        network: { ...TEST_NETWORK, fetch },
+        signal: abort.signal,
+      });
+      const observed = await started.promise;
+      abort.abort(new Error("handshake cancelled"));
+      await expect(connecting).rejects.toThrow("handshake cancelled");
+      expect(observed.aborted).toBe(true);
+      await expect(session.listTools()).rejects.toThrow("not connected");
+    } finally {
+      await session.close();
+    }
+  });
+
   it("preserves SDK session and protocol headers after stateful initialization", async () => {
     const requests: Request[] = [];
     const session = new McpSession();

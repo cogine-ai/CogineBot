@@ -15,6 +15,7 @@ import {
   type RemoteTransportDependencies,
   type SafeRemoteFetch,
 } from "./remote-mcp.js";
+import { withAbort } from "./web-ssrf.js";
 
 export type McpRemoteTransport = "streamable-http" | "sse";
 
@@ -299,12 +300,7 @@ export class McpSession {
               eventSourceInit: { fetch: fetch as never },
             });
       this.transport = transport;
-      await withRequestSignal(signal, (requestSignal) =>
-        this.client.connect(transport, {
-          signal: requestSignal,
-          timeout: options.timeoutMs ?? 15_000,
-        }),
-      );
+      await this.connectTransport(transport, signal, options.timeoutMs ?? 15_000);
       this.connected = true;
     };
     this.connecting = (async () => {
@@ -312,6 +308,7 @@ export class McpSession {
         await connect(options.transport ?? "streamable-http");
       } catch (error) {
         const canFallback =
+          !signal.aborted &&
           (options.fallbackToSse ?? true) &&
           options.allowLegacySse &&
           (options.transport ?? "streamable-http") === "streamable-http";
@@ -350,19 +347,27 @@ export class McpSession {
     const transport = new StdioClientTransport(stdioParams(options));
     this.transport = transport;
     const signal = combineSignals(options.signal, AbortSignal.timeout(options.timeoutMs ?? 15_000));
-    this.connecting = withRequestSignal(signal, (requestSignal) =>
-      this.client.connect(transport, {
-        signal: requestSignal,
-        timeout: options.timeoutMs ?? 15_000,
-      }),
-    )
+    this.connecting = this.connectTransport(transport, signal, options.timeoutMs ?? 15_000)
       .then(() => {
         this.connected = true;
+      })
+      .catch(async (error: unknown) => {
+        await this.client.close().catch(() => undefined);
+        this.transport = undefined;
+        throw error;
       })
       .finally(() => {
         this.connecting = undefined;
       });
     await this.connecting;
+  }
+
+  private connectTransport(transport: Transport, signal: AbortSignal, timeout: number) {
+    // The SDK applies request options after transport.start(). Bound the whole handshake,
+    // including an SSE stream that connects but never supplies its endpoint.
+    return withRequestSignal(signal, (requestSignal) =>
+      withAbort(this.client.connect(transport, { signal: requestSignal, timeout }), requestSignal),
+    );
   }
 
   async listTools(options?: { signal?: AbortSignal }): Promise<ListToolsResult> {

@@ -173,6 +173,52 @@ describe("MCP discovery lifecycle", () => {
     }
   });
 
+  it("preserves the remaining observation when a newer discovery is cancelled", async () => {
+    const startedFirst = Promise.withResolvers<void>();
+    const startedSecond = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<never>();
+    const second = Promise.withResolvers<never>();
+    const list = vi
+      .spyOn(McpSession.prototype, "listTools")
+      .mockImplementationOnce(() => {
+        startedFirst.resolve();
+        return first.promise;
+      })
+      .mockImplementationOnce(() => {
+        startedSecond.resolve();
+        return second.promise;
+      });
+    const cancelled = new AbortController();
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const connector = new McpConnector(
+      { mcpServer: { findMany: async () => [SHARED_SERVER], updateMany } } as never,
+      {} as never,
+      { network: { ...TEST_NETWORK, fetch: mcpFetch({ failNext: false, initializations: 0 }) } },
+    );
+    try {
+      const remaining = connector.discoverTools(context);
+      await startedFirst.promise;
+      const leaving = connector.discoverTools({ ...context, signal: cancelled.signal });
+      await startedSecond.promise;
+      cancelled.abort();
+      await leaving;
+      first.reject(new Error("fixture discovery failure"));
+      await expect(remaining).resolves.toMatchObject([{ name: "mcp__demo__unavailable" }]);
+      await expect(connector.discoverTools(context)).resolves.toMatchObject([
+        { name: "mcp__demo__unavailable" },
+      ]);
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(updateMany).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ healthStatus: "error" }),
+        }),
+      );
+    } finally {
+      list.mockRestore();
+      await connector.close();
+    }
+  });
+
   it("caps repeated discovery backoff and tries an edited configuration immediately", async () => {
     let server = SHARED_SERVER;
     let now = Date.now();
@@ -209,6 +255,71 @@ describe("MCP discovery lifecycle", () => {
       clock.mockRestore();
     }
   });
+
+  it.each(["connect", "list"])(
+    "redacts reflected custom header values from %s failures",
+    async (phase) => {
+      const server = { ...SHARED_SERVER, secretId: "secret-1" };
+      const credential = "fixture-partner-code";
+      const healthy = mcpFetch({ failNext: false, initializations: 0 });
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const connector = new McpConnector(
+        {
+          mcpServer: { findMany: async () => [server], findFirst: async () => server, updateMany },
+          secret: { findFirst: async () => ({ id: "secret-1", ciphertext: "encrypted" }) },
+        } as never,
+        {
+          load: async () => JSON.stringify({ headers: { "X-Partner-Code": credential } }),
+        } as never,
+        {
+          network: {
+            ...TEST_NETWORK,
+            fetch: async (input, init) => {
+              if (phase === "connect")
+                return new Response(`Rejected code ${credential}`, { status: 500 });
+              const request = new Request(input, init);
+              if (request.method === "POST") {
+                const message = await request.json();
+                if (message.method === "tools/list")
+                  return Response.json({
+                    jsonrpc: "2.0",
+                    id: message.id,
+                    error: { code: -32000, message: `Rejected code ${credential}` },
+                  });
+              }
+              return healthy(input, init);
+            },
+          },
+        },
+      );
+      try {
+        const health = await connector.check(server as never, context);
+        expect(health.message).toContain("[redacted]");
+        expect(health.message).not.toContain(credential);
+        expect(JSON.stringify(updateMany.mock.calls)).not.toContain(credential);
+        const [tool] = await connector.discoverTools(context);
+        const call = connector
+          .execute(
+            {
+              tool: tool!.name,
+              route: tool!.route,
+              args: {},
+              executionId: "fixture",
+            },
+            context,
+          )
+          [Symbol.asyncIterator]();
+        await expect(call.next()).resolves.toMatchObject({
+          value: {
+            type: "error",
+            message: health.message,
+          },
+        });
+      } finally {
+        await connector.close();
+      }
+    },
+  );
 
   it("never includes an undecodable stored credential in tool or health output", async () => {
     const server = { ...SHARED_SERVER, secretId: "secret-1" };

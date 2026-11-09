@@ -5,7 +5,6 @@ import { getLogger } from "@rakazo/logging";
 import { sanitizeConnectorError } from "./connector-safety.js";
 
 const REWRITE_MS = 60_000;
-const HEALTH_MESSAGE_MAX = 2_000;
 const REGISTRATION_UNSUPPORTED =
   "Incompatible auth server: does not support dynamic client registration";
 
@@ -30,10 +29,7 @@ export function mcpHealthError(error: unknown, secrets: string[] = []): McpHealt
   const code = needsMcpOAuthClient(error) ? MCP_OAUTH_CLIENT_REQUIRED : null;
   return {
     status: "error",
-    message: (code ? REGISTRATION_UNSUPPORTED : sanitizeConnectorError(error, secrets)).slice(
-      0,
-      HEALTH_MESSAGE_MAX,
-    ),
+    message: code ? REGISTRATION_UNSUPPORTED : sanitizeConnectorError(error, secrets),
     code,
     toolCount: null,
   };
@@ -42,7 +38,8 @@ export function mcpHealthError(error: unknown, secrets: string[] = []): McpHealt
 type HealthServer = Pick<McpServer, "id" | "spaceId" | "userId" | "revision"> &
   Partial<Pick<McpServer, "installId">>;
 
-/** Old revisions and late observations cannot overwrite a newer check. */
+/** Reject old configurations and observations older than the recorded status.
+ * Same-state checks inside the refresh window are deliberately not persisted. */
 export async function recordMcpServerHealth(
   prisma: PrismaClient,
   server: HealthServer,

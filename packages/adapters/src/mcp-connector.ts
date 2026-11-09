@@ -81,6 +81,16 @@ type PendingSession = {
   ref?: string;
 };
 
+function diagnosticSecrets(material: OAuthMaterial): string[] {
+  // A custom header or environment variable can carry credentials under any name.
+  // Error diagnostics can echo configuration; mask every configured value there.
+  return [
+    ...oauthMaterialSecrets(material),
+    ...Object.values(material.headers ?? {}),
+    ...Object.values(material.env ?? {}),
+  ];
+}
+
 function hasAllowedTools(server: Pick<McpServer, "allowAllTools" | "allowedTools">): boolean {
   return (
     server.allowAllTools ||
@@ -156,6 +166,7 @@ export class McpConnector implements ConnectorProvider {
   // Discovery runs more than once per run: once up front, then again on every lazy
   // catalog access. Each attempt needs its own executionId.
   private discoverySeq = 0;
+  private lastObservationTime = 0;
   private readonly unsubscribe: () => void;
   constructor(
     private readonly prisma: PrismaClient,
@@ -253,7 +264,8 @@ export class McpConnector implements ConnectorProvider {
     context.signal.throwIfAborted();
     const key = this.sessionKey(server, context);
     const previous = this.discoveries.get(key);
-    const checkedAt = new Date(Math.max(Date.now(), (previous?.checkedAt.getTime() ?? 0) + 1));
+    this.lastObservationTime = Math.max(Date.now(), this.lastObservationTime + 1);
+    const checkedAt = new Date(this.lastObservationTime);
     const recovered =
       server.healthRevision === server.revision &&
       server.healthStatus === "ok" &&
@@ -310,9 +322,6 @@ export class McpConnector implements ConnectorProvider {
         checkedAt: backoff.checkedAt,
       };
     }
-    const observation: DiscoveryState = { revision: server.revision, checkedAt, failure: backoff };
-    const latest = this.discoveries.get(key);
-    if (!latest || latest.revision <= server.revision) this.discoveries.set(key, observation);
     this.startReaper();
 
     let entry: SessionEntry | undefined;
@@ -326,9 +335,8 @@ export class McpConnector implements ConnectorProvider {
       context.signal.throwIfAborted();
       this.shutdown.signal.throwIfAborted();
       const reason = signal.aborted ? new Error("MCP tool discovery timed out") : error;
-      const secrets = entry ? oauthMaterialSecrets(entry.material) : [];
+      const secrets = entry ? diagnosticSecrets(entry.material) : [];
       health = mcpHealthError(reason, secrets);
-      if (entry) this.retire(key, entry);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
       await withAbort(
         this.recordDiscoveryFailure(server.slug, reason, context, checkedAt.getTime(), secrets),
@@ -340,9 +348,15 @@ export class McpConnector implements ConnectorProvider {
     if (listed) await active();
     context.signal.throwIfAborted();
     this.shutdown.signal.throwIfAborted();
-    if (this.discoveries.get(key) === observation) {
-      if (listed) observation.failure = undefined;
-      else {
+    const latest = this.discoveries.get(key);
+    if (
+      !latest ||
+      latest.revision < server.revision ||
+      (latest.revision === server.revision && latest.checkedAt < checkedAt)
+    ) {
+      const observation: DiscoveryState = { revision: server.revision, checkedAt };
+      if (!listed) {
+        if (entry) this.retire(key, entry);
         const delay = Math.min(
           !force && backoff ? backoff.delay * 2 : DISCOVERY_BACKOFF_MS,
           DISCOVERY_BACKOFF_MAX_MS,
@@ -354,6 +368,7 @@ export class McpConnector implements ConnectorProvider {
           health,
         };
       }
+      this.discoveries.set(key, observation);
       const write = recordMcpServerHealth(this.prisma, server, health, checkedAt, force);
       if (force) await withAbort(write, signal).catch(() => undefined);
     }
@@ -864,7 +879,7 @@ export class McpConnector implements ConnectorProvider {
       // cover only whoever looked first.
       if (!material) throw error;
       throw new Error(
-        mcpHealthError(error, oauthMaterialSecrets(material)).message ?? "MCP connection failed",
+        mcpHealthError(error, diagnosticSecrets(material)).message ?? "MCP connection failed",
       );
     }
   }
