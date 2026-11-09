@@ -362,6 +362,7 @@ import {
   resolveThreadTarget,
   sendThreadMessage,
   setThreadUnreadState,
+  steersUserMessage,
   stopThreadRuns,
   threadHead,
   threadSnapshot,
@@ -2819,15 +2820,19 @@ export function createRouter(deps: RouterDeps) {
             blocks,
             clientNonce: input.clientNonce,
           });
-          const active = await tx.run.findFirst({
+          const activeRuns = await tx.run.findMany({
             where: {
               threadId: target.threadId,
               botId,
               status: { in: [...ACTIVE_RUN_STATUSES] },
               NOT: { status: "waiting_limit", trigger: { in: [...THREAD_HIDDEN_RUN_TRIGGERS] } },
             },
-            select: { id: true, status: true },
+            select: { id: true, status: true, trigger: true },
           });
+          const active =
+            activeRuns.find(steersUserMessage) ??
+            activeRuns.find((candidate) => candidate.status !== "waiting_limit") ??
+            activeRuns[0];
           let run: { id: string } | null = null;
           if (!active) {
             const task = await tx.task.create({

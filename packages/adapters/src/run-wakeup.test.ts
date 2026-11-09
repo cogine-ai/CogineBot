@@ -166,6 +166,47 @@ describe("durable direct run wakeups", () => {
     }
   });
 
+  it("keeps a timed quota retry scheduled while the same revision is still executing", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const retryAt = new Date(Date.now() + 500);
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let completeScheduling!: () => void;
+    const scheduled = new Promise<void>((resolve) => {
+      completeScheduling = resolve;
+    });
+    const handler = vi.fn(async () => {
+      if (handler.mock.calls.length !== 1) return;
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, retryAt));
+      completeScheduling();
+      await active;
+    });
+    f.starter.attach({ "run.continue": handler } as unknown as BackgroundJobHandlers);
+    try {
+      await f.publisher.enqueue(runQuotaResumeJob("limited", 2, new Date()));
+      await scheduled;
+      await vi.advanceTimersByTimeAsync(499);
+      expect(handler).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenLastCalledWith(
+        { runId: "limited", quotaWaitRevision: 2 },
+        expect.objectContaining({ onRunStarted: expect.any(Function) }),
+      );
+      expect(f.background.enqueue).not.toHaveBeenCalled();
+      expect(f.updateMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await f.starter.stop();
+    }
+  });
+
   it.each(["due", "future"] as const)(
     "preserves a queued %s schedule when ordinary or explicit hints arrive late",
     async (schedule) => {

@@ -3898,6 +3898,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const expiredQuotaWait = pendingQuotaWaitExpired(quotaWait, Date.now());
       let computerLease: ComputerExecutionLease | null = null;
       if (!expiredQuotaWait) {
+        const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
+          where: { id: run.botId },
+          select: {
+            computerId: true,
+            computerSwitching: true,
+            computer: { select: { scope: true } },
+          },
+        });
+        if (!leaseTarget.computerId) throw new Error("Bot has no computer");
+        const computerRun = {
+          id: runId,
+          botId: run.botId,
+          bot: { computerId: leaseTarget.computerId },
+        };
+        const isComputerBlocked = async () =>
+          (await findRunRecoveryBlockers(deps.prisma, [computerRun], new Date())).has(runId);
         const waitForComputer = async (untilReleased = false) => {
           if (quotaWait?.dispatchedFence !== null) {
             await requeueComputerRun(
@@ -3911,11 +3927,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
             return;
           }
+          const now = Date.now();
           const retryAt = new Date(
-            Math.min(
-              Date.now() + computerRetryDelay(fence),
-              Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
-            ),
+            untilReleased
+              ? now
+              : Math.min(
+                  now + computerRetryDelay(fence),
+                  Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
+                ),
           );
           const waiting = await deps.prisma.run.updateMany({
             where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
@@ -3926,19 +3945,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               leaseExpiresAt: null,
             },
           });
-          if (waiting.count === 1 && !untilReleased && retryAt.getTime() > Date.now()) {
+          if (waiting.count !== 1) return;
+          // Recheck once after parking: a release just before the write cannot see this wait.
+          if (untilReleased ? !(await isComputerBlocked()) : retryAt.getTime() > Date.now()) {
             await deps.jobs.enqueue(runQuotaResumeJob(runId, quotaWait.revision, retryAt));
           }
         };
-        const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
-          where: { id: run.botId },
-          select: {
-            computerId: true,
-            computerSwitching: true,
-            computer: { select: { scope: true } },
-          },
-        });
-        if (!leaseTarget.computerId) throw new Error("Bot has no computer");
         if (leaseTarget.computerSwitching) {
           await waitForComputer();
           return;
@@ -3968,12 +3980,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         } catch (error) {
           if (!(error instanceof ComputerBusyError)) throw error;
-          const blockers = await findRunRecoveryBlockers(
-            deps.prisma,
-            [{ id: runId, botId: run.botId, bot: { computerId: leaseTarget.computerId } }],
-            new Date(),
-          );
-          await waitForComputer(blockers.has(runId));
+          await waitForComputer(await isComputerBlocked());
           return;
         }
       }

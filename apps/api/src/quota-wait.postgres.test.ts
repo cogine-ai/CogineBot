@@ -8,8 +8,10 @@ import type { Bot, Group, ThreadSnapshot } from "@rakazo/contracts";
 import { RUN_QUOTA_WAIT_MAX_MS, runQuotaWaitStateSchema } from "@rakazo/contracts";
 import { createDb } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { releaseComputerExecutionLease } from "../../../packages/adapters/src/computer-lifecycle.js";
 import { createJobReconciler } from "../../../packages/adapters/src/job-reconciler.js";
 import { ModelQuotaWaitError } from "../../../packages/adapters/src/model-output-recovery.js";
+import { startNextWaitingRun } from "../../../packages/adapters/src/run-lifecycle.js";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
@@ -189,6 +191,73 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     ).toBe(0);
   });
 
+  it("keeps a timed retry when the bot is changing computers", async () => {
+    const { bot, run, until } = await parkChat();
+    await handles.jobs.cancel(`run:${run.id}:quota:1`);
+    await database.prisma.bot.update({
+      where: { id: bot.id },
+      data: { computerSwitching: true },
+    });
+    vi.setSystemTime(until);
+    await handles.jobs.enqueue(runQuotaResumeJob(run.id, 1, until));
+    await handles.awaitIdle!();
+    expect(runtime.resumed).not.toContain(run.id);
+    const retry = await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
+    expect(retry).toMatchObject({ status: "waiting_limit", quotaWait: run.quotaWait });
+    expect(retry.wakeAt!.getTime()).toBeGreaterThan(until.getTime());
+
+    await database.prisma.bot.update({
+      where: { id: bot.id },
+      data: { computerSwitching: false },
+    });
+    vi.setSystemTime(retry.wakeAt!);
+    await handles.awaitIdle!();
+    expect(runtime.resumed.filter((id) => id === run.id)).toEqual([run.id]);
+  });
+
+  it("wakes a due quota wait as soon as the same bot's computer lease is released", async () => {
+    const { bot, run, until } = await parkChat();
+    await handles.jobs.cancel(`run:${run.id}:quota:1`);
+    const state = runQuotaWaitStateSchema.parse(run.quotaWait);
+    // Leave less than one normal reconciliation interval before the wait expires.
+    const releaseAt = new Date(Date.parse(state.beganAt) + RUN_QUOTA_WAIT_MAX_MS - 2_000);
+    const owner = await database.prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      select: { computerId: true },
+    });
+    const runId = "synthetic-computer-lease-holder";
+    const expiresAt = new Date(releaseAt.getTime() + 60_000);
+    const holder = await database.prisma.computerExecutionLease.upsert({
+      where: { computerId_botId: { computerId: owner.computerId!, botId: bot.id } },
+      create: { computerId: owner.computerId!, botId: bot.id, runId, expiresAt },
+      update: { runId, expiresAt },
+    });
+    const deps = { prisma: database.prisma, jobs: handles.jobs };
+
+    await startNextWaitingRun(deps, bot.id, holder.runId);
+    await handles.awaitIdle!();
+    expect(runtime.resumed).not.toContain(run.id);
+
+    vi.setSystemTime(releaseAt);
+    await handles.jobs.enqueue(runQuotaResumeJob(run.id, state.revision, until));
+    await handles.awaitIdle!();
+    expect(runtime.resumed).not.toContain(run.id);
+    expect(await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+      status: "waiting_limit",
+      wakeAt: releaseAt,
+      quotaWait: run.quotaWait,
+    });
+
+    await releaseComputerExecutionLease(database.prisma, holder);
+    await startNextWaitingRun(deps, bot.id, holder.runId);
+    await handles.awaitIdle!();
+    expect(runtime.resumed.filter((id) => id === run.id)).toEqual([run.id]);
+    expect(await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+      status: "completed",
+      quotaWait: { ...state, dispatchedFence: expect.any(Number) },
+    });
+  });
+
   it("expires a wait even when another Run still holds the computer", async () => {
     const { bot, run, until } = await parkChat();
     await handles.jobs.cancel(`run:${run.id}:quota:1`);
@@ -239,7 +308,7 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     });
   });
 
-  it("routes group follow-ups past hidden waits and queues them behind visible waits", async () => {
+  it("routes group follow-ups past hidden waits and prefers steerable work over visible waits", async () => {
     const { cookie, bot, run, until } = await parkChat();
     const peer = await rpc<Bot>(cookie, "bots/create", { name: "Group quota peer" });
     await handles.awaitIdle!();
@@ -291,6 +360,35 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     expect(await database.prisma.run.findUniqueOrThrow({ where: { id: wait.id } })).toMatchObject({
       status: "waiting_limit",
       wakeAt: until,
+    });
+    expect(runtime.resumed).not.toContain(wait.id);
+
+    const handoffTask = await database.prisma.task.create({
+      data: { ...scope, prompt: "Synthetic handed-off work", status: "queued" },
+    });
+    const handoff = await database.prisma.run.create({
+      data: {
+        ...scope,
+        taskId: handoffTask.id,
+        trigger: "follow_up",
+        status: "queued",
+        wakeAt: new Date(until.getTime() + 60_000),
+      },
+    });
+    for (const status of ["queued", "waiting_takeover"] as const) {
+      await database.prisma.run.update({ where: { id: handoff.id }, data: { status } });
+      const steered = await followUp(`Continue the handed-off work in ${status}.`);
+      expect(steered.runId).toBe(handoff.id);
+      expect(
+        await database.prisma.steeringMessage.findFirstOrThrow({
+          where: { messageId: steered.id },
+        }),
+      ).toMatchObject({ runId: handoff.id, claimedAt: null });
+    }
+    expect(await database.prisma.run.findUniqueOrThrow({ where: { id: wait.id } })).toMatchObject({
+      status: "waiting_limit",
+      wakeAt: until,
+      quotaWait: { revision: 1, dispatchedFence: null },
     });
     expect(runtime.resumed).not.toContain(wait.id);
   });

@@ -95,7 +95,7 @@ const STEERABLE_RUN_STATUSES = new Set(["queued", "leased", "running", "waiting_
  * webhook question. Other ordinary questions may retire; protected cards stay pending.
  * Remaining messages use the existing conversational steering or new-work route.
  */
-function steersUserMessage(run: { status: string; trigger?: string | null }) {
+export function steersUserMessage(run: { status: string; trigger?: string | null }) {
   return STEERABLE_RUN_STATUSES.has(run.status) && isConversationalRun(run.trigger);
 }
 
