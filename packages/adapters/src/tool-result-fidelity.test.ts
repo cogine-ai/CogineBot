@@ -150,29 +150,35 @@ describe("tool result fidelity", () => {
     expect(bounded.historyReference).toEqual(reference);
   });
 
-  it("keeps a single fitting character when the context budget is tight", () => {
-    const page = {
-      url: "https://example.test/page",
-      title: "",
-      text: "a".repeat(5_000),
-      offset: 0,
-      truncated: false,
-    };
-    const expected = {
-      contextTruncated: true,
-      historyUnavailable: true,
-      result: { ...page, text: "a", truncated: true, nextOffset: 1 },
-    };
-    const size = JSON.stringify(expected).length;
-    const result = parse(
-      boundToolResultText(JSON.stringify(page), size, {
-        name: "web_fetch",
-        fresh: true,
-      }),
-      size,
-    );
-    expect(result).toEqual(expected);
-  });
+  it.each([
+    ["a", 4_999],
+    ["😀", 500],
+  ] as const)(
+    "keeps the first %s when the exact prefix fits a tight context budget",
+    (prefix, trailing) => {
+      const page = {
+        url: "https://example.test/page",
+        title: "",
+        text: prefix + "a".repeat(trailing),
+        offset: 0,
+        truncated: false,
+      };
+      const expected = {
+        contextTruncated: true,
+        historyUnavailable: true,
+        result: { ...page, text: prefix, truncated: true, nextOffset: prefix.length },
+      };
+      const size = JSON.stringify(expected).length;
+      const result = parse(
+        boundToolResultText(JSON.stringify(page), size, {
+          name: "web_fetch",
+          fresh: true,
+        }),
+        size,
+      );
+      expect(result).toEqual(expected);
+    },
+  );
 
   it("recognizes a fresh page before considering an optional result extension", () => {
     const page = {

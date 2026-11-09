@@ -643,7 +643,7 @@ function shortenWebFetchPage(
   }
   // The exact first character can still fit when reserving the largest cursor leaves no room.
   const firstLength = (page.text.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
-  const window = pageWindow(page.text, low || firstLength, page.offset, maxOffset);
+  const window = pageWindow(page.text, Math.max(low, firstLength), page.offset, maxOffset);
   if (!window.text) return null;
   const result = window.truncated
     ? project({ ...page, title, text: window.text, truncated: true, nextOffset: window.nextOffset })
