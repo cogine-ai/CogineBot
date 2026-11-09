@@ -5654,11 +5654,6 @@ msgstr "En attente de connexion"
 msgid "Waiting for first signed event"
 msgstr ""
 
-#: src/lib/roster-status.ts
-#: src/pages/ActivityList.tsx
-msgid "Waiting for model limit"
-msgstr "En attente du quota du modèle"
-
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"
 msgstr ""
@@ -5667,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr "En attente du retour de l'API…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "En attente de l’ordinateur avant de réessayer."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "En attente dans la file…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "En attente de reprise"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

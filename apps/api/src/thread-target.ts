@@ -648,9 +648,9 @@ function mapRun(run: {
           { preserveDetails: true },
         )
       : run.error;
-  const quotaWaitUntil =
+  const quotaWait =
     run.status === "waiting_limit"
-      ? runQuotaWaitStateSchema.safeParse(run.quotaWait).data?.until
+      ? runQuotaWaitStateSchema.safeParse(run.quotaWait).data
       : undefined;
   return {
     id: run.id,
@@ -668,7 +668,8 @@ function mapRun(run: {
     startedAt: run.startedAt?.toISOString() ?? null,
     completedAt: run.completedAt?.toISOString() ?? null,
     createdAt: run.createdAt.toISOString(),
-    ...(quotaWaitUntil ? { quotaWaitUntil } : {}),
+    ...(quotaWait ? { quotaWaitUntil: quotaWait.until } : {}),
+    ...(quotaWait?.waitingForComputer ? { quotaWaitForComputer: true as const } : {}),
   };
 }
 

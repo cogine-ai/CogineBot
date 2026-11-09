@@ -5654,11 +5654,6 @@ msgstr "कनेक्शन की प्रतीक्षा"
 msgid "Waiting for first signed event"
 msgstr ""
 
-#: src/lib/roster-status.ts
-#: src/pages/ActivityList.tsx
-msgid "Waiting for model limit"
-msgstr "मॉडल की सीमा रीसेट होने की प्रतीक्षा"
-
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"
 msgstr ""
@@ -5667,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr ""
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "फिर से कोशिश करने से पहले कंप्यूटर के उपलब्ध होने की प्रतीक्षा है।"
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "कतार में प्रतीक्षा…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "फिर से शुरू होने की प्रतीक्षा"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

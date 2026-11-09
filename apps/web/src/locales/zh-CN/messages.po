@@ -5654,11 +5654,6 @@ msgstr "等待连接"
 msgid "Waiting for first signed event"
 msgstr "等待首条签名事件"
 
-#: src/lib/roster-status.ts
-#: src/pages/ActivityList.tsx
-msgid "Waiting for model limit"
-msgstr "等待模型额度恢复"
-
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"
 msgstr "等待 Notion"
@@ -5667,9 +5662,18 @@ msgstr "等待 Notion"
 msgid "Waiting for the API to come back…"
 msgstr "正在等待 API 恢复…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "正在等待电脑可用，之后会重试。"
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "排队等候…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "等待继续"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

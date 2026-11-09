@@ -22,15 +22,18 @@ export async function findRunRecoveryBlockers(
   runs: readonly RecoveryRun[],
   now: Date,
 ): Promise<Map<string, string>> {
-  // An expired quota wait only needs a Run fence to settle. It never takes a computer.
-  const candidates = runs.filter(
-    (run) =>
-      run.quotaWait == null ||
-      !pendingQuotaWaitExpired(
-        runQuotaWaitStateSchema.safeParse(run.quotaWait).data,
-        now.getTime(),
-      ),
-  );
+  const clock = now.getTime();
+  const candidates = runs.filter((run) => {
+    if (run.quotaWait == null) return true;
+    const state = runQuotaWaitStateSchema.safeParse(run.quotaWait).data;
+    if (state?.dispatchedFence !== null) return true;
+    // Expiry only needs a Run fence. A recovered due wait also needs its first computer
+    // admission so an existing holder can be reported before later scans skip the wait.
+    return (
+      !pendingQuotaWaitExpired(state, clock) &&
+      (state.waitingForComputer || Date.parse(state.until) > clock)
+    );
+  });
   const leases = candidates.length
     ? await prisma.computerExecutionLease.findMany({
         where: { botId: { in: candidates.map((run) => run.botId) }, expiresAt: { gt: now } },

@@ -17,7 +17,7 @@ export function rosterWorkStatusLabel(status: string): string | null {
     case "running":
       return t`Working…`;
     case "waiting_limit":
-      return t`Waiting for model limit`;
+      return t`Waiting to resume`;
     default:
       return null;
   }

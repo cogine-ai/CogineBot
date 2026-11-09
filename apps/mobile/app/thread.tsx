@@ -1031,7 +1031,9 @@ function Thread({
         id: run.id,
         bot,
         botId: run.botId,
-        label: t("Model limit reached. Resuming at {time}.", { time }),
+        label: run.quotaWaitForComputer
+          ? t("Waiting for the computer before retrying.")
+          : t("Model limit reached. Resuming at {time}.", { time }),
       },
     ];
   });

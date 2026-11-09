@@ -411,6 +411,7 @@ export function reduceThreadSnapshot(
       ...runFromStartedEvent(event, known),
       status: "waiting_limit",
       quotaWaitUntil: until.data,
+      ...(event.payload.waitingForComputer === true ? { quotaWaitForComputer: true } : {}),
     };
     const otherRuns = previousRuns.filter(
       (candidate) => candidate.id !== runId && isActive(candidate.status as RunStatus),
@@ -547,7 +548,13 @@ export function reduceThreadSnapshot(
       // why it stopped, matching what threads.get returns on the next load.
       run:
         endedRun && failure
-          ? { ...endedRun, status: "failed", error: failure, quotaWaitUntil: undefined }
+          ? {
+              ...endedRun,
+              status: "failed",
+              error: failure,
+              quotaWaitUntil: undefined,
+              quotaWaitForComputer: undefined,
+            }
           : primaryEnded
             ? (activeRuns?.[0] ?? null)
             : prev.run,

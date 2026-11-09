@@ -148,6 +148,7 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
       status: "waiting_limit",
       quotaWaitUntil: until.toISOString(),
     });
+    expect(snapshot.run?.quotaWaitForComputer).toBeUndefined();
     return { cookie, bot, run, until };
   }
 
@@ -191,8 +192,8 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     ).toBe(0);
   });
 
-  it("keeps a timed retry when the bot is changing computers", async () => {
-    const { bot, run, until } = await parkChat();
+  it("reports a computer wait once and keeps its timed retry when the bot is changing computers", async () => {
+    const { cookie, bot, run, until } = await parkChat();
     await handles.jobs.cancel(`run:${run.id}:quota:1`);
     await database.prisma.bot.update({
       where: { id: bot.id },
@@ -203,16 +204,49 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     await handles.awaitIdle!();
     expect(runtime.resumed).not.toContain(run.id);
     const retry = await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
-    expect(retry).toMatchObject({ status: "waiting_limit", quotaWait: run.quotaWait });
+    expect(retry).toMatchObject({
+      status: "waiting_limit",
+      quotaWait: { ...runQuotaWaitStateSchema.parse(run.quotaWait), waitingForComputer: true },
+    });
     expect(retry.wakeAt!.getTime()).toBeGreaterThan(until.getTime());
+    expect((await rpc<ThreadSnapshot>(cookie, "threads/get", { botId: bot.id })).run).toMatchObject(
+      {
+        id: run.id,
+        status: "waiting_limit",
+        quotaWaitUntil: until.toISOString(),
+        quotaWaitForComputer: true,
+      },
+    );
+
+    vi.setSystemTime(retry.wakeAt!);
+    await handles.awaitIdle!();
+    const nextRetry = await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
+    expect(nextRetry.wakeAt!.getTime()).toBeGreaterThan(retry.wakeAt!.getTime());
+    const waitingEvents = await database.prisma.event.findMany({
+      where: { runId: run.id, type: "run.waiting_limit" },
+      orderBy: { seq: "asc" },
+      select: { payload: true },
+    });
+    expect(waitingEvents.map((event) => event.payload)).toEqual([
+      { until: until.toISOString() },
+      { until: until.toISOString(), waitingForComputer: true },
+    ]);
 
     await database.prisma.bot.update({
       where: { id: bot.id },
       data: { computerSwitching: false },
     });
-    vi.setSystemTime(retry.wakeAt!);
+    vi.setSystemTime(nextRetry.wakeAt!);
     await handles.awaitIdle!();
     expect(runtime.resumed.filter((id) => id === run.id)).toEqual([run.id]);
+    expect(await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+      status: "completed",
+      quotaWait: { revision: 1, dispatchedFence: expect.any(Number) },
+    });
+    expect(
+      (await rpc<ThreadSnapshot>(cookie, "threads/get", { botId: bot.id })).run
+        ?.quotaWaitForComputer,
+    ).toBeUndefined();
   });
 
   it("wakes a due quota wait as soon as the same bot's computer lease is released", async () => {
@@ -258,8 +292,8 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     });
   });
 
-  it("expires a wait even when another Run still holds the computer", async () => {
-    const { bot, run, until } = await parkChat();
+  it("reports a recovered computer wait and expires it even while the holder is active", async () => {
+    const { cookie, bot, run, until } = await parkChat();
     await handles.jobs.cancel(`run:${run.id}:quota:1`);
     const persistedWait = runQuotaWaitStateSchema.parse(run.quotaWait);
     const expiresAt = new Date(Date.parse(persistedWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS + 60_000);
@@ -278,8 +312,22 @@ describe.skipIf(!enabled).sequential("durable model limit wait (PostgreSQL)", ()
     const recovery = createJobReconciler({ prisma: database.prisma, jobs: handles.jobs });
     await recovery.reconcileOnce();
     await handles.awaitIdle!();
+    expect((await rpc<ThreadSnapshot>(cookie, "threads/get", { botId: bot.id })).run).toMatchObject(
+      {
+        id: run.id,
+        status: "waiting_limit",
+        quotaWaitUntil: until.toISOString(),
+        quotaWaitForComputer: true,
+      },
+    );
+
+    // After recording the phase, subsequent recovery scans leave the resource wait parked.
+    const waiting = await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
+    await recovery.reconcileOnce();
+    await handles.awaitIdle!();
     expect(await database.prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
       status: "waiting_limit",
+      leaseFence: waiting.leaseFence,
     });
 
     vi.setSystemTime(new Date(expiresAt.getTime() - 30_000));

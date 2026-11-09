@@ -1149,20 +1149,37 @@ describe("thread event reduction", () => {
     const until = "2026-11-09T10:00:00.000Z";
     const updated = reduceThreadSnapshot(waiting, { ...wait, seq: 7, payload: { until } });
     expect(updated?.activeRuns?.[0]?.quotaWaitUntil).toBe(until);
+    const deferred = reduceThreadSnapshot(updated, {
+      ...wait,
+      seq: 8,
+      payload: { until, waitingForComputer: true },
+    });
+    expect(deferred?.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until,
+      quotaWaitForComputer: true,
+    });
+    expect(deferred?.activeRuns?.[0]?.quotaWaitForComputer).toBe(true);
+    const newProviderWait = reduceThreadSnapshot(deferred, { ...wait, seq: 9 });
+    expect(newProviderWait?.run?.quotaWaitForComputer).toBeUndefined();
+
     const resumed = reduceThreadSnapshot(
-      updated,
-      event({ type: "run.started", seq: 8, runId: run.id }),
+      deferred,
+      event({ type: "run.started", seq: 9, runId: run.id }),
     );
     expect(resumed?.run).toMatchObject({ id: run.id, status: "running" });
     expect(resumed?.run?.quotaWaitUntil).toBeUndefined();
+    expect(resumed?.run?.quotaWaitForComputer).toBeUndefined();
     expect(reduceThreadSnapshot(resumed, wait)).toBe(resumed);
 
     const failed = reduceThreadSnapshot(
-      updated,
+      deferred,
       event({ type: "run.failed", seq: 9, runId: run.id, payload: { error: "Model unavailable" } }),
     );
     expect(failed?.run).toMatchObject({ id: run.id, status: "failed", error: "Model unavailable" });
     expect(failed?.run?.quotaWaitUntil).toBeUndefined();
+    expect(failed?.run?.quotaWaitForComputer).toBeUndefined();
 
     const ask = { ...threadRun("run-ask"), status: "waiting_input" as const };
     const whileAsked = reduceThreadSnapshot({ ...initial, run: ask }, wait);

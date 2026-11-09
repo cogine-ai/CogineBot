@@ -1,7 +1,9 @@
 export const RU_MESSAGES: Record<string, string> = {
   "Model limit reached. Resuming at {time}.":
     "Достигнут лимит модели. Работа продолжится в {time}.",
-  "Waiting for model limit": "Ожидание сброса лимита модели",
+  "Waiting for the computer before retrying.":
+    "Ожидание готовности компьютера перед повторной попыткой.",
+  "Waiting to resume": "Ожидание продолжения",
   "Use {count} characters or fewer": "Используйте не более {count} символов",
   "Use a valid name": "Введите допустимое название",
   "Always allow {site}": "Всегда разрешать {site}",

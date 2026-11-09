@@ -172,6 +172,7 @@ import {
   readHistory,
   readRunTimingFields,
   recordUsage,
+  reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
   retireModelCredential,
   runAsSystem,
@@ -3936,16 +3937,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
                 ),
           );
-          const waiting = await deps.prisma.run.updateMany({
-            where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-            data: {
-              status: "waiting_limit",
-              wakeAt: retryAt,
-              leaseOwner: null,
-              leaseExpiresAt: null,
-            },
+          const waiting = await reparkRunQuotaWaitForComputer(deps.prisma, {
+            runId,
+            spaceId: run.spaceId,
+            threadId: run.threadId,
+            botId: run.botId,
+            leaseOwner: workerId,
+            leaseFence: fence,
+            state: quotaWait,
+            wakeAt: retryAt,
           });
-          if (waiting.count !== 1) return;
+          if (!waiting) return;
+          if (waiting.eventSeq !== null) {
+            await deps.events.notify(run.threadId, waiting.eventSeq).catch(() => undefined);
+          }
           // Recheck once after parking: a release just before the write cannot see this wait.
           if (untilReleased ? !(await isComputerBlocked()) : retryAt.getTime() > Date.now()) {
             await deps.jobs.enqueue(runQuotaResumeJob(runId, quotaWait.revision, retryAt));

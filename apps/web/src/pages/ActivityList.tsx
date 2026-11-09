@@ -419,7 +419,7 @@ export function statusLabel(status: RunActivityRow["status"]): string {
     case "waiting_takeover":
       return t`Needs takeover`;
     case "waiting_limit":
-      return t`Waiting for model limit`;
+      return t`Waiting to resume`;
     case "completed":
       return t`Done`;
     case "failed":

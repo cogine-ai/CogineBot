@@ -157,6 +157,64 @@ export async function parkRunQuotaWait(
   );
 }
 
+/** A due quota wake that lost computer admission keeps its revision and provider reset time. */
+export async function reparkRunQuotaWaitForComputer(
+  prisma: PrismaClient,
+  input: RunQuotaLease & {
+    spaceId: string;
+    threadId: string;
+    botId: string;
+    state: RunQuotaWaitState;
+    wakeAt: Date;
+  },
+): Promise<{ eventSeq: number | null } | null> {
+  const { runId, spaceId, threadId, botId, leaseOwner, leaseFence, state, wakeAt } = input;
+  if (state.dispatchedFence !== null) return null;
+
+  return withTransactionRetry(() =>
+    prisma.$transaction(async (tx) => {
+      // Match Stop's Thread → Run lock order so the deferred state and event commit together.
+      const [thread] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM threads WHERE id = ${threadId} AND "spaceId" = ${spaceId} FOR UPDATE
+      `;
+      if (!thread) return null;
+
+      const waiting = await tx.run.updateMany({
+        where: {
+          id: runId,
+          spaceId,
+          threadId,
+          botId,
+          status: "running",
+          leaseOwner,
+          leaseFence,
+          leaseExpiresAt: { gt: new Date() },
+          quotaWait: { equals: state },
+        },
+        data: {
+          status: "waiting_limit",
+          wakeAt,
+          quotaWait: { ...state, waitingForComputer: true },
+          leaseOwner: null,
+          leaseExpiresAt: null,
+        },
+      });
+      if (waiting.count !== 1) return null;
+      if (state.waitingForComputer) return { eventSeq: null };
+
+      const event = await appendEventInTransaction(tx, {
+        runId,
+        spaceId,
+        threadId,
+        botId,
+        type: "run.waiting_limit",
+        payload: { until: state.until, waitingForComputer: true },
+      });
+      return { eventSeq: event.seq };
+    }),
+  );
+}
+
 /** Consume one quota wake or trusted human continuation at the model-open boundary. */
 export async function claimRunQuotaResume(
   prisma: PrismaClient,

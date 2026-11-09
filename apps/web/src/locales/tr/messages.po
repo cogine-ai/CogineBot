@@ -5654,11 +5654,6 @@ msgstr "Bağlantı bekleniyor"
 msgid "Waiting for first signed event"
 msgstr ""
 
-#: src/lib/roster-status.ts
-#: src/pages/ActivityList.tsx
-msgid "Waiting for model limit"
-msgstr "Model sınırının sıfırlanması bekleniyor"
-
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"
 msgstr ""
@@ -5667,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr ""
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "Yeniden denemeden önce bilgisayarın hazır olması bekleniyor."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "Sırada bekleniyor…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "Devam etmesi bekleniyor"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

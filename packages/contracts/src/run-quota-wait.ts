@@ -32,6 +32,7 @@ export const runQuotaWaitStateSchema = z
     until: z.iso.datetime({ precision: 3 }),
     target: runQuotaTargetSchema,
     dispatchedFence: z.number().int().positive().nullable(),
+    waitingForComputer: z.literal(true).optional(),
     humanResume: z.enum(["input", "takeover", "takeover-skipped", "takeover-held"]).optional(),
   })
   .refine(({ beganAt, until, dispatchedFence, humanResume }) => {

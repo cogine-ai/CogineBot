@@ -3186,7 +3186,9 @@ export function ShellPage() {
       {
         id: run.id,
         bot: { botId: run.botId, color: bot?.color ?? FALLBACK_BOT_COLOR, name: bot?.name },
-        label: t`Model limit reached. Resuming at ${time}.`,
+        label: run.quotaWaitForComputer
+          ? t`Waiting for the computer before retrying.`
+          : t`Model limit reached. Resuming at ${time}.`,
       },
     ];
   });

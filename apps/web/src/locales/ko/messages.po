@@ -5654,11 +5654,6 @@ msgstr "연결 대기 중"
 msgid "Waiting for first signed event"
 msgstr ""
 
-#: src/lib/roster-status.ts
-#: src/pages/ActivityList.tsx
-msgid "Waiting for model limit"
-msgstr "모델 한도 재설정 대기 중"
-
 #: src/components/integrations/NativeNotionWebhookSetup.tsx
 msgid "Waiting for Notion"
 msgstr ""
@@ -5667,9 +5662,18 @@ msgstr ""
 msgid "Waiting for the API to come back…"
 msgstr "API가 다시 작동하기를 기다리는 중…"
 
+#: src/pages/Shell.tsx
+msgid "Waiting for the computer before retrying."
+msgstr "다시 시도하기 전에 컴퓨터가 준비되기를 기다리는 중입니다."
+
 #: src/lib/roster-status.ts
 msgid "Waiting in line…"
 msgstr "줄에서 기다리는 중…"
+
+#: src/lib/roster-status.ts
+#: src/pages/ActivityList.tsx
+msgid "Waiting to resume"
+msgstr "다시 시작 대기 중"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Waiting…"

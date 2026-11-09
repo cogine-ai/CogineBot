@@ -34,12 +34,19 @@ test("a model quota wait survives reload and can be stopped", async ({ page }, i
   const { botId } = await account(page, "quota-wait");
   const actor = await rpc<Me>(page, "me", {});
   const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  const { PostgresRealtimeFanout } = await import("../../../packages/adapters/src/realtime");
   const { createDb } = await import("../../../packages/db/src/client");
-  const { appendEventInTransaction } = await import("../../../packages/db/src/events");
+  const { appendEventInTransaction, notifyRealtime } = await import(
+    "../../../packages/db/src/events"
+  );
   const { createThreadMessageInTransaction } = await import("../../../packages/db/src/messages");
   const db = createDb(connection.toString(), {
     poolMax: 2,
     applicationName: "quota-wait-browser-fixture",
+  });
+  const realtime = new PostgresRealtimeFanout({
+    connectionString: connection.toString(),
+    publisher: db.pool,
   });
   try {
     const [identity] = await db.prisma.$queryRaw<Array<{ name: string }>>`
@@ -58,6 +65,20 @@ test("a model quota wait survives reload and can be stopped", async ({ page }, i
     const until = new Date(beganAt.getTime() + 60 * 60_000);
     // Scheduler retries can move wakeAt without changing the provider reset time.
     const wakeAt = new Date(until.getTime() + 5 * 60_000);
+    const quotaWait = {
+      beganAt: beganAt.toISOString(),
+      until: until.toISOString(),
+      revision: 1,
+      dispatchedFence: null,
+      target: {
+        provider: "openai",
+        modelId: "fixture-model",
+        modelCredentialId: null,
+        connectionRevision: null,
+        endpointDigest: "0".repeat(64),
+        costOwner: "deployment",
+      },
+    };
     const run = await db.prisma.$transaction(async (tx) => {
       const message = await createThreadMessageInTransaction(tx, {
         threadId: scope.threadId,
@@ -77,20 +98,7 @@ test("a model quota wait survives reload and can be stopped", async ({ page }, i
           status: "waiting_limit",
           startedAt: beganAt,
           wakeAt,
-          quotaWait: {
-            beganAt: beganAt.toISOString(),
-            until: until.toISOString(),
-            revision: 1,
-            dispatchedFence: null,
-            target: {
-              provider: "openai",
-              modelId: "fixture-model",
-              modelCredentialId: null,
-              connectionRevision: null,
-              endpointDigest: "0".repeat(64),
-              costOwner: "deployment",
-            },
-          },
+          quotaWait,
         },
       });
       await tx.message.update({ where: { id: message.id }, data: { runId: waiting.id } });
@@ -122,8 +130,44 @@ test("a model quota wait survives reload and can be stopped", async ({ page }, i
     await expect(stop).toBeEnabled();
     await expect(page.getByTestId("connection-status")).toBeHidden({ timeout: 30_000 });
     await captureScreenshot(page, info, "b5-provider-quota-wait");
-    await stop.click();
+
+    // Drive the computer wait through the same durable event and snapshot used by the UI.
+    const deferred = await db.prisma.$transaction(async (tx) => {
+      await tx.run.update({
+        where: { id: run.id },
+        data: { quotaWait: { ...quotaWait, waitingForComputer: true } },
+      });
+      return appendEventInTransaction(tx, {
+        ...scope,
+        runId: run.id,
+        type: "run.waiting_limit",
+        payload: { until: quotaWait.until, waitingForComputer: true },
+      });
+    });
+    await notifyRealtime(realtime, scope.threadId, deferred.seq);
+    const computerWait = page.getByRole("status").filter({
+      hasText: "Waiting for the computer before retrying.",
+    });
+    await expect(computerWait).toBeVisible();
     await expect(wait).toBeHidden();
+    await expect(stop).toBeEnabled();
+
+    const deferredSnapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+    expect(deferredSnapshot.run).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until.toISOString(),
+      quotaWaitForComputer: true,
+    });
+    expect(deferredSnapshot.run).not.toHaveProperty("quotaWait");
+    await captureScreenshot(page, info, "b5-provider-quota-computer-wait");
+
+    await page.reload();
+    await expect(computerWait).toBeVisible();
+    await expect(wait).toBeHidden();
+    await expect(stop).toBeEnabled();
+    await stop.click();
+    await expect(computerWait).toBeHidden();
     await expect
       .poll(async () => {
         const row = await db.prisma.run.findUniqueOrThrow({ where: { id: run.id } });
@@ -133,7 +177,9 @@ test("a model quota wait survives reload and can be stopped", async ({ page }, i
     const stopped = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
     expect(stopped.run?.status).not.toBe("waiting_limit");
     expect(stopped.run?.quotaWaitUntil).toBeUndefined();
+    expect(stopped.run?.quotaWaitForComputer).toBeUndefined();
   } finally {
+    await realtime.close();
     await db.prisma.$disconnect();
     await db.pool.end();
   }

@@ -1760,7 +1760,7 @@ const BotRow = memo(function BotRow({
   const { t } = useI18n();
   const waitingForQuota = bot.status === "waiting_limit";
   const preview = waitingForQuota
-    ? t("Waiting for model limit")
+    ? t("Waiting to resume")
     : previewSnippet(bot.preview, 40) || bot.title || t("No messages yet");
   const time = bot.updatedAt ? formatThreadTime(bot.updatedAt, new Date(day)) : "";
   const tag = botTag(bot.title, bot.name);

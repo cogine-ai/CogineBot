@@ -1335,6 +1335,7 @@ type MobileRun = {
   status: string;
   error?: string | null;
   quotaWaitUntil?: string;
+  quotaWaitForComputer?: true;
 };
 
 export type MobileSnapshot = {
@@ -1712,6 +1713,7 @@ export function applyMobileThreadEvent(
       status: "waiting_limit",
       error: null,
       quotaWaitUntil: until.data,
+      quotaWaitForComputer: event.payload?.waitingForComputer === true ? true : undefined,
     };
     const otherRuns = previousRuns.filter(
       (candidate) => candidate.id !== runId && isActive(candidate.status as RunStatus),
@@ -1736,7 +1738,9 @@ export function applyMobileThreadEvent(
       run?.id === runId && run.status === "waiting_limit";
     if (!isResuming(prev.run) && !prev.activeRuns?.some(isResuming)) return original;
     const resume = (run: MobileRun): MobileRun =>
-      isResuming(run) ? { ...run, status: "running", quotaWaitUntil: undefined } : run;
+      isResuming(run)
+        ? { ...run, status: "running", quotaWaitUntil: undefined, quotaWaitForComputer: undefined }
+        : run;
     return {
       ...prev,
       cursor,
@@ -1841,7 +1845,13 @@ export function applyMobileThreadEvent(
       // A failed run stays in run so the thread can say why it stopped (see reduceThreadSnapshot).
       run:
         endedRun && failure
-          ? { ...endedRun, status: "failed", error: failure, quotaWaitUntil: undefined }
+          ? {
+              ...endedRun,
+              status: "failed",
+              error: failure,
+              quotaWaitUntil: undefined,
+              quotaWaitForComputer: undefined,
+            }
           : primaryEnded
             ? (activeRuns?.[0] ?? null)
             : prev.run,

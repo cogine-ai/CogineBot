@@ -1044,6 +1044,7 @@ export const RunSchema = z.object({
   completedAt: z.string().nullable(),
   createdAt: z.string(),
   quotaWaitUntil: IsoDate.optional(),
+  quotaWaitForComputer: z.literal(true).optional(),
 });
 export type Run = z.infer<typeof RunSchema>;
 

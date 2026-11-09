@@ -4418,16 +4418,42 @@ describe("mobile thread event reduction", () => {
     const until = "2026-11-09T10:00:00.000Z";
     const updated = applyMobileThreadEvent(waiting, { ...event, seq: 5, payload: { until } });
     expect(updated?.activeRuns?.[1]?.quotaWaitUntil).toBe(until);
-
-    const resumed = applyMobileThreadEvent(updated, {
-      type: "run.started",
+    const deferred = applyMobileThreadEvent(updated, {
+      ...event,
       seq: 6,
+      payload: { until, waitingForComputer: true },
+    });
+    expect(deferred?.run).toEqual(other);
+    expect(deferred?.activeRuns?.[1]).toMatchObject({
+      id: run.id,
+      status: "waiting_limit",
+      quotaWaitUntil: until,
+      quotaWaitForComputer: true,
+    });
+    const newProviderWait = applyMobileThreadEvent(deferred, { ...event, seq: 7 });
+    expect(newProviderWait?.activeRuns?.[1]?.quotaWaitForComputer).toBeUndefined();
+
+    const resumed = applyMobileThreadEvent(deferred, {
+      type: "run.started",
+      seq: 7,
       runId: run.id,
       botId: run.botId,
     });
     expect(resumed?.activeRuns).toMatchObject([other, run]);
     expect(resumed?.activeRuns?.[1]?.quotaWaitUntil).toBeUndefined();
+    expect(resumed?.activeRuns?.[1]?.quotaWaitForComputer).toBeUndefined();
     expect(applyMobileThreadEvent(resumed, event)).toBe(resumed);
+
+    const failed = applyMobileThreadEvent(deferred, {
+      type: "run.failed",
+      seq: 7,
+      runId: run.id,
+      botId: run.botId,
+      payload: { error: "Model unavailable" },
+    });
+    expect(failed?.run).toMatchObject({ id: run.id, status: "failed", error: "Model unavailable" });
+    expect(failed?.run?.quotaWaitForComputer).toBeUndefined();
+    expect(failed?.activeRuns).toEqual([other]);
   });
 
   it("keeps an actionable direct run and its supplemental quota wait", () => {
