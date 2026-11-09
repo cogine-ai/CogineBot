@@ -25,6 +25,33 @@ const json = (body: unknown, status = 200, headers = {}) =>
   new Response(JSON.stringify(body), { status, headers });
 
 describe("native HTTP execution", () => {
+  it("rechecks the approval after DNS and before sending a write", async () => {
+    let revoked = false;
+    const fetch = vi.fn(async () => json({ id: "should-not-exist" }));
+    const beforeDispatch = vi.fn(async () => {
+      if (revoked) throw new Error("Approval revoked");
+    });
+    const client = new NativeHttpClient(
+      "https://api.example.test",
+      async () => ({ kind: "bearer", value: "fixture-access" }),
+      {
+        readOnly: false,
+        beforeDispatch,
+        signal: new AbortController().signal,
+        network: {
+          fetch,
+          resolveHostname: async () => {
+            revoked = true;
+            return [{ address: "203.0.113.10", family: 4 }];
+          },
+        },
+      },
+    );
+    clients.push(client);
+    await expect(client.request({ method: "POST", path: "/v1/pages", body: {} })).rejects.toThrow();
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it.each([410, 403, 404])(
     "distinguishes expired cursors from access failure %s",
     async (status) => {

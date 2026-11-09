@@ -420,6 +420,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
           endpoint: MCP_ENDPOINT,
           headers: this.mcpHeaders(context, app, token, this.accountRef(connection)),
           signal: context.signal,
+          beforeDispatch: call.beforeDispatch,
           session: remoteMcpToolSession(
             context,
             `pipedream:${connection.id}`,

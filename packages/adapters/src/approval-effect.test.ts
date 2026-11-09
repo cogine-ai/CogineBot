@@ -4,6 +4,7 @@ import {
   approvalPausedToolResult,
   approvalReplayPathError,
   approvalReplayResourceError,
+  approvedActionReceipt,
   approvedCatalogReplay,
   approvedReplayArgs,
   boundDirectApprovalRequest,
@@ -25,6 +26,90 @@ import {
   resolveDuplicateEffectGate,
   settleUncertainEffect,
 } from "./approval-effect.js";
+
+describe("approval execution receipts", () => {
+  const url = "https://example.com/posts/123";
+
+  it("keeps the permalink from an actual connector result and omits internal content", () => {
+    expect(
+      approvedActionReceipt({ data: { data: { id: "123", url } }, logId: "fixture" }, "result"),
+    ).toEqual({ state: "succeeded", url });
+    expect(
+      approvedActionReceipt({ structuredContent: { permalink: url }, isError: false }, "result"),
+    ).toEqual({ state: "succeeded", url });
+  });
+
+  it("separates failure, uncertainty and signed URLs from a usable success receipt", () => {
+    expect(
+      approvedActionReceipt({ data: { errors: [{ message: "rejected" }], url } }, "result"),
+    ).toEqual({ state: "failed" });
+    expect(approvedActionReceipt({ error: "timed out", uncertain: true }, "error")).toEqual({
+      state: "unknown",
+    });
+    expect(approvedActionReceipt({ data: { url: `${url}?token=fixture` } }, "result")).toEqual({
+      state: "succeeded",
+    });
+    expect(approvedActionReceipt({ url })).toEqual({ state: "unknown" });
+  });
+
+  it("keeps asynchronous acknowledgments unconfirmed and detects a failed inner action", () => {
+    expect(approvedActionReceipt({ outcome: "partial", complete: false, url }, "result")).toEqual({
+      state: "unknown",
+    });
+    expect(approvedActionReceipt({ file: { permalink: url } }, "result")).toEqual({
+      state: "succeeded",
+      url,
+    });
+    expect(
+      approvedActionReceipt(
+        {
+          write_outcome: "partial",
+          all_edits_applied: false,
+          url,
+        },
+        "result",
+      ),
+    ).toEqual({ state: "unknown" });
+    expect(
+      approvedActionReceipt(
+        {
+          status: 202,
+          data: { url },
+          deliveryVerified: false,
+          terminalStateVerified: false,
+        },
+        "result",
+      ),
+    ).toEqual({ state: "unknown" });
+    expect(
+      approvedActionReceipt(
+        {
+          data: {
+            results: [{ response: { successful: true } }, { response: { successful: false } }],
+          },
+          logId: "fixture",
+        },
+        "result",
+      ),
+    ).toEqual({ state: "failed" });
+    expect(
+      approvedActionReceipt(
+        {
+          data: [{ written: true }, { successful: false }],
+        },
+        "result",
+      ),
+    ).toEqual({ state: "failed" });
+    expect(approvedActionReceipt({ issue: { html_url: url } }, "result")).toEqual({
+      state: "succeeded",
+      url,
+    });
+    expect(approvedActionReceipt({ link: { webUrl: url } }, "result")).toEqual({
+      state: "succeeded",
+      url,
+    });
+  });
+});
 
 describe("connectorBatchApprovalFromEffect", () => {
   const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";

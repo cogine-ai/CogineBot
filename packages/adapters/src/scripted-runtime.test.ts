@@ -4,12 +4,27 @@ import type {
   AgentSteeringMessage,
   ScriptedRuntimeState,
 } from "@rakazo/adapter-kit";
+import { buildBotMessageWakePrompt } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
 import { preparePageToolRequest } from "./page-tool-request.js";
 import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
 import { scriptedStateDigest } from "./scripted-state.js";
 
 describe("inferScript message_bot", () => {
+  it("relays a delegated result instead of interpreting its content as another tool call", () => {
+    const text = "Wrote two notes.\n\nThe connected destination returned two record IDs.";
+    const prompt = buildBotMessageWakePrompt({
+      from: { id: "fixture-reviewer", name: "Reviewer" },
+      text,
+      intent: "result",
+    });
+    expect(inferScript(prompt)).toEqual([
+      {
+        assistant: `Here's what Reviewer found: ${text}`,
+        complete: true,
+      },
+    ]);
+  });
   const messageBotScript = (confirmName: string, message: string) => [
     {
       assistant: "messaging that bot now.",

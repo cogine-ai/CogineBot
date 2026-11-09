@@ -168,6 +168,7 @@ export class RemoteMcpSessionPool {
           requestSignal.throwIfAborted();
           await withAbort(binding.assertCurrent(), requestSignal);
         }
+        if (options.beforeDispatch) await withAbort(options.beforeDispatch(), requestSignal);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Remote MCP authorization changed";
         throw new RemoteMcpAuthorizationError(message, { cause: error });

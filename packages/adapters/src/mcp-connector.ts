@@ -18,6 +18,8 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { catalogToolPrefix } from "./approval-effect.js";
 import { composioToolBatch } from "./composio-batch.js";
+import type { ConnectorDispatchCheck } from "./connector-dispatch.js";
+import { dispatchTransaction } from "./connector-dispatch.js";
 import {
   combineSignals,
   redactConnectorPayload,
@@ -525,13 +527,25 @@ export class McpConnector implements ConnectorProvider {
     const sessionKey = this.sessionKey(server, context);
     try {
       entry = await this.acquire(server, context, context.signal);
-      const { session } = entry;
+      const { session, stdio } = entry;
       material = entry.material;
+      const guard = call.beforeDispatch as ConnectorDispatchCheck | undefined;
+      const checkDispatch = guard
+        ? async () => {
+            try {
+              await guard();
+            } catch (error) {
+              admissionRejected = true;
+              throw error;
+            }
+          }
+        : undefined;
       let dispatched: ReturnType<McpSession["callTool"]> | undefined;
       const dispatch = () => {
         context.signal.throwIfAborted();
         dispatched = session.callTool(call.route!.toolName, call.args, {
           signal: context.signal,
+          beforeDispatch: stdio ? undefined : checkDispatch,
         });
         // The transport may reject before the DB admission transaction has returned.
         void dispatched.catch(() => undefined);
@@ -561,8 +575,11 @@ export class McpConnector implements ConnectorProvider {
             ) {
               throw new Error("MCP server permissions or credentials changed; retry");
             }
-            // Invocation is the dispatch boundary. Do not await network work under
-            // this lock: OAuth refresh needs its own parent/material transaction.
+            // Start the SDK invocation under the plugin lock. The remote POST
+            // rechecks separately after DNS; do not await it or OAuth here.
+            const checkInTransaction = guard?.[dispatchTransaction];
+            if (checkInTransaction) await checkInTransaction(tx);
+            else if (guard) await guard();
             dispatch();
           });
         } catch (error) {
@@ -574,6 +591,7 @@ export class McpConnector implements ConnectorProvider {
           }
         }
       } else {
+        if (stdio) await checkDispatch?.();
         dispatch();
       }
       const result = await dispatched!;

@@ -964,6 +964,71 @@ describe("composio tool mapping", () => {
     ]);
   });
 
+  it("checks a delegated approval after the provider session is available and before dispatch", async () => {
+    composioSdkState.created.length = 0;
+    composioSdkState.executions.length = 0;
+    composioSdkState.sessions.clear();
+    composioToolkitDirectory.invalidate();
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "peer-approval",
+      traceId: "peer-approval",
+      spaceId: "workspace",
+      userId: "user-1",
+      signal: new AbortController().signal,
+      connectedConnections: [
+        {
+          id: "connection-dropbox",
+          connectorId: "composio",
+          externalId: "dropbox",
+          displayName: "Dropbox",
+        },
+      ],
+    };
+    const beforeDispatch = vi.fn(async (): Promise<void> => {
+      expect(composioSdkState.created.some(({ userId }) => userId === context.userId)).toBe(true);
+      throw new Error("The delegated action is no longer authorized.");
+    });
+    const events: ConnectorEvent[] = [];
+    for await (const event of connector.execute(
+      {
+        tool: "DROPBOX_CREATE_FOLDER",
+        args: { path: "/Reviewed" },
+        executionId: "peer-approval",
+        beforeDispatch,
+      },
+      context,
+    ))
+      events.push(event);
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(composioSdkState.executions).toEqual([]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "error",
+        message: "The delegated action is no longer authorized.",
+      }),
+    ]);
+    beforeDispatch.mockResolvedValueOnce(undefined);
+    const partial: ConnectorEvent[] = [];
+    for await (const event of connector.execute(
+      {
+        tool: "COMPOSIO_MULTI_EXECUTE_TOOL",
+        args: {
+          tools: [
+            { tool_slug: "DROPBOX_CREATE_FOLDER", arguments: { path: "/Reviewed" } },
+            { tool_slug: "DROPBOX_LIST_FILES_IN_FOLDER", arguments: { path: "/Reviewed" } },
+          ],
+        },
+        executionId: "peer-approval-partial",
+        beforeDispatch,
+      },
+      context,
+    ))
+      partial.push(event);
+    expect(composioSdkState.executions).toHaveLength(1);
+    expect(partial).toEqual([expect.objectContaining({ type: "error", uncertain: true })]);
+  });
+
   it("keeps earlier log ids when a later split call fails", async () => {
     composioSdkState.created.length = 0;
     composioSdkState.executions.length = 0;

@@ -299,91 +299,126 @@ describe("MCP transport seam", () => {
     }
   });
 
-  it("lets the SDK refresh a rejected token, persist rotation, and retry the MCP request", async () => {
-    const resourceHeaders: string[] = [];
-    const persisted: unknown[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const request = input instanceof Request ? input : new Request(input, init);
-        const url = new URL(logicalHref(input, init));
-        if (url.href === "https://auth.example.test/token") {
-          return Response.json({
-            access_token: "fresh-access",
-            refresh_token: "rotated-refresh",
-            token_type: "bearer",
-            expires_in: 3600,
-          });
-        }
-        if (url.href === "https://mcp.example.test/mcp") {
-          const authorization = request.headers.get("authorization") ?? "";
-          resourceHeaders.push(authorization);
-          if (authorization === "Bearer stale-access") {
-            return new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer" } });
-          }
-          const message = JSON.parse(await request.text()) as { id?: number; method?: string };
-          if (message.method === "initialize") {
+  it.each(["initialize", "approved tool", "revoked tool"])(
+    "lets the SDK refresh a rejected token and respects the dispatch check for %s",
+    async (scenario) => {
+      const resourceHeaders: string[] = [];
+      const toolHeaders: string[] = [];
+      const persisted: unknown[] = [];
+      let approved = true;
+      const beforeDispatch = vi.fn(async () => {
+        if (!approved) throw new Error("Approval revoked");
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          const url = new URL(logicalHref(input, init));
+          if (url.href === "https://auth.example.test/token") {
+            if (scenario === "revoked tool") approved = false;
             return Response.json({
-              jsonrpc: "2.0",
-              id: message.id,
-              result: {
-                protocolVersion: "2025-11-25",
-                capabilities: {},
-                serverInfo: { name: "test", version: "1" },
-              },
+              access_token: "fresh-access",
+              refresh_token: "rotated-refresh",
+              token_type: "bearer",
+              expires_in: 3600,
             });
           }
-          return new Response(null, { status: 202 });
-        }
-        throw new Error(`Unexpected request: ${request.method} ${url}`);
-      }),
-    );
-    const provider = new StoredMcpOAuthProvider(
-      "server-1",
-      {
-        oauth: {
-          redirectUri: "http://127.0.0.1:5173/mcp/oauth/callback",
-          tokens: { access_token: "stale-access", refresh_token: "refresh", token_type: "bearer" },
-          clientInformation: { client_id: "client-1" },
-          discoveryState: {
-            authorizationServerUrl: "https://auth.example.test",
-            resourceMetadata: {
-              resource: "https://mcp.example.test/mcp",
-              authorization_servers: ["https://auth.example.test"],
+          if (url.href === "https://mcp.example.test/mcp") {
+            if (request.method !== "POST") return new Response(null, { status: 405 });
+            const authorization = request.headers.get("authorization") ?? "";
+            resourceHeaders.push(authorization);
+            const message = JSON.parse(await request.text()) as { id?: number; method?: string };
+            const tool = message.method === "tools/call";
+            if (tool) toolHeaders.push(authorization);
+            if (authorization === "Bearer stale-access" && (tool || scenario === "initialize")) {
+              return new Response(null, { status: 401, headers: { "WWW-Authenticate": "Bearer" } });
+            }
+            if (message.method === "initialize") {
+              return Response.json({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-11-25",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "test", version: "1" },
+                },
+              });
+            }
+            if (tool) {
+              return Response.json({ jsonrpc: "2.0", id: message.id, result: { content: [] } });
+            }
+            return new Response(null, { status: 202 });
+          }
+          throw new Error(`Unexpected request: ${request.method} ${url}`);
+        }),
+      );
+      const provider = new StoredMcpOAuthProvider(
+        "server-1",
+        {
+          oauth: {
+            redirectUri: "http://127.0.0.1:5173/mcp/oauth/callback",
+            tokens: {
+              access_token: "stale-access",
+              refresh_token: "refresh",
+              token_type: "bearer",
             },
-            authorizationServerMetadata: {
-              issuer: "https://auth.example.test",
-              authorization_endpoint: "https://auth.example.test/authorize",
-              token_endpoint: "https://auth.example.test/token",
-              response_types_supported: ["code"],
-              grant_types_supported: ["authorization_code", "refresh_token"],
+            clientInformation: { client_id: "client-1" },
+            discoveryState: {
+              authorizationServerUrl: "https://auth.example.test",
+              resourceMetadata: {
+                resource: "https://mcp.example.test/mcp",
+                authorization_servers: ["https://auth.example.test"],
+              },
+              authorizationServerMetadata: {
+                issuer: "https://auth.example.test",
+                authorization_endpoint: "https://auth.example.test/authorize",
+                token_endpoint: "https://auth.example.test/token",
+                response_types_supported: ["code"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
+              },
             },
           },
         },
-      },
-      async (material) => {
-        persisted.push(structuredClone(material));
-      },
-    );
-    const session = new McpSession();
+        async (material) => {
+          persisted.push(structuredClone(material));
+        },
+      );
+      const session = new McpSession();
 
-    await session.connectRemote({
-      url: "https://mcp.example.test/mcp",
-      authProvider: provider,
-      fallbackToSse: false,
-      network: TEST_NETWORK,
-    });
-
-    expect(resourceHeaders[0]).toBe("Bearer stale-access");
-    expect(resourceHeaders.slice(1)).not.toHaveLength(0);
-    expect(resourceHeaders.slice(1).every((value) => value === "Bearer fresh-access")).toBe(true);
-    expect(await provider.tokens()).toMatchObject({
-      access_token: "fresh-access",
-      refresh_token: "rotated-refresh",
-    });
-    expect(persisted).toHaveLength(1);
-    await session.close();
-  });
+      try {
+        await session.connectRemote({
+          url: "https://mcp.example.test/mcp",
+          authProvider: provider,
+          fallbackToSse: false,
+          network: TEST_NETWORK,
+        });
+        if (scenario === "initialize") {
+          expect(resourceHeaders[0]).toBe("Bearer stale-access");
+          expect(resourceHeaders.slice(1)).not.toHaveLength(0);
+          expect(resourceHeaders.slice(1).every((value) => value === "Bearer fresh-access")).toBe(
+            true,
+          );
+        } else {
+          const result = session.callTool("write", {}, { beforeDispatch });
+          if (scenario === "revoked tool") {
+            await expect(result).rejects.toThrow("Approval revoked");
+            expect(toolHeaders).toEqual(["Bearer stale-access"]);
+          } else {
+            await expect(result).resolves.toEqual({ content: [] });
+            expect(toolHeaders).toEqual(["Bearer stale-access", "Bearer fresh-access"]);
+          }
+          expect(beforeDispatch).toHaveBeenCalledTimes(2);
+        }
+        expect(await provider.tokens()).toMatchObject({
+          access_token: "fresh-access",
+          refresh_token: "rotated-refresh",
+        });
+        expect(persisted).toHaveLength(1);
+      } finally {
+        await session.close();
+      }
+    },
+  );
 
   it("invalidates a dead refresh token and surfaces reconnect instead of silently losing tools", async () => {
     const persisted: unknown[] = [];
@@ -496,6 +531,75 @@ describe("MCP transport seam", () => {
           urlPolicy: { allowHttpLocalhost: true, allowPrivateEndpoint: true },
         }),
       ).rejects.toThrow("Reconnect this server");
+    } finally {
+      await session.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("checks approval after resolving a loopback tool request", async () => {
+    const toolRequests: Array<string | undefined> = [];
+    const server = createServer(async (req, res) => {
+      if (req.method !== "POST") {
+        res.writeHead(405).end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const message = JSON.parse(Buffer.concat(chunks).toString()) as {
+        method: string;
+        id?: number;
+      };
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      if (message.method === "tools/call") toolRequests.push(req.headers.authorization);
+      const result =
+        message.method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "test", version: "1" },
+            }
+          : { content: [] };
+      res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const session = new McpSession();
+    let revokeOnLookup = false;
+    let approved = true;
+    const beforeDispatch = vi.fn(async () => {
+      if (!approved) throw new Error("Approval revoked");
+    });
+    try {
+      await session.connectRemote({
+        url: `http://localhost:${port}/mcp`,
+        urlPolicy: {
+          allowHttpLocalhost: true,
+          allowPrivateEndpoint: true,
+          allowLocalHttpCredentials: true,
+        },
+        headerPolicy: { headers: { Authorization: "Bearer synthetic" } },
+        network: {
+          resolveHostname: async () => {
+            if (revokeOnLookup) approved = false;
+            return [{ address: "127.0.0.1", family: 4 }];
+          },
+        },
+      });
+      await expect(session.callTool("write", {}, { beforeDispatch })).resolves.toEqual({
+        content: [],
+      });
+      revokeOnLookup = true;
+      await expect(session.callTool("write", {}, { beforeDispatch })).rejects.toThrow(
+        "Approval revoked",
+      );
+      expect(beforeDispatch).toHaveBeenCalledTimes(2);
+      expect(toolRequests).toEqual(["Bearer synthetic"]);
     } finally {
       await session.close();
       await new Promise((resolve) => server.close(resolve));

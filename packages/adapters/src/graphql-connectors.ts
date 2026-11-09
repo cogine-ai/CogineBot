@@ -39,7 +39,8 @@ export const GraphqlConfigSchema = z.object({
 
 export type GraphqlOperation = z.infer<typeof GraphqlOperationSchema>;
 export type GraphqlConfig = z.infer<typeof GraphqlConfigSchema>;
-export type RemoteGraphqlDependencies = RemoteTransportDependencies & RemoteUrlPolicy;
+export type RemoteGraphqlDependencies = RemoteTransportDependencies &
+  RemoteUrlPolicy & { beforeDispatch?: () => Promise<void> };
 
 const INTROSPECTION_QUERY = `query RakazoIntrospection {
   __schema {
@@ -292,12 +293,16 @@ export async function executeGraphqlOperation(
 
   const safeFetch = createSafeRemoteFetch(remote.fetch, remote.resolveHostname, remote);
   try {
-    const response = await safeFetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query: document, variables, operationName: opName }),
-      signal: combineSignals(signal, AbortSignal.timeout(30_000)),
-    });
+    const response = await safeFetch(
+      url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ query: document, variables, operationName: opName }),
+        signal: combineSignals(signal, AbortSignal.timeout(30_000)),
+      },
+      remote.beforeDispatch,
+    );
     const { text, truncated: validationTruncated } = await readBoundedText(
       response,
       MAX_GRAPHQL_VALIDATION_BYTES,

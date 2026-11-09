@@ -109,7 +109,8 @@ type InstalledRow = {
 };
 
 export type RemoteConnectorDependencies = RemoteTransportDependencies;
-type RemoteRequestPolicy = RemoteConnectorDependencies & RemoteUrlPolicy;
+type RemoteRequestPolicy = RemoteConnectorDependencies &
+  RemoteUrlPolicy & { beforeDispatch?: () => Promise<void> };
 
 export class InstalledConnectorProvider implements ConnectorProvider {
   private readonly strictInputSchemas = new WeakSet<Record<string, unknown>>();
@@ -325,7 +326,7 @@ export class InstalledConnectorProvider implements ConnectorProvider {
     let credential: string | undefined;
     try {
       credential = await this.loadCredential(install, context);
-      const remote = await this.remoteFor(context);
+      const remote = { ...(await this.remoteFor(context)), beforeDispatch: call.beforeDispatch };
       if (install.kind === "mcp") {
         const config = McpConfigSchema.parse(install.config);
         const session = remoteMcpToolSession(context, `installed:${install.id}`, install.revision, {
@@ -708,12 +709,16 @@ async function executeApiOperation(
   applyCredential(url, headers, config.auth, credential);
   const safeFetch = createSafeRemoteFetch(remote.fetch, remote.resolveHostname, remote);
   try {
-    const response = await safeFetch(url, {
-      method: operation.method,
-      headers,
-      body,
-      signal: combineSignals(signal, AbortSignal.timeout(30_000)),
-    });
+    const response = await safeFetch(
+      url,
+      {
+        method: operation.method,
+        headers,
+        body,
+        signal: combineSignals(signal, AbortSignal.timeout(30_000)),
+      },
+      remote.beforeDispatch,
+    );
     const { text, truncated } = await readBoundedText(response, 1_000_000);
     let data: unknown = text;
     try {

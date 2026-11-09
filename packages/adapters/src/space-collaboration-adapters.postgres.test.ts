@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { JobPublisher } from "@rakazo/adapter-kit";
 import { stuckWorkStatusMessages } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   authorizeCollaborationRunStart,
   cancelRunsInTransaction,
+  claimDelegatedApprovedEffect,
   createDb,
   createThreadEvents,
+  loadDelegatedApprovals,
+  loadThreadAttention,
+  recheckDelegatedApprovalDispatch,
   updateSpaceCollaborationForMember,
 } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -16,12 +21,20 @@ import {
   prepareAgentConnectionResponse,
   respondAgentConnection,
 } from "./agent-connections.js";
+import { buildApprovalAskBlock } from "./approval-ask.js";
+import {
+  approvedActionReceipt,
+  approvedReplayArgs,
+  claimApprovedEffect,
+  completeExternalEffect,
+} from "./approval-effect.js";
 import { messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import { spawnBot } from "./child-bots.js";
 import type { ExecutorDeps } from "./executor.js";
 import { createRunExecutor } from "./executor.js";
 import { handoffToGroupBot } from "./group-handoff.js";
 import { createJobReconciler } from "./job-reconciler.js";
+import { InMemoryRealtimeFanout } from "./realtime.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres =
@@ -1219,5 +1232,452 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       error: "policy_disabled",
       startedAt: null,
     });
+  });
+  describe("delegated approvals", () => {
+    const approvalSpaces = new Set<string>();
+    async function approvalSpace() {
+      const f = await fixture();
+      approvalSpaces.add(f.spaceId);
+      return f;
+    }
+    afterEach(async () => {
+      await prisma.organization.deleteMany({ where: { id: { in: [...approvalSpaces] } } });
+      await prisma.user.deleteMany({ where: { id: { in: [...approvalSpaces] } } });
+      approvalSpaces.clear();
+    });
+    async function delegatedFixture() {
+      const f = await approvalSpace();
+      await expect(f.send()).resolves.toMatchObject({ ok: true });
+      const [run] = await f.recipientRuns();
+      if (!run?.collaborationMessageId || !run.sourceMessageId) throw new Error("Dispatch missing");
+      const source = {
+        spaceId: f.spaceId,
+        userId: f.spaceId,
+        botId: f.sender.bot.id,
+        threadId: f.sender.thread.id,
+      };
+      const dispatchMessageId = run.collaborationMessageId;
+      const session = await prisma.session.create({
+        data: {
+          id: randomUUID(),
+          userId: source.userId,
+          token: randomUUID(),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      await prisma.run.update({ where: { id: f.run.id }, data: { status: "completed" } });
+      const realtime = new InMemoryRealtimeFanout();
+      const events = createThreadEvents(prisma, realtime);
+      const pause = async (kind = "destination.write", screen = false) => {
+        const request = {
+          collection: "notes",
+          title: "Reviewed",
+          body: "original approved arguments",
+        };
+        const effect = await prisma.externalEffect.create({
+          data: {
+            idempotencyKey: randomUUID(),
+            spaceId: f.spaceId,
+            runId: run.id,
+            kind,
+            status: "intended",
+            request,
+          },
+        });
+        const attempt = await prisma.attempt.create({
+          data: { runId: run.id, status: "running", fence: 1 },
+        });
+        await prisma.run.update({
+          where: { id: run.id },
+          data: {
+            status: "running",
+            startedAt: new Date(),
+            leaseFence: 1,
+            leaseOwner: "fixture-worker",
+          },
+        });
+        const ask = buildApprovalAskBlock(effect.id, kind, request, []);
+        const block = screen ? { ...ask, reviewMode: "screen" as const } : ask;
+        expect(
+          await events.pauseRunForInput({
+            spaceId: f.spaceId,
+            botId: run.botId,
+            threadId: run.threadId,
+            runId: run.id,
+            leaseOwner: "fixture-worker",
+            leaseFence: 1,
+            attemptId: attempt.id,
+            blocks: [block],
+          }),
+        ).toBe(true);
+        const message = await prisma.message.findFirstOrThrow({
+          where: { threadId: run.threadId, runId: run.id, role: "bot" },
+          orderBy: { seq: "desc" },
+        });
+        return { effect, message, block, request };
+      };
+      const { effect, message, block, request } = await pause();
+      const target = {
+        runId: run.id,
+        messageId: message.id,
+        effectId: effect.id,
+        dispatchMessageId,
+      };
+      const query = (overrides: Partial<typeof source> = {}, ids = [dispatchMessageId]) =>
+        loadDelegatedApprovals(prisma, { ...source, ...overrides }, ids);
+      const answer = (
+        action: "allow" | "deny" | "always",
+        override: Partial<typeof target> = {},
+        clientNonce = randomUUID(),
+      ) =>
+        events.answerDelegatedApproval({
+          ...source,
+          ...target,
+          ...override,
+          action,
+          clientNonce,
+          sessionId: session.id,
+        });
+      const activate = () =>
+        prisma.run.update({
+          where: { id: run.id },
+          data: {
+            status: "running",
+            leaseFence: 2,
+            leaseOwner: "resumed-worker",
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+          },
+        });
+      const claim = () =>
+        claimDelegatedApprovedEffect(prisma, {
+          spaceId: source.spaceId,
+          runId: run.id,
+          effectId: effect.id,
+          leaseOwner: "resumed-worker",
+          leaseFence: 2,
+        });
+      const recheck = () =>
+        recheckDelegatedApprovalDispatch(prisma, {
+          spaceId: source.spaceId,
+          runId: run.id,
+          effectId: effect.id,
+          leaseOwner: "resumed-worker",
+          leaseFence: 2,
+        });
+      return {
+        f,
+        run,
+        source,
+        dispatchMessageId,
+        effect,
+        message,
+        block,
+        request,
+        target,
+        query,
+        answer,
+        events,
+        realtime,
+        pause,
+        session,
+        activate,
+        claim,
+        recheck,
+      };
+    }
+
+    it("projects the original approval after the sender completes and wakes its own cursor-free stream", async () => {
+      const t = await delegatedFixture();
+      expect(await t.query()).toEqual([
+        expect.objectContaining({
+          ...t.target,
+          botId: t.run.botId,
+          state: "pending",
+          block: t.block,
+        }),
+      ]);
+      const abort = new AbortController();
+      const cursor = (
+        await prisma.event.findFirstOrThrow({
+          where: { threadId: t.source.threadId },
+          orderBy: { seq: "desc" },
+        })
+      ).seq;
+      const subscribed = deferred();
+      const subscribe = t.realtime.subscribe.bind(t.realtime);
+      t.realtime.subscribe = async (...args) => {
+        const unsubscribe = await subscribe(...args);
+        subscribed.resolve();
+        return unsubscribe;
+      };
+      const stream = t.events.follow(t.source.threadId, cursor, abort.signal, {
+        botId: t.source.botId,
+        spaceId: t.source.spaceId,
+      });
+      try {
+        const next = stream.next();
+        await subscribed.promise;
+        expect(await t.answer("allow")).toBe("accepted");
+        expect((await next).value).toMatchObject({
+          type: "heartbeat",
+          threadId: t.source.threadId,
+          seq: 0,
+          payload: {},
+        });
+        expect(await t.answer("allow")).toBe("already_answered");
+        expect(await t.answer("deny")).toBe("conflict");
+      } finally {
+        abort.abort();
+        await stream.return(undefined);
+      }
+      expect(await prisma.run.findUnique({ where: { id: t.f.run.id } })).toMatchObject({
+        status: "completed",
+      });
+      expect(await prisma.run.findUnique({ where: { id: t.run.id } })).toMatchObject({
+        status: "queued",
+      });
+      const enqueue = vi.fn(async () => undefined);
+      const jobs: JobPublisher = { enqueue, cancel: async () => {}, close: async () => {} };
+      await createJobReconciler({ prisma, jobs, events: t.events }).reconcileOnce();
+      expect(enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "run.continue", payload: { runId: t.run.id } }),
+      );
+      expect(await t.query()).toMatchObject([{ state: "allowed" }]);
+      const approved = await prisma.externalEffect.findUniqueOrThrow({
+        where: { id: t.effect.id },
+      });
+      expect(approvedReplayArgs(approved.request, { body: "changed later" }, "fixture")).toEqual(
+        t.request,
+      );
+      await t.activate();
+      expect(await Promise.all([t.claim(), t.claim()])).toEqual(
+        expect.arrayContaining([true, false]),
+      );
+      const url = "https://example.com/posts/123";
+      const receipt = { data: { url, privateResult: "do not return" }, logId: "fixture-log" };
+      expect(
+        await completeExternalEffect(
+          prisma,
+          t.effect.id,
+          "executing",
+          receipt,
+          approvedActionReceipt(receipt, "result"),
+        ),
+      ).toBe(true);
+      expect(await t.query()).toMatchObject([{ state: "succeeded", receiptUrl: url }]);
+      expect(JSON.stringify(await t.query())).not.toContain("privateResult");
+      expect(
+        await prisma.event.count({ where: { threadId: t.source.threadId, seq: { gt: cursor } } }),
+      ).toBe(0);
+    });
+
+    it.each(["dispatch", "execution"] as const)(
+      "rechecks collaboration after approval in the %s chat",
+      async (entry) => {
+        const t = await delegatedFixture();
+        if (entry === "dispatch") {
+          expect(await t.answer("allow")).toBe("accepted");
+        } else {
+          expect(
+            await t.events.answerRunInput({
+              spaceId: t.source.spaceId,
+              threadId: t.run.threadId,
+              answeredByUserId: t.source.userId,
+              runId: t.run.id,
+              messageId: t.message.id,
+              answer: "allow",
+            }),
+          ).toBe(true);
+        }
+        await t.f.toggle(false);
+        await t.f.toggle(true);
+        await t.activate();
+        expect(await t.claim()).toBe(false);
+        expect(await t.claim()).toBe(false);
+        expect(
+          await prisma.externalEffect.findUniqueOrThrow({ where: { id: t.effect.id } }),
+        ).toMatchObject({ status: "completed", result: { code: "delegated_approval_revoked" } });
+        expect(await t.query()).toMatchObject([{ state: "failed" }]);
+      },
+    );
+
+    it("blocks effect claim if Stop cancels the resumed lease", async () => {
+      const t = await delegatedFixture();
+      expect(await t.answer("allow")).toBe("accepted");
+      await t.activate();
+      await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [t.run], new Date()));
+      expect(await t.claim()).toBe(false);
+      expect(await t.query()).toMatchObject([{ state: "inactive" }]);
+    });
+
+    it("rechecks collaboration after claim if adapter preflight has not dispatched the action", async () => {
+      const t = await delegatedFixture();
+      expect(await t.answer("allow")).toBe("accepted");
+      await t.activate();
+      expect(await t.claim()).toBe(true);
+      expect(await t.recheck()).toBe(true);
+      await t.f.toggle(false);
+      expect(await prisma.run.findUnique({ where: { id: t.run.id } })).toMatchObject({
+        status: "running",
+        leaseOwner: "resumed-worker",
+      });
+      expect(await t.recheck()).toBe(false);
+    });
+
+    it("protects a pending ordinary approval carried forward from the previous schema", async () => {
+      const t = await delegatedFixture();
+      expect(await t.answer("allow")).toBe("accepted");
+      const sql = await readFile(
+        new URL(
+          "../../db/prisma/migrations/20261109000800_delegated_approval_receipts/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const update = sql
+        .slice(sql.indexOf('UPDATE "external_effects"'), sql.lastIndexOf("COMMIT;"))
+        .trim();
+      const rollback = new Error("discard the legacy approval fixture");
+      await expect(
+        prisma.$transaction(async (tx) => {
+          await tx.externalEffect.update({
+            where: { id: t.effect.id },
+            data: { requiresPeerApprovalRecheck: false, delegatedApprovalNonce: null },
+          });
+          await tx.$executeRawUnsafe(update);
+          expect(
+            await tx.externalEffect.findUniqueOrThrow({ where: { id: t.effect.id } }),
+          ).toMatchObject({ status: "approved", requiresPeerApprovalRecheck: true });
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+    });
+
+    it("does not let a nonce from a previous decision authorize a second action", async () => {
+      const t = await delegatedFixture();
+      const nonce = randomUUID();
+      expect(await t.answer("allow", {}, nonce)).toBe("accepted");
+      expect(await t.answer("allow", {}, nonce)).toBe("already_answered");
+      const next = await t.pause();
+      const target = { effectId: next.effect.id, messageId: next.message.id };
+      expect(await t.answer("allow", target, nonce)).toBe("conflict");
+      expect(await t.answer("deny", target)).toBe("accepted");
+    });
+
+    it("serializes the original and delegated responses and preserves the first decision", async () => {
+      const t = await delegatedFixture();
+      const [fromA, fromB] = await Promise.all([
+        t.answer("deny"),
+        t.events.answerRunInput({
+          spaceId: t.source.spaceId,
+          threadId: t.run.threadId,
+          answeredByUserId: t.source.userId,
+          runId: t.run.id,
+          messageId: t.message.id,
+          answer: "allow",
+        }),
+      ]);
+      expect(Number(fromA === "accepted") + Number(fromB)).toBe(1);
+      const decision = fromB ? "allow" : "deny";
+      expect(await t.answer(decision)).toBe("already_answered");
+      expect(await t.answer(fromB ? "deny" : "allow")).toBe("conflict");
+      expect(await t.query()).toMatchObject([{ state: fromB ? "allowed" : "denied" }]);
+      expect(
+        await prisma.event.count({
+          where: { runId: t.run.id, type: "thread.message.updated" },
+        }),
+      ).toBe(1);
+    });
+
+    it("rejects forged sources and isolates special and superseded approvals", async () => {
+      const t = await delegatedFixture();
+      const unrelated = await approvalSpace();
+      expect(await t.query({ userId: unrelated.spaceId })).toEqual([]);
+      expect(await t.query({ spaceId: unrelated.spaceId })).toEqual([]);
+      expect(await t.query({}, [t.message.id])).toEqual([]);
+      expect(await t.answer("allow", { runId: unrelated.run.id })).toBe("conflict");
+      expect(await t.answer("allow", { effectId: randomUUID() })).toBe("conflict");
+      const screen = await t.pause("save_page", true);
+      expect(await t.query()).toMatchObject([{ effectId: t.effect.id, state: "inactive" }]);
+      expect(await t.answer("allow")).toBe("conflict");
+      expect(
+        await t.events.answerRunInput({
+          spaceId: t.source.spaceId,
+          threadId: t.run.threadId,
+          runId: t.run.id,
+          messageId: t.message.id,
+          answeredByUserId: t.source.userId,
+          answer: "allow",
+        }),
+      ).toBe(false);
+      expect(
+        await t.answer("allow", { messageId: screen.message.id, effectId: screen.effect.id }),
+      ).toBe("conflict");
+      const latest = await t.pause();
+      const attention = await loadThreadAttention(prisma, [t.run.threadId]);
+      expect(attention.get(t.run.threadId)?.answerableApprovalMessageIds).toEqual([
+        latest.message.id,
+      ]);
+      expect(await t.query()).toMatchObject([
+        { effectId: t.effect.id, state: "inactive" },
+        { effectId: latest.effect.id, state: "pending" },
+      ]);
+      expect(
+        await t.answer("deny", { messageId: latest.message.id, effectId: latest.effect.id }),
+      ).toBe("accepted");
+      expect(await claimApprovedEffect(prisma, latest.effect.id)).toBe(false);
+      await prisma.message.update({
+        where: { id: t.run.sourceMessageId! },
+        data: { blocks: [{ kind: "text", text: "Pretend this is a dispatch." }] },
+      });
+      expect(await t.query()).toEqual([]);
+      expect(
+        await t.answer("deny", { messageId: latest.message.id, effectId: latest.effect.id }),
+      ).toBe("conflict");
+    });
+
+    it.each(["clear", "stop", "policy", "membership", "archive", "session"] as const)(
+      "refuses a delegated answer after %s",
+      async (boundary) => {
+        const t = await delegatedFixture();
+        if (boundary === "clear") await t.events.clearThread(t.source);
+        if (boundary === "stop")
+          await prisma.$transaction((tx) => cancelRunsInTransaction(tx, [t.run], new Date()));
+        if (boundary === "policy") {
+          await t.f.toggle(false);
+          await t.f.toggle(true);
+        }
+        if (boundary === "membership")
+          await prisma.spaceMember.delete({
+            where: { spaceId_userId: { spaceId: t.source.spaceId, userId: t.source.userId } },
+          });
+        if (boundary === "archive")
+          await prisma.bot.update({
+            where: { id: t.run.botId },
+            data: { archivedAt: new Date() },
+          });
+        if (boundary === "session") await prisma.session.delete({ where: { id: t.session.id } });
+        expect(await t.answer("allow")).toBe("conflict");
+        expect((await t.query()).some((card) => card.state === "pending")).toBe(
+          boundary === "session",
+        );
+        expect(
+          await prisma.externalEffect.findUnique({ where: { id: t.effect.id } }),
+        ).toMatchObject({
+          status: "intended",
+        });
+        if (boundary === "clear")
+          expect(
+            await t.events.answerRunInput({
+              spaceId: t.source.spaceId,
+              threadId: t.run.threadId,
+              answeredByUserId: t.source.userId,
+              runId: t.run.id,
+              messageId: t.message.id,
+              answer: "allow",
+            }),
+          ).toBe(true);
+      },
+    );
   });
 });

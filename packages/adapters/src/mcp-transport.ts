@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -76,6 +77,7 @@ export interface McpClientOptions {
 const DEFAULT_HEADERS = ["accept", "content-type", "authorization", "user-agent"];
 const RESOURCE_HEADERS = new Set(["mcp-session-id", "mcp-protocol-version", "last-event-id"]);
 const DEFAULT_MAX_URL_LENGTH = 2_048;
+const toolDispatchCheck = new AsyncLocalStorage<() => Promise<void>>();
 
 function validateUrl(raw: string | URL, policy: McpUrlPolicy = {}): URL {
   const url = new URL(raw.toString());
@@ -174,9 +176,21 @@ export function secureFetch(
       redirect: "manual",
       signal: source.signal,
     } satisfies RequestInit;
-    const response = localHttp
-      ? await (network.fetch ?? globalThis.fetch)(url, requestInit)
-      : await safeRemoteFetch(url, requestInit);
+    // The SDK also uses this fetch for token requests and session traffic. Its
+    // tool POST (including a retry after OAuth) is the side-effect boundary.
+    const check = toolDispatchCheck.getStore();
+    const beforeDispatch =
+      check &&
+      body &&
+      source.method === "POST" &&
+      source.headers.get("content-type")?.startsWith("application/json") &&
+      JSON.parse(new TextDecoder().decode(body))?.method === "tools/call"
+        ? check
+        : undefined;
+    const response =
+      localHttp && !beforeDispatch
+        ? await (network.fetch ?? globalThis.fetch)(url, requestInit)
+        : await safeRemoteFetch(url, requestInit, beforeDispatch);
     if (response.status >= 300 && response.status < 400) {
       throw new Error("MCP redirects are not permitted; configure the final HTTPS URL explicitly");
     }
@@ -380,14 +394,15 @@ export class McpSession {
   async callTool(
     name: string,
     args: Record<string, unknown> = {},
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; beforeDispatch?: () => Promise<void> },
   ): Promise<CallToolResult> {
     this.assertConnected();
     const call = (signal?: AbortSignal) =>
       this.client.callTool({ name, arguments: args }, undefined, {
         signal,
       }) as Promise<CallToolResult>;
-    return options?.signal ? withRequestSignal(options.signal, call) : call();
+    const run = () => (options?.signal ? withRequestSignal(options.signal, call) : call());
+    return options?.beforeDispatch ? toolDispatchCheck.run(options.beforeDispatch, run) : run();
   }
 
   async close(): Promise<void> {

@@ -1,5 +1,6 @@
 import { createLogger, createTestSink, getLogger, installLogger } from "@rakazo/logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { dispatchTransaction } from "./connector-dispatch.js";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
 import { allowlistDrift, McpConnector } from "./mcp-connector.js";
 import { type McpOAuthBroker, StoredMcpOAuthProvider } from "./mcp-oauth.js";
@@ -442,6 +443,24 @@ describe("MCP discovery lifecycle", () => {
     try {
       const [tool] = await connector.discoverTools(context);
       expect(connect).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      const denied = connector
+        .execute(
+          {
+            tool: tool!.name,
+            route: tool!.route,
+            args: {},
+            executionId: "withdrawn",
+            beforeDispatch: async () => {
+              throw new Error("Approval revoked");
+            },
+          },
+          context,
+        )
+        [Symbol.asyncIterator]()
+        .next();
+      await expect(denied).resolves.toMatchObject({ value: { type: "error" } });
+      expect(call).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
       const request = connector
         .execute(
           {
@@ -455,6 +474,7 @@ describe("MCP discovery lifecycle", () => {
         [Symbol.asyncIterator]()
         .next();
       await entered;
+      expect(connect).toHaveBeenCalledOnce();
       connector.reapIdle(Date.now() + 15 * 60_000);
       expect(close).not.toHaveBeenCalled();
       finish();
@@ -1921,9 +1941,12 @@ describe("managed plugin MCP lifecycle", () => {
 });
 
 describe("plugin MCP dispatch settlement", () => {
-  it("keeps an admitted call alive when another queued call is rejected", async () => {
+  const withdrawals = ["plugin lock", "approval at lock", "approval at DNS"] as const;
+  it.each(withdrawals)("rejects withdrawal during %s", async (withdrawal) => {
     const server = { ...SHARED_SERVER, installId: "plugin-one" };
     let active = true;
+    let approvalActive = true;
+    let delayDns = false;
     let lockCount = 0;
     let queued!: () => void;
     const queuedAdmission = new Promise<void>((resolve) => {
@@ -1932,6 +1955,14 @@ describe("plugin MCP dispatch settlement", () => {
     let releaseAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
       releaseAdmission = resolve;
+    });
+    let reachedDns!: () => void;
+    const waitingAtDns = new Promise<void>((resolve) => {
+      reachedDns = resolve;
+    });
+    let releaseDns!: () => void;
+    const dns = new Promise<void>((resolve) => {
+      releaseDns = resolve;
     });
     const prisma = {
       mcpServer: { findFirst: vi.fn(async () => ({ ...server })) },
@@ -1976,7 +2007,18 @@ describe("plugin MCP dispatch settlement", () => {
         return normalFetch(input, init);
       }),
     );
-    const connector = new McpConnector(prisma as never, {} as never, { network: TEST_NETWORK });
+    const connector = new McpConnector(prisma as never, {} as never, {
+      network: {
+        ...TEST_NETWORK,
+        resolveHostname: async () => {
+          if (delayDns) {
+            reachedDns();
+            await dns;
+          }
+          return TEST_NETWORK.resolveHostname();
+        },
+      },
+    });
     const context = {
       operationId: "test",
       traceId: "test",
@@ -1985,7 +2027,18 @@ describe("plugin MCP dispatch settlement", () => {
       userId: "u1",
       signal: new AbortController().signal,
     };
-    const execute = async (executionId: string) => {
+    const checkInTransaction = vi.fn(async (tx: unknown) => {
+      expect(tx).toBe(prisma);
+      if (!approvalActive) throw new Error("Approval revoked");
+      delayDns = withdrawal === "approval at DNS";
+    });
+    const checkAtWire = vi.fn(async () => {
+      if (!approvalActive) throw new Error("Approval revoked");
+    });
+    const beforeDispatch = Object.assign(checkAtWire, {
+      [dispatchTransaction]: checkInTransaction,
+    });
+    const execute = async (executionId: string, guarded = false) => {
       const events = [];
       for await (const event of connector.execute(
         {
@@ -1998,6 +2051,7 @@ describe("plugin MCP dispatch settlement", () => {
           },
           args: {},
           executionId,
+          ...(guarded ? { beforeDispatch } : {}),
         },
         context,
       ))
@@ -2007,17 +2061,32 @@ describe("plugin MCP dispatch settlement", () => {
     const first = execute("admitted");
     try {
       await dispatched;
-      const second = execute("queued");
+      const guarded = withdrawal !== "plugin lock";
+      const second = execute("queued", guarded);
       await queuedAdmission;
-      active = false;
+      if (withdrawal === "approval at lock") approvalActive = false;
+      if (withdrawal === "plugin lock") active = false;
       releaseAdmission();
+      if (withdrawal === "approval at DNS") {
+        await waitingAtDns;
+        approvalActive = false;
+        releaseDns();
+      }
       expect(await second).toMatchObject([{ type: "error" }]);
+      expect(checkInTransaction).toHaveBeenCalledTimes(guarded ? 1 : 0);
+      expect(checkAtWire).toHaveBeenCalledTimes(withdrawal === "approval at DNS" ? 1 : 0);
       finish();
       expect(await first).toMatchObject([{ type: "result" }]);
       expect(state.calls).toHaveLength(1);
+      if (withdrawal === "approval at DNS") {
+        expect(await execute("still-authorized")).toMatchObject([{ type: "result" }]);
+        expect(state.calls).toHaveLength(2);
+        expect(state.initializations).toBe(1);
+      }
     } finally {
       finish();
       releaseAdmission();
+      releaseDns();
       await connector.close();
     }
   });

@@ -294,6 +294,8 @@ export interface ConnectorCall {
   connectionId?: string;
   executionId: string;
   route?: ConnectorRoute;
+  /** Executor-owned approval check at the adapter's external dispatch boundary. */
+  beforeDispatch?: () => Promise<void>;
 }
 
 export type ConnectorEvent =

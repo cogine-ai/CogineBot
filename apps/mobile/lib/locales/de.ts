@@ -802,6 +802,12 @@ export const DE_MESSAGES: Record<string, string> = {
   // components/AskActions.tsx
   "Allow once": "Einmal erlauben",
   "Always allow": "Immer erlauben",
+  "Always allow these actions": "Diese Aktionen immer erlauben",
+  "Action failed": "Aktion fehlgeschlagen",
+  "Result unconfirmed": "Ergebnis unbestätigt",
+  "Action completed": "Aktion abgeschlossen",
+  "View result": "Ergebnis ansehen",
+  "View execution chat": "Ausführenden Chat öffnen",
   "Could not submit answer": "Antwort konnte nicht gesendet werden",
   Deny: "Ablehnen",
   "Please try again.": "Versuche es erneut.",

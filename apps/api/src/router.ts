@@ -160,6 +160,7 @@ import {
   BOT_INSTRUCTIONS_CONFLICT_REASON,
   BotSecretAuth,
   ComputerCommandSchema,
+  DelegatedApprovalAction,
   foldComputerCommands,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
@@ -221,12 +222,14 @@ import {
   GroupCreationConflictError,
   GroupMembershipConflictError,
   groupMemberOrderBy,
+  hasPeerApprovalDecision,
   InvalidSpaceNameError,
   IsolationError,
   issueMessagingLinkCode,
   listBoards,
   listSpaceBackupModels,
   listTicketComments,
+  loadDelegatedApprovals,
   lockBotCreationIntro,
   lockOwnedGroup,
   lockPluginInstall,
@@ -2627,7 +2630,14 @@ export function createRouter(deps: RouterDeps) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const peerRunCache = new Map<string, Promise<boolean>>();
         const backgroundRunCache = new Map<string, Promise<boolean>>();
-        const follow = deps.events.follow(target.threadId, input.cursor, context.signal);
+        const follow = deps.events.follow(
+          target.threadId,
+          input.cursor,
+          context.signal,
+          target.kind === "bot"
+            ? { spaceId: context.actor.spaceId, botId: target.botId }
+            : undefined,
+        );
         // A half-open stream looks identical to an idle one, so punctuate silence:
         // the client treats any frame as liveness and reconnects once they stop.
         let pending: Promise<IteratorResult<ProductEvent>> | undefined;
@@ -3003,6 +3013,51 @@ export function createRouter(deps: RouterDeps) {
         });
         return { ok: true as const };
       }),
+      delegatedApprovals: authed.threads.delegatedApprovals.handler(async ({ context, input }) => {
+        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        return deps.prisma.$transaction(
+          (tx) =>
+            loadDelegatedApprovals(
+              tx,
+              {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                botId: input.botId,
+                threadId: target.threadId,
+              },
+              input.dispatchMessageIds,
+            ),
+          { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+        );
+      }),
+      answerDelegatedApproval: newWork.threads.answerDelegatedApproval.handler(
+        async ({ context, input }) => {
+          const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+          if (!context.sessionId) throw new ORPCError("UNAUTHORIZED");
+          const outcome = await deps.events.answerDelegatedApproval({
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            botId: input.botId,
+            threadId: target.threadId,
+            dispatchMessageId: input.dispatchMessageId,
+            runId: input.runId,
+            messageId: input.messageId,
+            effectId: input.effectId,
+            action: input.action,
+            clientNonce: input.clientNonce,
+            sessionId: context.sessionId,
+          });
+          if (outcome === "conflict")
+            throw new ORPCError("CONFLICT", {
+              message: "This prompt is no longer awaiting an answer",
+            });
+          if (outcome === "accepted")
+            await deps.jobs.enqueue(runContinueJob(input.runId)).catch((error) => {
+              getLogger().error("delegated approval enqueue", error);
+            });
+          return { ok: true as const };
+        },
+      ),
       answer: newWork.threads.answer.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const answered = await deps.events.answerRunInput({
@@ -3016,6 +3071,22 @@ export function createRouter(deps: RouterDeps) {
           username: input.username,
         });
         if (!answered) {
+          const action = DelegatedApprovalAction.safeParse(input.answer);
+          if (
+            target.kind === "bot" &&
+            !input.username &&
+            action.success &&
+            (await hasPeerApprovalDecision(deps.prisma, {
+              spaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              botId: target.botId,
+              threadId: target.threadId,
+              runId: input.runId,
+              messageId: input.messageId,
+              action: action.data,
+            }))
+          )
+            return { ok: true as const };
           throw new ORPCError("CONFLICT", {
             message: "This prompt is no longer awaiting an answer",
           });

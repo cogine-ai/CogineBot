@@ -1,6 +1,32 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
 import { withTransactionRetry } from "./transaction-retry.js";
+
+export async function findPendingAsk(
+  tx: Prisma.TransactionClient,
+  input: { threadId: string; runId: string },
+) {
+  const messages = await tx.message.findMany({
+    where: {
+      threadId: input.threadId,
+      runId: input.runId,
+      role: "bot",
+    },
+    orderBy: { seq: "desc" },
+    take: 50,
+    select: { id: true, blocks: true },
+  });
+  for (const message of messages) {
+    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
+    if (!parsed.success) continue;
+    const pendingAsk = parsed.data.find(
+      (block) => block.kind === "ask" && block.status !== "answered",
+    );
+    if (pendingAsk?.kind === "ask") return { messageId: message.id, pendingAsk };
+  }
+  return null;
+}
 
 /** Group turns use channel inputs and their own outputs, never private thread history. */
 export function loadRunHistoryMessages(

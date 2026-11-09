@@ -44,6 +44,7 @@ export interface RemoteMcpOptions extends RemoteTransportDependencies, RemoteUrl
   headers?: Record<string, string>;
   signal?: AbortSignal;
   session?: RemoteMcpToolSession;
+  beforeDispatch?: () => Promise<void>;
 }
 
 export interface SafeRemoteFetch {
@@ -89,6 +90,7 @@ export async function callRemoteMcpTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const call = async (client: Client, signal: AbortSignal) => {
+    signal.throwIfAborted();
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
       signal,
       timeout: MCP_TIMEOUT_MS,
@@ -119,7 +121,13 @@ async function withRemoteMcpClient<T>(
     options.resolveHostname ?? resolveHostname,
     policy,
   );
-  const { client, transport } = createRemoteMcpClient(endpoint, options.headers, safeFetch, signal);
+  const { client, transport } = createRemoteMcpClient(
+    endpoint,
+    options.headers,
+    (input, init) =>
+      safeFetch(input, init, init?.method === "POST" ? options.beforeDispatch : undefined),
+    signal,
+  );
   try {
     await client.connect(transport, { signal, timeout: MCP_TIMEOUT_MS });
     return await run(client, signal);

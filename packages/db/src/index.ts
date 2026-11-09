@@ -16,6 +16,13 @@ export {
   verifyDatabaseRestore,
 } from "./database-restore.js";
 export { verifyRealtimeDatabase, verifyRuntimeDatabase } from "./database-runtime.js";
+export {
+  claimDelegatedApprovedEffect,
+  hasPeerApprovalDecision,
+  loadDelegatedApprovals,
+  recheckDelegatedApprovalDispatch,
+  recheckDelegatedApprovalDispatchInTransaction,
+} from "./delegated-approvals.js";
 export * from "./events.js";
 export * from "./expire-stuck-run.js";
 export * from "./external-conversations.js";

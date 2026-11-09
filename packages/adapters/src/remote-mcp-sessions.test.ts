@@ -117,6 +117,29 @@ describe("remote MCP tool sessions", () => {
     await pool?.close();
   });
 
+  it("rechecks the current approval after DNS on a reused MCP session", async () => {
+    pool = new RemoteMcpSessionPool();
+    const fake = server();
+    const bound = pool.bind(context(), current);
+    let revokeOnLookup = false;
+    let revoked = false;
+    const resolve = async () => {
+      if (revokeOnLookup) revoked = true;
+      return resolveHostname();
+    };
+    await invoke(bound.context, fake.fetch, { resolveHostname: resolve }, { name: "read" });
+    revokeOnLookup = true;
+    await expect(
+      invoke(bound.context, fake.fetch, {
+        resolveHostname: resolve,
+        beforeDispatch: async () => {
+          if (revoked) throw new Error("Approval revoked");
+        },
+      }),
+    ).rejects.toThrow(/Approval revoked/);
+    expect(fake.tools.map((call) => call.name)).toEqual(["read"]);
+  });
+
   it("shares an in-flight initialization without sharing callers' cancellation", async () => {
     pool = new RemoteMcpSessionPool();
     const initializing = deferred();

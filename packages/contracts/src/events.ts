@@ -100,6 +100,37 @@ const ChartBlock = z
 export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
+const AskMessageBlock = z.object({
+  kind: z.literal("ask"),
+  text: z.string(),
+  approvalEffectId: Id.optional(),
+  /** The pending card presents an exact list of connector actions. */
+  approvalScope: z.literal("connector_batch").optional(),
+  detail: z.string().optional(),
+  /** This approval requires the full detail to be available on screen. */
+  reviewMode: z.literal("screen").optional(),
+  input: z.enum(["text", "secret"]).optional(),
+  /** Why the secret is needed; drives field label on the masked card. */
+  purpose: SecretAskPurpose.optional(),
+  // Records what the runtime could produce under either deployment mode, so
+  // an ask persisted before an owner toggles the private-HTTP flag still
+  // validates on replay.
+  credential: botSecretDestinationSchema({ allowPrivateHttpOrigin: true }).optional(),
+  /** On a fetch approval, the site an "always" answer allows. */
+  site: z.string().optional(),
+  status: z.enum(["pending", "answered"]).optional(),
+  answer: z.string().optional(),
+  actions: z
+    .array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        outcome: z.enum(["created", "cancelled"]).optional(),
+      }),
+    )
+    .optional(),
+});
+
 export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("text"),
@@ -113,36 +144,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),
   }),
-  z.object({
-    kind: z.literal("ask"),
-    text: z.string(),
-    approvalEffectId: Id.optional(),
-    /** The pending card presents an exact list of connector actions. */
-    approvalScope: z.literal("connector_batch").optional(),
-    detail: z.string().optional(),
-    /** This approval requires the full detail to be available on screen. */
-    reviewMode: z.literal("screen").optional(),
-    input: z.enum(["text", "secret"]).optional(),
-    /** Why the secret is needed; drives field label on the masked card. */
-    purpose: SecretAskPurpose.optional(),
-    // Records what the runtime could produce under either deployment mode, so
-    // an ask persisted before an owner toggles the private-HTTP flag still
-    // validates on replay.
-    credential: botSecretDestinationSchema({ allowPrivateHttpOrigin: true }).optional(),
-    /** On a fetch approval, the site an "always" answer allows. */
-    site: z.string().optional(),
-    status: z.enum(["pending", "answered"]).optional(),
-    answer: z.string().optional(),
-    actions: z
-      .array(
-        z.object({
-          id: z.string(),
-          label: z.string(),
-          outcome: z.enum(["created", "cancelled"]).optional(),
-        }),
-      )
-      .optional(),
-  }),
+  AskMessageBlock,
   z.object({
     kind: z.literal("choice"),
     question: z.string(),
@@ -318,6 +320,26 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
 ]);
 export type MessageBlock = z.infer<typeof MessageBlock>;
+
+export const DelegatedApprovalAction = z.enum(["allow", "always", "deny"]);
+export type DelegatedApprovalAction = z.infer<typeof DelegatedApprovalAction>;
+export const ApprovalReceiptSchema = z.object({
+  state: z.enum(["succeeded", "failed", "unknown"]),
+  url: z.url({ protocol: /^https$/ }).optional(),
+});
+export type ApprovalReceipt = z.infer<typeof ApprovalReceiptSchema>;
+export const DelegatedApprovalSchema = z.object({
+  dispatchMessageId: Id,
+  botId: Id,
+  botName: z.string(),
+  runId: Id,
+  messageId: Id,
+  effectId: Id,
+  block: AskMessageBlock,
+  state: z.enum(["pending", "allowed", "denied", "succeeded", "failed", "unknown", "inactive"]),
+  receiptUrl: z.string().url().optional(),
+});
+export type DelegatedApproval = z.infer<typeof DelegatedApprovalSchema>;
 
 /**
  * Something the bot did on its computer, shown in the terminal's Activity view: a shell

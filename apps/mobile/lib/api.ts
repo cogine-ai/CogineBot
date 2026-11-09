@@ -1572,6 +1572,7 @@ export async function subscribeThread(
   cursor: number,
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
+  onHeartbeat?: () => void,
 ) {
   const selectionGeneration = currentSpaceSelectionGeneration();
   const context = await captureApiRequestContext();
@@ -1631,7 +1632,8 @@ export async function subscribeThread(
       try {
         const parsed = JSON.parse(data) as { json?: ThreadEvent; error?: { message?: string } };
         // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
-        if (parsed.json?.type && parsed.json.type !== "heartbeat") onEvent(parsed.json);
+        if (parsed.json?.type === "heartbeat") onHeartbeat?.();
+        else if (parsed.json?.type) onEvent(parsed.json);
       } catch {
         // ignore keepalives and partial frames
       }

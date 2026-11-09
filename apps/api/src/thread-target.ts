@@ -1236,7 +1236,7 @@ export async function stopThreadRuns(
   actor: Actor,
   target: ThreadTarget,
 ) {
-  const { runIds, computers, leases, eventSeq } = await deps.prisma.$transaction(async (tx) => {
+  const stopped = await deps.prisma.$transaction(async (tx) => {
     await lockRoutineRetryThread(tx, target.threadId);
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
     await revokePendingRoutineRetries(tx, { spaceId: actor.spaceId, threadId: target.threadId });
@@ -1246,7 +1246,7 @@ export async function stopThreadRuns(
         status: { in: [...ACTIVE_RUN_STATUSES] },
       },
       data: { status: "cancelled", completedAt: new Date() },
-      select: { id: true, botId: true, spaceId: true },
+      select: { id: true, botId: true, spaceId: true, origin: true },
     });
     await clearRunTurnCheckpoints(tx, cancelled);
     const ids = cancelled.map((run) => run.id);
@@ -1310,11 +1310,18 @@ export async function stopThreadRuns(
         },
       });
     }
-    return { runIds: ids, computers, leases, eventSeq };
+    const delegatedRunIds = cancelled
+      .filter((run) => run.origin === "bot_peer")
+      .map((run) => run.id);
+    return { runIds: ids, delegatedRunIds, computers, leases, eventSeq };
   });
+  const { runIds, delegatedRunIds, computers, leases, eventSeq } = stopped;
   if (eventSeq !== null) {
     // The events are durable; subscribers refetch from their persisted cursor.
-    await deps.events.notify(target.threadId, eventSeq).catch((error) => {
+    const notice = delegatedRunIds.length
+      ? deps.events.notify(target.threadId, eventSeq, undefined, delegatedRunIds)
+      : deps.events.notify(target.threadId, eventSeq);
+    await notice.catch((error) => {
       getLogger().error("thread stop realtime notification", error);
     });
   }

@@ -7338,3 +7338,18 @@ msgstr "The shared link stops working"
 #: src/components/pages/PageShareControl.tsx
 msgid "Who can open this page"
 msgstr "Who can open this page"
+
+msgid "Action failed"
+msgstr "Action failed"
+
+msgid "Result unconfirmed"
+msgstr "Result unconfirmed"
+
+msgid "Action completed"
+msgstr "Action completed"
+
+msgid "View result"
+msgstr "View result"
+
+msgid "View execution chat"
+msgstr "View execution chat"
