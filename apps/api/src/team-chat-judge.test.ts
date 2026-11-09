@@ -146,6 +146,8 @@ describe("team chat engagement judge", () => {
         provider: "google",
         model: "gemini-3.8-flash",
         modelCredentialId: null,
+        costOwner: null,
+        providerRequestId: null,
         inputTokens: 150,
         outputTokens: 20,
         cacheReadTokens: 40,
@@ -154,8 +156,11 @@ describe("team chat engagement judge", () => {
         reasoningTokens: null,
         totalTokens: null,
         costUsd: null,
+        openRouterFeeUsd: null,
+        upstreamInferenceCostUsd: null,
         costSource: null,
         pricingVersion: null,
+        pricingSnapshot: undefined,
         usageSource: null,
         callId: null,
         agentId: null,
@@ -606,6 +611,7 @@ describe("team chat judge connection bindings", () => {
     expect(fixture.run.mock.calls[0]?.[0].model).toEqual({
       provider: "openai-compatible",
       id: "deployment-model",
+      modelCredentialId: null,
       apiKey: "fake-deployment-key",
     });
   });
@@ -650,6 +656,7 @@ describe("team chat judge connection bindings", () => {
     expect(fixture.run.mock.calls[0]?.[0].model).toEqual({
       provider: "google",
       id: "platform-model",
+      modelCredentialId: null,
       apiKey: "fake-deployment-key",
     });
   });
