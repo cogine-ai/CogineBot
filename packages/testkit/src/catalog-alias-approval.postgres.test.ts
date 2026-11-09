@@ -35,6 +35,7 @@ const approved = {
 const cases = [
   { mode: "allow", separator: ":" },
   { mode: "revoke", separator: "/" },
+  { mode: "block", separator: ":" },
   { mode: "intent", separator: "__" },
   { mode: "same-labels", separator: ":" },
   { mode: "reauthorize", separator: "/" },
@@ -152,6 +153,9 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
               expect(mutations[0]!.token).toBe("Bearer synthetic-native-a");
               expect(mutations[0]!.body).toMatchObject(approved.event);
               expect(mutations[0]!.body.summary).not.toBe("Unapproved replacement");
+            } else if (mode === "block") {
+              expect(result).toContain("action_rule_blocked");
+              expect(mutations).toEqual([]);
             } else {
               expect(result).not.toContain('"outcome":"succeeded"');
               expect(result).toMatch(
@@ -320,7 +324,7 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
         );
         if (!resolved) throw new Error("Missing synthetic action");
         approvedToolName = resolved.tool.name;
-        // Approval rules are loaded once per run, so install this before sending the task.
+        // The first action must enter the manual approval path.
         await handles.prisma.actionApprovalRule.create({
           data: {
             spaceId: storedBot.spaceId,
@@ -366,7 +370,22 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
         });
         expect((request[3] as { resourceRevision: unknown }).resourceRevision).toBeTruthy();
         if (mode === "revoke") await native.revoke(connections[0]!, context);
-        else if (mode === "intent") {
+        else if (mode === "block") {
+          await handles.prisma.actionApprovalRule.create({
+            data: {
+              spaceId: storedBot.spaceId,
+              createdByUserId: storedBot.userId,
+              effect: "deny",
+              matchKind: "tool",
+              matchValue: approvedToolName,
+            },
+          });
+          await expect(rpc("approvalRules/list", {})).resolves.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ effect: "deny", matchValue: approvedToolName }),
+            ]),
+          );
+        } else if (mode === "intent") {
           const run = await handles.prisma.run.findUniqueOrThrow({ where: { id: sent.runId } });
           await handles.prisma.task.update({
             where: { id: run.taskId },
@@ -479,7 +498,7 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
               (await handles.prisma.run.findUnique({ where: { id: sent.runId } }))?.status,
             { timeout: 15000, interval: 100 },
           )
-          .toBe(allowed ? "completed" : "failed");
+          .toBe(allowed || mode === "block" ? "completed" : "failed");
         model.assertComplete();
         expect(model.requests).toHaveLength(mode === "same-labels" ? 5 : 4);
         expect(mutations).toHaveLength(allowed ? 1 : 0);
@@ -491,7 +510,12 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
         expect(settled[0]!.idempotencyKey).toBe(effect.idempotencyKey);
         expect(settled[0]!.request).toEqual(effect.request);
         if (allowed) expect(settled[0]!.status).toBe("completed");
-        else expect(settled[0]!.status).not.toBe("completed");
+        else if (mode === "block") {
+          expect(settled[0]).toMatchObject({
+            status: "completed",
+            result: { code: "action_rule_blocked" },
+          });
+        } else expect(settled[0]!.status).not.toBe("completed");
         const allEffects = await handles.prisma.externalEffect.findMany({
           where: { runId: sent.runId },
         });

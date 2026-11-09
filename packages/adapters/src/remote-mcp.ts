@@ -5,7 +5,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost, isPrivateNetworkHost } from "@rakazo/contracts";
-import { Agent, buildConnector, Client as UndiciClient } from "undici";
+import { Agent, Client as UndiciClient } from "undici";
+import { ActionRuleDispatchError, guardedConnect } from "./connector-dispatch.js";
 import { combineSignals } from "./connector-safety.js";
 import { boundToolResultText } from "./context-selection.js";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./network-address.js";
 import type { RemoteMcpToolSession } from "./remote-mcp-sessions.js";
 import { dispatcherFetch, fetchPairedWithDispatcher } from "./undici-fetch.js";
+import { withAbort } from "./web-ssrf.js";
 
 const MAX_MCP_TOOLS = 250;
 const MAX_MCP_PAGES = 20;
@@ -236,10 +238,19 @@ export function createSafeRemoteFetch(
     const { url, addresses } = await inspectSafeRemoteUrl(String(input), resolve, policy);
     if (beforeDispatch && !usePackageFetch) await beforeDispatch();
     init?.signal?.throwIfAborted();
+    let refusal: ActionRuleDispatchError | undefined;
     const guardedClient =
       beforeDispatch && usePackageFetch
         ? new UndiciClient(url.origin, {
-            connect: guardedConnect(lookup, beforeDispatch),
+            connect: guardedConnect(lookup, async () => {
+              try {
+                init?.signal?.throwIfAborted();
+                await withAbort(beforeDispatch(), init?.signal ?? undefined);
+              } catch (error) {
+                if (error instanceof ActionRuleDispatchError) refusal = error;
+                throw error;
+              }
+            }),
             pipelining: 0,
           })
         : undefined;
@@ -256,6 +267,8 @@ export function createSafeRemoteFetch(
             baseFetch!(url, requestInitWithHost(url, requestInit)),
           );
     } catch (error) {
+      // The HTTP client wraps connection callback errors in a generic transport failure.
+      if (refusal) throw refusal;
       const detail = transportFailureDetail(error);
       throw new Error(`Could not reach ${url.host}${detail ? `: ${detail}` : ""}`, {
         cause: error,
@@ -284,32 +297,6 @@ export function createSafeRemoteFetch(
     );
   };
   return result;
-}
-
-/** Only this POST owns the connection, so its guard also covers any replacement socket. */
-function guardedConnect(
-  lookup: LookupFunction,
-  beforeDispatch: () => Promise<void>,
-): buildConnector.connector {
-  const connect = buildConnector({ lookup });
-  return (options, callback) => {
-    connect(options, (...[error, socket]) => {
-      if (error) {
-        callback(error, null);
-        return;
-      }
-      // Recheck after DNS and TCP/TLS, before handing the socket over for the write.
-      void Promise.resolve()
-        .then(beforeDispatch)
-        .then(
-          () => callback(null, socket),
-          (reason: unknown) => {
-            socket.destroy();
-            callback(reason instanceof Error ? reason : new Error(String(reason)), null);
-          },
-        );
-    });
-  };
 }
 
 function assertPrivateAddresses(addresses: ResolvedAddress[]): void {

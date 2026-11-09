@@ -1,4 +1,5 @@
 import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import { combineSignals } from "../connector-safety.js";
 import type { RemoteTransportDependencies } from "../remote-mcp.js";
 import { NativeActionError } from "./action.js";
@@ -68,7 +69,8 @@ export class NativeSlackFileTransfers {
         },
         this.beforeDispatch,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof ActionRuleDispatchError) throw error;
       throw new NativeActionError("result_unknown", "File upload acknowledgement unavailable.", {
         uncertain: true,
       });
@@ -92,10 +94,11 @@ export class NativeSlackFileTransfers {
     const url = resourceUrl(input.url, false);
     const token = await this.token();
     const signal = combineSignals(this.signal, AbortSignal.timeout(30_000));
-    const response = await this.fetch(url, {
-      headers: { authorization: `Bearer ${token}` },
-      signal,
-    });
+    const response = await this.fetch(
+      url,
+      { headers: { authorization: `Bearer ${token}` }, signal },
+      this.beforeDispatch,
+    );
     if (!response.ok) {
       await response.body?.cancel();
       throw new NativeActionError(

@@ -452,7 +452,7 @@ function fixture({
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   const append = vi.fn(async (_event: Parameters<ThreadEvents["append"]>[0]) => undefined);
   const notifyDelegatedApprovalParent = vi.fn(async (_runId: string) => undefined);
-  const execute = vi.fn(async function* (call: ConnectorCall) {
+  const execute = vi.fn<ConnectorProvider["execute"]>(async function* (call) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
   let calls: {
@@ -4139,6 +4139,61 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
   });
 
+  it("blocks a trusted same-site redirect before DNS when a block is saved after the first hop", async () => {
+    const start = "https://trusted.example.org/start";
+    const blocked = "https://trusted.example.org/report";
+    const rules: ActionApprovalRule[] = [
+      { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+    ];
+    const resolveHostname = vi.fn(async () => [{ address: "203.0.113.10", family: 4 }]);
+    const fetch = vi.fn(async () => {
+      rules.push({ effect: "deny", matchKind: "site", matchValue: "example.org" });
+      return new Response(null, { status: 302, headers: { location: blocked } });
+    });
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      prompt: `Read ${start}`,
+      rules,
+      webProvider: new KeylessHttpWebProvider({ resolveHostname, fetch }),
+    });
+    f.setCalls([{ args: { url: start }, executionId: "start" }]);
+    await f.run();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(resolveHostname).toHaveBeenCalledExactlyOnceWith("trusted.example.org");
+    expect(f.results).toEqual([
+      {
+        code: "action_rule_blocked",
+        error: expect.stringContaining("is blocked by an action rule"),
+      },
+    ]);
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("rechecks a site block after initial DNS and before sending any HTTP request", async () => {
+    const url = "https://trusted.example.org/report";
+    const rules: ActionApprovalRule[] = [
+      { effect: "always_allow", matchKind: "site", matchValue: "example.org" },
+    ];
+    const fetch = vi.fn(async () => new Response("Not sent"));
+    const f = fixture({
+      name: "web_fetch",
+      builtin: true,
+      rules,
+      webProvider: new KeylessHttpWebProvider({
+        fetch,
+        resolveHostname: async () => {
+          rules.push({ effect: "deny", matchKind: "site", matchValue: "example.org" });
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
+      }),
+    });
+    f.setCalls([{ args: { url }, executionId: "start" }]);
+    await f.run();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+  });
+
   it("keeps a canonical approved initial site's relative grant even with a require rule", async () => {
     const start = "https://approved.example.org/start";
     const requested: string[] = [];
@@ -5172,6 +5227,245 @@ describe("connector batch approval", () => {
       );
     },
   );
+
+  it.each([false, true])(
+    "blocks a known denied action in an incomplete batch without asking (catalog %s)",
+    async (catalog) => {
+      const f = batchFixture({
+        catalog,
+        autoReview: true,
+        rules: [rule("always_allow", wrapper), rule("deny", send)],
+      });
+      f.setCalls([{ args: items(send, null), executionId: "batch" }]);
+      await f.run();
+      expect(f.results).toEqual([
+        {
+          code: "action_rule_blocked",
+          error: expect.stringContaining("is blocked by an action rule"),
+        },
+      ]);
+      expect(reviewMock).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.effects).toHaveLength(0);
+    },
+  );
+
+  it("blocks a padded action before the provider can dispatch its normalized name", async () => {
+    const denied = "DROPBOX_LIST_FILES_IN_FOLDER";
+    const f = batchFixture({ rules: [rule("deny", denied)] });
+    f.setCalls([{ args: items(` ${denied} `), executionId: "batch" }]);
+    await f.run();
+    expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("blocks a code tool inside a recognizable batch", async () => {
+    const f = batchFixture({ rules: [rule("deny", send)] });
+    f.tool.route!.connectorId = "mcp";
+    f.setCalls([{ args: items("COMPOSIO_REMOTE_BASH_TOOL"), executionId: "batch" }]);
+    await f.run();
+    expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      current: "installed__resource-1__send_mail",
+      kind: "tool",
+      saved: "send_mail",
+      wire: "send_mail",
+    },
+    {
+      current: "send_mail",
+      kind: "tool",
+      saved: "installed__resource-1__send_mail",
+      wire: "send_mail",
+    },
+    { current: "installed__resource-1__send_mail", kind: "tool", saved: "send_mail", wire: "op-a" },
+    { current: "send_mail", kind: "tool", saved: "installed__resource-1__send_mail", wire: "op-a" },
+    {
+      current: "installed__resource-1__stripe_refund",
+      kind: "connector",
+      saved: "stripe",
+      wire: "stripe_refund",
+    },
+  ] as const)(
+    "keeps a saved $kind block after an installed name changes ($current)",
+    async ({ current, kind, saved, wire }) => {
+      const f = fixture({
+        name: current,
+        readOnly: false,
+        rules: [{ effect: "deny", matchKind: kind, matchValue: saved }],
+      });
+      f.tool.route!.connectorId = "installed";
+      f.tool.route!.toolName = wire;
+      await f.run();
+      expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+      expect(f.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["completed", "uncertain"])(
+    "replays an existing %s receipt before enforcing the new block",
+    async (status) => {
+      const rules: ActionApprovalRule[] = [];
+      const f = batchFixture({ rules });
+      f.setCalls([{ args: items(send), executionId: "batch" }]);
+      await f.run();
+      const receipt = { item: "original receipt" };
+      Object.assign(f.effects[0]!, { status, result: receipt });
+      rules.push(rule("deny", send));
+      await f.run();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.results.at(-1)).toEqual(receipt);
+      expect(f.effects[0]).toMatchObject({ status, result: receipt });
+    },
+  );
+
+  it("blocks a canonical wrapper deny on a generic MCP alias", async () => {
+    const f = batchFixture({ name: "mcp__mail__BATCH", rules: [rule("deny", wrapper)] });
+    f.tool.route!.connectorId = "mcp";
+    f.tool.route!.toolName = wrapper;
+    f.setCalls([{ args: items(read), executionId: "batch" }]);
+    await f.run();
+    expect(f.results).toEqual([
+      {
+        code: "action_rule_blocked",
+        error: expect.stringContaining("is blocked by an action rule"),
+      },
+    ]);
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "settles an approved batch without dispatch when a deny was saved after approval (catalog %s)",
+    async (catalog) => {
+      const rules = [rule("require_approval", send)];
+      const f = batchFixture({ catalog, rules });
+      f.setCalls([{ args: items(send), executionId: "first" }]);
+      await f.run();
+      f.effects[0]!.status = "approved";
+      rules.push(rule("deny", send));
+      f.setCalls([{ args: items(read), executionId: "replay" }]);
+      await f.run();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]).toMatchObject({
+        status: "completed",
+        result: {
+          code: "action_rule_blocked",
+          error: expect.stringContaining("is blocked by an action rule"),
+        },
+      });
+    },
+  );
+
+  it("rechecks a connector rule at the actual dispatch after provider preparation", async () => {
+    const rules: ActionApprovalRule[] = [];
+    const f = batchFixture({ rules });
+    const sendToProvider = vi.fn();
+    f.execute.mockImplementationOnce(async function* (call) {
+      rules.push(rule("deny", send));
+      const admitted = await call.beforeDispatch!().then(
+        () => true,
+        () => false,
+      );
+      if (!admitted) {
+        yield { type: "result", data: { item: "blocked before dispatch" } };
+        return;
+      }
+      sendToProvider();
+      yield { type: "result", data: { item: "sent" } };
+    });
+    f.setCalls([{ args: items(send), executionId: "batch" }]);
+    await f.run();
+    expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+    expect(f.effects[0]).toMatchObject({
+      status: "completed",
+      result: { code: "action_rule_blocked" },
+    });
+    expect(sendToProvider).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { connectorId: "composio", blocked: true, site: false },
+    { connectorId: "mcp", blocked: true, site: false },
+    { connectorId: "mcp", blocked: false, site: true },
+    { connectorId: "installed", blocked: true, site: false },
+    { connectorId: "installed", blocked: false, site: false, rest: true },
+  ])(
+    "limits code-tool protection to actual provider routes ($connectorId $blocked $site)",
+    async (test) => {
+      const name = "COMPOSIO_REMOTE_WORKBENCH";
+      const f = fixture({
+        name: `routed_${name}`,
+        rules: test.site
+          ? [{ effect: "deny", matchKind: "site", matchValue: "example.org" }]
+          : [rule("deny", send)],
+      });
+      f.tool.route!.toolName = name;
+      f.tool.route!.connectorId = test.connectorId;
+      const findFirst = vi.fn(async () => (test.rest ? null : { id: "resource-1" }));
+      Object.assign(f.prisma, { capabilityInstall: { findFirst } });
+      await f.run();
+      expect(f.execute).toHaveBeenCalledTimes(test.blocked ? 0 : 1);
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      if (test.blocked)
+        expect(f.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+      if (test.connectorId === "installed") {
+        expect(findFirst).toHaveBeenCalledWith({
+          where: { id: "resource-1", spaceId: "space-1", userId: "user-1", kind: "mcp" },
+          select: { id: true },
+        });
+      }
+    },
+  );
+
+  it("preserves the native checkpoint when a later provider request is blocked", async () => {
+    const name = "mail_send_file";
+    const rules: ActionApprovalRule[] = [];
+    const f = fixture({ name, rules, readOnly: false });
+    f.tool.route!.connectorId = "native";
+    f.execute.mockImplementationOnce(async function* (call) {
+      await call.beforeDispatch!();
+      f.effects[0]!.result = { nativeRecovery: { file_id: "synthetic-file", stage: "completion" } };
+      rules.push(rule("deny", name));
+      try {
+        await call.beforeDispatch!();
+      } catch {
+        yield { type: "error", message: "Blocked before completion", uncertain: true };
+      }
+    });
+    await f.run();
+    const expected = {
+      uncertain: true,
+      recovery: { file_id: "synthetic-file", stage: "completion" },
+    };
+    expect(f.results.at(-1)).toMatchObject(expected);
+    expect(f.effects[0]).toMatchObject({ status: "uncertain", result: expected });
+  });
+
+  it("closes a pending effect without showing a card when the rule changes during Auto Review", async () => {
+    const rules: ActionApprovalRule[] = [];
+    const f = batchFixture({ autoReview: true, rules });
+    reviewMock.mockImplementationOnce(async () => {
+      rules.push(rule("deny", send));
+      return { decision: "ask", model: "mock" };
+    });
+    f.setCalls([{ args: items(send), executionId: "batch" }]);
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects[0]).toMatchObject({
+      status: "completed",
+      result: { code: "action_rule_blocked" },
+    });
+  });
 
   it("runs a batch when every named action is allowed", async () => {
     const f = batchFixture({

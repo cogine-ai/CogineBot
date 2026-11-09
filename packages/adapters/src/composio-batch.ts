@@ -3,6 +3,16 @@ import type { ConnectorBatchActionNames } from "@rakazo/core";
 
 export const COMPOSIO_MULTI_EXECUTE_TOOL = "COMPOSIO_MULTI_EXECUTE_TOOL";
 
+// These provider tools run code that can invoke any action.
+export function isComposioCodeTool(toolName: string): boolean {
+  const name = toolName.toUpperCase();
+  return name === "COMPOSIO_REMOTE_WORKBENCH" || name === "COMPOSIO_REMOTE_BASH_TOOL";
+}
+
+export function normalizedBatchActionName(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 const COMPOSIO_BATCH: ToolBatch = { items: "tools", action: "tool_slug" };
 
 export function composioToolBatch(toolName: string): ToolBatch | undefined {
@@ -22,7 +32,7 @@ export function connectorBatchActionNames(
   let complete = items.length > 0;
   for (const item of items) {
     const slug = (item as Record<string, unknown> | null)?.[shape.action];
-    const action = typeof slug === "string" ? slug : "";
+    const action = normalizedBatchActionName(slug);
     const key = action.toUpperCase();
     if (!/^[A-Za-z0-9_-]+$/.test(action) || key === toolName.toUpperCase()) {
       complete = false;

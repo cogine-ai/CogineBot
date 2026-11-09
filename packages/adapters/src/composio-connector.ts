@@ -10,7 +10,11 @@ import type {
   ManagedConnectorProvider,
 } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
-import { COMPOSIO_MULTI_EXECUTE_TOOL, composioToolBatch } from "./composio-batch.js";
+import {
+  COMPOSIO_MULTI_EXECUTE_TOOL,
+  composioToolBatch,
+  normalizedBatchActionName,
+} from "./composio-batch.js";
 import {
   composioToolkitDirectory,
   mergeCatalogWithConnected,
@@ -180,7 +184,7 @@ export function expandComposioMultiExecute(
 function dropboxFolderListCall(item: unknown): ComposioExecutionCall | undefined {
   if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
   const record = item as Record<string, unknown>;
-  const slug = typeof record.tool_slug === "string" ? record.tool_slug.trim() : "";
+  const slug = normalizedBatchActionName(record.tool_slug);
   if (!slug || !DROPBOX_FOLDER_LIST_TOOLS.has(slug.toUpperCase())) return undefined;
   const toolArgs = objectArguments(record.arguments);
   if (!toolArgs) {
@@ -540,7 +544,7 @@ export class ComposioConnector implements ComposioProvider {
       const record = asObject(item);
       if (typeof record?.account !== "string") return item;
       const selector = record.account.trim();
-      const slug = typeof record.tool_slug === "string" ? record.tool_slug.toUpperCase() : "";
+      const slug = normalizedBatchActionName(record.tool_slug).toUpperCase();
       const matches = (listed.items ?? []).filter((account) => {
         const connection = allowed.get(account.id);
         if (!connection) return false;

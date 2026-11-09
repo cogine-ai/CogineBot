@@ -143,6 +143,38 @@ test("editing another Space saves its models and confirmations without moving th
   });
   expect((await inSpace<Me>(page, personal.id, "me")).defaultModel).toBe("personal-target-model");
 
+  // Saved rules are readable before the public write contract exposes blocks.
+  const isolatedDatabase = process.env.VERIFY_ISOLATED_DATABASE;
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.VERIFY_DATABASE).toBe("1");
+  expect(isolatedDatabase).toBeTruthy();
+  const connection = new URL(process.env.DATABASE_URL!);
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(connection.hostname);
+  expect(Number(connection.port)).toBeGreaterThan(1024);
+  expect(connection.port).not.toBe("5432");
+  expect(connection.pathname).toBe(`/${isolatedDatabase}`);
+  expect(connection.search).toBe("");
+  const { createDb } = await import("../../../packages/db/src/client");
+  const db = createDb(connection.href, { poolMax: 1 });
+  try {
+    const [identity] = await db.prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT current_database() AS name
+    `;
+    expect(identity?.name).toBe(isolatedDatabase);
+    await db.prisma.actionApprovalRule.create({
+      data: {
+        spaceId: personal.id,
+        createdByUserId: supportMe.userId,
+        effect: "deny",
+        matchKind: "site",
+        matchValue: "example.org",
+      },
+    });
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
   await settings.getByTestId("settings-nav-confirmations").click();
   const ruleSaved = page.waitForResponse(
     (response) => response.url().endsWith("/rpc/approvalRules/set") && response.ok(),
@@ -157,6 +189,7 @@ test("editing another Space saves its models and confirmations without moving th
   expect(await inSpace<ActionApprovalRule[]>(page, support.id, "approvalRules/list")).toEqual(
     originalRules,
   );
+  await expect(settings.getByText("Blocked · example.org", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "space-confirmations-target-personal");
 
   for (const [section, procedure] of [

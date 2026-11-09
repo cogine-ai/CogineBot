@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { it as test } from "vitest";
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import type { NativeActionContext, NativeRequest } from "./action.js";
 import { NativeActionError } from "./action.js";
 import { collaborationActions } from "./collaboration-action.js";
@@ -58,6 +59,16 @@ function fixture(id: string, path: string, options = true) {
   );
   return { action: action!, context, calls: () => calls, receipt: () => receipt };
 }
+
+test("preserves an explicit first-dispatch block through a collaboration write", async () => {
+  const f = fixture("outlook.drafts.send", "/me/messages/fixture-resource/send");
+  const refusal = new ActionRuleDispatchError("Action blocked");
+  f.context.request = async () => {
+    throw refusal;
+  };
+  await assert.rejects(f.action.execute({}, f.context), (error: unknown) => error === refusal);
+  assert.equal(f.calls(), 0);
+});
 
 for (const [id, path] of [
   ["outlook.drafts.send", "/me/messages/fixture-resource/send"],

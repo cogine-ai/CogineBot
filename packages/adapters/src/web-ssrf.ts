@@ -1,14 +1,15 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { readBoundedResponseBytes } from "@rakazo/core";
-import { Agent } from "undici";
+import { Agent, Client as UndiciClient } from "undici";
+import { guardedConnect } from "./connector-dispatch.js";
 import {
   createAddressCheckedLookup,
   isPrivateAddress,
   type ResolvedAddress,
   type ResolveHostname,
 } from "./network-address.js";
-import { fetchPairedWithDispatcher } from "./undici-fetch.js";
+import { dispatcherFetch, fetchPairedWithDispatcher } from "./undici-fetch.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
@@ -30,7 +31,8 @@ export interface SafeWebFetchOptions {
   /** Refuse any hop, redirects included, whose port is not listed. */
   allowedPorts?: readonly number[];
   /** Caller authority for each redirect, checked before the next hop's DNS or HTTP request. */
-  assertRedirectAllowed?: (url: string) => void;
+  assertRedirectAllowed?: (url: string) => void | Promise<void>;
+  beforeRequest?: (url: string) => void | Promise<void>;
   /**
    * Test seam for dispatcher teardown. Defaults to `Agent.close()`.
    * Always raced against the shared operation deadline.
@@ -52,7 +54,7 @@ export async function assertSafeWebUrl(
   resolve: ResolveHostname = defaultResolveHostname,
   signal?: AbortSignal,
   allowedPorts?: readonly number[],
-  beforeResolve?: (url: string) => void,
+  beforeResolve?: (url: string) => void | Promise<void>,
 ): Promise<URL> {
   let url: URL;
   try {
@@ -74,7 +76,7 @@ export async function assertSafeWebUrl(
   if (isBlockedHostname(hostname)) {
     throw new Error("URL targets a private or internal host");
   }
-  beforeResolve?.(url.href);
+  if (beforeResolve) await withAbort(Promise.resolve(beforeResolve(url.href)), signal);
   assertPublicAddresses(await withAbort(resolve(hostname), signal));
   return url;
 }
@@ -113,25 +115,30 @@ export async function fetchSafeWebBytes(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const baseFetch = fetchPairedWithDispatcher(options.fetch);
-  const dispatcher = new Agent({
-    connect: { lookup: createAddressCheckedLookup(resolve, assertPublicAddresses) },
-  });
+  const safeLookup = createAddressCheckedLookup(resolve, assertPublicAddresses);
+  const dispatcher = new Agent({ connect: { lookup: safeLookup } });
+  const guardedClients: UndiciClient[] = [];
+  const dispatchers = () => [dispatcher, ...guardedClients];
   // One deadline for the whole redirect chain + body read + cleanup, not per hop.
   const signal = combineSignals(options.signal, AbortSignal.timeout(timeoutMs));
   const cleanup =
     options.cleanup ??
-    (() =>
-      dispatcher.close().then(
-        () => undefined,
-        () => undefined,
-      ));
-  const destroy = options.destroy ?? (() => dispatcher.destroy());
+    (async () => {
+      await Promise.allSettled(dispatchers().map((client) => client.close()));
+    });
+  const destroy =
+    options.destroy ??
+    (async () => {
+      await Promise.allSettled(dispatchers().map((client) => client.destroy()));
+    });
 
   try {
     return await followRedirects(url, {
       baseFetch,
       resolve,
       dispatcher,
+      guardedClients,
+      safeLookup,
       maxBytes,
       userAgent: options.userAgent ?? "Rakazo/0.1 (+https://github.com/elie222/rakazo)",
       headers: options.headers,
@@ -140,6 +147,7 @@ export async function fetchSafeWebBytes(
       truncate: options.truncate ?? false,
       allowedPorts: options.allowedPorts,
       assertRedirectAllowed: options.assertRedirectAllowed,
+      beforeRequest: options.beforeRequest,
     });
   } finally {
     // Race graceful close against the shared deadline. Do not wait unbounded on close().
@@ -163,6 +171,8 @@ async function followRedirects(
     baseFetch: typeof globalThis.fetch;
     resolve: ResolveHostname;
     dispatcher: Agent;
+    guardedClients: UndiciClient[];
+    safeLookup: LookupFunction;
     maxBytes: number;
     userAgent: string;
     headers?: Record<string, string>;
@@ -170,7 +180,8 @@ async function followRedirects(
     redirectsRemaining: number;
     truncate: boolean;
     allowedPorts?: readonly number[];
-    assertRedirectAllowed?: (url: string) => void;
+    assertRedirectAllowed?: (url: string) => void | Promise<void>;
+    beforeRequest?: (url: string) => void | Promise<void>;
     redirected?: boolean;
   },
 ): Promise<SafeWebResponse<Uint8Array>> {
@@ -184,6 +195,26 @@ async function followRedirects(
     state.allowedPorts,
     state.redirected ? state.assertRedirectAllowed : undefined,
   );
+  let dispatcher: Agent | UndiciClient = state.dispatcher;
+  const beforeRequest = state.beforeRequest;
+  if (beforeRequest) {
+    const check = async () => {
+      state.signal.throwIfAborted();
+      await withAbort(Promise.resolve(beforeRequest(validated.href)), state.signal);
+      state.signal.throwIfAborted();
+    };
+    if (state.baseFetch === dispatcherFetch) {
+      // A request-owned client prevents a pooled socket from skipping its authorization check.
+      const client = new UndiciClient(validated.origin, {
+        connect: guardedConnect(state.safeLookup, check),
+        pipelining: 0,
+      });
+      state.guardedClients.push(client);
+      dispatcher = client;
+    } else {
+      await withAbort(check(), state.signal);
+    }
+  }
   // Race fetch against the deadline — injected fetch may ignore init.signal.
   const response = await withAbort(
     state.baseFetch(validated.href, {
@@ -195,8 +226,8 @@ async function followRedirects(
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
         ...state.headers,
       },
-      dispatcher: state.dispatcher,
-    } as RequestInit & { dispatcher: Agent }),
+      dispatcher,
+    } as RequestInit & { dispatcher: Agent | UndiciClient }),
     state.signal,
   );
 

@@ -115,6 +115,7 @@ export class KeylessHttpWebProvider implements WebProvider {
       userAgent: this.userAgent,
       signal: request.signal ?? context.signal,
       assertRedirectAllowed: request.assertRedirectAllowed,
+      beforeRequest: request.beforeRequest,
     });
     if (!body.trim()) throw new Error(`Failed to fetch content from ${url}`);
     const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase();

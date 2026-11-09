@@ -4,6 +4,8 @@ import type { ApprovalBatchResolutionContext, Prisma } from "@rakazo/db";
 import { COMPOSIO_MULTI_EXECUTE_TOOL, connectorBatchActionNames } from "./composio-batch.js";
 import { catalogIdForRoute } from "./lazy-tool-catalog.js";
 
+export const ACTION_RULE_BLOCKED = "action_rule_blocked";
+
 export type ApprovalPausedToolResult = AgentToolExecutionResult & { terminate: true };
 
 export interface ApprovedEffectReplay {
@@ -541,7 +543,7 @@ export async function completeExternalEffect(
     };
   },
   effectId: string,
-  expectedStatus: "intended" | "executing",
+  expectedStatus: "intended" | "approved" | "executing",
   result: unknown,
   approvalReceipt?: ApprovalReceipt,
 ): Promise<boolean> {

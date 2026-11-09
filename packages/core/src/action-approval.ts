@@ -278,15 +278,15 @@ function ruleSpecificity(rule: ActionApprovalRule): number {
   }
 }
 
-export type ActionApprovalSource = "require_approval" | "always_allow" | "default";
+export type ActionApprovalSource = "require_approval" | "always_allow" | "deny" | "default";
 
 export type ActionApprovalResolved = {
-  decision: "ask" | "allow";
+  decision: "ask" | "allow" | "deny";
   source: ActionApprovalSource;
   matchingRules: ActionApprovalRule[];
 };
 
-/** Deterministic rule resolution. Always-allow and require-approval both beat the default. */
+/** Any matching block wins. Other decisions use the most specific matching rule. */
 export function resolveActionApprovalDetail(input: {
   toolName: string;
   connectorKind?: string;
@@ -302,6 +302,9 @@ export function resolveActionApprovalDetail(input: {
     return { decision: "allow", source: "default", matchingRules };
   }
 
+  if (matchingRules.some((rule) => rule.effect === "deny")) {
+    return { decision: "deny", source: "deny", matchingRules };
+  }
   const highestSpecificity = Math.max(...matchingRules.map(ruleSpecificity));
   const winners = matchingRules.filter((rule) => ruleSpecificity(rule) === highestSpecificity);
   if (winners.some((rule) => rule.effect === "require_approval")) {
@@ -324,7 +327,7 @@ export function displayedBatchApprovalRuleNames(
     : undefined;
 }
 
-/** Wrapper rules can require approval, while a saved allow must cover every inner action. */
+/** A block on any action or wrapper wins. A saved allow must cover every inner action. */
 export function resolveBatchActionApproval(input: {
   actions: ReadonlyArray<{ toolName: string; connectorKind: string; readOnly?: boolean }>;
   wrappers: ReadonlyArray<{ toolName: string; connectorKind: string; readOnly?: boolean }>;
@@ -333,12 +336,15 @@ export function resolveBatchActionApproval(input: {
   const actions = input.actions.map((tool) =>
     resolveActionApprovalDetail({ ...tool, rules: input.rules }),
   );
-  const wrapperRules = input.rules.filter((rule) => rule.effect === "require_approval");
+  const wrapperRules = input.rules.filter((rule) => rule.effect !== "always_allow");
   const wrapperRequirements = input.wrappers
     .map((tool) => resolveActionApprovalDetail({ ...tool, rules: wrapperRules }))
-    .filter((part) => part.decision === "ask");
+    .filter((part) => part.decision !== "allow");
   const parts = [...actions, ...wrapperRequirements];
   const matchingRules = [...new Set(parts.flatMap((part) => part.matchingRules))];
+  if (parts.some((part) => part.decision === "deny")) {
+    return { decision: "deny", source: "deny", matchingRules };
+  }
   if (parts.some((part) => part.decision === "ask")) {
     return { decision: "ask", source: "require_approval", matchingRules };
   }
@@ -352,7 +358,7 @@ export function resolveActionApproval(input: {
   readOnly?: boolean;
   site?: string;
   rules: ActionApprovalRule[];
-}): "ask" | "allow" {
+}): "ask" | "allow" | "deny" {
   return resolveActionApprovalDetail(input).decision;
 }
 
@@ -360,7 +366,7 @@ export type AutoReviewJudgeDecision = "pass" | "ask" | "error";
 
 /**
  * Pure combiner for Auto Review after rule resolution.
- * Rules win: require_approval asks, always_allow runs. Only the default path may call a judge.
+ * Blocks refuse before review. Only the default path may call a judge.
  * The judge only escalates to ask; it never silent-denies.
  */
 export function planActionGate(input: {
@@ -372,8 +378,8 @@ export function planActionGate(input: {
   reviewOnly?: boolean;
   /** An outbound URL whose site the run has not been given. */
   newDestination?: boolean;
-}): "ask" | "allow" | "judge" {
-  if (input.resolved.decision === "ask") return "ask";
+}): "ask" | "allow" | "judge" | "deny" {
+  if (input.resolved.decision !== "allow") return input.resolved.decision;
   if (input.newDestination)
     return input.autoReviewEnabled && input.checkerConfigured ? "judge" : "ask";
   if (input.resolved.source === "always_allow") return "allow";

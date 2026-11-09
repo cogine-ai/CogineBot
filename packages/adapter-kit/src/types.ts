@@ -1034,8 +1034,10 @@ export interface WebFetchRequest {
   /** UTF-16 position in the extracted page text. Defaults to the beginning. */
   offset?: number;
   signal?: AbortSignal;
-  /** Synchronous Run authority check before a redirect target is resolved or contacted. */
-  assertRedirectAllowed?: (url: string) => void;
+  /** Run authority check before a redirect target is resolved or contacted. */
+  assertRedirectAllowed?: (url: string) => void | Promise<void>;
+  /** Recheck caller authority after resolving a hop, before making its HTTP request. */
+  beforeRequest?: (url: string) => void | Promise<void>;
 }
 
 export interface WebFetchResult {

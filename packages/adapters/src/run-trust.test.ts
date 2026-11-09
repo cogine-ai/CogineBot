@@ -1,6 +1,10 @@
 import { withPageReplyContext } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
-import { boundDirectApprovalRequest, catalogApprovalRequest } from "./approval-effect.js";
+import {
+  ACTION_RULE_BLOCKED,
+  boundDirectApprovalRequest,
+  catalogApprovalRequest,
+} from "./approval-effect.js";
 import {
   connectorBatchActions,
   connectorTrustKeys,
@@ -150,12 +154,31 @@ describe("run destination trust", () => {
     },
   );
 
+  it("does not rebuild outbound trust from a completed policy refusal", async () => {
+    const { trust } = fixture({
+      passedEffects: [
+        {
+          kind: "web_fetch",
+          request: { url: "https://untrusted.example.org" },
+          result: { code: ACTION_RULE_BLOCKED },
+        },
+        {
+          kind: "mail_get",
+          request: {},
+          result: { code: ACTION_RULE_BLOCKED },
+        },
+      ],
+    });
+    expect(await trust.loadTrustedSites()).not.toContain("example.org");
+    expect(await trust.loadTrustedConnectors()).toHaveProperty("size", 0);
+  });
+
   function fixture(input: {
     attempts?: number;
     outside?: boolean;
     trigger?: string;
     connectedProviders?: string[];
-    passedEffects?: Array<{ kind: string; request: unknown }>;
+    passedEffects?: Array<{ kind: string; request: unknown; result?: unknown }>;
   }) {
     let outside = input.outside ?? false;
     const findFirst = vi.fn(async () => (outside ? { id: "steering" } : null));
@@ -163,7 +186,12 @@ describe("run destination trust", () => {
       {
         attempt: { count: async () => input.attempts ?? 1 },
         steeringMessage: { findFirst },
-        externalEffect: { findMany: async () => input.passedEffects ?? [] },
+        externalEffect: {
+          findMany: async ({ where }: { where: { kind?: string } }) =>
+            (input.passedEffects ?? []).filter(
+              (effect) => !where.kind || effect.kind === where.kind,
+            ),
+        },
       } as never,
       {
         run: { id: "run", userId: "owner", spaceId: "space", trigger: input.trigger ?? "user" },

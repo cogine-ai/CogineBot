@@ -1,3 +1,4 @@
+import { ActionRuleDispatchError } from "../connector-dispatch.js";
 import {
   asRecord,
   isSensitiveHeader,
@@ -255,7 +256,8 @@ export class NativeHttpClient {
           { method: request.method, headers, body, signal },
           this.options.beforeDispatch,
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof ActionRuleDispatchError) throw error;
         if (readOnly && attempt === 0 && !this.options.signal.aborted) continue;
         throw new NativeActionError(
           readOnly ? "temporarily_unavailable" : "result_unknown",
