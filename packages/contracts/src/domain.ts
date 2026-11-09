@@ -851,6 +851,16 @@ export const McpServerConfigInput = z.discriminatedUnion("transport", [
 ]);
 export type McpServerConfigInput = z.infer<typeof McpServerConfigInput>;
 
+export const MCP_OAUTH_CLIENT_REQUIRED = "MCP_OAUTH_CLIENT_REQUIRED";
+export const McpServerHealthSchema = z.object({
+  status: z.enum(["unknown", "installing", "ok", "error"]),
+  message: z.string().nullable(),
+  code: z.literal(MCP_OAUTH_CLIENT_REQUIRED).nullable(),
+  toolCount: z.number().int().nonnegative().nullable(),
+  checkedAt: z.string().nullable(),
+});
+export type McpServerHealth = z.infer<typeof McpServerHealthSchema>;
+
 export const McpServerSchema = z.object({
   id: Id,
   spaceId: Id,
@@ -865,6 +875,7 @@ export const McpServerSchema = z.object({
   headerKeys: z.array(z.string()),
   hasSecret: z.boolean(),
   oauthStatus: z.enum(["none", "connected", "reconnect", "unknown"]),
+  health: McpServerHealthSchema.optional(),
   enabled: z.boolean(),
   verbatimResults: z.boolean().default(false),
   allowAllTools: z.boolean(),

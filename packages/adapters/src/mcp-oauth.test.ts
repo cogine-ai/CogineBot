@@ -8,6 +8,7 @@ import {
   McpReauthorizationRequiredError,
   StoredMcpOAuthProvider,
 } from "./mcp-oauth.js";
+import { McpOAuthClientRequiredError } from "./mcp-server-health.js";
 import { infisicalFake } from "./secret-store-fake.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -195,8 +196,9 @@ function chunkedBody(totalBytes: number, chunkBytes: number): ReadableStream<Uin
 }
 
 async function rejectedOAuthBegin(
-  register: () => Response | Promise<Response>,
+  register: (() => Response | Promise<Response>) | undefined,
   secret?: string,
+  writeHealth?: () => Promise<{ count: number }>,
 ): Promise<Error> {
   vi.stubGlobal(
     "fetch",
@@ -224,13 +226,13 @@ async function rejectedOAuthBegin(
           issuer: "https://auth.example.test",
           authorization_endpoint: "https://auth.example.test/authorize",
           token_endpoint: "https://auth.example.test/token",
-          registration_endpoint: "https://auth.example.test/register",
+          ...(register ? { registration_endpoint: "https://auth.example.test/register" } : {}),
           response_types_supported: ["code"],
           grant_types_supported: ["authorization_code", "refresh_token"],
           code_challenge_methods_supported: ["S256"],
         });
       }
-      if (url === "https://auth.example.test/register" && request.method === "POST") {
+      if (register && url === "https://auth.example.test/register" && request.method === "POST") {
         return register();
       }
       throw new Error(`Unexpected request: ${request.method} ${url}`);
@@ -256,6 +258,7 @@ async function rejectedOAuthBegin(
   };
   const prisma = {
     mcpServer: {
+      updateMany: writeHealth ?? vi.fn().mockResolvedValue({ count: 1 }),
       findFirst: vi.fn().mockResolvedValue({
         id: "server-1",
         endpoint: "https://mcp.example.test/mcp",
@@ -898,6 +901,31 @@ describe("MCP OAuth", () => {
     expect((error as Error).message).not.toContain("UPSTREAM_BODY_MARKER");
   });
 
+  it("identifies authorization metadata without a registration endpoint", async () => {
+    const error = await rejectedOAuthBegin(undefined);
+    expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+    expect(error.message).toBe("This MCP server requires a pre-registered OAuth client.");
+  });
+
+  it("returns the typed OAuth error when the health write exceeds the handshake deadline", async () => {
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout;
+    const clock = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => (ms === 15_000 ? deadline.signal : timeout(ms)));
+    const writeHealth = vi.fn(async () => {
+      deadline.abort();
+      return new Promise<never>(() => {});
+    });
+    try {
+      const error = await rejectedOAuthBegin(undefined, undefined, writeHealth);
+      expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+      expect(writeHealth).toHaveBeenCalledOnce();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("reports the HTTP status and OAuth error when registration is rejected", async () => {
     vi.stubGlobal(
       "fetch",
@@ -950,6 +978,7 @@ describe("MCP OAuth", () => {
       mcpServer: {
         findFirst: vi.fn().mockResolvedValue({
           endpoint: "https://mcp.example.test/mcp",
+          revision: 3,
           secretId: null,
         }),
         update: vi.fn().mockResolvedValue({}),
@@ -960,10 +989,20 @@ describe("MCP OAuth", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
+    let healthPersisted = false;
+    const updateMany = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      healthPersisted = true;
+      return { count: 1 };
+    });
     const prisma = {
       mcpServer: {
+        updateMany,
         findFirst: vi.fn().mockResolvedValue({
           id: "server-1",
+          revision: 3,
+          spaceId: "workspace-1",
+          userId: "user-1",
           endpoint: "https://mcp.example.test/mcp",
           secretId: null,
         }),
@@ -994,6 +1033,19 @@ describe("MCP OAuth", () => {
       "Could not start MCP OAuth: HTTP 403 registration_not_supported: Dynamic client registration is not supported. Only pre-registered partners are allowed.",
     );
     expect((error as Error).message).not.toContain("[object Response]");
+    expect(error).toBeInstanceOf(McpOAuthClientRequiredError);
+    expect(healthPersisted).toBe(true);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "server-1",
+          revision: 3,
+          spaceId: "workspace-1",
+          userId: "user-1",
+        }),
+        data: expect.objectContaining({ healthCode: "MCP_OAUTH_CLIENT_REQUIRED" }),
+      }),
+    );
   });
 
   it("reports the OAuth status and code when the description is redacted", async () => {

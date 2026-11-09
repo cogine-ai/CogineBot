@@ -1448,6 +1448,12 @@ model McpServer {
   verbatimResults Boolean         @default(false)
   allowedTools  Json              @default("[]")
   revision      Int               @default(1)
+  healthRevision Int?
+  healthStatus String @default("unknown")
+  healthMessage String?
+  healthCode String?
+  healthToolCount Int?
+  healthCheckedAt DateTime?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   assignments   BotMcpServer[]

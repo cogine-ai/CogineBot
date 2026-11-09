@@ -14,6 +14,61 @@ const actor: Actor = {
   isDeploymentOwner: false,
 };
 
+it("checks only an owned enabled MCP server and rejects a result for an edited revision", async () => {
+  const server = {
+    id: "server",
+    spaceId: actor.spaceId,
+    userId: actor.userId,
+    enabled: true,
+    revision: 3,
+  };
+  const findFirst = vi
+    .fn()
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(server)
+    .mockResolvedValueOnce(null);
+  const check = vi.fn().mockResolvedValue({
+    status: "ok",
+    message: null,
+    code: null,
+    toolCount: 1,
+    checkedAt: new Date(0).toISOString(),
+  });
+  const deps = {
+    prisma: { mcpServer: { findFirst } },
+    mcpConnector: { check },
+    env: {
+      defaultProvider: "fake",
+      defaultModel: "fake-model",
+      webOrigin: "http://127.0.0.1:5173",
+    },
+    dataDir: "/tmp/mcp-status-fixture",
+  } as unknown as RouterDeps;
+  const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+  await expect(client.mcp.servers.check({ id: "foreign" })).rejects.toThrow();
+  expect(check).not.toHaveBeenCalled();
+  await expect(client.mcp.servers.check({ id: server.id })).rejects.toMatchObject({
+    code: "CONFLICT",
+  });
+  expect(check).toHaveBeenCalledWith(
+    server,
+    expect.objectContaining({
+      spaceId: actor.spaceId,
+      userId: actor.userId,
+    }),
+  );
+  expect(findFirst).toHaveBeenLastCalledWith({
+    where: {
+      id: server.id,
+      spaceId: actor.spaceId,
+      userId: actor.userId,
+      enabled: true,
+      revision: 3,
+    },
+    select: { id: true },
+  });
+});
+
 describe("MCP list preserves unknown credential status", () => {
   it.each(["not-found", "bad-ref", "aad", "json", "structure"])(
     "isolates a %s secret failure from healthy and credentialless servers",

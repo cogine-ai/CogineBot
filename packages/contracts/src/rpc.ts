@@ -81,6 +81,7 @@ import {
   GroupSchema,
   IntegrationCatalogResultSchema,
   McpServerConfigInput,
+  McpServerHealthSchema,
   McpServerSchema,
   MemoryDocumentSchema,
   MemoryScopeSchema,
@@ -873,6 +874,7 @@ export const appContract = {
   mcp: {
     servers: {
       list: oc.output(z.array(McpServerSchema)),
+      check: oc.input(z.object({ id: Id })).output(McpServerHealthSchema),
       create: oc.input(McpServerConfigInput).output(McpServerSchema),
       setTools: oc
         .input(

@@ -3,7 +3,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { AdapterContext, ConnectorCall } from "@rakazo/adapter-kit";
-import { combineSignals } from "./connector-safety.js";
+import { combineSignals, withRequestSignal } from "./connector-safety.js";
 import { credentialDigest } from "./credential-digest.js";
 import type { RemoteMcpOptions } from "./remote-mcp.js";
 import {
@@ -454,22 +454,6 @@ function guardedMcpRequest(body: RequestInit["body"]): boolean {
 
 function stopBinding(binding: Binding) {
   binding.stop.abort(new Error("Remote MCP Run has ended"));
-}
-
-/** The SDK retains its abort listener after a response. Stop forwarding once it settles. */
-async function withRequestSignal<T>(
-  source: AbortSignal,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  source.throwIfAborted();
-  const controller = new AbortController();
-  const abort = () => controller.abort(source.reason);
-  source.addEventListener("abort", abort, { once: true });
-  try {
-    return await run(controller.signal);
-  } finally {
-    source.removeEventListener("abort", abort);
-  }
 }
 
 /** Match a pre-dispatch session rejection before replaying a tool. */

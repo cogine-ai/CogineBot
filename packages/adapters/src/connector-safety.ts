@@ -4,6 +4,22 @@ export function combineSignals(...signals: Array<AbortSignal | undefined>): Abor
   return AbortSignal.any(signals.filter((signal): signal is AbortSignal => Boolean(signal)));
 }
 
+/** The SDK retains its abort listener after a response. Stop forwarding once it settles. */
+export async function withRequestSignal<T>(
+  source: AbortSignal,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  source.throwIfAborted();
+  const controller = new AbortController();
+  const abort = () => controller.abort(source.reason);
+  source.addEventListener("abort", abort, { once: true });
+  try {
+    return await run(controller.signal);
+  } finally {
+    source.removeEventListener("abort", abort);
+  }
+}
+
 export function sanitizeConnectorError(error: unknown, secrets: string[] = []): string {
   const message = error instanceof Error ? error.message : String(error);
   const redacted = redactConnectorPayload(message, secrets);
