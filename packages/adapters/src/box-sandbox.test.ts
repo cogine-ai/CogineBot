@@ -21,6 +21,47 @@ afterEach(() => {
 });
 
 describe("BoxSandboxProvider", () => {
+  it.each(["direct", "polled", "timeout"])(
+    "keeps %s fallback exit unconfirmed",
+    async (response) => {
+      const f = boxFixture();
+      if (response === "direct") {
+        f.command.mockResolvedValueOnce(finished({ exitCode: null }));
+      } else if (response === "timeout") {
+        f.command.mockResolvedValueOnce(finished({ timedOut: true }));
+      } else {
+        f.command.mockResolvedValueOnce({
+          ok: true,
+          type: "command.started",
+          success: true,
+          processId: 42,
+          pid: 42,
+          command: "true",
+          startedAt: new Date(),
+        });
+        f.commandStatus.mockResolvedValueOnce({
+          running: false,
+          exitCode: null,
+          stdout: "",
+          stderr: "",
+        });
+      }
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, f.client);
+      const events = [];
+      for await (const event of provider.execute(
+        { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
+        { argv: ["true"] },
+        context,
+      ))
+        events.push(event);
+      expect(events.at(-1)).toEqual({
+        type: "exit",
+        code: response === "timeout" ? 124 : 1,
+        terminalStateVerified: false,
+      });
+    },
+  );
+
   it.each(["archived", "archiving", "unknown"])(
     "does not extend attendance on a %s box",
     async (state) => {

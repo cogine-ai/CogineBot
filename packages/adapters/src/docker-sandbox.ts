@@ -205,7 +205,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     });
     if (!res.ok) {
       yield { type: "stderr", data: `exec failed: ${res.status}` };
-      yield { type: "exit", code: 1 };
+      yield { type: "exit", code: 1, terminalStateVerified: false };
       return;
     }
     const contentType = res.headers.get("content-type") ?? "";
@@ -225,7 +225,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     );
     if (body.stdout) yield { type: "stdout", data: body.stdout };
     if (body.stderr) yield { type: "stderr", data: body.stderr };
-    yield { type: "exit", code: body.code };
+    yield { type: "exit", code: body.code, terminalStateVerified: false };
   }
 
   async pageBrowser(
@@ -599,7 +599,7 @@ async function* readNdjsonProcessEvents(
   const reader = res.body?.getReader();
   if (!reader) {
     yield { type: "stderr", data: "exec failed: empty response\n" };
-    yield { type: "exit", code: 1 };
+    yield { type: "exit", code: 1, terminalStateVerified: false };
     return;
   }
   const decoder = new TextDecoder();
@@ -614,7 +614,7 @@ async function* readNdjsonProcessEvents(
       bytes += value.byteLength;
       if (bytes > MAX_SANDBOX_SUCCESS_RESPONSE_BYTES) {
         yield { type: "stderr", data: "exec failed: response too large\n" };
-        yield { type: "exit", code: 1 };
+        yield { type: "exit", code: 1, terminalStateVerified: false };
         await reader.cancel().catch(() => undefined);
         return;
       }
@@ -634,7 +634,7 @@ async function* readNdjsonProcessEvents(
         yield event;
       }
     }
-    if (!sawExit) yield { type: "exit", code: 1 };
+    if (!sawExit) yield { type: "exit", code: 1, terminalStateVerified: false };
   } finally {
     reader.releaseLock();
   }
@@ -661,7 +661,12 @@ function parseProcessLine(line: string): ProcessEvent | undefined {
     return { type: "stderr", data: `${trimmed}\n` };
   }
   if (!parsed || typeof parsed !== "object") return undefined;
-  const record = parsed as { type?: unknown; data?: unknown; code?: unknown };
+  const record = parsed as {
+    type?: unknown;
+    data?: unknown;
+    code?: unknown;
+    terminalStateVerified?: unknown;
+  };
   if (record.type === "stdout" && typeof record.data === "string") {
     return { type: "stdout", data: record.data };
   }
@@ -669,7 +674,11 @@ function parseProcessLine(line: string): ProcessEvent | undefined {
     return { type: "stderr", data: record.data };
   }
   if (record.type === "exit" && typeof record.code === "number" && Number.isFinite(record.code)) {
-    return { type: "exit", code: record.code };
+    return {
+      type: "exit",
+      code: record.code,
+      ...(record.terminalStateVerified === true ? {} : { terminalStateVerified: false }),
+    };
   }
   return undefined;
 }

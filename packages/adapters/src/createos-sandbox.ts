@@ -488,18 +488,23 @@ export class CreateOSSandboxProvider implements SandboxProvider {
     } catch (error) {
       if (context.signal.aborted) {
         yield { type: "stderr", data: "command aborted\n" };
-        yield { type: "exit", code: 130 };
+        yield { type: "exit", code: 130, terminalStateVerified: false };
         return;
       }
       if (!isTimeoutAbort(error)) throw error;
       yield { type: "stderr", data: `command timed out after ${timeoutMs} ms\n` };
-      yield { type: "exit", code: 124 };
+      yield { type: "exit", code: 124, terminalStateVerified: false };
       return;
     }
     if (result.result?.stdout) yield { type: "stdout", data: result.result.stdout };
     if (result.result?.stderr) yield { type: "stderr", data: result.result.stderr };
     if (result.result?.error) yield { type: "stderr", data: `${result.result.error}\n` };
-    yield { type: "exit", code: result.result?.exit_code ?? (result.result?.error ? 1 : 0) };
+    const code = result.result?.exit_code;
+    yield {
+      type: "exit",
+      code: code ?? (result.result?.error ? 1 : 0),
+      ...(code == null ? { terminalStateVerified: false } : {}),
+    };
   }
 
   async connectScreen(

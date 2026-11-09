@@ -108,6 +108,7 @@ export interface ThreadEvents {
     firstResponseRunId?: string,
     cancelledRunIds?: string[],
   ): Promise<void>;
+  notifyDelegatedApprovalParent(runId: string): Promise<void>;
   pauseRunForInput(input: PauseRunForInput): Promise<boolean>;
   pauseRunForTakeover(input: PauseRunForTakeover): Promise<boolean>;
   sendUserMessage(input: SendUserMessageInput): Promise<SendUserMessageResult>;
@@ -374,6 +375,8 @@ export function createThreadEvents(
         cancelledRunIds.map((runId) => notifyDelegatedApprovalParent(prisma, realtime, runId)),
       );
     },
+    notifyDelegatedApprovalParent: (runId) =>
+      notifyDelegatedApprovalParent(prisma, realtime, runId),
     pauseRunForInput: (input) => pauseRunForInput(prisma, input, realtime),
     pauseRunForTakeover: (input) => pauseRunForTakeover(prisma, input, realtime),
     sendUserMessage: (input) => sendUserMessage(prisma, input, realtime),

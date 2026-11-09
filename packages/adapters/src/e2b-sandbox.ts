@@ -1,5 +1,6 @@
 import {
   ApiClient,
+  CommandExitError,
   type CommandResult,
   ConnectionConfig,
   FileNotFoundError,
@@ -22,6 +23,7 @@ import type {
   ScreenSession,
   TerminalRequest,
 } from "@rakazo/adapter-kit";
+import { SandboxCommandExitError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { sandboxIdleMs } from "./computer-idle.js";
 import { normalizeWorkspacePath, shellQuote, workspacePath } from "./computer-support.js";
@@ -347,15 +349,26 @@ export class E2BSandboxProvider implements SandboxProvider {
       });
       if (result.stdout) yield { type: "stdout", data: result.stdout };
       if (result.stderr) yield { type: "stderr", data: result.stderr };
-      yield { type: "exit", code: result.exitCode ?? 0 };
+      yield {
+        type: "exit",
+        code: result.exitCode ?? 0,
+        ...(result.exitCode == null ? { terminalStateVerified: false } : {}),
+      };
     } catch (error) {
       if (error instanceof TimeoutError) {
         yield {
           type: "stderr",
           data: `command timed out after ${timeoutMs} ms\n`,
         };
-        yield { type: "exit", code: 124 };
+        yield { type: "exit", code: 124, terminalStateVerified: false };
         return;
+      }
+      if (
+        error instanceof CommandExitError &&
+        Number.isInteger(error.exitCode) &&
+        error.exitCode !== 0
+      ) {
+        throw new SandboxCommandExitError(error.exitCode, error);
       }
       throw error;
     }

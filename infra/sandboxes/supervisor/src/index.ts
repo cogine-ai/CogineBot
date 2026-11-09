@@ -436,6 +436,7 @@ app.post("/computers/:id/exec", async (c) => {
         type: "stdout" | "stderr" | "exit";
         data?: string;
         code?: number;
+        terminalStateVerified?: boolean;
       }) => {
         if (closed) return;
         try {
@@ -470,7 +471,11 @@ app.post("/computers/:id/exec", async (c) => {
         } else if (result.stderr.endsWith(timeoutNote) && !streamedStderr.endsWith(timeoutNote)) {
           send({ type: "stderr", data: timeoutNote });
         }
-        send({ type: "exit", code: result.code });
+        send({
+          type: "exit",
+          code: result.code,
+          terminalStateVerified: result.terminalStateVerified,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         send({ type: "stderr", data: message });
@@ -1993,7 +1998,7 @@ async function runContainerCommand(
     /** Live stdout/stderr. The returned buffers are still the full demuxed result. */
     onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void;
   } = {},
-): Promise<{ stdout: string; stderr: string; code: number }> {
+): Promise<{ stdout: string; stderr: string; code: number; terminalStateVerified: boolean }> {
   if (options.stdin !== undefined && !options.signal) throw new Error("stdin requires a signal");
   options.signal?.throwIfAborted();
   const timeoutMs = options.timeoutMs;
@@ -2065,6 +2070,7 @@ async function runContainerCommand(
       ? `${output.stderr}${output.stderr.endsWith("\n") || output.stderr === "" ? "" : "\n"}command timed out after ${timeoutMs} ms\n`
       : output.stderr,
     code,
+    terminalStateVerified: inspect.Running === false && Number.isInteger(inspect.ExitCode),
   };
 }
 

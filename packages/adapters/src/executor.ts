@@ -6849,7 +6849,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const trusted = await trust.loadTrustedConnectors();
             for (const key of connectorTrusts) trusted.add(key);
           }
-          const persistEffectResult = (result: unknown, connectorOutcome?: "result" | "error") =>
+          const persistEffectResult = (result: unknown, outcome?: "result" | "error") =>
             applied
               ? completeEffect(
                   deps,
@@ -6857,14 +6857,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   claimedEffect ? "executing" : "intended",
                   result,
                   claimedApproval && run.origin === "bot_peer"
-                    ? approvedActionReceipt(result, connectorOutcome)
+                    ? approvedActionReceipt(result, outcome)
                     : undefined,
                 )
               : Promise.resolve(true);
-          const finish = async (result: unknown, connectorOutcome?: "result" | "error") =>
-            (await persistEffectResult(result, connectorOutcome))
-              ? result
-              : uncertainEffectResult(name);
+          const finish = async (result: unknown, outcome?: "result" | "error") =>
+            (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -7205,6 +7203,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               exitCode: null,
               output: "",
             });
+            let terminalExitCode: number | undefined;
             try {
               let latestOutput = "";
               let lastPublishedAt = 0;
@@ -7266,6 +7265,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
                 {
                   secrets: runSecrets,
+                  onVerifiedExit: (code) => {
+                    terminalExitCode = code;
+                  },
                   onOutput: (snapshot) => {
                     const output = commandOutput(snapshot, true);
                     if (output) publishRunning(output);
@@ -7292,7 +7294,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   running: true,
                   notice: SHELL_STILL_RUNNING_NOTICE,
                 });
-                if (isRunningShellCommand(returned)) observer?.onShellStillRunning?.(completion);
+                if (isRunningShellCommand(returned)) {
+                  observer?.onShellStillRunning?.(completion);
+                  if (claimedApproval && run.origin === "bot_peer" && applied) {
+                    // Update the card after a verified exit, retaining the already-returned tool result.
+                    const effectId = applied.effect.id;
+                    void completion
+                      .catch(() => undefined)
+                      .then(async () => {
+                        if (terminalExitCode === undefined) return;
+                        const updated = await deps.prisma.externalEffect.updateMany({
+                          where: {
+                            id: effectId,
+                            runId,
+                            spaceId: run.spaceId,
+                            status: "completed",
+                            approvalReceipt: { equals: { state: "unknown" } },
+                          },
+                          data: {
+                            approvalReceipt: {
+                              state: terminalExitCode === 0 ? "succeeded" : "failed",
+                            },
+                          },
+                        });
+                        if (updated.count === 1) {
+                          await deps.events.notifyDelegatedApprovalParent(runId);
+                        }
+                      })
+                      .catch(() => undefined);
+                  }
+                }
                 return returned;
               }
               clearPublishTimer();
@@ -7303,17 +7334,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 exitCode: redacted.code,
                 output: commandOutput(redacted, false).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
-              return finish(redacted);
+              if (terminalExitCode === undefined) return finish(redacted);
+              return finish(redacted, terminalExitCode === 0 ? "result" : "error");
             } catch (error) {
+              const message = redactSecrets(
+                error instanceof Error ? error.message : "command failed",
+                runSecrets,
+              );
               await appendComputerCommand({
                 ...commandEvent,
                 status: "done",
-                exitCode: 1,
-                output: redactSecrets(
-                  error instanceof Error ? error.message : "command failed",
-                  runSecrets,
-                ).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
+                exitCode: terminalExitCode ?? 1,
+                output: message.slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
+              if (
+                terminalExitCode !== undefined &&
+                terminalExitCode !== 0 &&
+                claimedApproval &&
+                run.origin === "bot_peer"
+              ) {
+                await persistEffectResult({ error: message }, "error").catch(() => undefined);
+              }
               throw error;
             }
           }

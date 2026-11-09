@@ -67,6 +67,7 @@ interface BoxCommandResult {
   stderr: string;
   exitCode: number;
   timedOut: boolean;
+  terminalStateVerified?: false;
 }
 
 export class BoxSandboxProvider implements SandboxProvider {
@@ -273,21 +274,25 @@ export class BoxSandboxProvider implements SandboxProvider {
       );
       if (context.signal.aborted) {
         yield { type: "stderr", data: "command aborted\n" };
-        yield { type: "exit", code: 130 };
+        yield { type: "exit", code: 130, terminalStateVerified: false };
         return;
       }
       if (result.stdout) yield { type: "stdout", data: result.stdout };
       if (result.timedOut) {
         yield { type: "stderr", data: `command timed out after ${timeoutMs} ms\n` };
-        yield { type: "exit", code: 124 };
+        yield { type: "exit", code: 124, terminalStateVerified: false };
         return;
       }
       if (result.stderr) yield { type: "stderr", data: result.stderr };
-      yield { type: "exit", code: result.exitCode };
+      yield {
+        type: "exit",
+        code: result.exitCode,
+        ...(result.terminalStateVerified === false ? { terminalStateVerified: false } : {}),
+      };
     } catch (error) {
       if (context.signal.aborted || isAbortError(error)) {
         yield { type: "stderr", data: "command aborted\n" };
-        yield { type: "exit", code: 130 };
+        yield { type: "exit", code: 130, terminalStateVerified: false };
         return;
       }
       throw error;
@@ -679,6 +684,7 @@ export class BoxSandboxProvider implements SandboxProvider {
           stderr: status.stderr,
           exitCode: status.exitCode ?? 1,
           timedOut: false,
+          ...(status.exitCode == null ? { terminalStateVerified: false } : {}),
         };
       }
       if (Date.now() >= deadline) {
@@ -818,6 +824,7 @@ function commandResponse(response: CommandResponse): BoxCommandResult {
     stderr: response.stderr,
     exitCode: response.exitCode ?? 1,
     timedOut: response.timedOut,
+    ...(response.exitCode == null ? { terminalStateVerified: false } : {}),
   };
 }
 

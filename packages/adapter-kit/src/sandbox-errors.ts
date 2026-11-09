@@ -1,5 +1,16 @@
 import { COMPUTER_RATE_LIMITED_ERROR_MESSAGE } from "@rakazo/contracts";
 
+/** A provider reports a confirmed nonzero exit through its error channel. */
+export class SandboxCommandExitError extends Error {
+  constructor(
+    readonly exitCode: number,
+    cause: Error,
+  ) {
+    super(cause.message, { cause });
+    this.name = "SandboxCommandExitError";
+  }
+}
+
 /** The sandbox provider refused the request because an account rate limit or quota was hit. */
 export class SandboxRateLimitError extends Error {
   readonly code = "SANDBOX_RATE_LIMITED";

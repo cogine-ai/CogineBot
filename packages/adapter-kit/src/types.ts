@@ -111,7 +111,8 @@ export interface CommandRequest {
 export type ProcessEvent =
   | { type: "stdout"; data: string }
   | { type: "stderr"; data: string }
-  | { type: "exit"; code: number };
+  /** A fallback code preserves the command result without verifying termination. */
+  | { type: "exit"; code: number; terminalStateVerified?: false };
 
 export interface ScreenRequest {
   view: "stream" | "snapshot";

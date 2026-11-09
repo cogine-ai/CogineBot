@@ -65,6 +65,39 @@ async function snapshot(id: string, screen: string, lease: string, home = "home"
   });
 }
 
+it.each([
+  { ExitCode: 0, Running: false, verified: true },
+  { ExitCode: 2, Running: false, verified: true },
+  { ExitCode: 0, Running: true, verified: false },
+  { ExitCode: null, Running: false, verified: false },
+])("preserves exec terminal evidence %j", async ({ ExitCode, Running, verified }) => {
+  mock.exec.mockResolvedValueOnce({
+    start: async () => new PassThrough().end(),
+    inspect: async () => ({ ExitCode, Running }),
+  });
+  const response = await supervisorApp.request("/computers/command-fixture/exec", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+    },
+    body: JSON.stringify({ argv: ["true"] }),
+  });
+  expect(response.status).toBe(200);
+  expect(
+    (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+  ).toContainEqual({
+    type: "exit",
+    code: ExitCode ?? 0,
+    terminalStateVerified: verified,
+  });
+});
+
 const browserCommands = ["navigate", "act", "snapshot"] as const;
 
 async function browserRequest(id: string, command: (typeof browserCommands)[number]) {

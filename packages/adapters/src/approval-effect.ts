@@ -559,7 +559,7 @@ export async function completeExternalEffect(
 /** Translate the executed tool's receipt without changing the replayed tool result. */
 export function approvedActionReceipt(
   result: unknown,
-  connectorOutcome?: "result" | "error",
+  outcome?: "result" | "error",
 ): ApprovalReceipt {
   const bodies: Record<string, unknown>[] = [];
   const pending = [result];
@@ -601,7 +601,7 @@ export function approvedActionReceipt(
   )
     return { state: "unknown" };
   if (
-    connectorOutcome === "error" ||
+    outcome === "error" ||
     bodies.some(
       (body) =>
         body.error ||
@@ -614,7 +614,7 @@ export function approvedActionReceipt(
   )
     return { state: "failed" };
   const succeeded =
-    connectorOutcome === "result" ||
+    outcome === "result" ||
     bodies.some((body) => body?.ok === true || body?.success === true || body?.successful === true);
   if (!succeeded) return { state: "unknown" };
   const links = new Set<string>();
