@@ -3,6 +3,7 @@ import type {
   AgentContextStrategy,
   CacheCapabilities,
   ToolResultHistoryReference,
+  WebFetchResult,
 } from "@rakazo/adapter-kit";
 
 import {
@@ -20,6 +21,7 @@ import {
   mcpToolResultRoute,
   toolCallIdentity,
 } from "./verbatim-mcp-result.js";
+import { MAX_WEB_FETCH_OFFSET, pageWindow } from "./web-limits.js";
 
 export type ContextStrategy = AgentContextStrategy;
 export interface ContextMessage {
@@ -573,6 +575,82 @@ interface ToolResultBoundOptions {
   afterUse?: boolean;
 }
 
+type OffsetWebPage = WebFetchResult & { offset: number };
+
+function isOffsetWebPage(value: unknown): value is OffsetWebPage {
+  if (!value || typeof value !== "object") return false;
+  const page = value as Partial<OffsetWebPage>;
+  return (
+    typeof page.url === "string" &&
+    typeof page.title === "string" &&
+    typeof page.text === "string" &&
+    typeof page.truncated === "boolean" &&
+    typeof page.offset === "number" &&
+    Number.isInteger(page.offset) &&
+    page.offset >= 0 &&
+    page.offset <= MAX_WEB_FETCH_OFFSET
+  );
+}
+
+/** Keep an unread page's contiguous prefix and advance only by the text delivered. */
+function shortenWebFetchPage(
+  original: unknown,
+  size: number,
+  wrap: (value: unknown) => unknown,
+  trustedEnvelope: boolean,
+): unknown {
+  const envelope =
+    !isOffsetWebPage(original) && original && typeof original === "object" && "result" in original
+      ? original
+      : undefined;
+  const page = envelope ? envelope.result : original;
+  if (!isOffsetWebPage(page)) return undefined;
+  const project = (result: WebFetchResult) =>
+    wrap(envelope && trustedEnvelope ? { ...envelope, result } : result);
+  let title = truncatePlainText(page.title, Math.min(1_000, Math.floor(size / 4)));
+  const full = project({ ...page, title });
+  if (JSON.stringify(full).length <= size) return full;
+
+  const maxOffset =
+    typeof page.maxOffset === "number" && Number.isInteger(page.maxOffset)
+      ? page.maxOffset
+      : page.truncated && page.nextOffset === undefined
+        ? page.offset
+        : MAX_WEB_FETCH_OFFSET;
+  // Reserve space for the largest possible continuation so the budget comparison stays monotone.
+  const largestNext = Math.min(MAX_WEB_FETCH_OFFSET, maxOffset, page.offset + page.text.length - 1);
+  const fits = (length: number) =>
+    JSON.stringify(
+      project({
+        ...page,
+        title,
+        text: truncatePlainText(page.text, length),
+        truncated: true,
+        nextOffset: largestNext > page.offset ? largestNext : undefined,
+      }),
+    ).length <= size;
+  if (!fits(2)) {
+    title = "";
+    const bodyWithoutTitle = project({ ...page, title });
+    if (JSON.stringify(bodyWithoutTitle).length <= size) return bodyWithoutTitle;
+  }
+  let low = 0;
+  let high = Math.max(0, Math.min(size, page.text.length - 1));
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle - 1;
+  }
+  // The exact first character can still fit when reserving the largest cursor leaves no room.
+  const firstLength = (page.text.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+  const window = pageWindow(page.text, Math.max(low, firstLength), page.offset, maxOffset);
+  if (!window.text) return null;
+  const result = window.truncated
+    ? project({ ...page, title, text: window.text, truncated: true, nextOffset: window.nextOffset })
+    : project({ ...page, title });
+  return JSON.stringify(result).length <= size ? result : null;
+}
+
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
 export function boundToolResultText(
   source: string,
@@ -656,6 +734,12 @@ export function boundToolResult(
         ? { ...original, ...evidence }
         : { result: original, ...evidence };
     if (JSON.stringify(complete).length <= size) return encode(complete);
+  }
+  if (tool.name === "web_fetch" && !tool.afterUse) {
+    const page = shortenWebFetchPage(original, size, wrap, trustedView);
+    if (page === null)
+      return encode({ contextTruncated: true, error: "budget_error", ...evidence });
+    if (page !== undefined) return encode(page);
   }
   const overhead = JSON.stringify(wrap({})).length;
   try {

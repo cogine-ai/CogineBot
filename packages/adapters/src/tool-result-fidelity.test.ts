@@ -50,6 +50,156 @@ describe("tool result fidelity", () => {
     },
   );
 
+  it("advances an unread web page only by the contiguous text that fits the model budget", () => {
+    const page = {
+      url: "https://example.test/doc",
+      title: "Fixture",
+      text: '"\n\u0000😀'.repeat(6_000),
+      offset: 101,
+      truncated: false,
+    };
+    const serialized = serializeToolResult(page, "current", "web_fetch", {}, reference);
+    const result = parse(serialized);
+    const first = result.result as typeof page & { nextOffset: number };
+    expect(first).toMatchObject({ offset: 101, truncated: true });
+    expect(first.text.length).toBeGreaterThan(0);
+    expect(first.text.length).toBeLessThan(page.text.length);
+    expect(first.text).toBe(page.text.slice(0, first.text.length));
+    expect(first.text).not.toMatch(/[\uD800-\uDBFF]$/);
+    expect(first.nextOffset).toBe(101 + first.text.length);
+    expect(result.historyReference).toEqual(reference);
+
+    const squeezed = parse(
+      boundToolResultText(
+        serialized,
+        600,
+        {
+          name: "web_fetch",
+          retained: true,
+          wrapped: true,
+        },
+        reference,
+      ),
+      600,
+    );
+    const shorter = squeezed.result as typeof first;
+    expect(shorter.text.length).toBeGreaterThan(0);
+    expect(shorter.text.length).toBeLessThan(first.text.length);
+    expect(shorter.text).toBe(page.text.slice(0, shorter.text.length));
+    expect(shorter.nextOffset).toBe(101 + shorter.text.length);
+    expect(squeezed.historyReference).toEqual(reference);
+
+    const restored = parse(
+      boundToolResultText(serialized, 600, { name: "web_fetch" }, reference),
+      600,
+    );
+    expect(restored.result).toMatchObject({ text: shorter.text, nextOffset: shorter.nextOffset });
+    expect(restored.historyReference).toEqual(reference);
+  });
+
+  it.each([105, 1_000, undefined])(
+    "keeps the read ceiling %s when shortening an unread web result",
+    (maxOffset) => {
+      const page = {
+        url: "https://example.test/doc",
+        title: "Fixture",
+        text: "body ".repeat(1_000),
+        offset: 100,
+        truncated: true,
+        ...(maxOffset === undefined ? {} : { maxOffset }),
+      };
+      const result = parse(
+        boundToolResultText(JSON.stringify(page), 480, {
+          name: "web_fetch",
+          fresh: true,
+        }),
+        480,
+      );
+      expect(result.result).toMatchObject({ offset: 100, truncated: true });
+      const shortened = result.result as typeof page & { nextOffset?: number };
+      expect(shortened.maxOffset).toBe(maxOffset);
+      if (maxOffset === 1_000) expect(shortened.nextOffset).toBe(100 + shortened.text.length);
+      else expect(shortened.nextOffset).toBeUndefined();
+    },
+  );
+
+  it("keeps a readable web prefix when an escaped title crowds the result budget", () => {
+    const page = {
+      url: `https://example.test/${"a".repeat(86)}`,
+      title: '"'.repeat(1_000),
+      text: "body ".repeat(1_000),
+      offset: 0,
+      truncated: false,
+    };
+    const bounded = parse(
+      boundToolResultText(
+        JSON.stringify(page),
+        400,
+        {
+          name: "web_fetch",
+          fresh: true,
+        },
+        reference,
+      ),
+      400,
+    );
+    const result = bounded.result as typeof page & { nextOffset: number };
+    expect(result.text.length).toBeGreaterThan(0);
+    expect(result.text).toBe(page.text.slice(0, result.text.length));
+    expect(result.nextOffset).toBe(result.text.length);
+    expect(bounded.historyReference).toEqual(reference);
+  });
+
+  it.each([
+    ["a", 4_999],
+    ["😀", 500],
+  ] as const)(
+    "keeps the first %s when the exact prefix fits a tight context budget",
+    (prefix, trailing) => {
+      const page = {
+        url: "https://example.test/page",
+        title: "",
+        text: prefix + "a".repeat(trailing),
+        offset: 0,
+        truncated: false,
+      };
+      const expected = {
+        contextTruncated: true,
+        historyUnavailable: true,
+        result: { ...page, text: prefix, truncated: true, nextOffset: prefix.length },
+      };
+      const size = JSON.stringify(expected).length;
+      const result = parse(
+        boundToolResultText(JSON.stringify(page), size, {
+          name: "web_fetch",
+          fresh: true,
+        }),
+        size,
+      );
+      expect(result).toEqual(expected);
+    },
+  );
+
+  it("recognizes a fresh page before considering an optional result extension", () => {
+    const page = {
+      url: "https://example.test/page",
+      title: "Fixture",
+      text: "a".repeat(5_000),
+      offset: 0,
+      truncated: false,
+      result: { kind: "fixture" },
+    };
+    const result = parse(
+      boundToolResultText(JSON.stringify(page), 500, {
+        name: "web_fetch",
+        fresh: true,
+      }),
+      500,
+    ).result as typeof page & { nextOffset: number };
+    expect(result.text).toBe(page.text.slice(0, result.nextOffset));
+    expect(result.nextOffset).toBeGreaterThan(0);
+  });
+
   it("preserves JSON in every MCP text part and duplicated structured content", () => {
     const envelope = {
       content: [
