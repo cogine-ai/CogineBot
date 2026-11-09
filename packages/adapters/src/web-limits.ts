@@ -21,12 +21,10 @@ export function clampMaxChars(value: unknown): number {
 
 export function clampOffset(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  const offset = Math.floor(n);
-  if (offset > MAX_WEB_FETCH_OFFSET) {
+  if (n > MAX_WEB_FETCH_OFFSET) {
     throw new Error(`web_fetch can skip at most ${MAX_WEB_FETCH_OFFSET} characters.`);
   }
-  return offset;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 /** Bound a body that already starts at offset. Providers can set a lower continuation limit. */
@@ -35,15 +33,17 @@ export function pageWindow(
   maxChars: number,
   offset: number,
   maxOffset = MAX_WEB_FETCH_OFFSET,
-): { text: string; truncated: boolean; offset: number; nextOffset?: number } {
+): { text: string; truncated: boolean; offset: number; nextOffset?: number; maxOffset?: number } {
   const text = truncatePlainText(rest, maxChars);
   const truncated = text.length < rest.length;
   const next = offset + text.length;
+  const limit = Math.min(maxOffset, MAX_WEB_FETCH_OFFSET);
   return {
     text,
     truncated,
     offset,
-    ...(truncated && next > offset && next <= maxOffset ? { nextOffset: next } : {}),
+    ...(truncated && next > offset && next <= limit ? { nextOffset: next } : {}),
+    ...(limit < MAX_WEB_FETCH_OFFSET ? { maxOffset: limit } : {}),
   };
 }
 

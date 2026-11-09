@@ -11,7 +11,11 @@ import {
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
 import { BROWSER_ACT_KINDS } from "./browser-tools.js";
-import { MAX_WEB_FETCH_OFFSET } from "./web-limits.js";
+import {
+  DEFAULT_WEB_FETCH_MAX_CHARS,
+  MAX_WEB_FETCH_MAX_CHARS,
+  MAX_WEB_FETCH_OFFSET,
+} from "./web-limits.js";
 
 // The owner flag can land in process.env after static imports run (loadRootEnv
 // parses .env once the entry module is already executing), so the model-facing
@@ -584,12 +588,12 @@ export const builtinAgentTools: ConnectorTool[] = [
         url: { type: "string", description: "Page URL (http or https)." },
         maxChars: {
           type: "number",
-          description: "Max characters of body text (default 8000, max 50000).",
+          description: `Max characters of body text (default ${DEFAULT_WEB_FETCH_MAX_CHARS}, max ${MAX_WEB_FETCH_MAX_CHARS}).`,
         },
         offset: {
           type: "number",
           maximum: MAX_WEB_FETCH_OFFSET,
-          description: "Position in the extracted text. Use nextOffset from the previous page.",
+          description: `UTF-16 position in the extracted text (default 0, max ${MAX_WEB_FETCH_OFFSET}). Use nextOffset from the previous page.`,
         },
       },
       required: ["url"],

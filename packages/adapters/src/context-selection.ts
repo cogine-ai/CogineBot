@@ -597,27 +597,52 @@ function shortenWebFetchPage(
   original: unknown,
   size: number,
   wrap: (value: unknown) => unknown,
+  trustedEnvelope: boolean,
 ): unknown {
   const envelope =
     original && typeof original === "object" && "result" in original ? original : undefined;
   const page = envelope ? envelope.result : original;
   if (!isOffsetWebPage(page)) return undefined;
-  const title = truncatePlainText(page.title, Math.min(1_000, Math.floor(size / 4)));
-  const build = (limit: number) => {
-    const window = pageWindow(page.text, limit, page.offset);
-    const bounded = window.truncated ? { url: page.url, title, ...window } : { ...page, title };
-    return wrap(envelope ? { ...envelope, result: bounded } : bounded);
-  };
-  const full = build(page.text.length);
+  const project = (result: WebFetchResult) =>
+    wrap(envelope && trustedEnvelope ? { ...envelope, result } : result);
+  let title = truncatePlainText(page.title, Math.min(1_000, Math.floor(size / 4)));
+  const full = project({ ...page, title });
   if (JSON.stringify(full).length <= size) return full;
+
+  const maxOffset =
+    typeof page.maxOffset === "number" && Number.isInteger(page.maxOffset)
+      ? page.maxOffset
+      : page.truncated && page.nextOffset === undefined
+        ? page.offset
+        : MAX_WEB_FETCH_OFFSET;
+  // Reserve space for the largest possible continuation so the budget comparison stays monotone.
+  const largestNext = Math.min(MAX_WEB_FETCH_OFFSET, maxOffset, page.offset + page.text.length - 1);
+  const fits = (length: number) =>
+    JSON.stringify(
+      project({
+        ...page,
+        title,
+        text: truncatePlainText(page.text, length),
+        truncated: true,
+        nextOffset: largestNext > page.offset ? largestNext : undefined,
+      }),
+    ).length <= size;
+  if (!fits(2)) {
+    title = "";
+    const bodyWithoutTitle = project({ ...page, title });
+    if (JSON.stringify(bodyWithoutTitle).length <= size) return bodyWithoutTitle;
+  }
   let low = 0;
-  let high = Math.min(size, page.text.length);
+  let high = Math.max(0, Math.min(size, page.text.length - 1));
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (JSON.stringify(build(middle)).length <= size) low = middle;
+    if (fits(middle)) low = middle;
     else high = middle - 1;
   }
-  return truncatePlainText(page.text, low) ? build(low) : null;
+  const window = pageWindow(page.text, low, page.offset, maxOffset);
+  return window.text
+    ? project({ ...page, title, text: window.text, truncated: true, nextOffset: window.nextOffset })
+    : null;
 }
 
 /** A final model-facing bound. Structured results are never cut into partial JSON. */
@@ -705,7 +730,7 @@ export function boundToolResult(
     if (JSON.stringify(complete).length <= size) return encode(complete);
   }
   if (tool.name === "web_fetch" && !tool.afterUse) {
-    const page = shortenWebFetchPage(original, size, wrap);
+    const page = shortenWebFetchPage(original, size, wrap, trustedView);
     if (page === null)
       return encode({ contextTruncated: true, error: "budget_error", ...evidence });
     if (page !== undefined) return encode(page);

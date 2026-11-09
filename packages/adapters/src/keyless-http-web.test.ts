@@ -130,22 +130,25 @@ describe("keyless HTTP web provider", () => {
     expect(next).toMatchObject({ text: content.slice(first.nextOffset), truncated: false });
   });
 
-  it("rejects an excessive offset before network access", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const resolveHostname = vi.fn(publicResolver);
-    const provider = new KeylessHttpWebProvider({ fetch, resolveHostname });
-    await expect(
-      provider.fetch(
-        {
-          url: "https://example.test/doc",
-          offset: MAX_WEB_FETCH_OFFSET + 1,
-        },
-        ctx,
-      ),
-    ).rejects.toThrow(String(MAX_WEB_FETCH_OFFSET));
-    expect(fetch).not.toHaveBeenCalled();
-    expect(resolveHostname).not.toHaveBeenCalled();
-  });
+  it.each([MAX_WEB_FETCH_OFFSET + 1, MAX_WEB_FETCH_OFFSET + 0.5, Infinity])(
+    "rejects offset %s before network access",
+    async (offset) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const resolveHostname = vi.fn(publicResolver);
+      const provider = new KeylessHttpWebProvider({ fetch, resolveHostname });
+      await expect(
+        provider.fetch(
+          {
+            url: "https://example.test/doc",
+            offset,
+          },
+          ctx,
+        ),
+      ).rejects.toThrow(String(MAX_WEB_FETCH_OFFSET));
+      expect(fetch).not.toHaveBeenCalled();
+      expect(resolveHostname).not.toHaveBeenCalled();
+    },
+  );
 
   it("still checks the redirect destination during a continuation read", async () => {
     const url = "https://example.test/doc";
@@ -276,7 +279,15 @@ describe("web tool clamps", () => {
       truncated: true,
       offset: MAX_WEB_FETCH_OFFSET - 1,
     });
-    expect(pageWindow("abc", 2, 1, 2).nextOffset).toBeUndefined();
+    expect(pageWindow("abc", 2, 1, 2)).toEqual({
+      text: "ab",
+      truncated: true,
+      offset: 1,
+      maxOffset: 2,
+    });
+    expect(
+      pageWindow("abc", 2, MAX_WEB_FETCH_OFFSET, MAX_WEB_FETCH_OFFSET + 2).nextOffset,
+    ).toBeUndefined();
   });
 
   it("clamps maxResults and maxChars", () => {

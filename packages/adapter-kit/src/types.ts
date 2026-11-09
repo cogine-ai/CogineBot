@@ -1035,6 +1035,8 @@ export interface WebFetchResult {
   offset?: number;
   /** When truncated, the next position if the provider can read further. */
   nextOffset?: number;
+  /** A provider ceiling below the shared maximum, when it limits continuation. */
+  maxOffset?: number;
 }
 
 /** Page-level browser on the bot computer (DOM refs), not a hosted browser vendor. */

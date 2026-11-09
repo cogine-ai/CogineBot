@@ -88,6 +88,66 @@ describe("tool result fidelity", () => {
     expect(shorter.text).toBe(page.text.slice(0, shorter.text.length));
     expect(shorter.nextOffset).toBe(101 + shorter.text.length);
     expect(squeezed.historyReference).toEqual(reference);
+
+    const restored = parse(
+      boundToolResultText(serialized, 600, { name: "web_fetch" }, reference),
+      600,
+    );
+    expect(restored.result).toMatchObject({ text: shorter.text, nextOffset: shorter.nextOffset });
+    expect(restored.historyReference).toEqual(reference);
+  });
+
+  it.each([105, 1_000, undefined])(
+    "keeps the read ceiling %s when shortening an unread web result",
+    (maxOffset) => {
+      const page = {
+        url: "https://example.test/doc",
+        title: "Fixture",
+        text: "body ".repeat(1_000),
+        offset: 100,
+        truncated: true,
+        ...(maxOffset === undefined ? {} : { maxOffset }),
+      };
+      const result = parse(
+        boundToolResultText(JSON.stringify(page), 480, {
+          name: "web_fetch",
+          fresh: true,
+        }),
+        480,
+      );
+      expect(result.result).toMatchObject({ offset: 100, truncated: true });
+      const shortened = result.result as typeof page & { nextOffset?: number };
+      expect(shortened.maxOffset).toBe(maxOffset);
+      if (maxOffset === 1_000) expect(shortened.nextOffset).toBe(100 + shortened.text.length);
+      else expect(shortened.nextOffset).toBeUndefined();
+    },
+  );
+
+  it("keeps a readable web prefix when an escaped title crowds the result budget", () => {
+    const page = {
+      url: `https://example.test/${"a".repeat(86)}`,
+      title: '"'.repeat(1_000),
+      text: "body ".repeat(1_000),
+      offset: 0,
+      truncated: false,
+    };
+    const bounded = parse(
+      boundToolResultText(
+        JSON.stringify(page),
+        400,
+        {
+          name: "web_fetch",
+          fresh: true,
+        },
+        reference,
+      ),
+      400,
+    );
+    const result = bounded.result as typeof page & { nextOffset: number };
+    expect(result.text.length).toBeGreaterThan(0);
+    expect(result.text).toBe(page.text.slice(0, result.text.length));
+    expect(result.nextOffset).toBe(result.text.length);
+    expect(bounded.historyReference).toEqual(reference);
   });
 
   it("preserves JSON in every MCP text part and duplicated structured content", () => {
