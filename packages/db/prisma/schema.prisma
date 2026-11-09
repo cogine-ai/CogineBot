@@ -1344,6 +1344,8 @@ model UsageRecord {
   model            String
   /// Actual connection used by this call; retained after credential deletion.
   modelCredentialId String?
+  costOwner         String?
+  providerRequestId String?
   /// Uncached input; cache buckets are additional, reasoning is a subset of output.
   inputTokens       Int?
   outputTokens      Int?
@@ -1353,8 +1355,11 @@ model UsageRecord {
   reasoningTokens   Int?
   totalTokens       Int?
   costUsd           Float?
+  openRouterFeeUsd   Float?
+  upstreamInferenceCostUsd Float?
   costSource        String?
   pricingVersion    String?
+  pricingSnapshot   Json?
   usageSource       String?
   callId            String? @unique
   operationId       String?

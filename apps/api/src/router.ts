@@ -164,6 +164,7 @@ import {
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
+  UsagePricingSnapshotSchema,
   usableModelId,
 } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
@@ -7278,6 +7279,12 @@ export function createRouter(deps: RouterDeps) {
           totalTokens: row.totalTokens,
           costUsd: row.costUsd,
           costSource: row.costSource,
+          providerRequestId: row.providerRequestId,
+          pricingSnapshot: UsagePricingSnapshotSchema.safeParse(row.pricingSnapshot).data ?? null,
+          openRouterFeeUsd: row.openRouterFeeUsd,
+          upstreamInferenceCostUsd: row.upstreamInferenceCostUsd,
+          costOwner:
+            row.costOwner === "deployment" || row.costOwner === "user" ? row.costOwner : null,
           pricingVersion: row.pricingVersion,
           usageSource: row.usageSource,
           callId: row.callId,

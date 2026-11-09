@@ -915,6 +915,19 @@ export const ArtifactWithContentSchema = ArtifactSchema.extend({
 });
 export type ArtifactWithContent = z.infer<typeof ArtifactWithContentSchema>;
 
+const UsageRatesSchema = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cacheRead: z.number().nonnegative(),
+  cacheWrite: z.number().nonnegative(),
+});
+export const UsagePricingSnapshotSchema = UsageRatesSchema.extend({
+  tiers: z
+    .array(UsageRatesSchema.extend({ inputTokensAbove: z.number().nonnegative() }))
+    .optional(),
+});
+export type UsagePricingSnapshot = z.infer<typeof UsagePricingSnapshotSchema>;
+
 export const UsageRecordSchema = z.object({
   id: Id,
   botId: Id.nullable(),
@@ -930,6 +943,11 @@ export const UsageRecordSchema = z.object({
   totalTokens: z.number().int().nullable().optional(),
   costUsd: z.number().nonnegative().nullable().optional(),
   costSource: z.string().nullable().optional(),
+  providerRequestId: z.string().nullable().optional(),
+  pricingSnapshot: UsagePricingSnapshotSchema.nullable().optional(),
+  openRouterFeeUsd: z.number().nonnegative().nullable().optional(),
+  upstreamInferenceCostUsd: z.number().nonnegative().nullable().optional(),
+  costOwner: z.enum(["deployment", "user"]).nullable().optional(),
   pricingVersion: z.string().nullable().optional(),
   usageSource: z.string().nullable().optional(),
   callId: z.string().nullable().optional(),
