@@ -14,6 +14,8 @@ const stagingFaults = vi.hoisted(() => ({
   create: undefined as Error | undefined,
   write: undefined as Error | undefined,
   cleanup: undefined as Error | undefined,
+  cleanupTarget: undefined as string | undefined,
+  failedCleanups: 0,
   diskChecksUntilFull: undefined as number | undefined,
   directories: new Set<string>(),
   writeTargets: [] as string[],
@@ -42,8 +44,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return actual.open(...args);
     },
     rm: async (...args: Parameters<typeof actual.rm>) => {
-      if (stagingFaults.directories.has(String(args[0])) && stagingFaults.cleanup)
+      if (stagingFaults.cleanupTarget === String(args[0]) && stagingFaults.cleanup) {
+        stagingFaults.failedCleanups++;
         throw stagingFaults.cleanup;
+      }
       return actual.rm(...args);
     },
     statfs: async (target: string) => {
@@ -64,8 +68,20 @@ function clearStagingFaults() {
   stagingFaults.create = undefined;
   stagingFaults.write = undefined;
   stagingFaults.cleanup = undefined;
+  stagingFaults.cleanupTarget = undefined;
+  stagingFaults.failedCleanups = 0;
   stagingFaults.diskChecksUntilFull = undefined;
   stagingFaults.writeTargets = [];
+}
+
+function failSaveCleanup(home: LocalAgentHomeStore, error: Error) {
+  stagingFaults.cleanup = error;
+  const createStaging = home.createStaging.bind(home);
+  vi.spyOn(home, "createStaging").mockImplementation(async () => {
+    const staging = await createStaging();
+    stagingFaults.cleanupTarget = staging.path;
+    return staging;
+  });
 }
 
 const context = {
@@ -664,14 +680,36 @@ describe("computer recovery preserves live work", () => {
     expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
   });
 
+  it("restores the committed revision even if staging cleanup fails", async () => {
+    const { deps, row } = await fixture();
+    failSaveCleanup(deps.home, new Error("Synthetic staging cleanup failure"));
+    const destroy = vi.spyOn(deps.sandbox, "destroy");
+    const provision = vi.spyOn(deps.sandbox, "provision");
+
+    const recovered = await replaceComputer(deps, row.id, "recover", context);
+
+    expect(recovered.fresh).toBe(true);
+    expect(stagingFaults.failedCleanups).toBe(1);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(provision).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({
+      state: "running",
+      providerRef: recovered.providerRef,
+      homeRevision: expect.stringMatching(/^rev-/),
+    });
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+    ).toBe("live work");
+  });
+
   it.each([
     "mkdtemp ENOSPC",
     "disk reserve exhausted after export",
     "staged write ENOSPC",
-    "cleanup after export",
     "staged write with iterator return trap",
-    "staged write masked by cleanup",
-    "provider next masked by cleanup",
+    "staged write with cleanup failure",
+    "provider next with cleanup failure",
     "invalid portable path",
   ])("blocks recovery and retry after trusted local checkpoint staging: %s", async (stage) => {
     const { deps, row, first } = await fixture();
@@ -689,8 +727,7 @@ describe("computer recovery preserves live work", () => {
     let returnTraps = 0;
     if (stage === "mkdtemp ENOSPC") stagingFaults.create = localFailure;
     if (stage.startsWith("staged write")) stagingFaults.write = localFailure;
-    if (stage === "cleanup after export" || stage.includes("masked by cleanup"))
-      stagingFaults.cleanup = cleanupFailure;
+    if (stage.endsWith("cleanup failure")) failSaveCleanup(deps.home, cleanupFailure);
     if (stage === "staged write with iterator return trap") {
       exported.mockImplementation(async function* (...args) {
         try {
@@ -701,7 +738,7 @@ describe("computer recovery preserves live work", () => {
           throw returnFailure;
         }
       });
-    } else if (stage === "provider next masked by cleanup") {
+    } else if (stage === "provider next with cleanup failure") {
       exported.mockImplementation(async function* (...args) {
         for await (const file of exportWorkspace(...args)) {
           yield file;
@@ -724,21 +761,21 @@ describe("computer recovery preserves live work", () => {
           await expect(recovery).rejects.toThrow("Path escapes the computer workspace");
         else if (stage === "disk reserve exhausted after export")
           await expect(recovery).rejects.toMatchObject({ name: "WorkspaceTooLargeError" });
-        else if (stagingFaults.cleanup) await expect(recovery).rejects.toBe(cleanupFailure);
+        else if (stage === "provider next with cleanup failure")
+          await expect(recovery).rejects.toBe(iteratorFailure);
         else await expect(recovery).rejects.toBe(localFailure);
         expect(row).toMatchObject({
           state: "running",
           providerRef: first.providerRef,
-          ...(stage === "cleanup after export" ? {} : { homeRevision: "saved" }),
+          homeRevision: "saved",
         });
         expect(destroy).not.toHaveBeenCalled();
         expect(provision).not.toHaveBeenCalled();
         expect(
           new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context)),
         ).toBe("live work");
-        expect(await deps.home.readFile("bot", "notes.txt", context)).toBe(
-          stage === "cleanup after export" ? "live work" : "checkpoint",
-        );
+        expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+        if (stage.endsWith("cleanup failure")) expect(stagingFaults.failedCleanups).toBe(attempt);
         if (stage === "staged write with iterator return trap") expect(returnTraps).toBe(attempt);
         if (stage === "invalid portable path") expect(stagingFaults.writeTargets).toEqual([]);
       }
