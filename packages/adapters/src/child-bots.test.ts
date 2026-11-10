@@ -1882,6 +1882,7 @@ describe("archiveBot", () => {
     const archivedAt = new Date("2026-08-16T12:00:00.000Z");
     const updatedAt = new Date("2026-08-16T12:00:00.000Z");
     const updateComputer = vi.fn().mockResolvedValue({});
+    const findCheckpoint = vi.fn().mockResolvedValue({ state: "running", updatedAt });
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
         ...noGroupMemberships(),
@@ -1913,7 +1914,7 @@ describe("archiveBot", () => {
     const prisma = {
       computer: {
         findUnique: vi.fn().mockResolvedValue(dedicated),
-        findFirst: vi.fn().mockResolvedValue({ state: "running", updatedAt }),
+        findFirst: findCheckpoint,
         update: updateComputer,
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1938,11 +1939,21 @@ describe("archiveBot", () => {
           jobs: { cancel: vi.fn() } as unknown as JobPublisher,
         },
         { id: "bot-1", spaceId: "workspace-1", name: "Researcher", archivedAt },
-        context,
+        { ...context, botId: "parent", runId: "parent-run", screenLeaseId: "parent-run:3" },
       ),
     ).rejects.toThrow("stop failed");
 
-    expect(stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ providerRef: "provider-1" }),
+      expect.objectContaining({ botId: "bot-1", runId: undefined, screenLeaseId: undefined }),
+    );
+    expect(findCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          executionLeases: { none: { expiresAt: { gt: expect.any(Date) } } },
+        }),
+      }),
+    );
     expect(updateComputer).not.toHaveBeenCalled();
   });
 

@@ -665,7 +665,18 @@ describe("delegated shell approval receipts", () => {
         .spyOn(DbModule, "authorizeCollaborationRunStart")
         .mockResolvedValue({ allowed: true, notices: [] });
       Object.assign(f.runRecord, { origin: "bot_peer" });
-      Object.assign(f.prisma, { computer: { updateMany: vi.fn(async () => ({ count: 1 })) } });
+      Object.assign(f.prisma, {
+        $queryRaw: vi.fn(async () => [{ id: "computer-1" }]),
+        computer: {
+          findFirst: vi.fn(async () => ({
+            id: "computer-1",
+            state: "running",
+            homeRevision: "empty",
+            updatedAt: new Date(),
+          })),
+          updateMany: vi.fn(async () => ({ count: 1 })),
+        },
+      });
       const args = { command: "printf fixture" };
       f.setCalls([{ args, executionId: "first" }]);
       try {

@@ -80,6 +80,25 @@ async function pathExists(target: string) {
 }
 
 describe("desktop sandbox write containment without O_NOFOLLOW", () => {
+  it("rejects a streamed file whose other hard-linked name is outside the workspace", async () => {
+    const { root, desktop, computer } = await fixture("stream-hardlink");
+    const outside = path.join(root, "outside.txt");
+    await writeFile(outside, "private outside bytes");
+    await link(outside, path.join(computer.providerRef, "notes.txt"));
+    const files = desktop
+      .exportWorkspace(computer, ctx, { maxBytes: 100, maxFiles: 1 })
+      [Symbol.asyncIterator]();
+    try {
+      const first = await files.next();
+      if (first.done || !("body" in first.value)) throw new Error("Expected a streamed file");
+      await expect(first.value.body[Symbol.asyncIterator]().next()).rejects.toThrow(
+        "Path escapes the computer workspace",
+      );
+    } finally {
+      await files.return?.();
+    }
+  });
+
   it("does not read a substituted file during a streamed export", async () => {
     const { root, desktop, computer } = await fixture("stream-contained");
     const outside = path.join(root, "outside.txt");

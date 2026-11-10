@@ -529,8 +529,14 @@ export async function archiveBot(
     : null;
   if (currentDedicated?.providerRef && currentDedicated.state === "running") {
     const ref = toComputerRef(currentDedicated);
-    await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, context);
-    await deps.sandbox.stop(ref, context);
+    const childContext = {
+      ...context,
+      botId: bot.id,
+      runId: undefined,
+      screenLeaseId: undefined,
+    };
+    await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, childContext);
+    await deps.sandbox.stop(ref, childContext);
     await deps.prisma.computer.updateMany({
       where: {
         id: currentDedicated.id,

@@ -133,7 +133,7 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     }
   }
 
-  private async lockHome(botId: string) {
+  private async lockHome(botId: string, mode: "shared" | "exclusive" = "exclusive") {
     this.botDir(botId);
     const directory = path.join(this.root, "workspace-locks");
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -144,7 +144,17 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     try {
       while (true) {
         try {
-          database.exec("BEGIN IMMEDIATE");
+          if (mode === "shared") {
+            database.exec("BEGIN");
+            try {
+              database.exec("SELECT name FROM sqlite_schema LIMIT 1");
+            } catch (error) {
+              database.exec("ROLLBACK");
+              throw error;
+            }
+          } else {
+            database.exec("BEGIN EXCLUSIVE");
+          }
           return () => database.close();
         } catch (error) {
           if (!isBusyLock(error) || performance.now() >= deadline) throw error;
@@ -154,6 +164,21 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     } catch (error) {
       database.close();
       throw error;
+    }
+  }
+
+  private async lockReadableHome(botId: string) {
+    while (true) {
+      const unlock = await this.lockHome(botId, "shared");
+      try {
+        if (!(await this.needsRecovery(botId))) return unlock;
+      } catch (error) {
+        unlock();
+        throw error;
+      }
+      unlock();
+      // Finishing a pending publication is a write, so do not upgrade a held read lock.
+      await this.withHomeLock(botId, () => this.recoverInterruptedCommit(botId));
     }
   }
 
@@ -381,10 +406,8 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     _context: AdapterContext,
     { directory = "", skipHidden = false }: { directory?: string; skipHidden?: boolean } = {},
   ): AsyncIterable<PortableFile> {
-    await this.waitForBotWrite(botId);
-    const unlock = await this.lockHome(botId);
+    const unlock = await this.lockReadableHome(botId);
     try {
-      await this.recoverInterruptedCommit(botId);
       const dir = this.botDir(botId);
       // Resolve the configured store first so a linked home cannot redefine containment.
       const storeRoot = await resolveExportPath(this.root);
@@ -406,12 +429,11 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     _context: AdapterContext,
     options?: { maxBytes?: number },
   ): Promise<string> {
-    await this.waitForBotWrite(botId);
-    const handle = await this.withHomeLock(botId, async () => {
-      await this.recoverInterruptedCommit(botId);
+    const unlock = await this.lockReadableHome(botId);
+    const handle = await (async () => {
       const full = await containedExistingPath(this.botDir(botId), filePath);
       return open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
-    });
+    })().finally(unlock);
     try {
       if (options?.maxBytes !== undefined) {
         const info = await handle.stat();
@@ -448,9 +470,8 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   }
 
   async list(botId: string, dirPath: string, _context: AdapterContext) {
-    await this.waitForBotWrite(botId);
-    return this.withHomeLock(botId, async () => {
-      await this.recoverInterruptedCommit(botId);
+    const unlock = await this.lockReadableHome(botId);
+    try {
       const root = this.botDir(botId);
       const candidate = safeJoin(root, dirPath);
       const full = await ensureContainedDirectory(root, candidate);
@@ -468,7 +489,9 @@ export class LocalAgentHomeStore implements AgentHomeStore {
         }),
       );
       return listed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-    });
+    } finally {
+      unlock();
+    }
   }
 
   private markerPath(botId: string) {
@@ -497,17 +520,21 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     }
   }
 
-  private async recoverInterruptedCommit(botId: string) {
+  private async needsRecovery(botId: string) {
     const dest = this.botDir(botId);
-    const previous = `${dest}.previous`;
-    if (
+    return (
       (await pathExists(this.pendingPath(botId))) ||
-      ((await pathExists(previous)) && !(await pathExists(dest)))
-    ) {
-      if (this.prisma) await this.settleCheckpoint(botId, this.prisma);
-      else if (await pathExists(this.pendingPath(botId)))
-        throw new Error("The saved workspace needs to be reconciled");
-      else await this.recoverLegacyBackup(dest, previous);
+      ((await pathExists(`${dest}.previous`)) && !(await pathExists(dest)))
+    );
+  }
+
+  private async recoverInterruptedCommit(botId: string) {
+    if (await pathExists(this.pendingPath(botId))) {
+      if (!this.prisma) throw new Error("The saved workspace needs to be reconciled");
+      await this.settleCheckpoint(botId, this.prisma);
+    } else {
+      const dest = this.botDir(botId);
+      await this.recoverLegacyBackup(dest, `${dest}.previous`);
     }
   }
 

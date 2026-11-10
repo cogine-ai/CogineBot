@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalAgentHomeStore } from "./home.js";
 
@@ -81,6 +82,37 @@ async function exported(store: LocalAgentHomeStore, directory = "") {
 }
 
 describe("LocalAgentHomeStore path containment", () => {
+  it("keeps the saved home readable while a restore consumer waits", async () => {
+    const { root, store, home } = await fixture();
+    await writeFile(path.join(home, "notes.txt"), "saved notes");
+    const exportStream = store.exportHome("bot-1", context)[Symbol.asyncIterator]();
+    const secondStore = new LocalAgentHomeStore(root);
+    try {
+      expect(await exportStream.next()).toMatchObject({ value: { path: "notes.txt" } });
+      await expect(secondStore.readFile("bot-1", "notes.txt", context)).resolves.toBe(
+        "saved notes",
+      );
+      await expect(secondStore.list("bot-1", "", context)).resolves.toMatchObject([
+        { path: "notes.txt", kind: "file" },
+      ]);
+    } finally {
+      await exportStream.return?.();
+    }
+  });
+
+  it("recovers a legacy backup without consulting the computer table", async () => {
+    const { root, home } = await fixture();
+    const transact = vi.fn();
+    const store = new LocalAgentHomeStore(root, {
+      $transaction: transact,
+    } as unknown as PrismaClient);
+    await writeFile(path.join(home, "notes.txt"), "legacy backup");
+    await rename(home, `${home}.previous`);
+
+    await expect(store.readFile("bot-1", "notes.txt", context)).resolves.toBe("legacy backup");
+    expect(transact).not.toHaveBeenCalled();
+  });
+
   it("reaps only stale owned save directories on its data volume", async () => {
     const { root, store } = await fixture();
     const staging = await store.createStaging();
