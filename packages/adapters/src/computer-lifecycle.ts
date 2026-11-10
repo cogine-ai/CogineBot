@@ -26,10 +26,12 @@ import {
 } from "./computer-control.js";
 import {
   confirmComputerStop,
+  inspectComputerPower,
   isSandboxDamaged,
   isSandboxUnsafeStop,
   markClaimedComputerStop,
-  matchesComputerProvider,
+  matchesComputerProvisionRoute,
+  needsProviderIdentityProof,
   requestClaimedComputerStop,
   saveComputerBeforeStop,
   stoppedComputerControl,
@@ -250,21 +252,6 @@ export async function provisionComputer(
   if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
     throw new ComputerBusyError();
   await guardComputerBoot(deps.prisma, existing, context);
-  if (existing.providerRef && !matchesComputerProvider(deps.sandbox, toComputerRef(existing))) {
-    await deps.prisma.computer.updateMany({
-      where: {
-        id: computerId,
-        state: existing.state,
-        kind: existing.kind,
-        providerRef: existing.providerRef,
-        providerAuthority: existing.providerAuthority,
-        updatedAt: existing.updatedAt,
-        stopRequestedAt: null,
-      },
-      data: { state: "quarantined", ...stoppedComputerControl },
-    });
-    throw new ComputerRecoveryRequiredError();
-  }
   if (existing.controlLeaseId && !hasActiveComputerControl(existing)) {
     await expireComputerControl(deps, existing.id, existing.controlLeaseId);
     existing = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
@@ -272,6 +259,37 @@ export async function provisionComputer(
     if (existing.controlLeaseId && !hasActiveComputerControl(existing)) {
       throw new Error("computer control revocation is still in progress");
     }
+  }
+  const requireReusableProvider = async () => {
+    if (!existing.providerRef) return;
+    const ref = toComputerRef(existing);
+    if (await matchesComputerProvisionRoute(deps.sandbox, ref)) {
+      if (!needsProviderIdentityProof(deps.sandbox, ref)) return;
+      const state = await inspectComputerPower(deps.sandbox, ref, context);
+      if (state === "running" || state === "stopped") return;
+    }
+    context.signal.throwIfAborted();
+    const lease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : null;
+    const quarantined = await deps.prisma.computer.updateMany({
+      where: {
+        id: computerId,
+        state: existing.state,
+        kind: existing.kind,
+        providerRef: existing.providerRef,
+        providerAuthority: existing.providerAuthority,
+        updatedAt: existing.updatedAt,
+        screenGeneration: existing.screenGeneration,
+        maintenanceId: existing.maintenanceId,
+        ...heldByNobodyElse(lease),
+        stopRequestedAt: null,
+      },
+      data: { state: "quarantined", ...stoppedComputerControl },
+    });
+    if (quarantined.count !== 1) throw new ComputerBusyError();
+    throw new ComputerRecoveryRequiredError();
+  };
+  if (existing.state !== "booting" && existing.state !== "suspending") {
+    await requireReusableProvider();
   }
   let retainedDamage: { ref: ComputerRef; error: unknown } | undefined;
   const homePath = resolveAgentHomePath(deps.home, existing.homeKey, deps.dataDir ?? "./data");
@@ -365,6 +383,7 @@ export async function provisionComputer(
   if (existing.state === "booting" || existing.state === "suspending") {
     existing = await waitForComputerReady(deps.prisma, computerId, context);
     await guardComputerBoot(deps.prisma, existing, context);
+    await requireReusableProvider();
   }
   // A booting row whose holder is gone is reclaimable. A suspending row is too once
   // its claim was already older than an execution-lease TTL when first observed and

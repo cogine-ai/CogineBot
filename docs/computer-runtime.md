@@ -64,7 +64,8 @@ The web and desktop computer view opens a terminal and a file browser from a doc
 - Keep the original provider's credentials configured until stopped or recovering computers have
   been retired. Newly started computers record the provider account and endpoint identity.
   A different endpoint or credential cannot confirm retirement of that computer. Older records
-  with an unverified provider identity require a positive lookup after a provider switch.
+  with an unverified provider identity require a positive lookup. If the lookup cannot confirm
+  that identity, the original reference is preserved for operator review.
 - Upload also needs control. Uploads land under the bot's workspace path and are capped at the attachment size limit.
 
 ## Screen connection diagnostics
@@ -79,7 +80,7 @@ The E2B adapter uses `@e2b/desktop` for machine lifecycle, shell commands, files
 
 ## Daytona backend
 
-The database stores the provider kind and opaque `providerRef`. That reference is an acceleration path, not durable data. It is passed back only to the same provider kind. A missing machine or a provider-kind change creates a replacement and restores its workspace through the provider-neutral contract.
+The database stores the provider kind and opaque `providerRef`. That reference is an acceleration path, not durable data. It is passed back only to the same provider kind. Confirmed loss can create a replacement and restore its workspace through the provider-neutral contract. To change provider kinds, use explicit recovery so the original machine can be retired before replacement.
 
 ## Box backend
 

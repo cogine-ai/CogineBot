@@ -7,6 +7,7 @@ import {
 } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { canTrustComputerGoneError } from "./computer-power.js";
 import { toComputerRef } from "./computer-support.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 
@@ -179,7 +180,13 @@ export async function clearInactiveUserComputerControl(
  * unless clearGoneRef: false (mid-replacement still names that ref for activation CAS). */
 export async function revokeScreenControl(
   deps: { prisma: PrismaClient; sandbox: SandboxProvider | undefined },
-  computer: { id: string; homeKey: string; kind: string; providerRef: string | null },
+  computer: {
+    id: string;
+    homeKey: string;
+    kind: string;
+    providerRef: string | null;
+    providerAuthority?: string | null;
+  },
   context: AdapterContext,
   leaseId: string | undefined,
   opts?: { clearGoneRef?: boolean },
@@ -190,6 +197,9 @@ export async function revokeScreenControl(
   } catch (error) {
     if (!isSandboxGoneError(error)) throw error;
     if (opts?.clearGoneRef === false) return;
+    if (deps.sandbox && !canTrustComputerGoneError(deps.sandbox, toComputerRef(computer))) {
+      throw error;
+    }
     getLogger().error(`computer ${computer.id} sandbox ${computer.providerRef} is gone`, error);
     // Fence by lease + skip booting/suspending so a stale gone-cleanup cannot clobber an
     // in-flight replace/boot that still names this providerRef.

@@ -1,4 +1,4 @@
-import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import type { AdapterContext, ComputerRef, SandboxPowerState } from "@rakazo/adapter-kit";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 
 /** Managed-provider protocol emulator backed by deterministic local state. */
@@ -17,6 +17,12 @@ export class ManagedSandboxEmulator extends FakeSandboxProvider {
   async provisionKind(): Promise<ComputerRef["kind"]> {
     return this.emulator.kind;
   }
+  async inspectPowerState(computer: ComputerRef): Promise<SandboxPowerState> {
+    const box = this.boxes.get(computer.providerRef);
+    if (!box || computer.kind !== this.emulator.kind) return "gone";
+    return box.running ? "running" : "stopped";
+  }
+
   override async provision(
     request: { botId: string; homePath: string },
     context: AdapterContext,

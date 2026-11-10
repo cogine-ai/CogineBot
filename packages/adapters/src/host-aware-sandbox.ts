@@ -16,6 +16,7 @@ import type {
   TerminalRequest,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
+import { SandboxUnsafeStopError } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { runAsSystem } from "@rakazo/db";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
@@ -58,7 +59,7 @@ export function createRunSandbox(
     docker: Boolean(opts.supervisorToken?.trim()),
   };
   const authorities: Partial<Record<ComputerRef["kind"], (string | undefined)[]>> = {
-    e2b: [opts.e2bApiKey?.trim()],
+    e2b: [opts.e2bApiKey?.trim(), process.env.E2B_API_URL, process.env.E2B_DOMAIN],
     daytona: [opts.daytonaApiKey?.trim(), opts.daytonaApiUrl, opts.daytonaTarget],
     createos: [opts.createosApiKey?.trim(), opts.createosBaseUrl],
     box: [opts.boxApiKey?.trim(), opts.boxApiUrl],
@@ -132,6 +133,13 @@ export class HostAwareSandbox implements SandboxProvider {
   async provision(request: Parameters<SandboxProvider["provision"]>[0], context: AdapterContext) {
     const provider = (await this.hostEnabled()) ? this.host : this.isolated;
     const providerKind = provider.describe().id;
+    if (
+      request.isolateWorkspaceGeneration &&
+      request.providerRef &&
+      request.providerKind !== providerKind
+    ) {
+      throw new SandboxUnsafeStopError(new Error("The computer provider changed before boot"));
+    }
     return provider.provision(
       {
         ...request,

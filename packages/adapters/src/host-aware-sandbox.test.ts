@@ -5,7 +5,11 @@ import type { ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerBrowserProvider } from "./computer-browser.js";
-import { confirmComputerStop, inspectComputerPower } from "./computer-power.js";
+import {
+  checkpointComputerBeforeStop,
+  confirmComputerStop,
+  inspectComputerPower,
+} from "./computer-power.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { DockerSandboxProvider } from "./docker-sandbox.js";
 import { E2BSandboxProvider } from "./e2b-sandbox.js";
@@ -87,13 +91,63 @@ describe("host-aware sandbox", () => {
     expect(destroy).not.toHaveBeenCalled();
   });
 
+  it("keeps an unbound legacy reference when the current provider cannot identify it", async () => {
+    vi.spyOn(E2BSandboxProvider.prototype, "inspectPowerState").mockResolvedValue("gone");
+    const exported = vi.spyOn(E2BSandboxProvider.prototype, "exportWorkspace");
+    const sandbox = createRunSandbox("e2b", { e2bApiKey: "synthetic-key" });
+    const ref = { id: "old", botId: "bot", kind: "e2b", providerRef: "old" } as const;
+    const deps = { sandbox } as Parameters<typeof checkpointComputerBeforeStop>[0];
+    await expect(
+      checkpointComputerBeforeStop(
+        deps,
+        { id: "old", homeKey: "bot", scope: "dedicated", spaceId: "w" },
+        ref,
+        ctx,
+        {},
+      ),
+    ).rejects.toThrow("The original computer could not be verified");
+    expect(exported).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a bound E2B reference through a different control plane", async () => {
+    vi.stubEnv("E2B_API_URL", "https://old.test");
+    const original = createRunSandbox("e2b", { e2bApiKey: "synthetic-key" });
+    const ref = {
+      id: "old",
+      botId: "bot",
+      kind: "e2b",
+      providerRef: "old",
+      providerAuthority: original.providerAuthority?.("e2b"),
+    } as const;
+    vi.stubEnv("E2B_API_URL", "https://current.test");
+    const current = createRunSandbox("e2b", { e2bApiKey: "synthetic-key" });
+    const destroy = vi.spyOn(E2BSandboxProvider.prototype, "destroy");
+    await expect(confirmComputerStop(current, ref, ctx, "destroy")).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("does not retire an unverified legacy reference through a same-kind emulator", async () => {
+    const sandbox = createRunSandbox("e2b-emulator", { e2bApiKey: "synthetic-key" });
+    const ref = { id: "old", botId: "bot", kind: "e2b", providerRef: "old" } as const;
+    const destroy = vi.spyOn(sandbox, "destroy");
+    await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
   const hostRoot = mkdtempSync(path.join(tmpdir(), "rakazo-host-root-"));
 
   afterAll(() => {
     rmSync(hostRoot, { recursive: true, force: true });
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it("exposes and routes page commands through the production Docker wrapper", async () => {
     const result = {
@@ -230,6 +284,26 @@ describe("host-aware sandbox", () => {
     expect(await sandbox.provisionKind()).toBe("desktop");
     expect(provisionIsolated).not.toHaveBeenCalled();
     expect(provisionHost).not.toHaveBeenCalled();
+  });
+
+  it("refuses to dispatch an existing reference if host selection changed before boot", async () => {
+    const isolated = new FakeSandboxProvider();
+    const host = new DesktopSandboxProvider();
+    const sandbox = new HostAwareSandbox(isolated, host, async () => true);
+    const provision = vi.spyOn(host, "provision");
+    await expect(
+      sandbox.provision(
+        {
+          botId: "bot",
+          homePath: hostRoot,
+          providerRef: "old",
+          providerKind: "fake",
+          isolateWorkspaceGeneration: true,
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ name: "SandboxUnsafeStopError" });
+    expect(provision).not.toHaveBeenCalled();
   });
 
   it("preserves the no-start cleanup option when routing an existing reference", async () => {

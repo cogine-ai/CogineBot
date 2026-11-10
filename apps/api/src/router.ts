@@ -52,6 +52,7 @@ import {
   ComputerBusyError,
   ComputerCheckpointChangedError,
   ComputerRecoveryRequiredError,
+  canTrustComputerGoneError,
   canUsePlatformModel,
   clearInactiveUserComputerControl,
   codexLiveCatalogsForSpace,
@@ -95,13 +96,14 @@ import {
   loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
-  matchesComputerProvider,
+  matchesComputerProvisionRoute,
   mcpServerHealthDto,
   modelConnectionErrorMessage,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   nativeSourceJob,
   needsMcpOAuthClient,
+  needsProviderIdentityProof,
   normalizeSecretDestination,
   PluginMarketplaceCursorError,
   PushSessionEndedError,
@@ -3238,7 +3240,8 @@ export function createRouter(deps: RouterDeps) {
           !bot.computer.stopRequestedAt &&
           bot.computer.kind !== "desktop" &&
           bot.computer.providerRef &&
-          matchesComputerProvider(deps.sandbox, toComputerRef(bot.computer))
+          !needsProviderIdentityProof(deps.sandbox, toComputerRef(bot.computer)) &&
+          (await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(bot.computer)))
         ) {
           try {
             await ensureComputerWorkspaceLayout(
@@ -8912,10 +8915,18 @@ async function clearGoneSandbox(
     state: string;
     screenGeneration: number;
     providerRef: string | null;
+    providerAuthority?: string | null;
   },
   error: unknown,
 ): Promise<null> {
-  if (computer.kind !== "e2b" || !isSandboxGoneError(error)) throw error;
+  if (
+    !computer.providerRef ||
+    computer.kind !== "e2b" ||
+    !canTrustComputerGoneError(deps.sandbox, toComputerRef(computer)) ||
+    !isSandboxGoneError(error) ||
+    !(await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(computer)))
+  )
+    throw error;
   getLogger().error(`computer ${computer.id} sandbox ${computer.providerRef} is gone`, error);
   await deps.prisma.computer.updateMany({
     where: {
@@ -8928,6 +8939,7 @@ async function clearGoneSandbox(
       screenGeneration: computer.screenGeneration,
       providerRef: computer.providerRef,
       maintenanceId: null,
+      stopRequestedAt: null,
     },
     data: { state: "stopped", providerRef: null },
   });

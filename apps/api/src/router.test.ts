@@ -2127,6 +2127,7 @@ const goneE2BComputerClaim = {
   state: "running",
   screenGeneration: 3,
   maintenanceId: null,
+  stopRequestedAt: null,
 };
 
 describe("computer screen url", () => {

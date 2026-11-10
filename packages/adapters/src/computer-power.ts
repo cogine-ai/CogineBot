@@ -31,13 +31,39 @@ function powerProvider(sandbox: SandboxProvider, ref: ComputerRef): SandboxProvi
   return sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
 }
 
-function needsProviderIdentityProof(sandbox: SandboxProvider, ref: ComputerRef): boolean {
+export function needsProviderIdentityProof(sandbox: SandboxProvider, ref: ComputerRef): boolean {
   return Boolean(
     sandbox.providerForPower &&
       !ref.providerAuthority &&
       ref.kind !== "desktop" &&
-      sandbox.describe().id.replace(/-emulator$/, "") !== ref.kind,
+      ref.kind !== "fake",
   );
+}
+
+export function canTrustComputerGoneError(sandbox: SandboxProvider, ref: ComputerRef): boolean {
+  return matchesComputerProvider(sandbox, ref) && !needsProviderIdentityProof(sandbox, ref);
+}
+
+export async function matchesComputerProvisionRoute(
+  sandbox: SandboxProvider,
+  ref: ComputerRef,
+): Promise<boolean> {
+  if (!matchesComputerProvider(sandbox, ref)) return false;
+  if (!sandbox.providerForPower) return true;
+  const kind = (await sandbox.provisionKind?.()) ?? sandbox.describe().id;
+  return kind === ref.kind;
+}
+
+async function verifyComputerProvider(
+  sandbox: SandboxProvider,
+  ref: ComputerRef,
+  context: AdapterContext,
+): Promise<void> {
+  if (!needsProviderIdentityProof(sandbox, ref)) return;
+  const current = await inspectComputerPower(sandbox, ref, context);
+  if (current !== "running" && current !== "stopped") {
+    throw new Error("The original computer could not be verified at this provider");
+  }
 }
 
 export async function inspectComputerPower(
@@ -122,6 +148,7 @@ export async function checkpointComputerBeforeStop(
 ): Promise<"gone" | "damaged" | undefined> {
   const provider = powerProvider(deps.sandbox, ref);
   if (!provider) throw new Error("The original computer provider is unavailable");
+  await verifyComputerProvider(deps.sandbox, ref, context);
   let exported = false;
   let stagingFailed = false;
   try {
@@ -146,7 +173,9 @@ export async function checkpointComputerBeforeStop(
       if (isSandboxDamaged(error)) return "damaged";
       if (
         !isSandboxUnsafeStop(error) &&
-        ((ref.kind === "e2b" && isSandboxGoneError(error)) ||
+        ((ref.kind === "e2b" &&
+          canTrustComputerGoneError(deps.sandbox, ref) &&
+          isSandboxGoneError(error)) ||
           (await inspectComputerPower(deps.sandbox, ref, context)) === "gone")
       ) {
         return "gone";
@@ -219,11 +248,7 @@ export async function confirmComputerStop(
     signal.throwIfAborted();
     const provider = powerProvider(sandbox, ref);
     if (!provider) throw new Error("The original computer provider is unavailable");
-    if (needsProviderIdentityProof(sandbox, ref)) {
-      const current = await inspectComputerPower(sandbox, ref, context);
-      if (current !== "running" && current !== "stopped")
-        throw new Error("The original computer could not be verified at this provider");
-    }
+    await verifyComputerProvider(sandbox, ref, context);
     const providerContext = { ...context, signal };
     const request =
       operation === "destroy" && options

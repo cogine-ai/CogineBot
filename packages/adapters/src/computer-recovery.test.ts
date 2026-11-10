@@ -16,6 +16,7 @@ import { checkpointAndRecordComputerWorkspace } from "./computer-workspace.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 import { LocalAgentHomeStore } from "./home.js";
+import { createRunSandbox } from "./host-aware-sandbox.js";
 
 const stagingFaults = vi.hoisted(() => ({
   create: undefined as Error | undefined,
@@ -129,6 +130,7 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
     scope: "dedicated",
     state: "running",
     providerRef: first.providerRef as string | null,
+    providerAuthority: null as string | null,
     kind: first.kind,
     controlHolder: "none",
     controlLeaseId: null,
@@ -285,6 +287,27 @@ describe("computer recovery preserves live work", () => {
     } finally {
       release();
     }
+  });
+
+  it("keeps the original reference when ordinary boot selects a different provider", async () => {
+    const { deps, row } = await fixture();
+    const config = { e2bApiKey: "synthetic-key" };
+    const original = createRunSandbox("e2b", config);
+    const switched = createRunSandbox("docker", config);
+    const provision = vi.spyOn(switched, "provision");
+    row.kind = "e2b";
+    row.providerRef = "previous-computer";
+    row.providerAuthority = original.providerAuthority?.("e2b") ?? null;
+
+    await expect(
+      provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+    ).rejects.toBeInstanceOf(ComputerRecoveryRequiredError);
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "quarantined",
+      kind: "e2b",
+      providerRef: "previous-computer",
+    });
   });
 
   it("renews a live restore through import and reconnect without a fixed deadline", async () => {
