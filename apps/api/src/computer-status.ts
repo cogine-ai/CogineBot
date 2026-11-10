@@ -66,6 +66,7 @@ export function toComputerStatus(
     homeRevision: string;
     maintenanceId?: string | null;
     stopRequestedAt?: Date | null;
+    updatedAt?: Date;
   } | null,
   busyBotName: string | null = null,
 ): ComputerStatus {
@@ -74,6 +75,9 @@ export function toComputerStatus(
     case "quarantined":
     case "needs_recovery":
       state = computer.state;
+      break;
+    case "restoring":
+      state = computerStopClaimIsStale(computer.updatedAt) ? "quarantined" : "booting";
       break;
     case "suspending":
       state = "stopping";
@@ -96,7 +100,10 @@ export function toComputerStatus(
       ? state
       : undefined;
   const unavailable = powerState !== undefined;
-  const screenAvailable = !computer?.maintenanceId && (state === "running" || state === "booting");
+  const screenAvailable =
+    !computer?.maintenanceId &&
+    computer?.state !== "restoring" &&
+    (state === "running" || state === "booting");
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
   return {

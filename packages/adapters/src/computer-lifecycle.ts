@@ -25,8 +25,10 @@ import {
   revokeScreenControl,
 } from "./computer-control.js";
 import {
+  confirmComputerStop,
   isSandboxDamaged,
   isSandboxUnsafeStop,
+  markClaimedComputerStop,
   requestClaimedComputerStop,
   saveComputerBeforeStop,
   stoppedComputerControl,
@@ -70,7 +72,7 @@ function isLiveSuspending(
   now = Date.now(),
 ): boolean {
   return (
-    computer.state === "suspending" &&
+    (computer.state === "suspending" || computer.state === "restoring") &&
     !isAbandonedLifecycleClaim(computer.stopRequestedAt ?? computer.updatedAt, now)
   );
 }
@@ -167,7 +169,7 @@ export function computerStopClaimIsStale(updatedAt?: Date | null): boolean {
   return isAbandonedLifecycleClaim(updatedAt);
 }
 
-export async function quarantineAbandonedComputerStop(
+export async function quarantineAbandonedComputerOperation(
   prisma: PrismaClient,
   computer: {
     id: string;
@@ -180,9 +182,11 @@ export async function quarantineAbandonedComputerStop(
   },
   context?: AdapterContext,
 ): Promise<boolean> {
+  const startedAt =
+    computer.stopRequestedAt ?? (computer.state === "restoring" ? computer.updatedAt : null);
   if (
-    !computer.stopRequestedAt ||
-    !computerStopClaimIsStale(computer.stopRequestedAt) ||
+    !startedAt ||
+    !computerStopClaimIsStale(startedAt) ||
     (await hasLiveForeignRunLease(prisma, computer.id, context?.runId))
   ) {
     return false;
@@ -207,17 +211,17 @@ export async function quarantineAbandonedComputerStop(
 
 async function guardComputerBoot(
   prisma: PrismaClient,
-  computer: Parameters<typeof quarantineAbandonedComputerStop>[1],
+  computer: Parameters<typeof quarantineAbandonedComputerOperation>[1],
   context: AdapterContext,
 ): Promise<void> {
   if (
     computer.state === "quarantined" ||
     computer.state === "needs_recovery" ||
-    (await quarantineAbandonedComputerStop(prisma, computer, context))
+    (await quarantineAbandonedComputerOperation(prisma, computer, context))
   ) {
     throw new ComputerRecoveryRequiredError();
   }
-  if (computer.stopRequestedAt) throw new ComputerBusyError();
+  if (computer.stopRequestedAt || computer.state === "restoring") throw new ComputerBusyError();
 }
 
 export { toComputerRef } from "./computer-support.js";
@@ -421,10 +425,12 @@ export async function provisionComputer(
   let provisioned: ComputerRef | undefined;
   let recoveryStarted = false;
   let claimRef = previousRef;
+  let fallbackRef = previousRef;
+  let claimState = "booting";
   let restorePending = existing.restorePending || !existing.providerRef;
   const bootClaim = () => ({
     id: computerId,
-    state: "booting",
+    state: claimState,
     updatedAt: claimStamp,
     ...claimRef,
     maintenanceId: existing.maintenanceId ?? null,
@@ -507,6 +513,7 @@ export async function provisionComputer(
       });
       if (cleared.count !== 1) throw new ComputerBusyError();
       claimRef = { providerRef: nextRef, kind: damaged.kind };
+      fallbackRef = claimRef;
       provisioned = undefined;
       ref = await provision(nextRef ?? undefined);
     }
@@ -519,12 +526,15 @@ export async function provisionComputer(
     if (replacement) {
       await markRestorePending();
       await onProgress?.("restoring");
-      // A provider may reuse an id or local workspace across boot claims.
+      // A stale boot may be reclaimed. An unsettled restore must retire its exact candidate first.
+      const target = { providerRef: ref.providerRef, kind: ref.kind };
       const current = await deps.prisma.computer.updateMany({
         where: { ...bootClaim(), stopRequestedAt: null },
-        data: { updatedAt: claimStamp },
+        data: { ...target, state: "restoring", updatedAt: claimStamp },
       });
       if (current.count !== 1) throw new ComputerBusyError();
+      claimState = "restoring";
+      claimRef = target;
       const restoreBudget = claimStamp.getTime() + BOOT_CLAIM_STALE_MS - Date.now() - 10_000;
       if (restoreBudget <= 0) throw new ComputerBusyError();
       await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, {
@@ -584,16 +594,36 @@ export async function provisionComputer(
     // A failed reconnect never owns an existing workspace, even if setup failed.
     const unsafe = isSandboxUnsafeStop(error);
     const damaged = isSandboxDamaged(error);
-    const rollbackError =
-      provisioned && !unsafe && !damaged && (!reconnecting || provisioned.fresh === true)
-        ? await rollbackProvisionedComputer(deps, bootClaim(), provisioned, context)
-        : undefined;
+    let rollbackError: unknown;
+    let rolledBack: "stopped" | "gone" | undefined;
+    if (provisioned && !unsafe && !damaged && (!reconnecting || provisioned.fresh === true)) {
+      const target = { providerRef: provisioned.providerRef, kind: provisioned.kind };
+      const cleanup = context.signal.aborted
+        ? { ...context, signal: AbortSignal.timeout(120_000) }
+        : context;
+      try {
+        await markClaimedComputerStop(deps.prisma, bootClaim(), cleanup, target);
+        claimRef = target;
+        await deps.sandbox
+          .releaseScreen?.(provisioned, cleanup, { onlyIfRunning: true })
+          .catch(() => undefined);
+        rolledBack = await confirmComputerStop(
+          deps.sandbox,
+          provisioned,
+          cleanup,
+          provisioned.fresh ? "destroy" : "stop",
+        );
+      } catch (failure) {
+        // The next claimant may have adopted the same identity.
+        if (!(failure instanceof ComputerCheckpointChangedError)) rollbackError = failure;
+      }
+    }
     try {
       await deps.prisma.computer.updateMany({
         where: bootClaim(),
         data: {
           state:
-            unsafe || rollbackError
+            unsafe || rollbackError || (claimState === "restoring" && !rolledBack)
               ? "quarantined"
               : damaged || recoveryStarted
                 ? "needs_recovery"
@@ -601,12 +631,20 @@ export async function provisionComputer(
                   ? "running"
                   : "error",
           stopRequestedAt: null,
-          ...(unsafe || rollbackError || damaged || recoveryStarted
+          ...(unsafe || rollbackError || damaged || recoveryStarted || claimState === "restoring"
             ? { restorePending: true, ...stoppedComputerControl }
             : {}),
           ...((damaged || rollbackError) && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
-            : {}),
+            : rolledBack === "gone"
+              ? {
+                  ...fallbackRef,
+                  providerRef:
+                    fallbackRef.providerRef === claimRef.providerRef
+                      ? null
+                      : fallbackRef.providerRef,
+                }
+              : {}),
         },
       });
     } catch (recordError) {
@@ -653,29 +691,6 @@ async function waitForComputerReady(
     await new Promise((resolve) => setTimeout(resolve, BOOT_WAIT_MS));
   }
   return prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
-}
-
-async function rollbackProvisionedComputer(
-  deps: { prisma: PrismaClient; sandbox: SandboxProvider },
-  claim: Prisma.ComputerWhereInput & { updatedAt: Date },
-  computer: ComputerRef,
-  context: AdapterContext,
-): Promise<unknown | undefined> {
-  try {
-    await requestClaimedComputerStop(
-      deps,
-      claim,
-      computer,
-      context.signal.aborted ? { ...context, signal: AbortSignal.timeout(120_000) } : context,
-      computer.fresh ? "destroy" : "stop",
-      true,
-    );
-    return undefined;
-  } catch (error) {
-    // A successor can adopt the same provider identity. The old claimant must leave it alone.
-    if (error instanceof ComputerCheckpointChangedError) return undefined;
-    return error;
-  }
 }
 
 export interface ComputerExecutionLease {
@@ -963,8 +978,7 @@ export async function replaceComputer(
     throw new ComputerBusyError();
   const recoveryRequired =
     existing.stopRequestedAt ||
-    existing.state === "quarantined" ||
-    existing.state === "needs_recovery";
+    ["restoring", "quarantined", "needs_recovery"].includes(existing.state);
   if (mode === "update" && recoveryRequired) throw new ComputerRecoveryRequiredError();
   const botId = context.botId;
   if (!botId) throw new Error("computer replacement requires a bot id");
@@ -1015,7 +1029,7 @@ export async function replaceComputer(
   // an execution-lease TTL (not merely the boot-wait poll) so a slow dedicated provision or
   // suspend is not destroyed mid-flight. Also refuse while a run still uses the computer —
   // before claiming suspending — so rollback cannot bump @updatedAt under an in-flight boot.
-  if (existing.state === "booting" || existing.state === "suspending") {
+  if (["booting", "suspending", "restoring"].includes(existing.state)) {
     if (await hasForeignExecutionLease(deps.prisma, computerId, botId)) {
       throw new ComputerBusyError();
     }

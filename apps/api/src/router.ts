@@ -2370,7 +2370,9 @@ export function createRouter(deps: RouterDeps) {
             const { now, previous, suspension } = computerSuspensionClaim(bot.computer);
             if (
               previous.stopRequestedAt ||
-              ["booting", "suspending", "quarantined", "needs_recovery"].includes(previous.state)
+              ["booting", "suspending", "restoring", "quarantined", "needs_recovery"].includes(
+                previous.state,
+              )
             ) {
               throw new ComputerCheckpointChangedError();
             }
@@ -3300,7 +3302,10 @@ export function createRouter(deps: RouterDeps) {
         const claimed = await deps.prisma.computer.updateMany({
           where: {
             ...previous,
-            state: { equals: previous.state, notIn: ["booting", "suspending", "quarantined"] },
+            state: {
+              equals: previous.state,
+              notIn: ["booting", "suspending", "restoring", "quarantined"],
+            },
             executionLeases: {
               none: { botId: { not: bot.id }, expiresAt: { gt: now } },
             },
@@ -8386,6 +8391,7 @@ async function expireStaleComputerControl(
     !computer ||
     computer.stopRequestedAt ||
     computer.state === "suspending" ||
+    computer.state === "restoring" ||
     computer.state === "quarantined" ||
     computer.state === "needs_recovery" ||
     hasActiveComputerControl(computer)

@@ -604,7 +604,7 @@ describe("finalizeComputerControlRelease", () => {
         controlBotId: "bot-1",
         controlLeaseId: "lease-1",
         controlRunId: "run-1",
-        state: { notIn: ["suspending", "quarantined", "needs_recovery"] },
+        state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
         stopRequestedAt: null,
       },
       data: {

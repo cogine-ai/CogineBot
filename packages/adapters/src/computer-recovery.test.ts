@@ -221,6 +221,28 @@ describe("computer recovery preserves live work", () => {
     expect(row.state).toBe("running");
   });
 
+  it("quarantines a stale restore without reusing the persisted candidate", async () => {
+    const { deps, row, first } = await fixture();
+    row.state = "restoring";
+    row.restorePending = true;
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    const destroy = vi.spyOn(deps.sandbox, "destroy");
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+      ComputerRecoveryRequiredError,
+    );
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ state: "quarantined", providerRef: first.providerRef });
+    await replaceComputer(deps, row.id, "recover", context);
+    expect(destroy).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ providerRef: first.providerRef }),
+      expect.anything(),
+    );
+    expect(destroy.mock.invocationCallOrder[0]).toBeLessThan(
+      provision.mock.invocationCallOrder[0]!,
+    );
+    expect(row.state).toBe("running");
+  });
+
   it("uses only one automatic attempt per saved workspace", async () => {
     const { deps, row, first } = await fixture();
     const stop = vi.spyOn(deps.sandbox, "stop").mockResolvedValue(undefined);

@@ -173,6 +173,7 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
     .and(page.locator("[aria-expanded]"));
   await savedFiles.click();
   await expect(savedFiles).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByText("Could not load files", { exact: true })).toHaveCount(0);
   expect(bootRequests).toBe(0);
   await savedFiles.click();
   await page.getByTestId("computer-more-button").click();

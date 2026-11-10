@@ -674,7 +674,13 @@ async function ensureContainedDirectory(root: string, candidate: string) {
       current = await realpath(next);
     } catch (error) {
       if (!isMissing(error)) throw error;
-      await mkdir(next);
+      await mkdir(next).catch((mkdirError: unknown) => {
+        if (
+          !(mkdirError instanceof Error && "code" in mkdirError && mkdirError.code === "EEXIST")
+        ) {
+          throw mkdirError;
+        }
+      });
       current = await realpath(next);
     }
     assertContained(resolvedRoot, current);

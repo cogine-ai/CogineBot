@@ -1825,7 +1825,7 @@ export async function finalizeComputerControlRelease(
           controlBotId: input.botId,
           controlLeaseId: input.leaseId,
           controlRunId: input.runId,
-          state: { notIn: ["suspending", "quarantined", "needs_recovery"] },
+          state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
           stopRequestedAt: null,
         },
         data: {

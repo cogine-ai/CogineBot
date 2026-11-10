@@ -197,7 +197,7 @@ export async function revokeScreenControl(
       where: {
         id: computer.id,
         providerRef: computer.providerRef,
-        state: { notIn: ["booting", "suspending", "quarantined", "needs_recovery"] },
+        state: { notIn: ["booting", "suspending", "restoring", "quarantined", "needs_recovery"] },
         stopRequestedAt: null,
         ...(leaseId != null ? { controlLeaseId: leaseId } : {}),
       },
@@ -222,7 +222,7 @@ export async function expireComputerControl(
     !computer ||
     computer.controlLeaseId !== leaseId ||
     computer.stopRequestedAt ||
-    ["suspending", "quarantined", "needs_recovery"].includes(computer.state)
+    ["suspending", "restoring", "quarantined", "needs_recovery"].includes(computer.state)
   )
     return false;
   const leaseClaim = {

@@ -878,18 +878,17 @@ describe("computer provisioning", () => {
           where: {
             maintenanceId: null,
             id: "computer-1",
-            state: "booting",
-            providerRef: "provider-1",
-            kind: "box",
+            state: stage === "prepare" ? "booting" : "restoring",
+            providerRef: ref.providerRef,
+            kind: ref.kind,
             updatedAt: expect.any(Date),
           },
-          data: rollbackFails
-            ? expect.objectContaining({
-                state: "quarantined",
-                providerRef: ref.providerRef,
-                stopRequestedAt: null,
-              })
-            : { state: stage === "prepare" ? "running" : "error", stopRequestedAt: null },
+          data: expect.objectContaining({
+            state: rollbackFails ? "quarantined" : stage === "prepare" ? "running" : "error",
+            providerRef: rollbackFails ? ref.providerRef : original.providerRef,
+            kind: rollbackFails ? ref.kind : original.kind,
+            stopRequestedAt: null,
+          }),
         });
         expect(original).toMatchObject({
           state: "running",
@@ -1027,9 +1026,9 @@ describe("computer provisioning", () => {
           where: {
             maintenanceId: null,
             id: "computer-1",
-            state: "booting",
-            providerRef: "provider-1",
-            kind: "box",
+            state: "restoring",
+            providerRef: next.providerRef,
+            kind: next.kind,
             updatedAt: expect.any(Date),
             stopRequestedAt: null,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
@@ -1231,13 +1230,21 @@ describe("computer provisioning", () => {
           expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
         ],
       });
+      expect(updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({ providerRef: null, stopRequestedAt: null }),
+        data: expect.objectContaining({
+          providerRef: ref.providerRef,
+          kind: ref.kind,
+          stopRequestedAt: expect.any(Date),
+        }),
+      });
       expect(updateMany).toHaveBeenLastCalledWith({
         where: {
           maintenanceId: null,
           id: "computer-1",
           state: "booting",
-          providerRef: null,
-          kind: "e2b",
+          providerRef: ref.providerRef,
+          kind: ref.kind,
           updatedAt: expect.any(Date),
         },
         data: expect.objectContaining({

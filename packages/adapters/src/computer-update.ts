@@ -14,7 +14,7 @@ import {
   ComputerBusyError,
   ComputerRecoveryRequiredError,
   computerSupportsUpdate,
-  quarantineAbandonedComputerStop,
+  quarantineAbandonedComputerOperation,
   replaceComputer,
 } from "./computer-lifecycle.js";
 
@@ -62,7 +62,7 @@ export async function queueComputerUpdate(
 ) {
   if (action === "recover") {
     const computer = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
-    await quarantineAbandonedComputerStop(deps.prisma, computer);
+    await quarantineAbandonedComputerOperation(deps.prisma, computer);
   }
   const prepared = await deps.prisma.$transaction(async (tx) => {
     // Mode switches lock this same row before marking a bot as switching.
@@ -140,7 +140,7 @@ export async function queueComputerUpdate(
       where: {
         id: computerId,
         maintenanceId: null,
-        state: { notIn: ["booting", "suspending"] },
+        state: { notIn: ["booting", "suspending", "restoring"] },
         controlHolder: { not: "user" },
         controlLeaseId: revokeLeaseId,
         executionLeases: { none: { expiresAt: { gt: new Date() } } },

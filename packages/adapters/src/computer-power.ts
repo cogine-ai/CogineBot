@@ -151,26 +151,29 @@ export async function publishComputerPowerStatus(
   }
 }
 
-/** Record the in-flight request before crossing the provider boundary. */
+/** Persist the exact target before crossing the provider boundary. */
+export async function markClaimedComputerStop(
+  prisma: PrismaClient,
+  claim: Prisma.ComputerWhereInput & { updatedAt: Date },
+  context: AdapterContext,
+  target?: { providerRef: string; kind: ComputerRef["kind"] },
+): Promise<void> {
+  context.signal.throwIfAborted();
+  const pending = await prisma.computer.updateMany({
+    where: { ...claim, stopRequestedAt: null },
+    data: { ...target, stopRequestedAt: new Date(), updatedAt: claim.updatedAt },
+  });
+  if (pending.count !== 1) throw new ComputerCheckpointChangedError();
+}
+
 export async function requestClaimedComputerStop(
   deps: { prisma: PrismaClient; sandbox: SandboxProvider },
   claim: Prisma.ComputerWhereInput & { updatedAt: Date },
   ref: ComputerRef,
   context: AdapterContext,
   operation: "stop" | "destroy" = "stop",
-  releaseScreen = false,
 ): Promise<"stopped" | "gone"> {
-  context.signal.throwIfAborted();
-  const pending = await deps.prisma.computer.updateMany({
-    where: { ...claim, stopRequestedAt: null },
-    data: { stopRequestedAt: new Date(), updatedAt: claim.updatedAt },
-  });
-  if (pending.count !== 1) throw new ComputerCheckpointChangedError();
-  if (releaseScreen) {
-    await deps.sandbox
-      .releaseScreen?.(ref, context, { onlyIfRunning: true })
-      .catch(() => undefined);
-  }
+  await markClaimedComputerStop(deps.prisma, claim, context);
   return confirmComputerStop(deps.sandbox, ref, context, operation);
 }
 

@@ -62,7 +62,7 @@ async function main(): Promise<void> {
               prisma.$queryRaw<Array<{ pending: boolean }>>`
               SELECT EXISTS (
                 SELECT FROM public.computers
-                WHERE state IN ('quarantined', 'needs_recovery') OR "stopRequestedAt" IS NOT NULL
+                WHERE state IN ('quarantined', 'needs_recovery', 'restoring') OR "stopRequestedAt" IS NOT NULL
               ) AS pending`,
           );
           if (computer?.pending) {

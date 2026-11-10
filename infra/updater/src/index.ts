@@ -833,6 +833,7 @@ export function createUpdaterApp(
     try {
       const gitSteps = input.steps.filter((step) => step.command === "git");
       const composeSteps = input.steps.filter((step) => step.command !== "git");
+      const explicitRollback = composeSteps.some((step) => step.id === "verify-rollback");
 
       for (const step of gitSteps) {
         if (step.id === "checkout" || step.id === "merge") checkoutNeedsRestore = true;
@@ -942,7 +943,7 @@ export function createUpdaterApp(
                   label: "Verify database readiness before recovery",
                   ...composeMigrationArgv(
                     migrationTarget,
-                    step.id === "verify-rollback" ? "verify" : "verify-rollback",
+                    explicitRollback ? "verify" : "verify-rollback",
                   ),
                 },
                 {

@@ -254,7 +254,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
     return new Uint8Array(await readFile(target));
   }
 
-  async writeFile(computer: ComputerRef, file: PortableFile) {
+  async writeFile(computer: ComputerRef, file: PortableFile, context?: AdapterContext) {
     const box = this.requiredBox(computer);
     const target = await localWorkspaceTarget(box.home, file.path, false);
     const handle = await openContainedWorkspaceFile(
@@ -263,8 +263,9 @@ export class DesktopSandboxProvider implements SandboxProvider {
       file.executable ? 0o700 : 0o600,
     );
     try {
+      context?.signal.throwIfAborted();
       await handle.truncate(0);
-      await handle.writeFile(file.content);
+      await writeFile(handle, file.content, { signal: context?.signal });
       if (file.executable) await handle.chmod(0o700);
     } finally {
       await handle.close();
@@ -293,7 +294,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
   ) {
     for await (const file of files) {
       context.signal.throwIfAborted();
-      await this.writeFile(computer, file);
+      await this.writeFile(computer, file, context);
     }
   }
 
