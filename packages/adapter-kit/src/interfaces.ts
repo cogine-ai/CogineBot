@@ -105,6 +105,8 @@ export interface SandboxProvider {
       homePath: string;
       providerRef?: string;
       providerKind?: ComputerRef["kind"];
+      /** Persist restore intent before replacing workspace bytes under an existing reference. */
+      beforeWorkspaceReplacement?: () => Promise<void>;
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;

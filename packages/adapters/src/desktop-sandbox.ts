@@ -84,7 +84,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
   }
 
   async provision(
-    request: { botId: string; homePath: string },
+    request: Parameters<SandboxProvider["provision"]>[0],
     _context: AdapterContext,
   ): Promise<ComputerRef> {
     const home = path.resolve(
@@ -95,20 +95,28 @@ export class DesktopSandboxProvider implements SandboxProvider {
     const existing = [...this.boxes.values()].find(
       (box) => box.ref.botId === request.botId || box.home === home,
     );
-    if (existing) {
+    const current = await lstat(home).catch((error: unknown) => {
+      if (hasErrorCode(error, "ENOENT")) return null;
+      throw error;
+    });
+    if (current && !current.isDirectory())
+      throw new Error("The desktop workspace is not a directory");
+    if (existing && current) {
       existing.running = true;
       return { ...existing.ref, fresh: false };
     }
     const id = `desktop-${request.botId}`;
-    // Recursive mkdir returns undefined when the directory already exists. This
-    // survives adapter/process restarts and distinguishes live files from a new home.
-    const created = await mkdir(home, { recursive: true });
+    // A recreated directory has the same provider reference. Record restore intent first.
+    if (!current) {
+      await request.beforeWorkspaceReplacement?.();
+      await mkdir(home, { recursive: true });
+    }
     const ref: ComputerRef = {
       id,
       botId: request.botId,
       kind: "desktop",
       providerRef: home,
-      fresh: created !== undefined,
+      fresh: !current,
     };
     this.boxes.set(id, {
       ref,

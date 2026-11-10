@@ -331,6 +331,15 @@ export async function provisionComputer(
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
   let restorePending = existing.restorePending || !existing.providerRef;
+  const markRestorePending = async () => {
+    if (restorePending) return;
+    const marked = await deps.prisma.computer.updateMany({
+      where: { id: computerId, state: "booting", updatedAt: claimStamp, ...previousRef },
+      data: { restorePending: true, updatedAt: claimStamp },
+    });
+    if (marked.count !== 1) throw new ComputerBusyError();
+    restorePending = true;
+  };
   try {
     await onProgress?.("recreating");
     const ref = await deps.sandbox.provision(
@@ -339,26 +348,22 @@ export async function provisionComputer(
         homePath,
         providerRef: existing.providerRef ?? undefined,
         providerKind: existing.kind as ComputerRef["kind"],
+        ...(existing.kind === "desktop" && existing.providerRef
+          ? { beforeWorkspaceReplacement: markRestorePending }
+          : {}),
       },
       context,
     );
     provisioned = ref;
     await deps.sandbox.prepare(ref, context);
     const replacement =
-      existing.restorePending ||
+      restorePending ||
       ref.fresh === true ||
       !existing.providerRef ||
       existing.providerRef !== ref.providerRef ||
       existing.kind !== ref.kind;
     if (replacement) {
-      if (existing.providerRef && !existing.restorePending) {
-        const marked = await deps.prisma.computer.updateMany({
-          where: { id: computerId, state: "booting", updatedAt: claimStamp, ...previousRef },
-          data: { restorePending: true, updatedAt: claimStamp },
-        });
-        if (marked.count !== 1) throw new ComputerBusyError();
-        restorePending = true;
-      }
+      await markRestorePending();
       await onProgress?.("restoring");
       await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, context);
     }

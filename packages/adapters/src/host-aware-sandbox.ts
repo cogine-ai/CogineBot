@@ -91,15 +91,7 @@ export class HostAwareSandbox implements SandboxProvider {
     return provider.describe().id as ComputerRef["kind"];
   }
 
-  async provision(
-    request: {
-      botId: string;
-      homePath: string;
-      providerRef?: string;
-      providerKind?: ComputerRef["kind"];
-    },
-    context: AdapterContext,
-  ) {
+  async provision(request: Parameters<SandboxProvider["provision"]>[0], context: AdapterContext) {
     const provider = (await this.hostEnabled()) ? this.host : this.isolated;
     const providerKind = provider.describe().id;
     return provider.provision(

@@ -318,6 +318,33 @@ describe("computer recovery preserves live work", () => {
     ).toBe("checkpoint");
   });
 
+  it("retains restore intent if Desktop recreates its directory and provisioning is interrupted", async () => {
+    const { deps, row, root, first } = await fixture("desktop");
+    await rm(first.providerRef, { recursive: true });
+    const provider = new DesktopSandboxProvider({ root });
+    deps.sandbox = provider;
+    const provision = provider.provision.bind(provider);
+    const interrupted = new Error("Synthetic interruption after workspace creation");
+    vi.spyOn(provider, "provision").mockImplementationOnce(async (...args) => {
+      const recreated = await provision(...args);
+      expect(row.restorePending).toBe(true);
+      expect(recreated).toMatchObject({ providerRef: first.providerRef, fresh: true });
+      throw interrupted;
+    });
+
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBe(interrupted);
+    expect(row).toMatchObject({ state: "error", restorePending: true });
+    await expect(access(first.providerRef)).resolves.toBeUndefined();
+
+    deps.sandbox = new DesktopSandboxProvider({ root });
+    const restarted = await provisionComputer(deps, row.id, context);
+    expect(restarted).toMatchObject({ providerRef: first.providerRef, fresh: false });
+    expect(row).toMatchObject({ state: "running", restorePending: false });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(restarted, "notes.txt", context)),
+    ).toBe("checkpoint");
+  });
+
   it.each([
     "Path notes.txt not found",
     "404: file not found",
