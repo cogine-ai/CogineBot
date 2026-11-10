@@ -133,6 +133,8 @@ export interface ScreenRequest {
   view: "stream" | "snapshot";
   /** Request a separately authorized control stream instead of the read-only viewer. */
   interactive?: boolean;
+  /** Passive attendance may attach to a live runtime without waking it. */
+  onlyIfRunning?: boolean;
   /** Fences an interactive stream so an older lease cannot revoke its replacement. */
   controlToken?: string;
 }

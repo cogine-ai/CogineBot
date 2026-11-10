@@ -797,6 +797,56 @@ describe("computer active time limit", () => {
     );
   });
 
+  it.each([false, true])(
+    "takes over an abandoned cap save only before a stop intent (%s)",
+    async (pendingStop) => {
+      const h = idleHarness({ runningSince: startedAt, billable: true });
+      Object.assign(h.computer, {
+        state: "suspending",
+        screenGeneration: 3,
+        updatedAt: new Date(Date.now() - 61 * 60_000),
+        stopRequestedAt: pendingStop ? new Date(Date.now() - 61 * 60_000) : null,
+      });
+      await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+      expect(h.sandbox.stop).toHaveBeenCalledTimes(pendingStop ? 0 : 1);
+      expect(h.computer.state).toBe(pendingStop ? "suspending" : "suspended");
+      if (!pendingStop) {
+        expect(h.prisma.computer.updateMany.mock.calls[1]?.[0].where.screenGeneration).toBe(3);
+      }
+    },
+  );
+
+  it.each(["running", "stopped", "unknown"] as const)(
+    "only records a clock for an old runtime after a read-only provider reports %s",
+    async (power) => {
+      const h = idleHarness({ billable: true });
+      h.prisma.computer.findMany.mockResolvedValue([h.computer]);
+      h.deps.sandbox.inspectPowerState = vi.fn().mockResolvedValue(power);
+      await createComputerActiveLimitRecovery(h.deps)();
+      expect(h.deps.sandbox.inspectPowerState).toHaveBeenCalledOnce();
+      expect(h.sandbox.keepAlive).not.toHaveBeenCalled();
+      expect(h.sandbox.stop).not.toHaveBeenCalled();
+      expect(h.computer.runningSince).toBeNull();
+      if (power !== "running") {
+        expect(h.jobs.enqueue).not.toHaveBeenCalled();
+        expect(h.prisma.computer.updateMany).not.toHaveBeenCalled();
+        return;
+      }
+      expect(h.prisma.computer.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { runningObservedAt: new Date(), updatedAt: startedAt },
+        }),
+      );
+      expect(h.jobs.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { computerId: h.computer.id, activeSince: new Date().toISOString() },
+          availableAt: new Date(Date.now() + 2 * 60 * 60_000),
+          replaceLockedBefore: new Date(Date.now() - 5 * 60_000),
+        }),
+      );
+    },
+  );
+
   it("reconciles overdue deadlines without replacing queued retries", async () => {
     const h = idleHarness({ runningSince: startedAt, billable: true });
     h.prisma.computer.findMany.mockResolvedValue([h.computer]);

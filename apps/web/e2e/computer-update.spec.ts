@@ -429,6 +429,9 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
     route.fulfill({ json: { json: current() } }),
   );
   await page.route("**/rpc/computer/boot", (route) => {
+    if (route.request().postDataJSON()?.json?.onlyIfRunning) {
+      return route.fulfill({ json: { json: current() } });
+    }
     boots += 1;
     resumed = true;
     return route.fulfill({ json: { json: current() } });
@@ -458,4 +461,8 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
   ).toHaveCount(0);
   expect(boots).toBe(1);
   expect(takeovers).toBe(0);
+  await page.getByRole("button", { name: "Close computer" }).click();
+  await expect(
+    page.getByText("At the runtime limit, pausing may stop background tasks.", { exact: true }),
+  ).toBeVisible();
 });

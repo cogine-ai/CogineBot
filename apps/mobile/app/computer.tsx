@@ -272,10 +272,12 @@ export default function Computer() {
     takeControl,
     overlay,
     force = false,
+    onlyIfRunning = false,
   }: {
     takeControl: boolean;
     overlay: boolean;
     force?: boolean;
+    onlyIfRunning?: boolean;
   }) {
     if (
       !botId ||
@@ -299,7 +301,11 @@ export default function Computer() {
     try {
       if (needsBoot) {
         autoBooted.current = botId;
-        await rpc("computer/boot", { botId }, { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS });
+        await rpc(
+          "computer/boot",
+          { botId, ...(onlyIfRunning ? { onlyIfRunning } : {}) },
+          { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS },
+        );
       }
       if (!action.isActive()) return false;
       if (takeControl) {
@@ -347,6 +353,7 @@ export default function Computer() {
       takeControl: false,
       overlay: computer?.state !== "running",
       force: true,
+      onlyIfRunning: computer.state === "running",
     }).catch(() => undefined);
   }, [
     readyTarget,

@@ -318,17 +318,17 @@ describePostgres("safe workspace publication", () => {
         },
       });
       if (!resumed) {
-        const ended = await prisma.run.create({
+        const waitingInput = await prisma.run.create({
           data: {
             ...owner,
             botId: bot.id,
             threadId: bot.thread!.id,
             taskId: task.id,
-            status: "completed",
+            status: "waiting_input",
             trigger: "chat",
           },
         });
-        await prisma.computer.update({ where: { id }, data: { executionRunId: ended.id } });
+        await prisma.computer.update({ where: { id }, data: { executionRunId: waitingInput.id } });
       }
       let running = true;
       const stop = vi.fn(async () => {

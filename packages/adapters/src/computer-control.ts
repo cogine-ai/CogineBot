@@ -211,7 +211,13 @@ export async function revokeScreenControl(
         stopRequestedAt: null,
         ...(leaseId != null ? { controlLeaseId: leaseId } : {}),
       },
-      data: { state: "stopped", providerRef: null, runningSince: null, suspensionReason: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
   }
 }

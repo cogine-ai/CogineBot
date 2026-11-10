@@ -9,7 +9,12 @@ import { computerSleepJob, SandboxRateLimitError } from "@rakazo/adapter-kit";
 import { COMPUTER_ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerExecutionLeases } from "@rakazo/db";
-import { computerActiveDeadline, scheduleComputerActiveLimit } from "./computer-active-limit.js";
+import {
+  ABANDONED_ACTIVE_LIMIT_CLAIM_MS,
+  computerActiveDeadline,
+  computerActiveEpoch,
+  scheduleComputerActiveLimit,
+} from "./computer-active-limit.js";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
 import {
   checkpointComputerBeforeStop,
@@ -205,13 +210,14 @@ export async function touchRunningComputer(
     providerAuthority?: string | null;
     kind: string;
     runningSince?: Date | null;
+    runningObservedAt?: Date | null;
     controlHolder: string;
     controlLeaseId: string | null;
     controlLeaseExpiresAt: Date | null;
   },
 ): Promise<void> {
   const ref = toComputerRef(computer);
-  const deadline = computerActiveDeadline(deps.sandbox, ref, computer.runningSince);
+  const deadline = computerActiveDeadline(deps.sandbox, ref, computerActiveEpoch(computer));
   if (deadline && deadline.getTime() <= Date.now() && !hasActiveComputerControl(computer)) return;
   scheduleComputerSleep(deps.jobs, computer.id);
   await deps.sandbox.keepAlive?.(ref, { onlyIfRunning: true });
@@ -230,25 +236,35 @@ export async function sleepComputerIfIdle(
 ): Promise<void> {
   if (!activeSince && !computerIdleSleepEnabled()) return;
   let computer = await loadComputer(deps.prisma, computerId);
-  if (!computer?.providerRef || computer.state !== "running" || computer.kind === "desktop") return;
+  const staleClaim = (row: NonNullable<typeof computer>) =>
+    Boolean(
+      activeSince &&
+        row.state === "suspending" &&
+        !row.stopRequestedAt &&
+        Date.now() - row.updatedAt.getTime() >= ABANDONED_ACTIVE_LIMIT_CLAIM_MS,
+    );
+  if (
+    !computer?.providerRef ||
+    (computer.state !== "running" && !staleClaim(computer)) ||
+    computer.kind === "desktop"
+  )
+    return;
 
-  const deadline = computerActiveDeadline(
-    deps.sandbox,
-    toComputerRef(computer),
-    computer.runningSince,
-  );
-  if (activeSince && (!deadline || computer.runningSince?.toISOString() !== activeSince)) return;
+  const epoch = computerActiveEpoch(computer);
+  const deadline = computerActiveDeadline(deps.sandbox, toComputerRef(computer), epoch);
+  const atLimit = Boolean(activeSince && deadline && epoch?.toISOString() === activeSince);
+  if (activeSince && !atLimit) return;
   const retry = (retryAfterMs = 0, whileInUse = false) => {
-    if (activeSince && computer?.runningSince) {
+    if (activeSince && epoch) {
       const baseDelay = whileInUse ? Math.min(60_000, sandboxIdleMs() / 2) : sandboxIdleMs();
       const at = new Date(Date.now() + Math.max(baseDelay, Math.min(retryAfterMs, 60 * 60_000)));
-      void scheduleComputerActiveLimit(deps.jobs, computerId, computer.runningSince, at);
+      void scheduleComputerActiveLimit(deps.jobs, computerId, epoch, at);
     } else {
       scheduleComputerSleep(deps.jobs, computerId, retryAfterMs);
     }
   };
-  if (deadline && activeSince && deadline.getTime() > Date.now()) {
-    await scheduleComputerActiveLimit(deps.jobs, computerId, computer.runningSince!, deadline);
+  if (deadline && activeSince && epoch && deadline.getTime() > Date.now()) {
+    await scheduleComputerActiveLimit(deps.jobs, computerId, epoch, deadline);
     return;
   }
   // A distinct key keeps the maximum runtime from moving when viewers reschedule idle sleep.
@@ -257,8 +273,8 @@ export async function sleepComputerIfIdle(
   if (computer.controlBotId && computer.controlLeaseId && !hasActiveComputerControl(computer)) {
     await expireComputerControl(deps, computer.id, computer.controlLeaseId);
     computer = await loadComputer(deps.prisma, computerId);
-    if (!computer?.providerRef || computer.state !== "running") return;
-    if (activeSince && computer.runningSince?.toISOString() !== activeSince) return;
+    if (!computer?.providerRef || (computer.state !== "running" && !staleClaim(computer))) return;
+    if (activeSince && computerActiveEpoch(computer)?.toISOString() !== activeSince) return;
   }
   const ref = toComputerRef(computer);
   const protectUse = async () => {
@@ -275,16 +291,21 @@ export async function sleepComputerIfIdle(
   if (activeSince && computer.executionRunId) {
     const { executionRunId } = computer;
     const run = await deps.prisma.run.findFirst({
-      where: { id: executionRunId, spaceId: computer.spaceId },
-      select: { status: true },
+      where: { id: executionRunId, spaceId: computer.spaceId, ...executingRun(new Date()) },
+      select: { id: true },
     });
-    if (run && !["completed", "failed", "cancelled"].includes(run.status)) {
+    if (run) {
       retry();
       return;
     }
-    // A stranded pre-lease binding to an ended run must not hold a new runtime indefinitely.
+    // A stranded pre-lease binding without an executing run must not hold a runtime indefinitely.
     const cleared = await deps.prisma.computer.updateMany({
-      where: { id: computerId, state: "running", executionRunId, updatedAt: computer.updatedAt },
+      where: {
+        id: computerId,
+        state: computer.state,
+        executionRunId,
+        updatedAt: computer.updatedAt,
+      },
       data: {
         executionRunId: null,
         executionBotId: null,
@@ -333,14 +354,19 @@ export async function sleepComputerIfIdle(
     return;
   }
 
-  const checkpointedAt = new Date(Math.max(Date.now(), computer.updatedAt.getTime() + 1));
-  const parked = activeSince
-    ? await parkedTakeoverLeases(deps.prisma, computerId, checkpointedAt)
-    : [];
+  const now = new Date();
+  const checkpointedAt = new Date(Math.max(now.getTime(), computer.updatedAt.getTime() + 1));
+  const parked = activeSince ? await parkedTakeoverLeases(deps.prisma, computerId, now) : [];
+  const epochGuard = activeSince
+    ? {
+        runningSince: computer.runningSince ?? null,
+        runningObservedAt: computer.runningObservedAt ?? null,
+      }
+    : {};
   const limitGuard = (now: Date): Prisma.ComputerWhereInput =>
     activeSince
       ? {
-          runningSince: new Date(activeSince),
+          ...epochGuard,
           bots: { none: { runs: { some: executingRun(now) } } },
           OR: [
             { controlHolder: { not: "user" } },
@@ -353,7 +379,7 @@ export async function sleepComputerIfIdle(
   const recorded = await deps.prisma.computer.updateMany({
     where: {
       id: computerId,
-      state: "running",
+      state: computer.state,
       maintenanceId: null,
       providerRef: computer.providerRef,
       ...(computer.providerAuthority !== undefined
@@ -364,8 +390,8 @@ export async function sleepComputerIfIdle(
       stopRequestedAt: null,
       updatedAt: computer.updatedAt,
       executionRunId: null,
-      ...limitGuard(checkpointedAt),
-      ...blockingLeases(parked, checkpointedAt),
+      ...limitGuard(now),
+      ...blockingLeases(parked, now),
     },
     data: { state: "suspending", updatedAt: checkpointedAt },
   });
@@ -379,13 +405,13 @@ export async function sleepComputerIfIdle(
     providerRef: computer.providerRef,
     kind: computer.kind,
     // The database revokes screen capabilities when running becomes suspending.
-    screenGeneration: computer.screenGeneration + 1,
+    screenGeneration: computer.screenGeneration + (computer.state === "running" ? 1 : 0),
     maintenanceId: null,
     ...(computer.providerAuthority !== undefined
       ? { providerAuthority: computer.providerAuthority }
       : {}),
     updatedAt: checkpointedAt,
-    ...(activeSince ? { runningSince: new Date(activeSince) } : {}),
+    ...epochGuard,
   };
 
   let damaged = false;
@@ -481,6 +507,7 @@ export async function sleepComputerIfIdle(
         state,
         stopRequestedAt: null,
         ...(computer.runningSince ? { runningSince: null } : {}),
+        ...(computer.runningObservedAt ? { runningObservedAt: null } : {}),
         ...(pauseReason ? { suspensionReason: pauseReason } : {}),
         ...(damaged || stopped === "gone" ? { restorePending: true } : {}),
         ...(stopped === "gone" ? { providerRef: null } : {}),
@@ -517,6 +544,8 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
       state: true,
       homeRevisionAt: true,
       runningSince: true,
+      runningObservedAt: true,
+      stopRequestedAt: true,
       executionRunId: true,
       restorePending: true,
       spaceId: true,

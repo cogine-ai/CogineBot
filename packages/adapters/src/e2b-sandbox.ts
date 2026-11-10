@@ -27,7 +27,7 @@ import type {
   TerminalRequest,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
-import { SandboxCommandExitError } from "@rakazo/adapter-kit";
+import { SandboxCommandExitError, SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { sandboxIdleMs } from "./computer-idle.js";
 import { normalizeWorkspacePath, shellQuote, workspacePath } from "./computer-support.js";
@@ -35,7 +35,7 @@ import {
   PORTABLE_TRANSFER_BATCH_BYTES,
   shouldSkipPortableWorkspaceFile,
 } from "./computer-workspace.js";
-import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
+import { LinuxDesktop, type LinuxDesktopHost, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
 import { streamWorkspaceBody } from "./workspace-save-policy.js";
@@ -155,21 +155,25 @@ export class E2BSandboxProvider implements SandboxProvider {
     return true;
   }
 
-  private readonly desktops = new LinuxDesktop({
-    environment: async () => ({
-      homeDir: "/home/user",
-      workspaceDir: E2B_WORKSPACE,
-      browserProfilesDir: E2B_BROWSER_PROFILES,
-      displayStart: 20,
-      portStart: 6100,
-    }),
-    run: async (computer, command, context) => {
-      const result = await this.runSetupCommand(await this.box(computer), command, context.signal);
-      return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
-    },
-    screenUrl: async (computer, port) =>
-      `https://${(await this.box(computer)).getHost(port)}/vnc.html`,
-  });
+  private readonly desktops = new LinuxDesktop(this.desktopHost((computer) => this.box(computer)));
+
+  private desktopHost(box: (computer: ComputerRef) => Promise<Sandbox>): LinuxDesktopHost {
+    return {
+      environment: async () => ({
+        homeDir: "/home/user",
+        workspaceDir: E2B_WORKSPACE,
+        browserProfilesDir: E2B_BROWSER_PROFILES,
+        displayStart: 20,
+        portStart: 6100,
+      }),
+      run: async (computer, command, context) => {
+        const result = await this.runSetupCommand(await box(computer), command, context.signal);
+        return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+      },
+      screenUrl: async (computer, port) =>
+        `https://${(await box(computer)).getHost(port)}/vnc.html`,
+    };
+  }
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, Promise<Sandbox>>();
   private readonly lastTouchedAt = new Map<string, number>();
@@ -296,9 +300,13 @@ export class E2BSandboxProvider implements SandboxProvider {
           const ref = { id, providerRef: id, kind: "e2b" as const, botId: request.botId };
           let started = false;
           if (this.sdk.getInfo) {
-            const state = await this.inspectPowerState(ref, _context).catch(() => "unknown");
+            const signal = AbortSignal.any([_context.signal, AbortSignal.timeout(10_000)]);
+            const state = await this.inspectPowerState(ref, { ..._context, signal }).catch(
+              () => "unknown",
+            );
             _context.signal.throwIfAborted();
             assertCurrent();
+            if (state === "unknown") throw new SandboxUnavailableError();
             started = state === "stopped";
             if (started || state === "gone") this.forgetCached(id);
           }
@@ -404,7 +412,15 @@ export class E2BSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
-    return this.desktops.connectScreen(computer, request, context);
+    if (!request.onlyIfRunning) return this.desktops.connectScreen(computer, request, context);
+    const desktop = await this.attachRunningBox(computer, context.signal);
+    if (!desktop) return { url: null, mimeType: "text/html", close: async () => undefined };
+    return this.desktops.connectScreen(
+      computer,
+      request,
+      context,
+      this.desktopHost(async () => desktop),
+    );
   }
   async connectTerminal(computer: ComputerRef, request: TerminalRequest, context: AdapterContext) {
     return this.desktops.connectTerminal(computer, request, context);

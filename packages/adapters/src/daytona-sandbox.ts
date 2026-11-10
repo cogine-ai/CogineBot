@@ -33,7 +33,7 @@ import {
   PORTABLE_TRANSFER_BATCH_BYTES,
   shouldSkipPortableWorkspaceFile,
 } from "./computer-workspace.js";
-import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
+import { LinuxDesktop, type LinuxDesktopHost, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
 
@@ -63,38 +63,45 @@ export class DaytonaSandboxProvider implements SandboxProvider {
   private readonly computerOperations = new Map<string, { pending: number }>();
   private readonly workspaceRoots = new Map<string, string>();
   private readonly prepared = new Set<string>();
-  private readonly desktops = new LinuxDesktop({
-    environment: async (computer) => {
-      const sandbox = await this.box(computer);
-      return {
-        homeDir: (await sandbox.getUserHomeDir()) ?? "/home/daytona",
-        workspaceDir: await this.workspaceRoot(sandbox),
-        browserProfilesDir: path.posix.join(await this.workspaceRoot(sandbox), ".browser-profiles"),
-        displayStart: 20,
-        portStart: 6100,
-      };
-    },
-    run: async (computer, command, context) => {
-      context.signal.throwIfAborted();
-      const result = await (await this.box(computer)).process.executeCommand(
-        `bash -c ${shellQuote(command)}`,
-        undefined,
-        undefined,
-        boundedSandboxCommandTimeoutMs(undefined) / 1000,
-      );
-      return { code: result.exitCode, stdout: result.result, stderr: result.result };
-    },
-    screenUrl: async (computer, port, context) => {
-      const preview = await this.screenPreview(
-        await this.box(computer),
-        screenSessionKey(context),
-        port,
-      );
-      const url = new URL(preview.url);
-      url.pathname = "/vnc.html";
-      return url.toString();
-    },
-  });
+  private readonly desktops = new LinuxDesktop(this.desktopHost((computer) => this.box(computer)));
+
+  private desktopHost(box: (computer: ComputerRef) => Promise<Sandbox>): LinuxDesktopHost {
+    return {
+      environment: async (computer) => {
+        const sandbox = await box(computer);
+        return {
+          homeDir: (await sandbox.getUserHomeDir()) ?? "/home/daytona",
+          workspaceDir: await this.workspaceRoot(sandbox),
+          browserProfilesDir: path.posix.join(
+            await this.workspaceRoot(sandbox),
+            ".browser-profiles",
+          ),
+          displayStart: 20,
+          portStart: 6100,
+        };
+      },
+      run: async (computer, command, context) => {
+        context.signal.throwIfAborted();
+        const result = await (await box(computer)).process.executeCommand(
+          `bash -c ${shellQuote(command)}`,
+          undefined,
+          undefined,
+          boundedSandboxCommandTimeoutMs(undefined) / 1000,
+        );
+        return { code: result.exitCode, stdout: result.result, stderr: result.result };
+      },
+      screenUrl: async (computer, port, context) => {
+        const preview = await this.screenPreview(
+          await box(computer),
+          screenSessionKey(context),
+          port,
+        );
+        const url = new URL(preview.url);
+        url.pathname = "/vnc.html";
+        return url.toString();
+      },
+    };
+  }
   private readonly preparations = new Map<string, Promise<void>>();
   private readonly screenPreviews = new Map<
     string,
@@ -240,7 +247,23 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
-    return this.desktops.connectScreen(computer, request, context);
+    if (!request.onlyIfRunning) return this.desktops.connectScreen(computer, request, context);
+    const sandbox = await withAbort(
+      this.client.get(computer.providerRef || computer.id),
+      context.signal,
+    );
+    if (
+      sandbox.id !== (computer.providerRef || computer.id) ||
+      sandbox.state !== SandboxState.STARTED
+    ) {
+      return { url: null, mimeType: "text/html", close: async () => undefined };
+    }
+    return this.desktops.connectScreen(
+      computer,
+      request,
+      context,
+      this.desktopHost(async () => sandbox),
+    );
   }
   async connectTerminal(computer: ComputerRef, request: TerminalRequest, context: AdapterContext) {
     return this.desktops.connectTerminal(computer, request, context);

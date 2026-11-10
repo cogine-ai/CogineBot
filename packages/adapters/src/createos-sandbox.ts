@@ -522,6 +522,9 @@ export class CreateOSSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
+    if (request.onlyIfRunning && (await this.inspectPowerState(computer, context)) !== "running") {
+      return emptyScreenSession();
+    }
     return this.connectAssignedScreen(computer, request, context, 0);
   }
 

@@ -860,6 +860,7 @@ export function ShellPage() {
     botId: string;
     isCurrent: () => boolean;
     promise: Promise<ComputerStatus>;
+    onlyIfRunning: boolean;
   } | null>(null);
   function invalidateComputerBoot() {
     computerBootEpoch.current += 1;
@@ -3986,11 +3987,13 @@ export function ShellPage() {
     takeControl,
     overlay,
     force = false,
+    onlyIfRunning = false,
   }: {
     botId: string;
     takeControl: boolean;
     overlay: boolean;
     force?: boolean;
+    onlyIfRunning?: boolean;
   }) {
     const cached = computerCacheRef.current.get(targetBotId);
     const targetComputer = computer?.botId === targetBotId ? computer : (cached?.computer ?? null);
@@ -4002,7 +4005,12 @@ export function ShellPage() {
     const targetScreen = computer?.botId === targetBotId ? screenUrl : (cached?.screenUrl ?? null);
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
-    let provision = pending?.botId === targetBotId && pending.isCurrent() ? pending : null;
+    let provision =
+      pending?.botId === targetBotId &&
+      pending.isCurrent() &&
+      (onlyIfRunning || !pending.onlyIfRunning)
+        ? pending
+        : null;
     let stillThisBoot = provision?.isCurrent;
     if (!stillThisBoot) {
       const epoch = ++computerBootEpoch.current;
@@ -4029,8 +4037,10 @@ export function ShellPage() {
       if (needsBoot) {
         const client = createSpaceRpc(spaceId ?? null, isCurrent);
         // Claim the provision before dispatch so both views share only the in-flight boot.
-        const promise = Promise.resolve().then(() => client.computer.boot({ botId: targetBotId }));
-        const attempt = { botId: targetBotId, isCurrent, promise };
+        const promise = Promise.resolve().then(() =>
+          client.computer.boot({ botId: targetBotId, ...(onlyIfRunning ? { onlyIfRunning } : {}) }),
+        );
+        const attempt = { botId: targetBotId, isCurrent, promise, onlyIfRunning };
         provision = attempt;
         computerBootAttempt.current = attempt;
         const clear = () => {
@@ -4162,6 +4172,7 @@ export function ShellPage() {
         takeControl: false,
         overlay: false,
         force: true,
+        onlyIfRunning: true,
       }).catch(() => undefined);
     })();
     return () => {

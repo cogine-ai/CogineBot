@@ -13,6 +13,17 @@ const context = {
 };
 
 describe("DaytonaSandboxProvider", () => {
+  it("leaves a stopped computer stopped when attaching a screen for attendance", async () => {
+    const f = daytonaFixture({ id: "retained", state: "stopped" });
+    const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, f.client);
+    const ref = { id: "retained", providerRef: "retained", kind: "daytona" as const, botId: "bot" };
+    await expect(
+      provider.connectScreen(ref, { view: "stream", onlyIfRunning: true }, context),
+    ).resolves.toMatchObject({ url: null });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.executeCommand).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });

@@ -22,6 +22,58 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it("does not connect or wake a paused computer from the screen path", async () => {
+    const attachRunning = vi.fn().mockResolvedValue(undefined);
+    const connect = vi.fn();
+    const provider = new E2BSandboxProvider("test-key", {
+      attachRunning,
+      connect,
+      create: vi.fn(),
+      pause: vi.fn(),
+    });
+    const ref = { id: "paused", providerRef: "paused", kind: "e2b" as const, botId: "bot" };
+    await expect(
+      provider.connectScreen(ref, { view: "stream", onlyIfRunning: true }, context),
+    ).resolves.toMatchObject({ url: null });
+    expect(attachRunning).toHaveBeenCalledWith(
+      "paused",
+      expect.objectContaining({ signal: context.signal }),
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("reports a verified same-reference resume and refuses an unverified reconnect", async () => {
+    const connect = vi.fn().mockResolvedValue({ sandboxId: "retained" });
+    const getInfo = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Synthetic power probe failure"))
+      .mockResolvedValueOnce({ sandboxId: "retained", state: "paused" })
+      .mockResolvedValueOnce({ sandboxId: "retained", state: "running" });
+    const provider = new E2BSandboxProvider("test-key", {
+      getInfo,
+      connect,
+      create: vi.fn(),
+      pause: vi.fn(),
+    });
+    const request = {
+      botId: "bot",
+      homePath: "/unused",
+      providerKind: "e2b" as const,
+      providerRef: "retained",
+    };
+    await expect(provider.provision(request, context)).rejects.toMatchObject({
+      name: "SandboxUnavailableError",
+    });
+    expect(connect).not.toHaveBeenCalled();
+    await expect(provider.provision(request, context)).resolves.toMatchObject({
+      providerRef: "retained",
+      fresh: false,
+      started: true,
+    });
+    await expect(provider.provision(request, context)).resolves.not.toHaveProperty("started");
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
   it.each<[string, boolean]>([
     ["success", false],
     ["transport", false],

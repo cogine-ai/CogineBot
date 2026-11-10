@@ -320,6 +320,9 @@ export class BoxSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
+    if (request.onlyIfRunning && (await this.inspectPowerState(computer, context)) !== "running") {
+      return { url: null, mimeType: "text/html", close: async () => undefined };
+    }
     return this.desktops.connectScreen(computer, request, context);
   }
   async connectTerminal(computer: ComputerRef, request: TerminalRequest, context: AdapterContext) {

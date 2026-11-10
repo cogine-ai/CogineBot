@@ -724,6 +724,7 @@ export async function provisionComputer(
         ...(runtimeStartedAt || (newRuntime && existing.runningSince)
           ? { runningSince: runtimeStartedAt ?? null }
           : {}),
+        ...(newRuntime && existing.runningObservedAt ? { runningObservedAt: null } : {}),
         ...(existing.suspensionReason ? { suspensionReason: null } : {}),
         ...(!reconnecting || recoveryStarted
           ? {
@@ -806,6 +807,9 @@ export async function provisionComputer(
           stopRequestedAt: null,
           // The provider completed the restart even if preparation did not.
           ...(restarted ? clearedWorkspaceSaveStatus : {}),
+          ...((restarted || rolledBack) && existing.runningObservedAt
+            ? { runningObservedAt: null }
+            : {}),
           ...(state === "running" && restarted && runtimeStartedAt
             ? { runningSince: runtimeStartedAt }
             : rolledBack && existing.runningSince
@@ -1413,6 +1417,7 @@ export async function replaceComputer(
       data: {
         state: "stopped",
         runningSince: null,
+        runningObservedAt: null,
         suspensionReason: null,
         providerRef: null,
         restorePending: true,

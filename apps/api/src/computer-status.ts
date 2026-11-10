@@ -1,6 +1,7 @@
 import type { SandboxProvider } from "@rakazo/adapter-kit";
 import {
   computerActiveDeadline,
+  computerActiveEpoch,
   computerRecoveryProviderUnavailable,
   computerStopClaimIsStale,
   computerSupportsTerminal,
@@ -76,6 +77,7 @@ export function toComputerStatus(
     stopRequestedAt?: Date | null;
     updatedAt?: Date;
     runningSince?: Date | null;
+    runningObservedAt?: Date | null;
     suspensionReason?: string | null;
     workspaceSaveProgress?: unknown;
     workspaceSaveFailure?: unknown;
@@ -158,7 +160,7 @@ export function toComputerStatus(
             homeKey: computer.homeKey,
             providerRef: computer.providerRef,
           }),
-          computer.runningSince,
+          computerActiveEpoch(computer),
         )
       : undefined;
   const screen = computerScreenSize(computer?.kind);
