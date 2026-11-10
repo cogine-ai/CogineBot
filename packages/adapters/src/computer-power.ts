@@ -172,9 +172,10 @@ export async function requestClaimedComputerStop(
   ref: ComputerRef,
   context: AdapterContext,
   operation: "stop" | "destroy" = "stop",
+  options?: Parameters<SandboxProvider["destroy"]>[2],
 ): Promise<"stopped" | "gone"> {
   await markClaimedComputerStop(deps.prisma, claim, context);
-  return confirmComputerStop(deps.sandbox, ref, context, operation);
+  return confirmComputerStop(deps.sandbox, ref, context, operation, options);
 }
 
 export async function confirmComputerStop(
@@ -182,14 +183,17 @@ export async function confirmComputerStop(
   ref: ComputerRef,
   context: AdapterContext,
   operation: "stop" | "destroy" = "stop",
+  options?: Parameters<SandboxProvider["destroy"]>[2],
 ): Promise<"stopped" | "gone"> {
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]);
   try {
     signal.throwIfAborted();
-    const outcome = await withAbort(
-      Promise.resolve(sandbox[operation](ref, { ...context, signal })),
-      signal,
-    );
+    const providerContext = { ...context, signal };
+    const request =
+      operation === "destroy" && options
+        ? sandbox.destroy(ref, providerContext, options)
+        : sandbox[operation](ref, providerContext);
+    const outcome = await withAbort(Promise.resolve(request), signal);
     return operation === "destroy" || outcome === "gone" ? "gone" : "stopped";
   } catch (error) {
     if (hasErrorName(error, "SandboxNotFoundError") && !isSandboxUnsafeStop(error)) return "gone";

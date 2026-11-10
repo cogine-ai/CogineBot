@@ -204,7 +204,12 @@ export async function quarantineAbandonedComputerOperation(
       stopRequestedAt: computer.stopRequestedAt,
       ...heldByNobodyElse(lease),
     },
-    data: { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl },
+    data: {
+      state: "quarantined",
+      stopRequestedAt: null,
+      ...(state === "restoring" ? { restorePending: true } : {}),
+      ...stoppedComputerControl,
+    },
   });
   return marked.count === 1;
 }
@@ -612,6 +617,9 @@ export async function provisionComputer(
           provisioned,
           cleanup,
           provisioned.fresh ? "destroy" : "stop",
+          provisioned.kind === "desktop" && provisioned.fresh
+            ? { retireWorkspace: true }
+            : undefined,
         );
       } catch (failure) {
         // The next claimant may have adopted the same identity.
@@ -1198,6 +1206,9 @@ export async function replaceComputer(
         oldRef,
         context,
         "destroy",
+        oldRef.kind === "desktop" && existing.restorePending
+          ? { retireWorkspace: true }
+          : undefined,
       );
       stopRequested = true;
     }

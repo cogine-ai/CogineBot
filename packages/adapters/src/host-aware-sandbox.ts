@@ -230,8 +230,15 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.teardownProvider(computer).stop(computer, context);
   }
 
-  destroy(computer: ComputerRef, context: AdapterContext) {
-    return this.teardownProvider(computer).destroy(computer, context);
+  destroy(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: Parameters<SandboxProvider["destroy"]>[2],
+  ) {
+    const provider = this.teardownProvider(computer);
+    return options
+      ? provider.destroy(computer, context, options)
+      : provider.destroy(computer, context);
   }
 
   private teardownProvider(computer: ComputerRef): SandboxProvider {

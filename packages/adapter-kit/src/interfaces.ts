@@ -196,7 +196,11 @@ export interface SandboxProvider {
   ): Promise<void>;
   /** Resolve only after the provider confirms the computer is stopped or gone. */
   stop(computer: ComputerRef, context: AdapterContext): Promise<void> | Promise<"gone" | undefined>;
-  destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  destroy(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { retireWorkspace?: boolean },
+  ): Promise<void>;
 }
 
 export interface ConnectorProvider {

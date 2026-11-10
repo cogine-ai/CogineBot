@@ -3476,6 +3476,7 @@ export function createRouter(deps: RouterDeps) {
                 bots: { some: { userId: context.actor.userId, archivedAt: null } },
               },
             },
+            include: { computer: { select: { state: true, stopRequestedAt: true } } },
           });
           if (!update) throw new ORPCError("CONFLICT");
           const failed = await tx.computerUpdate.updateMany({
@@ -3483,9 +3484,16 @@ export function createRouter(deps: RouterDeps) {
             data: { status: "failed" },
           });
           if (failed.count !== 1) throw new ORPCError("CONFLICT");
+          const { state, stopRequestedAt } = update.computer;
+          const quarantine = stopRequestedAt || state === "restoring" || state === "quarantined";
           const released = await tx.computer.updateMany({
-            where: { id: update.computerId, maintenanceId: update.id },
-            data: { maintenanceId: null, state: "error" },
+            where: { id: update.computerId, maintenanceId: update.id, state, stopRequestedAt },
+            data: {
+              maintenanceId: null,
+              state: quarantine ? "quarantined" : state === "needs_recovery" ? state : "error",
+              ...(state === "restoring" ? { restorePending: true } : {}),
+              ...(quarantine ? { stopRequestedAt: null, ...stoppedComputerControl } : {}),
+            },
           });
           if (released.count !== 1) throw new ORPCError("CONFLICT");
         });

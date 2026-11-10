@@ -243,6 +243,44 @@ describe("computer recovery preserves live work", () => {
     expect(row.state).toBe("running");
   });
 
+  it("does not let an interrupted Desktop import write into a retired workspace's successor", async () => {
+    const { deps, first, root } = await fixture("desktop");
+    const successor = new DesktopSandboxProvider({ root });
+    let release!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const content = new TextEncoder().encode("late");
+    const importResult = deps.sandbox.importWorkspace(
+      first,
+      (async function* () {
+        started();
+        await gate;
+        yield { path: "notes.txt", content };
+      })(),
+      context,
+    );
+    const checked = expect(importResult).rejects.toThrow("workspace was replaced during restore");
+    try {
+      await paused;
+      await successor.destroy(first, context, { retireWorkspace: true });
+      const next = await successor.provision({ botId: "bot", homePath: root }, context);
+      await successor.writeFile(next, {
+        path: "notes.txt",
+        content: new TextEncoder().encode("new"),
+      });
+      release();
+      await checked;
+      expect(new TextDecoder().decode(await successor.readFile(next, "notes.txt"))).toBe("new");
+    } finally {
+      release();
+    }
+  });
+
   it("uses only one automatic attempt per saved workspace", async () => {
     const { deps, row, first } = await fixture();
     const stop = vi.spyOn(deps.sandbox, "stop").mockResolvedValue(undefined);

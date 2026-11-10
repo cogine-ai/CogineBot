@@ -2665,10 +2665,14 @@ describe("integration setup authorization", () => {
 });
 
 describe("interrupted computer reservation release", () => {
-  function fixture() {
+  function fixture(state = "booting") {
     const order: string[] = [];
     const computerUpdate = {
-      findFirst: vi.fn(async () => ({ id: "update-1", computerId: "computer-1" })),
+      findFirst: vi.fn(async () => ({
+        id: "update-1",
+        computerId: "computer-1",
+        computer: { state, stopRequestedAt: null },
+      })),
       updateMany: vi.fn(async () => {
         order.push("operation");
         return { count: 1 };
@@ -2728,16 +2732,41 @@ describe("interrupted computer reservation release", () => {
         status: "interrupted",
         computer: { spaceId: "space-1", bots: { some: { userId: "user-1", archivedAt: null } } },
       },
+      include: { computer: { select: { state: true, stopRequestedAt: true } } },
     });
     expect(computerUpdate.updateMany).toHaveBeenCalledWith({
       where: { id: "update-1", status: "interrupted" },
       data: { status: "failed" },
     });
     expect(computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", maintenanceId: "update-1" },
+      where: {
+        id: "computer-1",
+        maintenanceId: "update-1",
+        state: "booting",
+        stopRequestedAt: null,
+      },
       data: { maintenanceId: null, state: "error" },
     });
     expect(order).toEqual(["operation", "computer"]);
+  });
+  it("keeps an interrupted restore quarantined after attended release", async () => {
+    const { call, computer } = fixture("restoring");
+    const { response } = await call(true, true);
+    expect(response.status).toBe(200);
+    expect(computer.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "computer-1",
+        maintenanceId: "update-1",
+        state: "restoring",
+        stopRequestedAt: null,
+      },
+      data: expect.objectContaining({
+        maintenanceId: null,
+        state: "quarantined",
+        restorePending: true,
+        stopRequestedAt: null,
+      }),
+    });
   });
 });
 
