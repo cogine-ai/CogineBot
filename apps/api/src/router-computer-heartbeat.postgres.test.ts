@@ -110,6 +110,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     keepAlive.mockClear();
     enqueue.mockClear();
     stopProvider.mockClear();
+    exportWorkspace.mockClear();
     providerRead.mockClear();
     casCounts.length = 0;
     afterSnapshot = undefined;
@@ -191,6 +192,31 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       providerRef: "heartbeat-provider",
       homeRevision: "last-saved-revision",
       homeRevisionAt: null,
+    });
+  });
+
+  it("stops a provider with a pending restore without exporting its incomplete workspace", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        state: "error",
+        controlBotId: botId,
+        homeRevision: "last-saved-revision",
+        restorePending: true,
+      },
+    });
+
+    await expect(stopComputer()).resolves.toMatchObject({ state: "stopped" });
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(stopProvider).toHaveBeenCalledOnce();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      state: "stopped",
+      providerRef: "heartbeat-provider",
+      homeRevision: "last-saved-revision",
+      homeRevisionAt: null,
+      restorePending: true,
     });
   });
 

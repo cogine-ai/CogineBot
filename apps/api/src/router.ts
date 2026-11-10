@@ -3183,6 +3183,7 @@ export function createRouter(deps: RouterDeps) {
           kind: bot.computer.kind,
           providerRef: bot.computer.providerRef,
           screenGeneration: bot.computer.screenGeneration + 1,
+          restorePending: bot.computer.restorePending,
           updatedAt: claimStamp,
           maintenanceId: null,
         };
@@ -3191,6 +3192,7 @@ export function createRouter(deps: RouterDeps) {
             id: bot.computer.id,
             state: { equals: bot.computer.state, notIn: ["booting", "suspending"] },
             screenGeneration: bot.computer.screenGeneration,
+            restorePending: bot.computer.restorePending,
             providerRef: bot.computer.providerRef,
             updatedAt: bot.computer.updatedAt,
             maintenanceId: null,
@@ -3231,9 +3233,11 @@ export function createRouter(deps: RouterDeps) {
             const ctx = computerContext(context.actor, bot.id, "stop");
             const ref = toComputerRef(bot.computer);
             try {
-              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
-                claim: suspensionClaim,
-              });
+              if (!bot.computer.restorePending) {
+                await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
+                  claim: suspensionClaim,
+                });
+              }
               stopStarted = true;
               await deps.sandbox.stop(ref, ctx);
             } catch (error) {
