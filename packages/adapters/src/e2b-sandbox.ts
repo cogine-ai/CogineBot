@@ -133,7 +133,14 @@ class RetainedE2BSandbox extends Sandbox {
     if (result.data.state !== "running") {
       throw new Error("E2B retained-screen state is unknown");
     }
-    if (result.data.lifecycle?.autoResume !== false) {
+    // All computers created by this integration explicitly opt out. Older API
+    // responses can omit lifecycle. Never infer policy for an unmarked sandbox.
+    const autoResume =
+      result.data.lifecycle?.autoResume ??
+      (result.data.metadata?.rakazo === "computer" && result.data.metadata.botId
+        ? false
+        : undefined);
+    if (autoResume !== false) {
       throw new Error("E2B retained-screen cleanup requires auto-resume to be disabled");
     }
     if (result.data.sandboxID !== id || !result.data.envdVersion) {
@@ -349,6 +356,8 @@ export class E2BSandboxProvider implements SandboxProvider {
     };
     try {
       if (id) {
+        // Before dispatch only. Once sent, keep the receipt available for lifecycle recovery.
+        _context.signal.throwIfAborted();
         try {
           const ref = { id, providerRef: id, kind: "e2b" as const, botId: request.botId };
           const desktop = await this.box(ref, true);

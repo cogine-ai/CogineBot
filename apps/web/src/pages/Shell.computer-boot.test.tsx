@@ -1587,6 +1587,32 @@ it("keeps a valid computer provision when only the same bot's conversation histo
   expect(boundary.call.mock.calls.filter(([path]) => path === "computer.takeover")).toHaveLength(0);
 });
 
+it("continues an explicit Open when the in-flight passive boot finds a stopped computer", async () => {
+  currentComputer = status("chief", "running");
+  const activeBoot = deferred<ComputerStatus>();
+  boots.push(activeBoot);
+  boundary.bootstrap.mockResolvedValue({ ...bootstrap(), thread: snapshot(currentComputer) });
+  const otherwise = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path: string, ...args: unknown[]) =>
+    path === "computer.screenUrl" ? Promise.resolve({ url: null }) : otherwise(path, ...args),
+  );
+  await render();
+  await openPanelAndStartComputer();
+  expect(callsTo("computer.boot").map(([, input]) => input)).toEqual([
+    { botId: "chief", onlyIfRunning: true },
+  ]);
+  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  expect(bootCalls).toEqual(["chief"]);
+  await act(async () => firstBoot.resolve(status("chief", "stopped")));
+  expect(callsTo("computer.boot").map(([, input]) => input)).toEqual([
+    { botId: "chief", onlyIfRunning: true },
+    { botId: "chief" },
+  ]);
+  await act(async () => activeBoot.resolve(currentComputer));
+  expect(bootCalls).toEqual(["chief", "chief"]);
+  expect(callsTo("computer.takeover")).toHaveLength(0);
+});
+
 it.each(["space-1", null])(
   "keeps a visible recovery provision when reselecting the current chat with stored Space %s",
   async (storedSpace) => {

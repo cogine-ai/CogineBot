@@ -860,6 +860,7 @@ export function ShellPage() {
     botId: string;
     isCurrent: () => boolean;
     promise: Promise<ComputerStatus>;
+    intent: { allowWake: boolean };
   } | null>(null);
   function invalidateComputerBoot() {
     computerBootEpoch.current += 1;
@@ -4005,6 +4006,7 @@ export function ShellPage() {
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
     let provision = pending?.botId === targetBotId && pending.isCurrent() ? pending : null;
+    if (provision && !onlyIfRunning) provision.intent.allowWake = true;
     let stillThisBoot = provision?.isCurrent;
     if (!stillThisBoot) {
       const epoch = ++computerBootEpoch.current;
@@ -4031,10 +4033,28 @@ export function ShellPage() {
       if (needsBoot) {
         const client = createSpaceRpc(spaceId ?? null, isCurrent);
         // Claim the provision before dispatch so both views share only the in-flight boot.
-        const promise = Promise.resolve().then(() =>
-          client.computer.boot({ botId: targetBotId, ...(onlyIfRunning ? { onlyIfRunning } : {}) }),
-        );
-        const attempt = { botId: targetBotId, isCurrent, promise };
+        const intent = { allowWake: !onlyIfRunning };
+        const promise = Promise.resolve().then(async () => {
+          const passive = !intent.allowWake;
+          const status = await client.computer.boot({
+            botId: targetBotId,
+            ...(passive ? { onlyIfRunning: true } : {}),
+          });
+          // If the passive read found a stopped or metered computer, honor an
+          // explicit Open that arrived while it was in flight.
+          if (
+            passive &&
+            intent.allowWake &&
+            isCurrent() &&
+            (status.state !== "running" || status.requiresExplicitWake) &&
+            status.state !== "stopping" &&
+            !computerStateRequiresRecovery(status.state)
+          ) {
+            return client.computer.boot({ botId: targetBotId });
+          }
+          return status;
+        });
+        const attempt = { botId: targetBotId, isCurrent, promise, intent };
         provision = attempt;
         computerBootAttempt.current = attempt;
         const clear = () => {

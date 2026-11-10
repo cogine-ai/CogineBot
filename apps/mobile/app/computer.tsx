@@ -342,7 +342,7 @@ export default function Computer() {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
     if (
       computer.state === "booting" ||
-      (computer.state === "running" && computer.requiresExplicitWake) ||
+      computer.requiresExplicitWake ||
       computer.state === "suspended" ||
       savedStoppedComputer ||
       computer.state === "stopping" ||

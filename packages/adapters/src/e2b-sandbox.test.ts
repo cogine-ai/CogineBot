@@ -78,25 +78,52 @@ describe("E2B computer backend", () => {
   it.each([200, 201] as const)(
     "provisions a retained computer from HTTP %s even without lifecycle metadata",
     async (connectStatus) => {
-      await withRetainedE2BServer({ connectStatus }, async (requests, provider) => {
-        const ref = await provider.provision(
+      await withRetainedE2BServer(
+        { connectStatus, autoResume: undefined, managedComputer: true, desktopOutput: true },
+        async (requests, provider) => {
+          const ref = await provider.provision(
+            {
+              botId: "bot",
+              homePath: "/unused",
+              providerKind: "e2b",
+              providerRef: "existing",
+            },
+            context,
+          );
+          expect(ref).toMatchObject({ providerRef: "existing", fresh: false });
+          expect(ref.started).toBe(connectStatus === 201 ? true : undefined);
+          await expect(
+            provider.connectScreen(ref, { view: "stream", onlyIfRunning: true }, context),
+          ).resolves.toMatchObject({ url: expect.stringContaining("/vnc.html") });
+          expect(requests).toEqual([
+            expect.objectContaining({ method: "POST", path: "/sandboxes/existing/connect" }),
+            expect.objectContaining({ method: "GET", path: "/sandboxes/existing" }),
+            expect.objectContaining({ method: "POST", path: "/process.Process/Start" }),
+          ]);
+          expect(JSON.parse(requests[0]!.body)).toEqual({ timeout: expect.any(Number) });
+        },
+      );
+    },
+  );
+
+  it("does not dispatch a retained connect for an already-canceled provision", async () => {
+    await withRetainedE2BServer({ connectStatus: 201 }, async (requests, provider) => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        provider.provision(
           {
             botId: "bot",
             homePath: "/unused",
             providerKind: "e2b",
             providerRef: "existing",
           },
-          context,
-        );
-        expect(ref).toMatchObject({ providerRef: "existing", fresh: false });
-        expect(ref.started).toBe(connectStatus === 201 ? true : undefined);
-        expect(requests).toEqual([
-          expect.objectContaining({ method: "POST", path: "/sandboxes/existing/connect" }),
-        ]);
-        expect(JSON.parse(requests[0]!.body)).toEqual({ timeout: expect.any(Number) });
-      });
-    },
-  );
+          { ...context, signal: controller.signal },
+        ),
+      ).rejects.toBe(controller.signal.reason);
+      expect(requests).toEqual([]);
+    });
+  });
 
   it("replaces a cached computer only after the explicit connect confirms it is gone", async () => {
     const transient = new Error("provider temporarily unavailable");
@@ -456,17 +483,20 @@ describe("E2B computer backend", () => {
   it.each([true, undefined])(
     "does not use an unverified auto-resume policy (%s) for attendance",
     async (autoResume) => {
-      await withRetainedE2BServer({ autoResume }, async (requests, backend) => {
-        await expect(
-          backend.keepAlive(
-            { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
-            { onlyIfRunning: true },
-          ),
-        ).rejects.toThrow(/auto-resume to be disabled/);
-        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
-          "GET /sandboxes/existing",
-        ]);
-      });
+      await withRetainedE2BServer(
+        { autoResume, managedComputer: autoResume === true },
+        async (requests, backend) => {
+          await expect(
+            backend.keepAlive(
+              { id: "existing", providerRef: "existing", kind: "e2b", botId: "home" },
+              { onlyIfRunning: true },
+            ),
+          ).rejects.toThrow(/auto-resume to be disabled/);
+          expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+            "GET /sandboxes/existing",
+          ]);
+        },
+      );
     },
   );
 
@@ -1468,6 +1498,8 @@ async function withRetainedE2BServer(
     execFails?: boolean;
     lookupStatus?: number;
     connectStatus?: 200 | 201;
+    managedComputer?: boolean;
+    desktopOutput?: boolean;
     holdLookup?: (closed: Promise<void>) => void;
   },
   check: (requests: RetainedE2BRequest[], backend: E2BSandboxProvider) => Promise<void>,
@@ -1505,6 +1537,9 @@ async function withRetainedE2BServer(
                   state: options.state ?? "running",
                   envdVersion: "0.3.0",
                   envdAccessToken: "test-envd-token",
+                  metadata: options.managedComputer
+                    ? { rakazo: "computer", botId: "bot" }
+                    : undefined,
                   lifecycle:
                     autoResume === undefined ? undefined : { autoResume, onTimeout: "pause" },
                 },
@@ -1544,6 +1579,17 @@ async function withRetainedE2BServer(
         response.end(
           Buffer.concat([
             envelope({ event: { start: { pid: 42 } } }),
+            ...(options.desktopOutput
+              ? [
+                  envelope({
+                    event: {
+                      data: {
+                        stdout: Buffer.from("RAKAZO_DESKTOP=0:screen-token\n").toString("base64"),
+                      },
+                    },
+                  }),
+                ]
+              : []),
             envelope({ event: { end: { exitCode: 0, exited: true } } }),
             envelope({}, 2),
           ]),
