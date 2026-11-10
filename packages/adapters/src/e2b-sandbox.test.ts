@@ -44,137 +44,88 @@ describe("E2B computer backend", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it("reports a verified same-reference resume and refuses an unverified reconnect", async () => {
-    const connect = vi.fn().mockResolvedValue({ sandboxId: "retained" });
-    const getInfo = vi
+  it.each([false, true])(
+    "uses the explicit connection receipt for the runtime clock (started=%s)",
+    async (started) => {
+      const connect = vi.fn();
+      const first = { sandboxId: "retained" };
+      const second = { sandboxId: "retained" };
+      const connectWithStartReceipt = vi
+        .fn()
+        .mockResolvedValueOnce({ desktop: first, started })
+        .mockResolvedValueOnce({ desktop: second, started: false });
+      const provider = new E2BSandboxProvider("test-key", {
+        connect,
+        connectWithStartReceipt,
+        create: vi.fn(),
+        pause: vi.fn(),
+      });
+      const request = {
+        botId: "bot",
+        homePath: "/unused",
+        providerKind: "e2b" as const,
+        providerRef: "retained",
+      };
+      const firstRef = await provider.provision(request, context);
+      expect(firstRef.started).toBe(started ? true : undefined);
+      expect(firstRef.fresh).toBe(false);
+      await expect(provider.provision(request, context)).resolves.not.toHaveProperty("started");
+      expect(connectWithStartReceipt).toHaveBeenCalledTimes(2);
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([200, 201] as const)(
+    "provisions a retained computer from HTTP %s even without lifecycle metadata",
+    async (connectStatus) => {
+      await withRetainedE2BServer({ connectStatus }, async (requests, provider) => {
+        const ref = await provider.provision(
+          {
+            botId: "bot",
+            homePath: "/unused",
+            providerKind: "e2b",
+            providerRef: "existing",
+          },
+          context,
+        );
+        expect(ref).toMatchObject({ providerRef: "existing", fresh: false });
+        expect(ref.started).toBe(connectStatus === 201 ? true : undefined);
+        expect(requests).toEqual([
+          expect.objectContaining({ method: "POST", path: "/sandboxes/existing/connect" }),
+        ]);
+        expect(JSON.parse(requests[0]!.body)).toEqual({ timeout: expect.any(Number) });
+      });
+    },
+  );
+
+  it("replaces a cached computer only after the explicit connect confirms it is gone", async () => {
+    const transient = new Error("provider temporarily unavailable");
+    const connectWithStartReceipt = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Synthetic power probe failure"))
-      .mockResolvedValueOnce({ sandboxId: "retained", state: "paused" })
-      .mockResolvedValueOnce({ sandboxId: "retained", state: "running" });
+      .mockResolvedValueOnce({ desktop: { sandboxId: "existing" }, started: false })
+      .mockRejectedValueOnce(transient)
+      .mockRejectedValueOnce(new SandboxNotFoundError("E2B sandbox not found"));
+    const create = vi.fn().mockResolvedValue({ sandboxId: "replacement" });
     const provider = new E2BSandboxProvider("test-key", {
-      getInfo,
-      connect,
-      create: vi.fn(),
+      create,
+      connect: vi.fn(),
+      connectWithStartReceipt,
       pause: vi.fn(),
     });
     const request = {
       botId: "bot",
       homePath: "/unused",
       providerKind: "e2b" as const,
-      providerRef: "retained",
+      providerRef: "existing",
     };
-    await expect(provider.provision(request, context)).rejects.toMatchObject({
-      name: "SandboxUnavailableError",
-    });
-    expect(connect).not.toHaveBeenCalled();
+    await expect(provider.provision(request, context)).resolves.toMatchObject({ fresh: false });
+    await expect(provider.provision(request, context)).rejects.toBe(transient);
+    expect(create).not.toHaveBeenCalled();
     await expect(provider.provision(request, context)).resolves.toMatchObject({
-      providerRef: "retained",
-      fresh: false,
-      started: true,
+      providerRef: "replacement",
+      fresh: true,
     });
-    await expect(provider.provision(request, context)).resolves.not.toHaveProperty("started");
-    expect(connect).toHaveBeenCalledOnce();
-  });
-
-  it.each<[string, boolean]>([
-    ["success", false],
-    ["transport", false],
-    ["gone", false],
-    ["success", true],
-    ["transport", true],
-    ["gone", true],
-  ])("ignores stopped cold renewal %s with successor attendance %s", async (outcome, next) => {
-    let complete!: () => void;
-    let reject!: (error: unknown) => void;
-    const renewal = new Promise<void>((resolve, fail) => {
-      complete = resolve;
-      reject = fail;
-    });
-    let renewing!: () => void;
-    const started = new Promise<void>((resolve) => {
-      renewing = resolve;
-    });
-    const old = {
-      sandboxId: "existing",
-      setTimeout: vi.fn(() => {
-        renewing();
-        return renewal;
-      }),
-    } as unknown as Sandbox;
-    let attach!: (desktop: Sandbox) => void;
-    const attachment = new Promise<Sandbox>((resolve) => {
-      attach = resolve;
-    });
-    const current = {
-      sandboxId: "existing",
-      setTimeout: vi.fn().mockResolvedValue(undefined),
-    } as unknown as Sandbox;
-    const sdk: E2BSandboxSdk = {
-      create: vi.fn(),
-      connect: vi.fn(),
-      pause: vi.fn().mockResolvedValue(undefined),
-      attachRunning: vi.fn().mockResolvedValueOnce(old).mockReturnValue(attachment),
-    };
-    const provider = new E2BSandboxProvider("test-key", sdk);
-    const registry = Reflect.get(provider, "computerOperations") as Map<
-      string,
-      { pending: number }
-    >;
-    const touched = Reflect.get(provider, "lastTouchedAt") as Map<string, number>;
-    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
-    const stopped = provider.keepAlive(ref, { onlyIfRunning: true });
-    await started;
-    await provider.stop(ref, context);
-    expect(registry.size).toBe(0);
-    const successor = next ? provider.keepAlive(ref, { onlyIfRunning: true }) : undefined;
-    const successorSlot = registry.get(ref.id);
-    if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
-    else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
-    else complete();
-    await stopped;
-    expect(touched.has(ref.id)).toBe(false);
-    expect(registry.size).toBe(next ? 1 : 0);
-    if (successor) {
-      expect(registry.get(ref.id)).toBe(successorSlot);
-      expect(successorSlot?.pending).toBe(1);
-      attach(current);
-      await successor;
-      expect(current.setTimeout).toHaveBeenCalledOnce();
-    }
-    expect(registry.size).toBe(0);
-    expect(old.setTimeout).toHaveBeenCalledOnce();
-    expect(sdk.connect).not.toHaveBeenCalled();
-    expect(sdk.create).not.toHaveBeenCalled();
-  });
-
-  it("rechecks power when the non-resuming attach loses a pause race", async () => {
-    const getInfo = vi
-      .fn()
-      .mockResolvedValueOnce({ sandboxId: "retained", state: "running" })
-      .mockResolvedValueOnce({ sandboxId: "retained", state: "paused" });
-    const attachRunning = vi.fn().mockResolvedValue(undefined);
-    const connect = vi.fn().mockResolvedValue({ sandboxId: "retained" });
-    const provider = new E2BSandboxProvider("test-key", {
-      getInfo,
-      attachRunning,
-      connect,
-      create: vi.fn(),
-      pause: vi.fn(),
-    });
-    await expect(
-      provider.provision(
-        {
-          botId: "bot",
-          homePath: "/unused",
-          providerKind: "e2b",
-          providerRef: "retained",
-        },
-        context,
-      ),
-    ).resolves.toMatchObject({ started: true, fresh: false });
-    expect(getInfo).toHaveBeenCalledTimes(2);
-    expect(attachRunning).toHaveBeenCalledOnce();
-    expect(connect).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it("lets two concurrent attendance viewers finish independently and releases their registry", async () => {
@@ -1516,6 +1467,7 @@ async function withRetainedE2BServer(
     autoResume?: boolean;
     execFails?: boolean;
     lookupStatus?: number;
+    connectStatus?: 200 | 201;
     holdLookup?: (closed: Promise<void>) => void;
   },
   check: (requests: RetainedE2BRequest[], backend: E2BSandboxProvider) => Promise<void>,
@@ -1557,6 +1509,21 @@ async function withRetainedE2BServer(
                     autoResume === undefined ? undefined : { autoResume, onTimeout: "pause" },
                 },
           ),
+        );
+        return;
+      }
+      if (
+        options.connectStatus &&
+        request.method === "POST" &&
+        request.url === "/sandboxes/existing/connect"
+      ) {
+        response.writeHead(options.connectStatus, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            sandboxID: "existing",
+            envdVersion: "0.3.0",
+            envdAccessToken: "test-envd-token",
+          }),
         );
         return;
       }

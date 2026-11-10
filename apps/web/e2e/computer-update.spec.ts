@@ -409,6 +409,7 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
   await completeOnboarding(page);
   let resumed = false;
   let boots = 0;
+  let passiveBoots = 0;
   let takeovers = 0;
   const botId = activeBotId(page);
   const base = await rpc<ComputerStatus>(page, "computer/status", { botId });
@@ -417,6 +418,7 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
     botId,
     state: resumed ? "running" : "suspended",
     screenAvailable: false,
+    requiresExplicitWake: true as const,
     suspensionReason: resumed ? undefined : "active_limit",
     activeLimitAt: resumed ? new Date(Date.now() + 7_200_000).toISOString() : undefined,
   });
@@ -430,6 +432,7 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
   );
   await page.route("**/rpc/computer/boot", (route) => {
     if (route.request().postDataJSON()?.json?.onlyIfRunning) {
+      passiveBoots += 1;
       return route.fulfill({ json: { json: current() } });
     }
     boots += 1;
@@ -460,6 +463,7 @@ test("a computer paused at its runtime limit waits for an explicit resume", asyn
     page.getByText("Computer paused at its runtime limit.", { exact: true }),
   ).toHaveCount(0);
   expect(boots).toBe(1);
+  expect(passiveBoots).toBe(0);
   expect(takeovers).toBe(0);
   await page.getByRole("button", { name: "Close computer" }).click();
   await expect(

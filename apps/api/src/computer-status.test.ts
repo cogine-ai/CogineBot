@@ -84,6 +84,8 @@ describe("toComputerStatus", () => {
       recoveryBlocked: true,
     });
     expect(toComputerStatus("bot-1", computer, null, original).recoveryBlocked).toBeUndefined();
+    expect(toComputerStatus("bot-1", computer, null, original).requiresExplicitWake).toBe(true);
+    expect(toComputerStatus("bot-1", computer, null, changed).requiresExplicitWake).toBeUndefined();
   });
 
   it("only projects recent progress for the current save and exposes failure while running", () => {

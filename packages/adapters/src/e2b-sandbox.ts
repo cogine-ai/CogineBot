@@ -46,6 +46,10 @@ const E2B_BROWSER_PROFILES = `${E2B_WORKSPACE}/.browser-profiles`;
 export interface E2BSandboxSdk {
   create(options: ReturnType<typeof e2bCreateOptions>): Promise<Sandbox>;
   connect(id: string, options: { apiKey: string; timeoutMs: number }): Promise<Sandbox>;
+  connectWithStartReceipt?(
+    id: string,
+    options: { apiKey: string; timeoutMs: number },
+  ): Promise<{ desktop: Sandbox; started: boolean }>;
   pause(
     id: string,
     options: { apiKey: string; signal: AbortSignal },
@@ -69,9 +73,47 @@ class RetainedE2BSandbox extends Sandbox {
     options: ConstructorParameters<typeof Sandbox>[0] & {
       sandboxDomain?: string;
       envdAccessToken?: string;
+      trafficAccessToken?: string;
     },
   ) {
     super(options);
+  }
+
+  static async connectWithStartReceipt(
+    id: string,
+    options: { apiKey: string; timeoutMs: number },
+  ): Promise<{ desktop: Sandbox; started: boolean }> {
+    // Retrying after a lost response could turn a resume receipt into "already running".
+    const config = new ConnectionConfig({ ...options, retries: 0 });
+    const result = await new ApiClient(config).api.POST("/sandboxes/{sandboxID}/connect", {
+      params: { path: { sandboxID: id } },
+      body: { timeout: Math.ceil(options.timeoutMs / 1000) },
+      signal: config.getSignal(),
+    });
+    const status = result.response.status;
+    if (status === 404 && result.error?.code === 404) {
+      throw new SandboxNotFoundError("E2B sandbox not found");
+    }
+    if (
+      (status !== 200 && status !== 201) ||
+      result.data?.sandboxID !== id ||
+      !result.data.envdVersion
+    ) {
+      throw new SandboxUnavailableError({ cause: new Error(`E2B connect failed (${status})`) });
+    }
+    return {
+      // This is the active handle. Keep the SDK defaults for long file transfers.
+      desktop: new RetainedE2BSandbox({
+        ...options,
+        sandboxId: id,
+        sandboxDomain: result.data.domain ?? undefined,
+        envdVersion: result.data.envdVersion,
+        envdAccessToken: result.data.envdAccessToken,
+        trafficAccessToken: result.data.trafficAccessToken ?? undefined,
+      }),
+      // The API distinguishes reattaching to a live sandbox from resuming it.
+      started: status === 201,
+    };
   }
 
   static async attachRunning(
@@ -176,6 +218,7 @@ export class E2BSandboxProvider implements SandboxProvider {
   }
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, Promise<Sandbox>>();
+  private readonly startReceipts = new WeakSet<Sandbox>();
   private readonly lastTouchedAt = new Map<string, number>();
   private readonly computerOperations = new Map<string, { pending: number }>();
 
@@ -200,13 +243,13 @@ export class E2BSandboxProvider implements SandboxProvider {
     };
   }
 
-  private async box(computer: ComputerRef): Promise<Sandbox> {
+  private async box(computer: ComputerRef, explicitProvision = false): Promise<Sandbox> {
     const id = computer.providerRef || computer.id;
     const operation = this.beginOperation(id);
     try {
       for (;;) {
         const existing = this.boxes.get(id);
-        if (existing) {
+        if (existing && (!explicitProvision || !this.sdk.connectWithStartReceipt)) {
           const lastTouched = this.lastTouchedAt.get(id) ?? 0;
           if (Date.now() - lastTouched < 60_000) return existing;
           // A cached handle to a sandbox E2B already killed keeps throwing on every call, and the
@@ -233,9 +276,16 @@ export class E2BSandboxProvider implements SandboxProvider {
           }
           return connected;
         }
+        const options = { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() };
+        const connecting = this.sdk.connectWithStartReceipt
+          ? this.sdk.connectWithStartReceipt(id, options).then(({ desktop, started }) => {
+              if (started) this.startReceipts.add(desktop);
+              else this.startReceipts.delete(desktop);
+              return desktop;
+            })
+          : this.sdk.connect(id, options);
         let connection!: Promise<Sandbox>;
-        connection = this.sdk
-          .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
+        connection = connecting
           .then(
             (connected) => {
               if (
@@ -254,6 +304,9 @@ export class E2BSandboxProvider implements SandboxProvider {
                 this.connections.get(id) !== connection
               ) {
                 throw new Error("computer connection stopped during teardown");
+              }
+              if (isSandboxGoneError(error) && this.boxes.get(id) === existing) {
+                this.forgetCached(id);
               }
               throw error;
             },
@@ -298,43 +351,7 @@ export class E2BSandboxProvider implements SandboxProvider {
       if (id) {
         try {
           const ref = { id, providerRef: id, kind: "e2b" as const, botId: request.botId };
-          let state: SandboxPowerState = "unknown";
-          let desktop: Sandbox | undefined;
-          if (this.sdk.getInfo) {
-            const signal = AbortSignal.any([_context.signal, AbortSignal.timeout(10_000)]);
-            const readPower = async () => {
-              const result = await this.inspectPowerState(ref, { ..._context, signal }).catch(
-                () => "unknown" as const,
-              );
-              _context.signal.throwIfAborted();
-              assertCurrent();
-              if (result === "unknown") throw new SandboxUnavailableError();
-              return result;
-            };
-            state = await readPower();
-            if (state === "running" && this.sdk.attachRunning) {
-              desktop = await this.attachRunningBox(ref, signal);
-              assertCurrent();
-              if (desktop) {
-                if (Date.now() - (this.lastTouchedAt.get(id) ?? 0) >= 60_000) {
-                  await withAbort(desktop.setTimeout(sandboxIdleMs()), signal);
-                  assertCurrent();
-                  this.lastTouchedAt.set(id, Date.now());
-                }
-                this.boxes.set(id, desktop);
-              } else {
-                // The previous running observation no longer authorizes a resume.
-                state = await readPower();
-                if (state === "running") throw new SandboxUnavailableError();
-              }
-            }
-            if (state === "running" && !desktop) {
-              desktop = this.boxes.get(id);
-              if (!desktop) throw new SandboxUnavailableError();
-            }
-            if (state === "stopped" || state === "gone") this.forgetCached(id);
-          }
-          desktop ??= await this.box(ref);
+          const desktop = await this.box(ref, true);
           assertCurrent();
           return {
             id: desktop.sandboxId,
@@ -342,7 +359,7 @@ export class E2BSandboxProvider implements SandboxProvider {
             kind: "e2b",
             providerRef: desktop.sandboxId,
             fresh: false,
-            ...(state === "stopped" ? { started: true } : {}),
+            ...(this.startReceipts.has(desktop) ? { started: true } : {}),
           };
         } catch (error) {
           assertCurrent();

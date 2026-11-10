@@ -860,7 +860,6 @@ export function ShellPage() {
     botId: string;
     isCurrent: () => boolean;
     promise: Promise<ComputerStatus>;
-    onlyIfRunning: boolean;
   } | null>(null);
   function invalidateComputerBoot() {
     computerBootEpoch.current += 1;
@@ -4005,12 +4004,7 @@ export function ShellPage() {
     const targetScreen = computer?.botId === targetBotId ? screenUrl : (cached?.screenUrl ?? null);
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
-    let provision =
-      pending?.botId === targetBotId &&
-      pending.isCurrent() &&
-      (onlyIfRunning || !pending.onlyIfRunning)
-        ? pending
-        : null;
+    let provision = pending?.botId === targetBotId && pending.isCurrent() ? pending : null;
     let stillThisBoot = provision?.isCurrent;
     if (!stillThisBoot) {
       const epoch = ++computerBootEpoch.current;
@@ -4040,7 +4034,7 @@ export function ShellPage() {
         const promise = Promise.resolve().then(() =>
           client.computer.boot({ botId: targetBotId, ...(onlyIfRunning ? { onlyIfRunning } : {}) }),
         );
-        const attempt = { botId: targetBotId, isCurrent, promise, onlyIfRunning };
+        const attempt = { botId: targetBotId, isCurrent, promise };
         provision = attempt;
         computerBootAttempt.current = attempt;
         const clear = () => {
@@ -4161,6 +4155,7 @@ export function ShellPage() {
       const currentScreen = computerCacheRef.current.get(botId)?.screenUrl ?? screen;
       if (
         current?.botId !== botId ||
+        currentComputer?.requiresExplicitWake ||
         !computerPanelNeedsScreen(currentComputer?.state, currentScreen) ||
         screenReadiness.current?.confirmed !== true ||
         autoBooted.current === botId

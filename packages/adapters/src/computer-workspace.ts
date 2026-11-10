@@ -619,7 +619,7 @@ function checkpointAvailable(
   const lease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
   const own = lease ? { runId: lease.ownerId, fence: lease.fence } : undefined;
   const live = { expiresAt: { gt: now } };
-  const allowed = own ? [...parked, own] : [...parked];
+  const allowed = parked.length ? (own ? [...parked, own] : [...parked]) : own;
   return {
     OR: [
       { controlHolder: { not: "user" } },
@@ -629,7 +629,7 @@ function checkpointAvailable(
       ...(context.botId ? [{ controlBotId: context.botId }] : []),
     ],
     executionLeases: {
-      none: { ...live, ...(allowed.length ? { NOT: allowed } : {}) },
+      none: { ...live, ...(allowed ? { NOT: allowed } : {}) },
       ...(own && context.runId === own.runId
         ? { some: { ...live, ...own, botId: context.botId } }
         : {}),

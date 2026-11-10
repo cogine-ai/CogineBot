@@ -6,6 +6,7 @@ import {
   computerStopClaimIsStale,
   computerSupportsTerminal,
   computerSupportsUpdate,
+  powerProvider,
   toComputerRef,
 } from "@rakazo/adapters";
 import type { ComputerStatus } from "@rakazo/contracts";
@@ -110,13 +111,13 @@ export function toComputerStatus(
   if (computer?.stopRequestedAt) {
     state = computerStopClaimIsStale(computer.stopRequestedAt) ? "quarantined" : "stopping";
   }
-  const recoveryBlocked =
-    computer?.providerRef &&
-    computer.homeKey !== undefined &&
-    computerRecoveryProviderUnavailable(
-      sandbox,
-      toComputerRef({ ...computer, providerRef: computer.providerRef, homeKey: computer.homeKey }),
-    );
+  const ref =
+    computer?.providerRef && computer.homeKey !== undefined
+      ? toComputerRef({ ...computer, providerRef: computer.providerRef, homeKey: computer.homeKey })
+      : undefined;
+  const recoveryBlocked = ref && computerRecoveryProviderUnavailable(sandbox, ref);
+  const requiresExplicitWake =
+    sandbox && ref && powerProvider(sandbox, ref)?.billsWhileRunning?.(ref) === true;
   if (recoveryBlocked && state !== "stopping" && state !== "booting") state = "quarantined";
   const powerState =
     state === "stopping" || state === "quarantined" || state === "needs_recovery"
@@ -152,16 +153,8 @@ export function toComputerStatus(
       ? WorkspaceSaveFailureReasonSchema.safeParse(storedFailure.reason)
       : undefined;
   const deadline =
-    state === "running" && sandbox && computer?.providerRef && computer.homeKey
-      ? computerActiveDeadline(
-          sandbox,
-          toComputerRef({
-            ...computer,
-            homeKey: computer.homeKey,
-            providerRef: computer.providerRef,
-          }),
-          computerActiveEpoch(computer),
-        )
+    state === "running" && sandbox && computer && ref
+      ? computerActiveDeadline(sandbox, ref, computerActiveEpoch(computer))
       : undefined;
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
@@ -174,6 +167,7 @@ export function toComputerStatus(
     ...(recoveryBlocked ? { recoveryBlocked: true } : {}),
     ...(progress?.success ? { workspaceSaveProgress: progress.data } : {}),
     ...(failure?.success ? { workspaceSaveFailure: failure.data } : {}),
+    ...(requiresExplicitWake ? { requiresExplicitWake: true as const } : {}),
     ...(deadline ? { activeLimitAt: deadline.toISOString() } : {}),
     ...(state === "suspended" && computer?.suspensionReason === "active_limit"
       ? { suspensionReason: "active_limit" as const }
