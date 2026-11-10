@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Actor, MessageBlock } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
-import { runSecretKind } from "@rakazo/core";
-import { createDb, createThreadMessage, pauseRunForInput } from "@rakazo/db";
+import {
+  BOT_SECRET_HTTP_REQUEST_KIND,
+  callClientNonce,
+  formatBotSecretHttpApprovalDetail,
+  runSecretKind,
+} from "@rakazo/core";
+import { answerRunInput, createDb, createThreadMessage, pauseRunForInput } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveThreadTarget, sendThreadMessage } from "../../../apps/api/src/thread-target.js";
 import { reconcileStuckWork } from "../../adapters/src/stuck-work.js";
@@ -119,6 +124,58 @@ describe.skipIf(!enabled).sequential("question routing (PostgreSQL)", () => {
       chatGroup,
     };
   }
+
+  it.each(["screen", "voice", "clipped", "unmarked"] as const)(
+    "requires an exact on-screen authenticated request approval for %s",
+    async (mode) => {
+      const id = randomUUID();
+      const args = {
+        name: "fixture_key",
+        method: "POST",
+        url: "https://example.org/report?q=full",
+        body: '{"approved":"the whole body"}',
+      };
+      const detail = formatBotSecretHttpApprovalDetail(args)!;
+      const f = await fixture([
+        {
+          kind: "ask",
+          approvalEffectId: id,
+          ...(mode !== "unmarked" ? { reviewMode: "screen" } : {}),
+          text: "Review before secret_request",
+          detail: mode === "clipped" ? detail.slice(0, -2) : detail,
+          status: "pending",
+          actions: [
+            { id: "allow", label: "Allow once" },
+            { id: "deny", label: "Deny" },
+          ],
+        },
+      ]);
+      await db.prisma.externalEffect.create({
+        data: {
+          id,
+          runId: f.run.id,
+          spaceId: f.spaceId,
+          kind: "secret_request",
+          idempotencyKey: id,
+          status: "intended",
+          request: [BOT_SECRET_HTTP_REQUEST_KIND, { id: "fixture-key", revision: "rev" }, args],
+        },
+      });
+      const answered = await answerRunInput(db.prisma, {
+        spaceId: f.spaceId,
+        threadId: f.threadId,
+        runId: f.run.id,
+        messageId: f.card.id,
+        answeredByUserId: f.userId,
+        answer: "allow",
+        clientNonce: mode === "voice" ? callClientNonce("fixture") : undefined,
+      });
+      expect(answered).toBe(mode === "screen");
+      expect(await db.prisma.externalEffect.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: mode === "screen" ? "approved" : "intended",
+      });
+    },
+  );
 
   it("starts separate work after an intervening message and retires the old ordinary question", async () => {
     const f = await fixture();

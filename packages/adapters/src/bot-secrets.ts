@@ -12,6 +12,7 @@ import {
   isPrivateNetworkHost,
   SecretHttpRequest,
 } from "@rakazo/contracts";
+import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
 import { ActionRuleDispatchError } from "./connector-dispatch.js";
@@ -617,36 +618,6 @@ function credentialHttpDestination(
     return { error: "This credential cannot be sent to that destination." };
   }
   return { destination };
-}
-
-const BOT_SECRET_HTTP_REQUEST_KIND = "bot_secret_http";
-
-export function readBotSecretHttpEffect(request: unknown) {
-  if (
-    !Array.isArray(request) ||
-    request.length !== 3 ||
-    request[0] !== BOT_SECRET_HTTP_REQUEST_KIND
-  )
-    return undefined;
-  const [, credential, args]: unknown[] = request;
-  if (
-    !credential ||
-    typeof credential !== "object" ||
-    !("id" in credential) ||
-    !("revision" in credential) ||
-    typeof credential.id !== "string" ||
-    !credential.id ||
-    typeof credential.revision !== "string" ||
-    !credential.revision ||
-    !args ||
-    typeof args !== "object" ||
-    Array.isArray(args)
-  )
-    return undefined;
-  return {
-    args: args as Record<string, unknown>,
-    credential: { id: credential.id, revision: credential.revision },
-  };
 }
 
 export async function prepareBotSecretHttpEffect(

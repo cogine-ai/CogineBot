@@ -4,6 +4,8 @@ import {
   type ConnectorBatchActionNames,
   containsSecret,
   displayedBatchApprovalRuleNames,
+  formatBotSecretHttpApprovalDetail,
+  MAX_APPROVAL_DETAIL_LENGTH,
   messagingProviderName,
   OUTBOUND_HTTP_TOOLS,
   redactSecrets,
@@ -13,7 +15,6 @@ import {
 import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
-const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
 export const MAX_FETCH_URL_LENGTH = 2_048;
 
 export type SharedPageApprovalSummary = { title: string; detail: string };
@@ -49,7 +50,7 @@ export function buildApprovalAskBlock(
     allowBatchAlways?: boolean;
     sharedPageUpdate?: SharedPageApprovalSummary;
   },
-): MessageBlock {
+): Extract<MessageBlock, { kind: "ask" }> {
   if (toolName === "save_page" && options?.sharedPageUpdate) {
     const { title, detail } = options.sharedPageUpdate;
     return {
@@ -93,6 +94,22 @@ export function buildApprovalAskBlock(
       status: "pending",
       actions: [
         { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    };
+  }
+  if (toolName === "secret_request") {
+    const detail = formatBotSecretHttpApprovalDetail(args);
+    const complete = detail && !containsSecret([detail, args], secrets) ? detail : undefined;
+    return {
+      kind: "ask",
+      approvalEffectId: effectId,
+      reviewMode: "screen",
+      text: "Review before secret_request",
+      detail: complete,
+      status: "pending",
+      actions: [
+        ...(complete ? [{ id: "allow", label: "Allow once" }] : []),
         { id: "deny", label: "Deny" },
       ],
     };
@@ -190,9 +207,6 @@ function formatApprovalDetail(
     lines.push(
       "Bots, groups, chats, files, memory, and integrations in this space stay separate from other spaces.",
     );
-  }
-  if (toolName === "secret_request") {
-    lines.push(`method: ${String(args.method ?? "GET")}`, `credential: ${String(args.name ?? "")}`);
   }
   if (fetchUrl) lines.push(`url: ${fetchUrl}`);
   if (toolName !== "web_fetch") {

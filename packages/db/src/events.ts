@@ -20,6 +20,7 @@ import {
   callIdFromClientNonce,
   canonicalApprovalSite,
   displayedBatchApprovalRuleNames,
+  formatBotSecretHttpApprovalDetail,
   isApprovalAskBlock,
   isCallClientNonce,
   isConversationalRun,
@@ -28,6 +29,7 @@ import {
   messageBypassesTakeoverWait,
   messageReaction,
   messagingChannelId,
+  readBotSecretHttpEffect,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
   runSecretKind,
@@ -966,17 +968,29 @@ async function commitAnswerRunInput(
       request !== null &&
       typeof request === "object" &&
       Object.hasOwn(request, "requestKind");
-    if (sharedPageRequest || pendingAsk.reviewMode === "screen") {
-      const bound = SharedPageUpdateRequestSchema.safeParse(request);
+    const authenticated =
+      approvalEffect.kind === "secret_request" && readBotSecretHttpEffect(request);
+    if (sharedPageRequest || authenticated || pendingAsk.reviewMode === "screen") {
       if (
-        !sharedPageRequest ||
-        !bound.success ||
-        !matchesSharedPageApprovalCard(pendingAsk, bound.data) ||
         run.userId !== input.answeredByUserId ||
         (input.answer !== "allow" && input.answer !== "deny") ||
-        isCallClientNonce(input.clientNonce)
+        isCallClientNonce(input.clientNonce) ||
+        delegation
       )
         return null;
+      if (authenticated) {
+        const detail = formatBotSecretHttpApprovalDetail(authenticated.args);
+        if (pendingAsk.reviewMode !== "screen" || !detail || pendingAsk.detail !== detail)
+          return null;
+      } else {
+        const bound = SharedPageUpdateRequestSchema.safeParse(request);
+        if (
+          !sharedPageRequest ||
+          !bound.success ||
+          !matchesSharedPageApprovalCard(pendingAsk, bound.data)
+        )
+          return null;
+      }
     }
     if (input.answer === "always") {
       if (run.userId !== input.answeredByUserId) return null;

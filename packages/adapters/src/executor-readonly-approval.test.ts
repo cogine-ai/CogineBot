@@ -18,7 +18,11 @@ import {
 import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
-import { pageReplyTaskPrompt, withPageReplyContext } from "@rakazo/core";
+import {
+  formatBotSecretHttpApprovalDetail,
+  pageReplyTaskPrompt,
+  withPageReplyContext,
+} from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { ClaimedSteeringMessage, ThreadEvents } from "@rakazo/db";
 import * as DbModule from "@rakazo/db";
@@ -3220,8 +3224,8 @@ describe("authenticated request destination policy", () => {
     const [card] = f.pauseRunForInput.mock.calls[0]![0].blocks;
     expect(card).toMatchObject({
       kind: "ask",
-      site: "example.org",
-      detail: expect.stringContaining(`method: POST\ncredential: test_key\nurl: ${url}`),
+      reviewMode: "screen",
+      detail: `method: POST\ncredential: test_key\nurl: ${url}\ncontent type: application/json\nbody: ${JSON.stringify(args.body)}`,
       actions: [
         { id: "allow", label: "Allow once" },
         { id: "deny", label: "Deny" },
@@ -3284,7 +3288,7 @@ describe("authenticated request destination policy", () => {
   it("refuses a URL that cannot fit in a human approval card without truncation", async () => {
     const f = authFixture({ rules: [toolAllow] });
     f.setCalls([
-      { args: { ...args, url: `${url}&p=${"x".repeat(2100)}` }, executionId: "long-url" },
+      { args: { ...args, url: `${url}&p=${"x".repeat(4000)}` }, executionId: "long-url" },
     ]);
     await f.run();
     expect(f.results[0]).toMatchObject({
@@ -3292,6 +3296,43 @@ describe("authenticated request destination policy", () => {
     });
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([4000, 4001, 9000])(
+    "only offers approval for a whole %i-character detail",
+    async (length) => {
+      const empty = { ...args, body: "" };
+      const body = "x".repeat(length - formatBotSecretHttpApprovalDetail(empty)!.length);
+      const request = { ...empty, body };
+      const f = authFixture({ rules: [toolAllow], autoReview: true });
+      reviewMock.mockResolvedValue({ decision: "ask", reason: "Check this request" });
+      f.setCalls([{ args: request, executionId: "body-boundary" }]);
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      if (length === 4000) {
+        expect(f.pauseRunForInput.mock.calls[0]?.[0].blocks[0]).toMatchObject({
+          reviewMode: "screen",
+          detail: formatBotSecretHttpApprovalDetail(request),
+        });
+      } else {
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        expect(f.results[0]).toMatchObject({
+          error: expect.stringContaining("cannot be shown in full"),
+        });
+      }
+    },
+  );
+
+  it("does not open a truncated or redacted approval when the body contains protected data", async () => {
+    const protectedText = "synthetic-masked-input";
+    const f = authFixture({ rules: [toolAllow], secrets: [protectedText] });
+    f.setCalls([
+      { args: { ...args, body: `line one\n${protectedText}` }, executionId: "protected-body" },
+    ]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.results)).not.toContain(protectedText);
   });
 
   it("refuses a webhook's discovered destination without waiting or loading the credential", async () => {

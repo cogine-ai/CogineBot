@@ -131,6 +131,7 @@ import {
   pageReplyTaskPrompt,
   planActionGate,
   promptInvokesSkill,
+  readBotSecretHttpEffect,
   redactSecrets,
   renderBotDirectory,
   resolveActionApprovalDetail,
@@ -268,7 +269,6 @@ import {
   loadBotCommandEnvironment,
   normalizeSecretDestination,
   prepareBotSecretHttpEffect,
-  readBotSecretHttpEffect,
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
@@ -6930,7 +6930,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             throw uncertainEffectError(name);
           };
 
-          const showApprovalCard = async () => {
+          const showApprovalCard = async (block: MessageBlock) => {
             if (!(await renewRunLease(deps, runId, workerId, fence))) {
               // Another worker owns the run now; exit without leaving a local pause card.
               return pauseForApproval();
@@ -6948,21 +6948,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ...(isSteeringContinuation && lastScriptedState
                   ? { scriptedState: scriptedStateJson(lastScriptedState) }
                   : {}),
-                blocks: [
-                  buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
-                    reviewReason,
-                    routineSiteDetail,
-                    batch,
-                    allowBatchAlways: managedBatch,
-                    sharedPageUpdate: sharedPageUpdate && {
-                      title: sharedPageUpdate.page.title,
-                      detail: sharedPageUpdate.detail,
-                    },
-                    allowSiteAlways: !approvalResolved.matchingRules.some(
-                      (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
-                    ),
-                  }),
-                ],
+                blocks: [block],
               },
               executionId,
               undefined,
@@ -6992,24 +6978,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
-            if (
-              authenticatedRequest &&
-              outboundUrl &&
-              (!credentialBinding ||
-                outboundUrl.length > MAX_FETCH_URL_LENGTH ||
-                containsSecret(outboundUrl, runSecrets))
-            ) {
+            await flushConnectionNarration(executionId);
+            const block = buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
+              reviewReason,
+              routineSiteDetail,
+              batch,
+              allowBatchAlways: managedBatch,
+              sharedPageUpdate: sharedPageUpdate && {
+                title: sharedPageUpdate.page.title,
+                detail: sharedPageUpdate.detail,
+              },
+              allowSiteAlways: !approvalResolved.matchingRules.some(
+                (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
+              ),
+            });
+            if (authenticatedRequest && (!credentialBinding || !block.detail)) {
               const result = {
                 error: credentialBinding
-                  ? "The authenticated request URL cannot be shown in full for approval."
+                  ? "The authenticated request cannot be shown in full for approval."
                   : BOT_SECRET_HTTP_APPROVAL_CHANGED,
               };
               return (await completeEffect(deps, applied!.effect.id, "intended", result))
                 ? result
                 : uncertainEffectResult(name);
             }
-            await flushConnectionNarration(executionId);
-            const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
+            const pause = await requestPause(
+              () => showApprovalCard(block),
+              observer?.beforeInputPause,
+            );
             return pause.owned ? pause.result : pauseForApproval();
           };
 
