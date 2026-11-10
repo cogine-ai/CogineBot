@@ -1392,9 +1392,10 @@ raise SystemExit(1)
               undefined,
               undefined,
               "application/octet-stream",
+              "headers",
             );
             return response.body;
-          }),
+          }, CREATEOS_SUCCESS_RESPONSE_TIMEOUT_MS),
         };
       } else {
         yield {
@@ -1594,6 +1595,7 @@ raise SystemExit(1)
     contentType?: string,
     timeoutMs = 30_000,
     accept?: string,
+    timeoutScope: "response" | "headers" = "response",
   ): Promise<Response> {
     const url = new URL(path, `${this.baseUrl}/`);
     const headers = new Headers({
@@ -1601,9 +1603,23 @@ raise SystemExit(1)
       ...(accept ? { Accept: accept } : {}),
       ...(contentType ? { "Content-Type": contentType } : {}),
     });
-    const timeout = AbortSignal.timeout(timeoutMs);
+    const headerDeadline = timeoutScope === "headers" ? new AbortController() : undefined;
+    const timer =
+      headerDeadline &&
+      setTimeout(() => {
+        headerDeadline.abort(
+          new DOMException("CreateOS response headers timed out", "TimeoutError"),
+        );
+      }, timeoutMs);
+    timer?.unref();
+    const timeout = headerDeadline?.signal ?? AbortSignal.timeout(timeoutMs);
     const signal = AbortSignal.any([context.signal, timeout]);
-    const response = await this.fetchImpl(url, { method, headers, body, signal });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, { method, headers, body, signal });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (!response.ok) {
       const message = await readCreateOSErrorMessage(response, signal);
       throw new CreateOSHttpError(response.status, message || response.statusText);

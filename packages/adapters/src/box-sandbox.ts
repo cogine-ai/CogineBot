@@ -389,7 +389,7 @@ export class BoxSandboxProvider implements SandboxProvider {
     if (limits) {
       let count = 0;
       let bytes = 0;
-      for await (const entry of this.boundedWorkspaceEntries(id, context)) {
+      for await (const entry of this.boundedWorkspaceEntries(id, limits.maxFiles, context)) {
         if (++count > limits.maxFiles) throw new WorkspaceTooLargeError("files");
         bytes += entry.size;
         if (bytes > limits.maxBytes) throw new WorkspaceTooLargeError("bytes");
@@ -611,13 +611,13 @@ export class BoxSandboxProvider implements SandboxProvider {
     );
   }
 
-  private async *boundedWorkspaceEntries(id: string, context: AdapterContext) {
+  private async *boundedWorkspaceEntries(id: string, maxFiles: number, context: AdapterContext) {
     // Detached command polling keeps only a tail of stdout. Stream the complete listing as a file.
     const manifest = `/tmp/workspace-save-${randomUUID()}.manifest`;
     try {
       const result = await this.runCommand(
         id,
-        writeWorkspaceManifestCommand(manifest),
+        writeWorkspaceManifestCommand(manifest, maxFiles),
         undefined,
         60_000,
         context.signal,
@@ -953,16 +953,28 @@ function listBoxWorkspaceFilesCommand(): string {
 
 const BOX_MANIFEST_HEADER = "workspace-list-v1";
 const BOX_MANIFEST_END = "workspace-list-complete";
+const BOX_MANIFEST_PATH_BYTES = 4096;
 
-function writeWorkspaceManifestCommand(manifest: string): string {
+function writeWorkspaceManifestCommand(manifest: string, maxFiles: number): string {
+  // Keep one extra record to distinguish an exactly full workspace from an over-limit one.
+  const records = maxFiles + 1;
+  const manifestBytes =
+    records * (BOX_MANIFEST_PATH_BYTES + 4 + 20 + 3) +
+    BOX_MANIFEST_HEADER.length +
+    BOX_MANIFEST_END.length +
+    2;
   return [
     "set -eC",
     "umask 077",
-    "ulimit -f 262144",
+    `ulimit -f ${Math.ceil(manifestBytes / 1024)}`,
     `cd ${shellQuote(BOX_WORKSPACE)}`,
     "{",
     `  printf '%s\\0' '${BOX_MANIFEST_HEADER}'`,
-    `  find . ${workspaceSaveFindExpression()} -printf '%P\\0%m\\0%s\\0'`,
+    "  set +e",
+    `  find . ${workspaceSaveFindExpression()} -printf '%P\\0%m\\0%s\\0' | head -z -n ${records * 3}`,
+    `  statuses=("\${PIPESTATUS[@]}")`,
+    "  set -e",
+    "  if (( statuses[1] != 0 || (statuses[0] != 0 && statuses[0] != 141) )); then exit 1; fi",
     `  printf '%s\\0' '${BOX_MANIFEST_END}'`,
     `} > ${shellQuote(manifest)}`,
   ].join("\n");
@@ -980,7 +992,7 @@ async function* readWorkspaceManifest(chunks: AsyncIterable<Uint8Array>) {
       const field = pending.slice(0, end);
       pending = pending.slice(end + 1);
       end = pending.indexOf("\0");
-      if (field.length > 4096) throw new Error("Invalid Box workspace listing");
+      if (field.length > BOX_MANIFEST_PATH_BYTES) throw new Error("Invalid Box workspace listing");
       if (!header) {
         if (field !== BOX_MANIFEST_HEADER) throw new Error("Invalid Box workspace listing");
         header = true;
@@ -1004,7 +1016,7 @@ async function* readWorkspaceManifest(chunks: AsyncIterable<Uint8Array>) {
       if (filePath !== relative) throw new Error("Invalid Box workspace path");
       yield { path: filePath, size: bytes, executable: Boolean(Number.parseInt(mode, 8) & 0o100) };
     }
-    if (pending.length > 4096) throw new Error("Invalid Box workspace listing");
+    if (pending.length > BOX_MANIFEST_PATH_BYTES) throw new Error("Invalid Box workspace listing");
   }
   pending += decoder.decode();
   const complete = pending.length === 0 && fields.length === 1 && fields[0] === BOX_MANIFEST_END;

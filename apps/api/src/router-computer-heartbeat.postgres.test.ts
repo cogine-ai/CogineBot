@@ -201,6 +201,36 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
   });
 
+  it.each(["changed", "foreign lease"] as const)(
+    "reports the real Stop conflict after a concurrent %s",
+    async (reason) => {
+      afterSnapshot = () =>
+        reason === "changed"
+          ? database.prisma.computer.update({
+              where: { id: computerId },
+              data: { screenGeneration: { increment: 1 } },
+            })
+          : database.prisma.computerExecutionLease.create({
+              data: {
+                computerId,
+                botId: "other-bot",
+                runId: "other-run",
+                expiresAt: new Date("2100-01-01"),
+              },
+            });
+
+      await expect(stopComputer()).rejects.toMatchObject({
+        code: "CONFLICT",
+        message:
+          reason === "changed"
+            ? new ComputerCheckpointChangedError().message
+            : "Other Team bots are still using this computer",
+      });
+      expect(exportWorkspace).not.toHaveBeenCalled();
+      expect(stopProvider).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     [new WorkspaceTooLargeError("files"), "BAD_REQUEST"],
     [new ComputerCheckpointChangedError(), "CONFLICT"],

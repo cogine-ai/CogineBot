@@ -479,6 +479,65 @@ describe("CreateOSSandboxProvider", () => {
     expect(fixture.calls.filter((call) => call.includes("/files"))).toHaveLength(1);
   });
 
+  it("keeps a progressing bounded download alive beyond the header timeout", async () => {
+    vi.useFakeTimers();
+    const timeouts = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const deadline = new AbortController();
+      setTimeout(() => deadline.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return deadline.signal;
+    });
+    const fixture = createosFixture();
+    let transferSignal: AbortSignal | null | undefined;
+    const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (!new URL(String(input)).pathname.endsWith("/files")) {
+        return fixture.fetchImpl(input, init);
+      }
+      transferSignal = init?.signal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            transferSignal?.addEventListener(
+              "abort",
+              () => controller.error(transferSignal?.reason),
+              {
+                once: true,
+              },
+            );
+            setTimeout(() => {
+              if (!transferSignal?.aborted) controller.enqueue(Buffer.from("slow "));
+            }, 20_000);
+            setTimeout(() => {
+              if (transferSignal?.aborted) return;
+              controller.enqueue(Buffer.from("file"));
+              controller.close();
+            }, 40_000);
+          },
+        }),
+      );
+    }) as typeof fetch;
+    const sandbox = new CreateOSSandboxProvider({ apiKey: "test-key", fetch: fetchImpl });
+    try {
+      const received = (async () => {
+        const chunks = [];
+        for await (const file of sandbox.exportWorkspace(computer, context, {
+          maxBytes: 9,
+          maxFiles: 1,
+        })) {
+          if (!("body" in file)) throw new Error("Expected a streamed file");
+          for await (const chunk of file.body) chunks.push(chunk);
+        }
+        return Buffer.concat(chunks).toString();
+      })();
+      const result = expect(received).resolves.toBe("slow file");
+      await vi.advanceTimersByTimeAsync(41_000);
+      await result;
+      expect(transferSignal?.aborted).toBe(false);
+    } finally {
+      timeouts.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("forgets per-sandbox state on stop and destroy", async () => {
     const fixture = createosFixture();
     const target = provider(fixture);

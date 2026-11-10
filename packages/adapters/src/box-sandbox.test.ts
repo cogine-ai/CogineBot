@@ -411,6 +411,23 @@ describe("BoxSandboxProvider", () => {
     expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
   });
 
+  it("allows the full file limit while bounding the manifest to one extra record", async () => {
+    const fixture = boxFixture();
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    const maxFiles = 1_000_000;
+    const entries = provider
+      .exportWorkspace(computer, context, { maxBytes: 5 * 1024 ** 3, maxFiles })
+      [Symbol.asyncIterator]();
+    await expect(entries.next()).resolves.toMatchObject({ done: true });
+    const command = fixture.command.mock.calls
+      .map(([call]) => call.commandRequest.command)
+      .find((script) => script.includes("workspace-list-v1"));
+    expect(command).toContain("head -z -n 3000003");
+    const blocks = Number(command?.match(/ulimit -f (\d+)/)?.[1]);
+    expect(blocks * 1024).toBeGreaterThan(maxFiles * (4096 + 4 + 20 + 3));
+  });
+
   it.each([undefined, "1", "20"])(
     "cancels oversized downloads with content-length %s",
     async (contentLength) => {

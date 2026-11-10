@@ -1,6 +1,7 @@
 // Modified to apply the workspace policy to streamed provider responses.
 import type { WorkspaceExportLimits } from "@rakazo/adapter-kit";
 import { shellQuote } from "@rakazo/core/node/desktop-runtime";
+import { withAbort } from "./web-ssrf.js";
 
 /** The most one save copies; a larger home keeps running unsaved. */
 export const WORKSPACE_SAVE_LIMITS: WorkspaceExportLimits = {
@@ -93,14 +94,20 @@ export function workspaceSaveFindExpression(): string {
 }
 
 /** Open one file on demand and cancel its transfer if staging stops reading it. */
-export async function* streamWorkspaceBody(open: () => Promise<ReadableStream<Uint8Array> | null>) {
+export async function* streamWorkspaceBody(
+  open: () => Promise<ReadableStream<Uint8Array> | null>,
+  idleTimeoutMs?: number,
+) {
   const body = await open();
   if (!body) throw new Error("The provider returned no workspace file body");
   const reader = body.getReader();
   let finished = false;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await withAbort(
+        reader.read(),
+        idleTimeoutMs === undefined ? undefined : AbortSignal.timeout(idleTimeoutMs),
+      );
       if (done) {
         finished = true;
         return;
@@ -108,7 +115,7 @@ export async function* streamWorkspaceBody(open: () => Promise<ReadableStream<Ui
       yield value;
     }
   } finally {
-    if (!finished) await reader.cancel().catch(() => undefined);
+    if (!finished) void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

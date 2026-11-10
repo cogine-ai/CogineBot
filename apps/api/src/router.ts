@@ -3266,9 +3266,20 @@ export function createRouter(deps: RouterDeps) {
           data: { state: suspensionClaim.state, updatedAt: suspensionClaim.updatedAt },
         });
         if (claimed.count !== 1) {
-          throw new ORPCError("CONFLICT", {
-            message: "Other Team bots are still using this computer",
+          const foreignLease = await deps.prisma.computerExecutionLease.findFirst({
+            where: {
+              computerId: bot.computer.id,
+              botId: { not: bot.id },
+              expiresAt: { gt: new Date() },
+            },
+            select: { id: true },
           });
+          if (foreignLease) {
+            throw new ORPCError("CONFLICT", {
+              message: "Other Team bots are still using this computer",
+            });
+          }
+          throw mapComputerCheckpointError(new ComputerCheckpointChangedError());
         }
         const otherRun = await deps.prisma.run.findFirst({
           where: {
