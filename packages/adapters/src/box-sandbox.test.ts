@@ -376,6 +376,41 @@ describe("BoxSandboxProvider", () => {
     );
   });
 
+  it("opens bounded workspace transfers lazily and refuses an incomplete listing", async () => {
+    const fixture = boxFixture();
+    const target = "/home/user/rakazo-home/notes/report.txt";
+    fixture.files.set(target, Buffer.from("saved"));
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    const limits = { maxBytes: 5, maxFiles: 1 };
+    for await (const file of provider.exportWorkspace(computer, context, limits)) {
+      expect(file.path).toBe("notes/report.txt");
+      expect(fixture.artifactRaw).not.toHaveBeenCalled();
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      const chunks = [];
+      for await (const chunk of file.body) chunks.push(chunk);
+      expect(Buffer.concat(chunks).toString()).toBe("saved");
+    }
+    expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+    expect(
+      fixture.command.mock.calls.some(([call]) =>
+        call.commandRequest.command.includes("-regextype posix-extended"),
+      ),
+    ).toBe(true);
+
+    const command = fixture.command.getMockImplementation()!;
+    fixture.command.mockImplementation(async (...args) => {
+      if (args[0].commandRequest.command.includes("workspace-list-complete")) {
+        return finished({ stdout: `${Buffer.from(target).toString("base64")}\tfile\t5\t0\n` });
+      }
+      return command(...args);
+    });
+    fixture.artifactRaw.mockClear();
+    const incomplete = provider.exportWorkspace(computer, context, limits)[Symbol.asyncIterator]();
+    await expect(incomplete.next()).rejects.toThrow("incomplete workspace listing");
+    expect(fixture.artifactRaw).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "1", "20"])(
     "cancels oversized downloads with content-length %s",
     async (contentLength) => {
@@ -602,7 +637,11 @@ function boxFixture(options: { state?: string } = {}) {
             return `${Buffer.from(filePath).toString("base64")}\tfile\t${content.byteLength}\t${executable}\n`;
           })
           .join("");
-        return finished({ stdout });
+        return finished({
+          stdout: command.includes("workspace-list-complete")
+            ? `${stdout}workspace-list-complete\n`
+            : stdout,
+        });
       }
       if (command.includes("import -window root")) {
         return finished({

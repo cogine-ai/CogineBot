@@ -1245,6 +1245,8 @@ model Computer {
   scopeKey                String                   @unique
   homeKey                 String                   @unique
   homeRevision            String                   @default("empty")
+  homeRevisionAt          DateTime?
+  restorePending          Boolean                  @default(false)
   kind                    String
   providerRef             String?
   state                   String                   @default("stopped")

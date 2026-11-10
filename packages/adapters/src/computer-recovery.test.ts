@@ -14,6 +14,7 @@ const stagingFaults = vi.hoisted(() => ({
   create: undefined as Error | undefined,
   write: undefined as Error | undefined,
   cleanup: undefined as Error | undefined,
+  diskChecksUntilFull: undefined as number | undefined,
   directories: new Set<string>(),
   writeTargets: [] as string[],
 }));
@@ -23,25 +24,38 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
-      const staging = String(args[0]).replace(/\\/g, "/").split("/").at(-1) === "rakazo-workspace-";
+      const staging = String(args[0]).replace(/\\/g, "/").split("/").at(-1) === "workspace-save-";
       if (staging && stagingFaults.create) throw stagingFaults.create;
       const directory = await actual.mkdtemp(...args);
       if (staging && typeof directory === "string") stagingFaults.directories.add(directory);
       return directory;
     },
-    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+    open: async (...args: Parameters<typeof actual.open>) => {
       const target = String(args[0]);
-      stagingFaults.writeTargets.push(target);
       const staging = [...stagingFaults.directories].some(
         (directory) => target.startsWith(`${directory}/`) || target.startsWith(`${directory}\\`),
       );
-      if (staging && stagingFaults.write) throw stagingFaults.write;
-      return actual.writeFile(...args);
+      if (staging) {
+        stagingFaults.writeTargets.push(target);
+        if (stagingFaults.write) throw stagingFaults.write;
+      }
+      return actual.open(...args);
     },
     rm: async (...args: Parameters<typeof actual.rm>) => {
       if (stagingFaults.directories.has(String(args[0])) && stagingFaults.cleanup)
         throw stagingFaults.cleanup;
       return actual.rm(...args);
+    },
+    statfs: async (target: string) => {
+      const disk = await actual.statfs(target);
+      if (
+        stagingFaults.directories.has(target) &&
+        stagingFaults.diskChecksUntilFull !== undefined &&
+        stagingFaults.diskChecksUntilFull-- <= 0
+      ) {
+        return { ...disk, bavail: 0 };
+      }
+      return disk;
     },
   };
 });
@@ -50,6 +64,7 @@ function clearStagingFaults() {
   stagingFaults.create = undefined;
   stagingFaults.write = undefined;
   stagingFaults.cleanup = undefined;
+  stagingFaults.diskChecksUntilFull = undefined;
   stagingFaults.writeTargets = [];
 }
 
@@ -96,12 +111,17 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
     controlLeaseId: null,
     maintenanceId: null as string | null,
     homeRevision: "saved",
+    restorePending: false,
+    screenGeneration: 0,
+    controlFence: 0,
+    executionFence: 0,
     updatedAt: new Date("2024-01-01T00:00:00.000Z"),
   };
   // Model the atomic scalar predicates used by claims, including stale references
   // and the updatedAt claim stamp used for booting reclaim / end-of-boot writes.
   const computer = {
     findUniqueOrThrow: vi.fn(async () => ({ ...row })),
+    findFirst: vi.fn(async () => ({ ...row })),
     updateMany: vi.fn(async ({ where, data }) => {
       const matches = ["id", "state", "providerRef", "kind", "updatedAt"].every(
         (key) => !(key in where) || where[key] === row[key as keyof typeof row],
@@ -114,12 +134,17 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
       Object.assign(row, { updatedAt: new Date(row.updatedAt.getTime() + 1) }, data),
     ),
   };
+  const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([{ id: row.id }]),
+    $transaction: vi.fn(async (work: (tx: PrismaClient) => Promise<unknown>) =>
+      work(prisma as unknown as PrismaClient),
+    ),
+    computer,
+    computerExecutionLease: { findFirst: vi.fn().mockResolvedValue(null) },
+    run: { findFirst: vi.fn().mockResolvedValue(null) },
+  };
   const deps = {
-    prisma: {
-      computer,
-      computerExecutionLease: { findFirst: vi.fn().mockResolvedValue(null) },
-      run: { findFirst: vi.fn().mockResolvedValue(null) },
-    } as unknown as PrismaClient,
+    prisma: prisma as unknown as PrismaClient,
     sandbox,
     home,
     jobs: {} as JobPublisher,
@@ -417,8 +442,7 @@ describe("computer recovery preserves live work", () => {
       expect(
         new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context)),
       ).toBe("live work");
-      // Storage succeeded even though its revision was not durably recorded on the computer.
-      expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("live work");
+      expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
     }
     computer.updateMany.mockImplementation(update);
     const recovered = await replaceComputer(deps, row.id, "recover", context);
@@ -480,7 +504,7 @@ describe("computer recovery preserves live work", () => {
   it.each([
     { label: "transport failure", gone: false },
     { label: "gone provider", gone: true },
-  ])("recovers the saved home when workspace export stops early with $label", async ({ gone }) => {
+  ])("preserves the saved home when workspace export stops early with $label", async ({ gone }) => {
     const { deps, row } = await fixture();
     const failure = new Error("Synthetic incomplete workspace export");
     if (gone) failure.name = "SandboxNotFoundError";
@@ -493,6 +517,15 @@ describe("computer recovery preserves live work", () => {
       throw failure;
     });
     const commit = vi.spyOn(deps.home, "commit");
+    if (!gone) {
+      const destroy = vi.spyOn(deps.sandbox, "destroy");
+      await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(commit).not.toHaveBeenCalled();
+      expect(row).toMatchObject({ state: "running", homeRevision: "saved" });
+      expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+      return;
+    }
     const recovered = await replaceComputer(deps, row.id, "recover", context);
     expect(recovered.fresh).toBe(true);
     expect(commit).not.toHaveBeenCalled();
@@ -571,6 +604,7 @@ describe("computer recovery preserves live work", () => {
 
   it.each([
     "mkdtemp ENOSPC",
+    "disk reserve exhausted after export",
     "staged write ENOSPC",
     "cleanup after export",
     "staged write with iterator return trap",
@@ -622,15 +656,18 @@ describe("computer recovery preserves live work", () => {
     const provision = vi.spyOn(deps.sandbox, "provision");
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
+        if (stage === "disk reserve exhausted after export") stagingFaults.diskChecksUntilFull = 1;
         const recovery = replaceComputer(deps, row.id, "recover", context);
         if (stage === "invalid portable path")
           await expect(recovery).rejects.toThrow("Path escapes the computer workspace");
+        else if (stage === "disk reserve exhausted after export")
+          await expect(recovery).rejects.toMatchObject({ name: "WorkspaceTooLargeError" });
         else if (stagingFaults.cleanup) await expect(recovery).rejects.toBe(cleanupFailure);
         else await expect(recovery).rejects.toBe(localFailure);
         expect(row).toMatchObject({
           state: "running",
           providerRef: first.providerRef,
-          homeRevision: "saved",
+          ...(stage === "cleanup after export" ? {} : { homeRevision: "saved" }),
         });
         expect(destroy).not.toHaveBeenCalled();
         expect(provision).not.toHaveBeenCalled();
@@ -660,7 +697,7 @@ describe("computer recovery preserves live work", () => {
     }
   });
 
-  it("allows saved-home fallback for provider ENOSPC without trusted local checkpoint staging failure", async () => {
+  it("keeps a reachable computer when a provider export fails with ENOSPC", async () => {
     const { deps, row } = await fixture();
     clearStagingFaults();
     const failure = Object.assign(new Error("Synthetic provider iterator ENOSPC"), {
@@ -678,17 +715,11 @@ describe("computer recovery preserves live work", () => {
     });
     const commit = vi.spyOn(deps.home, "commit");
     try {
-      const recovered = await replaceComputer(deps, row.id, "recover", context);
-      expect(recovered.fresh).toBe(true);
+      const destroy = vi.spyOn(deps.sandbox, "destroy");
+      await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
+      expect(destroy).not.toHaveBeenCalled();
       expect(commit).not.toHaveBeenCalled();
-      expect(row).toMatchObject({
-        state: "running",
-        providerRef: recovered.providerRef,
-        homeRevision: "saved",
-      });
-      expect(
-        new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
-      ).toBe("checkpoint");
+      expect(row).toMatchObject({ state: "running", homeRevision: "saved" });
       expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
     } finally {
       clearStagingFaults();

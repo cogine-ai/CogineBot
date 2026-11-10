@@ -39,3 +39,16 @@ export class SandboxUnavailableError extends Error {
     this.name = "SandboxUnavailableError";
   }
 }
+
+/** Saving stopped before replacing the stored workspace. */
+export class WorkspaceTooLargeError extends Error {
+  readonly code = "WORKSPACE_TOO_LARGE";
+  constructor(readonly limit: "bytes" | "files") {
+    super(
+      limit === "bytes"
+        ? "The computer's files are too large to save"
+        : "The computer has too many files to save",
+    );
+    this.name = "WorkspaceTooLargeError";
+  }
+}

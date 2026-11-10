@@ -9,6 +9,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -80,6 +81,31 @@ async function exported(store: LocalAgentHomeStore, directory = "") {
 }
 
 describe("LocalAgentHomeStore path containment", () => {
+  it("reaps only stale owned save directories on its data volume", async () => {
+    const { root, store } = await fixture();
+    const staging = await store.createStaging();
+    const parent = path.join(root, "staging");
+    const stale = path.join(parent, "workspace-save-STALEx");
+    const unrelated = path.join(parent, "workspace-save-unrelated");
+    const outside = path.join(root, "outside");
+    const link = path.join(parent, "workspace-save-OUTSID");
+    const old = new Date(Date.now() - 60 * 60_000);
+    await Promise.all([mkdir(stale), mkdir(unrelated), mkdir(outside)]);
+    try {
+      await symlink(outside, link, "dir");
+      await Promise.all(
+        [staging.path, stale, unrelated, outside].map((directory) => utimes(directory, old, old)),
+      );
+      await store.removeStaleStaging();
+      await expect(stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+      for (const directory of [staging.path, unrelated, outside, link]) {
+        expect((await stat(directory)).isDirectory()).toBe(true);
+      }
+    } finally {
+      await staging.remove();
+    }
+  });
+
   it("keeps revision metadata external without reserving a workspace file name", async () => {
     const { root, store } = await fixture();
     const source = path.join(root, "checkpoint-source");

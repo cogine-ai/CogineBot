@@ -10,7 +10,10 @@ import { COMPUTER_ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
 import { toComputerRef } from "./computer-lifecycle.js";
-import { checkpointComputerWorkspace } from "./computer-workspace.js";
+import {
+  ComputerCheckpointChangedError,
+  checkpointAndRecordComputerWorkspace,
+} from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;
@@ -261,25 +264,9 @@ export async function sleepComputerIfIdle(
   };
 
   try {
-    const revision = await checkpointComputerWorkspace(
-      deps.home,
-      deps.sandbox,
-      computer.homeKey,
-      ref,
-      ctx,
-    );
-    const saved = await deps.prisma.computer.updateMany({
-      where: suspensionClaim,
-      data: { homeRevision: revision, updatedAt: checkpointedAt },
+    await checkpointAndRecordComputerWorkspace(deps, computer, ref, ctx, {
+      claim: suspensionClaim,
     });
-    if (saved.count !== 1) {
-      await deps.prisma.computer.updateMany({
-        where: suspensionClaim,
-        data: { state: "running" },
-      });
-      scheduleComputerSleep(deps.jobs, computerId);
-      return;
-    }
   } catch (error) {
     if (isGoneComputerError(ref, error)) {
       await deps.prisma.computer.updateMany({
@@ -301,7 +288,8 @@ export async function sleepComputerIfIdle(
       data: { state: "running" },
     });
     scheduleComputerSleep(deps.jobs, computerId);
-    throw error;
+    if (!(error instanceof ComputerCheckpointChangedError)) throw error;
+    return;
   }
 
   const [current, activeAfterCheckpoint, backgroundAfterCheckpoint] = await Promise.all([
@@ -376,6 +364,7 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
     select: {
       id: true,
       homeKey: true,
+      scope: true,
       providerRef: true,
       kind: true,
       screenGeneration: true,

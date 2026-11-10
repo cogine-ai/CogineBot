@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommandRequest, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
@@ -81,6 +91,99 @@ describe("provider-neutral computer workspace", () => {
       ),
     ).toBe("portable");
   });
+
+  it.each(["bytes", "files"] as const)(
+    "does not replace the previous home or continue the transfer after exceeding %s",
+    async (limit) => {
+      const root = await mkdtemp(path.join(tmpdir(), "workspace-save-test-"));
+      roots.push(root);
+      const home = new LocalAgentHomeStore(root);
+      const key = "bot-1";
+      await home.writeFile(key, "notes.txt", "last good", context);
+      const revision = await home.revise(key);
+      const cancelled = vi.fn();
+      const nextFileOpened = vi.fn();
+      const computer = { id: "remote", providerRef: "remote", kind: "e2b", botId: key } as const;
+      const sandbox = {
+        async *exportWorkspace() {
+          yield {
+            path: "notes.txt",
+            body: (async function* () {
+              try {
+                yield Buffer.from("first");
+                yield Buffer.from("second");
+              } finally {
+                cancelled();
+              }
+            })(),
+          };
+          yield {
+            path: "new.txt",
+            body: (async function* () {
+              nextFileOpened();
+              yield Buffer.from("new");
+            })(),
+          };
+        },
+      } as unknown as SandboxProvider;
+
+      await expect(
+        checkpointComputerWorkspace(home, sandbox, key, computer, context, undefined, {
+          maxBytes: limit === "bytes" ? 5 : 20,
+          maxFiles: limit === "files" ? 1 : 2,
+        }),
+      ).rejects.toMatchObject({ name: "WorkspaceTooLargeError", limit });
+      expect(cancelled).toHaveBeenCalledOnce();
+      expect(nextFileOpened).not.toHaveBeenCalled();
+      expect(await home.readFile(key, "notes.txt", context)).toBe("last good");
+      expect(await readFile(path.join(root, "home-revisions", `${key}.txt`), "utf8")).toBe(
+        revision,
+      );
+      expect(await readdir(path.join(root, "staging"))).toEqual([]);
+    },
+  );
+
+  it("streams retained profile and user files and skips only the configured cache paths", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workspace-save-test-"));
+    roots.push(root);
+    const home = new LocalAgentHomeStore(root);
+    const key = "bot-1";
+    const computer = { id: "remote", providerRef: "remote", kind: "e2b", botId: key } as const;
+    const opened: string[] = [];
+    const paths = [
+      ".browser-profiles/sample/Default/Network/Cookies",
+      ".browser-profiles/sample/Default/Cache/data",
+      ".browser-profiles/sample/Local State",
+      "notes/Cache/record.txt",
+      "notes/node_modules/cache.txt",
+      "script.sh",
+    ];
+    const sandbox = {
+      async *exportWorkspace() {
+        for (const filePath of paths) {
+          yield {
+            path: filePath,
+            executable: filePath === "script.sh",
+            body: (async function* () {
+              opened.push(filePath);
+              yield Buffer.from("user");
+              yield Buffer.from(" content");
+            })(),
+          };
+        }
+      },
+    } as unknown as SandboxProvider;
+
+    await checkpointComputerWorkspace(home, sandbox, key, computer, context, undefined, {
+      maxBytes: 48,
+      maxFiles: 4,
+    });
+    expect(opened).toEqual([paths[0], paths[2], paths[3], paths[5]]);
+    for (const filePath of opened)
+      expect(await home.readFile(key, filePath, context)).toBe("user content");
+    expect((await lstat(path.join(home.pathFor(key), "script.sh"))).mode & 0o100).toBe(0o100);
+    expect(await readdir(path.join(root, "staging"))).toEqual([]);
+  });
 });
 
 describe("Team run checkpoints", () => {
@@ -91,7 +194,7 @@ describe("Team run checkpoints", () => {
     const deps = { sandbox: { exportWorkspace }, home: {}, prisma: { computer: { updateMany } } };
     const result = await checkpointRunComputerWorkspace(
       deps as never,
-      { id: "team", homeKey: "team", scope: "team" },
+      { id: "team", homeKey: "team", scope: "team", spaceId: "workspace" },
       { id: "remote", providerRef: "remote", kind: "e2b", botId: "team" },
       { ...context, botId: "writer", screenLeaseId: "run-a:2" },
     );
@@ -117,11 +220,16 @@ describe("Team run checkpoints", () => {
       await Promise.reject(new Error("export failed"));
       yield { path: "unreachable", content: new Uint8Array() };
     });
-    const deps = { sandbox: { exportWorkspace }, home: {}, prisma: { computer: { updateMany } } };
+    const findFirst = vi.fn().mockResolvedValue({ state: "suspending", updatedAt: new Date() });
+    const deps = {
+      sandbox: { exportWorkspace },
+      home: {},
+      prisma: { computer: { updateMany, findFirst } },
+    };
     await expect(
       checkpointRunComputerWorkspace(
         deps as never,
-        { id: "team", homeKey: "team", scope: "team" },
+        { id: "team", homeKey: "team", scope: "team", spaceId: "workspace" },
         { id: "remote", providerRef: "remote", kind: "box", botId: "team" },
         { ...context, botId: "writer", screenLeaseId: "run-a:2" },
       ),
@@ -130,7 +238,12 @@ describe("Team run checkpoints", () => {
       exportWorkspace.mock.invocationCallOrder[0]!,
     );
     expect(updateMany).toHaveBeenLastCalledWith({
-      where: { id: "team", providerRef: "remote", state: "suspending" },
+      where: {
+        id: "team",
+        providerRef: "remote",
+        state: "suspending",
+        updatedAt: expect.any(Date),
+      },
       data: { state: "running" },
     });
   });

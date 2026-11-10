@@ -376,6 +376,9 @@ async function buildApp(
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const oauthLogins = new PiOAuthLogins();
   const home = new LocalAgentHomeStore(env.dataDir);
+  await home.removeStaleStaging().catch((error) => {
+    logger.warn("workspace staging cleanup", { error });
+  });
   const artifacts = new LocalArtifactStore(env.dataDir);
   const memory = new MarkdownMemoryStore(prisma);
   const mcp = new McpConnector(

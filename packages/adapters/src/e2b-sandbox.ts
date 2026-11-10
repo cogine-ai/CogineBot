@@ -21,7 +21,9 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
   TerminalRequest,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import { SandboxCommandExitError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
@@ -34,6 +36,7 @@ import {
 import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
+import { streamWorkspaceBody } from "./workspace-save-policy.js";
 
 const E2B_WORKSPACE = "/home/user/rakazo-home";
 const E2B_BROWSER_PROFILES = `${E2B_WORKSPACE}/.browser-profiles`;
@@ -457,13 +460,20 @@ export class E2BSandboxProvider implements SandboxProvider {
     await writeE2BFiles(desktop, [file], context);
   }
 
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   async *exportWorkspace(
     computer: ComputerRef,
     context: AdapterContext,
-  ): AsyncIterable<PortableFile> {
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const desktop = await this.box(computer);
     await this.desktops.stopBrowsers(computer, context);
-    yield* keepingAwake(desktop, walkE2BWorkspace(desktop, "", context), context.signal);
+    yield* keepingAwake(desktop, walkE2BWorkspace(desktop, "", context, limits), context.signal);
   }
 
   async importWorkspace(
@@ -729,7 +739,8 @@ async function* walkE2BWorkspace(
   desktop: Sandbox,
   directory: string,
   context: AdapterContext,
-): AsyncIterable<PortableFile> {
+  limits?: WorkspaceExportLimits,
+): AsyncIterable<PortableFile | StreamedPortableFile> {
   const entries = await desktop.files.list(workspacePath(E2B_WORKSPACE, directory), {
     signal: context.signal,
   });
@@ -737,9 +748,25 @@ async function* walkE2BWorkspace(
   const directories: string[] = [];
   for (const entry of entries) {
     const relative = normalizeWorkspacePath(directory ? `${directory}/${entry.name}` : entry.name);
-    if (shouldSkipPortableWorkspaceFile(relative)) continue;
+    if (shouldSkipPortableWorkspaceFile(relative, entry.type === "dir")) continue;
     if (entry.type === "dir") directories.push(relative);
     else if (entry.type === "file") files.push({ relative, mode: entry.mode });
+  }
+  if (limits) {
+    for (const { relative, mode } of files) {
+      yield {
+        path: relative,
+        executable: Boolean(mode & 0o100),
+        body: streamWorkspaceBody(() =>
+          desktop.files.read(workspacePath(E2B_WORKSPACE, relative), {
+            format: "stream",
+            signal: context.signal,
+          }),
+        ),
+      };
+    }
+    for (const relative of directories) yield* walkE2BWorkspace(desktop, relative, context, limits);
+    return;
   }
   for (let index = 0; index < files.length; index += 8) {
     const batch = await Promise.all(

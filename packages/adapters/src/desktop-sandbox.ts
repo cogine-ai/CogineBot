@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -27,6 +27,8 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import {
@@ -46,6 +48,7 @@ import {
   win32NtRelativeAvailable,
 } from "./desktop-sandbox-win32-path.js";
 import { sandboxCommandEnvironment } from "./sandbox-command-environment.js";
+import { shouldSkipPortableWorkspaceFile } from "./workspace-save-policy.js";
 
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
@@ -242,9 +245,19 @@ export class DesktopSandboxProvider implements SandboxProvider {
     }
   }
 
-  async *exportWorkspace(computer: ComputerRef): AsyncIterable<PortableFile> {
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
+  async *exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const box = this.requiredBox(computer);
-    yield* walkDesktopWorkspace(box.home, "");
+    yield* walkDesktopWorkspace(box.home, "", limits ? context.signal : undefined);
   }
 
   async importWorkspace(
@@ -664,20 +677,34 @@ function hasErrorCode(error: unknown, code: string): error is NodeJS.ErrnoExcept
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-async function* walkDesktopWorkspace(home: string, directory: string): AsyncIterable<PortableFile> {
+async function* walkDesktopWorkspace(
+  home: string,
+  directory: string,
+  signal?: AbortSignal,
+): AsyncIterable<PortableFile | StreamedPortableFile> {
   const target = await localWorkspaceTarget(home, directory, true);
   for (const entry of await readdir(target, { withFileTypes: true })) {
+    signal?.throwIfAborted();
+    if (signal && entry.isSymbolicLink()) continue;
     const relative = normalizeWorkspacePath(directory ? `${directory}/${entry.name}` : entry.name);
     const child = await localWorkspaceTarget(home, relative, true).catch(() => null);
     if (!child) continue;
     const info = await stat(child);
-    if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative);
+    if (signal && shouldSkipPortableWorkspaceFile(relative, info.isDirectory())) continue;
+    if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative, signal);
     else if (info.isFile()) {
-      yield {
-        path: relative,
-        content: new Uint8Array(await readFile(child)),
-        executable: Boolean(info.mode & 0o100),
-      };
+      const metadata = { path: relative, executable: Boolean(info.mode & 0o100) };
+      if (signal) {
+        yield {
+          ...metadata,
+          body: (async function* () {
+            for await (const chunk of createReadStream(child, { signal }))
+              yield chunk as Uint8Array;
+          })(),
+        };
+      } else {
+        yield { ...metadata, content: new Uint8Array(await readFile(child)) };
+      }
     }
   }
 }

@@ -978,8 +978,9 @@ describe("computer provisioning", () => {
           updateMany: vi
             .fn()
             .mockResolvedValueOnce({ count: 1 })
-            .mockImplementation(async () => {
-              expect(await sandbox.readFile(ref, "notes/keep.txt", context)).toEqual(saved);
+            .mockImplementation(async ({ data }) => {
+              if (data.state === "running")
+                expect(await sandbox.readFile(ref, "notes/keep.txt", context)).toEqual(saved);
               return { count: 1 };
             }),
         },
@@ -1013,7 +1014,12 @@ describe("computer provisioning", () => {
             updatedAt: expect.any(Date),
             bots: { some: { id: "bot-1", archivedAt: null } },
           },
-          data: { state: "running", providerRef: next.providerRef, kind: next.kind },
+          data: {
+            state: "running",
+            providerRef: next.providerRef,
+            kind: next.kind,
+            restorePending: false,
+          },
         });
         expect(destroy).not.toHaveBeenCalled();
         expect(stop).not.toHaveBeenCalled();
@@ -1442,7 +1448,7 @@ describe("computer provisioning", () => {
         ),
       ).resolves.toEqual(ref);
       expect(importWorkspace).toHaveBeenCalledTimes(1);
-      expect(updateMany).toHaveBeenCalledTimes(2);
+      expect(updateMany).toHaveBeenCalledTimes(3);
       expect(updateMany).toHaveBeenLastCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -2266,11 +2272,21 @@ describe("computer replacement", () => {
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValue({ count: 1 });
     const update = vi.fn().mockResolvedValue({});
-    const prisma = {
-      computer: { findUniqueOrThrow, updateMany, update },
+    const mockPrisma = {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: computerRecord.id }]),
+      $transaction: vi.fn(async (work: (tx: PrismaClient) => Promise<unknown>) =>
+        work(mockPrisma as unknown as PrismaClient),
+      ),
+      computer: {
+        findUniqueOrThrow,
+        updateMany,
+        update,
+        findFirst: vi.fn().mockResolvedValue({ ...computerRecord, state: "suspending" }),
+      },
       computerExecutionLease: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
       run: { findFirst: vi.fn().mockResolvedValue(null) },
-    } as unknown as PrismaClient;
+    };
+    const prisma = mockPrisma as unknown as PrismaClient;
 
     const destroy = vi.spyOn(sandbox, "destroy");
     try {
@@ -3269,7 +3285,7 @@ describe("computer replacement", () => {
     expect(prisma.run.findFirst).not.toHaveBeenCalled();
   });
 
-  it("continues recover when checkpoint fails with an ordinary provider error", async () => {
+  it("leaves the computer running when recover cannot export an ordinary provider", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-recover-checkpoint-"));
     const homeRoot = await mkdtemp(path.join(tmpdir(), "rakazo-recover-checkpoint-home-"));
     const home = new LocalAgentHomeStore(homeRoot);
@@ -3301,27 +3317,26 @@ describe("computer replacement", () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const update = vi.fn().mockResolvedValue({});
     const prisma = {
-      computer: { findUniqueOrThrow, updateMany, update },
+      computer: {
+        findUniqueOrThrow,
+        updateMany,
+        update,
+        findFirst: vi.fn().mockResolvedValue(computerRecord),
+      },
       run: { findFirst: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
     const destroy = vi.spyOn(sandbox, "destroy");
 
     try {
-      const ref = await replaceComputer(
-        {
-          prisma,
-          sandbox,
-          home,
-          jobs: {} as JobPublisher,
-          events: {} as ThreadEvents,
-          dataDir,
-        },
-        "computer-1",
-        "recover",
-        context,
-      );
-      expect(destroy).toHaveBeenCalledOnce();
-      expect(ref.fresh).toBe(true);
+      await expect(
+        replaceComputer(
+          { prisma, sandbox, home, jobs: {} as JobPublisher, events: {} as ThreadEvents, dataDir },
+          "computer-1",
+          "recover",
+          context,
+        ),
+      ).rejects.toThrow("ECONNRESET");
+      expect(destroy).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
       await rm(homeRoot, { recursive: true, force: true });
@@ -3353,6 +3368,7 @@ describe("computer replacement", () => {
     const prisma = {
       computer: {
         findUniqueOrThrow: vi.fn().mockResolvedValue(computerRecord),
+        findFirst: vi.fn().mockResolvedValue(computerRecord),
         updateMany,
         update: vi.fn(),
       },

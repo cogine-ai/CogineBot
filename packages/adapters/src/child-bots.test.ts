@@ -1880,6 +1880,7 @@ describe("archiveBot", () => {
 
   it("surfaces computer stop failures and leaves the provider state retryable", async () => {
     const archivedAt = new Date("2026-08-16T12:00:00.000Z");
+    const updatedAt = new Date("2026-08-16T12:00:00.000Z");
     const updateComputer = vi.fn().mockResolvedValue({});
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
@@ -1894,7 +1895,10 @@ describe("archiveBot", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        computer: {
+          findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
@@ -1909,6 +1913,7 @@ describe("archiveBot", () => {
     const prisma = {
       computer: {
         findUnique: vi.fn().mockResolvedValue(dedicated),
+        findFirst: vi.fn().mockResolvedValue({ state: "running", updatedAt }),
         update: updateComputer,
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1965,13 +1970,17 @@ describe("archiveBot", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        computer: {
+          findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
     const prisma = {
       computer: {
         findUnique: vi.fn().mockResolvedValueOnce(booting).mockResolvedValueOnce(running),
+        findFirst: vi.fn().mockResolvedValue({ state: "running", updatedAt: new Date() }),
         updateMany,
       },
       run: { findMany: vi.fn().mockResolvedValue([]) },

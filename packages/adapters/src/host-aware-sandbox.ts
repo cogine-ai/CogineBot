@@ -10,7 +10,9 @@ import type {
   ProcessEvent,
   SandboxProvider,
   ScreenRequest,
+  StreamedPortableFile,
   TerminalRequest,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { runAsSystem } from "@rakazo/db";
@@ -173,8 +175,17 @@ export class HostAwareSandbox implements SandboxProvider {
     return this.route(computer).writeFile(computer, file, context);
   }
 
-  exportWorkspace(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).exportWorkspace(computer, context);
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
+  exportWorkspace(computer: ComputerRef, context: AdapterContext, limits?: WorkspaceExportLimits) {
+    const provider = this.route(computer);
+    return limits
+      ? provider.exportWorkspace(computer, context, limits)
+      : provider.exportWorkspace(computer, context);
   }
 
   importWorkspace(

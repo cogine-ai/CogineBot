@@ -19,6 +19,7 @@ import {
   runContinueJob,
   runJobKey,
   SecretStoreUnavailableError,
+  WorkspaceTooLargeError,
 } from "@rakazo/adapter-kit";
 import type {
   CloudAgentConnection,
@@ -49,6 +50,7 @@ import {
   CHATGPT_PLAN_PROVIDER_ID,
   CodexCatalogCache,
   ComputerBusyError,
+  ComputerCheckpointChangedError,
   canUsePlatformModel,
   checkpointAndRecordComputerWorkspace,
   clearInactiveUserComputerControl,
@@ -2312,7 +2314,9 @@ export function createRouter(deps: RouterDeps) {
             const ctx = computerContext(context.actor, bot.id, "computer.switch");
             const ref = toComputerRef(bot.computer);
             if (bot.computer.state === "running") {
-              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx);
+              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
+                claim: { state: "running", screenGeneration: bot.computer.screenGeneration },
+              });
               await deps.sandbox.stop(ref, ctx);
             }
             await deps.prisma.computerExecutionLease.deleteMany({
@@ -3167,16 +3171,29 @@ export function createRouter(deps: RouterDeps) {
         if (!bot.computer) throw new IsolationError();
         const controlLeaseId = bot.computer.controlLeaseId;
         const now = new Date();
+        const claimStamp = new Date(Math.max(now.getTime(), bot.computer.updatedAt.getTime() + 1));
+        const suspensionClaim = {
+          id: bot.computer.id,
+          state: "suspending",
+          kind: bot.computer.kind,
+          providerRef: bot.computer.providerRef,
+          screenGeneration: bot.computer.screenGeneration + 1,
+          updatedAt: claimStamp,
+          maintenanceId: null,
+        };
         const claimed = await deps.prisma.computer.updateMany({
           where: {
             id: bot.computer.id,
-            state: { not: "suspending" },
+            state: { equals: bot.computer.state, notIn: ["booting", "suspending"] },
+            screenGeneration: bot.computer.screenGeneration,
+            providerRef: bot.computer.providerRef,
+            updatedAt: bot.computer.updatedAt,
             maintenanceId: null,
             executionLeases: {
               none: { botId: { not: bot.id }, expiresAt: { gt: now } },
             },
           },
-          data: { state: "suspending" },
+          data: { state: "suspending", updatedAt: claimStamp },
         });
         if (claimed.count !== 1) {
           throw new ORPCError("CONFLICT", {
@@ -3193,7 +3210,7 @@ export function createRouter(deps: RouterDeps) {
         });
         if (otherRun) {
           await deps.prisma.computer.updateMany({
-            where: { id: bot.computer.id, state: "suspending" },
+            where: suspensionClaim,
             data: { state: bot.computer.state },
           });
           throw new ORPCError("CONFLICT", {
@@ -3203,12 +3220,16 @@ export function createRouter(deps: RouterDeps) {
         await deps.prisma.computerExecutionLease.deleteMany({
           where: { computerId: bot.computer.id, botId: bot.id },
         });
+        let stopStarted = false;
         try {
           if (bot.computer.providerRef) {
             const ctx = computerContext(context.actor, bot.id, "stop");
             const ref = toComputerRef(bot.computer);
             try {
-              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx);
+              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
+                claim: suspensionClaim,
+              });
+              stopStarted = true;
               await deps.sandbox.stop(ref, ctx);
             } catch (error) {
               // The sandbox is already gone: nothing left to checkpoint or stop.
@@ -3216,7 +3237,7 @@ export function createRouter(deps: RouterDeps) {
             }
           }
           await deps.prisma.computer.update({
-            where: { id: bot.computer.id },
+            where: suspensionClaim,
             data: {
               state: "stopped",
               controlHolder: "none",
@@ -3229,10 +3250,14 @@ export function createRouter(deps: RouterDeps) {
         } catch (error) {
           await deps.prisma.computer
             .updateMany({
-              where: { id: bot.computer.id, state: "suspending" },
-              data: { state: "error" },
+              where: suspensionClaim,
+              data: { state: stopStarted ? "error" : bot.computer.state },
             })
             .catch(() => undefined);
+          if (error instanceof WorkspaceTooLargeError)
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          if (error instanceof ComputerCheckpointChangedError)
+            throw new ORPCError("CONFLICT", { message: error.message });
           throw error;
         }
         await deps.jobs.cancel(

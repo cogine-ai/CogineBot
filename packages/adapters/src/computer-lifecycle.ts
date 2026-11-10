@@ -26,7 +26,7 @@ import {
 } from "./computer-control.js";
 import { toComputerRef } from "./computer-support.js";
 import {
-  checkpointComputerWorkspace,
+  checkpointAndRecordComputerWorkspace,
   ensureComputerWorkspaceLayout,
   removeDeletedBotWorkspaces,
   restoreComputerWorkspace,
@@ -312,7 +312,11 @@ export async function provisionComputer(
       maintenanceId: existing.maintenanceId ?? null,
       ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
     },
-    data: { state: "booting", updatedAt: claimStamp },
+    data: {
+      state: "booting",
+      updatedAt: claimStamp,
+      ...(!existing.providerRef ? { restorePending: true } : {}),
+    },
   });
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
@@ -330,11 +334,19 @@ export async function provisionComputer(
     provisioned = ref;
     await deps.sandbox.prepare(ref, context);
     const replacement =
+      existing.restorePending ||
       ref.fresh === true ||
       !existing.providerRef ||
       existing.providerRef !== ref.providerRef ||
       existing.kind !== ref.kind;
     if (replacement) {
+      if (existing.providerRef && !existing.restorePending) {
+        const marked = await deps.prisma.computer.updateMany({
+          where: { id: computerId, state: "booting", updatedAt: claimStamp, ...previousRef },
+          data: { restorePending: true, updatedAt: claimStamp },
+        });
+        if (marked.count !== 1) throw new ComputerBusyError();
+      }
       await onProgress?.("restoring");
       await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, context);
     }
@@ -367,6 +379,7 @@ export async function provisionComputer(
         state: "running",
         providerRef: ref.providerRef,
         kind: ref.kind,
+        restorePending: false,
         ...(!reconnecting
           ? {
               controlHolder: activeControl ? "user" : controlHolder,
@@ -948,39 +961,31 @@ export async function replaceComputer(
   let tornDown = false;
   try {
     // Retry the checkpoint even after an earlier update left the row in error.
-    if (oldRef && (mode === "update" || (existing.state === "running" && mode === "recover"))) {
+    if (
+      oldRef &&
+      (mode === "update" ||
+        (existing.state === "running" && mode === "recover" && !existing.restorePending))
+    ) {
       await onProgress?.("saving");
-      let revision: string | undefined;
       let exported = false;
       let stagingFailed = false;
       try {
-        revision = await checkpointComputerWorkspace(
-          deps.home,
-          deps.sandbox,
-          existing.homeKey,
-          oldRef,
-          context,
-          {
-            onExported: () => {
-              exported = true;
-            },
-            onStagingFailure: () => {
-              stagingFailed = true;
-            },
+        await checkpointAndRecordComputerWorkspace(deps, existing, oldRef, context, {
+          claim: {
+            state: "suspending",
+            updatedAt: claimStamp,
+            maintenanceId: existing.maintenanceId ?? null,
           },
-        );
-      } catch (error) {
-        // Recover can fall back when exporting fails. Staging and post-export
-        // failures must leave the old provider intact.
-        if (stagingFailed || exported || (!isSandboxGoneError(error) && mode !== "recover"))
-          throw error;
-      }
-      if (revision !== undefined) {
-        const recorded = await deps.prisma.computer.updateMany({
-          where: { id: computerId, state: "suspending", updatedAt: claimStamp },
-          data: { homeRevision: revision, updatedAt: claimStamp },
+          onExported: () => {
+            exported = true;
+          },
+          onStagingFailure: () => {
+            stagingFailed = true;
+          },
         });
-        if (recorded.count !== 1) throw new ComputerBusyError();
+      } catch (error) {
+        // Only confirmed provider loss before a completed export permits fallback.
+        if (stagingFailed || exported || !isSandboxGoneError(error)) throw error;
       }
     }
     await onProgress?.("recreating");

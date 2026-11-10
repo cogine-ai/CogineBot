@@ -1,10 +1,23 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { FileNotFoundError, SandboxNotFoundError } from "@e2b/desktop";
-import type { AgentHomeStore, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  AgentHomeStore,
+  JobPublisher,
+  SandboxProvider,
+} from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sleepComputerIfIdle } from "./computer-idle.js";
+import {
+  checkpointAndRecordComputerWorkspace,
+  teamBrowserProfileName,
+} from "./computer-workspace.js";
+import { LocalAgentHomeStore } from "./home.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres =
@@ -173,4 +186,176 @@ describePostgres("idle missing-computer suspension claim", () => {
       expect(enqueue).not.toHaveBeenCalled();
     },
   );
+});
+
+describePostgres("safe workspace publication", () => {
+  const organizationId = `save-organization-${randomUUID()}`;
+  const spaceId = `save-space-${randomUUID()}`;
+  const context = {
+    operationId: "save-test",
+    traceId: "save-test",
+    spaceId,
+    userId: "owner",
+    botId: "writer",
+    runId: "saving-run",
+    screenLeaseId: "saving-run:4",
+    signal: new AbortController().signal,
+  } satisfies AdapterContext;
+  let database: ReturnType<typeof createDb>;
+  let root: string;
+  let home: LocalAgentHomeStore;
+
+  beforeAll(async () => {
+    database = createDb(databaseUrl!);
+    await database.prisma.organization.create({
+      data: { id: organizationId, name: "Save Test", slug: organizationId, createdAt: new Date() },
+    });
+    await database.prisma.space.create({
+      data: { id: spaceId, organizationId, name: "Save Test" },
+    });
+    root = await mkdtemp(path.join(tmpdir(), "workspace-save-pg-"));
+    home = new LocalAgentHomeStore(root);
+  });
+
+  afterAll(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    if (!database) return;
+    await database.prisma.organization.deleteMany({ where: { id: organizationId } });
+    await database.prisma.$disconnect();
+    await database.pool.end();
+  });
+
+  async function seed() {
+    const id = `save-computer-${randomUUID()}`;
+    await home.writeFile(id, "notes.txt", "last valid home", context);
+    const homeRevision = await home.revise(id);
+    const record = await database.prisma.computer.create({
+      data: {
+        id,
+        spaceId,
+        userId: context.userId,
+        scope: "team",
+        scopeKey: id,
+        homeKey: id,
+        homeRevision,
+        providerRef: id,
+        kind: "e2b",
+        state: "running",
+        executionLeases: {
+          create: {
+            botId: context.botId,
+            runId: context.runId,
+            fence: 4,
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        },
+      },
+    });
+    expect(record).toMatchObject({ homeRevisionAt: null, restorePending: false });
+    const ref = { id, botId: context.botId, providerRef: id, kind: "e2b" } as const;
+    return { id, record, ref, homeRevision };
+  }
+
+  it.each(["generation", "restore pending", "expired lease", "revision record"] as const)(
+    "retains the last valid home if %s invalidates publication",
+    async (failure) => {
+      const { id, record, ref, homeRevision } = await seed();
+      const injected = new Error("Synthetic revision record failure");
+      const prisma =
+        failure === "revision record"
+          ? (database.prisma.$extends({
+              query: {
+                computer: {
+                  async updateMany({ args, query }) {
+                    if (args.data.homeRevision) throw injected;
+                    return query(args);
+                  },
+                },
+              },
+            }) as unknown as PrismaClient)
+          : database.prisma;
+      const sandbox = {
+        async *exportWorkspace() {
+          yield { path: "notes.txt", content: Buffer.from("replacement") };
+          if (failure === "generation") {
+            await prisma.computer.update({
+              where: { id },
+              data: { screenGeneration: { increment: 1 } },
+            });
+          }
+          if (failure === "restore pending") {
+            await prisma.computer.update({ where: { id }, data: { restorePending: true } });
+          }
+          if (failure === "expired lease") {
+            await prisma.computerExecutionLease.updateMany({
+              where: { computerId: id, runId: context.runId },
+              data: { expiresAt: new Date(0) },
+            });
+          }
+        },
+      } as unknown as SandboxProvider;
+      const save = checkpointAndRecordComputerWorkspace(
+        { prisma, home, sandbox },
+        record,
+        ref,
+        context,
+      );
+      if (failure === "revision record") await expect(save).rejects.toBe(injected);
+      else await expect(save).rejects.toMatchObject({ name: "ComputerCheckpointChangedError" });
+      expect(await home.readFile(id, "notes.txt", context)).toBe("last valid home");
+      expect(await readFile(path.join(root, "home-revisions", `${id}.txt`), "utf8")).toBe(
+        homeRevision,
+      );
+      expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        homeRevision,
+        homeRevisionAt: null,
+        state: "running",
+      });
+      expect(await readdir(path.join(root, "staging"))).toEqual([]);
+    },
+  );
+
+  it("excludes tombstones written during export and records the completed revision", async () => {
+    const { id, record, ref, homeRevision } = await seed();
+    const prisma = database.prisma;
+    const deletedId = "deleted-bot";
+    const deletedPaths = [
+      `bots/${deletedId}/notes.txt`,
+      `.browser-profiles/${teamBrowserProfileName(deletedId)}/Default/Network/Cookies`,
+    ];
+    const survivor = "bots/deleted-bot-other/notes.txt";
+    const sandbox = {
+      async *exportWorkspace() {
+        for (const filePath of [...deletedPaths, survivor]) {
+          yield { path: filePath, content: Buffer.from("new content") };
+        }
+        await prisma.botDeletion.create({
+          data: {
+            id: deletedId,
+            spaceId,
+            name: "Deleted bot",
+            deletedByUserId: context.userId,
+            memoriesPreserved: true,
+          },
+        });
+      },
+    } as unknown as SandboxProvider;
+    const revision = await checkpointAndRecordComputerWorkspace(
+      { prisma, home, sandbox },
+      record,
+      ref,
+      context,
+    );
+    expect(revision).not.toBe(homeRevision);
+    expect(await home.readFile(id, survivor, context)).toBe("new content");
+    for (const filePath of deletedPaths) {
+      await expect(home.readFile(id, filePath, context)).rejects.toThrow();
+    }
+    expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      homeRevision: revision,
+      homeRevisionAt: expect.any(Date),
+      updatedAt: record.updatedAt,
+      state: "running",
+    });
+  });
 });

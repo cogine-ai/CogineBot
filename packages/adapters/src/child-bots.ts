@@ -613,6 +613,10 @@ export async function destroyBot(
           WHERE "botId" = ${bot.id}
         `;
       }
+      // Serialize the deletion marker with a Team Computer's final workspace publication.
+      await tx.$queryRaw`
+        SELECT id FROM computers WHERE "scopeKey" = ${computerScopeKey("team", bot.spaceId)} FOR UPDATE
+      `;
       await tx.botDeletion.create({
         data: {
           id: bot.id,

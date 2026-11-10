@@ -2,20 +2,50 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   access,
+  lstat,
   mkdir,
+  mkdtemp,
   open,
   readdir,
+  readFile,
   realpath,
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, AgentHomeStore, PortableFile } from "@rakazo/adapter-kit";
+import { getLogger } from "@rakazo/logging";
 import { fileHandlePath } from "./file-handle-path.js";
 
+const SAVE_STAGING_PREFIX = "workspace-save-";
+const STAGING_HEARTBEAT_MS = 30_000;
+const STALE_STAGING_MS = 5 * 60_000;
+
+export type HomePublisher = (install: () => Promise<string>) => Promise<string>;
+
+export async function createStagingDirectory(parent = tmpdir()) {
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, SAVE_STAGING_PREFIX));
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void utimes(directory, now, now).catch(() => undefined);
+  }, STAGING_HEARTBEAT_MS);
+  heartbeat.unref();
+  return {
+    path: directory,
+    async remove() {
+      clearInterval(heartbeat);
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
 export class LocalAgentHomeStore implements AgentHomeStore {
+  private readonly saveStaging = new Set<string>();
   private readonly botWrites = new Map<string, Promise<void>>();
 
   constructor(private readonly root: string) {}
@@ -50,37 +80,110 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     return "working";
   }
 
-  async commit(botId: string, src: string, _context: AdapterContext): Promise<string> {
+  async createStaging() {
+    const staging = await createStagingDirectory(path.join(this.root, "staging"));
+    this.saveStaging.add(staging.path);
+    return {
+      path: staging.path,
+      remove: async () => {
+        this.saveStaging.delete(staging.path);
+        await staging.remove();
+      },
+    };
+  }
+
+  /** Only owned save directories on this store's volume are eligible for age-based cleanup. */
+  async removeStaleStaging(now = Date.now()) {
+    const parent = path.join(this.root, "staging");
+    const entries = await readdir(parent, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory() ||
+        !entry.name.startsWith(SAVE_STAGING_PREFIX) ||
+        !/^[A-Za-z0-9]{6}$/.test(entry.name.slice(SAVE_STAGING_PREFIX.length))
+      )
+        continue;
+      const directory = path.join(parent, entry.name);
+      if (this.saveStaging.has(directory)) continue;
+      const info = await lstat(directory).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (info?.isDirectory() && info.mtimeMs < now - STALE_STAGING_MS)
+        await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  async commit(
+    botId: string,
+    src: string,
+    _context: AdapterContext,
+    publish: HomePublisher = (install) => install(),
+  ): Promise<string> {
     return this.withBotWrite(botId, async () => {
       await this.recoverInterruptedCommit(botId);
       const dest = this.botDir(botId);
       const parent = path.dirname(dest);
-      const staging = path.join(parent, `.${botId}.staging-${randomUUID()}`);
+      const staged = this.saveStaging.has(src);
+      const staging = staged ? src : path.join(parent, `.${botId}.staging-${randomUUID()}`);
       const previous = `${dest}.previous`;
+      const retired = `${previous}-${randomUUID()}`;
+      let displaced: string | undefined;
+      let installed = false;
       await mkdir(parent, { recursive: true });
-      await mkdir(staging, { recursive: true });
       try {
-        await copyDir(src, staging);
-        await rm(previous, { recursive: true, force: true });
-        if (await pathExists(dest)) await rename(dest, previous);
-        try {
-          await rename(staging, dest);
-        } catch (error) {
-          if (!(await pathExists(dest)) && (await pathExists(previous))) {
-            await rename(previous, dest).catch(() => undefined);
-          }
-          throw error;
+        if (!staged) {
+          await mkdir(staging, { recursive: true });
+          await copyDir(src, staging);
         }
-        await rm(previous, { recursive: true, force: true });
-        return this.writeRevision(botId);
+        const revision = await this.publishRevision(botId, async (record) =>
+          publish(async () => {
+            await rm(previous, { recursive: true, force: true });
+            if (await pathExists(dest)) {
+              await rename(dest, previous);
+              displaced = previous;
+            }
+            await rename(staging, dest);
+            installed = true;
+            const revision = await record();
+            if (displaced) {
+              // Move the backup to an attempt-owned name while publication still holds the row.
+              await rename(previous, retired);
+              displaced = retired;
+            }
+            return revision;
+          }),
+        );
+        if (displaced) await this.cleanCommittedPath(displaced);
+        return revision;
+      } catch (error) {
+        try {
+          if (installed) await rename(dest, staging);
+          if (displaced) await rename(displaced, dest);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "Workspace save could not be rolled back",
+          );
+        }
+        throw error;
       } finally {
-        await rm(staging, { recursive: true, force: true });
+        if (!staged) await this.cleanCommittedPath(staging);
       }
     });
   }
 
-  async revise(botId: string): Promise<string> {
-    return this.withBotWrite(botId, async () => this.writeRevision(botId));
+  async revise(botId: string, publish: HomePublisher = (install) => install()): Promise<string> {
+    return this.withBotWrite(botId, async () => this.publishRevision(botId, publish));
+  }
+
+  private async cleanCommittedPath(directory: string) {
+    await rm(directory, { recursive: true, force: true }).catch((error) => {
+      getLogger().warn("workspace save cleanup", { error });
+    });
   }
 
   async restore(
@@ -178,12 +281,43 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     return listed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   }
 
-  private async writeRevision(botId: string) {
+  private async publishRevision(botId: string, publish: HomePublisher) {
     const revision = `rev-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const directory = path.join(this.root, "home-revisions");
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, `${botId}.txt`), revision, "utf8");
-    return revision;
+    const file = path.join(directory, `${botId}.txt`);
+    const staged = `${file}.${randomUUID()}.tmp`;
+    const previous = await readFile(file, "utf8").catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    let published = false;
+    const write = async (value: string) => {
+      await mkdir(directory, { recursive: true });
+      await writeFile(staged, value, "utf8");
+      await rename(staged, file);
+    };
+    try {
+      return await publish(async () => {
+        await write(revision);
+        published = true;
+        return revision;
+      });
+    } catch (error) {
+      if (published) {
+        try {
+          if (previous === null) await rm(file, { force: true });
+          else await write(previous);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "Workspace revision could not be rolled back",
+          );
+        }
+      }
+      throw error;
+    } finally {
+      await this.cleanCommittedPath(staged);
+    }
   }
 
   private async recoverInterruptedCommit(botId: string) {

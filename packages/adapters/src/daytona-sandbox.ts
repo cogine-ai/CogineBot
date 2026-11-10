@@ -21,7 +21,9 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
   TerminalRequest,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { screenSessionKey } from "./computer-screens.js";
@@ -302,13 +304,20 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     await this.writeFiles(sandbox, [file]);
   }
 
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   async *exportWorkspace(
     computer: ComputerRef,
     context: AdapterContext,
-  ): AsyncIterable<PortableFile> {
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const sandbox = await this.box(computer);
     await this.desktops.stopBrowsers(computer, context);
-    yield* walkDaytonaWorkspace(sandbox, await this.workspaceRoot(sandbox), "", context);
+    yield* walkDaytonaWorkspace(sandbox, await this.workspaceRoot(sandbox), "", context, limits);
   }
 
   async importWorkspace(
@@ -710,7 +719,8 @@ async function* walkDaytonaWorkspace(
   root: string,
   directory: string,
   context: AdapterContext,
-): AsyncIterable<PortableFile> {
+  limits?: WorkspaceExportLimits,
+): AsyncIterable<PortableFile | StreamedPortableFile> {
   if (context.signal.aborted) throw context.signal.reason ?? new Error("export aborted");
   const entries = await sandbox.fs.listFiles(workspacePath(root, directory));
   const files = entries
@@ -721,23 +731,38 @@ async function* walkDaytonaWorkspace(
     }))
     .filter(({ relative }) => !shouldSkipPortableWorkspaceFile(relative));
   const directories = entries.filter((entry) => entry.isDir);
-  for (const entries of daytonaExportBatches(files)) {
-    const batch = await Promise.all(
-      entries.map(async ({ entry, relative }) => {
-        const content = await sandbox.fs.downloadFile(workspacePath(root, relative));
-        return {
-          path: relative,
-          content: new Uint8Array(content.buffer, content.byteOffset, content.byteLength),
-          executable: isDaytonaExecutable(entry.mode, entry.permissions),
-        };
-      }),
-    );
-    for (const file of batch) yield file;
+  if (limits) {
+    for (const { entry, relative } of files) {
+      yield {
+        path: relative,
+        executable: isDaytonaExecutable(entry.mode, entry.permissions),
+        body: (async function* () {
+          const stream = await sandbox.fs.downloadFileStream(workspacePath(root, relative), {
+            signal: context.signal,
+          });
+          for await (const chunk of stream) yield chunk as Uint8Array;
+        })(),
+      };
+    }
+  } else {
+    for (const entries of daytonaExportBatches(files)) {
+      const batch = await Promise.all(
+        entries.map(async ({ entry, relative }) => {
+          const content = await sandbox.fs.downloadFile(workspacePath(root, relative));
+          return {
+            path: relative,
+            content: new Uint8Array(content.buffer, content.byteOffset, content.byteLength),
+            executable: isDaytonaExecutable(entry.mode, entry.permissions),
+          };
+        }),
+      );
+      for (const file of batch) yield file;
+    }
   }
   for (const entry of directories) {
     const relative = normalizeWorkspacePath(directory ? `${directory}/${entry.name}` : entry.name);
-    if (!shouldSkipPortableWorkspaceFile(`${relative}/placeholder`)) {
-      yield* walkDaytonaWorkspace(sandbox, root, relative, context);
+    if (!shouldSkipPortableWorkspaceFile(relative, true)) {
+      yield* walkDaytonaWorkspace(sandbox, root, relative, context, limits);
     }
   }
 }
