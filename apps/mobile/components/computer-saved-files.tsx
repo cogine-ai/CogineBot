@@ -1,10 +1,8 @@
-import { Directory, File, Paths } from "expo-file-system";
-import * as Sharing from "expo-sharing";
+import type { Directory } from "expo-file-system";
 import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { captureApiRequestContext, rpc } from "../lib/api";
-import { artifactShareFileName } from "../lib/artifact-file";
-import { ARTIFACT_DOWNLOAD_TIMEOUT_MS } from "../lib/artifact-open";
+import { ARTIFACT_DOWNLOAD_TIMEOUT_MS, artifactShareFileName } from "../lib/artifact-file";
 import { useI18n } from "../lib/i18n";
 import { captureMobileScope, isMobileScopeCurrent } from "../lib/mobile-scope";
 import { useMobileTokens } from "../lib/native";
@@ -22,12 +20,14 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const active = useRef<AbortController | null>(null);
+  const active = useRef<{ controller: AbortController; downloading: boolean } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
-    active.current = controller;
+    const session = { controller, downloading: false };
+    active.current = session;
+    setDownloading(false);
     const scope = captureMobileScope();
     const current = () => !controller.signal.aborted && isMobileScopeCurrent(scope);
     void (async () => {
@@ -46,7 +46,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
     })();
     return () => {
       controller.abort();
-      if (active.current === controller) active.current = null;
+      if (active.current === session) active.current = null;
     };
   }, [botId, open, path, t]);
 
@@ -57,8 +57,10 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
   }
 
   async function download(entry: Entry) {
-    const controller = active.current;
-    if (!controller || downloading) return;
+    const session = active.current;
+    if (!session || session.downloading) return;
+    session.downloading = true;
+    const { controller } = session;
     const scope = captureMobileScope();
     const current = () => !controller.signal.aborted && isMobileScopeCurrent(scope);
     setDownloading(true);
@@ -72,6 +74,11 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
         { botId, path: entry.path, source: "saved" },
         { requestContext, timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS, signal: controller.signal },
       );
+      if (!current()) return;
+      const [{ Directory, File, Paths }, Sharing] = await Promise.all([
+        import("expo-file-system"),
+        import("expo-sharing"),
+      ]);
       if (!current()) return;
       if (!(await Sharing.isAvailableAsync())) throw new Error(t("Could not download file"));
       if (!current()) return;
@@ -91,6 +98,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
       } catch (cause) {
         if (current()) setError(errorText(cause, t("Could not download file")));
       }
+      session.downloading = false;
       if (current()) setDownloading(false);
     }
   }

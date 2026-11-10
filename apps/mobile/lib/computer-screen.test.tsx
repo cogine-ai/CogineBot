@@ -11,6 +11,32 @@ import Computer from "../app/computer";
 
 const rpc = vi.hoisted(() => vi.fn());
 
+const nativeFiles = vi.hoisted(() => ({
+  createDirectory: vi.fn(),
+  deleteDirectory: vi.fn(),
+  createFile: vi.fn(),
+  writeFile: vi.fn(),
+  share: vi.fn(async () => undefined),
+}));
+
+vi.mock("expo-file-system", () => ({
+  Directory: class {
+    exists = true;
+    create = nativeFiles.createDirectory;
+    delete = nativeFiles.deleteDirectory;
+  },
+  File: class {
+    uri = "file:///synthetic/notes.txt";
+    create = nativeFiles.createFile;
+    write = nativeFiles.writeFile;
+  },
+  Paths: { cache: "file:///synthetic" },
+}));
+vi.mock("expo-sharing", () => ({
+  isAvailableAsync: async () => true,
+  shareAsync: nativeFiles.share,
+}));
+
 vi.mock("react-native", () => {
   function MockView(props: { children?: ReactNode }) {
     return createElement("div", null, props.children);
@@ -122,7 +148,11 @@ vi.mock("../components/computer-maintenance-actions", () => ({
 
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
 
-vi.mock("./api", () => ({ currentApiBase: () => "https://api.example.test", rpc }));
+vi.mock("./api", () => ({
+  captureApiRequestContext: async () => ({ apiBase: "https://api.example.test" }),
+  currentApiBase: () => "https://api.example.test",
+  rpc,
+}));
 vi.mock("./mobile-scope", () => ({
   captureMobileScope: () => "test-scope",
   isMobileScopeCurrent: () => true,
@@ -272,6 +302,61 @@ describe("computer screen", () => {
     expect(calls("computer/boot")).toHaveLength(1);
     expect(calls("computer/takeover")).toEqual([]);
     expect(view.querySelector("[data-keyboard-bar]")).toBeNull();
+  });
+
+  it("downloads saved files during recovery without starting the computer", async () => {
+    rpc.mockImplementation(async (method: string) => {
+      if (method === "computer/status") {
+        return {
+          ...botWorking,
+          state: "error",
+          powerState: "quarantined",
+          screenAvailable: false,
+          busyBotName: null,
+        };
+      }
+      if (method === "computer/files") return [{ path: "notes.txt", kind: "file" }];
+      if (method === "computer/downloadFile") return { contentBase64: "c2F2ZWQ=" };
+      return {};
+    });
+    const view = await render();
+    function button(label: string) {
+      const match = Array.from(view.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent === label,
+      );
+      if (!match) throw new Error(`Missing ${label} button`);
+      return match;
+    }
+    await act(async () => button("Files").click());
+    await settle();
+    expect(calls("computer/files")).toEqual([
+      [
+        "computer/files",
+        { botId: "bot-1", path: "", source: "saved" },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ],
+    ]);
+    await act(async () => {
+      const file = button("notes.txt");
+      file.click();
+      file.click();
+    });
+    await settle();
+    expect(calls("computer/downloadFile")).toEqual([
+      [
+        "computer/downloadFile",
+        { botId: "bot-1", path: "notes.txt", source: "saved" },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ],
+    ]);
+    expect(nativeFiles.writeFile).toHaveBeenCalledExactlyOnceWith("c2F2ZWQ=", {
+      encoding: "base64",
+    });
+    expect(nativeFiles.share).toHaveBeenCalledExactlyOnceWith("file:///synthetic/notes.txt", {
+      mimeType: "application/octet-stream",
+    });
+    expect(nativeFiles.deleteDirectory).toHaveBeenCalledOnce();
+    expect(calls("computer/boot")).toEqual([]);
   });
 
   it("takes control only from the Take control button", async () => {
