@@ -951,7 +951,9 @@ async function removeStoredTeamDirectory(
         });
         if (!record || !REMOTE_TEAM_SANDBOX_KINDS.has(record.kind)) return;
         await home.reconcileCheckpoint(computer.homeKey, record.homeRevision);
-        await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name);
+        await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name, (directory) =>
+          home.discardSavedDirectory(computer.homeKey, directory),
+        );
       },
       { timeout: 20_000 },
     ),
@@ -959,7 +961,12 @@ async function removeStoredTeamDirectory(
 }
 
 /** Delete one folder in the team home. A symlinked parent is refused; a final symlink is unlinked. */
-async function removeContainedDirectory(root: string, parent: string, name: string) {
+async function removeContainedDirectory(
+  root: string,
+  parent: string,
+  name: string,
+  retire?: (directory: string) => Promise<void>,
+) {
   const target = path.join(root, parent, name);
   const info = await lstat(target).catch((error: unknown) => {
     if (isMissing(error)) return null;
@@ -989,7 +996,8 @@ async function removeContainedDirectory(root: string, parent: string, name: stri
   ) {
     throw new Error("folder escapes the team home");
   }
-  await rm(resolvedTarget, { recursive: true, force: true });
+  if (retire) await retire(resolvedTarget);
+  else await rm(resolvedTarget, { recursive: true, force: true });
 }
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {

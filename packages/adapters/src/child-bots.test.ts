@@ -4,6 +4,7 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -39,6 +40,7 @@ import { LocalAgentHomeStore } from "./home.js";
 
 const fsHooks = vi.hoisted(() => ({
   afterRealpath: undefined as ((resolved: string) => Promise<void>) | undefined,
+  beforeRm: undefined as ((target: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("@rakazo/db", async (importOriginal) => ({
@@ -56,6 +58,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const resolved = await actual.realpath(...args);
       await fsHooks.afterRealpath?.(String(resolved));
       return resolved;
+    },
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      await fsHooks.beforeRm?.(String(args[0]));
+      return actual.rm(...args);
     },
   };
 });
@@ -1310,6 +1316,60 @@ describe("destroyBot", () => {
 
       await expect(access(path.join(teamHome, "bots", "bot-1"))).rejects.toThrow();
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("detaches a deleted Team workspace before waiting on recursive reclamation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "team-retired-home-test-"));
+    const home = new LocalAgentHomeStore(root);
+    const team = {
+      id: "team-computer",
+      homeKey: "team-workspace-1",
+      kind: "e2b",
+      providerRef: null,
+      scope: "team",
+      state: "stopped",
+    };
+    const target = path.join(home.pathFor(team.homeKey), "bots", "bot-1");
+    const staging = path.join(root, "staging");
+    await seedFile(target, "notes.txt", "remove");
+    await home.writeFile(team.homeKey, "shared/notes.txt", "keep", context);
+    let startCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      startCleanup = resolve;
+    });
+    let resumeCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      resumeCleanup = resolve;
+    });
+    fsHooks.beforeRm = async (directory) => {
+      if (path.dirname(directory) !== staging) return;
+      startCleanup();
+      await cleanupGate;
+    };
+    try {
+      await destroyBot(
+        {
+          prisma: deletionPrisma(team),
+          sandbox: {} as SandboxProvider,
+          home,
+          jobs: { cancel: vi.fn() } as unknown as JobPublisher,
+        },
+        { id: "bot-1", spaceId: "workspace-1", name: "Researcher", archivedAt: null },
+        context,
+        { deleteMemories: true },
+      );
+      await cleanupStarted;
+      await expect(access(target)).rejects.toMatchObject({ code: "ENOENT" });
+      const reader = new LocalAgentHomeStore(root);
+      await expect(reader.readFile(team.homeKey, "shared/notes.txt", context)).resolves.toBe(
+        "keep",
+      );
+    } finally {
+      resumeCleanup();
+      fsHooks.beforeRm = undefined;
+      await vi.waitFor(async () => expect(await readdir(staging)).toEqual([]));
       await rm(root, { recursive: true, force: true });
     }
   });

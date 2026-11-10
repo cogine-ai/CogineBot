@@ -110,8 +110,8 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   async removeHome(botId: string) {
     await this.withBotWrite(botId, async () => {
       const directory = this.botDir(botId);
-      await rm(directory, { recursive: true, force: true });
-      await rm(`${directory}.previous`, { recursive: true, force: true });
+      await this.retireDirectory(botId, directory);
+      await this.retireDirectory(botId, `${directory}.previous`);
       await rm(this.pendingPath(botId), { force: true });
       await rm(this.markerPath(botId), { force: true });
     });
@@ -158,6 +158,13 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   async discardStagedDirectory(botId: string, staging: string, directory: string) {
     if (!this.saveStaging.has(staging)) throw new Error("Workspace staging is not owned");
     await this.retireDirectory(botId, safeJoin(staging, directory));
+  }
+
+  async discardSavedDirectory(botId: string, directory: string) {
+    const [root, target] = await Promise.all([realpath(this.botDir(botId)), realpath(directory)]);
+    if (target !== directory || target === root) throw new Error("Path escapes the bot home");
+    assertContained(root, target);
+    await this.retireDirectory(botId, target);
   }
 
   private async lockHome(botId: string, mode: "shared" | "exclusive" = "exclusive") {
