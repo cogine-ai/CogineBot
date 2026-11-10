@@ -428,6 +428,50 @@ describe("computer recovery preserves live work", () => {
     expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
   });
 
+  it.each([
+    { label: "gone before bytes", partial: false, confirmed: true, cancelled: false },
+    { label: "gone after partial bytes", partial: true, confirmed: true, cancelled: false },
+    { label: "transport error after bytes", partial: true, confirmed: false, cancelled: false },
+    { label: "cancelled after bytes", partial: true, confirmed: true, cancelled: true },
+  ])("classifies streamed workspace failure: $label", async ({ partial, confirmed, cancelled }) => {
+    const { deps, row, first } = await fixture();
+    const abort = new AbortController();
+    const failure = new Error("Synthetic streamed provider failure");
+    if (confirmed) failure.name = "SandboxNotFoundError";
+    vi.spyOn(deps.sandbox, "exportWorkspace").mockImplementation(async function* () {
+      yield {
+        path: "notes.txt",
+        body: (async function* () {
+          if (partial) yield Buffer.from("partial workspace bytes");
+          if (cancelled) abort.abort(failure);
+          throw failure;
+        })(),
+      };
+    });
+    const commit = vi.spyOn(deps.home, "commit");
+    const destroy = vi.spyOn(deps.sandbox, "destroy");
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    const recovery = replaceComputer(deps, row.id, "recover", { ...context, signal: abort.signal });
+    if (confirmed && !cancelled) {
+      const recovered = await recovery;
+      expect(recovered.fresh).toBe(true);
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(provision).toHaveBeenCalledOnce();
+      expect(row.providerRef).toBe(recovered.providerRef);
+      expect(
+        new TextDecoder().decode(await deps.sandbox.readFile(recovered, "notes.txt", context)),
+      ).toBe("checkpoint");
+    } else {
+      await expect(recovery).rejects.toBe(failure);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(provision).not.toHaveBeenCalled();
+      expect(row.providerRef).toBe(first.providerRef);
+    }
+    expect(row).toMatchObject({ state: "running", homeRevision: "saved" });
+    expect(commit).not.toHaveBeenCalled();
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+  });
+
   it.each(["running", "error"])(
     "updates a %s computer only after saving its current workspace",
     async (state) => {
@@ -707,6 +751,7 @@ describe("computer recovery preserves live work", () => {
     "mkdtemp ENOSPC",
     "disk reserve exhausted after export",
     "staged write ENOSPC",
+    "staged write with a provider-shaped error",
     "staged write with iterator return trap",
     "staged write with cleanup failure",
     "provider next with cleanup failure",
@@ -717,6 +762,9 @@ describe("computer recovery preserves live work", () => {
     const localFailure = Object.assign(new Error("Synthetic local staging ENOSPC"), {
       code: "ENOSPC",
     });
+    if (stage === "staged write with a provider-shaped error") {
+      localFailure.name = "SandboxNotFoundError";
+    }
     const cleanupFailure = new Error("Synthetic staging cleanup failure");
     const iteratorFailure = Object.assign(new Error("Synthetic provider iterator ENOSPC"), {
       code: "ENOSPC",

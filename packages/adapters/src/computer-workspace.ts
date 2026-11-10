@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { mkdir, open, readdir, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -313,21 +314,28 @@ export async function checkpointComputerWorkspace(
       if ((await freeSaveDisk(staging.path)) < 0) throw new WorkspaceTooLargeError("bytes");
     };
     for await (const file of sandbox.exportWorkspace(computer, context, limits)) {
+      let relative: string;
       try {
         context.signal.throwIfAborted();
-        const relative = normalizeWorkspacePath(file.path);
+        relative = normalizeWorkspacePath(file.path);
         if (shouldSkipPortableWorkspaceFile(relative)) continue;
         if (++files > limits.maxFiles) throw new WorkspaceTooLargeError("files");
         await checkDisk(FILE_DISK_OVERHEAD_BYTES);
-        await writePortableFile(staging.path, relative, file, async (size) => {
+      } catch (error) {
+        failStaging(error);
+      }
+      await writePortableFile(
+        staging.path,
+        relative,
+        file,
+        async (size) => {
           bytes += size;
           if (bytes > limits.maxBytes) throw new WorkspaceTooLargeError("bytes");
           await checkDisk(size);
           context.signal.throwIfAborted();
-        });
-      } catch (error) {
-        failStaging(error);
-      }
+        },
+        failStaging,
+      );
     }
     options?.onExported?.();
     context.signal.throwIfAborted();
@@ -547,29 +555,45 @@ async function writePortableFile(
   relative: string,
   file: PortableFile | StreamedPortableFile,
   count: (bytes: number) => Promise<void>,
+  failStaging: (error: unknown) => never,
 ) {
-  if (!relative) throw new Error("Workspace snapshots cannot contain an empty file path");
-  const target = path.resolve(root, relative);
-  const resolvedRoot = path.resolve(root);
-  if (!target.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new Error("Workspace snapshot path escapes its staging directory");
-  }
-  await mkdir(path.dirname(target), { recursive: true });
-  const handle = await open(
-    target,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
-    file.executable ? 0o700 : 0o600,
-  );
+  let handle: FileHandle;
   try {
+    if (!relative) throw new Error("Workspace snapshots cannot contain an empty file path");
+    const target = path.resolve(root, relative);
+    const resolvedRoot = path.resolve(root);
+    if (!target.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new Error("Workspace snapshot path escapes its staging directory");
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    handle = await open(
+      target,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      file.executable ? 0o700 : 0o600,
+    );
+  } catch (error) {
+    failStaging(error);
+  }
+  let complete = false;
+  try {
+    // Iterator failures belong to the provider; only local writes mark staging failed.
     for await (const chunk of "body" in file ? file.body : [file.content]) {
-      await count(chunk.byteLength);
-      for (let offset = 0; offset < chunk.byteLength; ) {
-        const { bytesWritten } = await handle.write(chunk, offset, chunk.byteLength - offset);
-        if (bytesWritten === 0) throw new Error("Workspace file write made no progress");
-        offset += bytesWritten;
+      try {
+        await count(chunk.byteLength);
+        for (let offset = 0; offset < chunk.byteLength; ) {
+          const { bytesWritten } = await handle.write(chunk, offset, chunk.byteLength - offset);
+          if (bytesWritten === 0) throw new Error("Workspace file write made no progress");
+          offset += bytesWritten;
+        }
+      } catch (error) {
+        failStaging(error);
       }
     }
+    complete = true;
   } finally {
-    await handle.close();
+    await handle.close().catch((error) => {
+      if (complete) failStaging(error);
+      getLogger().warn("workspace staging file cleanup", { error });
+    });
   }
 }

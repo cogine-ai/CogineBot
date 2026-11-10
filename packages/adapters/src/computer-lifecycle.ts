@@ -1008,7 +1008,9 @@ export async function replaceComputer(
         });
       } catch (error) {
         // Only confirmed provider loss before a completed export permits fallback.
-        if (stagingFailed || exported || !isSandboxGoneError(error)) throw error;
+        if (context.signal.aborted || stagingFailed || exported || !isSandboxGoneError(error)) {
+          throw error;
+        }
       }
     }
     await onProgress?.("recreating");
