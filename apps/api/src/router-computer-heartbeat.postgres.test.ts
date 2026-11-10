@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouterClient } from "@orpc/server";
 import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
-import { LocalAgentHomeStore } from "@rakazo/adapters";
+import { DesktopSandboxProvider, LocalAgentHomeStore } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
@@ -37,9 +37,11 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
   let root: string;
   let home: LocalAgentHomeStore;
+  let desktop: DesktopSandboxProvider;
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
+  let bootComputer: () => Promise<unknown>;
 
   beforeAll(async () => {
     database = createDb(databaseUrl!);
@@ -78,9 +80,20 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
     root = await mkdtemp(path.join(tmpdir(), "computer-router-test-"));
     home = new LocalAgentHomeStore(root, database.prisma);
+    desktop = new DesktopSandboxProvider({ root });
     const deps = {
       prisma: instrumented as unknown as PrismaClient,
-      sandbox: { keepAlive, exportWorkspace, stop: stopProvider, readFile: providerRead },
+      sandbox: {
+        keepAlive,
+        exportWorkspace,
+        stop: stopProvider,
+        readFile: providerRead,
+        isRunning: desktop.isRunning.bind(desktop),
+        provision: desktop.provision.bind(desktop),
+        prepare: desktop.prepare.bind(desktop),
+        importWorkspace: desktop.importWorkspace.bind(desktop),
+        execute: desktop.execute.bind(desktop),
+      },
       home,
       jobs: { enqueue, cancel: vi.fn() },
       env: { defaultProvider: "fake", defaultModel: "fake", sandboxProvider: "fake" },
@@ -90,6 +103,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
+    bootComputer = () => client.computer.boot({ botId });
   });
 
   beforeEach(async () => {
@@ -197,6 +211,42 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       content: "last saved notes",
     });
     expect(providerRead).not.toHaveBeenCalled();
+  });
+
+  it("restores a missing Desktop workspace through manual Boot even if its row says running", async () => {
+    const context = {
+      ...actor,
+      botId,
+      operationId: "boot-test",
+      traceId: "boot-test",
+      signal: new AbortController().signal,
+    };
+    const ref = await desktop.provision(
+      { botId: computerId, homePath: home.pathFor(computerId) },
+      context,
+    );
+    await home.writeFile(computerId, `bots/${botId}/notes.txt`, "saved Desktop notes", context);
+    await rm(ref.providerRef, { recursive: true });
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        kind: "desktop",
+        providerRef: ref.providerRef,
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+
+    await expect(bootComputer()).resolves.toMatchObject({ state: "running" });
+    const bytes = await desktop.readFile(ref, `bots/${botId}/notes.txt`, context);
+    expect(Buffer.from(bytes).toString()).toBe("saved Desktop notes");
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      providerRef: ref.providerRef,
+      restorePending: false,
+    });
   });
 
   it.each([

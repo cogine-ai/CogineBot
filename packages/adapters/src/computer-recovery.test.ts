@@ -345,6 +345,26 @@ describe("computer recovery preserves live work", () => {
     ).toBe("checkpoint");
   });
 
+  it("does not implicitly recreate a missing desktop workspace while preparing Team folders", async () => {
+    const { deps, row, first } = await fixture("desktop");
+    await rm(first.providerRef, { recursive: true });
+    const execute = deps.sandbox.execute(
+      first,
+      { argv: ["mkdir", "-p", "shared", "bots/bot"] },
+      context,
+    );
+    const events = [];
+    for await (const event of execute) events.push(event);
+    expect(events.at(-1)).toMatchObject({ type: "exit", code: 1 });
+    await expect(access(first.providerRef)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const restored = await provisionComputer(deps, row.id, context);
+    expect(restored).toMatchObject({ providerRef: first.providerRef, fresh: true });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(restored, "notes.txt", context)),
+    ).toBe("checkpoint");
+  });
+
   it.each([
     "Path notes.txt not found",
     "404: file not found",

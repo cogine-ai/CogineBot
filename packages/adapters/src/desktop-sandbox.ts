@@ -95,10 +95,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
     const existing = [...this.boxes.values()].find(
       (box) => box.ref.botId === request.botId || box.home === home,
     );
-    const current = await lstat(home).catch((error: unknown) => {
-      if (hasErrorCode(error, "ENOENT")) return null;
-      throw error;
-    });
+    const current = await desktopWorkspaceDirectory(home);
     if (current && !current.isDirectory())
       throw new Error("The desktop workspace is not a directory");
     if (existing && current) {
@@ -129,6 +126,11 @@ export class DesktopSandboxProvider implements SandboxProvider {
 
   async prepare(_computer: ComputerRef, _context: AdapterContext): Promise<void> {}
 
+  async isRunning(computer: ComputerRef): Promise<boolean> {
+    const box = this.boxFor(computer);
+    return !!box?.running && (await desktopWorkspaceDirectory(box.home))?.isDirectory() === true;
+  }
+
   async *execute(
     computer: ComputerRef,
     request: CommandRequest,
@@ -146,7 +148,23 @@ export class DesktopSandboxProvider implements SandboxProvider {
       yield { type: "exit", code: 1 };
       return;
     }
-    await mkdir(cwd, { recursive: true });
+    if (!(await desktopWorkspaceDirectory(box.home))?.isDirectory()) {
+      yield { type: "stderr", data: "desktop workspace is unavailable" };
+      yield { type: "exit", code: 1 };
+      return;
+    }
+    if (cwd !== box.home) {
+      if (isAllowedDesktopPath(cwd, [box.home])) {
+        // Create only descendants of the existing workspace. The final name is never opened.
+        await localWorkspaceTarget(
+          box.home,
+          path.join(path.relative(box.home, cwd), "_cwd"),
+          false,
+        );
+      } else {
+        await mkdir(cwd, { recursive: true });
+      }
+    }
     const argv = request.argv.length ? request.argv : ["echo", "ready"];
     yield* streamLocalCommand(
       argv,
@@ -683,6 +701,13 @@ async function realpathFromFd(fd: number) {
 
 function hasErrorCode(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+function desktopWorkspaceDirectory(directory: string) {
+  return lstat(directory).catch((error: unknown) => {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  });
 }
 
 async function* walkDesktopWorkspace(

@@ -213,7 +213,7 @@ export async function provisionComputer(
         context.botId,
         context,
       );
-      return ref;
+      return ref.kind === "desktop" ? { ...ref, fresh: false } : ref;
     }
   }
 

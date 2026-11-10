@@ -3123,6 +3123,7 @@ export function createRouter(deps: RouterDeps) {
         if (
           bot.computer.state === "running" &&
           !bot.computer.restorePending &&
+          bot.computer.kind !== "desktop" &&
           bot.computer.providerRef
         ) {
           try {
