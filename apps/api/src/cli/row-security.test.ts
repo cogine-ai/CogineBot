@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
   disconnect: vi.fn(),
   end: vi.fn(),
+  queryRaw: vi.fn(),
+  verify: vi.fn(),
 }));
 
 vi.mock("@rakazo/core/node/load-root-env", () => ({ loadRootEnv: mocks.load }));
@@ -16,6 +18,8 @@ vi.mock("@rakazo/db", () => ({
   createDb: mocks.create,
   describeRowSecurityPolicies: mocks.describe,
   applyRowSecurityPolicies: mocks.apply,
+  verifyRuntimeDatabase: mocks.verify,
+  runAsSystem: (_reason: string, work: () => unknown) => work(),
 }));
 
 describe("row-security maintenance command", () => {
@@ -23,7 +27,7 @@ describe("row-security maintenance command", () => {
   const previousExitCode = process.exitCode;
   const ownerUrl = "postgres://fixture_owner:synthetic-owner@example.test/fixture";
   const runtimeUrl = "postgres://fixture_runtime:synthetic-runtime@example.test/fixture";
-  const prisma = { $disconnect: mocks.disconnect };
+  const prisma = { $disconnect: mocks.disconnect, $queryRaw: mocks.queryRaw };
   const pool = { end: mocks.end };
   let stdout: ReturnType<typeof vi.spyOn>;
   let stderr: ReturnType<typeof vi.spyOn>;
@@ -50,6 +54,7 @@ describe("row-security maintenance command", () => {
     mocks.urls.mockReturnValue({ migrationUrl: ownerUrl, url: runtimeUrl, separate: true });
     mocks.create.mockReturnValue({ prisma, pool });
     mocks.describe.mockResolvedValue(state());
+    mocks.verify.mockResolvedValue(state(true));
     mocks.apply.mockResolvedValue(state(true));
     mocks.disconnect.mockResolvedValue(undefined);
     mocks.end.mockResolvedValue(undefined);
@@ -106,6 +111,23 @@ describe("row-security maintenance command", () => {
       expect(process.exitCode).toBe(1);
     },
   );
+
+  it("blocks an older runtime while the database contains unconfirmed computer stops", async () => {
+    mocks.queryRaw
+      .mockResolvedValueOnce([{ present: true }])
+      .mockResolvedValueOnce([{ pending: true }]);
+    await run("verify", "--computer-rollback");
+    expect(process.exitCode).toBe(1);
+    expect(output(stderr)).toContain("Resolve unconfirmed computer stops");
+    expect(mocks.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("allows verification before the computer stop migration", async () => {
+    mocks.queryRaw.mockResolvedValueOnce([{ present: false }]);
+    await run("verify", "--computer-rollback");
+    expect(process.exitCode).toBeUndefined();
+    expect(mocks.queryRaw).toHaveBeenCalledOnce();
+  });
 
   it("closes the runtime client and pool and redacts a failed inspection", async () => {
     mocks.describe.mockRejectedValue(

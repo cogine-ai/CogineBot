@@ -60,7 +60,15 @@ The web and desktop computer view opens a terminal and a file browser from a doc
 **Files**
 - Browsing and text preview work on stopped computers through the stored workspace.
 - While the Files window is visible, the open folder refreshes every few seconds and after each bot command, so changes from a shell or the bot appear without reopening.
-- Download needs a running computer.
+- Files in the saved workspace remain downloadable while the computer is paused.
+- Keep the original provider's credentials configured until stopped or recovering computers have
+  been retired. Newly started computers record the provider account and endpoint identity.
+  A different endpoint or credential cannot confirm retirement of that computer. Older records
+  with an unverified provider identity require a positive lookup. If the lookup cannot confirm
+  that identity, the original reference is preserved for operator review. Temporary lookup failures
+  allow a retry. A known configuration mismatch disables recovery and reset while saved Files
+  stay available. Before rotating provider credentials, keep the original configuration
+  available until its existing computers have been retired and their references cleared.
 - Upload also needs control. Uploads land under the bot's workspace path and are capped at the attachment size limit.
 
 ## Screen connection diagnostics
@@ -75,7 +83,7 @@ The E2B adapter uses `@e2b/desktop` for machine lifecycle, shell commands, files
 
 ## Daytona backend
 
-The database stores the provider kind and opaque `providerRef`. That reference is an acceleration path, not durable data. It is passed back only to the same provider kind. A missing machine or a provider-kind change creates a replacement and restores its workspace through the provider-neutral contract.
+The database stores the provider kind and opaque `providerRef`. That reference is an acceleration path, not durable data. It is passed back only to the same provider kind. Confirmed loss can create a replacement and restore its workspace through the provider-neutral contract. To change provider kinds, use explicit recovery so the original machine can be retired before replacement.
 
 ## Box backend
 

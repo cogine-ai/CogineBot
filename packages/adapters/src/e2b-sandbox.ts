@@ -5,6 +5,7 @@ import {
   ConnectionConfig,
   FileNotFoundError,
   Sandbox,
+  SandboxNotFoundError,
   TimeoutError,
 } from "@e2b/desktop";
 import type {
@@ -18,6 +19,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -44,7 +46,18 @@ const E2B_BROWSER_PROFILES = `${E2B_WORKSPACE}/.browser-profiles`;
 export interface E2BSandboxSdk {
   create(options: ReturnType<typeof e2bCreateOptions>): Promise<Sandbox>;
   connect(id: string, options: { apiKey: string; timeoutMs: number }): Promise<Sandbox>;
-  pause(id: string, options: { apiKey: string }): Promise<void>;
+  pause(
+    id: string,
+    options: { apiKey: string; signal: AbortSignal },
+  ): Promise<boolean> | Promise<void>;
+  kill?(id: string, options: { apiKey: string; signal: AbortSignal }): Promise<boolean>;
+  getInfo?(
+    id: string,
+    options: { apiKey: string; signal: AbortSignal },
+  ): Promise<{
+    sandboxId: string;
+    state: string;
+  }>;
   attachRunning?(
     id: string,
     options: { apiKey: string; signal: AbortSignal },
@@ -597,28 +610,45 @@ export class E2BSandboxProvider implements SandboxProvider {
     );
   }
 
-  async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
     const id = computer.providerRef || computer.id;
-    const desktop = this.boxes.get(id);
-    this.forget(id);
-    if (desktop) {
-      await desktop.pause().catch(() => undefined);
-      return;
+    if (!this.sdk.getInfo) return "unknown";
+    try {
+      const current = await this.sdk.getInfo(id, { apiKey: this.apiKey, signal: context.signal });
+      if (current.sandboxId !== id) return "unknown";
+      if (current.state === "paused") return "stopped";
+      return current.state === "running" ? "running" : "unknown";
+    } catch (error) {
+      if (error instanceof SandboxNotFoundError) return "gone";
+      throw error;
     }
-    await this.sdk.pause(id, { apiKey: this.apiKey }).catch(() => undefined);
   }
 
-  async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
+  async stop(computer: ComputerRef, context: AdapterContext): Promise<"gone" | undefined> {
+    const id = computer.providerRef || computer.id;
+    this.forget(id);
+    try {
+      await this.sdk.pause(id, { apiKey: this.apiKey, signal: context.signal });
+    } catch (error) {
+      if (error instanceof SandboxNotFoundError) return "gone";
+      throw error;
+    }
+  }
+
+  async destroy(computer: ComputerRef, context: AdapterContext): Promise<void> {
     const id = computer.providerRef || computer.id;
     const cached = this.boxes.get(id);
     this.forget(id);
-    const desktop =
-      cached ??
-      (await this.sdk
-        .connect(id, { apiKey: this.apiKey, timeoutMs: sandboxIdleMs() })
-        .catch(() => undefined));
-    // The SDK returns false when the sandbox is already gone; teardown is complete.
-    await desktop?.kill();
+    if (this.sdk.kill) {
+      await this.sdk.kill(id, { apiKey: this.apiKey, signal: context.signal });
+    } else if (cached) {
+      await cached.kill();
+    } else {
+      throw new Error("E2B cannot confirm teardown without its kill-by-ID endpoint");
+    }
   }
 
   private beginOperation(id: string): { pending: number } {

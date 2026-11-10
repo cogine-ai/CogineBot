@@ -2127,6 +2127,7 @@ const goneE2BComputerClaim = {
   state: "running",
   screenGeneration: 3,
   maintenanceId: null,
+  stopRequestedAt: null,
 };
 
 describe("computer screen url", () => {
@@ -2346,6 +2347,25 @@ describe("computer terminal and file transfer", () => {
     };
     return { sandbox, prisma, call };
   }
+
+  it("rejects a known-blocked reset before claiming a Team execution lease", async () => {
+    const { prisma, call } = setup({
+      providerAuthority: "original-provider-authority",
+      state: "quarantined",
+    });
+    prisma.computer.findUniqueOrThrow = vi.fn();
+    await expect(call("reset", {})).resolves.toMatchObject({
+      status: 409,
+      body: {
+        json: {
+          code: "CONFLICT",
+          message: expect.stringContaining("restore the original computer provider settings"),
+        },
+      },
+    });
+    expect(prisma.computer.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(prisma.computer.updateMany).not.toHaveBeenCalled();
+  });
 
   it("prepares an unused bot's folders before listing a running Team Computer", async () => {
     const { sandbox, call } = setup();
@@ -2665,10 +2685,14 @@ describe("integration setup authorization", () => {
 });
 
 describe("interrupted computer reservation release", () => {
-  function fixture() {
+  function fixture(state = "booting") {
     const order: string[] = [];
     const computerUpdate = {
-      findFirst: vi.fn(async () => ({ id: "update-1", computerId: "computer-1" })),
+      findFirst: vi.fn(async () => ({
+        id: "update-1",
+        computerId: "computer-1",
+        computer: { state, stopRequestedAt: null },
+      })),
       updateMany: vi.fn(async () => {
         order.push("operation");
         return { count: 1 };
@@ -2728,16 +2752,41 @@ describe("interrupted computer reservation release", () => {
         status: "interrupted",
         computer: { spaceId: "space-1", bots: { some: { userId: "user-1", archivedAt: null } } },
       },
+      include: { computer: { select: { state: true, stopRequestedAt: true } } },
     });
     expect(computerUpdate.updateMany).toHaveBeenCalledWith({
       where: { id: "update-1", status: "interrupted" },
       data: { status: "failed" },
     });
     expect(computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", maintenanceId: "update-1" },
+      where: {
+        id: "computer-1",
+        maintenanceId: "update-1",
+        state: "booting",
+        stopRequestedAt: null,
+      },
       data: { maintenanceId: null, state: "error" },
     });
     expect(order).toEqual(["operation", "computer"]);
+  });
+  it("keeps an interrupted restore quarantined after attended release", async () => {
+    const { call, computer } = fixture("restoring");
+    const { response } = await call(true, true);
+    expect(response.status).toBe(200);
+    expect(computer.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "computer-1",
+        maintenanceId: "update-1",
+        state: "restoring",
+        stopRequestedAt: null,
+      },
+      data: expect.objectContaining({
+        maintenanceId: null,
+        state: "quarantined",
+        restorePending: true,
+        stopRequestedAt: null,
+      }),
+    });
   });
 });
 

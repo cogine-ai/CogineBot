@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type {
   AdapterContext,
@@ -8,12 +9,14 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   StreamedPortableFile,
   TerminalRequest,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
+import { SandboxUnsafeStopError } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { runAsSystem } from "@rakazo/db";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
@@ -29,30 +32,66 @@ export function createRunSandbox(
   kind: string,
   opts: SandboxProviderOptions & { prisma?: PrismaClient },
 ): SandboxProvider {
-  if (kind === "desktop") {
-    return new DesktopSandboxProvider({
-      root: opts.dataDir,
-      hostRoots: [homedir()],
-    });
-  }
-  const primary = createSandboxProvider(kind, opts);
-  if (kind !== "docker" || !opts.prisma) return primary;
-  return new HostAwareSandbox(
-    primary,
-    new DesktopSandboxProvider({
-      root: opts.dataDir,
-      hostRoots: [homedir()],
-    }),
-    async () => {
-      const settings = await runAsSystem("read deployment computer host for sandbox routing", () =>
-        opts.prisma!.deploymentSettings.findUnique({
-          where: { id: "default" },
-          select: { computerHost: true },
-        }),
+  const host = new DesktopSandboxProvider({ root: opts.dataDir, hostRoots: [homedir()] });
+  const primary = kind === "desktop" ? host : createSandboxProvider(kind, opts);
+  const sandbox =
+    kind === "docker" && opts.prisma
+      ? new HostAwareSandbox(primary, host, async () => {
+          const settings = await runAsSystem(
+            "read deployment computer host for sandbox routing",
+            () =>
+              opts.prisma!.deploymentSettings.findUnique({
+                where: { id: "default" },
+                select: { computerHost: true },
+              }),
+          );
+          return settings?.computerHost === "this-mac";
+        })
+      : primary;
+  const activeKind = primary.describe().id.replace(/-emulator$/, "");
+  const configured = new Map<string, SandboxProvider>([[activeKind, primary]]);
+  if (opts.dataDir) configured.set("desktop", host);
+  const enabled: Partial<Record<ComputerRef["kind"], boolean>> = {
+    e2b: Boolean(opts.e2bApiKey?.trim()),
+    daytona: Boolean(opts.daytonaApiKey?.trim()),
+    createos: Boolean(opts.createosApiKey?.trim()),
+    box: Boolean(opts.boxApiKey?.trim()),
+    docker: Boolean(opts.supervisorToken?.trim()),
+  };
+  const authorities: Partial<Record<ComputerRef["kind"], (string | undefined)[]>> = {
+    e2b: [opts.e2bApiKey?.trim(), process.env.E2B_API_URL, process.env.E2B_DOMAIN],
+    daytona: [opts.daytonaApiKey?.trim(), opts.daytonaApiUrl, opts.daytonaTarget],
+    createos: [opts.createosApiKey?.trim(), opts.createosBaseUrl],
+    box: [opts.boxApiKey?.trim(), opts.boxApiUrl],
+    docker: [opts.supervisorToken?.trim(), opts.supervisorUrl ?? "http://127.0.0.1:7091"],
+    desktop: [opts.dataDir],
+    fake: [],
+  };
+  return Object.assign(sandbox, {
+    providerAuthority(kind: ComputerRef["kind"]): string | undefined {
+      const identity = configured.get(kind)?.describe().id;
+      const values = identity?.endsWith("-emulator") ? [] : authorities[kind];
+      return (
+        values &&
+        createHash("sha256")
+          .update(JSON.stringify([identity ?? kind, ...values]))
+          .digest("hex")
       );
-      return settings?.computerHost === "this-mac";
     },
-  );
+    providerForPower(computer: ComputerRef): SandboxProvider | undefined {
+      const existing = configured.get(computer.kind);
+      if (existing) return existing;
+      if (!enabled[computer.kind]) return undefined;
+      try {
+        const provider = createSandboxProvider(computer.kind, opts);
+        if (provider.describe().id !== computer.kind) return undefined;
+        configured.set(computer.kind, provider);
+        return provider;
+      } catch {
+        return undefined;
+      }
+    },
+  });
 }
 
 export class HostAwareSandbox implements SandboxProvider {
@@ -94,6 +133,13 @@ export class HostAwareSandbox implements SandboxProvider {
   async provision(request: Parameters<SandboxProvider["provision"]>[0], context: AdapterContext) {
     const provider = (await this.hostEnabled()) ? this.host : this.isolated;
     const providerKind = provider.describe().id;
+    if (
+      request.isolateWorkspaceGeneration &&
+      request.providerRef &&
+      request.providerKind !== providerKind
+    ) {
+      throw new SandboxUnsafeStopError(new Error("The computer provider changed before boot"));
+    }
     return provider.provision(
       {
         ...request,
@@ -107,6 +153,15 @@ export class HostAwareSandbox implements SandboxProvider {
     const provider = (await this.hostEnabled()) ? this.host : this.isolated;
     if (provider.describe().id !== computer.kind) return false;
     return provider.isRunning?.(computer, context) ?? false;
+  }
+
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    const provider = this.route(computer);
+    if (provider.describe().id !== computer.kind) return "unknown";
+    return provider.inspectPowerState?.(computer, context) ?? "unknown";
   }
 
   prepare(computer: ComputerRef, context: AdapterContext) {
@@ -217,10 +272,25 @@ export class HostAwareSandbox implements SandboxProvider {
   }
 
   stop(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).stop(computer, context);
+    return this.teardownProvider(computer).stop(computer, context);
   }
 
-  destroy(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).destroy(computer, context);
+  destroy(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: Parameters<SandboxProvider["destroy"]>[2],
+  ) {
+    const provider = this.teardownProvider(computer);
+    return options
+      ? provider.destroy(computer, context, options)
+      : provider.destroy(computer, context);
+  }
+
+  private teardownProvider(computer: ComputerRef): SandboxProvider {
+    const provider = this.route(computer);
+    if (provider.describe().id !== computer.kind) {
+      throw new Error("The computer's provider is unavailable");
+    }
+    return provider;
   }
 }

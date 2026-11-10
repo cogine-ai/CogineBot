@@ -157,6 +157,7 @@ it("retains a running computer and saved revision after an SDK file 404 during i
       kind: "e2b",
       screenGeneration: 1,
       maintenanceId: null,
+      stopRequestedAt: null,
       updatedAt: expect.any(Date),
     },
     data: { state: "running" },

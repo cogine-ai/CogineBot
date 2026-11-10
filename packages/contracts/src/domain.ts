@@ -994,7 +994,18 @@ export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,
   kind: SandboxKind,
-  state: z.enum(["stopped", "booting", "running", "suspended", "error"]),
+  state: z.enum([
+    "stopped",
+    "booting",
+    "running",
+    "suspended",
+    "error",
+    "stopping",
+    "needs_recovery",
+    "quarantined",
+  ]),
+  powerState: z.enum(["stopping", "needs_recovery", "quarantined"]).optional(),
+  recoveryBlocked: z.boolean().optional(),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),
   takeoverRequested: z.boolean(),
@@ -1007,6 +1018,17 @@ export const ComputerStatusSchema = z.object({
   terminalAvailable: z.boolean(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
+
+/** New clients display the detailed status while older ones receive a safe legacy state. */
+export function currentComputerStatus(status: ComputerStatus): ComputerStatus {
+  return status.powerState && status.state !== status.powerState
+    ? { ...status, state: status.powerState }
+    : status;
+}
+
+export function computerStateRequiresRecovery(state: ComputerStatus["state"] | undefined): boolean {
+  return state === "needs_recovery" || state === "quarantined";
+}
 
 export const ComputerReleaseReasonSchema = z.enum(["done", "skipped"]);
 export type ComputerReleaseReason = z.infer<typeof ComputerReleaseReasonSchema>;

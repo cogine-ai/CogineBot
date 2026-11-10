@@ -1,4 +1,14 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Files: "Dateien",
+  "No files": "Keine Dateien",
+  "Could not load files": "Dateien konnten nicht geladen werden",
+  "Could not download file": "Datei konnte nicht heruntergeladen werden",
+  "Download {name}": "{name} herunterladen",
+  "Ask your deployment administrator to restore the original computer provider settings before retrying.":
+    "Bitten Sie Ihre Deployment-Administration, die ursprünglichen Einstellungen des Computeranbieters wiederherzustellen, bevor Sie es erneut versuchen.",
+  "Computer status unconfirmed": "Computerstatus unbestätigt",
+  "Computer needs recovery": "Computer muss wiederhergestellt werden",
+  "Saving or stopping computer…": "Computer wird gespeichert oder angehalten…",
   "Model limit reached. Resuming at {time}.": "Modelllimit erreicht. Fortsetzung um {time}.",
   "Waiting for the computer before retrying.":
     "Warten, bis der Computer für den nächsten Versuch verfügbar ist.",

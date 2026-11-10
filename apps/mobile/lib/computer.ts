@@ -164,6 +164,9 @@ export function previewPlaceholder(
   name: string,
   mode?: ComputerMode,
 ): string {
+  if (state === "quarantined") return t("Computer status unconfirmed");
+  if (state === "needs_recovery") return t("Computer needs recovery");
+  if (state === "stopping") return t("Saving or stopping computer…");
   if (state === "booting" || booting) return t("Booting live desktop…");
   if (state === "running") return computerLabel(mode, name);
   if (state === "suspended") return t("Computer is asleep. Take control to wake it.");

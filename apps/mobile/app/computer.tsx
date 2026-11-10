@@ -1,4 +1,5 @@
 import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
+import { computerStateRequiresRecovery, currentComputerStatus } from "@rakazo/contracts";
 import { createComputerHeartbeat } from "@rakazo/core";
 import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -23,6 +24,7 @@ import { WebView } from "react-native-webview";
 import { ComputerKeyboardBar } from "../components/computer-keyboard-bar";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
+import { ComputerSavedFiles } from "../components/computer-saved-files";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
 import { currentApiBase, rpc } from "../lib/api";
@@ -174,7 +176,7 @@ export default function Computer() {
         ),
       onStatus: (status) => {
         if (!current()) return;
-        setComputer(status);
+        setComputer(currentComputerStatus(status));
         setVerifiedView(viewEpochRef.current);
         heartbeat?.setEnabled(status.state === "running");
       },
@@ -275,7 +277,14 @@ export default function Computer() {
     overlay: boolean;
     force?: boolean;
   }) {
-    if (!botId || !visibleRef.current || !refreshController.isActive()) return false;
+    if (
+      !botId ||
+      !visibleRef.current ||
+      !refreshController.isActive() ||
+      computerStateRequiresRecovery(computer?.state) ||
+      computer?.state === "stopping"
+    )
+      return false;
     const action = refreshController.beginAction();
     const actionView = viewEpochRef.current;
     const actionGeneration = screenRecoveryRef.current.generation;
@@ -288,8 +297,10 @@ export default function Computer() {
     const showBooting = overlay && needsBoot;
     if (showBooting) setBootingCount((count) => count + 1);
     try {
-      if (needsBoot)
+      if (needsBoot) {
+        autoBooted.current = botId;
         await rpc("computer/boot", { botId }, { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS });
+      }
       if (!action.isActive()) return false;
       if (takeControl) {
         if (!currentInteraction()) return false;
@@ -316,17 +327,36 @@ export default function Computer() {
     }
   }
 
+  const savedStoppedComputer =
+    computer?.state === "stopped" &&
+    Boolean(computer.homeRevision) &&
+    computer.homeRevision !== "empty";
+
   useEffect(() => {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
-    if (computer?.state === "booting" || computer?.state === "suspended") return;
+    if (
+      computer.state === "booting" ||
+      computer.state === "suspended" ||
+      savedStoppedComputer ||
+      computer.state === "stopping" ||
+      computerStateRequiresRecovery(computer.state)
+    )
+      return;
     if (autoBooted.current === botId) return;
-    autoBooted.current = botId;
     void bootComputer({
       takeControl: false,
       overlay: computer?.state !== "running",
       force: true,
     }).catch(() => undefined);
-  }, [readyTarget, targetKey, botId, computer?.state, switching, viewVisible]);
+  }, [
+    readyTarget,
+    targetKey,
+    botId,
+    computer?.state,
+    savedStoppedComputer,
+    switching,
+    viewVisible,
+  ]);
 
   useEffect(() => {
     // Let the full-screen desktop rotate to landscape; the rest of the app stays portrait.
@@ -403,8 +433,14 @@ export default function Computer() {
     }
   }
 
+  const powerUnavailable =
+    computerStateRequiresRecovery(computer?.state) || computer?.state === "stopping";
+  useEffect(() => {
+    if (powerUnavailable) setComputerOpen(false);
+  }, [powerUnavailable]);
   const placeholder =
-    screenError ?? previewPlaceholder(computer?.state, booting, name, computer?.mode);
+    (!powerUnavailable && screenError) ||
+    previewPlaceholder(computer?.state, booting, name, computer?.mode);
 
   return (
     <ScrollView
@@ -448,12 +484,14 @@ export default function Computer() {
             </Text>
           </View>
         )}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("Open computer")}
-          onPress={() => void openComputer({ takeControl: false })}
-          style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
-        />
+        {!powerUnavailable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("Open computer")}
+            onPress={() => void openComputer({ takeControl: false })}
+            style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
+          />
+        ) : null}
       </View>
       <View
         style={{
@@ -472,14 +510,14 @@ export default function Computer() {
             takeoverRequested={computer?.takeoverRequested ?? false}
             onRelease={releaseComputer}
           />
-        ) : (
+        ) : !powerUnavailable ? (
           <NativeActionButton
             label={t("Take control")}
             prominence="secondary"
             style={{ alignSelf: "center" }}
             onPress={() => void openComputer({ takeControl: true })}
           />
-        )}
+        ) : null}
       </View>
       {computer ? (
         <ComputerMaintenanceActions
@@ -488,14 +526,20 @@ export default function Computer() {
           onChanged={refreshAfterMaintenance}
         />
       ) : null}
+      {botId &&
+      (computer?.state === "suspended" ||
+        savedStoppedComputer ||
+        computerStateRequiresRecovery(computer?.state)) ? (
+        <ComputerSavedFiles key={targetKey} botId={botId} />
+      ) : null}
       <ComputerModePicker
         value={computer?.mode}
-        disabled={switching}
+        disabled={switching || powerUnavailable}
         onChange={(mode) => void setComputerMode(mode)}
       />
 
       <Modal
-        visible={visible && (booting || computerOpen)}
+        visible={visible && !powerUnavailable && (booting || computerOpen)}
         animationType="fade"
         presentationStyle="fullScreen"
         supportedOrientations={["portrait", "landscape-left", "landscape-right"]}

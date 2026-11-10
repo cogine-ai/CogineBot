@@ -30,10 +30,15 @@ import {
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import {
+  isSandboxUnsafeStop,
+  requestClaimedComputerStop,
+  saveComputerBeforeStop,
+  stoppedComputerControl,
+} from "./computer-power.js";
 import { BrowserStoppedReleaseError } from "./computer-screens.js";
 import { toComputerRef } from "./computer-support.js";
 import {
-  checkpointAndRecordComputerWorkspace,
   isTeamBotFolderName,
   removeComputerWorkspaceDirectories,
   teamBrowserProfileName,
@@ -511,7 +516,8 @@ export async function archiveBot(
       await tx.computer.updateMany({
         where: {
           id: dedicated.id,
-          state: { not: "running" },
+          state: { in: ["stopped", "suspended", "error"] },
+          stopRequestedAt: null,
           NOT: { state: "error", restorePending: true },
         },
         data: { state: "stopped" },
@@ -543,18 +549,61 @@ export async function archiveBot(
       runId: undefined,
       screenLeaseId: undefined,
     };
-    if (!currentDedicated.restorePending) {
-      await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, childContext);
-    }
-    await deps.sandbox.stop(ref, childContext);
-    await deps.prisma.computer.updateMany({
-      where: {
-        id: currentDedicated.id,
-        state: currentDedicated.state,
-        providerRef: currentDedicated.providerRef,
-      },
-      data: { state: "stopped" },
+    const observed = {
+      id: currentDedicated.id,
+      state: currentDedicated.state,
+      providerRef: currentDedicated.providerRef,
+      kind: currentDedicated.kind,
+      screenGeneration: currentDedicated.screenGeneration,
+      updatedAt: currentDedicated.updatedAt,
+      maintenanceId: null,
+      stopRequestedAt: null,
+    };
+    const claim = {
+      ...observed,
+      state: "suspending",
+      screenGeneration: observed.screenGeneration + 1,
+      updatedAt: new Date(Math.max(Date.now(), observed.updatedAt.getTime() + 1)),
+    };
+    const claimed = await deps.prisma.computer.updateMany({
+      where: observed,
+      data: { state: claim.state, updatedAt: claim.updatedAt },
     });
+    if (claimed.count !== 1) return;
+    let requested = false;
+    try {
+      const evidence = await saveComputerBeforeStop(
+        deps,
+        currentDedicated,
+        ref,
+        childContext,
+        claim,
+      );
+      let stopped = evidence === "stopped" || evidence === "gone" ? evidence : undefined;
+      if (!stopped) {
+        stopped = await requestClaimedComputerStop(deps, claim, ref, childContext);
+        requested = true;
+      }
+      await deps.prisma.computer.updateMany({
+        where: { ...claim, stopRequestedAt: requested ? { not: null } : null },
+        data: {
+          state: evidence === "damaged" && stopped !== "gone" ? "needs_recovery" : "stopped",
+          stopRequestedAt: null,
+          ...(evidence === "damaged" || stopped === "gone" ? { restorePending: true } : {}),
+          ...(stopped === "gone" ? { providerRef: null } : {}),
+          ...stoppedComputerControl,
+        },
+      });
+    } catch (error) {
+      const uncertain = requested || isSandboxUnsafeStop(error);
+      await deps.prisma.computer.updateMany({
+        where: { ...claim, stopRequestedAt: uncertain ? { not: null } : null },
+        data: uncertain
+          ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
+          : { state: observed.state },
+      });
+      throw error;
+    }
   }
 }
 

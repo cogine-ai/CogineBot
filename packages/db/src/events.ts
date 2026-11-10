@@ -1687,7 +1687,13 @@ export async function pauseRunForTakeover(
       activeUserLease && computer?.controlBotId && computer.controlBotId !== input.botId,
     );
     const marked = await tx.computer.updateMany({
-      where: { id: input.computerId, spaceId: input.spaceId, restorePending: false },
+      where: {
+        id: input.computerId,
+        spaceId: input.spaceId,
+        state: "running",
+        restorePending: false,
+        stopRequestedAt: null,
+      },
       data: retainControl
         ? { state: "running", controlRunId: input.runId }
         : preserveForeignLease
@@ -1819,6 +1825,8 @@ export async function finalizeComputerControlRelease(
           controlBotId: input.botId,
           controlLeaseId: input.leaseId,
           controlRunId: input.runId,
+          state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
+          stopRequestedAt: null,
         },
         data: {
           controlHolder: input.holder,

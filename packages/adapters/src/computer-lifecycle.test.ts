@@ -50,7 +50,7 @@ describe("computer provisioning", () => {
       .fn()
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 })
-      .mockResolvedValueOnce({ count: 0 });
+      .mockResolvedValue({ count: 1 });
     const computerRow = {
       id: "computer-1",
       homeKey: "bot-1",
@@ -116,6 +116,7 @@ describe("computer provisioning", () => {
             updatedAt: expect.any(Date),
             providerRef: "provider-1",
             kind: "cloud",
+            stopRequestedAt: null,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
         }),
@@ -827,6 +828,7 @@ describe("computer provisioning", () => {
                   .fn()
                   .mockResolvedValueOnce({ count: 1 })
                   .mockResolvedValueOnce({ count: 1 })
+                  .mockResolvedValueOnce({ count: 1 })
                   .mockRejectedValueOnce(failure)
                   .mockResolvedValue({ count: 1 })
               : vi.fn().mockResolvedValue({ count: 1 }),
@@ -855,23 +857,38 @@ describe("computer provisioning", () => {
           context,
         );
         if (rollbackFails) {
-          await expect(result).rejects.toMatchObject({ errors: [failure, rollbackError] });
+          await expect(result).rejects.toMatchObject({
+            errors: [
+              failure,
+              expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+            ],
+          });
         } else {
           await expect(result).rejects.toBe(failure);
         }
-        expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(ref, context);
-        expect(sandbox.destroy).toHaveBeenCalledExactlyOnceWith(ref, context);
+        expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(ref, context, {
+          onlyIfRunning: true,
+        });
+        expect(sandbox.destroy).toHaveBeenCalledExactlyOnceWith(ref, {
+          ...context,
+          signal: expect.any(AbortSignal),
+        });
         expect(sandbox.stop).not.toHaveBeenCalled();
         expect(prisma.computer.updateMany).toHaveBeenLastCalledWith({
           where: {
             maintenanceId: null,
             id: "computer-1",
-            state: "booting",
-            providerRef: "provider-1",
-            kind: "box",
+            state: stage === "prepare" ? "booting" : "restoring",
+            providerRef: ref.providerRef,
+            kind: ref.kind,
             updatedAt: expect.any(Date),
           },
-          data: { state: stage === "prepare" ? "running" : "error" },
+          data: expect.objectContaining({
+            state: rollbackFails ? "quarantined" : stage === "prepare" ? "running" : "error",
+            providerRef: rollbackFails ? ref.providerRef : original.providerRef,
+            kind: rollbackFails ? ref.kind : original.kind,
+            stopRequestedAt: null,
+          }),
         });
         expect(original).toMatchObject({
           state: "running",
@@ -1009,10 +1026,11 @@ describe("computer provisioning", () => {
           where: {
             maintenanceId: null,
             id: "computer-1",
-            state: "booting",
-            providerRef: "provider-1",
-            kind: "box",
+            state: "restoring",
+            providerRef: next.providerRef,
+            kind: next.kind,
             updatedAt: expect.any(Date),
+            stopRequestedAt: null,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
           data: {
@@ -1085,15 +1103,18 @@ describe("computer provisioning", () => {
         ),
       ).rejects.toThrow("provider preparation failed");
       expect(prepare).toHaveBeenCalledWith(ref, context);
-      expect(releaseScreen).toHaveBeenCalledWith(ref, context);
-      expect(cleanup === "destroy" ? destroy : stop).toHaveBeenCalledWith(ref, context);
+      expect(releaseScreen).toHaveBeenCalledWith(ref, context, { onlyIfRunning: true });
+      expect(cleanup === "destroy" ? destroy : stop).toHaveBeenCalledWith(ref, {
+        ...context,
+        signal: expect.any(AbortSignal),
+      });
       expect(cleanup === "destroy" ? stop : destroy).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("releases the screen when activation fails on a resumed Team computer", async () => {
+  it("does not touch the provider after a newer Team boot claim wins", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-team-activation-rollback-"));
     const ref = {
       id: "provider-1",
@@ -1108,7 +1129,7 @@ describe("computer provisioning", () => {
       .fn()
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 })
-      .mockResolvedValueOnce({ count: 0 });
+      .mockResolvedValue({ count: 0 });
     const prisma = {
       computer: {
         findUniqueOrThrow: vi.fn().mockResolvedValue({
@@ -1150,8 +1171,8 @@ describe("computer provisioning", () => {
         ),
       ).rejects.toThrow("Computer is busy");
       expect(sandbox.execute).toHaveBeenCalled();
-      expect(releaseScreen).toHaveBeenCalledWith(ref, context);
-      expect(stop).toHaveBeenCalledWith(ref, context);
+      expect(releaseScreen).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -1204,22 +1225,35 @@ describe("computer provisioning", () => {
         context,
       );
       await expect(result).rejects.toMatchObject({
-        errors: [prepareError, rollbackError],
+        errors: [
+          prepareError,
+          expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+        ],
+      });
+      expect(updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({ providerRef: null, stopRequestedAt: null }),
+        data: expect.objectContaining({
+          providerRef: ref.providerRef,
+          kind: ref.kind,
+          stopRequestedAt: expect.any(Date),
+        }),
       });
       expect(updateMany).toHaveBeenLastCalledWith({
         where: {
           maintenanceId: null,
           id: "computer-1",
           state: "booting",
-          providerRef: null,
-          kind: "e2b",
+          providerRef: ref.providerRef,
+          kind: ref.kind,
           updatedAt: expect.any(Date),
         },
-        data: {
-          state: "error",
+        data: expect.objectContaining({
+          state: "quarantined",
           providerRef: "new-provider-1",
           kind: "e2b",
-        },
+          restorePending: true,
+          stopRequestedAt: null,
+        }),
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });
@@ -1273,7 +1307,10 @@ describe("computer provisioning", () => {
       };
       const updateMany = vi.fn().mockResolvedValue({ count: 1 });
       if (recordFails)
-        updateMany.mockResolvedValueOnce({ count: 1 }).mockRejectedValueOnce(recordError);
+        updateMany
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 1 })
+          .mockRejectedValueOnce(recordError);
       const prisma = {
         computer: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
@@ -1311,16 +1348,28 @@ describe("computer provisioning", () => {
         if (recordFails) {
           await expect(result).rejects.toBeInstanceOf(AggregateError);
           await expect(result).rejects.toMatchObject({
-            errors: [prepareError, rollbackError, recordError],
+            errors: [
+              prepareError,
+              expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+              recordError,
+            ],
           });
         } else {
           await expect(result).rejects.toBe(prepareError);
         }
-        expect(destroy).toHaveBeenCalledExactlyOnceWith(ref, context);
-        expect(updateMany).toHaveBeenCalledTimes(2);
+        expect(destroy).toHaveBeenCalledExactlyOnceWith(ref, {
+          ...context,
+          signal: expect.any(AbortSignal),
+        });
+        expect(updateMany).toHaveBeenCalledTimes(3);
         expect(updateMany).toHaveBeenLastCalledWith(
           expect.objectContaining({
-            data: { state: "error", providerRef: "new-provider-1", kind: "e2b" },
+            data: expect.objectContaining({
+              state: "quarantined",
+              providerRef: "new-provider-1",
+              kind: "e2b",
+              stopRequestedAt: null,
+            }),
           }),
         );
       } finally {
@@ -1449,7 +1498,7 @@ describe("computer provisioning", () => {
         ),
       ).resolves.toEqual(ref);
       expect(importWorkspace).toHaveBeenCalledTimes(1);
-      expect(updateMany).toHaveBeenCalledTimes(3);
+      expect(updateMany).toHaveBeenCalledTimes(4);
       expect(updateMany).toHaveBeenLastCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -3125,14 +3174,19 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-        data: { state: "suspending", updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        where: { id: "computer-1", state: "suspending", updatedAt: expect.any(Date) },
-        data: { state: "stopped" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          stopRequestedAt: null,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "stopped" }),
       }),
     );
   });
@@ -3178,14 +3232,19 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "suspended" }),
-        data: { state: "suspending", updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        where: { id: "computer-1", state: "suspending", updatedAt: expect.any(Date) },
-        data: { state: "suspended" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          stopRequestedAt: null,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "suspended" }),
       }),
     );
   });
@@ -3244,7 +3303,7 @@ describe("computer replacement", () => {
         1,
         expect.objectContaining({
           where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-          data: { state: "suspending", updatedAt: expect.any(Date) },
+          data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
         }),
       );
     } finally {
@@ -3395,8 +3454,14 @@ describe("computer replacement", () => {
       ).rejects.toThrow("ECONNRESET");
       expect(destroy).not.toHaveBeenCalled();
       expect(updateMany).toHaveBeenLastCalledWith({
-        where: { id: "computer-1", maintenanceId: null, updatedAt: expect.any(Date) },
-        data: { state: "running" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          maintenanceId: null,
+          stopRequestedAt: null,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "running" }),
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });

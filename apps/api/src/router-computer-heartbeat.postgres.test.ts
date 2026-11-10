@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouterClient } from "@orpc/server";
-import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
+import { SandboxDamagedError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
 import {
   ComputerCheckpointChangedError,
   DesktopSandboxProvider,
   LocalAgentHomeStore,
+  toComputerRef,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
@@ -37,6 +38,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const keepAlive = vi.fn().mockResolvedValue(undefined);
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const stopProvider = vi.fn().mockResolvedValue(undefined);
+  const inspectPowerState = vi.fn().mockResolvedValue("unknown");
   const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
   const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
   const providerWrite = vi.fn().mockResolvedValue(undefined);
@@ -45,6 +47,9 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let desktop: DesktopSandboxProvider;
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
+  let statusComputer: () => Promise<unknown>;
+  let recoverComputer: () => Promise<unknown>;
+  let downloadComputerFile: (source?: "saved") => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
   let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
@@ -94,6 +99,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
         keepAlive,
         exportWorkspace,
         stop: stopProvider,
+        inspectPowerState,
         readFile: providerRead,
         writeFile: providerWrite,
         isRunning: desktop.isRunning.bind(desktop),
@@ -110,6 +116,10 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
+    statusComputer = () => client.computer.status({ botId });
+    recoverComputer = () => client.computer.recover({ botId });
+    downloadComputerFile = (source) =>
+      client.computer.downloadFile({ botId, path: "sample.bin", source });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
     uploadComputerFile = () =>
       client.computer.uploadFile({
@@ -125,6 +135,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     keepAlive.mockClear();
     enqueue.mockClear();
     stopProvider.mockClear();
+    inspectPowerState.mockClear();
     exportWorkspace.mockClear();
     providerRead.mockClear();
     providerWrite.mockClear();
@@ -287,6 +298,140 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
   });
 
+  it("quarantines an unconfirmed manual Stop and blocks implicit boot", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { restorePending: true, homeRevision: "last-valid" },
+    });
+    // A delayed provider request can still be pending even if a read observes a pause.
+    inspectPowerState.mockResolvedValueOnce("unknown").mockResolvedValueOnce("stopped");
+    stopProvider.mockImplementationOnce(async () => {
+      expect(
+        await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+      ).toMatchObject({ state: "suspending", stopRequestedAt: expect.any(Date) });
+      throw new Error("provider connection closed after accepting the request");
+    });
+    await expect(stopComputer()).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "The computer's stop could not be confirmed.",
+    });
+    await expect(statusComputer()).resolves.toMatchObject({
+      state: "error",
+      powerState: "quarantined",
+      screenAvailable: false,
+      controlHolder: "none",
+      takeoverRequested: false,
+    });
+    await expect(bootComputer()).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      providerRef: "heartbeat-provider",
+      homeRevision: "last-valid",
+      stopRequestedAt: null,
+    });
+  });
+
+  it("does not abandon a newly issued stop after a long save", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { controlHolder: "none", controlLeaseId: null, controlLeaseExpiresAt: null },
+    });
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      exportWorkspace.mockImplementationOnce(() => {
+        vi.setSystemTime(start + 6 * 60_000);
+        return (async function* () {
+          yield* [];
+        })();
+      });
+      stopProvider.mockImplementationOnce(async () => {
+        await expect(statusComputer()).resolves.toMatchObject({
+          state: "error",
+          powerState: "stopping",
+        });
+        await expect(recoverComputer()).rejects.toMatchObject({ code: "CONFLICT" });
+      });
+      await expect(stopComputer()).resolves.toMatchObject({ state: "stopped" });
+      expect(stopProvider).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downloads binary bytes from a paused workspace without calling the provider", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { state: "suspended", controlHolder: "none", controlLeaseId: null },
+    });
+    const directory = path.join(home.pathFor(computerId), "bots", botId);
+    const bytes = Buffer.from([0, 128, 255, 1]);
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "sample.bin"), bytes);
+    await expect(downloadComputerFile()).resolves.toEqual({
+      path: "sample.bin",
+      contentBase64: bytes.toString("base64"),
+    });
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { state: "running" },
+    });
+    await expect(downloadComputerFile("saved")).resolves.toEqual({
+      path: "sample.bin",
+      contentBase64: bytes.toString("base64"),
+    });
+    expect(providerRead).not.toHaveBeenCalled();
+  });
+
+  it("does not resume or export a confirmed stopped computer with an unchanged saved home", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        homeRevision: "last-valid",
+        homeRevisionAt: new Date(),
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+    inspectPowerState.mockResolvedValueOnce("stopped");
+    await expect(stopComputer()).resolves.toMatchObject({ state: "stopped" });
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(stopProvider).not.toHaveBeenCalled();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({ homeRevision: "last-valid", providerRef: "heartbeat-provider" });
+  });
+
+  it("keeps the prior revision and marks a stopped damaged computer for recovery", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        homeRevision: "last-valid",
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+    exportWorkspace.mockImplementationOnce(async function* () {
+      yield await Promise.reject(new SandboxDamagedError());
+    });
+    await expect(stopComputer()).resolves.toMatchObject({
+      state: "error",
+      powerState: "needs_recovery",
+      screenAvailable: false,
+    });
+    expect(stopProvider).toHaveBeenCalledOnce();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      homeRevision: "last-valid",
+      providerRef: "heartbeat-provider",
+      restorePending: true,
+    });
+  });
+
   it("stops a provider with a pending restore without exporting its incomplete workspace", async () => {
     await database.prisma.computer.update({
       where: { id: computerId },
@@ -426,14 +571,17 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
 
     await expect(bootComputer()).resolves.toMatchObject({ state: "running" });
-    const bytes = await desktop.readFile(ref, `bots/${botId}/notes.txt`, context);
-    expect(Buffer.from(bytes).toString()).toBe("saved Desktop notes");
-    expect(
-      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
-    ).toMatchObject({
-      providerRef: ref.providerRef,
-      restorePending: false,
+    const restored = await database.prisma.computer.findUniqueOrThrow({
+      where: { id: computerId },
     });
+    expect(restored.providerRef).not.toBe(ref.providerRef);
+    expect(restored.restorePending).toBe(false);
+    const bytes = await desktop.readFile(
+      toComputerRef(restored),
+      `bots/${botId}/notes.txt`,
+      context,
+    );
+    expect(Buffer.from(bytes).toString()).toBe("saved Desktop notes");
   });
 
   it.each([

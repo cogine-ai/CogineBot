@@ -1272,7 +1272,10 @@ describe("E2B computer backend", () => {
     await screen.close();
     expect(streamStop).not.toHaveBeenCalled();
     await provider.stop(computer, context);
-    expect(desktop.pause).toHaveBeenCalled();
+    expect(sdk.pause).toHaveBeenCalledWith(
+      computer.providerRef,
+      expect.objectContaining({ signal: context.signal }),
+    );
   });
 
   it("gives Team bots distinct E2B screens and shared files", async () => {
@@ -2012,13 +2015,8 @@ describe("sandbox-gone detection", () => {
         reject = fail;
       });
       const sdk: E2BSandboxSdk = {
-        connect: vi
-          .fn()
-          .mockReturnValueOnce(connection)
-          .mockResolvedValue({
-            sandboxId: "existing",
-            kill: vi.fn().mockResolvedValue(undefined),
-          }),
+        connect: vi.fn().mockReturnValueOnce(connection),
+        kill: vi.fn().mockResolvedValue(true),
         create: vi.fn().mockResolvedValue({ sandboxId: "unexpected" }),
         pause: vi.fn().mockResolvedValue(undefined),
       };
@@ -2030,7 +2028,7 @@ describe("sandbox-gone detection", () => {
           context,
         )
         .catch((error: unknown) => error);
-      let stopped: Promise<void> | undefined;
+      let stopped: Promise<void> | Promise<"gone" | undefined> | undefined;
       const schedule = (remaining: number) =>
         queueMicrotask(() => {
           if (remaining) return schedule(remaining - 1);
@@ -2070,14 +2068,9 @@ describe("sandbox-gone detection", () => {
       const sdk: E2BSandboxSdk = {
         create: vi.fn().mockResolvedValue({ sandboxId: "unexpected" }),
         connect: vi.fn().mockReturnValueOnce(initial),
+        kill,
         pause: vi.fn().mockResolvedValue(undefined),
       };
-      if (teardown === "destroy") {
-        vi.mocked(sdk.connect).mockResolvedValueOnce({
-          sandboxId: "existing",
-          kill,
-        } as unknown as Sandbox);
-      }
       vi.mocked(sdk.connect).mockReturnValueOnce(connection);
       const provider = new E2BSandboxProvider("test-key", sdk);
       const request = {
@@ -2089,7 +2082,7 @@ describe("sandbox-gone detection", () => {
       const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
       const first = provider.provision(request, context).catch((error: unknown) => error);
       const second = provider.provision(request, context).catch((error: unknown) => error);
-      let stopped: Promise<void> | undefined;
+      let stopped: Promise<void> | Promise<"gone" | undefined> | undefined;
       let successor: Promise<unknown> | undefined;
       const registry = Reflect.get(provider, "computerOperations") as Map<string, unknown>;
       let slot: unknown;
@@ -2119,7 +2112,8 @@ describe("sandbox-gone detection", () => {
           fresh: false,
         });
       }
-      expect(sdk.connect).toHaveBeenCalledTimes((teardown === "destroy" ? 2 : 1) + (next ? 1 : 0));
+      expect(sdk.connect).toHaveBeenCalledTimes(next ? 2 : 1);
+      expect(kill).toHaveBeenCalledTimes(teardown === "destroy" ? 1 : 0);
       expect(registry.size).toBe(0);
     },
   );
@@ -2153,6 +2147,7 @@ describe("sandbox-gone detection", () => {
       });
       const sdk: E2BSandboxSdk = {
         create: vi.fn(),
+        kill: vi.fn().mockResolvedValue(true),
         connect: vi
           .fn()
           .mockResolvedValueOnce(old)
@@ -2204,13 +2199,13 @@ describe("sandbox-gone detection", () => {
     "keeps a successor connection when old recovery and %s finish later",
     async (teardown) => {
       let finishOld!: (desktop: Sandbox) => void;
-      let finishLookup!: (desktop: Sandbox) => void;
+      let finishKill!: (deleted: boolean) => void;
       let finishCurrent!: (desktop: Sandbox) => void;
       const old = new Promise<Sandbox>((resolve) => {
         finishOld = resolve;
       });
-      const lookup = new Promise<Sandbox>((resolve) => {
-        finishLookup = resolve;
+      const deletion = new Promise<boolean>((resolve) => {
+        finishKill = resolve;
       });
       const connection = new Promise<Sandbox>((resolve) => {
         finishCurrent = resolve;
@@ -2221,13 +2216,12 @@ describe("sandbox-gone detection", () => {
       });
       const read = vi.fn().mockResolvedValue(new Uint8Array([1]));
       const current = { sandboxId: "existing", files: { read } } as unknown as Sandbox;
-      const kill = vi.fn().mockResolvedValue(undefined);
       const sdk: E2BSandboxSdk = {
         create: vi.fn(),
+        kill: vi.fn().mockReturnValue(deletion),
         connect: vi.fn().mockReturnValueOnce(old),
         pause: vi.fn().mockReturnValue(pause),
       };
-      if (teardown === "destroy") vi.mocked(sdk.connect).mockReturnValueOnce(lookup);
       vi.mocked(sdk.connect).mockReturnValueOnce(connection);
       const provider = new E2BSandboxProvider("test-key", sdk);
       const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
@@ -2243,8 +2237,7 @@ describe("sandbox-gone detection", () => {
         message: "computer connection stopped during teardown",
       });
       expect(registry.get(ref.id)).toBe(slot);
-      if (teardown === "destroy")
-        finishLookup({ sandboxId: "existing", kill } as unknown as Sandbox);
+      if (teardown === "destroy") finishKill(true);
       else finishPause();
       await stopped;
       expect(registry.get(ref.id)).toBe(slot);
@@ -2253,10 +2246,10 @@ describe("sandbox-gone detection", () => {
       await expect(provider.readFile(ref, "saved.bin", context)).resolves.toEqual(
         new Uint8Array([1]),
       );
-      expect(sdk.connect).toHaveBeenCalledTimes(teardown === "destroy" ? 3 : 2);
+      expect(sdk.connect).toHaveBeenCalledTimes(2);
       expect(read).toHaveBeenCalledTimes(2);
       expect(sdk.create).not.toHaveBeenCalled();
-      expect(kill).toHaveBeenCalledTimes(teardown === "destroy" ? 1 : 0);
+      expect(sdk.kill).toHaveBeenCalledTimes(teardown === "destroy" ? 1 : 0);
       expect(registry.size).toBe(0);
     },
   );
@@ -2277,7 +2270,8 @@ describe("sandbox-gone detection", () => {
       const kill = vi.fn().mockResolvedValue(undefined);
       const sdk: E2BSandboxSdk = {
         create: vi.fn(),
-        connect: vi.fn().mockResolvedValue({ sandboxId: "existing", kill }),
+        connect: vi.fn(),
+        kill,
         pause: vi.fn(),
         attachRunning: vi.fn().mockReturnValue(attachment),
       };
@@ -2291,8 +2285,8 @@ describe("sandbox-gone detection", () => {
       await expect(attendance).resolves.toBeUndefined();
       expect(desktop.setTimeout).not.toHaveBeenCalled();
       expect((Reflect.get(provider, "computerOperations") as Map<string, unknown>).size).toBe(0);
-      expect(sdk.connect).toHaveBeenCalledOnce();
-      expect(kill).toHaveBeenCalledOnce();
+      expect(sdk.connect).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledExactlyOnceWith(ref.providerRef, expect.anything());
       expect(sdk.create).not.toHaveBeenCalled();
     },
   );

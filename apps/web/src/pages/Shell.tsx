@@ -30,6 +30,8 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
+  computerStateRequiresRecovery,
+  currentComputerStatus,
   DelegatedApprovalAction,
   MESSAGE_REACTIONS,
   type MessageReaction,
@@ -160,6 +162,7 @@ import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
+import { FilesApp } from "../components/computer/FilesApp";
 import { DelegatedApprovalCard } from "../components/DelegatedApprovalCard";
 import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
@@ -588,7 +591,11 @@ export function ShellPage() {
     const cache = computerCacheRef.current;
     const prev = cache.get(botId) ?? { computer: null, screenUrl: null };
     cache.delete(botId);
-    cache.set(botId, { ...prev, ...patch });
+    cache.set(botId, {
+      ...prev,
+      ...patch,
+      ...(patch.computer ? { computer: currentComputerStatus(patch.computer) } : {}),
+    });
     if (cache.size > COMPUTER_CACHE_LIMIT) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
@@ -596,6 +603,10 @@ export function ShellPage() {
   }
 
   function commitSnapshot(next: ThreadSnapshot | null) {
+    if (next?.computer) {
+      const computer = currentComputerStatus(next.computer);
+      if (computer !== next.computer) next = { ...next, computer };
+    }
     snapshotRef.current = next;
     setSnapshot(withLiveStreamingProgress(next, streamResponsesRef.current));
   }
@@ -608,6 +619,7 @@ export function ShellPage() {
     next: ComputerStatus | null,
     observation: "snapshot" | "running-event" | "attendance-read" = "snapshot",
   ) {
+    if (next) next = currentComputerStatus(next);
     const before = computerRef.current;
     computerRef.current = next;
     setComputer(next);
@@ -941,6 +953,7 @@ export function ShellPage() {
   const pendingBrowserNotifications = useRef(new Map<string, PendingBrowserNotification>());
   const computerVisible = useRef(false);
   const computerSelection = currentSpaceSelectionGeneration();
+  const [savedFilesBotId, setSavedFilesBotId] = useState<string | null>(null);
   const watchingComputer = panel === "computer" || computerOpen;
   computerVisible.current = watchingComputer;
   const autoSpoken = useRef<string | null>(null);
@@ -3972,6 +3985,11 @@ export function ShellPage() {
   }) {
     const cached = computerCacheRef.current.get(targetBotId);
     const targetComputer = computer?.botId === targetBotId ? computer : (cached?.computer ?? null);
+    if (
+      computerStateRequiresRecovery(targetComputer?.state) ||
+      targetComputer?.state === "stopping"
+    )
+      return false;
     const targetScreen = computer?.botId === targetBotId ? screenUrl : (cached?.screenUrl ?? null);
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
@@ -4309,7 +4327,9 @@ export function ShellPage() {
         const client = createSpaceRpc(spaceId, current);
         let status: ComputerStatus;
         try {
-          status = await client.computer.status({ botId: heartbeatBotId }, { signal });
+          status = currentComputerStatus(
+            await client.computer.status({ botId: heartbeatBotId }, { signal }),
+          );
         } catch (error) {
           observation?.settle(false);
           if (current()) recheckQueued = false;
@@ -4419,6 +4439,11 @@ export function ShellPage() {
     }
     setComputerOpen(true);
     computerVisible.current = true;
+    if (
+      computerStateRequiresRecovery(targetComputer?.state) ||
+      targetComputer?.state === "stopping"
+    )
+      return false;
     const needsTakeover = takeControl && !userHoldsComputerControl(targetComputer, id);
     const blocked = computerTakeoverBlocked(targetComputer, snapshot?.run?.status);
     try {
@@ -6057,7 +6082,15 @@ export function ShellPage() {
                   ) : panel === "settings" ? (
                     <Trans>Settings</Trans>
                   ) : active ? (
-                    (computer?.state ?? active.status)
+                    computer?.state === "quarantined" ? (
+                      <Trans>Computer status unconfirmed</Trans>
+                    ) : computer?.state === "needs_recovery" ? (
+                      <Trans>Computer needs recovery</Trans>
+                    ) : computer?.state === "stopping" ? (
+                      <Trans>Saving or stopping computer…</Trans>
+                    ) : (
+                      (computer?.state ?? active.status)
+                    )
                   ) : (
                     <Trans>Group</Trans>
                   )}
@@ -6116,7 +6149,9 @@ export function ShellPage() {
                     <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                       <Trans>Open in full window</Trans>
                     </div>
-                  ) : computer?.kind === "desktop" ? (
+                  ) : computer?.kind === "desktop" &&
+                    !computerStateRequiresRecovery(computer.state) &&
+                    computer.state !== "stopping" ? (
                     <DesktopKindEmptyState className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground/80" />
                   ) : computer?.state === "running" &&
                     screenPresented &&
@@ -6158,7 +6193,10 @@ export function ShellPage() {
                         ))}
                     </div>
                   )}
-                  {!computerScreenError && !showingRecoveryHint ? (
+                  {!computerScreenError &&
+                  !showingRecoveryHint &&
+                  !computerStateRequiresRecovery(computer?.state) &&
+                  computer?.state !== "stopping" ? (
                     <button
                       type="button"
                       data-testid="computer-preview-open"
@@ -6176,6 +6214,33 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                {computer?.state === "suspended" ||
+                computerStateRequiresRecovery(computer?.state) ? (
+                  <div className="mt-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-expanded={savedFilesBotId === active.id}
+                      onClick={() =>
+                        setSavedFilesBotId(savedFilesBotId === active.id ? null : active.id)
+                      }
+                    >
+                      <Trans>Files</Trans>
+                    </Button>
+                    {savedFilesBotId === active.id ? (
+                      <div className="mt-2 h-64 overflow-hidden rounded-md border border-border">
+                        <FilesApp
+                          key={active.id}
+                          botId={active.id}
+                          canUpload={false}
+                          savedOnly
+                          visible
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <RoutineListHeader
                   onCreate={() => {
                     setRoutineDraft(emptyRoutineDraft());
@@ -7179,9 +7244,11 @@ export function ShellPage() {
                 ) : (
                   <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                     {computerScreenError ??
-                      (computer?.state === "suspended"
-                        ? t`Computer is asleep`
-                        : computerLabel(computer?.mode, computerBot.name))}
+                      computerPlaceholder(
+                        computer?.state,
+                        booting,
+                        computerLabel(computer?.mode, computerBot.name),
+                      )}
                   </div>
                 )}
               </ComputerWorkspace>
@@ -9555,6 +9622,9 @@ function computerPlaceholder(
   booting: boolean,
   label: string,
 ) {
+  if (state === "quarantined") return t`Computer status unconfirmed`;
+  if (state === "needs_recovery") return t`Computer needs recovery`;
+  if (state === "stopping") return t`Saving or stopping computer…`;
   if (state === "booting" || booting) return t`Booting live desktop…`;
   if (state === "running") return label;
   if (state === "suspended") return t`Computer is asleep. Open it to wake.`;

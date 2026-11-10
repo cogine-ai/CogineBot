@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   lstat,
@@ -7,6 +8,7 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   rmdir,
   stat,
@@ -87,27 +89,27 @@ export class DesktopSandboxProvider implements SandboxProvider {
     request: Parameters<SandboxProvider["provision"]>[0],
     _context: AdapterContext,
   ): Promise<ComputerRef> {
-    const home = path.resolve(
-      this.opts.root ?? path.join(process.cwd(), "data"),
-      "desktop-computers",
-      request.botId,
-    );
-    const existing = [...this.boxes.values()].find(
-      (box) => box.ref.botId === request.botId || box.home === home,
-    );
-    const current = await desktopWorkspaceDirectory(home);
+    const legacy = this.legacyWorkspace(request.botId);
+    const requested =
+      request.providerKind === "desktop" && request.providerRef
+        ? this.managedWorkspace(request.botId, request.providerRef)
+        : undefined;
+    const previous = requested ?? (request.isolateWorkspaceGeneration ? undefined : legacy);
+    const current = previous ? await desktopWorkspaceDirectory(previous) : undefined;
     if (current && !current.isDirectory())
       throw new Error("The desktop workspace is not a directory");
+    const home =
+      current && previous
+        ? previous
+        : request.isolateWorkspaceGeneration
+          ? `${this.workspaceGenerationPrefix(request.botId)}${randomUUID()}`
+          : legacy;
+    const existing = [...this.boxes.values()].find((box) => box.home === home);
     if (existing && current) {
       existing.running = true;
       return { ...existing.ref, fresh: false };
     }
-    const id = `desktop-${request.botId}`;
-    // A recreated directory has the same provider reference. Record restore intent first.
-    if (!current) {
-      await request.beforeWorkspaceReplacement?.();
-      await mkdir(home, { recursive: true });
-    }
+    const id = home === legacy ? `desktop-${request.botId}` : `desktop-${path.basename(home)}`;
     const ref: ComputerRef = {
       id,
       botId: request.botId,
@@ -115,6 +117,10 @@ export class DesktopSandboxProvider implements SandboxProvider {
       providerRef: home,
       fresh: !current,
     };
+    if (!current) {
+      await request.beforeWorkspaceReplacement?.(ref);
+      await mkdir(home, { recursive: true });
+    }
     this.boxes.set(id, {
       ref,
       home,
@@ -254,16 +260,33 @@ export class DesktopSandboxProvider implements SandboxProvider {
     return new Uint8Array(await readFile(target));
   }
 
-  async writeFile(computer: ComputerRef, file: PortableFile) {
-    const box = this.requiredBox(computer);
-    const target = await localWorkspaceTarget(box.home, file.path, false);
+  async writeFile(computer: ComputerRef, file: PortableFile, context?: AdapterContext) {
+    return this.writeWorkspaceFile(this.requiredBox(computer).home, file, context);
+  }
+
+  private async writeWorkspaceFile(
+    home: string,
+    file: PortableFile,
+    context?: AdapterContext,
+    incarnation?: { dev: number; ino: number },
+  ) {
+    context?.signal.throwIfAborted();
+    if (incarnation) {
+      const current = await stat(home);
+      if (current.dev !== incarnation.dev || current.ino !== incarnation.ino)
+        throw new Error("The desktop workspace was replaced during restore");
+    }
+    const target = await localWorkspaceTarget(home, file.path, false);
     const handle = await openContainedWorkspaceFile(
-      box.home,
+      home,
       target,
       file.executable ? 0o700 : 0o600,
+      incarnation,
     );
     try {
+      context?.signal.throwIfAborted();
       await handle.truncate(0);
+      context?.signal.throwIfAborted();
       await handle.writeFile(file.content);
       if (file.executable) await handle.chmod(0o700);
     } finally {
@@ -289,9 +312,18 @@ export class DesktopSandboxProvider implements SandboxProvider {
   async importWorkspace(
     computer: ComputerRef,
     files: AsyncIterable<PortableFile>,
-    _context: AdapterContext,
+    context: AdapterContext,
   ) {
-    for await (const file of files) await this.writeFile(computer, file);
+    const { home } = this.requiredBox(computer);
+    const directory = await open(home, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+    try {
+      const incarnation = await directory.stat();
+      for await (const file of files) {
+        await this.writeWorkspaceFile(home, file, context, incarnation);
+      }
+    } finally {
+      await directory.close();
+    }
   }
 
   async snapshot(computer: ComputerRef, _context: AdapterContext) {
@@ -303,7 +335,31 @@ export class DesktopSandboxProvider implements SandboxProvider {
     if (box) box.running = false;
   }
 
-  async destroy(computer: ComputerRef, _context: AdapterContext): Promise<void> {
+  async destroy(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: Parameters<SandboxProvider["destroy"]>[2],
+  ): Promise<void> {
+    if (options?.retireWorkspace) {
+      if (computer.kind !== "desktop")
+        throw new Error("The desktop workspace identity did not match");
+      const home = this.managedWorkspace(computer.botId, computer.providerRef);
+      const current = await desktopWorkspaceDirectory(home);
+      if (current) {
+        if (!current.isDirectory()) throw new Error("The desktop workspace is not a directory");
+        context.signal.throwIfAborted();
+        const retired = path.join(path.dirname(home), `.retired-${randomUUID()}`);
+        await rename(home, retired);
+        const moved = await lstat(retired);
+        if (moved.dev !== current.dev || moved.ino !== current.ino)
+          throw new Error("The desktop workspace changed before it could be retired");
+        await rm(retired, { recursive: true, force: true });
+      }
+      for (const [id, box] of this.boxes) {
+        if (box.home === home) this.boxes.delete(id);
+      }
+      return;
+    }
     const box = this.boxFor(computer);
     if (box) this.boxes.delete(box.ref.id);
     this.boxes.delete(computer.id);
@@ -317,16 +373,41 @@ export class DesktopSandboxProvider implements SandboxProvider {
     }
   }
 
+  private legacyWorkspace(botId: string) {
+    return path.resolve(
+      this.opts.root ?? path.join(process.cwd(), "data"),
+      "desktop-computers",
+      botId,
+    );
+  }
+
+  private workspaceGenerationPrefix(botId: string) {
+    const owner = createHash("sha256").update(botId).digest("hex").slice(0, 32);
+    return path.join(path.dirname(this.legacyWorkspace(botId)), `.workspace-${owner}-`);
+  }
+
+  private managedWorkspace(botId: string, ref: string) {
+    const home = path.resolve(ref);
+    if (home === this.legacyWorkspace(botId)) return home;
+    const prefix = this.workspaceGenerationPrefix(botId);
+    if (
+      home.startsWith(prefix) &&
+      /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(home.slice(prefix.length))
+    )
+      return home;
+    throw new Error("The desktop workspace identity did not match");
+  }
+
   private boxFor(computer: ComputerRef): DesktopBox | undefined {
     const existing = this.boxes.get(computer.id);
-    if (existing) return existing;
+    if (existing?.home === computer.providerRef) return existing;
     for (const box of this.boxes.values()) {
-      if (box.ref.botId === computer.botId || box.home === computer.providerRef) return box;
+      if (box.home === computer.providerRef) return box;
     }
     if (!computer.providerRef) return undefined;
     const box: DesktopBox = {
       ref: computer,
-      home: path.resolve(computer.providerRef),
+      home: this.managedWorkspace(computer.botId, computer.providerRef),
       running: true,
       screen: "ready",
     };
@@ -452,7 +533,12 @@ async function localWorkspaceTarget(home: string, relative: string, mustExist: b
   return resolved;
 }
 
-async function openContainedWorkspaceFile(home: string, target: string, mode: number) {
+async function openContainedWorkspaceFile(
+  home: string,
+  target: string,
+  mode: number,
+  incarnation?: { dev: number; ino: number },
+) {
   const resolvedHome = await realpath(home);
   const parentPath = path.dirname(target);
   const name = path.basename(target);
@@ -532,6 +618,11 @@ async function openContainedWorkspaceFile(home: string, target: string, mode: nu
       throw new Error("Path escapes the computer workspace");
     }
     await assertContainedFileHandle(handle, resolvedHome, parentHandle, containedParent, name);
+    if (incarnation) {
+      const current = await stat(home);
+      if (current.dev !== incarnation.dev || current.ino !== incarnation.ino)
+        throw new Error("The desktop workspace was replaced during restore");
+    }
     return handle;
   } catch (error) {
     if (created && handle) {

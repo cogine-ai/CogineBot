@@ -142,6 +142,7 @@ describe("screen grant authority after provider recovery", () => {
           providerRef: "provider",
           screenGeneration: 3,
           maintenanceId: null,
+          stopRequestedAt: null,
         },
         data: { state: "stopped", providerRef: null },
       });

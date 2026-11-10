@@ -7353,3 +7353,19 @@ msgstr "View result"
 
 msgid "View execution chat"
 msgstr "View execution chat"
+
+#: src/pages/Shell.tsx
+msgid "Computer status unconfirmed"
+msgstr "Computer status unconfirmed"
+
+#: src/pages/Shell.tsx
+msgid "Computer needs recovery"
+msgstr "Computer needs recovery"
+
+#: src/pages/Shell.tsx
+msgid "Saving or stopping computer…"
+msgstr "Saving or stopping computer…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr "Ask your deployment administrator to restore the original computer provider settings before retrying."

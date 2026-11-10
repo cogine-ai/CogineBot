@@ -29,10 +29,15 @@ export function ComputerMaintenanceActions({
   const navigation = useNavigation();
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const busy = Boolean(computer?.busyBotName) || computer?.state === "booting" || pending !== null;
+  const blocked = computer?.recoveryBlocked === true;
+  const busy =
+    Boolean(computer?.busyBotName) ||
+    computer?.state === "booting" ||
+    computer?.state === "stopping" ||
+    pending !== null;
 
   async function run(action: Action) {
-    if (busy) return;
+    if (blocked || busy) return;
     setPending(action);
     setError(null);
     try {
@@ -48,6 +53,7 @@ export function ComputerMaintenanceActions({
   }
 
   function confirm(action: "recover" | "reset") {
+    if (blocked || busy) return;
     Alert.alert(
       action === "reset" ? t("Reset computer?") : t("Recover computer?"),
       action === "reset"
@@ -111,7 +117,7 @@ export function ComputerMaintenanceActions({
                     label: action.title,
                     description: action.explanation,
                     destructive: action.destructive,
-                    disabled: busy,
+                    disabled: blocked || busy,
                     onPress: action.onPress,
                   })),
                 },
@@ -122,7 +128,7 @@ export function ComputerMaintenanceActions({
     return () => {
       navigation.setOptions({ unstable_headerRightItems: () => [] });
     };
-  }, [navigation, hasComputer, canUpdate, busy, t, botId, onChanged]);
+  }, [navigation, hasComputer, canUpdate, blocked, busy, t, botId, onChanged]);
 
   if (!computer) return null;
   return (
@@ -139,7 +145,7 @@ export function ComputerMaintenanceActions({
               {
                 id: action.id,
                 title: action.title,
-                attributes: { destructive: action.destructive, disabled: busy },
+                attributes: { destructive: action.destructive, disabled: blocked || busy },
               },
             ],
           }))}
@@ -160,6 +166,13 @@ export function ComputerMaintenanceActions({
             />
           </View>
         </MenuView>
+      ) : null}
+      {blocked ? (
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+          {t(
+            "Ask your deployment administrator to restore the original computer provider settings before retrying.",
+          )}
+        </Text>
       ) : null}
       {error ? (
         <Text accessibilityRole="alert" style={{ color: tokens.destructive, fontSize: 13 }}>

@@ -12,6 +12,7 @@ import type {
   PageBrowserResult,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -27,6 +28,19 @@ import {
 } from "./computer-support.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { readBodyCapped, withAbort } from "./web-ssrf.js";
+
+async function confirmedDockerTeardown(
+  response: Response,
+  id: string,
+  signal: AbortSignal,
+): Promise<"stopped" | "gone" | undefined> {
+  const body = await readSandboxJson<{ id?: string; powerState?: string }>(response, signal).catch(
+    () => undefined,
+  );
+  if (body?.id !== id) return;
+  if (body.powerState === "gone") return "gone";
+  if (response.ok && body.powerState === "stopped") return "stopped";
+}
 
 export const MAX_SANDBOX_ERROR_RESPONSE_BYTES = 8 * 1024;
 export const MAX_SANDBOX_SUCCESS_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -181,7 +195,35 @@ export class DockerSandboxProvider implements SandboxProvider {
 
   async isRunning(computer: ComputerRef, context: AdapterContext): Promise<boolean> {
     if (computer.kind !== "docker") return false;
-    return (await this.containerRunning(computer, context)) === true;
+    return (await this.inspectPowerState(computer, context)) === "running";
+  }
+
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    try {
+      const res = await fetch(this.url(`/computers/${computer.id}`), {
+        method: "GET",
+        headers: this.headers(context, computer.botId),
+        signal: context.signal,
+      });
+      if (!res.ok && res.status !== 404) {
+        cancelResponseBody(res);
+        return "unknown";
+      }
+      const body = await readSandboxJson<{ id?: string; running?: boolean; powerState?: string }>(
+        res,
+        context.signal,
+      );
+      if (body.id !== computer.id) return "unknown";
+      if (res.status === 404) return body.powerState === "gone" ? "gone" : "unknown";
+      if (typeof body.running !== "boolean") return "unknown";
+      return body.running ? "running" : "stopped";
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      return "unknown";
+    }
   }
 
   async prepare(_computer: ComputerRef, _context: AdapterContext): Promise<void> {}
@@ -266,7 +308,7 @@ export class DockerSandboxProvider implements SandboxProvider {
       }
       // A container that stopped under a "running" row (host reboot, docker stop) has no
       // screen to show; report it gone so the caller offers a boot instead of a blank error.
-      if ((await this.containerRunning(computer, context)) === false) {
+      if ((await this.inspectPowerState(computer, context)) === "stopped") {
         throw sandboxGoneError(computer);
       }
       return { url: null, mimeType: "text/html", close: async () => undefined };
@@ -312,40 +354,13 @@ export class DockerSandboxProvider implements SandboxProvider {
       // containing Docker's 404. Preserve the gone signal so lease cleanup can
       // clear the stale providerRef instead of retrying the same dead container.
       if (/no such container/i.test(detail)) throw sandboxGoneError(computer);
-      if ((await this.containerRunning(computer, context)) === false) {
+      if ((await this.inspectPowerState(computer, context)) === "stopped") {
         // The screen died with its container: a revoke has nothing left to release, while
         // an interactive grant needs the computer booted first.
         if (!interactive) return;
         throw sandboxGoneError(computer);
       }
       throw new Error(`sandbox screen mode failed: ${res.status} ${detail}`.trim());
-    }
-  }
-
-  /**
-   * The supervisor's view of the container, or null when it cannot say. Only a successful
-   * inspection counts: the supervisor answers 404 for any lookup failure, so that and transport
-   * errors leave the caller on its previous behaviour rather than starting a recovery.
-   */
-  private async containerRunning(
-    computer: ComputerRef,
-    context: AdapterContext,
-  ): Promise<boolean | null> {
-    try {
-      const res = await fetch(this.url(`/computers/${computer.id}`), {
-        method: "GET",
-        headers: this.headers(context, computer.botId),
-        signal: context.signal,
-      });
-      if (!res.ok) {
-        cancelResponseBody(res);
-        return null;
-      }
-      const body = await readSandboxJson<{ running?: boolean }>(res, context.signal);
-      return body.running === true;
-    } catch (error) {
-      if (context.signal.aborted) throw error;
-      return null;
     }
   }
 
@@ -535,18 +550,24 @@ export class DockerSandboxProvider implements SandboxProvider {
     }
   }
 
-  async stop(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async stop(computer: ComputerRef, context: AdapterContext): Promise<"gone" | undefined> {
     const res = await fetch(this.url(`/computers/${computer.id}/stop`), {
       method: "POST",
       headers: this.headers(context, computer.botId),
       signal: context.signal,
     });
-    // 404 means the supervisor no longer has the container, which is the state we want.
     if (!res.ok && res.status !== 404) {
       throw new Error(
         `sandbox stop failed: ${res.status} ${await safeBody(res, context.signal)}`.trim(),
       );
     }
+    const confirmed = await confirmedDockerTeardown(res, computer.id, context.signal);
+    if (confirmed === "gone") return confirmed;
+    if (confirmed === "stopped") return;
+    // Older supervisors can confirm a pause through a separate identity-scoped inspection.
+    const state = await this.inspectPowerState(computer, context);
+    if (state === "gone") return state;
+    if (state !== "stopped") throw new Error("The supervisor did not confirm the computer stopped");
   }
 
   async destroy(computer: ComputerRef, context: AdapterContext): Promise<void> {
@@ -559,6 +580,9 @@ export class DockerSandboxProvider implements SandboxProvider {
       throw new Error(
         `sandbox destroy failed: ${res.status} ${await safeBody(res, context.signal)}`.trim(),
       );
+    }
+    if ((await confirmedDockerTeardown(res, computer.id, context.signal)) !== "gone") {
+      throw new Error("The supervisor did not confirm the computer was removed");
     }
   }
 

@@ -100,7 +100,6 @@ export function ComputerWorkspace({
               <FilesApp
                 key={botId}
                 botId={botId}
-                running={running}
                 canUpload={hasControl && running}
                 visible={!collapsed}
               />

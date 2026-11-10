@@ -444,7 +444,7 @@ describe("Docker sandbox", () => {
 
   it("treats a computer the supervisor no longer knows as already stopped and destroyed", async () => {
     const fetchMock = vi.fn(async () =>
-      Response.json({ error: "computer not found" }, { status: 404 }),
+      Response.json({ id: "computer", powerState: "gone" }, { status: 404 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
@@ -455,10 +455,30 @@ describe("Docker sandbox", () => {
       providerRef: "computer",
     } as const;
 
-    await expect(provider.stop(computer, context)).resolves.toBeUndefined();
+    await expect(provider.inspectPowerState(computer, context)).resolves.toBe("gone");
+    await expect(provider.stop(computer, context)).resolves.toBe("gone");
     await expect(provider.destroy(computer, context)).resolves.toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+  it.each([200, 404])(
+    "does not accept legacy supervisor HTTP %s as confirmation of deletion",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ ok: true }, { status })),
+      );
+      const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+      const ref = {
+        id: "computer",
+        botId: "bot",
+        kind: "docker",
+        providerRef: "computer",
+      } as const;
+      await expect(provider.destroy(ref, context)).rejects.toThrow("did not confirm");
+      await expect(provider.inspectPowerState(ref, context)).resolves.toBe("unknown");
+    },
+  );
+
   it("asks the supervisor to cancel orphaned run work when releasing a screen", async () => {
     const fetchMock = vi.fn(async () => Response.json({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);

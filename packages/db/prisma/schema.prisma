@@ -1247,8 +1247,11 @@ model Computer {
   homeRevision            String                   @default("empty")
   homeRevisionAt          DateTime?
   restorePending          Boolean                  @default(false)
+  stopRequestedAt         DateTime?
+  autoRecoveredAt         DateTime?
   kind                    String
   providerRef             String?
+  providerAuthority       String?
   state                   String                   @default("stopped")
   controlHolder           String                   @default("none")
   controlLeaseId          String?

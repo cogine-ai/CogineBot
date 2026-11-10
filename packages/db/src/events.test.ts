@@ -604,6 +604,8 @@ describe("finalizeComputerControlRelease", () => {
         controlBotId: "bot-1",
         controlLeaseId: "lease-1",
         controlRunId: "run-1",
+        state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
+        stopRequestedAt: null,
       },
       data: {
         controlHolder: "none",
@@ -1220,7 +1222,13 @@ describe("pauseRunForTakeover", () => {
       expect.objectContaining({ data: expect.objectContaining({ status: "waiting_takeover" }) }),
     );
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
+      where: {
+        id: "computer-1",
+        spaceId: "workspace-1",
+        state: "running",
+        restorePending: false,
+        stopRequestedAt: null,
+      },
       data: {
         state: "running",
         controlHolder: "none",
@@ -1291,7 +1299,13 @@ describe("pauseRunForTakeover", () => {
     ).resolves.toBe(true);
 
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
+      where: {
+        id: "computer-1",
+        spaceId: "workspace-1",
+        state: "running",
+        restorePending: false,
+        stopRequestedAt: null,
+      },
       data: { state: "running", controlRunId: "run-1" },
     });
     expect(tx.event.create).toHaveBeenCalledWith(
@@ -1349,7 +1363,13 @@ describe("pauseRunForTakeover", () => {
     ).resolves.toBe(true);
 
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
+      where: {
+        id: "computer-1",
+        spaceId: "workspace-1",
+        state: "running",
+        restorePending: false,
+        stopRequestedAt: null,
+      },
       data: { state: "running" },
     });
     expect(tx.event.create).toHaveBeenCalledWith(

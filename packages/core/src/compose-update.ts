@@ -470,7 +470,7 @@ export function composeUpArgv(
 /** Operations on the canonical administrator service, independent of long-lived runtime services. */
 export function composeMigrationArgv(
   target: ComposeTarget,
-  operation: "status" | "stop" | "stop-writers" | "verify" | "configuration",
+  operation: "status" | "stop" | "stop-writers" | "verify" | "verify-rollback" | "configuration",
 ): ComposeInvocation {
   const args =
     operation === "configuration"
@@ -495,6 +495,7 @@ export function composeMigrationArgv(
                 "run",
                 "db:row-security",
                 "verify",
+                ...(operation === "verify-rollback" ? ["--computer-rollback"] : []),
               ];
   return { command: "docker", args: [...composeBase(target), ...args] };
 }

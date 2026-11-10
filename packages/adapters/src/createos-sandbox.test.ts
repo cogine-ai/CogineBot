@@ -91,6 +91,7 @@ function createosFixture(
     mkdtempSync(path.join(tmpdir(), "createos-screens-")),
     "screens.json",
   );
+  let powerState: "running" | "paused" | "destroyed" = "running";
   let nextScreen = 1;
   let screenDeleteFailures = options.failScreenDeletes ?? 0;
   const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -103,8 +104,13 @@ function createosFixture(
       return jsonResponse({ id: "sbx-1", status: statuses[0] ?? "running" });
     }
     if (method === "GET" && /^\/v1\/sandboxes\/[^/]+$/.test(url.pathname)) {
-      return jsonResponse({ id: "sbx-1", status: statuses.shift() ?? "running" });
+      return jsonResponse({ id: "sbx-1", status: statuses.shift() ?? powerState });
     }
+    if (route === "POST /v1/sandboxes/sbx-1/pause") {
+      statuses.length = 0;
+      powerState = "paused";
+    }
+    if (route === "DELETE /v1/sandboxes/sbx-1") powerState = "destroyed";
     if (method === "POST" && url.pathname.endsWith("/exec")) {
       const body = JSON.parse(String(init?.body)) as { args: string[] };
       const command = body.args[3] ?? "";
@@ -576,7 +582,7 @@ describe("CreateOSSandboxProvider", () => {
       })) as typeof fetch;
     const target = new CreateOSSandboxProvider({ apiKey: "test-key", fetch: gone });
 
-    await expect(target.stop(computer, context)).resolves.toBeUndefined();
+    await expect(target.stop(computer, context)).resolves.toBe("gone");
     await expect(target.destroy(computer, context)).resolves.toBeUndefined();
   });
 

@@ -1118,6 +1118,14 @@ its existing operator-controlled maintenance command before using its new flow.
 password. It preserves every selected administrator/runtime password and refuses
 unparseable environment files rather than modifying another multiline secret.
 
+Computer recovery requires the API, worker, and sandbox supervisor from the same
+release. Stop the old API and workers before running migrations, then start
+the updated supervisor before resuming computer work. For a separately hosted
+supervisor, upgrade that service as well. Before starting the new API or worker,
+recreate the independently pinned updater at the same release and verify its
+running image ID with `docker compose images updater`. Keep a version that
+understands unconfirmed stops available for rollback if any computers still need recovery.
+
 A deployment on a published release tag uses:
 
 ```bash
@@ -1146,7 +1154,7 @@ db:migrate`; a missing script or failed migration must exit nonzero. API and wor
 never run administrator DDL. Keep them stopped after a failed migration or readiness
 check. The maintenance check authenticates roles and keys but does not reverse
 schema changes. A manual rollback must use the reviewed current maintenance image
-to verify the database first, then restore only cached runtime images with
+to run `db:row-security verify --computer-rollback` first, then restore only cached runtime images with
 `--no-deps --no-build --pull never`.
 
 The updater sidecar has its own image and tag so an update never recreates the process performing

@@ -1938,7 +1938,7 @@ describe("archiveBot", () => {
     );
   });
 
-  it.each([false, true])("keeps a failed stop retryable (%s)", async (pending) => {
+  it.each([false, true])("quarantines an unconfirmed stop (%s)", async (pending) => {
     const archivedAt = new Date("2026-08-16T12:00:00.000Z");
     const updatedAt = new Date("2026-08-16T12:00:00.000Z");
     const updateComputer = vi.fn().mockResolvedValue({});
@@ -1970,6 +1970,8 @@ describe("archiveBot", () => {
       providerRef: "provider-1",
       state: pending ? "error" : "running",
       restorePending: pending,
+      updatedAt,
+      screenGeneration: 0,
     };
     const stop = vi.fn().mockRejectedValue(new Error("stop failed"));
     const prisma = {
@@ -2002,7 +2004,10 @@ describe("archiveBot", () => {
         { id: "bot-1", spaceId: "workspace-1", name: "Researcher", archivedAt },
         { ...context, botId: "parent", runId: "parent-run", screenLeaseId: "parent-run:3" },
       ),
-    ).rejects.toThrow("stop failed");
+    ).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+      cause: expect.objectContaining({ message: "stop failed" }),
+    });
 
     expect(stop).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ providerRef: "provider-1" }),
@@ -2020,6 +2025,15 @@ describe("archiveBot", () => {
       );
     }
     expect(updateComputer).not.toHaveBeenCalled();
+    expect(prisma.computer.updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          providerRef: "provider-1",
+          stopRequestedAt: { not: null },
+        }),
+        data: expect.objectContaining({ state: "quarantined", stopRequestedAt: null }),
+      }),
+    );
   });
 
   it("stops a provider that finishes booting while the bot is archived", async () => {
@@ -2031,6 +2045,8 @@ describe("archiveBot", () => {
       kind: "cloud",
       providerRef: null,
       state: "booting",
+      updatedAt: new Date(),
+      screenGeneration: 0,
     };
     const running = { ...booting, providerRef: "provider-1", state: "running" };
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
@@ -2084,8 +2100,25 @@ describe("archiveBot", () => {
 
     expect(stop).toHaveBeenCalledOnce();
     expect(updateMany).toHaveBeenLastCalledWith({
-      where: { id: "computer-1", state: "running", providerRef: "provider-1" },
-      data: { state: "stopped" },
+      where: {
+        id: "computer-1",
+        state: "suspending",
+        providerRef: "provider-1",
+        kind: "cloud",
+        screenGeneration: 1,
+        maintenanceId: null,
+        updatedAt: expect.any(Date),
+        stopRequestedAt: { not: null },
+      },
+      data: {
+        state: "stopped",
+        stopRequestedAt: null,
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+        controlBotId: null,
+        controlRunId: null,
+      },
     });
   });
 

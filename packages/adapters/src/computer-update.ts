@@ -12,8 +12,11 @@ import {
 import { scheduleComputerSleep } from "./computer-idle.js";
 import {
   ComputerBusyError,
+  ComputerRecoveryRequiredError,
   computerSupportsUpdate,
+  quarantineAbandonedComputerOperation,
   replaceComputer,
+  requireComputerRecoveryProvider,
 } from "./computer-lifecycle.js";
 
 type Deps = Parameters<typeof replaceComputer>[0];
@@ -58,13 +61,27 @@ export async function queueComputerUpdate(
   botId: string,
   action: "update" | "recover" = "update",
 ) {
+  if (action === "recover") {
+    const computer = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
+    requireComputerRecoveryProvider(deps.sandbox, computer);
+    await quarantineAbandonedComputerOperation(deps.prisma, computer);
+  }
   const prepared = await deps.prisma.$transaction(async (tx) => {
     // Mode switches lock this same row before marking a bot as switching.
     // The following statement then observes their committed reservation.
     await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerId} FOR UPDATE`;
     const computer = await tx.computer.findUniqueOrThrow({ where: { id: computerId } });
+    requireComputerRecoveryProvider(deps.sandbox, computer);
     if (action === "update" && !computerSupportsUpdate(computer.kind))
       throw new Error("Computer update is not available on this device");
+    if (
+      action === "update" &&
+      (computer.stopRequestedAt ||
+        computer.state === "quarantined" ||
+        computer.state === "needs_recovery")
+    ) {
+      throw new ComputerRecoveryRequiredError();
+    }
     // A run bound to this takeover must keep it. Maintenance does not resume that run.
     if (
       computer.controlHolder === "user" &&
@@ -126,7 +143,7 @@ export async function queueComputerUpdate(
       where: {
         id: computerId,
         maintenanceId: null,
-        state: { notIn: ["booting", "suspending"] },
+        state: { notIn: ["booting", "suspending", "restoring"] },
         controlHolder: { not: "user" },
         controlLeaseId: revokeLeaseId,
         executionLeases: { none: { expiresAt: { gt: new Date() } } },

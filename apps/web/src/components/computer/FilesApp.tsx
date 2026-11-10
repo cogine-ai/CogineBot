@@ -32,19 +32,20 @@ const IMAGE_TYPES: Record<string, string> = {
   webp: "image/webp",
 };
 
-/** Browse the bot's workspace. Download needs a running computer; upload needs control. */
+/** Browse the bot's workspace. Download works from the saved workspace while paused. Upload needs control. */
 export function FilesApp({
   botId,
-  running,
   canUpload,
+  savedOnly,
   visible,
 }: {
   botId: string;
-  running: boolean;
   canUpload: boolean;
+  savedOnly?: boolean;
   /** Refresh only while the window is on screen. */
   visible: boolean;
 }) {
+  const source = savedOnly ? ("saved" as const) : undefined;
   const { t } = useLingui();
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<Entry[] | null>(null);
@@ -59,7 +60,7 @@ export function FilesApp({
       const generation = ++loadGeneration.current;
       setError(null);
       try {
-        const listed = await rpc.computer.files({ botId, path: target });
+        const listed = await rpc.computer.files({ botId, path: target, source });
         if (generation !== loadGeneration.current) return;
         setEntries(sortEntries(listed));
         setPath(target);
@@ -86,7 +87,7 @@ export function FilesApp({
     const refresh = async () => {
       if (document.visibilityState !== "visible") return;
       const generation = loadGeneration.current;
-      const listed = await rpc.computer.files({ botId, path }).catch(() => null);
+      const listed = await rpc.computer.files({ botId, path, source }).catch(() => null);
       if (cancelled || !listed || generation !== loadGeneration.current) return;
       const next = sortEntries(listed);
       setEntries((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next));
@@ -100,15 +101,15 @@ export function FilesApp({
       window.clearInterval(timer);
       unsubscribe();
     };
-  }, [botId, path, preview, visible]);
+  }, [botId, path, preview, source, visible]);
 
   async function open(entry: Entry) {
     if (entry.kind === "dir") return load(entry.path);
     setError(null);
     try {
       const mimeType = IMAGE_TYPES[extension(entry.path)];
-      if (mimeType && running) {
-        const file = await rpc.computer.downloadFile({ botId, path: entry.path });
+      if (mimeType) {
+        const file = await rpc.computer.downloadFile({ botId, path: entry.path, source });
         setPreview({
           path: entry.path,
           kind: "image",
@@ -116,7 +117,7 @@ export function FilesApp({
           mimeType,
         });
       } else {
-        const file = await rpc.computer.readFile({ botId, path: entry.path });
+        const file = await rpc.computer.readFile({ botId, path: entry.path, source });
         setPreview({ path: entry.path, kind: "text", content: file.content });
       }
     } catch (cause) {
@@ -127,7 +128,7 @@ export function FilesApp({
   async function download(target: string) {
     setError(null);
     try {
-      const file = await rpc.computer.downloadFile({ botId, path: target });
+      const file = await rpc.computer.downloadFile({ botId, path: target, source });
       downloadArtifactBytes(
         basename(target),
         IMAGE_TYPES[extension(target)] ?? "application/octet-stream",
@@ -189,7 +190,7 @@ export function FilesApp({
         <span className="min-w-0 flex-1 truncate text-muted-foreground" dir="auto">
           ~/{location}
         </span>
-        {preview && running ? (
+        {preview ? (
           <Button
             variant="ghost"
             size="icon-xs"
@@ -254,7 +255,7 @@ export function FilesApp({
                     </span>
                   ) : null}
                 </button>
-                {entry.kind === "file" && running ? (
+                {entry.kind === "file" ? (
                   <Button
                     variant="ghost"
                     size="icon-xs"

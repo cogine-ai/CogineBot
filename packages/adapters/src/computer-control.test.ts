@@ -161,7 +161,12 @@ describe("computer control leases", () => {
 
     expect(harness.prisma.computer.updateMany).toHaveBeenCalledTimes(1);
     expect(harness.prisma.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-id", controlLeaseId: "lease-1" },
+      where: {
+        id: "computer-id",
+        controlLeaseId: "lease-1",
+        state: "running",
+        stopRequestedAt: null,
+      },
       data: { controlHolder: "none" },
     });
     expect(harness.events.finalizeComputerControlRelease).not.toHaveBeenCalled();
@@ -180,7 +185,8 @@ describe("computer control leases", () => {
       where: {
         id: "computer-id",
         providerRef: "computer",
-        state: { notIn: ["booting", "suspending"] },
+        state: { notIn: ["booting", "suspending", "restoring", "quarantined", "needs_recovery"] },
+        stopRequestedAt: null,
         controlLeaseId: "lease-1",
       },
       data: { state: "stopped", providerRef: null },
@@ -263,7 +269,8 @@ describe("computer control leases", () => {
       where: {
         id: "computer-1",
         providerRef: "provider-1",
-        state: { notIn: ["booting", "suspending"] },
+        state: { notIn: ["booting", "suspending", "restoring", "quarantined", "needs_recovery"] },
+        stopRequestedAt: null,
         controlLeaseId: "lease-1",
       },
       data: { state: "stopped", providerRef: null },
@@ -365,6 +372,8 @@ describe("computer control leases", () => {
       where: {
         id: "computer-id",
         controlLeaseId: "lease-1",
+        state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
+        stopRequestedAt: null,
       },
       data: {
         controlHolder: "none",

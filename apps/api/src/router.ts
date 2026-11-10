@@ -51,8 +51,9 @@ import {
   CodexCatalogCache,
   ComputerBusyError,
   ComputerCheckpointChangedError,
+  ComputerRecoveryRequiredError,
+  canTrustComputerGoneError,
   canUsePlatformModel,
-  checkpointAndRecordComputerWorkspace,
   clearInactiveUserComputerControl,
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
@@ -81,9 +82,11 @@ import {
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
   isSandboxGoneError,
+  isSandboxUnsafeStop,
   isScratchpadStatus,
   kickModelCredentialRefresh,
   LOCAL_PROVIDER_ID,
+  LocalAgentHomeStore,
   listAvailablePiCatalog,
   listBotSecretMetadata,
   listNativeRoutineTriggers,
@@ -93,12 +96,14 @@ import {
   loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
+  matchesComputerProvisionRoute,
   mcpServerHealthDto,
   modelConnectionErrorMessage,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   nativeSourceJob,
   needsMcpOAuthClient,
+  needsProviderIdentityProof,
   normalizeSecretDestination,
   PluginMarketplaceCursorError,
   PushSessionEndedError,
@@ -112,10 +117,13 @@ import {
   probeCatalogProviderModels,
   probeOpenAiCompatibleModels,
   provisionComputer,
+  publishComputerPowerStatus,
   queueComputerUpdate,
   releaseComputerExecutionLease,
   replaceComputer,
   replaceNativeRoutineTriggersTx,
+  requestClaimedComputerStop,
+  requireComputerRecoveryProvider,
   requireRoutineTrigger,
   resolveAutoReviewChecker,
   resolveBotUploadPath,
@@ -124,6 +132,7 @@ import {
   revokeScreenControl,
   routineRunModelPin,
   sanitizeComposioError,
+  saveComputerBeforeStop,
   savePushToken,
   scheduleComputerControlExpiry,
   scheduleComputerSleep,
@@ -131,6 +140,7 @@ import {
   scriptedCatalogEntry,
   serializeModelSecret,
   stopCancelledGroupComputer,
+  stoppedComputerControl,
   storeBotSecret,
   takeoverLeaseMs,
   toComputerRef,
@@ -549,6 +559,7 @@ function computerSuspensionClaim(computer: {
   providerRef: string | null;
   screenGeneration: number;
   restorePending: boolean;
+  stopRequestedAt: Date | null;
   updatedAt: Date;
 }) {
   const now = new Date();
@@ -559,6 +570,7 @@ function computerSuspensionClaim(computer: {
     providerRef: computer.providerRef,
     screenGeneration: computer.screenGeneration,
     restorePending: computer.restorePending,
+    stopRequestedAt: computer.stopRequestedAt,
     updatedAt: computer.updatedAt,
     maintenanceId: null,
   };
@@ -576,6 +588,10 @@ function computerSuspensionClaim(computer: {
 }
 
 function mapComputerCheckpointError(error: unknown): unknown {
+  if (error instanceof ComputerRecoveryRequiredError)
+    return new ORPCError("CONFLICT", { message: error.message });
+  if (isSandboxUnsafeStop(error))
+    return new ORPCError("CONFLICT", { message: "The computer's stop could not be confirmed." });
   if (error instanceof WorkspaceTooLargeError)
     return new ORPCError("BAD_REQUEST", { message: error.message });
   if (error instanceof ComputerCheckpointChangedError)
@@ -2356,7 +2372,12 @@ export function createRouter(deps: RouterDeps) {
             const ctx = computerContext(context.actor, bot.id, "computer.switch");
             const ref = toComputerRef(bot.computer);
             const { now, previous, suspension } = computerSuspensionClaim(bot.computer);
-            if (previous.state === "booting" || previous.state === "suspending") {
+            if (
+              previous.stopRequestedAt ||
+              ["booting", "suspending", "restoring", "quarantined", "needs_recovery"].includes(
+                previous.state,
+              )
+            ) {
               throw new ComputerCheckpointChangedError();
             }
             const needsStop =
@@ -2364,6 +2385,8 @@ export function createRouter(deps: RouterDeps) {
               (previous.state === "error" && previous.restorePending);
             let claimedStop = false;
             let stopStarted = false;
+            let gone = false;
+            let damaged = false;
             try {
               if (needsStop) {
                 const claimed = await deps.prisma.computer.updateMany({
@@ -2375,23 +2398,36 @@ export function createRouter(deps: RouterDeps) {
                 });
                 if (claimed.count !== 1) throw new ComputerCheckpointChangedError();
                 claimedStop = true;
-                if (!previous.restorePending) {
-                  await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
-                    claim: suspension,
-                  });
+                const evidence = await saveComputerBeforeStop(
+                  deps,
+                  bot.computer,
+                  ref,
+                  ctx,
+                  suspension,
+                );
+                gone = evidence === "gone";
+                damaged = evidence === "damaged";
+                if (evidence !== "gone" && evidence !== "stopped") {
+                  const result = await requestClaimedComputerStop(
+                    deps,
+                    { ...suspension, executionLeases: { none: { expiresAt: { gt: new Date() } } } },
+                    ref,
+                    ctx,
+                  );
+                  gone = result === "gone";
+                  stopStarted = true;
                 }
-                stopStarted = true;
-                await deps.sandbox.stop(ref, ctx);
               }
               const stopped = await deps.prisma.computer.updateMany({
-                where: claimedStop ? suspension : previous,
+                where: claimedStop
+                  ? { ...suspension, stopRequestedAt: stopStarted ? { not: null } : null }
+                  : previous,
                 data: {
-                  state: "stopped",
-                  controlHolder: "none",
-                  controlLeaseId: null,
-                  controlLeaseExpiresAt: null,
-                  controlBotId: null,
-                  controlRunId: null,
+                  state: damaged && !gone ? "needs_recovery" : "stopped",
+                  stopRequestedAt: null,
+                  ...(gone ? { providerRef: null } : {}),
+                  ...(damaged || gone ? { restorePending: true } : {}),
+                  ...stoppedComputerControl,
                   executionRunId: null,
                   executionBotId: null,
                   executionLeaseExpiresAt: null,
@@ -2403,10 +2439,13 @@ export function createRouter(deps: RouterDeps) {
               });
             } catch (error) {
               if (claimedStop) {
+                const uncertain = stopStarted || isSandboxUnsafeStop(error);
                 await deps.prisma.computer
                   .updateMany({
-                    where: suspension,
-                    data: { state: stopStarted ? "error" : previous.state },
+                    where: { ...suspension, stopRequestedAt: uncertain ? { not: null } : null },
+                    data: uncertain
+                      ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
+                      : { state: previous.state },
                   })
                   .catch(() => undefined);
               }
@@ -3199,8 +3238,11 @@ export function createRouter(deps: RouterDeps) {
         if (
           bot.computer.state === "running" &&
           !bot.computer.restorePending &&
+          !bot.computer.stopRequestedAt &&
           bot.computer.kind !== "desktop" &&
-          bot.computer.providerRef
+          bot.computer.providerRef &&
+          !needsProviderIdentityProof(deps.sandbox, toComputerRef(bot.computer)) &&
+          (await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(bot.computer)))
         ) {
           try {
             await ensureComputerWorkspaceLayout(
@@ -3241,7 +3283,7 @@ export function createRouter(deps: RouterDeps) {
           if (error instanceof ComputerBusyError) {
             throw new ORPCError("CONFLICT", { message: "Computer is busy" });
           }
-          throw error;
+          throw mapComputerCheckpointError(error);
         } finally {
           await releaseComputerExecutionLease(deps.prisma, lease);
         }
@@ -3250,6 +3292,13 @@ export function createRouter(deps: RouterDeps) {
       stop: authed.computer.stop.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
+        if (
+          bot.computer.stopRequestedAt ||
+          bot.computer.state === "quarantined" ||
+          bot.computer.state === "needs_recovery"
+        ) {
+          throw mapComputerCheckpointError(new ComputerRecoveryRequiredError());
+        }
         const controlLeaseId = bot.computer.controlLeaseId;
         const {
           now,
@@ -3259,7 +3308,10 @@ export function createRouter(deps: RouterDeps) {
         const claimed = await deps.prisma.computer.updateMany({
           where: {
             ...previous,
-            state: { equals: previous.state, notIn: ["booting", "suspending"] },
+            state: {
+              equals: previous.state,
+              notIn: ["booting", "suspending", "restoring", "quarantined"],
+            },
             executionLeases: {
               none: { botId: { not: bot.id }, expiresAt: { gt: now } },
             },
@@ -3282,64 +3334,83 @@ export function createRouter(deps: RouterDeps) {
           }
           throw mapComputerCheckpointError(new ComputerCheckpointChangedError());
         }
-        const otherRun = await deps.prisma.run.findFirst({
-          where: {
-            botId: { not: bot.id },
-            status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
-            bot: { computerId: bot.computer.id },
-          },
-          select: { id: true },
-        });
-        if (otherRun) {
-          await deps.prisma.computer.updateMany({
-            where: suspensionClaim,
-            data: { state: bot.computer.state },
-          });
-          throw new ORPCError("CONFLICT", {
-            message: "Other Team bots are still using this computer",
-          });
-        }
-        await deps.prisma.computerExecutionLease.deleteMany({
-          where: { computerId: bot.computer.id, botId: bot.id },
-        });
-        let stopStarted = false;
+        let stopRequested = false;
+        let state: "stopped" | "needs_recovery" = "stopped";
         try {
+          const otherRun = await deps.prisma.run.findFirst({
+            where: {
+              botId: { not: bot.id },
+              status: { in: [...COMPUTER_ACTIVE_RUN_STATUSES] },
+              bot: { computerId: bot.computer.id },
+            },
+            select: { id: true },
+          });
+          if (otherRun) {
+            throw new ORPCError("CONFLICT", {
+              message: "Other Team bots are still using this computer",
+            });
+          }
+          await deps.prisma.computerExecutionLease.deleteMany({
+            where: { computerId: bot.computer.id, botId: bot.id },
+          });
+          let stopped: "stopped" | "gone" = "stopped";
           if (bot.computer.providerRef) {
             const ctx = computerContext(context.actor, bot.id, "stop");
             const ref = toComputerRef(bot.computer);
-            try {
-              if (!bot.computer.restorePending) {
-                await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
-                  claim: suspensionClaim,
-                });
-              }
-              stopStarted = true;
-              await deps.sandbox.stop(ref, ctx);
-            } catch (error) {
-              // The sandbox is already gone: nothing left to checkpoint or stop.
-              if (!isSandboxGoneError(error)) throw error;
+            const evidence = await saveComputerBeforeStop(
+              deps,
+              bot.computer,
+              ref,
+              ctx,
+              suspensionClaim,
+            );
+            if (evidence === "stopped" || evidence === "gone") stopped = evidence;
+            else {
+              stopped = await requestClaimedComputerStop(
+                deps,
+                {
+                  ...suspensionClaim,
+                  executionLeases: { none: { expiresAt: { gt: new Date() } } },
+                },
+                ref,
+                ctx,
+              );
+              stopRequested = true;
             }
+            if (evidence === "damaged" && stopped !== "gone") state = "needs_recovery";
           }
           await deps.prisma.computer.update({
-            where: suspensionClaim,
+            where: { ...suspensionClaim, stopRequestedAt: stopRequested ? { not: null } : null },
             data: {
-              state: "stopped",
-              controlHolder: "none",
-              controlLeaseId: null,
-              controlLeaseExpiresAt: null,
-              controlBotId: null,
-              controlRunId: null,
+              state,
+              stopRequestedAt: null,
+              ...(state === "needs_recovery" || stopped === "gone" ? { restorePending: true } : {}),
+              ...(stopped === "gone" ? { providerRef: null } : {}),
+              ...stoppedComputerControl,
             },
           });
         } catch (error) {
-          await deps.prisma.computer
+          const uncertain = stopRequested || isSandboxUnsafeStop(error);
+          const settled = await deps.prisma.computer
             .updateMany({
-              where: suspensionClaim,
-              data: { state: stopStarted ? "error" : bot.computer.state },
+              where: { ...suspensionClaim, stopRequestedAt: uncertain ? { not: null } : null },
+              data: uncertain
+                ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
+                : { state: bot.computer.state },
             })
             .catch(() => undefined);
+          if (uncertain && settled?.count === 1) {
+            await publishComputerPowerStatus(deps, bot.computer, "quarantined").catch(
+              (eventError) => {
+                getLogger().error("publish computer stop status", eventError);
+              },
+            );
+          }
           throw mapComputerCheckpointError(error);
         }
+        await publishComputerPowerStatus(deps, bot.computer, state).catch((error) => {
+          getLogger().error("publish computer stop status", error);
+        });
         await deps.jobs.cancel(
           computerControlExpireJobKey(bot.computer.id, controlLeaseId ?? undefined),
         );
@@ -3353,7 +3424,7 @@ export function createRouter(deps: RouterDeps) {
         } catch (error) {
           if (error instanceof ComputerBusyError)
             throw new ORPCError("CONFLICT", { message: "Computer is busy" });
-          throw error;
+          throw mapComputerCheckpointError(error);
         }
       }),
       reset: newWork.computer.reset.handler(async ({ context, input }) =>
@@ -3371,7 +3442,7 @@ export function createRouter(deps: RouterDeps) {
         } catch (error) {
           if (error instanceof ComputerBusyError)
             throw new ORPCError("CONFLICT", { message: "Computer is busy" });
-          throw error;
+          throw mapComputerCheckpointError(error);
         }
       }),
       updates: authed.computer.updates.handler(async ({ context }) => {
@@ -3411,6 +3482,7 @@ export function createRouter(deps: RouterDeps) {
                 bots: { some: { userId: context.actor.userId, archivedAt: null } },
               },
             },
+            include: { computer: { select: { state: true, stopRequestedAt: true } } },
           });
           if (!update) throw new ORPCError("CONFLICT");
           const failed = await tx.computerUpdate.updateMany({
@@ -3418,9 +3490,16 @@ export function createRouter(deps: RouterDeps) {
             data: { status: "failed" },
           });
           if (failed.count !== 1) throw new ORPCError("CONFLICT");
+          const { state, stopRequestedAt } = update.computer;
+          const quarantine = stopRequestedAt || state === "restoring" || state === "quarantined";
           const released = await tx.computer.updateMany({
-            where: { id: update.computerId, maintenanceId: update.id },
-            data: { maintenanceId: null, state: "error" },
+            where: { id: update.computerId, maintenanceId: update.id, state, stopRequestedAt },
+            data: {
+              maintenanceId: null,
+              state: quarantine ? "quarantined" : state === "needs_recovery" ? state : "error",
+              ...(state === "restoring" ? { restorePending: true } : {}),
+              ...(quarantine ? { stopRequestedAt: null, ...stoppedComputerControl } : {}),
+            },
           });
           if (released.count !== 1) throw new ORPCError("CONFLICT");
         });
@@ -3702,7 +3781,13 @@ export function createRouter(deps: RouterDeps) {
         const ctx = computerContext(context.actor, bot.id, "files");
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let entries: Awaited<ReturnType<SandboxProvider["listFiles"]>>;
-        if (computer.state === "running" && !computer.restorePending && computer.providerRef) {
+        if (
+          input.source !== "saved" &&
+          computer.state === "running" &&
+          !computer.restorePending &&
+          !computer.stopRequestedAt &&
+          computer.providerRef
+        ) {
           await deps.prisma.computer.updateMany({
             where: { id: computer.id, state: "running" },
             data: { updatedAt: new Date() },
@@ -3727,7 +3812,9 @@ export function createRouter(deps: RouterDeps) {
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let content: string;
         if (
+          input.source !== "saved" &&
           bot.computer.state === "running" &&
+          !bot.computer.stopRequestedAt &&
           !bot.computer.restorePending &&
           bot.computer.providerRef
         ) {
@@ -3758,29 +3845,40 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, input.botId);
         const computer = bot.computer;
         if (!computer) throw new IsolationError();
-        // The stopped-computer home store is text-only; binary transfer needs the live machine.
-        if (computer.state !== "running" || computer.restorePending || !computer.providerRef) {
-          throw new ORPCError("CONFLICT", { message: "Start the computer first." });
-        }
-        await keepComputerAwake(deps, computer.id);
         const storedPath = resolveBotWorkspacePath(
           parseComputerMode(computer.scope),
           bot.id,
           input.path,
         );
-        const bytes = await deps.sandbox
-          .readFile(
-            toComputerRef(computer),
-            storedPath,
-            computerContext(context.actor, bot.id, "download"),
-            { maxBytes: ATTACHMENT_MAX_BYTES },
-          )
-          .catch((error: unknown) => {
-            if (error instanceof Error && /exceeds|too large/i.test(error.message)) {
-              throw new ORPCError("BAD_REQUEST", { message: "File is too large to download." });
-            }
-            throw error;
-          });
+        const ctx = computerContext(context.actor, bot.id, "download");
+        const live =
+          input.source !== "saved" &&
+          computer.state === "running" &&
+          !computer.restorePending &&
+          !computer.stopRequestedAt &&
+          computer.providerRef;
+        let bytes: Uint8Array;
+        try {
+          if (live) {
+            await keepComputerAwake(deps, computer.id);
+            bytes = await deps.sandbox.readFile(toComputerRef(computer), storedPath, ctx, {
+              maxBytes: ATTACHMENT_MAX_BYTES,
+            });
+          } else if (deps.home instanceof LocalAgentHomeStore) {
+            bytes = await deps.home.readFileBytes(
+              computer.homeKey,
+              storedPath,
+              ATTACHMENT_MAX_BYTES,
+            );
+          } else {
+            throw new ORPCError("CONFLICT", { message: "Start the computer first." });
+          }
+        } catch (error) {
+          if (error instanceof Error && /exceeds|too large/i.test(error.message)) {
+            throw new ORPCError("BAD_REQUEST", { message: "File is too large to download." });
+          }
+          throw error;
+        }
         return { path: input.path, contentBase64: Buffer.from(bytes).toString("base64") };
       }),
       uploadFile: newWork.computer.uploadFile.handler(async ({ context, input }) => {
@@ -3903,6 +4001,7 @@ export function createRouter(deps: RouterDeps) {
         }
         if (
           !bot.computer?.providerRef ||
+          bot.computer.stopRequestedAt ||
           (bot.computer.state !== "running" && bot.computer.state !== "booting")
         ) {
           return { url: null };
@@ -3949,6 +4048,7 @@ export function createRouter(deps: RouterDeps) {
           current.computer.providerRef === computer.providerRef &&
           current.computer.kind === computer.kind &&
           current.computer.homeKey === computer.homeKey &&
+          !current.computer.stopRequestedAt &&
           ["running", "booting"].includes(current.computer.state);
         const sameHumanControl =
           sameComputer &&
@@ -8189,7 +8289,7 @@ async function computerStatus(
     botId,
     botName: bot.name,
   });
-  return toComputerStatus(botId, bot.computer, busyBotName);
+  return toComputerStatus(botId, bot.computer, busyBotName, deps.sandbox);
 }
 
 /** Hand the user's screen control for this bot back, continuing any run waiting on it. */
@@ -8262,6 +8362,7 @@ async function runComputerReplace(
   const manualRunId = `${mode}:${randomUUID()}`;
   let lease: ComputerExecutionLease | null;
   try {
+    requireComputerRecoveryProvider(deps.sandbox, bot.computer);
     lease = await acquireComputerExecutionLease(deps.prisma, {
       computerId: bot.computer.id,
       runId: manualRunId,
@@ -8271,7 +8372,7 @@ async function runComputerReplace(
     if (error instanceof ComputerBusyError) {
       throw new ORPCError("CONFLICT", { message: "Computer is busy" });
     }
-    throw error;
+    throw mapComputerCheckpointError(error);
   }
   try {
     await replaceComputer(
@@ -8291,7 +8392,7 @@ async function runComputerReplace(
     if (error instanceof ComputerBusyError) {
       throw new ORPCError("CONFLICT", { message: "Computer is busy" });
     }
-    throw error;
+    throw mapComputerCheckpointError(error);
   } finally {
     await releaseComputerExecutionLease(deps.prisma, lease);
   }
@@ -8304,11 +8405,22 @@ async function expireStaleComputerControl(
     | (NonNullable<Parameters<typeof hasActiveComputerControl>[0]> & {
         id: string;
         controlHolder?: string;
+        state?: string;
+        stopRequestedAt?: Date | null;
       })
     | null
     | undefined,
 ): Promise<boolean> {
-  if (!computer || hasActiveComputerControl(computer)) return false;
+  if (
+    !computer ||
+    computer.stopRequestedAt ||
+    computer.state === "suspending" ||
+    computer.state === "restoring" ||
+    computer.state === "quarantined" ||
+    computer.state === "needs_recovery" ||
+    hasActiveComputerControl(computer)
+  )
+    return false;
   if (computer.controlHolder !== "user") {
     // Holder "none" with a surviving lease id is a revoke that failed mid-expiry;
     // retry it so the row does not sit busy forever.
@@ -8805,10 +8917,18 @@ async function clearGoneSandbox(
     state: string;
     screenGeneration: number;
     providerRef: string | null;
+    providerAuthority?: string | null;
   },
   error: unknown,
 ): Promise<null> {
-  if (computer.kind !== "e2b" || !isSandboxGoneError(error)) throw error;
+  if (
+    !computer.providerRef ||
+    computer.kind !== "e2b" ||
+    !canTrustComputerGoneError(deps.sandbox, toComputerRef(computer)) ||
+    !isSandboxGoneError(error) ||
+    !(await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(computer)))
+  )
+    throw error;
   getLogger().error(`computer ${computer.id} sandbox ${computer.providerRef} is gone`, error);
   await deps.prisma.computer.updateMany({
     where: {
@@ -8821,6 +8941,7 @@ async function clearGoneSandbox(
       screenGeneration: computer.screenGeneration,
       providerRef: computer.providerRef,
       maintenanceId: null,
+      stopRequestedAt: null,
     },
     data: { state: "stopped", providerRef: null },
   });

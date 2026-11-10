@@ -5,6 +5,7 @@ import {
   createDb,
   databaseUrls,
   describeRowSecurityPolicies,
+  runAsSystem,
   verifyRealtimeDatabase,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
@@ -28,7 +29,11 @@ function print(status: RowSecurityPolicyStatus): void {
 async function main(): Promise<void> {
   loadRootEnv();
   const [command = "status", ...extra] = process.argv.slice(2);
-  if ((command !== "status" && command !== "verify" && command !== "apply") || extra.length > 0)
+  const rollback = command === "verify" && extra.length === 1 && extra[0] === "--computer-rollback";
+  if (
+    (command !== "status" && command !== "verify" && command !== "apply") ||
+    (extra.length > 0 && !rollback)
+  )
     throw new Error("Use db:row-security status, db:row-security verify or db:row-security apply");
   const urls = databaseUrls(process.env);
   if (command === "apply") {
@@ -44,6 +49,27 @@ async function main(): Promise<void> {
       const status = await verifyRuntimeDatabase(prisma, options);
       if (status.problems.includes("runtime-not-prepared"))
         throw new Error("Runtime role preparation failed");
+      if (rollback) {
+        const [schema] = await prisma.$queryRaw<Array<{ present: boolean }>>`
+          SELECT EXISTS (
+            SELECT FROM pg_catalog.pg_attribute WHERE attrelid = 'public.computers'::pg_catalog.regclass
+              AND attname = 'stopRequestedAt' AND NOT attisdropped
+          ) AS present`;
+        if (schema?.present) {
+          const [computer] = await runAsSystem(
+            "verify rollback-safe computer state",
+            () =>
+              prisma.$queryRaw<Array<{ pending: boolean }>>`
+              SELECT EXISTS (
+                SELECT FROM public.computers
+                WHERE state IN ('quarantined', 'needs_recovery', 'restoring') OR "stopRequestedAt" IS NOT NULL
+              ) AS pending`,
+          );
+          if (computer?.pending) {
+            throw new Error("Resolve unconfirmed computer stops before starting an older runtime");
+          }
+        }
+      }
       const realtimeUrl = process.env.REALTIME_DATABASE_URL?.trim();
       if (realtimeUrl && realtimeUrl !== urls.url)
         await verifyRealtimeDatabase(realtimeUrl, status.connectionEnforced, true, options);
@@ -65,6 +91,10 @@ async function main(): Promise<void> {
 }
 
 const commandHints = new Map([
+  [
+    "Resolve unconfirmed computer stops before starting an older runtime",
+    "Resolve unconfirmed computer stops before starting an older runtime.",
+  ],
   [
     "Database policy commit outcome is uncertain; policies may have committed",
     "Database policy commit outcome is uncertain; policies may have committed. Run db:row-security status before retrying.",

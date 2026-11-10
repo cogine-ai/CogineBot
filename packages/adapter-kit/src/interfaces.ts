@@ -56,6 +56,7 @@ import type {
   PortableFile,
   ProcessEvent,
   SandboxCapabilities,
+  SandboxPowerState,
   ScreenRequest,
   ScreenSession,
   SecretChangeListener,
@@ -105,8 +106,10 @@ export interface SandboxProvider {
       homePath: string;
       providerRef?: string;
       providerKind?: ComputerRef["kind"];
+      /** Allocate a distinct local workspace when the previous reference cannot be reused. */
+      isolateWorkspaceGeneration?: boolean;
       /** Persist restore intent before replacing workspace bytes under an existing reference. */
-      beforeWorkspaceReplacement?: () => Promise<void>;
+      beforeWorkspaceReplacement?: (candidate?: ComputerRef) => Promise<void>;
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
@@ -117,6 +120,12 @@ export interface SandboxProvider {
   provisionKind?(): Promise<ComputerRef["kind"]>;
   /** Read-only probe: true only when this exact reference is already running. */
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
+  /** Select the configured provider that owns an existing reference for power operations. */
+  providerForPower?(computer: ComputerRef): SandboxProvider | undefined;
+  /** Opaque identity of the configured provider account and endpoint for this kind. */
+  providerAuthority?(kind: ComputerRef["kind"]): string | undefined;
+  /** Read the exact reference without starting it. Unknown is never proof of a stop. */
+  inspectPowerState?(computer: ComputerRef, context: AdapterContext): Promise<SandboxPowerState>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */
   prepare(computer: ComputerRef, context: AdapterContext): Promise<void>;
   execute(
@@ -191,8 +200,13 @@ export interface SandboxProvider {
     /** Earlier-attempt cleanup must not start the computer or revoke newer user control. */
     options?: { onlyIfRunning?: boolean },
   ): Promise<void>;
-  stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
-  destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  /** Resolve only after the provider confirms the computer is stopped or gone. */
+  stop(computer: ComputerRef, context: AdapterContext): Promise<void> | Promise<"gone" | undefined>;
+  destroy(
+    computer: ComputerRef,
+    context: AdapterContext,
+    options?: { retireWorkspace?: boolean },
+  ): Promise<void>;
 }
 
 export interface ConnectorProvider {

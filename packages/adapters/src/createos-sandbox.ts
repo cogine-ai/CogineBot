@@ -11,6 +11,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -768,23 +769,60 @@ print(json.dumps(out))
     await this.runScreenMap(computer, "commit-release", screenKey, screenId, context);
   }
 
-  async stop(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    try {
+      const current = await this.getSandbox(computer.providerRef, context);
+      if (current.id !== computer.providerRef) return "unknown";
+      if (current.status === "destroyed") return "gone";
+      if (current.status === "paused") return "stopped";
+      return current.status === "running" ? "running" : "unknown";
+    } catch (error) {
+      if (error instanceof CreateOSHttpError && error.status === 404) return "gone";
+      throw error;
+    }
+  }
+
+  async stop(computer: ComputerRef, context: AdapterContext): Promise<"gone" | undefined> {
     this.forget(computer.providerRef);
-    await this.postJson(
-      `/v1/sandboxes/${encodeURIComponent(computer.providerRef)}/pause`,
-      undefined,
-      context,
-    ).catch(ignoreMissingCreateOSResource);
+    try {
+      await this.postJson(
+        `/v1/sandboxes/${encodeURIComponent(computer.providerRef)}/pause`,
+        undefined,
+        context,
+      );
+      const current = await this.waitUntilSettled(computer.providerRef, context);
+      if (current.id === computer.providerRef) {
+        if (current.status === "destroyed") return "gone";
+        if (current.status === "paused") return;
+      }
+      throw new Error("CreateOS did not confirm the sandbox is stopped");
+    } catch (error) {
+      if (error instanceof CreateOSHttpError && error.status === 404) return "gone";
+      throw error;
+    }
   }
 
   async destroy(computer: ComputerRef, context: AdapterContext): Promise<void> {
-    this.forget(computer.providerRef);
-    await this.request(
-      "DELETE",
-      `/v1/sandboxes/${encodeURIComponent(computer.providerRef)}`,
-      undefined,
-      context,
-    ).catch(ignoreMissingCreateOSResource);
+    const id = computer.providerRef;
+    this.forget(id);
+    context = {
+      ...context,
+      signal: AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]),
+    };
+    try {
+      await this.request("DELETE", `/v1/sandboxes/${encodeURIComponent(id)}`, undefined, context);
+      while (true) {
+        context.signal.throwIfAborted();
+        const current = await this.pollSandbox(id, context);
+        if (current?.id === id && current.status === "destroyed") return;
+        await delay(1_000, undefined, { signal: context.signal });
+      }
+    } catch (error) {
+      if (!(error instanceof CreateOSHttpError && error.status === 404)) throw error;
+    }
   }
 
   private forget(id: string): void {

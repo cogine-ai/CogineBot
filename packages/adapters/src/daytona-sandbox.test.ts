@@ -49,7 +49,9 @@ describe("DaytonaSandboxProvider", () => {
       };
       const recovering = provider.provision(request, context).catch((error: unknown) => error);
       const stopping = provider[teardown](ref, context).catch((error: unknown) => error);
-      await expect(stopping).resolves.toBe(missing ? undefined : failure);
+      await expect(stopping).resolves.toBe(
+        missing ? (teardown === "stop" ? "gone" : undefined) : failure,
+      );
       reject({ statusCode: 404 });
       await expect(recovering).resolves.toMatchObject({
         message: "Daytona connection was invalidated during teardown",
@@ -721,7 +723,7 @@ describe("DaytonaSandboxProvider", () => {
           context,
         )
         .catch((error: unknown) => error);
-      let stopped: Promise<void> | undefined;
+      let stopped: Promise<void> | Promise<"gone" | undefined> | undefined;
       const schedule = (remaining: number): void =>
         queueMicrotask(() => {
           if (remaining) return schedule(remaining - 1);
@@ -1351,7 +1353,7 @@ describe("DaytonaSandboxProvider", () => {
     fixture.get.mockRejectedValueOnce({ statusCode: 404 });
 
     await expect(provider.stop(computer, context)).rejects.toThrow("temporary Daytona outage");
-    await expect(provider.stop(computer, context)).resolves.toBeUndefined();
+    await expect(provider.stop(computer, context)).resolves.toBe("gone");
   });
 
   it("accepts definitive deletion while preserving transient teardown failures", async () => {

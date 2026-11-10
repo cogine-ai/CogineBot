@@ -1,4 +1,14 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  Files: "文件",
+  "No files": "没有文件",
+  "Could not load files": "无法加载文件",
+  "Could not download file": "无法下载文件",
+  "Download {name}": "下载 {name}",
+  "Ask your deployment administrator to restore the original computer provider settings before retrying.":
+    "请联系部署管理员恢复原电脑服务商设置后重试。",
+  "Computer status unconfirmed": "电脑状态待核实",
+  "Computer needs recovery": "电脑需要恢复",
+  "Saving or stopping computer…": "正在保存或停止电脑…",
   "Model limit reached. Resuming at {time}.": "已达到模型额度上限。将于 {time} 继续。",
   "Waiting for the computer before retrying.": "正在等待电脑可用，之后会重试。",
   "Waiting to resume": "等待继续",

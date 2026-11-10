@@ -14,9 +14,11 @@ export class SandboxCommandExitError extends Error {
 /** The sandbox provider refused the request because an account rate limit or quota was hit. */
 export class SandboxRateLimitError extends Error {
   readonly code = "SANDBOX_RATE_LIMITED";
-  constructor(options?: { cause?: unknown }) {
+  readonly retryAfterMs?: number;
+  constructor(options?: { cause?: unknown; retryAfterMs?: number }) {
     super(COMPUTER_RATE_LIMITED_ERROR_MESSAGE, options);
     this.name = "SandboxRateLimitError";
+    this.retryAfterMs = options?.retryAfterMs;
   }
 }
 
@@ -37,6 +39,22 @@ export class SandboxUnavailableError extends Error {
   constructor(options?: { cause?: unknown }) {
     super("The computer did not start. Try again.", options);
     this.name = "SandboxUnavailableError";
+  }
+}
+
+/** The provider confirmed that the computer can no longer start programs. */
+export class SandboxDamagedError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super("The computer needs recovery.", options);
+    this.name = "SandboxDamagedError";
+  }
+}
+
+/** A stop or teardown request ended without confirming the computer is offline. */
+export class SandboxUnsafeStopError extends Error {
+  constructor(cause?: unknown) {
+    super("The computer's stop could not be confirmed.", { cause });
+    this.name = "SandboxUnsafeStopError";
   }
 }
 

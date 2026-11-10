@@ -3,12 +3,20 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
+import { SandboxDamagedError } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ComputerBusyError, provisionComputer, replaceComputer } from "./computer-lifecycle.js";
+import {
+  ComputerBusyError,
+  ComputerRecoveryRequiredError,
+  provisionComputer,
+  replaceComputer,
+} from "./computer-lifecycle.js";
+import { checkpointAndRecordComputerWorkspace } from "./computer-workspace.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 import { LocalAgentHomeStore } from "./home.js";
+import { createRunSandbox } from "./host-aware-sandbox.js";
 
 const stagingFaults = vi.hoisted(() => ({
   create: undefined as Error | undefined,
@@ -122,12 +130,15 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
     scope: "dedicated",
     state: "running",
     providerRef: first.providerRef as string | null,
+    providerAuthority: null as string | null,
     kind: first.kind,
     controlHolder: "none",
     controlLeaseId: null,
     maintenanceId: null as string | null,
     homeRevision: "saved",
     restorePending: false,
+    stopRequestedAt: null as Date | null,
+    autoRecoveredAt: null as Date | null,
     screenGeneration: 0,
     controlFence: 0,
     executionFence: 0,
@@ -139,10 +150,30 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
     findUniqueOrThrow: vi.fn(async () => ({ ...row })),
     findFirst: vi.fn(async () => ({ ...row })),
     updateMany: vi.fn(async ({ where, data }) => {
-      const matches = ["id", "state", "providerRef", "kind", "updatedAt"].every(
-        (key) => !(key in where) || where[key] === row[key as keyof typeof row],
-      );
+      const matches = [
+        "id",
+        "state",
+        "providerRef",
+        "kind",
+        "updatedAt",
+        "stopRequestedAt",
+        "autoRecoveredAt",
+        "screenGeneration",
+      ].every((key) => {
+        if (!(key in where)) return true;
+        if (key === "stopRequestedAt" && where[key]?.not === null) {
+          return row.stopRequestedAt !== null;
+        }
+        return where[key] === row[key as keyof typeof row];
+      });
       if (!matches) return { count: 0 };
+      if (
+        (data.state &&
+          data.state !== row.state &&
+          !(row.state === "booting" && data.state === "running")) ||
+        ("providerRef" in data && data.providerRef !== row.providerRef)
+      )
+        row.screenGeneration += 1;
       Object.assign(row, { updatedAt: new Date(row.updatedAt.getTime() + 1) }, data);
       return { count: 1 };
     }),
@@ -171,6 +202,294 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
 }
 
 describe("computer recovery preserves live work", () => {
+  it("quarantines an abandoned stop before any provider operation", async () => {
+    const { deps, row, first } = await fixture();
+    row.state = "suspending";
+    row.stopRequestedAt = row.updatedAt;
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+      ComputerRecoveryRequiredError,
+    );
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "quarantined",
+      providerRef: first.providerRef,
+      stopRequestedAt: null,
+    });
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+      ComputerRecoveryRequiredError,
+    );
+    await replaceComputer(deps, row.id, "recover", context);
+    expect(row.state).toBe("running");
+  });
+
+  it("quarantines a stale restore without reusing the persisted candidate", async () => {
+    const { deps, row, first } = await fixture();
+    row.state = "restoring";
+    row.restorePending = true;
+    const provision = vi.spyOn(deps.sandbox, "provision");
+    const destroy = vi.spyOn(deps.sandbox, "destroy");
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+      ComputerRecoveryRequiredError,
+    );
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ state: "quarantined", providerRef: first.providerRef });
+    await replaceComputer(deps, row.id, "recover", context);
+    expect(destroy).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ providerRef: first.providerRef }),
+      expect.anything(),
+    );
+    expect(destroy.mock.invocationCallOrder[0]).toBeLessThan(
+      provision.mock.invocationCallOrder[0]!,
+    );
+    expect(row.state).toBe("running");
+  });
+
+  it("does not let an interrupted Desktop import write into a retired workspace's successor", async () => {
+    const { deps, first, root } = await fixture("desktop");
+    const successor = new DesktopSandboxProvider({ root });
+    let release!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const content = new TextEncoder().encode("late");
+    const importResult = deps.sandbox.importWorkspace(
+      first,
+      (async function* () {
+        started();
+        await gate;
+        yield { path: "notes.txt", content };
+      })(),
+      context,
+    );
+    const checked = expect(importResult).rejects.toThrow();
+    try {
+      await paused;
+      await successor.destroy(first, context, { retireWorkspace: true });
+      const next = await successor.provision(
+        { botId: "bot", homePath: root, isolateWorkspaceGeneration: true },
+        context,
+      );
+      expect(next.providerRef).not.toBe(first.providerRef);
+      await successor.writeFile(next, {
+        path: "notes.txt",
+        content: new TextEncoder().encode("new"),
+      });
+      // The older request can be delivered again after the new computer is active.
+      await successor.destroy(first, context, { retireWorkspace: true });
+      release();
+      await checked;
+      expect(new TextDecoder().decode(await successor.readFile(next, "notes.txt"))).toBe("new");
+    } finally {
+      release();
+    }
+  });
+
+  it("keeps the original reference when ordinary boot selects a different provider", async () => {
+    const { deps, row } = await fixture();
+    const config = { e2bApiKey: "synthetic-key" };
+    const original = createRunSandbox("e2b", config);
+    const switched = createRunSandbox("docker", config);
+    const provision = vi.spyOn(switched, "provision");
+    row.kind = "e2b";
+    row.providerRef = "previous-computer";
+    row.providerAuthority = original.providerAuthority?.("e2b") ?? null;
+
+    await expect(
+      provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+    ).rejects.toBeInstanceOf(ComputerRecoveryRequiredError);
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "quarantined",
+      kind: "e2b",
+      providerRef: "previous-computer",
+    });
+  });
+
+  it("leaves a legacy computer unchanged when its provider lookup is temporarily unavailable", async () => {
+    const { deps, row, computer } = await fixture();
+    row.kind = "e2b";
+    row.providerRef = "original-computer";
+    const sandbox = createRunSandbox("e2b", { e2bApiKey: "fixture-key" });
+    vi.spyOn(sandbox, "inspectPowerState").mockRejectedValue(new Error("temporary timeout"));
+    const provision = vi.spyOn(sandbox, "provision");
+    await expect(provisionComputer({ ...deps, sandbox }, row.id, context)).rejects.toBeInstanceOf(
+      ComputerBusyError,
+    );
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ state: "running", providerRef: "original-computer" });
+  });
+
+  it("explains a changed provider configuration before reserving or retiring a computer", async () => {
+    const { deps, row, computer } = await fixture();
+    const original = createRunSandbox("e2b", { e2bApiKey: "fixture-original" });
+    const changed = createRunSandbox("e2b", { e2bApiKey: "fixture-changed" });
+    row.kind = "e2b";
+    row.providerRef = "original-computer";
+    row.providerAuthority = original.providerAuthority?.("e2b") ?? null;
+    row.state = "quarantined";
+    const destroy = vi.spyOn(changed, "destroy");
+    for (const mode of ["recover", "reset"] as const) {
+      await expect(
+        replaceComputer({ ...deps, sandbox: changed }, row.id, mode, context),
+      ).rejects.toThrow("restore the original computer provider settings");
+    }
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it.each(["booting", "suspending"])(
+    "leaves a new %s claim alone when provider settings change while an old caller waits",
+    async (state) => {
+      const { deps, row, computer } = await fixture();
+      row.state = state;
+      row.kind = "e2b";
+      row.providerRef = "previous-computer";
+      computer.findUniqueOrThrow.mockResolvedValueOnce({ ...row });
+      const currentClaim = new Date();
+      row.updatedAt = currentClaim;
+      const switched = createRunSandbox("docker", {});
+      const originalTimeout = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn: () => void) => originalTimeout(fn, 0));
+      try {
+        await expect(
+          provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+        ).rejects.toBeInstanceOf(ComputerBusyError);
+        expect(computer.updateMany).not.toHaveBeenCalled();
+        expect(row).toMatchObject({
+          state,
+          updatedAt: currentClaim,
+          providerRef: "previous-computer",
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("preserves maintenance reserved while an earlier boot was waiting", async () => {
+    const { deps, row, computer } = await fixture();
+    row.state = "suspending";
+    row.kind = "e2b";
+    row.providerRef = "previous-computer";
+    computer.findUniqueOrThrow.mockResolvedValueOnce({ ...row });
+    row.state = "stopped";
+    row.maintenanceId = "other-operation";
+    const switched = createRunSandbox("docker", {});
+
+    await expect(
+      provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+    ).rejects.toBeInstanceOf(ComputerBusyError);
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "stopped",
+      maintenanceId: "other-operation",
+      providerRef: "previous-computer",
+    });
+  });
+
+  it("renews a live restore through import and reconnect without a fixed deadline", async () => {
+    const { deps, row } = await fixture();
+    row.restorePending = true;
+    const importWorkspace = deps.sandbox.importWorkspace.bind(deps.sandbox);
+    let ready!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markReconnecting!: () => void;
+    let finishReconnecting!: () => void;
+    const reconnecting = new Promise<void>((resolve) => {
+      markReconnecting = resolve;
+    });
+    const reconnectGate = new Promise<void>((resolve) => {
+      finishReconnecting = resolve;
+    });
+    vi.spyOn(deps.sandbox, "importWorkspace").mockImplementationOnce(async (...args) => {
+      ready();
+      await gate;
+      await importWorkspace(...args);
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      const restoring = provisionComputer(deps, row.id, context, "none", async (stage) => {
+        if (stage !== "reconnecting") return;
+        markReconnecting();
+        await reconnectGate;
+      });
+      await started;
+      const stamp = row.updatedAt.getTime();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(row.updatedAt.getTime()).toBeGreaterThanOrEqual(stamp + 5 * 60_000);
+      await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+        ComputerBusyError,
+      );
+      release();
+      await reconnecting;
+      const reconnectStamp = row.updatedAt.getTime();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(row.updatedAt.getTime()).toBeGreaterThanOrEqual(reconnectStamp + 5 * 60_000);
+      await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+        ComputerBusyError,
+      );
+      finishReconnecting();
+      await restoring;
+      expect(row).toMatchObject({ state: "running", restorePending: false });
+    } finally {
+      release();
+      finishReconnecting();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses only one automatic attempt per saved workspace", async () => {
+    const { deps, row, first } = await fixture();
+    const stop = vi.spyOn(deps.sandbox, "stop").mockResolvedValue(undefined);
+    const prepare = vi.spyOn(deps.sandbox, "prepare");
+    prepare.mockRejectedValueOnce(new SandboxDamagedError());
+    await provisionComputer(deps, row.id, context);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(row.autoRecoveredAt).toBeInstanceOf(Date);
+    expect(row).toMatchObject({
+      state: "running",
+      providerRef: first.providerRef,
+      restorePending: false,
+    });
+    expect(await deps.home.readFile("bot", "notes.txt", context)).toBe("checkpoint");
+
+    prepare.mockRejectedValueOnce(new SandboxDamagedError());
+    await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+      SandboxDamagedError,
+    );
+    expect(stop).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({ state: "needs_recovery", providerRef: first.providerRef });
+  });
+
+  it("reopens automatic recovery only after a new save, not a reset from the same revision", async () => {
+    const { deps, row } = await fixture();
+    const originalAttempt = new Date();
+    row.autoRecoveredAt = originalAttempt;
+    row.state = "needs_recovery";
+
+    const reset = await replaceComputer(deps, row.id, "reset", context);
+    expect(row.autoRecoveredAt).toBe(originalAttempt);
+    await checkpointAndRecordComputerWorkspace(
+      deps,
+      { ...row, spaceId: context.spaceId },
+      reset,
+      context,
+    );
+    expect(row.autoRecoveredAt).toBeNull();
+  });
+
   it("retries restoration for a live reference that is still marked pending", async () => {
     const { deps, row, first } = await fixture();
     row.restorePending = true;
@@ -328,7 +647,8 @@ describe("computer recovery preserves live work", () => {
     await rm(first.providerRef, { recursive: true });
     deps.sandbox = new DesktopSandboxProvider({ root });
     const reconnected = await provisionComputer(deps, row.id, context);
-    expect(reconnected).toMatchObject({ providerRef: first.providerRef, fresh: true });
+    expect(reconnected).toMatchObject({ fresh: true });
+    expect(reconnected.providerRef).not.toBe(first.providerRef);
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(reconnected, "notes.txt", context)),
     ).toBe("checkpoint");
@@ -344,17 +664,21 @@ describe("computer recovery preserves live work", () => {
     vi.spyOn(provider, "provision").mockImplementationOnce(async (...args) => {
       const recreated = await provision(...args);
       expect(row.restorePending).toBe(true);
-      expect(recreated).toMatchObject({ providerRef: first.providerRef, fresh: true });
+      expect(recreated).toMatchObject({ fresh: true });
+      expect(recreated.providerRef).not.toBe(first.providerRef);
+      expect(row.providerRef).toBe(recreated.providerRef);
       throw interrupted;
     });
 
     await expect(provisionComputer(deps, row.id, context)).rejects.toBe(interrupted);
     expect(row).toMatchObject({ state: "error", restorePending: true });
-    await expect(access(first.providerRef)).resolves.toBeUndefined();
+    await expect(access(first.providerRef)).rejects.toMatchObject({ code: "ENOENT" });
+    const candidate = row.providerRef!;
+    await expect(access(candidate)).resolves.toBeUndefined();
 
     deps.sandbox = new DesktopSandboxProvider({ root });
     const restarted = await provisionComputer(deps, row.id, context);
-    expect(restarted).toMatchObject({ providerRef: first.providerRef, fresh: false });
+    expect(restarted).toMatchObject({ providerRef: candidate, fresh: false });
     expect(row).toMatchObject({ state: "running", restorePending: false });
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(restarted, "notes.txt", context)),
@@ -375,7 +699,8 @@ describe("computer recovery preserves live work", () => {
     await expect(access(first.providerRef)).rejects.toMatchObject({ code: "ENOENT" });
 
     const restored = await provisionComputer(deps, row.id, context);
-    expect(restored).toMatchObject({ providerRef: first.providerRef, fresh: true });
+    expect(restored).toMatchObject({ fresh: true });
+    expect(restored.providerRef).not.toBe(first.providerRef);
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(restored, "notes.txt", context)),
     ).toBe("checkpoint");
@@ -415,6 +740,7 @@ describe("computer recovery preserves live work", () => {
 
   it("continues update from the last revision when checkpoint finds the sandbox gone", async () => {
     const { deps, row } = await fixture();
+    row.kind = "e2b";
     vi.spyOn(deps.sandbox, "exportWorkspace").mockImplementation(async function* () {
       yield { path: "notes.txt", content: new TextEncoder().encode("incomplete checkpoint") };
       throw Object.assign(new Error("Sandbox not found"), { name: "SandboxNotFoundError" });
@@ -435,6 +761,7 @@ describe("computer recovery preserves live work", () => {
     { label: "cancelled after bytes", partial: true, confirmed: true, cancelled: true },
   ])("classifies streamed workspace failure: $label", async ({ partial, confirmed, cancelled }) => {
     const { deps, row, first } = await fixture();
+    row.kind = "e2b";
     const abort = new AbortController();
     const failure = new Error("Synthetic streamed provider failure");
     if (confirmed) failure.name = "SandboxNotFoundError";
@@ -628,6 +955,7 @@ describe("computer recovery preserves live work", () => {
     { label: "gone provider", gone: true },
   ])("preserves the saved home when workspace export stops early with $label", async ({ gone }) => {
     const { deps, row } = await fixture();
+    row.kind = "e2b";
     const failure = new Error("Synthetic incomplete workspace export");
     if (gone) failure.name = "SandboxNotFoundError";
     const exportWorkspace = deps.sandbox.exportWorkspace.bind(deps.sandbox);
@@ -687,8 +1015,11 @@ describe("computer recovery preserves live work", () => {
     const destroy = vi.spyOn(deps.sandbox, "destroy").mockRejectedValue(failure);
     const provision = vi.spyOn(deps.sandbox, "provision");
     const exported = vi.spyOn(deps.sandbox, "exportWorkspace");
-    await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toBe(failure);
-    expect(row).toMatchObject({ state: "error", providerRef: first.providerRef });
+    await expect(replaceComputer(deps, row.id, "recover", context)).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+      cause: failure,
+    });
+    expect(row).toMatchObject({ state: "quarantined", providerRef: first.providerRef });
     expect(provision).not.toHaveBeenCalled();
     expect(new TextDecoder().decode(await deps.sandbox.readFile(first, "notes.txt", context))).toBe(
       "live work",
@@ -914,8 +1245,11 @@ describe("computer recovery preserves live work", () => {
     const failure = new Error("404: configuration file not found");
     vi.spyOn(deps.sandbox, "destroy").mockRejectedValue(failure);
     const provision = vi.spyOn(deps.sandbox, "provision");
-    await expect(replaceComputer(deps, row.id, "reset", context)).rejects.toBe(failure);
+    await expect(replaceComputer(deps, row.id, "reset", context)).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+      cause: failure,
+    });
     expect(provision).not.toHaveBeenCalled();
-    expect(row.providerRef).toBe(first.providerRef);
+    expect(row).toMatchObject({ state: "quarantined", providerRef: first.providerRef });
   });
 });
