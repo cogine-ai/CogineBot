@@ -297,8 +297,10 @@ export default function Computer() {
     const showBooting = overlay && needsBoot;
     if (showBooting) setBootingCount((count) => count + 1);
     try {
-      if (needsBoot)
+      if (needsBoot) {
+        autoBooted.current = botId;
         await rpc("computer/boot", { botId }, { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS });
+      }
       if (!action.isActive()) return false;
       if (takeControl) {
         if (!currentInteraction()) return false;
@@ -325,23 +327,36 @@ export default function Computer() {
     }
   }
 
+  const savedStoppedComputer =
+    computer?.state === "stopped" &&
+    Boolean(computer.homeRevision) &&
+    computer.homeRevision !== "empty";
+
   useEffect(() => {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
     if (
       computer.state === "booting" ||
       computer.state === "suspended" ||
+      savedStoppedComputer ||
       computer.state === "stopping" ||
       computerStateRequiresRecovery(computer.state)
     )
       return;
     if (autoBooted.current === botId) return;
-    autoBooted.current = botId;
     void bootComputer({
       takeControl: false,
       overlay: computer?.state !== "running",
       force: true,
     }).catch(() => undefined);
-  }, [readyTarget, targetKey, botId, computer?.state, switching, viewVisible]);
+  }, [
+    readyTarget,
+    targetKey,
+    botId,
+    computer?.state,
+    savedStoppedComputer,
+    switching,
+    viewVisible,
+  ]);
 
   useEffect(() => {
     // Let the full-screen desktop rotate to landscape; the rest of the app stays portrait.
@@ -512,7 +527,9 @@ export default function Computer() {
         />
       ) : null}
       {botId &&
-      (computer?.state === "suspended" || computerStateRequiresRecovery(computer?.state)) ? (
+      (computer?.state === "suspended" ||
+        savedStoppedComputer ||
+        computerStateRequiresRecovery(computer?.state)) ? (
         <ComputerSavedFiles key={targetKey} botId={botId} />
       ) : null}
       <ComputerModePicker

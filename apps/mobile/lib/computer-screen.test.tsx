@@ -215,6 +215,7 @@ describe("computer screen", () => {
   let container: HTMLDivElement | undefined;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     rpc.mockReset();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   });
@@ -304,60 +305,85 @@ describe("computer screen", () => {
     expect(view.querySelector("[data-keyboard-bar]")).toBeNull();
   });
 
-  it("downloads saved files during recovery without starting the computer", async () => {
-    rpc.mockImplementation(async (method: string) => {
-      if (method === "computer/status") {
-        return {
-          ...botWorking,
-          state: "error",
-          powerState: "quarantined",
-          screenAvailable: false,
-          busyBotName: null,
-        };
-      }
-      if (method === "computer/files") return [{ path: "notes.txt", kind: "file" }];
-      if (method === "computer/downloadFile") return { contentBase64: "c2F2ZWQ=" };
-      return {};
+  it("still boots a new computer with the empty revision and omits saved Files", async () => {
+    respond({
+      ...botWorking,
+      state: "stopped",
+      screenAvailable: false,
+      homeRevision: "empty",
     });
     const view = await render();
-    function button(label: string) {
-      const match = Array.from(view.querySelectorAll("button")).find(
-        (candidate) => candidate.textContent === label,
-      );
-      if (!match) throw new Error(`Missing ${label} button`);
-      return match;
-    }
-    await act(async () => button("Files").click());
-    await settle();
-    expect(calls("computer/files")).toEqual([
-      [
-        "computer/files",
-        { botId: "bot-1", path: "", source: "saved" },
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      ],
-    ]);
-    await act(async () => {
-      const file = button("notes.txt");
-      file.click();
-      file.click();
-    });
-    await settle();
-    expect(calls("computer/downloadFile")).toEqual([
-      [
-        "computer/downloadFile",
-        { botId: "bot-1", path: "notes.txt", source: "saved" },
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      ],
-    ]);
-    expect(nativeFiles.writeFile).toHaveBeenCalledExactlyOnceWith("c2F2ZWQ=", {
-      encoding: "base64",
-    });
-    expect(nativeFiles.share).toHaveBeenCalledExactlyOnceWith("file:///synthetic/notes.txt", {
-      mimeType: "application/octet-stream",
-    });
-    expect(nativeFiles.deleteDirectory).toHaveBeenCalledOnce();
-    expect(calls("computer/boot")).toEqual([]);
+    expect(calls("computer/boot")).toHaveLength(1);
+    expect(
+      Array.from(view.querySelectorAll("button")).some((button) => button.textContent === "Files"),
+    ).toBe(false);
   });
+
+  it.each([
+    { state: "error", powerState: "quarantined", homeRevision: null },
+    { state: "stopped", homeRevision: "last-saved-revision" },
+  ] as const)(
+    "downloads saved files from a $state computer without starting it",
+    async (status) => {
+      rpc.mockImplementation(async (method: string) => {
+        if (method === "computer/status") {
+          return {
+            ...botWorking,
+            ...status,
+            screenAvailable: false,
+            busyBotName: null,
+          };
+        }
+        if (method === "computer/files") return [{ path: "notes.txt", kind: "file" }];
+        if (method === "computer/downloadFile") return { contentBase64: "c2F2ZWQ=" };
+        return {};
+      });
+      const view = await render();
+      function button(label: string) {
+        const match = Array.from(view.querySelectorAll("button")).find(
+          (candidate) => candidate.textContent === label,
+        );
+        if (!match) throw new Error(`Missing ${label} button`);
+        return match;
+      }
+      await act(async () => button("Files").click());
+      await settle();
+      expect(calls("computer/files")).toEqual([
+        [
+          "computer/files",
+          { botId: "bot-1", path: "", source: "saved" },
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        ],
+      ]);
+      await act(async () => {
+        const file = button("notes.txt");
+        file.click();
+        file.click();
+      });
+      await settle();
+      expect(calls("computer/downloadFile")).toEqual([
+        [
+          "computer/downloadFile",
+          { botId: "bot-1", path: "notes.txt", source: "saved" },
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        ],
+      ]);
+      expect(nativeFiles.writeFile).toHaveBeenCalledExactlyOnceWith("c2F2ZWQ=", {
+        encoding: "base64",
+      });
+      expect(nativeFiles.share).toHaveBeenCalledExactlyOnceWith("file:///synthetic/notes.txt", {
+        mimeType: "application/octet-stream",
+      });
+      expect(nativeFiles.deleteDirectory).toHaveBeenCalledOnce();
+      expect(calls("computer/boot")).toEqual([]);
+      if (status.state === "stopped") {
+        respond(botWorking);
+        await act(async () => preview(view).click());
+        await settle();
+        expect(calls("computer/boot")).toHaveLength(1);
+      }
+    },
+  );
 
   it("takes control only from the Take control button", async () => {
     respond(botWorking);
