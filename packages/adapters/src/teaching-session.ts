@@ -23,7 +23,11 @@ import {
   type PrismaClient,
   type ThreadEvents,
 } from "@rakazo/db";
-import { revokeScreenControl } from "./computer-control.js";
+import {
+  type InteractiveComputerSnapshot,
+  revokeScreenControl,
+  touchInteractiveComputer,
+} from "./computer-control.js";
 import { scheduleComputerSleep } from "./computer-idle.js";
 import { toComputerRef } from "./computer-support.js";
 
@@ -550,6 +554,7 @@ export async function recordTeachingInputEvent(
   actor: Actor,
   botId: string,
   mapped: TeachComputerInput,
+  expectedComputer?: InteractiveComputerSnapshot,
 ): Promise<"recorded" | "idle" | "stale"> {
   const skill = await getActiveTeachingSession(deps.prisma, actor.spaceId, botId, actor.userId);
   // Protected input names the recording it was queued for, so a later one cannot receive it.
@@ -594,7 +599,19 @@ export async function recordTeachingInputEvent(
     return "stale";
   }
   if (prepared.kind === "stale") return "stale";
-  if (prepared.computer?.providerRef) {
+  const computer = prepared.computer;
+  if (
+    computer?.restorePending ||
+    (expectedComputer &&
+      (!computer ||
+        computer.id !== expectedComputer.id ||
+        computer.providerRef !== expectedComputer.providerRef ||
+        computer.screenGeneration !== expectedComputer.screenGeneration ||
+        computer.controlLeaseId !== expectedComputer.controlLeaseId))
+  ) {
+    return "stale";
+  }
+  if (computer?.providerRef) {
     // The row lock above does not cover sandbox IO. Only protected input is
     // bound to a recording, so ordinary events skip this extra read.
     if (mapped.sensitive === true && mapped.skillId) {
@@ -606,9 +623,15 @@ export async function recordTeachingInputEvent(
       );
       if (protectedInputMissesRecording(mapped, active?.id)) return "stale";
     }
+    if (
+      expectedComputer &&
+      !(await touchInteractiveComputer(deps.prisma, botId, expectedComputer))
+    ) {
+      return "stale";
+    }
     await applyTeachingDesktopInput(
       deps.sandbox,
-      prepared.computer,
+      computer,
       mapped,
       computerContext(actor, botId, "input"),
     );

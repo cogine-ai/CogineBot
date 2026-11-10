@@ -143,6 +143,48 @@ describe("provider-neutral computer workspace", () => {
     },
   );
 
+  it.each(["published", "too large"] as const)(
+    "preserves the %s save result when staging cleanup fails",
+    async (outcome) => {
+      const root = await mkdtemp(path.join(tmpdir(), "workspace-cleanup-test-"));
+      roots.push(root);
+      const home = new LocalAgentHomeStore(root);
+      const createStaging = home.createStaging.bind(home);
+      vi.spyOn(home, "createStaging").mockImplementation(async () => {
+        const stage = await createStaging();
+        return {
+          path: stage.path,
+          remove: async () => {
+            await stage.remove();
+            throw new Error("Synthetic cleanup failure");
+          },
+        };
+      });
+      const provider = new FakeSandboxProvider();
+      const key = "bot-1";
+      const computer = await provider.provision({ botId: key, homePath: "/unused" }, context);
+      await home.writeFile(key, "notes.txt", "previous", context);
+      await provider.writeFile(
+        computer,
+        { path: "notes.txt", content: Buffer.from("current") },
+        context,
+      );
+      const save = checkpointComputerWorkspace(home, provider, key, computer, context, undefined, {
+        maxBytes: outcome === "published" ? 7 : 6,
+        maxFiles: 1,
+      });
+      if (outcome === "published") await expect(save).resolves.toMatch(/^rev-/);
+      else
+        await expect(save).rejects.toMatchObject({
+          name: "WorkspaceTooLargeError",
+          limit: "bytes",
+        });
+      expect(await home.readFile(key, "notes.txt", context)).toBe(
+        outcome === "published" ? "current" : "previous",
+      );
+    },
+  );
+
   it("streams retained profile and user files and skips only the configured cache paths", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "workspace-save-test-"));
     roots.push(root);

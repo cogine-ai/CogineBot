@@ -49,6 +49,7 @@ const BOX_API_COMMAND_TIMEOUT_SECONDS = 600;
 const BOX_TTL_SECONDS = 2 * 60 * 60;
 const BOX_DELETE_TIMEOUT_MS = 60_000;
 const BOX_EXPORT_CONCURRENCY = 16;
+const BOX_WORKSPACE_IDLE_TIMEOUT_MS = 30_000;
 
 export type BoxSandboxSdk = Pick<
   BoxApi,
@@ -396,13 +397,11 @@ export class BoxSandboxProvider implements SandboxProvider {
         yield {
           path: entry.path,
           executable: entry.executable,
-          body: streamWorkspaceBody(async () => {
-            const { raw } = await this.client.artifactRaw(
-              { boxId: id, path: workspacePath(BOX_WORKSPACE, entry.path) },
-              { signal: context.signal },
-            );
-            return raw.body;
-          }),
+          body: this.streamWorkspaceArtifact(
+            id,
+            workspacePath(BOX_WORKSPACE, entry.path),
+            context.signal,
+          ),
         };
       }
       return;
@@ -623,15 +622,7 @@ export class BoxSandboxProvider implements SandboxProvider {
         context.signal,
       );
       if (result.exitCode !== 0) throw new Error("Could not enumerate the Box workspace");
-      yield* readWorkspaceManifest(
-        streamWorkspaceBody(async () => {
-          const { raw } = await this.client.artifactRaw(
-            { boxId: id, path: manifest },
-            { signal: context.signal },
-          );
-          return raw.body;
-        }),
-      );
+      yield* readWorkspaceManifest(this.streamWorkspaceArtifact(id, manifest, context.signal));
     } finally {
       try {
         const cleanup = await this.runCommand(
@@ -645,6 +636,30 @@ export class BoxSandboxProvider implements SandboxProvider {
         getLogger().warn("workspace manifest cleanup", { error });
       }
     }
+  }
+
+  private streamWorkspaceArtifact(id: string, filePath: string, signal: AbortSignal) {
+    return streamWorkspaceBody(async () => {
+      const deadline = new AbortController();
+      const timer = setTimeout(
+        () => deadline.abort(new DOMException("Box workspace response timed out", "TimeoutError")),
+        BOX_WORKSPACE_IDLE_TIMEOUT_MS,
+      );
+      timer.unref();
+      try {
+        const { raw } = await this.client.artifactRaw(
+          { boxId: id, path: filePath },
+          { signal: AbortSignal.any([signal, deadline.signal]) },
+        );
+        return raw.body;
+      } catch (error) {
+        signal.throwIfAborted();
+        deadline.signal.throwIfAborted();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }, BOX_WORKSPACE_IDLE_TIMEOUT_MS);
   }
 
   private async readRemoteFile(

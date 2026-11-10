@@ -340,11 +340,9 @@ export async function checkpointComputerWorkspace(
         : await (publish?.(install, staging.path) ?? install());
     return revision;
   } finally {
-    try {
-      await staging.remove();
-    } catch (error) {
-      failStaging(error);
-    }
+    await staging.remove().catch((error) => {
+      getLogger().warn("workspace staging cleanup", { error });
+    });
   }
 }
 

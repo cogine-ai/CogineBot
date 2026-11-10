@@ -2284,8 +2284,12 @@ describe("computer terminal and file transfer", () => {
       connectTerminal: vi.fn().mockResolvedValue({
         url: "https://screen.example/vnc.html?path=websockify%3Ftoken%3Dterminal-1",
       }),
+      connectScreen: vi.fn().mockResolvedValue({
+        url: "https://screen.example/vnc.html?path=websockify%3Ftoken%3Dscreen-1",
+      }),
       readFile: vi.fn().mockResolvedValue(new TextEncoder().encode("hello")),
       writeFile: vi.fn().mockResolvedValue(undefined),
+      sendInput: vi.fn().mockResolvedValue(undefined),
     };
     const prisma = {
       bot: {
@@ -2315,6 +2319,7 @@ describe("computer terminal and file transfer", () => {
       },
       computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
+      taughtSkill: { findFirst: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
     const deps = {
       prisma,
@@ -2463,6 +2468,53 @@ describe("computer terminal and file transfer", () => {
     expect(sandbox.connectTerminal).not.toHaveBeenCalled();
   });
 
+  it("allows watching but blocks writes and control while the running computer needs restore", async () => {
+    const { sandbox, prisma, call } = setup({ ...controlled, restorePending: true });
+    const contentBase64 = Buffer.from("notes").toString("base64");
+    await expect(call("takeover", {})).resolves.toMatchObject({ status: 400 });
+    await expect(call("uploadFile", { path: "notes.txt", contentBase64 })).resolves.toMatchObject({
+      status: 409,
+    });
+    await expect(call("terminalUrl", {})).resolves.toEqual({
+      status: 200,
+      body: { json: { url: null } },
+    });
+    await expect(call("input", { kind: "key", payload: { key: "Enter" } })).resolves.toMatchObject({
+      status: 403,
+    });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+    expect(sandbox.connectTerminal).not.toHaveBeenCalled();
+    expect(prisma.computer.updateMany).not.toHaveBeenCalled();
+    await expect(call("screenUrl", {})).resolves.toMatchObject({ status: 200 });
+    expect(sandbox.connectScreen).toHaveBeenCalledWith(
+      expect.anything(),
+      { view: "stream", interactive: false, controlToken: undefined },
+      expect.anything(),
+    );
+  });
+
+  it("does not grant or reuse a takeover if a restore became pending after reading the computer", async () => {
+    const { prisma, call } = setup({ restorePending: false });
+    vi.mocked(prisma.computer.updateMany).mockResolvedValueOnce({ count: 0 });
+    prisma.computer.findUniqueOrThrow = vi.fn().mockResolvedValue({
+      ...controlled,
+      restorePending: true,
+    });
+    await expect(call("takeover", {})).resolves.toMatchObject({ status: 409 });
+    expect(prisma.computer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ restorePending: false }) }),
+    );
+  });
+
+  it("does not refresh a suspension claim while delivering input", async () => {
+    const { sandbox, prisma, call } = setup({ ...controlled, state: "suspending" });
+    await expect(call("input", { kind: "key", payload: { key: "Enter" } })).resolves.toMatchObject({
+      status: 403,
+    });
+    expect(prisma.computer.updateMany).not.toHaveBeenCalled();
+    expect(sandbox.sendInput).not.toHaveBeenCalled();
+  });
+
   it("uploads into the bot workspace only under control", async () => {
     const contentBase64 = Buffer.from("notes").toString("base64");
     const released = setup();
@@ -2489,6 +2541,35 @@ describe("computer terminal and file transfer", () => {
       call("uploadFile", { path: "bots/bot-2/secret.txt", contentBase64 }),
     ).resolves.toMatchObject({ status: 400 });
     expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "uploadFile",
+      { path: "notes.txt", contentBase64: Buffer.from("notes").toString("base64") },
+      409,
+    ],
+    ["input", { kind: "key", payload: { key: "Enter" } }, 409],
+    ["terminalUrl", {}, 200],
+  ] as const)("rechecks restore and control before %s", async (procedure, input, status) => {
+    const { sandbox, prisma, call } = setup({ ...controlled, restorePending: false });
+    vi.mocked(prisma.computer.updateMany).mockResolvedValueOnce({ count: 0 });
+    const response = await call(procedure, input);
+    expect(response.status).toBe(status);
+    if (procedure === "terminalUrl") expect(response.body).toEqual({ json: { url: null } });
+    expect(prisma.computer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          restorePending: false,
+          providerRef: "sandbox-ref-1",
+          screenGeneration: 3,
+          controlLeaseId: "lease-1",
+        }),
+      }),
+    );
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+    expect(sandbox.sendInput).not.toHaveBeenCalled();
+    expect(sandbox.connectTerminal).not.toHaveBeenCalled();
   });
 
   it("downloads bytes from a running computer", async () => {

@@ -39,12 +39,14 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const stopProvider = vi.fn().mockResolvedValue(undefined);
   const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
   const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
+  const providerWrite = vi.fn().mockResolvedValue(undefined);
   let root: string;
   let home: LocalAgentHomeStore;
   let desktop: DesktopSandboxProvider;
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
+  let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
   let switchComputerMode: () => Promise<unknown>;
 
@@ -93,6 +95,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
         exportWorkspace,
         stop: stopProvider,
         readFile: providerRead,
+        writeFile: providerWrite,
         isRunning: desktop.isRunning.bind(desktop),
         provision: desktop.provision.bind(desktop),
         prepare: desktop.prepare.bind(desktop),
@@ -108,6 +111,12 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
+    uploadComputerFile = () =>
+      client.computer.uploadFile({
+        botId,
+        path: "notes.txt",
+        contentBase64: Buffer.from("upload").toString("base64"),
+      });
     bootComputer = () => client.computer.boot({ botId });
     switchComputerMode = () => client.bots.setComputer({ botId, mode: "team" });
   });
@@ -118,6 +127,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     stopProvider.mockClear();
     exportWorkspace.mockClear();
     providerRead.mockClear();
+    providerWrite.mockClear();
     casCounts.length = 0;
     afterSnapshot = undefined;
     botId = `heartbeat-bot-${randomUUID()}`;
@@ -175,6 +185,20 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
     expect(computer.controlLeaseId).toBe("heartbeat-human-lease");
     expect(computer.controlLeaseExpiresAt).toEqual(new Date("2030-01-01"));
+  });
+
+  it("does not upload after a restore starts between the read and the write claim", async () => {
+    const where = { id: computerId };
+    await database.prisma.computer.update({ where, data: { controlBotId: botId } });
+    afterSnapshot = () =>
+      database.prisma.computer.update({ where, data: { restorePending: true } });
+
+    await expect(uploadComputerFile()).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(providerWrite).not.toHaveBeenCalled();
+
+    await database.prisma.computer.update({ where, data: { restorePending: false } });
+    await expect(uploadComputerFile()).resolves.toEqual({ ok: true });
+    expect(providerWrite).toHaveBeenCalledOnce();
   });
 
   it("keeps the provider running when manual Stop exceeds the workspace save limit", async () => {

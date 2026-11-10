@@ -1220,7 +1220,7 @@ describe("pauseRunForTakeover", () => {
       expect.objectContaining({ data: expect.objectContaining({ status: "waiting_takeover" }) }),
     );
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1" },
+      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
       data: {
         state: "running",
         controlHolder: "none",
@@ -1291,7 +1291,7 @@ describe("pauseRunForTakeover", () => {
     ).resolves.toBe(true);
 
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1" },
+      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
       data: { state: "running", controlRunId: "run-1" },
     });
     expect(tx.event.create).toHaveBeenCalledWith(
@@ -1349,7 +1349,7 @@ describe("pauseRunForTakeover", () => {
     ).resolves.toBe(true);
 
     expect(tx.computer.updateMany).toHaveBeenCalledWith({
-      where: { id: "computer-1", spaceId: "workspace-1" },
+      where: { id: "computer-1", spaceId: "workspace-1", restorePending: false },
       data: { state: "running" },
     });
     expect(tx.event.create).toHaveBeenCalledWith(

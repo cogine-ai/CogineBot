@@ -1,4 +1,4 @@
-import type { Command200Response } from "@asciidev/box-sdk";
+import { type Command200Response, FetchError } from "@asciidev/box-sdk";
 import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { parse } from "shell-quote";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -428,6 +428,101 @@ describe("BoxSandboxProvider", () => {
     expect(blocks * 1024).toBeGreaterThan(maxFiles * (4096 + 4 + 20 + 3));
   });
 
+  it.each(["headers", "manifest body", "file body"] as const)(
+    "times out stalled Box workspace %s and removes the manifest",
+    async (stage) => {
+      const fixture = boxFixture();
+      const filePath = "/home/user/rakazo-home/report.txt";
+      fixture.files.set(filePath, Buffer.from("data"));
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+      const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+      vi.useFakeTimers();
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new DOMException("Read timed out", "TimeoutError")), ms);
+        return controller.signal;
+      });
+      const cancel = vi.fn();
+      const body = new ReadableStream<Uint8Array>({ cancel });
+      const original = fixture.artifactRaw.getMockImplementation()!;
+      fixture.artifactRaw.mockImplementation(async (request, options) => {
+        const stalled =
+          stage === "file body" ? request.path === filePath : request.path.endsWith(".manifest");
+        if (!stalled) return original(request, options);
+        if (stage !== "headers") return { raw: new Response(body) };
+        const signal = options?.signal;
+        return new Promise((_, reject) => {
+          signal?.addEventListener("abort", () => reject(new FetchError(signal.reason)), {
+            once: true,
+          });
+        });
+      });
+      const save = async () => {
+        for await (const file of provider.exportWorkspace(computer, context, {
+          maxBytes: 4,
+          maxFiles: 1,
+        })) {
+          if (!("body" in file)) throw new Error("Expected a streamed file");
+          await file.body[Symbol.asyncIterator]().next();
+        }
+      };
+      const result = expect(save()).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await result;
+      expect(cancel).toHaveBeenCalledTimes(stage === "headers" ? 0 : 1);
+      expect(body.locked).toBe(false);
+      expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
+    },
+  );
+
+  it("keeps a progressing Box workspace download alive beyond 30 seconds", async () => {
+    const fixture = boxFixture();
+    const filePath = "/home/user/rakazo-home/report.txt";
+    fixture.files.set(filePath, Buffer.from("data"));
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Read timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    const original = fixture.artifactRaw.getMockImplementation()!;
+    let transfer: AbortSignal | undefined;
+    fixture.artifactRaw.mockImplementation(async (request, options) => {
+      if (request.path !== filePath) return original(request, options);
+      transfer = options?.signal;
+      return {
+        raw: new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              setTimeout(() => controller.enqueue(Buffer.from("da")), 20_000);
+              setTimeout(() => {
+                controller.enqueue(Buffer.from("ta"));
+                controller.close();
+              }, 40_000);
+            },
+          }),
+        ),
+      };
+    });
+    const save = async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const file of provider.exportWorkspace(computer, context, {
+        maxBytes: 4,
+        maxFiles: 1,
+      })) {
+        if (!("body" in file)) throw new Error("Expected a streamed file");
+        for await (const chunk of file.body) chunks.push(chunk);
+      }
+      return Buffer.concat(chunks).toString("utf8");
+    };
+    const result = expect(save()).resolves.toBe("data");
+    await vi.advanceTimersByTimeAsync(40_000);
+    await result;
+    expect(transfer?.aborted).toBe(false);
+  });
+
   it.each([undefined, "1", "20"])(
     "cancels oversized downloads with content-length %s",
     async (contentLength) => {
@@ -702,7 +797,7 @@ function boxFixture(options: { state?: string } = {}) {
         };
       },
     ),
-    artifactRaw: vi.fn(async ({ path }: { path: string }) => {
+    artifactRaw: vi.fn(async ({ path }: { path: string }, _options?: { signal?: AbortSignal }) => {
       const content = path.startsWith("/tmp/rakazo-observe-")
         ? Uint8Array.from([1, 2, 3])
         : (files.get(path) ?? new Uint8Array());

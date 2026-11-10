@@ -18,6 +18,7 @@ import {
   expireTaughtSkillTeaching,
   extendActiveComputerControl,
   getActiveTeachingSession,
+  type InteractiveComputerSnapshot,
   mapTaughtSkill,
   observeStopSnapshot,
   parsePlaybook,
@@ -567,8 +568,9 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       actor: Actor,
       botId: string,
       mapped: TeachComputerInput,
+      expectedComputer: InteractiveComputerSnapshot,
     ): Promise<"recorded" | "idle" | "stale"> {
-      return recordTeachingInputEvent(deps, actor, botId, mapped);
+      return recordTeachingInputEvent(deps, actor, botId, mapped, expectedComputer);
     },
   };
 }

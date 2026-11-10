@@ -134,6 +134,7 @@ import {
   storeBotSecret,
   takeoverLeaseMs,
   toComputerRef,
+  touchInteractiveComputer,
   touchRunningComputer,
   updateTicket,
   validateModelAuthAvailability,
@@ -3441,7 +3442,11 @@ export function createRouter(deps: RouterDeps) {
       }),
       takeover: newWork.computer.takeover.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
-        if (!bot.computer?.providerRef || bot.computer.state !== "running") {
+        if (
+          !bot.computer?.providerRef ||
+          bot.computer.state !== "running" ||
+          bot.computer.restorePending
+        ) {
           throw new ORPCError("BAD_REQUEST", { message: "computer must be running" });
         }
         if (hasActiveComputerControl(bot.computer) && bot.computer.controlBotId === bot.id) {
@@ -3492,7 +3497,11 @@ export function createRouter(deps: RouterDeps) {
         if (!bot.computer) throw new IsolationError();
         // Gone-sandbox revoke may have marked the row stopped; do not fall through to the
         // running-state grant and return a confusing "control changed" conflict.
-        if (!bot.computer.providerRef || bot.computer.state !== "running") {
+        if (
+          !bot.computer.providerRef ||
+          bot.computer.state !== "running" ||
+          bot.computer.restorePending
+        ) {
           throw new ORPCError("BAD_REQUEST", { message: "computer must be running" });
         }
 
@@ -3543,6 +3552,7 @@ export function createRouter(deps: RouterDeps) {
           where: {
             id: bot.computer.id,
             state: "running",
+            restorePending: false,
             maintenanceId: null,
             controlHolder: { not: "user" },
             controlLeaseId: null,
@@ -3564,7 +3574,11 @@ export function createRouter(deps: RouterDeps) {
           const current = await deps.prisma.computer.findUniqueOrThrow({
             where: { id: bot.computer.id },
           });
-          if (!hasActiveComputerControl(current) || current.controlBotId !== bot.id) {
+          if (
+            current.restorePending ||
+            !hasActiveComputerControl(current) ||
+            current.controlBotId !== bot.id
+          ) {
             throw new ORPCError("CONFLICT", { message: "Computer control changed; try again" });
           }
           await bindWaitingTakeoverToControl(deps, {
@@ -3620,7 +3634,12 @@ export function createRouter(deps: RouterDeps) {
       input: newWork.computer.input.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         const computer = bot.computer;
-        if (!computer || !hasActiveComputerControl(computer) || computer.controlBotId !== bot.id) {
+        if (
+          computer?.state !== "running" ||
+          computer.restorePending ||
+          !hasActiveComputerControl(computer) ||
+          computer.controlBotId !== bot.id
+        ) {
           await expireStaleComputerControl(deps, computer);
           throw new ORPCError("FORBIDDEN");
         }
@@ -3659,9 +3678,12 @@ export function createRouter(deps: RouterDeps) {
                   }),
           ...(skillId ? { skillId } : {}),
         };
-        const outcome = await taughtSkills.recordInput(context.actor, bot.id, mapped);
+        const outcome = await taughtSkills.recordInput(context.actor, bot.id, mapped, computer);
         if (outcome === "stale") return { ok: true as const };
         if (outcome !== "recorded") {
+          if (!(await touchInteractiveComputer(deps.prisma, bot.id, computer))) {
+            throw new ORPCError("CONFLICT", { message: "Computer control changed; try again" });
+          }
           await applyTeachingDesktopInput(
             deps.sandbox,
             computer,
@@ -3669,10 +3691,6 @@ export function createRouter(deps: RouterDeps) {
             computerContext(context.actor, bot.id, "input"),
           );
         }
-        await deps.prisma.computer.updateMany({
-          where: { id: computer.id, state: "running" },
-          data: { updatedAt: new Date() },
-        });
         scheduleComputerSleep(deps.jobs, computer.id);
         return { ok: true as const };
       }),
@@ -3772,7 +3790,7 @@ export function createRouter(deps: RouterDeps) {
         }
         const computer = bot.computer;
         if (!computer) throw new IsolationError();
-        if (computer.state !== "running" || !computer.providerRef) {
+        if (computer.state !== "running" || computer.restorePending || !computer.providerRef) {
           throw new ORPCError("CONFLICT", { message: "Start the computer first." });
         }
         if (!hasActiveComputerControl(computer) || computer.controlBotId !== bot.id) {
@@ -3782,7 +3800,6 @@ export function createRouter(deps: RouterDeps) {
         if (content.byteLength > ATTACHMENT_MAX_BYTES) {
           throw new ORPCError("BAD_REQUEST", { message: "File is too large to upload." });
         }
-        await keepComputerAwake(deps, computer.id);
         let storedPath: string;
         try {
           storedPath = resolveBotUploadPath(parseComputerMode(computer.scope), bot.id, input.path);
@@ -3792,6 +3809,10 @@ export function createRouter(deps: RouterDeps) {
           }
           throw error;
         }
+        if (!(await touchInteractiveComputer(deps.prisma, bot.id, computer))) {
+          throw new ORPCError("CONFLICT", { message: "Computer control changed; try again" });
+        }
+        scheduleComputerSleep(deps.jobs, computer.id);
         await deps.sandbox.writeFile(
           toComputerRef(computer),
           { path: storedPath, content },
@@ -3825,6 +3846,7 @@ export function createRouter(deps: RouterDeps) {
         if (
           !computer?.providerRef ||
           computer.state !== "running" ||
+          computer.restorePending ||
           !deps.sandbox.connectTerminal ||
           !computerSupportsTerminal(computer.kind)
         ) {
@@ -3837,6 +3859,9 @@ export function createRouter(deps: RouterDeps) {
           !computer.controlLeaseId
         ) {
           throw new ORPCError("FORBIDDEN", { message: "Take control first." });
+        }
+        if (!(await touchInteractiveComputer(deps.prisma, bot.id, computer))) {
+          return { url: null };
         }
         const session = await deps.sandbox
           .connectTerminal(
@@ -3855,7 +3880,7 @@ export function createRouter(deps: RouterDeps) {
           )
           .catch((error: unknown) => clearGoneSandbox(deps, computer, error));
         if (!session) return { url: null };
-        await keepComputerAwake(deps, computer.id);
+        scheduleComputerSleep(deps.jobs, computer.id);
         return {
           url: addScreenProxyCapability(
             withViewOnly(session.url, false),
@@ -3883,7 +3908,11 @@ export function createRouter(deps: RouterDeps) {
           return { url: null };
         }
         const computer = bot.computer;
-        const interactive = hasActiveComputerControl(computer) && computer.controlBotId === bot.id;
+        const interactive =
+          computer.state === "running" &&
+          !computer.restorePending &&
+          hasActiveComputerControl(computer) &&
+          computer.controlBotId === bot.id;
         if (interactive) await deps.billing?.assertAccess(context.actor);
         const screenContext = await computerScreenContext(
           deps.prisma,
@@ -3899,6 +3928,8 @@ export function createRouter(deps: RouterDeps) {
               view: "stream",
               interactive,
               controlToken:
+                computer.state === "running" &&
+                !computer.restorePending &&
                 computer.controlBotId === bot.id
                   ? (computer.controlLeaseId ?? undefined)
                   : undefined,
@@ -3921,6 +3952,8 @@ export function createRouter(deps: RouterDeps) {
           ["running", "booting"].includes(current.computer.state);
         const sameHumanControl =
           sameComputer &&
+          current.computer?.state === "running" &&
+          !current.computer?.restorePending &&
           hasActiveComputerControl(current.computer) &&
           current.computer?.controlBotId === bot.id &&
           current.computer.controlLeaseId === computer.controlLeaseId;

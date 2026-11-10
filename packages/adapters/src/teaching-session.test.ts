@@ -80,6 +80,7 @@ function recordingDeps(skill: ReturnType<typeof skillRow>) {
         bot: {
           findUnique: vi.fn(),
         },
+        computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         message: {
           findMany: vi
             .fn()
@@ -253,6 +254,48 @@ describe("completeTeachingSession", () => {
 });
 
 describe("recordTeachingInputEvent", () => {
+  it.each(["restore pending", "new generation", "control lost", "still current"] as const)(
+    "handles %s after the initial input authorization",
+    async (change) => {
+      const { deps, current, tx } = recordingDeps(skillRow());
+      const expected = {
+        id: "computer-1",
+        state: "running",
+        providerRef: "box-1",
+        screenGeneration: 5,
+        controlLeaseId: "lease-1",
+      };
+      tx.bot.findUnique.mockResolvedValue({
+        id: "bot-1",
+        computer: {
+          ...expected,
+          homeKey: "bot-1",
+          kind: "e2b",
+          restorePending: change === "restore pending",
+          screenGeneration: change === "new generation" ? 6 : 5,
+        },
+      });
+      if (change === "control lost")
+        deps.prisma.computer.updateMany.mockResolvedValue({ count: 0 });
+      const actor = { spaceId: "workspace-1", userId: "user-1" } as never;
+      await expect(
+        recordTeachingInputEvent(
+          deps as never,
+          actor,
+          "bot-1",
+          { kind: "key", key: "x" },
+          expected,
+        ),
+      ).resolves.toBe(change === "still current" ? "recorded" : "stale");
+      expect(deps.prisma.computer.updateMany).toHaveBeenCalledTimes(
+        change === "control lost" || change === "still current" ? 1 : 0,
+      );
+      const applied = change === "still current" ? 1 : 0;
+      expect(deps.sandbox.sendInput).toHaveBeenCalledTimes(applied);
+      expect(current().recording.events).toHaveLength(applied);
+    },
+  );
+
   it("does not claim a click that landed after the session was finalized", async () => {
     const { deps } = recordingDeps(skillRow({ status: "draft" }));
     deps.prisma.taughtSkill.findFirst = vi
