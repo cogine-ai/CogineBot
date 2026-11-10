@@ -3402,15 +3402,20 @@ describe("authenticated request destination policy", () => {
   });
 
   it("returns a tool error when a saved private origin is no longer permitted", async () => {
-    const f = authFixture();
-    f.credential.origin = "http://192.168.2.10:8080";
-    f.setCalls([
-      { args: { ...args, url: `${f.credential.origin}/v1/items` }, executionId: "private" },
-    ]);
-    await f.run();
-    expect(f.results[0]).toEqual({ error: "Invalid authenticated request." });
-    expect(f.pauseRunForInput).not.toHaveBeenCalled();
-    expect(f.fetch).not.toHaveBeenCalled();
+    vi.stubEnv("RAKAZO_SECRETS_ALLOW_PRIVATE_HTTP", "0");
+    try {
+      const f = authFixture();
+      f.credential.origin = "http://192.168.2.10:8080";
+      f.setCalls([
+        { args: { ...args, url: `${f.credential.origin}/v1/items` }, executionId: "private" },
+      ]);
+      await f.run();
+      expect(f.results[0]).toEqual({ error: "Invalid authenticated request." });
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("does not use an exact search hit to authorize an authenticated request", async () => {
