@@ -310,6 +310,35 @@ describe("computer recovery preserves live work", () => {
     });
   });
 
+  it.each(["booting", "suspending"])(
+    "leaves a new %s claim alone when provider settings change while an old caller waits",
+    async (state) => {
+      const { deps, row, computer } = await fixture();
+      row.state = state;
+      row.kind = "e2b";
+      row.providerRef = "previous-computer";
+      computer.findUniqueOrThrow.mockResolvedValueOnce({ ...row });
+      const currentClaim = new Date();
+      row.updatedAt = currentClaim;
+      const switched = createRunSandbox("docker", {});
+      const originalTimeout = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn: () => void) => originalTimeout(fn, 0));
+      try {
+        await expect(
+          provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+        ).rejects.toBeInstanceOf(ComputerBusyError);
+        expect(computer.updateMany).not.toHaveBeenCalled();
+        expect(row).toMatchObject({
+          state,
+          updatedAt: currentClaim,
+          providerRef: "previous-computer",
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("renews a live restore through import and reconnect without a fixed deadline", async () => {
     const { deps, row } = await fixture();
     row.restorePending = true;

@@ -380,10 +380,10 @@ export async function provisionComputer(
   ) {
     throw new ComputerBusyError();
   }
-  if (existing.state === "booting" || existing.state === "suspending") {
+  const waited = existing.state === "booting" || existing.state === "suspending";
+  if (waited) {
     existing = await waitForComputerReady(deps.prisma, computerId, context);
     await guardComputerBoot(deps.prisma, existing, context);
-    await requireReusableProvider();
   }
   // A booting row whose holder is gone is reclaimable. A suspending row is too once
   // its claim was already older than an execution-lease TTL when first observed and
@@ -391,6 +391,7 @@ export async function provisionComputer(
   const staleSuspending =
     existing.state === "suspending" &&
     suspendClaimIsStale &&
+    existing.updatedAt.getTime() === suspendStamp?.getTime() &&
     !(await hasLiveForeignRunLease(deps.prisma, computerId, context.runId));
   if (
     !staleSuspending &&
@@ -400,7 +401,7 @@ export async function provisionComputer(
   }
   // Waited for suspending (or similar) and landed on booting we never stamped: another
   // caller owns that boot. Do not adopt its updatedAt / previousRef and double-provision.
-  if (existing.state === "booting" && reclaimStamp === null) {
+  if (existing.state === "booting" && existing.updatedAt.getTime() !== reclaimStamp?.getTime()) {
     throw new ComputerBusyError();
   }
   // We came to reclaim abandoned booting; if another caller already activated, do not fall
@@ -417,6 +418,8 @@ export async function provisionComputer(
   ) {
     throw new ComputerBusyError();
   }
+
+  if (waited) await requireReusableProvider();
 
   const reconnecting =
     Boolean(existing.providerRef) &&
