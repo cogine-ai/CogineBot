@@ -135,6 +135,7 @@ export function createJobReconciler(
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconciling: Promise<void> | undefined;
   let reconcilingGroupRunTeardowns: Promise<void> | undefined;
+  let reconcilingActiveLimits: Promise<void> | undefined;
   let lastCompletedAt = Date.now();
   let stuckCursor: Cursor | undefined;
   let runCursor: Cursor | undefined;
@@ -212,13 +213,18 @@ export function createJobReconciler(
             reconcilingGroupRunTeardowns = undefined;
           });
       }
+      if (!reconcilingActiveLimits && deps.reconcileComputerActiveLimits) {
+        reconcilingActiveLimits = Promise.resolve()
+          .then(deps.reconcileComputerActiveLimits)
+          .catch((error) => getLogger().error("computer active limit reconciliation", error))
+          .finally(() => {
+            reconcilingActiveLimits = undefined;
+          });
+      }
       const auxiliary = await Promise.allSettled(
-        [
-          deps.reconcileCloudAgents,
-          deps.reconcileComputerUpdates,
-          deps.reconcileComputerActiveLimits,
-          deps.reconcileNativeEvents,
-        ].map(async (reconcile) => reconcile?.()),
+        [deps.reconcileCloudAgents, deps.reconcileComputerUpdates, deps.reconcileNativeEvents].map(
+          async (reconcile) => reconcile?.(),
+        ),
       );
       for (const result of auxiliary) {
         if (result.status === "rejected")
@@ -588,6 +594,7 @@ export function createJobReconciler(
       timer = undefined;
       await reconciling?.catch(() => undefined);
       await reconcilingGroupRunTeardowns;
+      await reconcilingActiveLimits;
       await deps.leadership?.release();
     },
   };
