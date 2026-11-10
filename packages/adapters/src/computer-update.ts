@@ -16,6 +16,7 @@ import {
   computerSupportsUpdate,
   quarantineAbandonedComputerOperation,
   replaceComputer,
+  requireComputerRecoveryProvider,
 } from "./computer-lifecycle.js";
 
 type Deps = Parameters<typeof replaceComputer>[0];
@@ -69,6 +70,7 @@ export async function queueComputerUpdate(
     // The following statement then observes their committed reservation.
     await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerId} FOR UPDATE`;
     const computer = await tx.computer.findUniqueOrThrow({ where: { id: computerId } });
+    requireComputerRecoveryProvider(deps.sandbox, computer);
     if (action === "update" && !computerSupportsUpdate(computer.kind))
       throw new Error("Computer update is not available on this device");
     if (

@@ -25,13 +25,14 @@ import {
   revokeScreenControl,
 } from "./computer-control.js";
 import {
+  computerRecoveryProviderUnavailable,
   confirmComputerStop,
-  inspectComputerPower,
   isSandboxDamaged,
   isSandboxUnsafeStop,
   markClaimedComputerStop,
   matchesComputerProvisionRoute,
   needsProviderIdentityProof,
+  probeComputerPower,
   requestClaimedComputerStop,
   saveComputerBeforeStop,
   stoppedComputerControl,
@@ -162,9 +163,23 @@ export class ComputerBusyError extends Error {
 }
 
 export class ComputerRecoveryRequiredError extends Error {
-  constructor() {
-    super("The computer needs recovery before it can be started.");
+  constructor(message = "The computer needs recovery before it can be started.") {
+    super(message);
     this.name = "ComputerRecoveryRequiredError";
+  }
+}
+
+export function requireComputerRecoveryProvider(
+  sandbox: SandboxProvider | undefined,
+  computer: Parameters<typeof toComputerRef>[0],
+): void {
+  if (
+    computer.providerRef &&
+    computerRecoveryProviderUnavailable(sandbox, toComputerRef(computer))
+  ) {
+    throw new ComputerRecoveryRequiredError(
+      "Ask your deployment administrator to restore the original computer provider settings before retrying.",
+    );
   }
 }
 
@@ -268,7 +283,9 @@ export async function provisionComputer(
     const ref = toComputerRef(existing);
     if (await matchesComputerProvisionRoute(deps.sandbox, ref)) {
       if (!needsProviderIdentityProof(deps.sandbox, ref)) return;
-      const state = await inspectComputerPower(deps.sandbox, ref, context);
+      const state = await probeComputerPower(deps.sandbox, ref, context);
+      context.signal.throwIfAborted();
+      if (state === "unknown") throw new ComputerBusyError();
       if (state === "running" || state === "stopped") return;
     }
     context.signal.throwIfAborted();
@@ -1110,6 +1127,7 @@ export async function replaceComputer(
   let existing = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
   if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
     throw new ComputerBusyError();
+  requireComputerRecoveryProvider(deps.sandbox, existing);
   const recoveryRequired =
     existing.stopRequestedAt ||
     ["restoring", "quarantined", "needs_recovery"].includes(existing.state);

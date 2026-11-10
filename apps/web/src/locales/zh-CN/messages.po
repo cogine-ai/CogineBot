@@ -7365,3 +7365,7 @@ msgstr "电脑需要恢复"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "正在保存或停止电脑…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr "请联系部署管理员恢复原电脑服务商设置后重试。"

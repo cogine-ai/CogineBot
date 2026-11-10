@@ -310,6 +310,39 @@ describe("computer recovery preserves live work", () => {
     });
   });
 
+  it("leaves a legacy computer unchanged when its provider lookup is temporarily unavailable", async () => {
+    const { deps, row, computer } = await fixture();
+    row.kind = "e2b";
+    row.providerRef = "original-computer";
+    const sandbox = createRunSandbox("e2b", { e2bApiKey: "fixture-key" });
+    vi.spyOn(sandbox, "inspectPowerState").mockRejectedValue(new Error("temporary timeout"));
+    const provision = vi.spyOn(sandbox, "provision");
+    await expect(provisionComputer({ ...deps, sandbox }, row.id, context)).rejects.toBeInstanceOf(
+      ComputerBusyError,
+    );
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(provision).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ state: "running", providerRef: "original-computer" });
+  });
+
+  it("explains a changed provider configuration before reserving or retiring a computer", async () => {
+    const { deps, row, computer } = await fixture();
+    const original = createRunSandbox("e2b", { e2bApiKey: "fixture-original" });
+    const changed = createRunSandbox("e2b", { e2bApiKey: "fixture-changed" });
+    row.kind = "e2b";
+    row.providerRef = "original-computer";
+    row.providerAuthority = original.providerAuthority?.("e2b") ?? null;
+    row.state = "quarantined";
+    const destroy = vi.spyOn(changed, "destroy");
+    for (const mode of ["recover", "reset"] as const) {
+      await expect(
+        replaceComputer({ ...deps, sandbox: changed }, row.id, mode, context),
+      ).rejects.toThrow("restore the original computer provider settings");
+    }
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
   it.each(["booting", "suspending"])(
     "leaves a new %s claim alone when provider settings change while an old caller waits",
     async (state) => {

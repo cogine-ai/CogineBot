@@ -43,6 +43,7 @@ export function ComputerMaintenanceActions({
 
   if (!computer) return null;
 
+  const blocked = computer.recoveryBlocked === true;
   const busy =
     Boolean(computer.busyBotName) || computer.state === "booting" || computer.state === "stopping";
   const showRecover =
@@ -57,6 +58,7 @@ export function ComputerMaintenanceActions({
   if (!hasActions) return null;
 
   async function run(action: Action) {
+    if (blocked) return;
     onChanging?.();
     setPending(action);
     setError(null);
@@ -112,7 +114,7 @@ export function ComputerMaintenanceActions({
             <Trans>Cancel</Trans>
           </AlertDialogCancel>
           <AlertDialogAction
-            disabled={pending !== null}
+            disabled={blocked || pending !== null}
             variant="destructive"
             onClick={() => {
               if (confirmAction) void run(confirmAction);
@@ -155,10 +157,18 @@ export function ComputerMaintenanceActions({
           data-testid="computer-more-menu"
           className="w-auto min-w-44"
         >
+          {blocked ? (
+            <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
+              <Trans>
+                Ask your deployment administrator to restore the original computer provider settings
+                before retrying.
+              </Trans>
+            </p>
+          ) : null}
           {showRecover ? (
             <DropdownMenuItem
               closeOnClick={false}
-              disabled={busy || pending !== null}
+              disabled={blocked || busy || pending !== null}
               aria-label={t`Recover computer`}
               className="flex flex-col items-start"
               onClick={() => openConfirm("recover")}
@@ -179,7 +189,7 @@ export function ComputerMaintenanceActions({
             <DropdownMenuItem
               aria-label={t`Reset computer`}
               className="flex flex-col items-start"
-              disabled={busy || pending !== null}
+              disabled={blocked || busy || pending !== null}
               onClick={() => openConfirm("reset")}
             >
               <span>
@@ -193,7 +203,7 @@ export function ComputerMaintenanceActions({
           {showUpdate ? (
             <DropdownMenuItem
               closeOnClick={false}
-              disabled={busy || pending !== null}
+              disabled={blocked || busy || pending !== null}
               aria-label={t`Update computer`}
               className="flex flex-col items-start"
               onClick={() => void run("update")}

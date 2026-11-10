@@ -7350,3 +7350,7 @@ msgstr "कंप्यूटर को पुनर्स्थापित क
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "कंप्यूटर सहेजा या रोका जा रहा है…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr ""

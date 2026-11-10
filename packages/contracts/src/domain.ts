@@ -1005,6 +1005,7 @@ export const ComputerStatusSchema = z.object({
     "quarantined",
   ]),
   powerState: z.enum(["stopping", "needs_recovery", "quarantined"]).optional(),
+  recoveryBlocked: z.boolean().optional(),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),
   takeoverRequested: z.boolean(),

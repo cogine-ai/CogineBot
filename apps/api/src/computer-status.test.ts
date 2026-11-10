@@ -1,3 +1,4 @@
+import { createRunSandbox } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
 import { executionBlocksUserTakeover, toComputerStatus } from "./computer-status.js";
 
@@ -62,6 +63,28 @@ describe("toComputerStatus", () => {
       });
     },
   );
+
+  it("blocks recovery for unavailable provider settings and clears the block when restored", () => {
+    const original = createRunSandbox("e2b", { e2bApiKey: "fixture-original" });
+    const changed = createRunSandbox("e2b", { e2bApiKey: "fixture-changed" });
+    const computer = {
+      kind: "e2b",
+      providerRef: "old-computer",
+      providerAuthority: original.providerAuthority?.("e2b"),
+      homeKey: "home",
+      state: "running",
+      scope: "team",
+      controlHolder: "none",
+      homeRevision: "r1",
+    };
+    expect(toComputerStatus("bot-1", computer, null, changed)).toMatchObject({
+      state: "error",
+      powerState: "quarantined",
+      screenAvailable: false,
+      recoveryBlocked: true,
+    });
+    expect(toComputerStatus("bot-1", computer, null, original).recoveryBlocked).toBeUndefined();
+  });
 
   it("hides update on desktop computers", () => {
     expect(

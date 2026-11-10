@@ -7350,3 +7350,7 @@ msgstr "Computer muss wiederhergestellt werden"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "Computer wird gespeichert oder angehalten…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr "Bitten Sie Ihre Deployment-Administration, die ursprünglichen Einstellungen des Computeranbieters wiederherzustellen, bevor Sie es erneut versuchen."

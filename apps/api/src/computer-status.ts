@@ -1,7 +1,10 @@
+import type { SandboxProvider } from "@rakazo/adapter-kit";
 import {
+  computerRecoveryProviderUnavailable,
   computerStopClaimIsStale,
   computerSupportsTerminal,
   computerSupportsUpdate,
+  toComputerRef,
 } from "@rakazo/adapters";
 import type { ComputerStatus } from "@rakazo/contracts";
 import { COMPUTER_ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
@@ -58,6 +61,9 @@ export function toComputerStatus(
   botId: string,
   computer: {
     kind: string;
+    homeKey?: string;
+    providerRef?: string | null;
+    providerAuthority?: string | null;
     state: string;
     scope: string;
     controlHolder: string;
@@ -69,6 +75,7 @@ export function toComputerStatus(
     updatedAt?: Date;
   } | null,
   busyBotName: string | null = null,
+  sandbox?: SandboxProvider,
 ): ComputerStatus {
   let state: ComputerStatus["state"];
   switch (computer?.state) {
@@ -95,12 +102,21 @@ export function toComputerStatus(
   if (computer?.stopRequestedAt) {
     state = computerStopClaimIsStale(computer.stopRequestedAt) ? "quarantined" : "stopping";
   }
+  const recoveryBlocked =
+    computer?.providerRef &&
+    computer.homeKey !== undefined &&
+    computerRecoveryProviderUnavailable(
+      sandbox,
+      toComputerRef({ ...computer, providerRef: computer.providerRef, homeKey: computer.homeKey }),
+    );
+  if (recoveryBlocked && state !== "stopping" && state !== "booting") state = "quarantined";
   const powerState =
     state === "stopping" || state === "quarantined" || state === "needs_recovery"
       ? state
       : undefined;
   const unavailable = powerState !== undefined;
   const screenAvailable =
+    !recoveryBlocked &&
     !computer?.maintenanceId &&
     computer?.state !== "restoring" &&
     (state === "running" || state === "booting");
@@ -112,6 +128,7 @@ export function toComputerStatus(
     kind,
     state: unavailable ? "error" : state,
     ...(powerState ? { powerState } : {}),
+    ...(recoveryBlocked ? { recoveryBlocked: true } : {}),
     controlHolder: (unavailable
       ? "none"
       : (computer?.controlHolder ?? "none")) as ComputerStatus["controlHolder"],
@@ -122,7 +139,7 @@ export function toComputerStatus(
     screenHeight: screen.height,
     homeRevision: computer?.homeRevision ?? null,
     busyBotName,
-    canUpdate: !unavailable && computerSupportsUpdate(kind),
+    canUpdate: !unavailable && !recoveryBlocked && computerSupportsUpdate(kind),
     terminalAvailable: computerSupportsTerminal(kind),
   };
 }

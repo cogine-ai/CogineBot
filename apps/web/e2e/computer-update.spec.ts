@@ -124,12 +124,15 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
   await signup(page, `computer-power-${Date.now()}@example.test`, "password12", "Computer Power");
   await completeOnboarding(page);
 
+  let recoveryBlocked = true;
+
   function markUnconfirmed(status: ComputerStatus | undefined) {
     if (!status) return;
     status.state = "error";
     status.powerState = "quarantined";
     status.screenAvailable = false;
     status.canUpdate = false;
+    status.recoveryBlocked = recoveryBlocked;
   }
 
   async function patchStatus(
@@ -183,6 +186,21 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
   expect(bootRequests).toBe(0);
   await savedFiles.click();
   await page.getByTestId("computer-more-button").click();
+  await expect(
+    page.getByRole("menuitem", { name: "Recover computer", exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "Reset computer", exact: true })).toBeDisabled();
+  await expect(page.getByText(/restore the original computer provider settings/)).toBeVisible();
+  await captureScreenshot(page, testInfo, "computer-stop-provider-blocked");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("computer-more-menu")).not.toBeVisible();
+  const computerPanel = page.getByTitle("Agent computer");
+  if (await preview.isVisible()) await computerPanel.click();
+  await expect(preview).not.toBeVisible();
+  recoveryBlocked = false;
+  await computerPanel.click();
+  await page.getByTestId("computer-more-button").click();
+  await expect(page.getByRole("menuitem", { name: "Recover computer", exact: true })).toBeEnabled();
   await expect(page.getByRole("menuitem", { name: "Recover computer", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Update computer", exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "computer-stop-unconfirmed");

@@ -65,7 +65,10 @@ The web and desktop computer view opens a terminal and a file browser from a doc
   been retired. Newly started computers record the provider account and endpoint identity.
   A different endpoint or credential cannot confirm retirement of that computer. Older records
   with an unverified provider identity require a positive lookup. If the lookup cannot confirm
-  that identity, the original reference is preserved for operator review.
+  that identity, the original reference is preserved for operator review. Temporary lookup failures
+  allow a retry. A known configuration mismatch disables recovery and reset while saved Files
+  stay available. Before rotating provider credentials, keep the original configuration
+  available until its existing computers have been retired and their references cleared.
 - Upload also needs control. Uploads land under the bot's workspace path and are capped at the attachment size limit.
 
 ## Screen connection diagnostics

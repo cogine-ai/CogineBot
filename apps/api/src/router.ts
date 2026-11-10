@@ -3423,7 +3423,7 @@ export function createRouter(deps: RouterDeps) {
         } catch (error) {
           if (error instanceof ComputerBusyError)
             throw new ORPCError("CONFLICT", { message: "Computer is busy" });
-          throw error;
+          throw mapComputerCheckpointError(error);
         }
       }),
       reset: newWork.computer.reset.handler(async ({ context, input }) =>
@@ -8288,7 +8288,7 @@ async function computerStatus(
     botId,
     botName: bot.name,
   });
-  return toComputerStatus(botId, bot.computer, busyBotName);
+  return toComputerStatus(botId, bot.computer, busyBotName, deps.sandbox);
 }
 
 /** Hand the user's screen control for this bot back, continuing any run waiting on it. */

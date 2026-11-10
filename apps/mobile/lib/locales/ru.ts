@@ -4,6 +4,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not load files": "Не удалось загрузить файлы",
   "Could not download file": "Не удалось скачать файл",
   "Download {name}": "Скачать {name}",
+  "Ask your deployment administrator to restore the original computer provider settings before retrying.":
+    "Попросите администратора развёртывания восстановить исходные настройки поставщика компьютера, затем повторите попытку.",
   "Computer status unconfirmed": "Состояние компьютера не подтверждено",
   "Computer needs recovery": "Компьютер нужно восстановить",
   "Saving or stopping computer…": "Сохранение или остановка компьютера…",

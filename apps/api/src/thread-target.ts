@@ -356,7 +356,7 @@ export async function threadHead(prisma: PrismaClient, target: ThreadTarget) {
 }
 
 export async function threadSnapshot(
-  deps: { prisma: PrismaClient },
+  deps: { prisma: PrismaClient; sandbox?: SandboxProvider },
   target: ThreadTarget,
 ): Promise<ThreadSnapshot> {
   // Lock the thread row so messages, the event cursor, active runs, and live
@@ -479,7 +479,7 @@ export async function threadSnapshot(
       attentionMessageId: core.attention.get(target.threadId)?.attentionMessageId ?? null,
       answerableApprovalMessageIds:
         core.attention.get(target.threadId)?.answerableApprovalMessageIds ?? [],
-      computer: toComputerStatus(target.botId, target.bot.computer, busyBotName),
+      computer: toComputerStatus(target.botId, target.bot.computer, busyBotName, deps.sandbox),
     };
   }
 

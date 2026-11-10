@@ -52,7 +52,7 @@ async function main(): Promise<void> {
       if (rollback) {
         const [schema] = await prisma.$queryRaw<Array<{ present: boolean }>>`
           SELECT EXISTS (
-            SELECT FROM pg_attribute WHERE attrelid = 'public.computers'::regclass
+            SELECT FROM pg_catalog.pg_attribute WHERE attrelid = 'public.computers'::pg_catalog.regclass
               AND attname = 'stopRequestedAt' AND NOT attisdropped
           ) AS present`;
         if (schema?.present) {

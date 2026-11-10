@@ -7350,3 +7350,7 @@ msgstr "Bilgisayarın kurtarılması gerekiyor"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "Bilgisayar kaydediliyor veya durduruluyor…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr ""

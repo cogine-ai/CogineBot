@@ -4,6 +4,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not load files": "Dateien konnten nicht geladen werden",
   "Could not download file": "Datei konnte nicht heruntergeladen werden",
   "Download {name}": "{name} herunterladen",
+  "Ask your deployment administrator to restore the original computer provider settings before retrying.":
+    "Bitten Sie Ihre Deployment-Administration, die ursprünglichen Einstellungen des Computeranbieters wiederherzustellen, bevor Sie es erneut versuchen.",
   "Computer status unconfirmed": "Computerstatus unbestätigt",
   "Computer needs recovery": "Computer muss wiederhergestellt werden",
   "Saving or stopping computer…": "Computer wird gespeichert oder angehalten…",

@@ -66,7 +66,8 @@ async function verifyComputerProvider(
   }
 }
 
-export async function inspectComputerPower(
+/** Raw evidence for callers that need to distinguish a missing resource from a failed probe. */
+export async function probeComputerPower(
   sandbox: SandboxProvider,
   ref: ComputerRef,
   context: AdapterContext,
@@ -74,11 +75,27 @@ export async function inspectComputerPower(
   const provider = powerProvider(sandbox, ref);
   if (!provider?.inspectPowerState || context.signal.aborted) return "unknown";
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
-  const state = await withAbort(
-    provider.inspectPowerState(ref, { ...context, signal }),
-    signal,
-  ).catch(() => "unknown" as const);
+  try {
+    return await withAbort(provider.inspectPowerState(ref, { ...context, signal }), signal);
+  } catch {
+    return "unknown";
+  }
+}
+
+export async function inspectComputerPower(
+  sandbox: SandboxProvider,
+  ref: ComputerRef,
+  context: AdapterContext,
+): Promise<SandboxPowerState> {
+  const state = await probeComputerPower(sandbox, ref, context);
   return state === "gone" && needsProviderIdentityProof(sandbox, ref) ? "unknown" : state;
+}
+
+export function computerRecoveryProviderUnavailable(
+  sandbox: SandboxProvider | undefined,
+  ref: ComputerRef,
+): boolean {
+  return Boolean(sandbox && !powerProvider(sandbox, ref));
 }
 
 /** Match the provider before deciding that a stopped computer needs no new export. */

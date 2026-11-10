@@ -7350,3 +7350,7 @@ msgstr "L’ordinateur doit être restauré"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "Enregistrement ou arrêt de l’ordinateur…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr ""

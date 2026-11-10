@@ -7350,3 +7350,7 @@ msgstr "O computador precisa ser recuperado"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "Salvando ou parando o computador…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr ""

@@ -7350,3 +7350,7 @@ msgstr "Компьютер нужно восстановить"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "Сохранение или остановка компьютера…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr "Попросите администратора развёртывания восстановить исходные настройки поставщика компьютера, затем повторите попытку."

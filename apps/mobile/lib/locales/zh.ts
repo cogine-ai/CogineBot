@@ -4,6 +4,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not load files": "无法加载文件",
   "Could not download file": "无法下载文件",
   "Download {name}": "下载 {name}",
+  "Ask your deployment administrator to restore the original computer provider settings before retrying.":
+    "请联系部署管理员恢复原电脑服务商设置后重试。",
   "Computer status unconfirmed": "电脑状态待核实",
   "Computer needs recovery": "电脑需要恢复",
   "Saving or stopping computer…": "正在保存或停止电脑…",

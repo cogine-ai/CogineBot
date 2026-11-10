@@ -7350,3 +7350,7 @@ msgstr "컴퓨터 복구 필요"
 #: src/pages/Shell.tsx
 msgid "Saving or stopping computer…"
 msgstr "컴퓨터를 저장하거나 중지하는 중…"
+
+#: src/components/ComputerMaintenanceActions.tsx
+msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
+msgstr ""

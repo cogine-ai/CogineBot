@@ -7,6 +7,8 @@ import {
   reconcileComputerUpdates,
 } from "./computer-update.js";
 
+import { createRunSandbox } from "./host-aware-sandbox.js";
+
 vi.mock("./computer-lifecycle.js", async (original) => ({
   ...(await original<typeof ComputerLifecycleModule>()),
   replaceComputer: vi.fn(),
@@ -91,6 +93,25 @@ describe("background computer maintenance", () => {
     await performComputerUpdate(deps, row.id);
     expect(replacement).toHaveBeenCalledOnce();
   });
+  it("does not queue a recovery with a different provider configuration", async () => {
+    const { row, computer, computerUpdate, deps, jobs } = fixture();
+    const original = createRunSandbox("e2b", { e2bApiKey: "fixture-original" });
+    const changed = createRunSandbox("e2b", { e2bApiKey: "fixture-changed" });
+    Object.assign(row.computer, {
+      kind: "e2b",
+      providerRef: "old-computer",
+      providerAuthority: original.providerAuthority?.("e2b"),
+      homeKey: "home",
+      state: "quarantined",
+    });
+    await expect(
+      queueComputerUpdate({ ...deps, sandbox: changed }, row.computerId, row.botId, "recover"),
+    ).rejects.toThrow("restore the original computer provider settings");
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(computerUpdate.create).not.toHaveBeenCalled();
+    expect(jobs.enqueue).not.toHaveBeenCalled();
+  });
+
   it("republishes queued intent after an enqueue failure", async () => {
     const { row, deps, jobs } = fixture();
     jobs.enqueue.mockRejectedValueOnce(new Error("offline"));
