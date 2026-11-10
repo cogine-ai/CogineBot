@@ -6,10 +6,10 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SandboxUnsafeStopError } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { ParkedComputerLeases } from "./computer-workspace.js";
 import {
   ComputerCheckpointChangedError,
   checkpointAndRecordComputerWorkspace,
-  type ParkedComputerLeases,
 } from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 import { withAbort } from "./web-ssrf.js";

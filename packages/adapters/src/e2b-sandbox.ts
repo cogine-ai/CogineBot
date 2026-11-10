@@ -1,7 +1,7 @@
+import type { CommandResult } from "@e2b/desktop";
 import {
   ApiClient,
   CommandExitError,
-  type CommandResult,
   ConnectionConfig,
   FileNotFoundError,
   Sandbox,
@@ -35,7 +35,8 @@ import {
   PORTABLE_TRANSFER_BATCH_BYTES,
   shouldSkipPortableWorkspaceFile,
 } from "./computer-workspace.js";
-import { LinuxDesktop, type LinuxDesktopHost, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
+import type { LinuxDesktopHost } from "./linux-desktop.js";
+import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
 import { streamWorkspaceBody } from "./workspace-save-policy.js";

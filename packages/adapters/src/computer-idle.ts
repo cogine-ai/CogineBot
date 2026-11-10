@@ -27,7 +27,8 @@ import {
 } from "./computer-power.js";
 import { notifyWorkspaceSaveChanged } from "./computer-save-status.js";
 import { toComputerRef } from "./computer-support.js";
-import { ComputerCheckpointChangedError, type ParkedComputerLeases } from "./computer-workspace.js";
+import type { ParkedComputerLeases } from "./computer-workspace.js";
+import { ComputerCheckpointChangedError } from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;

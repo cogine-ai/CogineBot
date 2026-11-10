@@ -1,10 +1,9 @@
 import path from "node:path";
+import type { DaytonaConfig, Sandbox } from "@daytona/sdk";
 import {
   Daytona,
-  type DaytonaConfig,
   DaytonaNotFoundError,
   DaytonaProcessExecutionTimeoutError,
-  type Sandbox,
   SandboxState,
 } from "@daytona/sdk";
 import type {
@@ -34,7 +33,8 @@ import {
   PORTABLE_TRANSFER_BATCH_BYTES,
   shouldSkipPortableWorkspaceFile,
 } from "./computer-workspace.js";
-import { LinuxDesktop, type LinuxDesktopHost, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
+import type { LinuxDesktopHost } from "./linux-desktop.js";
+import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
 
