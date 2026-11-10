@@ -407,12 +407,12 @@ describePostgres("safe workspace publication", () => {
     const bot = await addLinkedBot();
     const threadId = bot.thread!.id;
     const events = createThreadEvents(prisma);
-    const fail = (error: Error) =>
+    const fail = (error: Error, sink?: ThreadEvents) =>
       checkpointAndRecordComputerWorkspace(
         {
           prisma,
           home,
-          events,
+          events: sink,
           sandbox: {
             async *exportWorkspace() {
               yield await Promise.reject(error);
@@ -424,20 +424,30 @@ describePostgres("safe workspace publication", () => {
         context,
       );
     const rateLimited = new SandboxRateLimitError();
+    await expect(fail(rateLimited)).rejects.toBe(rateLimited);
+    const beforeEvents = await prisma.computer.findUniqueOrThrow({ where: { id } });
+    expect(beforeEvents.workspaceSaveFailure).toMatchObject({
+      reason: "rate_limited",
+      notifiedThreadIds: [],
+    });
+    expect(await prisma.message.count({ where: { threadId, role: "system" } })).toBe(0);
+
     await Promise.all([
-      expect(fail(rateLimited)).rejects.toBe(rateLimited),
-      expect(fail(rateLimited)).rejects.toBe(rateLimited),
+      expect(fail(rateLimited, events)).rejects.toBe(rateLimited),
+      expect(fail(rateLimited, events)).rejects.toBe(rateLimited),
     ]);
     const limit = new WorkspaceTooLargeError("files");
-    await expect(fail(limit)).rejects.toBe(limit);
+    await expect(fail(limit, events)).rejects.toBe(limit);
     const newlyLinked = await addLinkedBot();
-    await expect(fail(limit)).rejects.toBe(limit);
+    await expect(fail(limit, events)).rejects.toBe(limit);
     const notices = (target = threadId) =>
       prisma.message.findMany({
         where: { threadId: target, role: "system" },
         orderBy: { seq: "asc" },
       });
-    expect(await notices()).toHaveLength(1);
+    expect(await notices()).toMatchObject([
+      { clientNonce: (beforeEvents.workspaceSaveFailure as { nonce: string }).nonce },
+    ]);
     expect(await notices(newlyLinked.thread!.id)).toMatchObject([
       { clientNonce: (await notices())[0]!.clientNonce },
     ]);
@@ -452,7 +462,7 @@ describePostgres("safe workspace publication", () => {
 
     await clearThread(prisma, { spaceId, threadId, botId: bot.id });
     expect(await notices()).toHaveLength(0);
-    await expect(fail(limit)).rejects.toBe(limit);
+    await expect(fail(limit, events)).rejects.toBe(limit);
     expect(await notices()).toHaveLength(0);
     const previousNonce = (await notices(newlyLinked.thread!.id))[0]!.clientNonce;
 
@@ -474,7 +484,7 @@ describePostgres("safe workspace publication", () => {
     expect(
       (await prisma.computer.findUniqueOrThrow({ where: { id } })).workspaceSaveFailure,
     ).toBeNull();
-    await expect(fail(limit)).rejects.toBe(limit);
+    await expect(fail(limit, events)).rejects.toBe(limit);
     const after = await notices();
     expect(after).toHaveLength(1);
     expect(after[0]!.clientNonce).not.toBe(previousNonce);

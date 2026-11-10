@@ -580,15 +580,13 @@ export async function checkpointAndRecordComputerWorkspace(
       (options?.shouldReportFailure ? await options.shouldReportFailure(error) : defaultReport)
     ) {
       failed = true;
-      if (deps.events) {
-        await recordWorkspaceSaveFailure(
-          deps,
-          computerRecord,
-          () => ({ ...fence, ...checkpointAvailable(context, new Date()) }),
-          context,
-          workspaceSaveFailureReason(error, storageFailure),
-        );
-      }
+      await recordWorkspaceSaveFailure(
+        deps,
+        computerRecord,
+        () => ({ ...fence, ...checkpointAvailable(context, new Date()) }),
+        context,
+        workspaceSaveFailureReason(error, storageFailure),
+      );
     }
     throw error;
   } finally {
