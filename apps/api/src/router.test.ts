@@ -2348,6 +2348,25 @@ describe("computer terminal and file transfer", () => {
     return { sandbox, prisma, call };
   }
 
+  it("rejects a known-blocked reset before claiming a Team execution lease", async () => {
+    const { prisma, call } = setup({
+      providerAuthority: "original-provider-authority",
+      state: "quarantined",
+    });
+    prisma.computer.findUniqueOrThrow = vi.fn();
+    await expect(call("reset", {})).resolves.toMatchObject({
+      status: 409,
+      body: {
+        json: {
+          code: "CONFLICT",
+          message: expect.stringContaining("restore the original computer provider settings"),
+        },
+      },
+    });
+    expect(prisma.computer.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(prisma.computer.updateMany).not.toHaveBeenCalled();
+  });
+
   it("prepares an unused bot's folders before listing a running Team Computer", async () => {
     const { sandbox, call } = setup();
     let prepared = false;

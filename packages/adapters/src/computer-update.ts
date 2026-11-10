@@ -63,6 +63,7 @@ export async function queueComputerUpdate(
 ) {
   if (action === "recover") {
     const computer = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
+    requireComputerRecoveryProvider(deps.sandbox, computer);
     await quarantineAbandonedComputerOperation(deps.prisma, computer);
   }
   const prepared = await deps.prisma.$transaction(async (tx) => {

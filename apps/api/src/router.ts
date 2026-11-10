@@ -123,6 +123,7 @@ import {
   replaceComputer,
   replaceNativeRoutineTriggersTx,
   requestClaimedComputerStop,
+  requireComputerRecoveryProvider,
   requireRoutineTrigger,
   resolveAutoReviewChecker,
   resolveBotUploadPath,
@@ -8361,6 +8362,7 @@ async function runComputerReplace(
   const manualRunId = `${mode}:${randomUUID()}`;
   let lease: ComputerExecutionLease | null;
   try {
+    requireComputerRecoveryProvider(deps.sandbox, bot.computer);
     lease = await acquireComputerExecutionLease(deps.prisma, {
       computerId: bot.computer.id,
       runId: manualRunId,
@@ -8370,7 +8372,7 @@ async function runComputerReplace(
     if (error instanceof ComputerBusyError) {
       throw new ORPCError("CONFLICT", { message: "Computer is busy" });
     }
-    throw error;
+    throw mapComputerCheckpointError(error);
   }
   try {
     await replaceComputer(
