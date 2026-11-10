@@ -116,7 +116,7 @@ describe("computer provisioning", () => {
             updatedAt: expect.any(Date),
             providerRef: "provider-1",
             kind: "cloud",
-            bots: { some: { id: "bot-1", archivedAt: null } },
+            bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
         }),
       );
@@ -1013,7 +1013,7 @@ describe("computer provisioning", () => {
             providerRef: "provider-1",
             kind: "box",
             updatedAt: expect.any(Date),
-            bots: { some: { id: "bot-1", archivedAt: null } },
+            bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
           data: {
             state: "running",

@@ -541,6 +541,47 @@ function computerContext(actor: Actor, botId: string, operationId: string): Adap
   };
 }
 
+function computerSuspensionClaim(computer: {
+  id: string;
+  state: string;
+  kind: string;
+  providerRef: string | null;
+  screenGeneration: number;
+  restorePending: boolean;
+  updatedAt: Date;
+}) {
+  const now = new Date();
+  const previous = {
+    id: computer.id,
+    state: computer.state,
+    kind: computer.kind,
+    providerRef: computer.providerRef,
+    screenGeneration: computer.screenGeneration,
+    restorePending: computer.restorePending,
+    updatedAt: computer.updatedAt,
+    maintenanceId: null,
+  };
+  const claimStamp = new Date(Math.max(now.getTime(), computer.updatedAt.getTime() + 1));
+  return {
+    now,
+    previous,
+    suspension: {
+      ...previous,
+      state: "suspending",
+      screenGeneration: previous.screenGeneration + 1,
+      updatedAt: claimStamp,
+    },
+  };
+}
+
+function mapComputerCheckpointError(error: unknown): unknown {
+  if (error instanceof WorkspaceTooLargeError)
+    return new ORPCError("BAD_REQUEST", { message: error.message });
+  if (error instanceof ComputerCheckpointChangedError)
+    return new ORPCError("CONFLICT", { message: error.message });
+  return error;
+}
+
 function mcpServerDto(
   row: {
     id: string;
@@ -2313,33 +2354,67 @@ export function createRouter(deps: RouterDeps) {
           if (bot.computer.scope === "dedicated" && bot.computer.providerRef) {
             const ctx = computerContext(context.actor, bot.id, "computer.switch");
             const ref = toComputerRef(bot.computer);
-            if (bot.computer.state === "running") {
-              await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
-                claim: { state: "running", screenGeneration: bot.computer.screenGeneration },
-              });
-              await deps.sandbox.stop(ref, ctx);
+            const { now, previous, suspension } = computerSuspensionClaim(bot.computer);
+            if (previous.state === "booting" || previous.state === "suspending") {
+              throw new ComputerCheckpointChangedError();
             }
-            await deps.prisma.computerExecutionLease.deleteMany({
-              where: { computerId: bot.computer.id, botId: bot.id },
-            });
-            await deps.prisma.computer.update({
-              where: { id: bot.computer.id },
-              data: {
-                state: "stopped",
-                controlHolder: "none",
-                controlLeaseId: null,
-                controlLeaseExpiresAt: null,
-                controlBotId: null,
-                controlRunId: null,
-                executionRunId: null,
-                executionBotId: null,
-                executionLeaseExpiresAt: null,
-              },
-            });
+            const needsStop =
+              previous.state === "running" ||
+              (previous.state === "error" && previous.restorePending);
+            let claimedStop = false;
+            let stopStarted = false;
+            try {
+              if (needsStop) {
+                const claimed = await deps.prisma.computer.updateMany({
+                  where: {
+                    ...previous,
+                    executionLeases: { none: { expiresAt: { gt: now } } },
+                  },
+                  data: { state: suspension.state, updatedAt: suspension.updatedAt },
+                });
+                if (claimed.count !== 1) throw new ComputerCheckpointChangedError();
+                claimedStop = true;
+                if (!previous.restorePending) {
+                  await checkpointAndRecordComputerWorkspace(deps, bot.computer, ref, ctx, {
+                    claim: suspension,
+                  });
+                }
+                stopStarted = true;
+                await deps.sandbox.stop(ref, ctx);
+              }
+              const stopped = await deps.prisma.computer.updateMany({
+                where: claimedStop ? suspension : previous,
+                data: {
+                  state: "stopped",
+                  controlHolder: "none",
+                  controlLeaseId: null,
+                  controlLeaseExpiresAt: null,
+                  controlBotId: null,
+                  controlRunId: null,
+                  executionRunId: null,
+                  executionBotId: null,
+                  executionLeaseExpiresAt: null,
+                },
+              });
+              if (stopped.count !== 1) throw new ComputerCheckpointChangedError();
+              await deps.prisma.computerExecutionLease.deleteMany({
+                where: { computerId: bot.computer.id, botId: bot.id },
+              });
+            } catch (error) {
+              if (claimedStop) {
+                await deps.prisma.computer
+                  .updateMany({
+                    where: suspension,
+                    data: { state: stopStarted ? "error" : previous.state },
+                  })
+                  .catch(() => undefined);
+              }
+              throw error;
+            }
           }
           return await repos.setBotComputer(context.actor, bot.id, input.mode);
         } catch (error) {
-          throw mapSpaceLifecycleError(error);
+          throw mapComputerCheckpointError(mapSpaceLifecycleError(error));
         } finally {
           await deps.prisma.bot.updateMany({
             where: { id: bot.id },
@@ -3175,32 +3250,20 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
         const controlLeaseId = bot.computer.controlLeaseId;
-        const now = new Date();
-        const claimStamp = new Date(Math.max(now.getTime(), bot.computer.updatedAt.getTime() + 1));
-        const suspensionClaim = {
-          id: bot.computer.id,
-          state: "suspending",
-          kind: bot.computer.kind,
-          providerRef: bot.computer.providerRef,
-          screenGeneration: bot.computer.screenGeneration + 1,
-          restorePending: bot.computer.restorePending,
-          updatedAt: claimStamp,
-          maintenanceId: null,
-        };
+        const {
+          now,
+          previous,
+          suspension: suspensionClaim,
+        } = computerSuspensionClaim(bot.computer);
         const claimed = await deps.prisma.computer.updateMany({
           where: {
-            id: bot.computer.id,
-            state: { equals: bot.computer.state, notIn: ["booting", "suspending"] },
-            screenGeneration: bot.computer.screenGeneration,
-            restorePending: bot.computer.restorePending,
-            providerRef: bot.computer.providerRef,
-            updatedAt: bot.computer.updatedAt,
-            maintenanceId: null,
+            ...previous,
+            state: { equals: previous.state, notIn: ["booting", "suspending"] },
             executionLeases: {
               none: { botId: { not: bot.id }, expiresAt: { gt: now } },
             },
           },
-          data: { state: "suspending", updatedAt: claimStamp },
+          data: { state: suspensionClaim.state, updatedAt: suspensionClaim.updatedAt },
         });
         if (claimed.count !== 1) {
           throw new ORPCError("CONFLICT", {
@@ -3263,11 +3326,7 @@ export function createRouter(deps: RouterDeps) {
               data: { state: stopStarted ? "error" : bot.computer.state },
             })
             .catch(() => undefined);
-          if (error instanceof WorkspaceTooLargeError)
-            throw new ORPCError("BAD_REQUEST", { message: error.message });
-          if (error instanceof ComputerCheckpointChangedError)
-            throw new ORPCError("CONFLICT", { message: error.message });
-          throw error;
+          throw mapComputerCheckpointError(error);
         }
         await deps.jobs.cancel(
           computerControlExpireJobKey(bot.computer.id, controlLeaseId ?? undefined),

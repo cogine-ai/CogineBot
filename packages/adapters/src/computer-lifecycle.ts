@@ -200,7 +200,9 @@ export async function provisionComputer(
           screenGeneration: existing.screenGeneration,
           restorePending: false,
           maintenanceId: existing.maintenanceId ?? null,
-          ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+          ...(context.botId
+            ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+            : {}),
         },
         data: { updatedAt: new Date() },
       });
@@ -320,7 +322,9 @@ export async function provisionComputer(
       id: computerId,
       ...claimWhere,
       maintenanceId: existing.maintenanceId ?? null,
-      ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+      ...(context.botId
+        ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+        : {}),
     },
     data: {
       state: "booting",
@@ -390,7 +394,9 @@ export async function provisionComputer(
         updatedAt: claimStamp,
         ...previousRef,
         maintenanceId: existing.maintenanceId ?? null,
-        ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+        ...(context.botId
+          ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+          : {}),
       },
       data: {
         state: "running",

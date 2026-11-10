@@ -509,7 +509,11 @@ export async function archiveBot(
     });
     if (dedicated) {
       await tx.computer.updateMany({
-        where: { id: dedicated.id, state: { not: "running" } },
+        where: {
+          id: dedicated.id,
+          state: { not: "running" },
+          NOT: { state: "error", restorePending: true },
+        },
         data: { state: "stopped" },
       });
     }
@@ -527,7 +531,11 @@ export async function archiveBot(
   const currentDedicated = dedicated
     ? await deps.prisma.computer.findUnique({ where: { id: dedicated.id } })
     : null;
-  if (currentDedicated?.providerRef && currentDedicated.state === "running") {
+  if (
+    currentDedicated?.providerRef &&
+    (currentDedicated.state === "running" ||
+      (currentDedicated.state === "error" && currentDedicated.restorePending))
+  ) {
     const ref = toComputerRef(currentDedicated);
     const childContext = {
       ...context,
@@ -535,12 +543,14 @@ export async function archiveBot(
       runId: undefined,
       screenLeaseId: undefined,
     };
-    await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, childContext);
+    if (!currentDedicated.restorePending) {
+      await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, childContext);
+    }
     await deps.sandbox.stop(ref, childContext);
     await deps.prisma.computer.updateMany({
       where: {
         id: currentDedicated.id,
-        state: "running",
+        state: currentDedicated.state,
         providerRef: currentDedicated.providerRef,
       },
       data: { state: "stopped" },

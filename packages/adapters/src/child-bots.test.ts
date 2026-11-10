@@ -1938,7 +1938,7 @@ describe("archiveBot", () => {
     );
   });
 
-  it("surfaces computer stop failures and leaves the provider state retryable", async () => {
+  it.each([false, true])("keeps a failed stop retryable (%s)", async (pending) => {
     const archivedAt = new Date("2026-08-16T12:00:00.000Z");
     const updatedAt = new Date("2026-08-16T12:00:00.000Z");
     const updateComputer = vi.fn().mockResolvedValue({});
@@ -1968,7 +1968,8 @@ describe("archiveBot", () => {
       homeKey: "bot-1",
       kind: "cloud",
       providerRef: "provider-1",
-      state: "running",
+      state: pending ? "error" : "running",
+      restorePending: pending,
     };
     const stop = vi.fn().mockRejectedValue(new Error("stop failed"));
     const prisma = {
@@ -2007,13 +2008,17 @@ describe("archiveBot", () => {
       expect.objectContaining({ providerRef: "provider-1" }),
       expect.objectContaining({ botId: "bot-1", runId: undefined, screenLeaseId: undefined }),
     );
-    expect(findCheckpoint).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          executionLeases: { none: { expiresAt: { gt: expect.any(Date) } } },
+    if (pending) {
+      expect(findCheckpoint).not.toHaveBeenCalled();
+    } else {
+      expect(findCheckpoint).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            executionLeases: { none: { expiresAt: { gt: expect.any(Date) } } },
+          }),
         }),
-      }),
-    );
+      );
+    }
     expect(updateComputer).not.toHaveBeenCalled();
   });
 

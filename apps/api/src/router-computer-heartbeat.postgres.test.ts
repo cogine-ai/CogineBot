@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouterClient } from "@orpc/server";
 import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
-import { DesktopSandboxProvider, LocalAgentHomeStore } from "@rakazo/adapters";
+import {
+  ComputerCheckpointChangedError,
+  DesktopSandboxProvider,
+  LocalAgentHomeStore,
+} from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
@@ -42,6 +46,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let stopComputer: () => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
+  let switchComputerMode: () => Promise<unknown>;
 
   beforeAll(async () => {
     database = createDb(databaseUrl!);
@@ -104,6 +109,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     stopComputer = () => client.computer.stop({ botId });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
     bootComputer = () => client.computer.boot({ botId });
+    switchComputerMode = () => client.bots.setComputer({ botId, mode: "team" });
   });
 
   beforeEach(async () => {
@@ -195,6 +201,38 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
   });
 
+  it.each([
+    [new WorkspaceTooLargeError("files"), "BAD_REQUEST"],
+    [new ComputerCheckpointChangedError(), "CONFLICT"],
+  ] as const)("reports an actionable workspace error during mode switch", async (error, code) => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        scope: "dedicated",
+        homeRevision: "last-saved-revision",
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+    exportWorkspace.mockImplementationOnce(async function* () {
+      yield await Promise.reject(error);
+    });
+
+    await expect(switchComputerMode()).rejects.toMatchObject({ code, message: error.message });
+    expect(stopProvider).not.toHaveBeenCalled();
+    expect(await database.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+      computerId,
+      computerSwitching: false,
+    });
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      state: "running",
+      homeRevision: "last-saved-revision",
+    });
+  });
+
   it("stops a provider with a pending restore without exporting its incomplete workspace", async () => {
     await database.prisma.computer.update({
       where: { id: computerId },
@@ -217,6 +255,75 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       homeRevision: "last-saved-revision",
       homeRevisionAt: null,
       restorePending: true,
+    });
+  });
+
+  it("stops a pending dedicated provider before moving the bot to a Team Computer", async () => {
+    await database.prisma.thread.create({ data: { botId, spaceId, userId: actor.userId } });
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        scope: "dedicated",
+        state: "error",
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+        homeRevision: "last-saved-revision",
+        restorePending: true,
+      },
+    });
+
+    await expect(switchComputerMode()).resolves.toMatchObject({ id: botId });
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(stopProvider).toHaveBeenCalledOnce();
+    const switched = await database.prisma.bot.findUniqueOrThrow({
+      where: { id: botId },
+      include: { computer: true },
+    });
+    expect(switched.computer?.scope).toBe("team");
+    expect(switched.computerId).not.toBe(computerId);
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      state: "stopped",
+      homeRevision: "last-saved-revision",
+      restorePending: true,
+    });
+  });
+
+  it("leaves a concurrently restored dedicated provider running during mode switch", async () => {
+    const before = await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        scope: "dedicated",
+        state: "error",
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+        homeRevision: "last-saved-revision",
+        restorePending: true,
+      },
+    });
+    afterSnapshot = () =>
+      database.prisma.computer.update({
+        where: { id: computerId },
+        data: { state: "running", restorePending: false, updatedAt: before.updatedAt },
+      });
+
+    await expect(switchComputerMode()).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(stopProvider).not.toHaveBeenCalled();
+    expect(await database.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+      computerId,
+      computerSwitching: false,
+    });
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      providerRef: "heartbeat-provider",
+      state: "running",
+      restorePending: false,
+      homeRevision: "last-saved-revision",
     });
   });
 
