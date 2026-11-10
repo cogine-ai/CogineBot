@@ -161,6 +161,7 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
+import { ComputerActiveLimit } from "../components/computer/ComputerActiveLimit";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { FilesApp } from "../components/computer/FilesApp";
 import { WorkspaceSaveStatus } from "../components/computer/WorkspaceSaveStatus";
@@ -859,6 +860,7 @@ export function ShellPage() {
     botId: string;
     isCurrent: () => boolean;
     promise: Promise<ComputerStatus>;
+    intent: { allowWake: boolean };
   } | null>(null);
   function invalidateComputerBoot() {
     computerBootEpoch.current += 1;
@@ -3985,11 +3987,13 @@ export function ShellPage() {
     takeControl,
     overlay,
     force = false,
+    onlyIfRunning = false,
   }: {
     botId: string;
     takeControl: boolean;
     overlay: boolean;
     force?: boolean;
+    onlyIfRunning?: boolean;
   }) {
     const cached = computerCacheRef.current.get(targetBotId);
     const targetComputer = computer?.botId === targetBotId ? computer : (cached?.computer ?? null);
@@ -4002,6 +4006,7 @@ export function ShellPage() {
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
     let provision = pending?.botId === targetBotId && pending.isCurrent() ? pending : null;
+    if (provision && !onlyIfRunning) provision.intent.allowWake = true;
     let stillThisBoot = provision?.isCurrent;
     if (!stillThisBoot) {
       const epoch = ++computerBootEpoch.current;
@@ -4028,8 +4033,28 @@ export function ShellPage() {
       if (needsBoot) {
         const client = createSpaceRpc(spaceId ?? null, isCurrent);
         // Claim the provision before dispatch so both views share only the in-flight boot.
-        const promise = Promise.resolve().then(() => client.computer.boot({ botId: targetBotId }));
-        const attempt = { botId: targetBotId, isCurrent, promise };
+        const intent = { allowWake: !onlyIfRunning };
+        const promise = Promise.resolve().then(async () => {
+          const passive = !intent.allowWake;
+          const status = await client.computer.boot({
+            botId: targetBotId,
+            ...(passive ? { onlyIfRunning: true } : {}),
+          });
+          // If the passive read found a stopped or metered computer, honor an
+          // explicit Open that arrived while it was in flight.
+          if (
+            passive &&
+            intent.allowWake &&
+            isCurrent() &&
+            (status.state !== "running" || status.requiresExplicitWake) &&
+            status.state !== "stopping" &&
+            !computerStateRequiresRecovery(status.state)
+          ) {
+            return client.computer.boot({ botId: targetBotId });
+          }
+          return status;
+        });
+        const attempt = { botId: targetBotId, isCurrent, promise, intent };
         provision = attempt;
         computerBootAttempt.current = attempt;
         const clear = () => {
@@ -4150,6 +4175,7 @@ export function ShellPage() {
       const currentScreen = computerCacheRef.current.get(botId)?.screenUrl ?? screen;
       if (
         current?.botId !== botId ||
+        currentComputer?.requiresExplicitWake ||
         !computerPanelNeedsScreen(currentComputer?.state, currentScreen) ||
         screenReadiness.current?.confirmed !== true ||
         autoBooted.current === botId
@@ -4161,6 +4187,7 @@ export function ShellPage() {
         takeControl: false,
         overlay: false,
         force: true,
+        onlyIfRunning: true,
       }).catch(() => undefined);
     })();
     return () => {
@@ -4541,6 +4568,7 @@ export function ShellPage() {
         </Button>
       </div>
     ) : null;
+  const capPaused = computer?.state === "suspended" && computer.suspensionReason === "active_limit";
   const saveFailure = computer?.state === "running" && computer.workspaceSaveFailure;
   const savingWorkspace =
     computer?.state === "stopping" && computer.workspaceSaveProgress !== undefined;
@@ -6163,6 +6191,13 @@ export function ShellPage() {
                     <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                       <Trans>Open in full window</Trans>
                     </div>
+                  ) : capPaused ? (
+                    <div className="grid h-full place-items-center px-6 text-center text-sm">
+                      <ComputerActiveLimit
+                        computer={computer}
+                        onContinue={() => void openComputer()}
+                      />
+                    </div>
                   ) : savingWorkspace ? (
                     <div className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground">
                       <WorkspaceSaveStatus computer={computer} />
@@ -6211,7 +6246,8 @@ export function ShellPage() {
                         ))}
                     </div>
                   )}
-                  {!computerScreenError &&
+                  {!capPaused &&
+                  !computerScreenError &&
                   !showingRecoveryHint &&
                   !computerStateRequiresRecovery(computer?.state) &&
                   computer?.state !== "stopping" ? (
@@ -6232,6 +6268,11 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                {computer?.state === "running" && computer.activeLimitAt ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <Trans>At the runtime limit, pausing may stop background tasks.</Trans>
+                  </p>
+                ) : null}
                 {saveFailure ? <WorkspaceSaveStatus computer={computer} /> : null}
                 {saveFailure ||
                 computer?.state === "suspended" ||
@@ -7234,7 +7275,14 @@ export function ShellPage() {
                     : undefined
                 }
               >
-                {savingWorkspace ? (
+                {capPaused ? (
+                  <div className="grid h-full place-items-center text-center text-sm">
+                    <ComputerActiveLimit
+                      computer={computer}
+                      onContinue={() => void openComputer(computerBot.id)}
+                    />
+                  </div>
+                ) : savingWorkspace ? (
                   <div className="grid h-full place-items-center text-center text-sm text-muted-foreground">
                     <WorkspaceSaveStatus computer={computer} />
                   </div>

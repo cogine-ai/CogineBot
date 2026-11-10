@@ -6,6 +6,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SandboxUnsafeStopError } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { ParkedComputerLeases } from "./computer-workspace.js";
 import {
   ComputerCheckpointChangedError,
   checkpointAndRecordComputerWorkspace,
@@ -25,7 +26,10 @@ export function matchesComputerProvider(sandbox: SandboxProvider, ref: ComputerR
   return !ref.providerAuthority || sandbox.providerAuthority?.(ref.kind) === ref.providerAuthority;
 }
 
-function powerProvider(sandbox: SandboxProvider, ref: ComputerRef): SandboxProvider | undefined {
+export function powerProvider(
+  sandbox: SandboxProvider,
+  ref: ComputerRef,
+): SandboxProvider | undefined {
   if (!matchesComputerProvider(sandbox, ref)) return undefined;
   return sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
 }
@@ -161,6 +165,7 @@ export async function checkpointComputerBeforeStop(
   ref: ComputerRef,
   context: AdapterContext,
   claim: Prisma.ComputerWhereInput,
+  parkedLeases?: ParkedComputerLeases,
 ): Promise<"gone" | "damaged" | undefined> {
   const provider = powerProvider(deps.sandbox, ref);
   if (!provider) throw new Error("The original computer provider is unavailable");
@@ -176,6 +181,7 @@ export async function checkpointComputerBeforeStop(
       context,
       {
         claim,
+        parkedLeases,
         onExported: () => {
           exported = true;
         },
@@ -209,6 +215,7 @@ export async function publishComputerPowerStatus(
   deps: { prisma: PrismaClient; events: ThreadEvents },
   computer: { id: string; spaceId: string },
   status: "stopped" | "suspended" | "needs_recovery" | "quarantined",
+  suspensionReason?: "active_limit" | null,
 ): Promise<void> {
   const bots = await deps.prisma.bot.findMany({
     where: { computerId: computer.id },
@@ -224,7 +231,7 @@ export async function publishComputerPowerStatus(
       payload:
         status === "quarantined" || status === "needs_recovery"
           ? { status: "error", powerState: status }
-          : { status },
+          : { status, ...(suspensionReason ? { suspensionReason } : {}) },
     });
   }
 }

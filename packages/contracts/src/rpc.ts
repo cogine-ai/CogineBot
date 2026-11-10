@@ -619,7 +619,9 @@ export const appContract = {
   },
   computer: {
     status: oc.input(botId).output(ComputerStatusSchema),
-    boot: oc.input(botId).output(ComputerStatusSchema),
+    boot: oc
+      .input(botId.extend({ onlyIfRunning: z.boolean().optional() }))
+      .output(ComputerStatusSchema),
     stop: oc.input(botId).output(ComputerStatusSchema),
     recover: oc.input(botId).output(ComputerUpdateSchema),
     reset: oc.input(botId).output(ComputerStatusSchema),

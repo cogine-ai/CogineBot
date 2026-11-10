@@ -20,6 +20,7 @@ import {
   CodexCatalogCache,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
+  createComputerActiveLimitRecovery,
   createConnectorStack,
   createGroupRunTeardownRecovery,
   createJobReconciler,
@@ -318,6 +319,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileComputerActiveLimits: createComputerActiveLimitRecovery({ prisma, sandbox, jobs }),
     reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
     reconcileNativeEvents: () => nativeEvents.reconcile(),
   });

@@ -270,6 +270,121 @@ describePostgres("safe workspace publication", () => {
     return { id, record, ref, homeRevision };
   }
 
+  it.each([false, true])(
+    "settles a parked takeover at the limit only while it stays parked (resumed=%s)",
+    async (resumed) => {
+      const { id, homeRevision } = await seed();
+      const prisma = database.prisma;
+      const runningSince = new Date(Date.now() - 3 * 60 * 60_000);
+      await prisma.computer.update({ where: { id }, data: { runningSince } });
+      await prisma.computerExecutionLease.deleteMany({ where: { computerId: id } });
+      const owner = { userId: context.userId, spaceId };
+      const bot = await prisma.bot.create({
+        data: {
+          ...owner,
+          computerId: id,
+          name: "Parked Bot",
+          color: "slate",
+          thread: { create: owner },
+        },
+        include: { thread: true },
+      });
+      const task = await prisma.task.create({
+        data: {
+          ...owner,
+          botId: bot.id,
+          threadId: bot.thread!.id,
+          prompt: "Synthetic work",
+          status: "running",
+        },
+      });
+      const run = await prisma.run.create({
+        data: {
+          ...owner,
+          botId: bot.id,
+          threadId: bot.thread!.id,
+          taskId: task.id,
+          status: "waiting_takeover",
+          trigger: "chat",
+        },
+      });
+      const lease = await prisma.computerExecutionLease.create({
+        data: {
+          computerId: id,
+          botId: bot.id,
+          runId: run.id,
+          fence: 7,
+          expiresAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      if (!resumed) {
+        const waitingInput = await prisma.run.create({
+          data: {
+            ...owner,
+            botId: bot.id,
+            threadId: bot.thread!.id,
+            taskId: task.id,
+            status: "waiting_input",
+            trigger: "chat",
+          },
+        });
+        await prisma.computer.update({ where: { id }, data: { executionRunId: waitingInput.id } });
+      }
+      let running = true;
+      const stop = vi.fn(async () => {
+        running = false;
+      });
+      const sandbox = {
+        billsWhileRunning: () => true,
+        inspectPowerState: async () => (running ? "running" : "stopped"),
+        inspectBackgroundWork: vi.fn().mockResolvedValue("active"),
+        async *exportWorkspace() {
+          yield { path: "notes.txt", content: Buffer.from("workspace after the wait") };
+          if (resumed) {
+            await prisma.run.update({
+              where: { id: run.id },
+              data: {
+                status: "running",
+                leaseOwner: "synthetic-worker",
+                leaseExpiresAt: new Date(Date.now() + 60_000),
+              },
+            });
+          }
+        },
+        stop,
+      } as unknown as SandboxProvider;
+      await sleepComputerIfIdle(
+        {
+          prisma,
+          home,
+          sandbox,
+          events: createThreadEvents(prisma),
+          jobs: { enqueue: vi.fn().mockResolvedValue(undefined) } as unknown as JobPublisher,
+        },
+        id,
+        runningSince.toISOString(),
+      );
+      const state = await prisma.computer.findUniqueOrThrow({ where: { id } });
+      expect(state.state).toBe(resumed ? "running" : "suspended");
+      expect(state.suspensionReason).toBe(resumed ? null : "active_limit");
+      expect(state.runningSince).toEqual(resumed ? runningSince : null);
+      expect(state.executionRunId).toBeNull();
+      expect(state.homeRevision).not.toBe(homeRevision);
+      expect(await home.readFile(id, "notes.txt", context)).toBe("workspace after the wait");
+      expect(stop).toHaveBeenCalledTimes(resumed ? 0 : 1);
+      expect(sandbox.inspectBackgroundWork).not.toHaveBeenCalled();
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: resumed ? "running" : "waiting_takeover",
+      });
+      expect(
+        await prisma.computerExecutionLease.findUniqueOrThrow({ where: { id: lease.id } }),
+      ).toMatchObject({
+        fence: 7,
+        expiresAt: resumed ? lease.expiresAt : new Date(0),
+      });
+    },
+  );
+
   it("publishes completed files and written bytes during a claimed save without changing its stamp", async () => {
     const { id, record, ref } = await seed();
     const prisma = database.prisma;

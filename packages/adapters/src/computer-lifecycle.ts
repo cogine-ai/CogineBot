@@ -17,6 +17,7 @@ import { COMPUTER_ACTIVE_RUN_STATUSES, parseScreenLeaseId, screenLeaseId } from 
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerExecutionLeases, Prisma, parseComputerMode } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { computerActiveDeadline, scheduleComputerActiveLimit } from "./computer-active-limit.js";
 import {
   clearInactiveUserComputerControl,
   expireComputerControl,
@@ -32,6 +33,7 @@ import {
   markClaimedComputerStop,
   matchesComputerProvisionRoute,
   needsProviderIdentityProof,
+  powerProvider,
   probeComputerPower,
   requestClaimedComputerStop,
   saveComputerBeforeStop,
@@ -491,6 +493,7 @@ export async function provisionComputer(
   });
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
+  let runtimeStartedAt: Date | undefined;
   const clearedWorkspaceSaveStatus = {
     workspaceSaveFailure: Prisma.DbNull,
     workspaceSaveProgress: Prisma.DbNull,
@@ -544,6 +547,19 @@ export async function provisionComputer(
     );
     const providerAuthority = authorityFor(ref);
     provisioned = providerAuthority ? { ...ref, providerAuthority } : ref;
+    runtimeStartedAt = undefined;
+    if (
+      ref.kind !== "desktop" &&
+      (ref.fresh === true ||
+        ref.started === true ||
+        !providerRef ||
+        ref.providerRef !== providerRef) &&
+      powerProvider(deps.sandbox, provisioned)?.billsWhileRunning?.(provisioned) === true
+    ) {
+      runtimeStartedAt = new Date(
+        Math.max(Date.now(), (existing.runningSince?.getTime() ?? -1) + 1),
+      );
+    }
     await deps.sandbox.prepare(provisioned, context);
     return provisioned;
   };
@@ -689,6 +705,7 @@ export async function provisionComputer(
     await finishRestoreRenewal?.();
     restoreContext.signal.throwIfAborted();
     const activeControl = hasActiveComputerControl(existing);
+    const newRuntime = replacement || recoveryStarted || ref.started === true;
     const activated = await deps.prisma.computer.updateMany({
       where: {
         ...bootClaim(),
@@ -703,9 +720,12 @@ export async function provisionComputer(
         kind: ref.kind,
         ...(ref.providerAuthority ? { providerAuthority: ref.providerAuthority } : {}),
         restorePending: false,
-        ...(replacement || recoveryStarted || ref.started === true
-          ? clearedWorkspaceSaveStatus
+        ...(newRuntime ? clearedWorkspaceSaveStatus : {}),
+        ...(runtimeStartedAt || (newRuntime && existing.runningSince)
+          ? { runningSince: runtimeStartedAt ?? null }
           : {}),
+        ...(newRuntime && existing.runningObservedAt ? { runningObservedAt: null } : {}),
+        ...(existing.suspensionReason ? { suspensionReason: null } : {}),
         ...(!reconnecting || recoveryStarted
           ? {
               controlHolder: activeControl ? "user" : controlHolder,
@@ -723,6 +743,11 @@ export async function provisionComputer(
     });
     if (activated.count !== 1) {
       throw new ComputerBusyError();
+    }
+    if (runtimeStartedAt) {
+      const deadline = computerActiveDeadline(deps.sandbox, ref, runtimeStartedAt);
+      if (deadline)
+        void scheduleComputerActiveLimit(deps.jobs, computerId, runtimeStartedAt, deadline);
     }
     return ref;
   } catch (error) {
@@ -762,25 +787,34 @@ export async function provisionComputer(
         if (!(failure instanceof ComputerCheckpointChangedError)) rollbackError = failure;
       }
     }
+    const state =
+      unsafe || rollbackError || (claimState === "restoring" && !rolledBack)
+        ? "quarantined"
+        : damaged || recoveryStarted
+          ? "needs_recovery"
+          : reconnecting && !restorePending
+            ? "running"
+            : "error";
+    const restarted =
+      provisioned?.started === true &&
+      provisioned.providerRef === previousRef.providerRef &&
+      provisioned.kind === previousRef.kind;
     try {
-      await deps.prisma.computer.updateMany({
+      const recorded = await deps.prisma.computer.updateMany({
         where: bootClaim(),
         data: {
-          state:
-            unsafe || rollbackError || (claimState === "restoring" && !rolledBack)
-              ? "quarantined"
-              : damaged || recoveryStarted
-                ? "needs_recovery"
-                : reconnecting && !restorePending
-                  ? "running"
-                  : "error",
+          state,
           stopRequestedAt: null,
           // The provider completed the restart even if preparation did not.
-          ...(provisioned?.started === true &&
-          provisioned.providerRef === previousRef.providerRef &&
-          provisioned.kind === previousRef.kind
-            ? clearedWorkspaceSaveStatus
+          ...(restarted ? clearedWorkspaceSaveStatus : {}),
+          ...((restarted || rolledBack) && existing.runningObservedAt
+            ? { runningObservedAt: null }
             : {}),
+          ...(state === "running" && restarted && runtimeStartedAt
+            ? { runningSince: runtimeStartedAt }
+            : rolledBack && existing.runningSince
+              ? { runningSince: null }
+              : {}),
           ...(unsafe || rollbackError || damaged || recoveryStarted || claimState === "restoring"
             ? { restorePending: true, ...stoppedComputerControl }
             : {}),
@@ -811,6 +845,17 @@ export async function provisionComputer(
               : {}),
         },
       });
+      if (
+        recorded.count === 1 &&
+        state === "running" &&
+        restarted &&
+        provisioned &&
+        runtimeStartedAt
+      ) {
+        const deadline = computerActiveDeadline(deps.sandbox, provisioned, runtimeStartedAt);
+        if (deadline)
+          void scheduleComputerActiveLimit(deps.jobs, computerId, runtimeStartedAt, deadline);
+      }
     } catch (recordError) {
       throw new AggregateError(
         [error, ...(rollbackError ? [rollbackError] : []), recordError],
@@ -1371,6 +1416,9 @@ export async function replaceComputer(
       where: { ...suspensionClaim, stopRequestedAt: stopRequested ? { not: null } : null },
       data: {
         state: "stopped",
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
         providerRef: null,
         restorePending: true,
         stopRequestedAt: null,

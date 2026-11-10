@@ -106,6 +106,7 @@ export class LinuxDesktop {
     context: AdapterContext,
     env: DesktopEnvironment,
     entry: PendingControlCleanup,
+    host: LinuxDesktopHost = this.host,
   ) {
     await this.run(
       computer,
@@ -118,27 +119,38 @@ export class LinuxDesktop {
         entry.version,
       ),
       context,
+      host,
     );
     this.forgetCleanup(computer, context, entry);
   }
 
-  private async run(computer: ComputerRef, command: string, context: AdapterContext) {
+  private async run(
+    computer: ComputerRef,
+    command: string,
+    context: AdapterContext,
+    host = this.host,
+  ) {
     context.signal.throwIfAborted();
-    const result = await this.host.run(computer, command, context);
+    const result = await host.run(computer, command, context);
     if (result.code === 75) throw new ComputerScreenUnavailableError();
     if (result.code !== 0) throw new Error(result.stderr || "computer desktop operation failed");
     return result.stdout;
   }
 
-  private async ensure(computer: ComputerRef, context: AdapterContext): Promise<EnsuredDesktop> {
-    const env = await this.host.environment(computer);
+  private async ensure(
+    computer: ComputerRef,
+    context: AdapterContext,
+    host = this.host,
+  ): Promise<EnsuredDesktop> {
+    const env = await host.environment(computer);
     for (const pending of this.pendingCleanups(computer, context))
-      await this.retryCleanup(computer, context, env, pending);
+      await this.retryCleanup(computer, context, env, pending, host);
     const key = screenSessionKey(context);
     const output = await this.run(
       computer,
       managedDesktopCommand(key, context.screenLeaseId, env, randomUUID()),
       context,
+      host,
     );
     const match = output.match(/RAKAZO_DESKTOP=(\d+):([a-zA-Z0-9_-]+)/);
     if (!match) throw new ComputerScreenUnavailableError();
@@ -176,8 +188,9 @@ export class LinuxDesktop {
     computer: ComputerRef,
     request: ScreenRequest,
     context: AdapterContext,
+    host = this.host,
   ): Promise<ScreenSession> {
-    const screen = await this.ensure(computer, context);
+    const screen = await this.ensure(computer, context, host);
     let token = screen.token;
     const grantVersion = request.interactive ? randomUUID() : undefined;
     if (request.interactive) {
@@ -194,10 +207,11 @@ export class LinuxDesktop {
           grantVersion,
         ),
         context,
+        host,
       );
     }
     try {
-      const url = await this.host.screenUrl(
+      const url = await host.screenUrl(
         computer,
         request.interactive ? screen.layout.controlPort : screen.layout.viewPort,
         context,
@@ -214,7 +228,7 @@ export class LinuxDesktop {
         const entry = { token, version: grantVersion!, leaseId: context.screenLeaseId };
         pending.set(entry.version, entry);
         try {
-          await this.retryCleanup(computer, context, screen.env, entry);
+          await this.retryCleanup(computer, context, screen.env, entry, host);
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
@@ -250,14 +264,15 @@ export class LinuxDesktop {
     interactive: boolean,
     context: AdapterContext,
     token?: string,
+    host = this.host,
   ) {
     if (!token) {
       if (interactive) throw new Error("interactive screen requires a control token");
       return;
     }
     const env = interactive
-      ? (await this.ensure(computer, context)).env
-      : await this.host.environment(computer);
+      ? (await this.ensure(computer, context, host)).env
+      : await host.environment(computer);
     const pending = interactive
       ? []
       : this.pendingCleanups(computer, context).filter((entry) => entry.token === token);
@@ -271,6 +286,7 @@ export class LinuxDesktop {
         token,
       ),
       context,
+      host,
     );
     for (const entry of pending) this.forgetCleanup(computer, context, entry);
   }

@@ -133,6 +133,8 @@ export interface ScreenRequest {
   view: "stream" | "snapshot";
   /** Request a separately authorized control stream instead of the read-only viewer. */
   interactive?: boolean;
+  /** Passive attendance may attach to a live runtime without waking it. */
+  onlyIfRunning?: boolean;
   /** Fences an interactive stream so an older lease cannot revoke its replacement. */
   controlToken?: string;
 }
@@ -831,7 +833,7 @@ export interface BackgroundJobPayloads {
   "run.continue": { runId: string; quotaWaitRevision?: number };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "routine.retry": { runId: string };
-  "computer.sleep": { computerId: string };
+  "computer.sleep": { computerId: string; activeSince?: string };
   "computer.update": { updateId: string };
   "computer.control-expire": { computerId: string; leaseId: string };
   "skill.teaching-expire": { skillId: string };

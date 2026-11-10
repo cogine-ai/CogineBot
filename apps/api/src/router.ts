@@ -59,6 +59,8 @@ import {
   codexLiveListsModel,
   commentTicket,
   compatibleThinkingLevels,
+  computerActiveDeadline,
+  computerActiveEpoch,
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
@@ -110,6 +112,7 @@ import {
   parseModelSecret,
   persistPreparedSecret,
   planLiveConnectionSync,
+  powerProvider,
   prepareApiInstall,
   prepareGraphqlInstall,
   prepareManagedConnectorForTransaction,
@@ -1379,7 +1382,13 @@ export function createRouter(deps: RouterDeps) {
                   providerRef: computer.providerRef,
                   space: { deletionClaimId: claimId },
                 },
-                data: { state: "stopped", providerRef: null },
+                data: {
+                  state: "stopped",
+                  providerRef: null,
+                  runningSince: null,
+                  runningObservedAt: null,
+                  suspensionReason: null,
+                },
               });
             }
             await assertClaim();
@@ -2424,6 +2433,9 @@ export function createRouter(deps: RouterDeps) {
                   : previous,
                 data: {
                   state: damaged && !gone ? "needs_recovery" : "stopped",
+                  ...(bot.computer.runningSince ? { runningSince: null } : {}),
+                  ...(bot.computer.runningObservedAt ? { runningObservedAt: null } : {}),
+                  ...(bot.computer.suspensionReason ? { suspensionReason: null } : {}),
                   stopRequestedAt: null,
                   ...(gone ? { providerRef: null } : {}),
                   ...(damaged || gone ? { restorePending: true } : {}),
@@ -3235,19 +3247,25 @@ export function createRouter(deps: RouterDeps) {
       boot: newWork.computer.boot.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
+        const ref = bot.computer.providerRef ? toComputerRef(bot.computer) : undefined;
+        const billable = ref && powerProvider(deps.sandbox, ref)?.billsWhileRunning?.(ref) === true;
+        if (input.onlyIfRunning && (billable || bot.computer.state !== "running" || !ref)) {
+          return computerStatus(deps, context.actor, input.botId);
+        }
         if (
           bot.computer.state === "running" &&
           !bot.computer.restorePending &&
           !bot.computer.stopRequestedAt &&
           bot.computer.kind !== "desktop" &&
-          bot.computer.providerRef &&
-          !needsProviderIdentityProof(deps.sandbox, toComputerRef(bot.computer)) &&
-          (await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(bot.computer)))
+          ref &&
+          !billable &&
+          !needsProviderIdentityProof(deps.sandbox, ref) &&
+          (await matchesComputerProvisionRoute(deps.sandbox, ref))
         ) {
           try {
             await ensureComputerWorkspaceLayout(
               deps.sandbox,
-              toComputerRef(bot.computer),
+              ref,
               parseComputerMode(bot.computer.scope),
               bot.id,
               computerContext(context.actor, bot.id, "boot"),
@@ -3258,6 +3276,7 @@ export function createRouter(deps: RouterDeps) {
             await clearGoneSandbox(deps, bot.computer, error);
           }
         }
+        if (input.onlyIfRunning) return computerStatus(deps, context.actor, input.botId);
         const ctx = computerContext(context.actor, bot.id, "boot");
         const manualRunId = `boot:${randomUUID()}`;
         let lease: ComputerExecutionLease | null;
@@ -3383,6 +3402,9 @@ export function createRouter(deps: RouterDeps) {
             where: { ...suspensionClaim, stopRequestedAt: stopRequested ? { not: null } : null },
             data: {
               state,
+              ...(bot.computer.runningSince ? { runningSince: null } : {}),
+              ...(bot.computer.runningObservedAt ? { runningObservedAt: null } : {}),
+              ...(bot.computer.suspensionReason ? { suspensionReason: null } : {}),
               stopRequestedAt: null,
               ...(state === "needs_recovery" || stopped === "gone" ? { restorePending: true } : {}),
               ...(stopped === "gone" ? { providerRef: null } : {}),
@@ -4007,6 +4029,9 @@ export function createRouter(deps: RouterDeps) {
           return { url: null };
         }
         const computer = bot.computer;
+        const ref = toComputerRef(computer);
+        const provider = powerProvider(deps.sandbox, ref);
+        if (!provider) return { url: null };
         const interactive =
           computer.state === "running" &&
           !computer.restorePending &&
@@ -4020,12 +4045,13 @@ export function createRouter(deps: RouterDeps) {
           bot.id,
           "screen",
         );
-        const session = await deps.sandbox
+        const session = await provider
           .connectScreen(
-            toComputerRef(computer),
+            ref,
             {
               view: "stream",
               interactive,
+              ...(provider.billsWhileRunning?.(ref) === true ? { onlyIfRunning: true } : {}),
               controlToken:
                 computer.state === "running" &&
                 !computer.restorePending &&
@@ -4088,6 +4114,19 @@ export function createRouter(deps: RouterDeps) {
       heartbeat: authed.computer.heartbeat.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (bot.computer?.state === "running" && bot.computer.providerRef) {
+          const ref = toComputerRef(bot.computer);
+          const deadline = computerActiveDeadline(
+            deps.sandbox,
+            ref,
+            computerActiveEpoch(bot.computer),
+          );
+          if (
+            deadline &&
+            deadline.getTime() <= Date.now() &&
+            !hasActiveComputerControl(bot.computer)
+          ) {
+            return { ok: true as const };
+          }
           const touched = await deps.prisma.computer.updateMany({
             where: {
               id: bot.computer.id,
@@ -4116,10 +4155,8 @@ export function createRouter(deps: RouterDeps) {
           await touchRunningComputer(
             { sandbox: deps.sandbox, jobs: deps.jobs },
             {
-              id: bot.computer.id,
-              homeKey: bot.computer.homeKey,
+              ...bot.computer,
               providerRef: bot.computer.providerRef,
-              kind: bot.computer.kind,
             },
           ).catch(() => undefined);
         }
@@ -8943,7 +8980,13 @@ async function clearGoneSandbox(
       maintenanceId: null,
       stopRequestedAt: null,
     },
-    data: { state: "stopped", providerRef: null },
+    data: {
+      state: "stopped",
+      providerRef: null,
+      runningSince: null,
+      runningObservedAt: null,
+      suspensionReason: null,
+    },
   });
   return null;
 }

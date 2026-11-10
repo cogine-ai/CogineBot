@@ -1,4 +1,10 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Computer paused at its runtime limit.":
+    "Компьютер приостановлен по достижении лимита времени работы.",
+  "Background tasks may have stopped.": "Фоновые задачи могли остановиться.",
+  "Continue using computer": "Продолжить работу с компьютером",
+  "At the runtime limit, pausing may stop background tasks.":
+    "При достижении лимита времени работы приостановка может остановить фоновые задачи.",
   "Saving workspace…": "Сохранение рабочего пространства…",
   "{files} files processed · {size}": "Обработано файлов: {files} · {size}",
   "Computer still running. Workspace not saved.":

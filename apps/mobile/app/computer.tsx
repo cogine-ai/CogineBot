@@ -272,10 +272,12 @@ export default function Computer() {
     takeControl,
     overlay,
     force = false,
+    onlyIfRunning = false,
   }: {
     takeControl: boolean;
     overlay: boolean;
     force?: boolean;
+    onlyIfRunning?: boolean;
   }) {
     if (
       !botId ||
@@ -299,7 +301,11 @@ export default function Computer() {
     try {
       if (needsBoot) {
         autoBooted.current = botId;
-        await rpc("computer/boot", { botId }, { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS });
+        await rpc(
+          "computer/boot",
+          { botId, ...(onlyIfRunning ? { onlyIfRunning } : {}) },
+          { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS },
+        );
       }
       if (!action.isActive()) return false;
       if (takeControl) {
@@ -336,6 +342,7 @@ export default function Computer() {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
     if (
       computer.state === "booting" ||
+      computer.requiresExplicitWake ||
       computer.state === "suspended" ||
       savedStoppedComputer ||
       computer.state === "stopping" ||
@@ -347,12 +354,14 @@ export default function Computer() {
       takeControl: false,
       overlay: computer?.state !== "running",
       force: true,
+      onlyIfRunning: computer.state === "running",
     }).catch(() => undefined);
   }, [
     readyTarget,
     targetKey,
     botId,
     computer?.state,
+    computer?.requiresExplicitWake,
     savedStoppedComputer,
     switching,
     viewVisible,
@@ -435,9 +444,10 @@ export default function Computer() {
 
   const powerUnavailable =
     computerStateRequiresRecovery(computer?.state) || computer?.state === "stopping";
+  const capPaused = computer?.state === "suspended" && computer.suspensionReason === "active_limit";
   useEffect(() => {
-    if (powerUnavailable) setComputerOpen(false);
-  }, [powerUnavailable]);
+    if (powerUnavailable || capPaused) setComputerOpen(false);
+  }, [powerUnavailable, capPaused]);
   const saveProgress = computer?.workspaceSaveProgress;
   const saveFailure = computer?.state === "running" ? computer.workspaceSaveFailure : undefined;
   const saveFailureText = saveFailure
@@ -452,9 +462,11 @@ export default function Computer() {
     : undefined;
   const placeholder =
     (!powerUnavailable && screenError) ||
-    (saveProgress !== undefined
-      ? t("Saving workspace…")
-      : previewPlaceholder(computer?.state, booting, name, computer?.mode));
+    (capPaused
+      ? t("Computer paused at its runtime limit.")
+      : saveProgress !== undefined
+        ? t("Saving workspace…")
+        : previewPlaceholder(computer?.state, booting, name, computer?.mode));
 
   return (
     <ScrollView
@@ -496,6 +508,18 @@ export default function Computer() {
             <Text style={{ color: tokens.mutedForeground, textAlign: "center" }}>
               {placeholder}
             </Text>
+            {capPaused ? (
+              <>
+                <Text style={{ color: tokens.mutedForeground, marginVertical: 8 }}>
+                  {t("Background tasks may have stopped.")}
+                </Text>
+                <NativeActionButton
+                  label={t("Continue using computer")}
+                  prominence="secondary"
+                  onPress={() => void openComputer({ takeControl: false })}
+                />
+              </>
+            ) : null}
             {saveProgress ? (
               <Text style={{ color: tokens.mutedForeground, marginTop: 8 }}>
                 {t("{files} files processed · {size}", {
@@ -506,7 +530,7 @@ export default function Computer() {
             ) : null}
           </View>
         )}
-        {!powerUnavailable ? (
+        {!powerUnavailable && !capPaused ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("Open computer")}
@@ -547,6 +571,11 @@ export default function Computer() {
           computer={computer}
           onChanged={refreshAfterMaintenance}
         />
+      ) : null}
+      {computer?.state === "running" && computer.activeLimitAt ? (
+        <Text style={{ color: tokens.mutedForeground, marginTop: 12 }}>
+          {t("At the runtime limit, pausing may stop background tasks.")}
+        </Text>
       ) : null}
       {saveFailureText ? (
         <View

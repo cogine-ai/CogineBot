@@ -795,10 +795,23 @@ export function reduceComputerStatus(
   const unavailable = status === "stopping" || computerStateRequiresRecovery(status);
   const screenAvailable =
     !unavailable && (status === "running" || status === "booting" || prev.screenAvailable);
-  if (status === prev.state && screenAvailable === prev.screenAvailable) return prev;
+  const suspensionReason =
+    status === "suspended" && event.payload.suspensionReason === "active_limit"
+      ? ("active_limit" as const)
+      : status === prev.state
+        ? prev.suspensionReason
+        : undefined;
+  if (
+    status === prev.state &&
+    screenAvailable === prev.screenAvailable &&
+    suspensionReason === prev.suspensionReason
+  )
+    return prev;
   return {
     ...prev,
     state: status,
+    suspensionReason,
+    activeLimitAt: status === "running" ? prev.activeLimitAt : undefined,
     powerState,
     screenAvailable,
     ...(unavailable

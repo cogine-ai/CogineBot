@@ -81,6 +81,10 @@ interface BoxCommandResult {
 }
 
 export class BoxSandboxProvider implements SandboxProvider {
+  billsWhileRunning(): boolean {
+    return true;
+  }
+
   private readonly client: BoxSandboxSdk;
   private readonly desktops = new LinuxDesktop({
     environment: async () => ({
@@ -185,7 +189,8 @@ export class BoxSandboxProvider implements SandboxProvider {
           { boxId: request.providerRef },
           { signal: context.signal },
         );
-        if (existing.box.state === "archived") {
+        const started = existing.box.state === "archived";
+        if (started) {
           await this.client.resume(
             {
               boxId: request.providerRef,
@@ -194,7 +199,8 @@ export class BoxSandboxProvider implements SandboxProvider {
             { signal: context.signal },
           );
         }
-        return this.ref(request.providerRef, request.botId, false);
+        const ref = this.ref(request.providerRef, request.botId, false);
+        return started ? { ...ref, started } : ref;
       } catch (error) {
         if (!isUnrecoverableBoxError(error)) throw error;
         this.forget(request.providerRef);
@@ -314,6 +320,9 @@ export class BoxSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
+    if (request.onlyIfRunning && (await this.inspectPowerState(computer, context)) !== "running") {
+      return { url: null, mimeType: "text/html", close: async () => undefined };
+    }
     return this.desktops.connectScreen(computer, request, context);
   }
   async connectTerminal(computer: ComputerRef, request: TerminalRequest, context: AdapterContext) {
@@ -325,6 +334,11 @@ export class BoxSandboxProvider implements SandboxProvider {
     context: AdapterContext,
     controlToken?: string,
   ): Promise<void> {
+    if (!interactive && controlToken) {
+      const state = await this.inspectPowerState(computer, context);
+      if (state === "stopped" || state === "gone") return;
+      if (state !== "running") throw new SandboxUnavailableError();
+    }
     return this.desktops.setScreenControl(computer, interactive, context, controlToken);
   }
   async sendInput(

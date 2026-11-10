@@ -1,4 +1,10 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Computer paused at its runtime limit.":
+    "Der Computer wurde beim Erreichen der Laufzeitgrenze pausiert.",
+  "Background tasks may have stopped.": "Hintergrundaufgaben wurden möglicherweise beendet.",
+  "Continue using computer": "Computer weiterverwenden",
+  "At the runtime limit, pausing may stop background tasks.":
+    "Beim Erreichen der Laufzeitgrenze kann das Pausieren Hintergrundaufgaben beenden.",
   "Saving workspace…": "Arbeitsbereich wird gespeichert…",
   "{files} files processed · {size}": "{files} Dateien verarbeitet · {size}",
   "Computer still running. Workspace not saved.":

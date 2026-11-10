@@ -2235,7 +2235,13 @@ describe("computer screen url", () => {
     await expect(response.json()).resolves.toEqual({ json: { url: null } });
     expect(updateMany).toHaveBeenCalledWith({
       where: goneE2BComputerClaim,
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
   });
 
@@ -2420,7 +2426,13 @@ describe("computer terminal and file transfer", () => {
     await expect(call("boot", {})).resolves.toMatchObject({ status: 409 });
     expect(prisma.computer.updateMany).toHaveBeenCalledWith({
       where: goneE2BComputerClaim,
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
     expect(findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: "computer-1" } });
   });
@@ -2468,14 +2480,28 @@ describe("computer terminal and file transfer", () => {
     });
     expect(gone.prisma.computer.updateMany).toHaveBeenCalledWith({
       where: goneE2BComputerClaim,
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
 
     const blip = setup(controlled);
     blip.sandbox.connectTerminal.mockRejectedValueOnce(new Error("fetch failed"));
     await expect(blip.call("terminalUrl", {})).resolves.toMatchObject({ status: 500 });
     expect(blip.prisma.computer.updateMany).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: { state: "stopped", providerRef: null } }),
+      expect.objectContaining({
+        data: {
+          state: "stopped",
+          providerRef: null,
+          runningSince: null,
+          runningObservedAt: null,
+          suspensionReason: null,
+        },
+      }),
     );
   });
 

@@ -7409,3 +7409,19 @@ msgstr "The workspace could not be stored."
 #: src/pages/Shell.tsx
 msgid "View files"
 msgstr "View files"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Computer paused at its runtime limit."
+msgstr "Computer paused at its runtime limit."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Background tasks may have stopped."
+msgstr "Background tasks may have stopped."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Continue using computer"
+msgstr "Continue using computer"
+
+#: src/pages/Shell.tsx
+msgid "At the runtime limit, pausing may stop background tasks."
+msgstr "At the runtime limit, pausing may stop background tasks."

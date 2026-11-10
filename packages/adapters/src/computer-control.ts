@@ -7,7 +7,7 @@ import {
 } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { canTrustComputerGoneError } from "./computer-power.js";
+import { canTrustComputerGoneError, powerProvider } from "./computer-power.js";
 import { toComputerRef } from "./computer-support.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 
@@ -192,8 +192,11 @@ export async function revokeScreenControl(
   opts?: { clearGoneRef?: boolean },
 ): Promise<void> {
   if (!computer.providerRef) return;
+  const ref = toComputerRef(computer);
   try {
-    await deps.sandbox?.setScreenControl?.(toComputerRef(computer), false, context, leaseId);
+    const provider = deps.sandbox && powerProvider(deps.sandbox, ref);
+    if (deps.sandbox && !provider) throw new Error("The original computer provider is unavailable");
+    await provider?.setScreenControl?.(ref, false, context, leaseId);
   } catch (error) {
     if (!isSandboxGoneError(error)) throw error;
     if (opts?.clearGoneRef === false) return;
@@ -211,7 +214,13 @@ export async function revokeScreenControl(
         stopRequestedAt: null,
         ...(leaseId != null ? { controlLeaseId: leaseId } : {}),
       },
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
   }
 }

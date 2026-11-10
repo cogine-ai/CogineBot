@@ -32,6 +32,7 @@ import {
   connectorBatchApprovalFromEffect,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
+  createComputerActiveLimitRecovery,
   createConnectorStack,
   createDeploymentTransferPeer,
   createGroupRunTeardownRecovery,
@@ -620,6 +621,7 @@ async function buildApp(
         notifications,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+        reconcileComputerActiveLimits: createComputerActiveLimitRecovery({ prisma, sandbox, jobs }),
         reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
         reconcileNativeEvents: () => nativeEvents.reconcile(),
       })

@@ -144,7 +144,13 @@ describe("screen grant authority after provider recovery", () => {
           maintenanceId: null,
           stopRequestedAt: null,
         },
-        data: { state: "stopped", providerRef: null },
+        data: {
+          state: "stopped",
+          providerRef: null,
+          runningSince: null,
+          runningObservedAt: null,
+          suspensionReason: null,
+        },
       });
     },
   );

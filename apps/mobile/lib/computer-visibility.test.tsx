@@ -510,6 +510,22 @@ it("a takeover returned after renderer loss cannot enable the replacement keyboa
   expect(state.screenProps?.onMessage).toBeUndefined();
 });
 
+it("waits for explicit Open after a retained computer's recovery failed", async () => {
+  currentStatus = status({
+    kind: "e2b",
+    state: "error",
+    screenAvailable: false,
+    requiresExplicitWake: true,
+  });
+  await render();
+  expect(calls("computer/boot")).toHaveLength(0);
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>('[aria-label="Open computer"]')!.click(),
+  );
+  expect(calls("computer/boot")).toHaveLength(1);
+  expect(calls("computer/boot")[0]?.[1]).toEqual({ botId: "bot-a" });
+});
+
 it("does not dispatch a pending takeover after the app backgrounds during boot", async () => {
   currentStatus = status({ state: "suspended", screenAvailable: false });
   await render();

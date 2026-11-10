@@ -176,7 +176,7 @@ export function createBackgroundJobHandlers(deps: {
       await performComputerUpdate(deps, updateId);
     }),
     "computer.sleep": asOwner(computer, async (payload) => {
-      await sleepComputerIfIdle(deps, payload.computerId);
+      await sleepComputerIfIdle(deps, payload.computerId, payload.activeSince);
     }),
     "computer.control-expire": asOwner(computer, async (payload) => {
       if (await expireComputerControl(deps, payload.computerId, payload.leaseId)) {
