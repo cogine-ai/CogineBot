@@ -86,14 +86,25 @@ describe("buildApprovalAskBlock", () => {
         body: JSON.stringify(JSON.stringify({ summary: quoted, status: "visible" })),
         headers: "Authorization: synthetic-raw-header\r\nX-Example: visible",
         maxTokens: 300,
+        tokenBudget: 600,
+        usage: { tokens: 5, tokenizer: "example tokenizer" },
+        secretary: "ordinary label",
+        encodedUsage: '{ "tokenBudget": 300, "maxTokens": "500" }',
+        passwd: "fixture-passwd-field",
+        note: "Passwd: fixture-passwd-inline\nThen continue.",
+        query: "ordinary search",
+        fileContents: "-----BEGIN PRIVATE KEY-----\nfixture-pem-body\n-----END PRIVATE KEY-----",
+        email: "person@example.test",
         accessToken: "fixture-path-field",
         private_key: "fixture-signing-private-field",
         privateKeyPem: "fixture-pem-private-field",
         secretAccessKey: "fixture-storage-secret-field",
+        storageAccessKeyId: "fixture-storage-id-field",
         session_id: "fixture-session-field",
         publicKey: "fixture-public-key",
         publicKeyPem: "fixture-public-pem",
         accessTokens: ["fixture-oauth-list-field"],
+        tokens: ["fixture-bare-token-list-field"],
         credentials: ["fixture-credential-list-field"],
         passwordConfirmation: "fixture-confirmation-field",
         named: { name: "API key", value: "fixture-key-field" },
@@ -117,6 +128,16 @@ describe("buildApprovalAskBlock", () => {
     expect(block.approvalDetails).toContain("label=visible&label=%5Bredacted%5D");
     expect(block.approvalDetails).toContain("X-Example: visible");
     expect(block.approvalDetails).toContain('"maxTokens": 300');
+    expect(block.approvalDetails).toContain('"tokenBudget": 600');
+    expect(block.approvalDetails).toContain('"tokens": 5');
+    expect(block.approvalDetails).toContain('"tokenizer": "example tokenizer"');
+    expect(block.approvalDetails).toContain('"secretary": "ordinary label"');
+    expect(block.approvalDetails).toContain(
+      JSON.stringify('{ "tokenBudget": 300, "maxTokens": "500" }'),
+    );
+    expect(block.approvalDetails).toContain("ordinary search");
+    expect(block.approvalDetails).toContain("person@example.test");
+    expect(block.approvalDetails).toContain("Then continue.");
     expect(block.approvalDetails).toContain("fixture-public-key");
     expect(block.approvalDetails).toContain("fixture-public-pem");
     expect(block.approvalDetails).toContain("ordinary label");
@@ -127,17 +148,34 @@ describe("buildApprovalAskBlock", () => {
       "synthetic-raw-header",
       "quoted",
       "fixture-path-field",
+      "fixture-passwd-field",
+      "fixture-passwd-inline",
+      "fixture-pem-body",
       "fixture-signing-private-field",
       "fixture-pem-private-field",
       "fixture-storage-secret-field",
+      "fixture-storage-id-field",
       "fixture-session-field",
       "fixture-oauth-list-field",
+      "fixture-bare-token-list-field",
       "fixture-credential-list-field",
       "fixture-confirmation-field",
       "fixture-key-field",
     ]) {
       expect(JSON.stringify(block)).not.toContain(protectedText);
     }
+  });
+
+  it("does not present an encoded object whose original fields cannot all be reviewed", () => {
+    const block = buildApprovalAskBlock(
+      "effect",
+      "demo_send",
+      { body: '{"note":"fixture-known-value","note":"visible"}' },
+      ["fixture-known-value"],
+      { resolvedScope: { action: "demo_send" } },
+    );
+    expect(block.approvalDetails).toBeUndefined();
+    expect(JSON.stringify(block)).not.toContain("fixture-known-value");
   });
 
   it("offers permanent approval only for the full list stored in the card", () => {

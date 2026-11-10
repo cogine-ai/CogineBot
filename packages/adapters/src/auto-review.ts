@@ -13,6 +13,11 @@ import type {
 import type { AutoReviewJudgeDecision } from "@rakazo/core";
 import { redactSecrets } from "@rakazo/core";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
+import {
+  hasDuplicateJsonFields,
+  isSecretFieldForDisplay,
+  redactSecretText,
+} from "@rakazo/logging/redaction";
 import { CONNECTOR_REDACTION_MAX_DEPTH, knownJsonSecretRedactions } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
@@ -210,15 +215,11 @@ function redactToolArgs(
 }
 
 /** A credential field is distinct from ordinary counts such as maxTokens. */
-function sensitiveApprovalField(name: string): boolean {
-  const key = name.replace(/[-_ ]/g, "");
+function sensitiveApprovalField(name: string, value: unknown): boolean {
   return (
-    /privatekey/i.test(key) ||
-    /(?:accesskey(?:id)?|apikey|authorization|clientassertion|cookie|credential|passphrase|password|secret|sessionid|sessionkey|signature|xsession)(?:s|value|confirmation|confirm|text)?$/i.test(
-      key,
-    ) ||
-    /(?:token(?:value|confirmation|confirm|text)?|(?:access|auth|bearer|id|refresh|session)tokens)$/i.test(
-      key,
+    isSecretFieldForDisplay(name, value) ||
+    /(?:accesskey(?:id)?|clientassertion|passphrase|sessionid|sessionkey|signature|xsession)(?:s|value|confirmation|confirm|text)?$/i.test(
+      name.replace(/[^a-z0-9]/gi, ""),
     )
   );
 }
@@ -238,8 +239,9 @@ function redactReviewObject(
   const credentialEntry =
     manual &&
     "name" in value &&
+    "value" in value &&
     typeof value.name === "string" &&
-    sensitiveApprovalField(value.name);
+    sensitiveApprovalField(value.name, value.value);
   let originalLabels: Set<string> | undefined;
   const ordinals = new Map<string, number>();
   for (const [key, nestedValue] of Object.entries(value)) {
@@ -256,7 +258,7 @@ function redactReviewObject(
     }
     entries.set(
       redactedKey,
-      sensitive(key) || (credentialEntry && key === "value")
+      sensitive(key, nestedValue) || (credentialEntry && key === "value")
         ? "[redacted]"
         : redactNestedReviewValue(
             nestedValue,
@@ -291,6 +293,8 @@ function redactNestedReviewValue(
           // A string need not be JSON.
         }
         if (decoded !== undefined) {
+          if (hasDuplicateJsonFields(trimmed, decoded))
+            throw new Error("Approval arguments include ambiguous JSON object keys.");
           const protectedValue = redactNestedReviewValue(
             decoded,
             secrets,
@@ -298,18 +302,23 @@ function redactNestedReviewValue(
             depth + 1,
             headers,
           );
-          if (JSON.stringify(protectedValue) !== JSON.stringify(decoded))
-            return JSON.stringify(protectedValue);
+          const protectedJson = JSON.stringify(protectedValue);
+          return protectedJson === JSON.stringify(decoded)
+            ? redactSecrets(value, secrets)
+            : protectedJson;
         }
       }
       if (headers) {
-        return redactSecrets(value, secrets).replace(
-          /^([\w-]+)([ \t]*:[ \t]*)([^\r\n]*)/gm,
-          (line, name: string, separator: string) =>
-            sensitiveApprovalField(name) ? `${name}${separator}[redacted]` : line,
+        return redactSecretText(
+          redactSecrets(value, secrets).replace(
+            /^([\w-]+)([ \t]*:[ \t]*)([^\r\n]*)/gm,
+            (line, name: string, separator: string, content: string) =>
+              sensitiveApprovalField(name, content) ? `${name}${separator}[redacted]` : line,
+          ),
         );
       }
       if (/^https?:\/\//i.test(trimmed)) return redactApprovalUrl(value, secrets);
+      return redactSecretText(redactSecrets(value, secrets));
     }
     return redactSecrets(value, secrets);
   }
@@ -318,7 +327,7 @@ function redactNestedReviewValue(
       headers &&
       value.length === 2 &&
       typeof value[0] === "string" &&
-      sensitiveApprovalField(value[0])
+      sensitiveApprovalField(value[0], value[1])
     )
       return [redactSecrets(value[0], secrets), "[redacted]"];
     return value.map((item) =>
@@ -334,7 +343,8 @@ function redactNestedReviewValue(
 /** Redact decoded URL components and keep repeated query values in their original order. */
 export function redactApprovalUrl(value: string, secrets: string[]): string {
   const url = URL.parse(value.trim());
-  if (!url || !["http:", "https:"].includes(url.protocol)) return redactSecrets(value, secrets);
+  if (!url || !["http:", "https:"].includes(url.protocol))
+    return redactSecretText(redactSecrets(value, secrets));
   let changed = Boolean(url.username || url.password);
   url.username = "";
   url.password = "";
@@ -345,7 +355,7 @@ export function redactApprovalUrl(value: string, secrets: string[]): string {
     } catch {
       return redactSecrets(segment, secrets);
     }
-    const safe = redactSecrets(decoded, secrets);
+    const safe = redactSecretText(redactSecrets(decoded, secrets));
     if (safe === decoded) return segment;
     changed = true;
     return encodeURIComponent(safe);
@@ -356,7 +366,9 @@ export function redactApprovalUrl(value: string, secrets: string[]): string {
   let queryChanged = false;
   for (const [name, content] of url.searchParams) {
     const key = redactSecrets(name, secrets);
-    const safe = sensitiveApprovalField(name) ? "[redacted]" : redactSecrets(content, secrets);
+    const safe = sensitiveApprovalField(name, content)
+      ? "[redacted]"
+      : redactSecretText(redactSecrets(content, secrets));
     queryChanged ||= key !== name || safe !== content;
     query.append(key, safe);
   }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { redactBindings, redactSensitiveText } from "./redaction.js";
+import {
+  hasDuplicateJsonFields,
+  isSecretFieldForDisplay,
+  redactBindings,
+  redactSensitiveText,
+} from "./redaction.js";
 
 describe("redaction", () => {
   it.each([
@@ -185,6 +190,32 @@ describe("redaction", () => {
       expect(redactSensitiveText("token=12345\nnext: safe")).toBe("token=[Redacted]\nnext: safe");
     },
   );
+
+  it("detects JSON object members lost during parsing", () => {
+    const duplicate = String.raw`{"nested":{"note":"first","n\u006fte":"second"}}`;
+    const separate = String.raw`[{"note":"one"},{"note":"quoted \"field\": sample"}]`;
+    expect(hasDuplicateJsonFields(duplicate, JSON.parse(duplicate))).toBe(true);
+    expect(hasDuplicateJsonFields(separate, JSON.parse(separate))).toBe(false);
+  });
+
+  it("shares credential names with display fields while retaining safe numeric counters", () => {
+    for (const key of ["passwd", "privateKeyPem", "AWS_ACCESS_KEY_ID", "accessTokens"])
+      expect(isSecretFieldForDisplay(key, "synthetic-value")).toBe(true);
+    for (const [key, value] of [
+      ["max_tokens", 4096],
+      ["tokenBudget", "1e3"],
+      ["body", "body"],
+      ["email", "person@example.test"],
+      ["tokenizer", "ordinary tokenizer"],
+      ["secretary", "ordinary label"],
+      ["tokens", 5],
+    ])
+      expect(isSecretFieldForDisplay(String(key), value)).toBe(false);
+    expect(isSecretFieldForDisplay("max_tokens", "opaque-value")).toBe(true);
+    expect(isSecretFieldForDisplay("access_token", 12345)).toBe(true);
+    expect(isSecretFieldForDisplay("tokens", ["synthetic-value"])).toBe(true);
+    expect(isSecretFieldForDisplay("tokens", "12345")).toBe(true);
+  });
 
   it("retains the existing structured binding policy for token counters", () => {
     expect(redactBindings({ max_tokens: 4096, token: 12345, safe_count: 60 })).toEqual({
