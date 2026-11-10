@@ -272,7 +272,10 @@ export async function expireComputerControl(
       }
     }
     const cleared = await deps.prisma.computer.updateMany({
-      where: leaseClaim,
+      where: {
+        ...leaseClaim,
+        state: { notIn: ["suspending", "restoring", "quarantined", "needs_recovery"] },
+      },
       data: {
         controlHolder: "none",
         controlLeaseId: null,

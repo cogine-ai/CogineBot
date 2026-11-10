@@ -29,6 +29,7 @@ async function fixture() {
     state: "running",
     screenGeneration: 7,
     restorePending: false,
+    stopRequestedAt: null as Date | null,
     maintenanceId: null as string | null,
     controlLeaseId: null,
     updatedAt: new Date("2024-01-01T00:00:00Z"),
@@ -108,7 +109,7 @@ describe("running Docker computer reuse", () => {
       const f = await fixture();
       const fetchMock = vi.fn(async () =>
         Response.json(
-          { running: running === true },
+          { id: "provider", running: running === true },
           { status: running === "unavailable" ? 503 : 200 },
         ),
       );
@@ -152,6 +153,7 @@ describe("running Docker computer reuse", () => {
     "ownership",
     "switch",
     "restore",
+    "stop",
     "cancel",
   ])("rejects reuse when %s changes during the read-only probe", async (change) => {
     const f = await fixture();
@@ -167,8 +169,9 @@ describe("running Docker computer reuse", () => {
         if (change === "ownership") f.unassign();
         if (change === "switch") f.beginSwitch();
         if (change === "restore") f.row.restorePending = true;
+        if (change === "stop") f.row.stopRequestedAt = new Date();
         if (change === "cancel") abort.abort(new Error("cancelled"));
-        return Response.json({ running: true });
+        return Response.json({ id: "provider", running: true });
       }),
     );
     try {
@@ -180,6 +183,7 @@ describe("running Docker computer reuse", () => {
           expect.objectContaining({
             where: expect.objectContaining({
               restorePending: false,
+              stopRequestedAt: null,
               bots: { some: { id: "bot", archivedAt: null, computerSwitching: false } },
             }),
           }),

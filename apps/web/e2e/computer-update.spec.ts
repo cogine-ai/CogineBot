@@ -171,7 +171,13 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
       visible: true,
     })
     .and(page.locator("[aria-expanded]"));
+  const listed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/rpc/computer/files") &&
+      response.request().postDataJSON()?.json?.source === "saved",
+  );
   await savedFiles.click();
+  expect((await listed).ok()).toBe(true);
   await expect(savedFiles).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("Could not load files", { exact: true })).toHaveCount(0);
   expect(bootRequests).toBe(0);

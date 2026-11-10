@@ -30,30 +30,42 @@ export function createRunSandbox(
   kind: string,
   opts: SandboxProviderOptions & { prisma?: PrismaClient },
 ): SandboxProvider {
-  if (kind === "desktop") {
-    return new DesktopSandboxProvider({
-      root: opts.dataDir,
-      hostRoots: [homedir()],
-    });
-  }
-  const primary = createSandboxProvider(kind, opts);
-  if (kind !== "docker" || !opts.prisma) return primary;
-  return new HostAwareSandbox(
-    primary,
-    new DesktopSandboxProvider({
-      root: opts.dataDir,
-      hostRoots: [homedir()],
-    }),
-    async () => {
-      const settings = await runAsSystem("read deployment computer host for sandbox routing", () =>
-        opts.prisma!.deploymentSettings.findUnique({
-          where: { id: "default" },
-          select: { computerHost: true },
-        }),
-      );
-      return settings?.computerHost === "this-mac";
+  const host = new DesktopSandboxProvider({ root: opts.dataDir, hostRoots: [homedir()] });
+  const primary = kind === "desktop" ? host : createSandboxProvider(kind, opts);
+  const sandbox =
+    kind === "docker" && opts.prisma
+      ? new HostAwareSandbox(primary, host, async () => {
+          const settings = await runAsSystem(
+            "read deployment computer host for sandbox routing",
+            () =>
+              opts.prisma!.deploymentSettings.findUnique({
+                where: { id: "default" },
+                select: { computerHost: true },
+              }),
+          );
+          return settings?.computerHost === "this-mac";
+        })
+      : primary;
+  const configured = new Map<string, SandboxProvider>([[primary.describe().id, primary]]);
+  if (opts.dataDir) configured.set("desktop", host);
+  const enabled: Partial<Record<ComputerRef["kind"], boolean>> = {
+    e2b: Boolean(opts.e2bApiKey?.trim()),
+    daytona: Boolean(opts.daytonaApiKey?.trim()),
+    createos: Boolean(opts.createosApiKey?.trim()),
+    box: Boolean(opts.boxApiKey?.trim()),
+    docker: Boolean(opts.supervisorToken?.trim()),
+  };
+  return Object.assign(sandbox, {
+    providerForPower(computer: ComputerRef): SandboxProvider | undefined {
+      const existing = configured.get(computer.kind);
+      if (existing) return existing;
+      if (!enabled[computer.kind]) return undefined;
+      const provider = createSandboxProvider(computer.kind, opts);
+      if (provider.describe().id !== computer.kind) return undefined;
+      configured.set(computer.kind, provider);
+      return provider;
     },
-  );
+  });
 }
 
 export class HostAwareSandbox implements SandboxProvider {

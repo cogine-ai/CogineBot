@@ -3775,7 +3775,13 @@ export function createRouter(deps: RouterDeps) {
         const ctx = computerContext(context.actor, bot.id, "files");
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let entries: Awaited<ReturnType<SandboxProvider["listFiles"]>>;
-        if (computer.state === "running" && !computer.restorePending && computer.providerRef) {
+        if (
+          input.source !== "saved" &&
+          computer.state === "running" &&
+          !computer.restorePending &&
+          !computer.stopRequestedAt &&
+          computer.providerRef
+        ) {
           await deps.prisma.computer.updateMany({
             where: { id: computer.id, state: "running" },
             data: { updatedAt: new Date() },
@@ -3800,7 +3806,9 @@ export function createRouter(deps: RouterDeps) {
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let content: string;
         if (
+          input.source !== "saved" &&
           bot.computer.state === "running" &&
+          !bot.computer.stopRequestedAt &&
           !bot.computer.restorePending &&
           bot.computer.providerRef
         ) {
@@ -3838,6 +3846,7 @@ export function createRouter(deps: RouterDeps) {
         );
         const ctx = computerContext(context.actor, bot.id, "download");
         const live =
+          input.source !== "saved" &&
           computer.state === "running" &&
           !computer.restorePending &&
           !computer.stopRequestedAt &&

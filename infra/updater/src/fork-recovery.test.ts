@@ -113,7 +113,8 @@ if (command === "docker") {
         state.stopFailed = true; fs.writeFileSync(stateFile, JSON.stringify(state)); fail("one old writer stopped before stop failed");
       }
     } else if (args.includes("run")) {
-      if (args.slice(-7).join(" ") !== "migrate pnpm --filter @rakazo/api run db:row-security verify") fail("Unexpected verification command");
+      const command = args.slice(args.indexOf("migrate")).join(" ");
+      if (!["migrate pnpm --filter @rakazo/api run db:row-security verify", "migrate pnpm --filter @rakazo/api run db:row-security verify --computer-rollback"].includes(command)) fail("Unexpected verification command");
       if (hasFailure("readiness")) fail("database roles or policies are not ready");
     } else if (args.includes("--exit-code-from")) {
       if (fixture.extraService && state.extraRunning !== false) fail("old extra writer still running");
@@ -266,6 +267,12 @@ describe.skipIf(process.platform === "win32")("fork recovery through fake execut
       imageTag: oldTag,
       envFile: originalEnv,
     });
+    expect(
+      fixture.calls.some(
+        (call) =>
+          call.args.includes("db:row-security") && call.args.at(-1) === "--computer-rollback",
+      ),
+    ).toBe(true);
     expect(fixture.record.steps.map((step) => step.id)).toEqual([
       "remote",
       "fetch",

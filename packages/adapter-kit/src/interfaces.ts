@@ -120,6 +120,8 @@ export interface SandboxProvider {
   provisionKind?(): Promise<ComputerRef["kind"]>;
   /** Read-only probe: true only when this exact reference is already running. */
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
+  /** Select the configured provider that owns an existing reference for power operations. */
+  providerForPower?(computer: ComputerRef): SandboxProvider | undefined;
   /** Read the exact reference without starting it. Unknown is never proof of a stop. */
   inspectPowerState?(computer: ComputerRef, context: AdapterContext): Promise<SandboxPowerState>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */

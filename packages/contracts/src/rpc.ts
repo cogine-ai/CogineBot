@@ -648,15 +648,23 @@ export const appContract = {
       )
       .output(z.object({ ok: z.literal(true) })),
     files: oc
-      .input(z.object({ botId: Id, path: z.string().default("/") }))
+      .input(
+        z.object({
+          botId: Id,
+          path: z.string().default("/"),
+          source: z.literal("saved").optional(),
+        }),
+      )
       .output(
         z.array(z.object({ path: z.string(), kind: z.enum(["file", "dir"]), size: z.number() })),
       ),
     readFile: oc
-      .input(z.object({ botId: Id, path: z.string() }))
+      .input(z.object({ botId: Id, path: z.string(), source: z.literal("saved").optional() }))
       .output(z.object({ path: z.string(), content: z.string() })),
     downloadFile: oc
-      .input(z.object({ botId: Id, path: z.string().min(1) }))
+      .input(
+        z.object({ botId: Id, path: z.string().min(1), source: z.literal("saved").optional() }),
+      )
       .output(z.object({ path: z.string(), contentBase64: z.string() })),
     uploadFile: oc
       .input(

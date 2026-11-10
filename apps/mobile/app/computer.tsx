@@ -24,6 +24,7 @@ import { WebView } from "react-native-webview";
 import { ComputerKeyboardBar } from "../components/computer-keyboard-bar";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
+import { ComputerSavedFiles } from "../components/computer-saved-files";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
 import { currentApiBase, rpc } from "../lib/api";
@@ -509,6 +510,10 @@ export default function Computer() {
           computer={computer}
           onChanged={refreshAfterMaintenance}
         />
+      ) : null}
+      {botId &&
+      (computer?.state === "suspended" || computerStateRequiresRecovery(computer?.state)) ? (
+        <ComputerSavedFiles key={targetKey} botId={botId} />
       ) : null}
       <ComputerModePicker
         value={computer?.mode}

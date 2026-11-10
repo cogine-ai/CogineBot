@@ -27,9 +27,10 @@ export async function inspectComputerPower(
   ref: ComputerRef,
   context: AdapterContext,
 ): Promise<SandboxPowerState> {
-  if (!sandbox.inspectPowerState || context.signal.aborted) return "unknown";
+  const provider = sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
+  if (!provider?.inspectPowerState || context.signal.aborted) return "unknown";
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
-  return withAbort(sandbox.inspectPowerState(ref, { ...context, signal }), signal).catch(
+  return withAbort(provider.inspectPowerState(ref, { ...context, signal }), signal).catch(
     () => "unknown" as const,
   );
 }
@@ -188,11 +189,13 @@ export async function confirmComputerStop(
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]);
   try {
     signal.throwIfAborted();
+    const provider = sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
+    if (!provider) throw new Error("The original computer provider is unavailable");
     const providerContext = { ...context, signal };
     const request =
       operation === "destroy" && options
-        ? sandbox.destroy(ref, providerContext, options)
-        : sandbox[operation](ref, providerContext);
+        ? provider.destroy(ref, providerContext, options)
+        : provider[operation](ref, providerContext);
     const outcome = await withAbort(Promise.resolve(request), signal);
     return operation === "destroy" || outcome === "gone" ? "gone" : "stopped";
   } catch (error) {

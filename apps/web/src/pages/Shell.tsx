@@ -6230,7 +6230,13 @@ export function ShellPage() {
                     </Button>
                     {savedFilesBotId === active.id ? (
                       <div className="mt-2 h-64 overflow-hidden rounded-md border border-border">
-                        <FilesApp key={active.id} botId={active.id} canUpload={false} visible />
+                        <FilesApp
+                          key={active.id}
+                          botId={active.id}
+                          canUpload={false}
+                          savedOnly
+                          visible
+                        />
                       </div>
                     ) : null}
                   </div>

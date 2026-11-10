@@ -5,8 +5,10 @@ import type { ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerBrowserProvider } from "./computer-browser.js";
+import { confirmComputerStop, inspectComputerPower } from "./computer-power.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { DockerSandboxProvider } from "./docker-sandbox.js";
+import { E2BSandboxProvider } from "./e2b-sandbox.js";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 import { createRunSandbox, HostAwareSandbox, sandboxKindForBot } from "./host-aware-sandbox.js";
 
@@ -19,6 +21,28 @@ const ctx = {
 };
 
 describe("host-aware sandbox", () => {
+  it("retires through the recorded provider when its original configuration is still available", async () => {
+    const destroyed = vi
+      .spyOn(E2BSandboxProvider.prototype, "destroy")
+      .mockResolvedValue(undefined);
+    const sandbox = createRunSandbox("docker", { e2bApiKey: "synthetic-key" });
+    const ref = { id: "old", botId: "bot", kind: "e2b", providerRef: "old" } as const;
+    await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).resolves.toBe("gone");
+    expect(destroyed).toHaveBeenCalledExactlyOnceWith(
+      ref,
+      expect.objectContaining({ spaceId: ctx.spaceId }),
+    );
+  });
+
+  it("keeps teardown unknown when the original provider is no longer configured", async () => {
+    const sandbox = createRunSandbox("docker", {});
+    const ref = { id: "old", botId: "bot", kind: "e2b", providerRef: "old" } as const;
+    await expect(inspectComputerPower(sandbox, ref, ctx)).resolves.toBe("unknown");
+    await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+  });
+
   const hostRoot = mkdtempSync(path.join(tmpdir(), "rakazo-host-root-"));
 
   afterAll(() => {

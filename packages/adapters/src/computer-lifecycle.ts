@@ -408,7 +408,7 @@ export async function provisionComputer(
   // otherwise a booting self-transition would leave the CAS token unchanged and a second
   // worker that observed the same stamp could also claim and provision.
   const observedStamp = reclaimStamp ?? suspendStamp ?? existing.updatedAt;
-  const claimStamp = new Date(Math.max(Date.now(), observedStamp.getTime() + 1));
+  let claimStamp = new Date(Math.max(Date.now(), observedStamp.getTime() + 1));
   const claimed = await deps.prisma.computer.updateMany({
     where: {
       id: computerId,
@@ -534,21 +534,47 @@ export async function provisionComputer(
     if (replacement) {
       await markRestorePending();
       await onProgress?.("restoring");
-      // A stale boot may be reclaimed. An unsettled restore must retire its exact candidate first.
+      // Persist the candidate and renew its ownership independently of restore duration.
       const target = { providerRef: ref.providerRef, kind: ref.kind };
+      const startedAt = new Date(Math.max(Date.now(), claimStamp.getTime() + 1));
       const current = await deps.prisma.computer.updateMany({
         where: { ...bootClaim(), stopRequestedAt: null },
-        data: { ...target, state: "restoring", updatedAt: claimStamp },
+        data: { ...target, state: "restoring", updatedAt: startedAt },
       });
       if (current.count !== 1) throw new ComputerBusyError();
       claimState = "restoring";
       claimRef = target;
-      const restoreBudget = claimStamp.getTime() + BOOT_CLAIM_STALE_MS - Date.now() - 10_000;
-      if (restoreBudget <= 0) throw new ComputerBusyError();
-      await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, {
-        ...context,
-        signal: AbortSignal.any([context.signal, AbortSignal.timeout(restoreBudget)]),
-      });
+      claimStamp = startedAt;
+      const controller = new AbortController();
+      const signal = AbortSignal.any([context.signal, controller.signal]);
+      let renewal: Promise<void> | undefined;
+      const timer = setInterval(() => {
+        if (renewal || signal.aborted) return;
+        const stamp = new Date(Math.max(Date.now(), claimStamp.getTime() + 1));
+        renewal = deps.prisma.computer
+          .updateMany({
+            where: { ...bootClaim(), stopRequestedAt: null },
+            data: { updatedAt: stamp },
+          })
+          .then(({ count }) => {
+            if (count !== 1) throw new ComputerBusyError();
+            claimStamp = stamp;
+          })
+          .catch((error: unknown) => controller.abort(error))
+          .finally(() => {
+            renewal = undefined;
+          });
+      }, 30_000);
+      try {
+        await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, {
+          ...context,
+          signal,
+        });
+      } finally {
+        clearInterval(timer);
+        await renewal;
+      }
+      signal.throwIfAborted();
     }
     await onProgress?.("reconnecting");
     await ensureComputerWorkspaceLayout(

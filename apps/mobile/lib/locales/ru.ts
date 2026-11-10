@@ -1,4 +1,9 @@
 export const RU_MESSAGES: Record<string, string> = {
+  Files: "Файлы",
+  "No files": "Нет файлов",
+  "Could not load files": "Не удалось загрузить файлы",
+  "Could not download file": "Не удалось скачать файл",
+  "Download {name}": "Скачать {name}",
   "Computer status unconfirmed": "Состояние компьютера не подтверждено",
   "Computer needs recovery": "Компьютер нужно восстановить",
   "Saving or stopping computer…": "Сохранение или остановка компьютера…",

@@ -49,7 +49,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let stopComputer: () => Promise<unknown>;
   let statusComputer: () => Promise<unknown>;
   let recoverComputer: () => Promise<unknown>;
-  let downloadComputerFile: () => Promise<unknown>;
+  let downloadComputerFile: (source?: "saved") => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
   let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
@@ -118,7 +118,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     stopComputer = () => client.computer.stop({ botId });
     statusComputer = () => client.computer.status({ botId });
     recoverComputer = () => client.computer.recover({ botId });
-    downloadComputerFile = () => client.computer.downloadFile({ botId, path: "sample.bin" });
+    downloadComputerFile = (source) =>
+      client.computer.downloadFile({ botId, path: "sample.bin", source });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
     uploadComputerFile = () =>
       client.computer.uploadFile({
@@ -369,6 +370,14 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, "sample.bin"), bytes);
     await expect(downloadComputerFile()).resolves.toEqual({
+      path: "sample.bin",
+      contentBase64: bytes.toString("base64"),
+    });
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { state: "running" },
+    });
+    await expect(downloadComputerFile("saved")).resolves.toEqual({
       path: "sample.bin",
       contentBase64: bytes.toString("base64"),
     });

@@ -287,6 +287,42 @@ describe("computer recovery preserves live work", () => {
     }
   });
 
+  it("renews a live restore without capping how long the import may take", async () => {
+    const { deps, row } = await fixture();
+    row.restorePending = true;
+    const importWorkspace = deps.sandbox.importWorkspace.bind(deps.sandbox);
+    let ready!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(deps.sandbox, "importWorkspace").mockImplementationOnce(async (...args) => {
+      ready();
+      await gate;
+      await importWorkspace(...args);
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      const restoring = provisionComputer(deps, row.id, context);
+      await started;
+      const stamp = row.updatedAt.getTime();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(row.updatedAt.getTime()).toBeGreaterThanOrEqual(stamp + 5 * 60_000);
+      await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+        ComputerBusyError,
+      );
+      release();
+      await restoring;
+      expect(row).toMatchObject({ state: "running", restorePending: false });
+    } finally {
+      release();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses only one automatic attempt per saved workspace", async () => {
     const { deps, row, first } = await fixture();
     const stop = vi.spyOn(deps.sandbox, "stop").mockResolvedValue(undefined);

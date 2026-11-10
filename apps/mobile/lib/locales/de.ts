@@ -1,4 +1,9 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Files: "Dateien",
+  "No files": "Keine Dateien",
+  "Could not load files": "Dateien konnten nicht geladen werden",
+  "Could not download file": "Datei konnte nicht heruntergeladen werden",
+  "Download {name}": "{name} herunterladen",
   "Computer status unconfirmed": "Computerstatus unbestätigt",
   "Computer needs recovery": "Computer muss wiederhergestellt werden",
   "Saving or stopping computer…": "Computer wird gespeichert oder angehalten…",

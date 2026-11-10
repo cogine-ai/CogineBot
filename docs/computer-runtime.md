@@ -61,6 +61,8 @@ The web and desktop computer view opens a terminal and a file browser from a doc
 - Browsing and text preview work on stopped computers through the stored workspace.
 - While the Files window is visible, the open folder refreshes every few seconds and after each bot command, so changes from a shell or the bot appear without reopening.
 - Files in the saved workspace remain downloadable while the computer is paused.
+- Keep the original provider's credentials configured until stopped or recovering computers have
+  been retired. A default provider change does not authorize skipping confirmation of the old one.
 - Upload also needs control. Uploads land under the bot's workspace path and are capped at the attachment size limit.
 
 ## Screen connection diagnostics

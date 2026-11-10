@@ -337,8 +337,10 @@ if (args[0] === 'compose') {
   out('');
  }
  if (op==='run') {
-  if (!tail.includes('db:row-security') || tail.at(-1)!=='verify') fail('unexpected maintenance command');
+  const verification=tail.slice(tail.indexOf('db:row-security')).join(' ');
+  if (!['db:row-security verify','db:row-security verify --computer-rollback'].includes(verification)) fail('unexpected maintenance command');
   if (process.env.FAIL_DATABASE_VERIFY) fail('database verification failed');
+  if (process.env.FAIL_COMPUTER_ROLLBACK && tail.at(-1)==='--computer-rollback') fail('computer operation still unsettled');
   out('');
  }
  if (op==='up') {
@@ -2407,6 +2409,22 @@ describe("production deploy reserved image references and verified rollback", ()
 });
 
 describe("production deploy previous credential configuration", () => {
+  it("keeps older writers stopped when the computer rollback check refuses", () => {
+    const deploy = fixture();
+    const before = prime(deploy);
+    deploy.next();
+    const result = deploy.run({ FAIL_UP: "1", FAIL_COMPUTER_ROLLBACK: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("runtime recovery was not started");
+    expect(deploy.composeArguments("run").at(-1)).toContain("--computer-rollback");
+    expect(
+      deploy
+        .composeArguments("up")
+        .some((args) => args.some((arg) => arg.endsWith("/rollback.json"))),
+    ).toBe(false);
+    expect(deploy.record().healthy).toEqual(before.healthy);
+  });
+
   it.each([
     "ROLLBACK_OWNER_CREDENTIAL",
     "ROLLBACK_DIFFERENT_URL",
@@ -2427,7 +2445,7 @@ describe("production deploy previous credential configuration", () => {
     expect(
       deploy
         .composeArguments("run")
-        .some((args) => args.includes("db:row-security") && args.at(-1) === "verify"),
+        .some((args) => args.includes("db:row-security") && args.at(-1) === "--computer-rollback"),
     ).toBe(true);
     expect(deploy.record().healthy).toEqual(before.healthy);
     expect(deploy.state().containers["1".repeat(64)]?.State.Status).toBe("exited");
