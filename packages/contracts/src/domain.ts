@@ -1004,6 +1004,7 @@ export const ComputerStatusSchema = z.object({
     "needs_recovery",
     "quarantined",
   ]),
+  powerState: z.enum(["stopping", "needs_recovery", "quarantined"]).optional(),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),
   takeoverRequested: z.boolean(),
@@ -1016,6 +1017,13 @@ export const ComputerStatusSchema = z.object({
   terminalAvailable: z.boolean(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
+
+/** New clients display the detailed status while older ones receive a safe legacy state. */
+export function currentComputerStatus(status: ComputerStatus): ComputerStatus {
+  return status.powerState && status.state !== status.powerState
+    ? { ...status, state: status.powerState }
+    : status;
+}
 
 export function computerStateRequiresRecovery(state: ComputerStatus["state"] | undefined): boolean {
   return state === "needs_recovery" || state === "quarantined";

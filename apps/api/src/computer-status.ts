@@ -3,7 +3,7 @@ import {
   computerSupportsTerminal,
   computerSupportsUpdate,
 } from "@rakazo/adapters";
-import { type ComputerStatus, computerStateRequiresRecovery } from "@rakazo/contracts";
+import type { ComputerStatus } from "@rakazo/contracts";
 import { COMPUTER_ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
@@ -65,8 +65,7 @@ export function toComputerStatus(
     controlRunId?: string | null;
     homeRevision: string;
     maintenanceId?: string | null;
-    stopPending?: boolean;
-    updatedAt?: Date;
+    stopRequestedAt?: Date | null;
   } | null,
   busyBotName: string | null = null,
 ): ComputerStatus {
@@ -89,10 +88,14 @@ export function toComputerStatus(
     default:
       state = "stopped";
   }
-  if (computer?.stopPending) {
-    state = computerStopClaimIsStale(computer.updatedAt) ? "quarantined" : "stopping";
+  if (computer?.stopRequestedAt) {
+    state = computerStopClaimIsStale(computer.stopRequestedAt) ? "quarantined" : "stopping";
   }
-  const unavailable = state === "stopping" || computerStateRequiresRecovery(state);
+  const powerState =
+    state === "stopping" || state === "quarantined" || state === "needs_recovery"
+      ? state
+      : undefined;
+  const unavailable = powerState !== undefined;
   const screenAvailable = !computer?.maintenanceId && (state === "running" || state === "booting");
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
@@ -100,7 +103,8 @@ export function toComputerStatus(
     botId,
     mode: computer?.scope === "dedicated" ? "dedicated" : "team",
     kind,
-    state,
+    state: unavailable ? "error" : state,
+    ...(powerState ? { powerState } : {}),
     controlHolder: (unavailable
       ? "none"
       : (computer?.controlHolder ?? "none")) as ComputerStatus["controlHolder"],

@@ -1,4 +1,5 @@
-import { expect, type Route, test } from "@playwright/test";
+import type { Route } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { ComputerStatus, ComputerUpdate } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, signup } from "./helpers";
 
@@ -125,7 +126,8 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
 
   function markUnconfirmed(status: ComputerStatus | undefined) {
     if (!status) return;
-    status.state = "quarantined";
+    status.state = "error";
+    status.powerState = "quarantined";
     status.screenAvailable = false;
     status.canUpdate = false;
   }
@@ -164,6 +166,7 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
   await expect(preview.getByTestId("computer-preview-open")).toHaveCount(0);
   await expect(preview.locator("iframe")).toHaveCount(0);
   await page.getByTestId("computer-more-button").click();
+  await expect(page.getByRole("menuitem", { name: "Recover computer", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Update computer", exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "computer-stop-unconfirmed");
   await page.getByRole("menuitem", { name: "Recover computer", exact: true }).click();

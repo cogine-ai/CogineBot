@@ -66,10 +66,13 @@ function isAbandonedLifecycleClaim(updatedAt: Date | null | undefined, now = Dat
 }
 
 function isLiveSuspending(
-  computer: { state: string; updatedAt?: Date | null },
+  computer: { state: string; updatedAt?: Date | null; stopRequestedAt?: Date | null },
   now = Date.now(),
 ): boolean {
-  return computer.state === "suspending" && !isAbandonedLifecycleClaim(computer.updatedAt, now);
+  return (
+    computer.state === "suspending" &&
+    !isAbandonedLifecycleClaim(computer.stopRequestedAt ?? computer.updatedAt, now)
+  );
 }
 
 /**
@@ -173,13 +176,13 @@ export async function quarantineAbandonedComputerStop(
     providerRef: string | null;
     screenGeneration: number;
     updatedAt: Date;
-    stopPending: boolean;
+    stopRequestedAt: Date | null;
   },
   context?: AdapterContext,
 ): Promise<boolean> {
   if (
-    !computer.stopPending ||
-    !computerStopClaimIsStale(computer.updatedAt) ||
+    !computer.stopRequestedAt ||
+    !computerStopClaimIsStale(computer.stopRequestedAt) ||
     (await hasLiveForeignRunLease(prisma, computer.id, context?.runId))
   ) {
     return false;
@@ -194,10 +197,10 @@ export async function quarantineAbandonedComputerStop(
       providerRef,
       screenGeneration,
       updatedAt,
-      stopPending: true,
+      stopRequestedAt: computer.stopRequestedAt,
       ...heldByNobodyElse(lease),
     },
-    data: { state: "quarantined", stopPending: false, ...stoppedComputerControl },
+    data: { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl },
   });
   return marked.count === 1;
 }
@@ -214,7 +217,7 @@ async function guardComputerBoot(
   ) {
     throw new ComputerRecoveryRequiredError();
   }
-  if (computer.stopPending) throw new ComputerBusyError();
+  if (computer.stopRequestedAt) throw new ComputerBusyError();
 }
 
 export { toComputerRef } from "./computer-support.js";
@@ -272,7 +275,7 @@ export async function provisionComputer(
           kind: existing.kind,
           screenGeneration: existing.screenGeneration,
           restorePending: false,
-          stopPending: false,
+          stopRequestedAt: null,
           maintenanceId: existing.maintenanceId ?? null,
           ...(context.botId
             ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
@@ -401,7 +404,7 @@ export async function provisionComputer(
     where: {
       id: computerId,
       ...claimWhere,
-      stopPending: false,
+      stopRequestedAt: null,
       screenGeneration: existing.screenGeneration,
       maintenanceId: existing.maintenanceId ?? null,
       ...(context.botId
@@ -429,7 +432,7 @@ export async function provisionComputer(
   const markRestorePending = async () => {
     if (restorePending) return;
     const marked = await deps.prisma.computer.updateMany({
-      where: { ...bootClaim(), stopPending: false },
+      where: { ...bootClaim(), stopRequestedAt: null },
       data: { restorePending: true, updatedAt: claimStamp },
     });
     if (marked.count !== 1) throw new ComputerBusyError();
@@ -475,7 +478,7 @@ export async function provisionComputer(
       const allowed = await deps.prisma.computer.updateMany({
         where: {
           ...bootClaim(),
-          stopPending: false,
+          stopRequestedAt: null,
           autoRecoveredAt: null,
           ...heldByNobodyElse(bootLease),
         },
@@ -499,8 +502,8 @@ export async function provisionComputer(
       );
       const nextRef = stopped === "gone" ? null : damaged.providerRef;
       const cleared = await deps.prisma.computer.updateMany({
-        where: { ...bootClaim(), stopPending: true },
-        data: { providerRef: nextRef, stopPending: false, updatedAt: claimStamp },
+        where: { ...bootClaim(), stopRequestedAt: { not: null } },
+        data: { providerRef: nextRef, stopRequestedAt: null, updatedAt: claimStamp },
       });
       if (cleared.count !== 1) throw new ComputerBusyError();
       claimRef = { providerRef: nextRef, kind: damaged.kind };
@@ -537,7 +540,7 @@ export async function provisionComputer(
     const activated = await deps.prisma.computer.updateMany({
       where: {
         ...bootClaim(),
-        stopPending: false,
+        stopRequestedAt: null,
         ...(context.botId
           ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
           : {}),
@@ -587,7 +590,7 @@ export async function provisionComputer(
                   ? "running"
                   : "error",
           ...(unsafe || rollbackError || damaged || recoveryStarted
-            ? { stopPending: false, restorePending: true, ...stoppedComputerControl }
+            ? { stopRequestedAt: null, restorePending: true, ...stoppedComputerControl }
             : {}),
           ...((damaged || rollbackError) && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
@@ -842,7 +845,7 @@ async function validateAcquiredComputerLease(
 ): Promise<ComputerExecutionLease> {
   const computer = await prisma.computer.findUniqueOrThrow({
     where: { id: lease.computerId },
-    select: { state: true, maintenanceId: true, updatedAt: true },
+    select: { state: true, maintenanceId: true, updatedAt: true, stopRequestedAt: true },
   });
   if (
     !isLiveSuspending(computer) &&
@@ -943,7 +946,9 @@ export async function replaceComputer(
   if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
     throw new ComputerBusyError();
   const recoveryRequired =
-    existing.stopPending || existing.state === "quarantined" || existing.state === "needs_recovery";
+    existing.stopRequestedAt ||
+    existing.state === "quarantined" ||
+    existing.state === "needs_recovery";
   if (mode === "update" && recoveryRequired) throw new ComputerRecoveryRequiredError();
   const botId = context.botId;
   if (!botId) throw new Error("computer replacement requires a bot id");
@@ -985,7 +990,7 @@ export async function replaceComputer(
   }
   // Reset is the in-product recovery for a hung suspend. Recover and update still refuse
   // so they cannot destroy a computer that is only stuck, not requested as a Reset.
-  if (existing.state === "suspending" && mode !== "reset" && !existing.stopPending) {
+  if (existing.state === "suspending" && mode !== "reset" && !existing.stopRequestedAt) {
     throw new ComputerBusyError();
   }
   // Allow Reset on a stale "booting" or "suspending" row unless another bot still holds a live
@@ -998,7 +1003,7 @@ export async function replaceComputer(
     if (await hasForeignExecutionLease(deps.prisma, computerId, botId)) {
       throw new ComputerBusyError();
     }
-    if (!isAbandonedLifecycleClaim(existing.updatedAt)) {
+    if (!isAbandonedLifecycleClaim(existing.stopRequestedAt ?? existing.updatedAt)) {
       throw new ComputerBusyError();
     }
     const activeBootRun = await deps.prisma.run.findFirst({
@@ -1032,7 +1037,7 @@ export async function replaceComputer(
       kind: existing.kind,
       screenGeneration: existing.screenGeneration,
       updatedAt: existing.updatedAt,
-      stopPending: existing.stopPending,
+      stopRequestedAt: existing.stopRequestedAt,
       restorePending: existing.restorePending,
       executionLeases: { none: { botId: { not: botId }, expiresAt: { gt: now } } },
       ...(handBackIdleTakeover
@@ -1053,7 +1058,7 @@ export async function replaceComputer(
     },
     data: {
       state: "suspending",
-      stopPending: false,
+      stopRequestedAt: null,
       updatedAt: claimStamp,
       ...(handBackIdleTakeover
         ? {
@@ -1078,8 +1083,8 @@ export async function replaceComputer(
   };
   const releaseClaim = () =>
     deps.prisma.computer.updateMany({
-      where: { ...suspensionClaim, stopPending: false },
-      data: { state: previousState, stopPending: existing.stopPending, ...previousControl },
+      where: { ...suspensionClaim, stopRequestedAt: null },
+      data: { state: previousState, stopRequestedAt: existing.stopRequestedAt, ...previousControl },
     });
   // Re-check after the claim in case a run started between the pre-check and CAS.
   const activeRun = await deps.prisma.run.findFirst({
@@ -1167,13 +1172,12 @@ export async function replaceComputer(
       stopRequested = true;
     }
     const stopped = await deps.prisma.computer.updateMany({
-      where: { ...suspensionClaim, stopPending: stopRequested },
+      where: { ...suspensionClaim, stopRequestedAt: stopRequested ? { not: null } : null },
       data: {
         state: "stopped",
         providerRef: null,
         restorePending: true,
-        stopPending: false,
-        autoRecoveredAt: null,
+        stopRequestedAt: null,
         ...stoppedComputerControl,
         updatedAt: claimStamp,
       },
@@ -1186,12 +1190,12 @@ export async function replaceComputer(
       const uncertain = stopRequested || isSandboxUnsafeStop(error);
       await deps.prisma.computer
         .updateMany({
-          where: { ...suspensionClaim, stopPending: uncertain },
+          where: { ...suspensionClaim, stopRequestedAt: uncertain ? { not: null } : null },
           data: uncertain
-            ? { state: "quarantined", stopPending: false, ...stoppedComputerControl }
+            ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
             : {
                 state: previousState,
-                stopPending: existing.stopPending,
+                stopRequestedAt: existing.stopRequestedAt,
                 // A provider screen was already revoked if hand-back succeeded.
                 ...(previousControl ? stoppedComputerControl : {}),
               },

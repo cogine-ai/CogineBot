@@ -1,6 +1,7 @@
 import { FetchError, ResponseError } from "@asciidev/box-sdk";
 import { SandboxRateLimitError, SandboxUnresponsiveError } from "@rakazo/adapter-kit";
 import { redactSecrets } from "@rakazo/core";
+import { providerRetryAfterAt } from "./provider-quota-reset.js";
 import { readBodyCapped } from "./web-ssrf.js";
 
 const MAX_BOX_ERROR_RESPONSE_BYTES = 16 * 1024;
@@ -25,8 +26,15 @@ export function wrapBoxCall<Args extends unknown[], Result>(
         throw new SandboxUnresponsiveError("Box could not be reached", { cause: error });
       }
       if (!(error instanceof ResponseError)) throw error;
+      const receivedAt = Date.now();
       const wrapped = await boxResponseError(error.response, apiKey);
-      if (error.response.status === 429) throw new SandboxRateLimitError({ cause: wrapped });
+      if (error.response.status === 429) {
+        const retryAt = providerRetryAfterAt(error.response.headers.get("retry-after"), receivedAt);
+        throw new SandboxRateLimitError({
+          cause: wrapped,
+          retryAfterMs: retryAt === undefined ? undefined : retryAt - receivedAt,
+        });
+      }
       if (TRANSIENT_STATUSES.has(error.response.status) || error.response.status === 402) {
         throw new SandboxUnresponsiveError(wrapped.message, { cause: wrapped });
       }

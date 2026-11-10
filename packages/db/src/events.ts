@@ -1692,7 +1692,7 @@ export async function pauseRunForTakeover(
         spaceId: input.spaceId,
         state: "running",
         restorePending: false,
-        stopPending: false,
+        stopRequestedAt: null,
       },
       data: retainControl
         ? { state: "running", controlRunId: input.runId }
@@ -1826,7 +1826,7 @@ export async function finalizeComputerControlRelease(
           controlLeaseId: input.leaseId,
           controlRunId: input.runId,
           state: { notIn: ["suspending", "quarantined", "needs_recovery"] },
-          stopPending: false,
+          stopRequestedAt: null,
         },
         data: {
           controlHolder: input.holder,

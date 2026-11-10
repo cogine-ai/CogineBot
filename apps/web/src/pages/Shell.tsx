@@ -31,6 +31,7 @@ import {
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
   computerStateRequiresRecovery,
+  currentComputerStatus,
   DelegatedApprovalAction,
   MESSAGE_REACTIONS,
   type MessageReaction,
@@ -589,7 +590,11 @@ export function ShellPage() {
     const cache = computerCacheRef.current;
     const prev = cache.get(botId) ?? { computer: null, screenUrl: null };
     cache.delete(botId);
-    cache.set(botId, { ...prev, ...patch });
+    cache.set(botId, {
+      ...prev,
+      ...patch,
+      ...(patch.computer ? { computer: currentComputerStatus(patch.computer) } : {}),
+    });
     if (cache.size > COMPUTER_CACHE_LIMIT) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
@@ -597,6 +602,10 @@ export function ShellPage() {
   }
 
   function commitSnapshot(next: ThreadSnapshot | null) {
+    if (next?.computer) {
+      const computer = currentComputerStatus(next.computer);
+      if (computer !== next.computer) next = { ...next, computer };
+    }
     snapshotRef.current = next;
     setSnapshot(withLiveStreamingProgress(next, streamResponsesRef.current));
   }
@@ -609,6 +618,7 @@ export function ShellPage() {
     next: ComputerStatus | null,
     observation: "snapshot" | "running-event" | "attendance-read" = "snapshot",
   ) {
+    if (next) next = currentComputerStatus(next);
     const before = computerRef.current;
     computerRef.current = next;
     setComputer(next);
@@ -4315,7 +4325,9 @@ export function ShellPage() {
         const client = createSpaceRpc(spaceId, current);
         let status: ComputerStatus;
         try {
-          status = await client.computer.status({ botId: heartbeatBotId }, { signal });
+          status = currentComputerStatus(
+            await client.computer.status({ botId: heartbeatBotId }, { signal }),
+          );
         } catch (error) {
           observation?.settle(false);
           if (current()) recheckQueued = false;

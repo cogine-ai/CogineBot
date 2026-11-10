@@ -235,7 +235,7 @@ describe("background computer maintenance", () => {
         id: "computer-1",
         providerRef: "provider-1",
         state: { notIn: ["booting", "suspending", "quarantined", "needs_recovery"] },
-        stopPending: false,
+        stopRequestedAt: null,
         controlLeaseId: expect.any(String),
       },
       data: { state: "stopped", providerRef: null },

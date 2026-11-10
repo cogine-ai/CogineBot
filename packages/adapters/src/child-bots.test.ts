@@ -2027,8 +2027,11 @@ describe("archiveBot", () => {
     expect(updateComputer).not.toHaveBeenCalled();
     expect(prisma.computer.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ providerRef: "provider-1", stopPending: true }),
-        data: expect.objectContaining({ state: "quarantined", stopPending: false }),
+        where: expect.objectContaining({
+          providerRef: "provider-1",
+          stopRequestedAt: { not: null },
+        }),
+        data: expect.objectContaining({ state: "quarantined", stopRequestedAt: null }),
       }),
     );
   });
@@ -2105,11 +2108,11 @@ describe("archiveBot", () => {
         screenGeneration: 1,
         maintenanceId: null,
         updatedAt: expect.any(Date),
-        stopPending: true,
+        stopRequestedAt: { not: null },
       },
       data: {
         state: "stopped",
-        stopPending: false,
+        stopRequestedAt: null,
         controlHolder: "none",
         controlLeaseId: null,
         controlLeaseExpiresAt: null,

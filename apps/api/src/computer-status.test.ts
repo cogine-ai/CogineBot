@@ -38,13 +38,12 @@ describe("toComputerStatus", () => {
     ["quarantined", false, new Date(), "quarantined"],
   ])(
     "reports %s without exposing its screen or stale control",
-    (state, stopPending, updatedAt, expected) => {
+    (state, stopRequestedAt, updatedAt, expected) => {
       expect(
         toComputerStatus("bot-1", {
           kind: "e2b",
           state,
-          stopPending,
-          updatedAt,
+          stopRequestedAt: stopRequestedAt ? updatedAt : null,
           scope: "team",
           controlHolder: "user",
           controlBotId: "bot-1",
@@ -53,7 +52,8 @@ describe("toComputerStatus", () => {
           maintenanceId: "old-maintenance",
         }),
       ).toMatchObject({
-        state: expected,
+        state: "error",
+        powerState: expected,
         screenAvailable: false,
         controlHolder: "none",
         takeoverRequested: false,

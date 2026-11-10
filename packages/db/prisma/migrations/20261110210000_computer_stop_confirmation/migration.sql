@@ -1,3 +1,3 @@
 ALTER TABLE public.computers
-  ADD COLUMN "stopPending" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "stopRequestedAt" TIMESTAMP(3),
   ADD COLUMN "autoRecoveredAt" TIMESTAMP(3);

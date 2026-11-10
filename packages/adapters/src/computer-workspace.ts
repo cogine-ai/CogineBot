@@ -412,7 +412,7 @@ export async function checkpointAndRecordComputerWorkspace(
     id: computerRecord.id,
     homeKey: computerRecord.homeKey,
     restorePending: false,
-    stopPending: false,
+    stopRequestedAt: null,
     providerRef: computer.providerRef,
     kind: computer.kind,
   } satisfies Prisma.ComputerWhereInput;

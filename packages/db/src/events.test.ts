@@ -605,7 +605,7 @@ describe("finalizeComputerControlRelease", () => {
         controlLeaseId: "lease-1",
         controlRunId: "run-1",
         state: { notIn: ["suspending", "quarantined", "needs_recovery"] },
-        stopPending: false,
+        stopRequestedAt: null,
       },
       data: {
         controlHolder: "none",
@@ -1227,7 +1227,7 @@ describe("pauseRunForTakeover", () => {
         spaceId: "workspace-1",
         state: "running",
         restorePending: false,
-        stopPending: false,
+        stopRequestedAt: null,
       },
       data: {
         state: "running",
@@ -1304,7 +1304,7 @@ describe("pauseRunForTakeover", () => {
         spaceId: "workspace-1",
         state: "running",
         restorePending: false,
-        stopPending: false,
+        stopRequestedAt: null,
       },
       data: { state: "running", controlRunId: "run-1" },
     });
@@ -1368,7 +1368,7 @@ describe("pauseRunForTakeover", () => {
         spaceId: "workspace-1",
         state: "running",
         restorePending: false,
-        stopPending: false,
+        stopRequestedAt: null,
       },
       data: { state: "running" },
     });

@@ -73,7 +73,7 @@ export async function queueComputerUpdate(
       throw new Error("Computer update is not available on this device");
     if (
       action === "update" &&
-      (computer.stopPending ||
+      (computer.stopRequestedAt ||
         computer.state === "quarantined" ||
         computer.state === "needs_recovery")
     ) {

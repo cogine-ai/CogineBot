@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouterClient } from "@orpc/server";
@@ -47,6 +47,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
   let statusComputer: () => Promise<unknown>;
+  let recoverComputer: () => Promise<unknown>;
+  let downloadComputerFile: () => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
   let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
@@ -114,6 +116,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
     statusComputer = () => client.computer.status({ botId });
+    recoverComputer = () => client.computer.recover({ botId });
+    downloadComputerFile = () => client.computer.downloadFile({ botId, path: "sample.bin" });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
     uploadComputerFile = () =>
       client.computer.uploadFile({
@@ -300,7 +304,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     stopProvider.mockImplementationOnce(async () => {
       expect(
         await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
-      ).toMatchObject({ state: "suspending", stopPending: true });
+      ).toMatchObject({ state: "suspending", stopRequestedAt: expect.any(Date) });
       throw new Error("provider connection closed after accepting the request");
     });
     await expect(stopComputer()).rejects.toMatchObject({
@@ -308,7 +312,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       message: "The computer's stop could not be confirmed.",
     });
     await expect(statusComputer()).resolves.toMatchObject({
-      state: "quarantined",
+      state: "error",
+      powerState: "quarantined",
       screenAvailable: false,
       controlHolder: "none",
       takeoverRequested: false,
@@ -319,8 +324,52 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     ).toMatchObject({
       providerRef: "heartbeat-provider",
       homeRevision: "last-valid",
-      stopPending: false,
+      stopRequestedAt: null,
     });
+  });
+
+  it("does not abandon a newly issued stop after a long save", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { controlHolder: "none", controlLeaseId: null, controlLeaseExpiresAt: null },
+    });
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      exportWorkspace.mockImplementationOnce(() => {
+        vi.setSystemTime(start + 6 * 60_000);
+        return (async function* () {
+          yield* [];
+        })();
+      });
+      stopProvider.mockImplementationOnce(async () => {
+        await expect(statusComputer()).resolves.toMatchObject({
+          state: "error",
+          powerState: "stopping",
+        });
+        await expect(recoverComputer()).rejects.toMatchObject({ code: "CONFLICT" });
+      });
+      await expect(stopComputer()).resolves.toMatchObject({ state: "stopped" });
+      expect(stopProvider).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downloads binary bytes from a paused workspace without calling the provider", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { state: "suspended", controlHolder: "none", controlLeaseId: null },
+    });
+    const directory = path.join(home.pathFor(computerId), "bots", botId);
+    const bytes = Buffer.from([0, 128, 255, 1]);
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "sample.bin"), bytes);
+    await expect(downloadComputerFile()).resolves.toEqual({
+      path: "sample.bin",
+      contentBase64: bytes.toString("base64"),
+    });
+    expect(providerRead).not.toHaveBeenCalled();
   });
 
   it("does not resume or export a confirmed stopped computer with an unchanged saved home", async () => {
@@ -357,7 +406,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       yield await Promise.reject(new SandboxDamagedError());
     });
     await expect(stopComputer()).resolves.toMatchObject({
-      state: "needs_recovery",
+      state: "error",
+      powerState: "needs_recovery",
       screenAvailable: false,
     });
     expect(stopProvider).toHaveBeenCalledOnce();

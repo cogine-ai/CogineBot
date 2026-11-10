@@ -116,7 +116,7 @@ describe("computer provisioning", () => {
             updatedAt: expect.any(Date),
             providerRef: "provider-1",
             kind: "cloud",
-            stopPending: false,
+            stopRequestedAt: null,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
         }),
@@ -884,7 +884,7 @@ describe("computer provisioning", () => {
             ? expect.objectContaining({
                 state: "quarantined",
                 providerRef: ref.providerRef,
-                stopPending: false,
+                stopRequestedAt: null,
               })
             : { state: stage === "prepare" ? "running" : "error" },
         });
@@ -1028,7 +1028,7 @@ describe("computer provisioning", () => {
             providerRef: "provider-1",
             kind: "box",
             updatedAt: expect.any(Date),
-            stopPending: false,
+            stopRequestedAt: null,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
           data: {
@@ -1242,7 +1242,7 @@ describe("computer provisioning", () => {
           providerRef: "new-provider-1",
           kind: "e2b",
           restorePending: true,
-          stopPending: false,
+          stopRequestedAt: null,
         }),
       });
     } finally {
@@ -1355,7 +1355,7 @@ describe("computer provisioning", () => {
               state: "quarantined",
               providerRef: "new-provider-1",
               kind: "e2b",
-              stopPending: false,
+              stopRequestedAt: null,
             }),
           }),
         );
@@ -3161,7 +3161,7 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-        data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
@@ -3170,7 +3170,7 @@ describe("computer replacement", () => {
         where: expect.objectContaining({
           id: "computer-1",
           state: "suspending",
-          stopPending: false,
+          stopRequestedAt: null,
           updatedAt: expect.any(Date),
         }),
         data: expect.objectContaining({ state: "stopped" }),
@@ -3219,7 +3219,7 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "suspended" }),
-        data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
@@ -3228,7 +3228,7 @@ describe("computer replacement", () => {
         where: expect.objectContaining({
           id: "computer-1",
           state: "suspending",
-          stopPending: false,
+          stopRequestedAt: null,
           updatedAt: expect.any(Date),
         }),
         data: expect.objectContaining({ state: "suspended" }),
@@ -3290,7 +3290,7 @@ describe("computer replacement", () => {
         1,
         expect.objectContaining({
           where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-          data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
+          data: { state: "suspending", stopRequestedAt: null, updatedAt: expect.any(Date) },
         }),
       );
     } finally {
@@ -3445,7 +3445,7 @@ describe("computer replacement", () => {
           id: "computer-1",
           state: "suspending",
           maintenanceId: null,
-          stopPending: false,
+          stopRequestedAt: null,
           updatedAt: expect.any(Date),
         }),
         data: expect.objectContaining({ state: "running" }),

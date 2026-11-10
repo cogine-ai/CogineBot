@@ -785,7 +785,12 @@ export function reduceComputerStatus(
           busyBotName: null,
         };
   }
-  const status = event.payload.status;
+  const power = event.payload.powerState;
+  const powerState =
+    power === "stopping" || power === "needs_recovery" || power === "quarantined"
+      ? power
+      : undefined;
+  const status = powerState ?? event.payload.status;
   if (!isComputerState(status)) return prev;
   const unavailable = status === "stopping" || computerStateRequiresRecovery(status);
   const screenAvailable =
@@ -794,6 +799,7 @@ export function reduceComputerStatus(
   return {
     ...prev,
     state: status,
+    powerState,
     screenAvailable,
     ...(unavailable
       ? { controlHolder: "none", controlBotId: null, takeoverRequested: false, canUpdate: false }

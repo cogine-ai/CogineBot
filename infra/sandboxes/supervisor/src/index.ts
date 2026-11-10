@@ -396,8 +396,11 @@ app.get("/computers/:id", async (c) => {
       image: info.Config.Image,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return c.json({ error: message }, 404);
+    if (error instanceof ComputerIdentityError)
+      return c.json({ error: "invalid computer identity" }, 403);
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404)
+      return c.json({ id, powerState: "gone", error: "computer not found" }, 404);
+    return c.json({ error: "computer state is unavailable" }, 500);
   }
 });
 
@@ -1110,12 +1113,12 @@ app.post("/computers/:id/stop", async (c) => {
         getLogger().error("computer network reclaim failed", error);
       });
     }
-    return c.json({ ok: true });
+    return c.json({ id, ok: true, powerState: "stopped" });
   } catch (error) {
     if (error instanceof ComputerIdentityError)
       return c.json({ error: "invalid computer identity" }, 403);
     if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404)
-      return c.json({ error: "computer not found" }, 404);
+      return c.json({ id, powerState: "gone", error: "computer not found" }, 404);
     return c.json({ error: "computer failed to stop" }, 500);
   }
 });
@@ -1134,13 +1137,13 @@ app.delete("/computers/:id", async (c) => {
       if (screenNetworkMode !== "internal") {
         await removeBotNetwork(botId);
       }
-      return c.json({ ok: true });
+      return c.json({ id, ok: true, powerState: "gone" });
     });
   } catch (error) {
     if (error instanceof ComputerIdentityError)
       return c.json({ error: "invalid computer identity" }, 403);
     if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404)
-      return c.json({ error: "computer not found" }, 404);
+      return c.json({ id, powerState: "gone", error: "computer not found" }, 404);
     return c.json({ error: "computer failed to delete" }, 500);
   }
 });

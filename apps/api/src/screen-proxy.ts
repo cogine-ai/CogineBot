@@ -52,6 +52,7 @@ export function mountScreenTarget(app: Hono, prisma: PrismaClient, secret: strin
               providerRef: true,
               state: true,
               restorePending: true,
+              stopRequestedAt: true,
               controlHolder: true,
               controlLeaseId: true,
               controlBotId: true,
@@ -66,6 +67,7 @@ export function mountScreenTarget(app: Hono, prisma: PrismaClient, secret: strin
       !computer ||
       computer.screenGeneration !== scope.computerGeneration ||
       !computer.providerRef ||
+      computer.stopRequestedAt ||
       !["running", "booting"].includes(computer.state) ||
       (target.interactive &&
         (computer.state !== "running" ||

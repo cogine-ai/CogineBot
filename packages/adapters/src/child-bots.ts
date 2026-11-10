@@ -31,10 +31,9 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import {
-  checkpointComputerBeforeStop,
   isSandboxUnsafeStop,
   requestClaimedComputerStop,
-  savedComputerPowerState,
+  saveComputerBeforeStop,
   stoppedComputerControl,
 } from "./computer-power.js";
 import { BrowserStoppedReleaseError } from "./computer-screens.js";
@@ -518,7 +517,7 @@ export async function archiveBot(
         where: {
           id: dedicated.id,
           state: { in: ["stopped", "suspended", "error"] },
-          stopPending: false,
+          stopRequestedAt: null,
           NOT: { state: "error", restorePending: true },
         },
         data: { state: "stopped" },
@@ -558,7 +557,7 @@ export async function archiveBot(
       screenGeneration: currentDedicated.screenGeneration,
       updatedAt: currentDedicated.updatedAt,
       maintenanceId: null,
-      stopPending: false,
+      stopRequestedAt: null,
     };
     const claim = {
       ...observed,
@@ -573,22 +572,24 @@ export async function archiveBot(
     if (claimed.count !== 1) return;
     let requested = false;
     try {
-      let stopped = await savedComputerPowerState(deps, currentDedicated, ref, childContext);
-      const loss =
-        !stopped && !currentDedicated.restorePending
-          ? await checkpointComputerBeforeStop(deps, currentDedicated, ref, childContext, claim)
-          : undefined;
-      if (loss === "gone") stopped = loss;
+      const evidence = await saveComputerBeforeStop(
+        deps,
+        currentDedicated,
+        ref,
+        childContext,
+        claim,
+      );
+      let stopped = evidence === "stopped" || evidence === "gone" ? evidence : undefined;
       if (!stopped) {
         stopped = await requestClaimedComputerStop(deps, claim, ref, childContext);
         requested = true;
       }
       await deps.prisma.computer.updateMany({
-        where: { ...claim, stopPending: requested },
+        where: { ...claim, stopRequestedAt: requested ? { not: null } : null },
         data: {
-          state: loss === "damaged" && stopped !== "gone" ? "needs_recovery" : "stopped",
-          stopPending: false,
-          ...(loss || stopped === "gone" ? { restorePending: true } : {}),
+          state: evidence === "damaged" && stopped !== "gone" ? "needs_recovery" : "stopped",
+          stopRequestedAt: null,
+          ...(evidence === "damaged" || stopped === "gone" ? { restorePending: true } : {}),
           ...(stopped === "gone" ? { providerRef: null } : {}),
           ...stoppedComputerControl,
         },
@@ -596,9 +597,9 @@ export async function archiveBot(
     } catch (error) {
       const uncertain = requested || isSandboxUnsafeStop(error);
       await deps.prisma.computer.updateMany({
-        where: { ...claim, stopPending: uncertain },
+        where: { ...claim, stopRequestedAt: uncertain ? { not: null } : null },
         data: uncertain
-          ? { state: "quarantined", stopPending: false, ...stoppedComputerControl }
+          ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
           : { state: observed.state },
       });
       throw error;

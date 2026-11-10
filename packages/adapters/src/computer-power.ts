@@ -78,6 +78,19 @@ export async function savedComputerPowerState(
   return run || takeover ? undefined : "stopped";
 }
 
+export async function saveComputerBeforeStop(
+  deps: { prisma: PrismaClient; sandbox: SandboxProvider; home: AgentHomeStore },
+  computer: Parameters<typeof checkpointAndRecordComputerWorkspace>[1] &
+    Parameters<typeof savedComputerPowerState>[1],
+  ref: ComputerRef,
+  context: AdapterContext,
+  claim: Prisma.ComputerWhereInput,
+): Promise<"stopped" | "gone" | "damaged" | undefined> {
+  const state = await savedComputerPowerState(deps, computer, ref, context);
+  if (state || computer.restorePending) return state;
+  return checkpointComputerBeforeStop(deps, computer, ref, context, claim);
+}
+
 /** Only loss during the provider export can fall back to the previous revision. */
 export async function checkpointComputerBeforeStop(
   deps: { prisma: PrismaClient; sandbox: SandboxProvider; home: AgentHomeStore },
@@ -102,7 +115,11 @@ export async function checkpointComputerBeforeStop(
   } catch (error) {
     if (!exported && !stagingFailed && !context.signal.aborted) {
       if (isSandboxDamaged(error)) return "damaged";
-      if (!isSandboxUnsafeStop(error) && ref.kind === "e2b" && isSandboxGoneError(error)) {
+      if (
+        !isSandboxUnsafeStop(error) &&
+        ((ref.kind === "e2b" && isSandboxGoneError(error)) ||
+          (await inspectComputerPower(deps.sandbox, ref, context)) === "gone")
+      ) {
         return "gone";
       }
     }
@@ -126,7 +143,10 @@ export async function publishComputerPowerStatus(
       threadId: bot.thread.id,
       botId: bot.id,
       type: "computer.status",
-      payload: { status },
+      payload:
+        status === "quarantined" || status === "needs_recovery"
+          ? { status: "error", powerState: status }
+          : { status },
     });
   }
 }
@@ -141,8 +161,8 @@ export async function requestClaimedComputerStop(
 ): Promise<"stopped" | "gone"> {
   context.signal.throwIfAborted();
   const pending = await deps.prisma.computer.updateMany({
-    where: { ...claim, stopPending: false },
-    data: { stopPending: true, updatedAt: claim.updatedAt },
+    where: { ...claim, stopRequestedAt: null },
+    data: { stopRequestedAt: new Date(), updatedAt: claim.updatedAt },
   });
   if (pending.count !== 1) throw new ComputerCheckpointChangedError();
   return confirmComputerStop(deps.sandbox, ref, context, operation);

@@ -1118,6 +1118,12 @@ its existing operator-controlled maintenance command before using its new flow.
 password. It preserves every selected administrator/runtime password and refuses
 unparseable environment files rather than modifying another multiline secret.
 
+Computer recovery requires the API, worker, and sandbox supervisor from the same
+release. Stop the old API and workers before running migrations, then start
+the updated supervisor before resuming computer work. For a separately hosted
+supervisor, upgrade that service as well. Keep a version that understands
+unconfirmed stops available for rollback if any computers still need recovery.
+
 A deployment on a published release tag uses:
 
 ```bash

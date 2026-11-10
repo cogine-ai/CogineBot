@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { type ComputerStatus, computerStateRequiresRecovery } from "@rakazo/contracts";
+import type { ComputerStatus } from "@rakazo/contracts";
+import { computerStateRequiresRecovery } from "@rakazo/contracts";
 import {
   AlertDialog,
   AlertDialogAction,

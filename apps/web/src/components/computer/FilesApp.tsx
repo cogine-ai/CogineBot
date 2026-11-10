@@ -32,15 +32,13 @@ const IMAGE_TYPES: Record<string, string> = {
   webp: "image/webp",
 };
 
-/** Browse the bot's workspace. Download needs a running computer; upload needs control. */
+/** Browse the bot's workspace. Download works from the saved workspace while paused. Upload needs control. */
 export function FilesApp({
   botId,
-  running,
   canUpload,
   visible,
 }: {
   botId: string;
-  running: boolean;
   canUpload: boolean;
   /** Refresh only while the window is on screen. */
   visible: boolean;
@@ -107,7 +105,7 @@ export function FilesApp({
     setError(null);
     try {
       const mimeType = IMAGE_TYPES[extension(entry.path)];
-      if (mimeType && running) {
+      if (mimeType) {
         const file = await rpc.computer.downloadFile({ botId, path: entry.path });
         setPreview({
           path: entry.path,
@@ -189,7 +187,7 @@ export function FilesApp({
         <span className="min-w-0 flex-1 truncate text-muted-foreground" dir="auto">
           ~/{location}
         </span>
-        {preview && running ? (
+        {preview ? (
           <Button
             variant="ghost"
             size="icon-xs"
@@ -254,7 +252,7 @@ export function FilesApp({
                     </span>
                   ) : null}
                 </button>
-                {entry.kind === "file" && running ? (
+                {entry.kind === "file" ? (
                   <Button
                     variant="ghost"
                     size="icon-xs"

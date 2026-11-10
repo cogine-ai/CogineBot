@@ -2,12 +2,8 @@ import type * as FileSystemPromises from "node:fs/promises";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  type AdapterContext,
-  type JobPublisher,
-  SandboxDamagedError,
-  type SandboxProvider,
-} from "@rakazo/adapter-kit";
+import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
+import { SandboxDamagedError } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -16,6 +12,7 @@ import {
   provisionComputer,
   replaceComputer,
 } from "./computer-lifecycle.js";
+import { checkpointAndRecordComputerWorkspace } from "./computer-workspace.js";
 import { DesktopSandboxProvider } from "./desktop-sandbox.js";
 import { FakeSandboxProvider } from "./fake-sandbox.js";
 import { LocalAgentHomeStore } from "./home.js";
@@ -138,7 +135,7 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
     maintenanceId: null as string | null,
     homeRevision: "saved",
     restorePending: false,
-    stopPending: false,
+    stopRequestedAt: null as Date | null,
     autoRecoveredAt: null as Date | null,
     screenGeneration: 0,
     controlFence: 0,
@@ -157,10 +154,16 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
         "providerRef",
         "kind",
         "updatedAt",
-        "stopPending",
+        "stopRequestedAt",
         "autoRecoveredAt",
         "screenGeneration",
-      ].every((key) => !(key in where) || where[key] === row[key as keyof typeof row]);
+      ].every((key) => {
+        if (!(key in where)) return true;
+        if (key === "stopRequestedAt" && where[key]?.not === null) {
+          return row.stopRequestedAt !== null;
+        }
+        return where[key] === row[key as keyof typeof row];
+      });
       if (!matches) return { count: 0 };
       if (
         (data.state &&
@@ -200,7 +203,7 @@ describe("computer recovery preserves live work", () => {
   it("quarantines an abandoned stop before any provider operation", async () => {
     const { deps, row, first } = await fixture();
     row.state = "suspending";
-    row.stopPending = true;
+    row.stopRequestedAt = row.updatedAt;
     const provision = vi.spyOn(deps.sandbox, "provision");
     await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
       ComputerRecoveryRequiredError,
@@ -209,7 +212,7 @@ describe("computer recovery preserves live work", () => {
     expect(row).toMatchObject({
       state: "quarantined",
       providerRef: first.providerRef,
-      stopPending: false,
+      stopRequestedAt: null,
     });
     await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
       ComputerRecoveryRequiredError,
@@ -239,6 +242,23 @@ describe("computer recovery preserves live work", () => {
     );
     expect(stop).toHaveBeenCalledOnce();
     expect(row).toMatchObject({ state: "needs_recovery", providerRef: first.providerRef });
+  });
+
+  it("reopens automatic recovery only after a new save, not a reset from the same revision", async () => {
+    const { deps, row } = await fixture();
+    const originalAttempt = new Date();
+    row.autoRecoveredAt = originalAttempt;
+    row.state = "needs_recovery";
+
+    const reset = await replaceComputer(deps, row.id, "reset", context);
+    expect(row.autoRecoveredAt).toBe(originalAttempt);
+    await checkpointAndRecordComputerWorkspace(
+      deps,
+      { ...row, spaceId: context.spaceId },
+      reset,
+      context,
+    );
+    expect(row.autoRecoveredAt).toBeNull();
   });
 
   it("retries restoration for a live reference that is still marked pending", async () => {

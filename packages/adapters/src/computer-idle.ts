@@ -5,7 +5,7 @@ import type {
   JobPublisher,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
-import { computerSleepJob } from "@rakazo/adapter-kit";
+import { computerSleepJob, SandboxRateLimitError } from "@rakazo/adapter-kit";
 import { COMPUTER_ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
@@ -182,9 +182,14 @@ export function computerIdleSleepEnabled(): boolean {
   return process.env.SANDBOX_IDLE_MS?.trim() !== "0";
 }
 
-export function scheduleComputerSleep(jobs: JobPublisher, computerId: string): void {
+export function scheduleComputerSleep(
+  jobs: JobPublisher,
+  computerId: string,
+  retryAfterMs = 0,
+): void {
   if (!computerId || !computerIdleSleepEnabled()) return;
-  void jobs.enqueue(computerSleepJob(computerId, new Date(Date.now() + sandboxIdleMs())));
+  const delay = Math.max(sandboxIdleMs(), Math.min(retryAfterMs, 60 * 60_000));
+  void jobs.enqueue(computerSleepJob(computerId, new Date(Date.now() + delay)));
 }
 
 export async function touchRunningComputer(
@@ -256,7 +261,7 @@ export async function sleepComputerIfIdle(
       providerRef: computer.providerRef,
       kind: computer.kind,
       screenGeneration: computer.screenGeneration,
-      stopPending: false,
+      stopRequestedAt: null,
       updatedAt: computer.updatedAt,
       executionRunId: null,
       executionLeases: { none: { expiresAt: { gt: checkpointedAt } } },
@@ -290,10 +295,14 @@ export async function sleepComputerIfIdle(
     }
   } catch (error) {
     await deps.prisma.computer.updateMany({
-      where: { ...suspensionClaim, stopPending: false },
+      where: { ...suspensionClaim, stopRequestedAt: null },
       data: { state: "running" },
     });
-    scheduleComputerSleep(deps.jobs, computerId);
+    scheduleComputerSleep(
+      deps.jobs,
+      computerId,
+      error instanceof SandboxRateLimitError ? error.retryAfterMs : undefined,
+    );
     if (!(error instanceof ComputerCheckpointChangedError)) throw error;
     return;
   }
@@ -343,9 +352,9 @@ export async function sleepComputerIfIdle(
   } catch (error) {
     const quarantined = isSandboxUnsafeStop(error);
     const changed = await deps.prisma.computer.updateMany({
-      where: { ...suspensionClaim, stopPending: quarantined },
+      where: { ...suspensionClaim, stopRequestedAt: quarantined ? { not: null } : null },
       data: quarantined
-        ? { state: "quarantined", stopPending: false, ...stoppedComputerControl }
+        ? { state: "quarantined", stopRequestedAt: null, ...stoppedComputerControl }
         : { state: "running" },
     });
     if (quarantined && changed.count === 1) {
@@ -356,10 +365,10 @@ export async function sleepComputerIfIdle(
   }
   const state = stopped === "gone" ? "stopped" : damaged ? "needs_recovery" : "suspended";
   const settled = await deps.prisma.computer.updateMany({
-    where: { ...suspensionClaim, stopPending: stopRequired },
+    where: { ...suspensionClaim, stopRequestedAt: stopRequired ? { not: null } : null },
     data: {
       state,
-      stopPending: false,
+      stopRequestedAt: null,
       ...(damaged || stopped === "gone" ? { restorePending: true } : {}),
       ...(stopped === "gone" ? { providerRef: null } : {}),
       ...stoppedComputerControl,

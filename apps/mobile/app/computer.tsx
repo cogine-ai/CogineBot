@@ -1,8 +1,5 @@
-import {
-  type ComputerMode,
-  type ComputerReleaseReason,
-  computerStateRequiresRecovery,
-} from "@rakazo/contracts";
+import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
+import { computerStateRequiresRecovery, currentComputerStatus } from "@rakazo/contracts";
 import { createComputerHeartbeat } from "@rakazo/core";
 import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -178,7 +175,7 @@ export default function Computer() {
         ),
       onStatus: (status) => {
         if (!current()) return;
-        setComputer(status);
+        setComputer(currentComputerStatus(status));
         setVerifiedView(viewEpochRef.current);
         heartbeat?.setEnabled(status.state === "running");
       },
@@ -422,6 +419,9 @@ export default function Computer() {
 
   const powerUnavailable =
     computerStateRequiresRecovery(computer?.state) || computer?.state === "stopping";
+  useEffect(() => {
+    if (powerUnavailable) setComputerOpen(false);
+  }, [powerUnavailable]);
   const placeholder =
     (!powerUnavailable && screenError) ||
     previewPlaceholder(computer?.state, booting, name, computer?.mode);
@@ -517,7 +517,7 @@ export default function Computer() {
       />
 
       <Modal
-        visible={visible && (booting || computerOpen)}
+        visible={visible && !powerUnavailable && (booting || computerOpen)}
         animationType="fade"
         presentationStyle="fullScreen"
         supportedOrientations={["portrait", "landscape-left", "landscape-right"]}
