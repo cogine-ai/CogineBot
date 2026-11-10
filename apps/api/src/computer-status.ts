@@ -1,5 +1,6 @@
 import type { SandboxProvider } from "@rakazo/adapter-kit";
 import {
+  computerActiveDeadline,
   computerRecoveryProviderUnavailable,
   computerStopClaimIsStale,
   computerSupportsTerminal,
@@ -74,6 +75,8 @@ export function toComputerStatus(
     maintenanceId?: string | null;
     stopRequestedAt?: Date | null;
     updatedAt?: Date;
+    runningSince?: Date | null;
+    suspensionReason?: string | null;
     workspaceSaveProgress?: unknown;
     workspaceSaveFailure?: unknown;
   } | null,
@@ -146,6 +149,18 @@ export function toComputerStatus(
     "reason" in storedFailure
       ? WorkspaceSaveFailureReasonSchema.safeParse(storedFailure.reason)
       : undefined;
+  const deadline =
+    state === "running" && sandbox && computer?.providerRef && computer.homeKey
+      ? computerActiveDeadline(
+          sandbox,
+          toComputerRef({
+            ...computer,
+            homeKey: computer.homeKey,
+            providerRef: computer.providerRef,
+          }),
+          computer.runningSince,
+        )
+      : undefined;
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
   return {
@@ -157,6 +172,10 @@ export function toComputerStatus(
     ...(recoveryBlocked ? { recoveryBlocked: true } : {}),
     ...(progress?.success ? { workspaceSaveProgress: progress.data } : {}),
     ...(failure?.success ? { workspaceSaveFailure: failure.data } : {}),
+    ...(deadline ? { activeLimitAt: deadline.toISOString() } : {}),
+    ...(state === "suspended" && computer?.suspensionReason === "active_limit"
+      ? { suspensionReason: "active_limit" as const }
+      : {}),
     controlHolder: (unavailable
       ? "none"
       : (computer?.controlHolder ?? "none")) as ComputerStatus["controlHolder"],

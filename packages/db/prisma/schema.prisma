@@ -1250,6 +1250,8 @@ model Computer {
   workspaceSaveFailure    Json?
   restorePending          Boolean                  @default(false)
   stopRequestedAt         DateTime?
+  runningSince            DateTime?
+  suspensionReason        String?
   autoRecoveredAt         DateTime?
   kind                    String
   providerRef             String?

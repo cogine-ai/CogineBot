@@ -401,3 +401,61 @@ test("a group computer window observes saving before its next attendance poll", 
     emitSave();
   }
 });
+
+test("a computer paused at its runtime limit waits for an explicit resume", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `active-limit-${Date.now()}@example.test`, "password12", "Computer Limit");
+  await completeOnboarding(page);
+  let resumed = false;
+  let boots = 0;
+  let takeovers = 0;
+  const botId = activeBotId(page);
+  const base = await rpc<ComputerStatus>(page, "computer/status", { botId });
+  const current = () => ({
+    ...base,
+    botId,
+    state: resumed ? "running" : "suspended",
+    screenAvailable: false,
+    suspensionReason: resumed ? undefined : "active_limit",
+    activeLimitAt: resumed ? new Date(Date.now() + 7_200_000).toISOString() : undefined,
+  });
+  await page.route("**/rpc/threads/get", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ThreadSnapshot };
+    await route.fulfill({ response, json: { json: { ...json, computer: current() } } });
+  });
+  await page.route("**/rpc/computer/status", (route) =>
+    route.fulfill({ json: { json: current() } }),
+  );
+  await page.route("**/rpc/computer/boot", (route) => {
+    boots += 1;
+    resumed = true;
+    return route.fulfill({ json: { json: current() } });
+  });
+  await page.route("**/rpc/computer/screenUrl", (route) =>
+    route.fulfill({ json: { json: { url: null } } }),
+  );
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/computer/takeover")) takeovers += 1;
+  });
+
+  await page.reload();
+  await page.getByTitle("Agent computer").click();
+  await expect(
+    page.getByText("Computer paused at its runtime limit.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Background tasks may have stopped.", { exact: true })).toBeVisible();
+  expect(boots).toBe(0);
+  await captureScreenshot(page, testInfo, "computer-active-limit-paused");
+
+  await page.getByRole("button", { name: "Continue using computer", exact: true }).click();
+  await expect(
+    page.getByTestId("computer-chrome").getByText("Watching", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Computer paused at its runtime limit.", { exact: true }),
+  ).toHaveCount(0);
+  expect(boots).toBe(1);
+  expect(takeovers).toBe(0);
+});

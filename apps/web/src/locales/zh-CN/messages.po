@@ -7409,3 +7409,19 @@ msgstr "无法写入工作区存档。"
 #: src/pages/Shell.tsx
 msgid "View files"
 msgstr "查看文件"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Computer paused at its runtime limit."
+msgstr "电脑已达到运行时长上限并暂停。"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Background tasks may have stopped."
+msgstr "后台任务可能已经停止。"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Continue using computer"
+msgstr "继续使用电脑"
+
+#: src/pages/Shell.tsx
+msgid "At the runtime limit, pausing may stop background tasks."
+msgstr "达到运行时长上限后，暂停可能会停止后台任务。"

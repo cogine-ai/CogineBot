@@ -93,6 +93,8 @@ import type {
 
 export interface SandboxProvider {
   describe(): AdapterDescriptor<SandboxCapabilities>;
+  /** Whether this provider bills for the running time of this computer. */
+  billsWhileRunning?(computer: ComputerRef): boolean;
   /** Optional live browser on the same leased screen as observe/act. */
   pageBrowser?(
     computer: ComputerRef,

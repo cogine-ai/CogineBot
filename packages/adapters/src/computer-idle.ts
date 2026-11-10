@@ -7,18 +7,22 @@ import type {
 } from "@rakazo/adapter-kit";
 import { computerSleepJob, SandboxRateLimitError } from "@rakazo/adapter-kit";
 import { COMPUTER_ACTIVE_RUN_STATUSES } from "@rakazo/core";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
+import { expireComputerExecutionLeases } from "@rakazo/db";
+import { computerActiveDeadline, scheduleComputerActiveLimit } from "./computer-active-limit.js";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
-import { toComputerRef } from "./computer-lifecycle.js";
 import {
   checkpointComputerBeforeStop,
   isSandboxUnsafeStop,
+  powerProvider,
   publishComputerPowerStatus,
   requestClaimedComputerStop,
   savedComputerPowerState,
   stoppedComputerControl,
 } from "./computer-power.js";
-import { ComputerCheckpointChangedError } from "./computer-workspace.js";
+import { notifyWorkspaceSaveChanged } from "./computer-save-status.js";
+import { toComputerRef } from "./computer-support.js";
+import { ComputerCheckpointChangedError, type ParkedComputerLeases } from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;
@@ -194,10 +198,23 @@ export function scheduleComputerSleep(
 
 export async function touchRunningComputer(
   deps: { sandbox: SandboxProvider; jobs: JobPublisher },
-  computer: { id: string; homeKey: string; providerRef: string; kind: string },
+  computer: {
+    id: string;
+    homeKey: string;
+    providerRef: string;
+    providerAuthority?: string | null;
+    kind: string;
+    runningSince?: Date | null;
+    controlHolder: string;
+    controlLeaseId: string | null;
+    controlLeaseExpiresAt: Date | null;
+  },
 ): Promise<void> {
+  const ref = toComputerRef(computer);
+  const deadline = computerActiveDeadline(deps.sandbox, ref, computer.runningSince);
+  if (deadline && deadline.getTime() <= Date.now() && !hasActiveComputerControl(computer)) return;
   scheduleComputerSleep(deps.jobs, computer.id);
-  await deps.sandbox.keepAlive?.(toComputerRef(computer), { onlyIfRunning: true });
+  await deps.sandbox.keepAlive?.(ref, { onlyIfRunning: true });
 }
 
 export async function sleepComputerIfIdle(
@@ -209,30 +226,93 @@ export async function sleepComputerIfIdle(
     events: ThreadEvents;
   },
   computerId: string,
+  activeSince?: string,
 ): Promise<void> {
-  if (!computerIdleSleepEnabled()) return;
+  if (!activeSince && !computerIdleSleepEnabled()) return;
   let computer = await loadComputer(deps.prisma, computerId);
-  if (!computer?.providerRef || computer.state !== "running") return;
+  if (!computer?.providerRef || computer.state !== "running" || computer.kind === "desktop") return;
+
+  const deadline = computerActiveDeadline(
+    deps.sandbox,
+    toComputerRef(computer),
+    computer.runningSince,
+  );
+  if (activeSince && (!deadline || computer.runningSince?.toISOString() !== activeSince)) return;
+  const retry = (retryAfterMs = 0, whileInUse = false) => {
+    if (activeSince && computer?.runningSince) {
+      const baseDelay = whileInUse ? Math.min(60_000, sandboxIdleMs() / 2) : sandboxIdleMs();
+      const at = new Date(Date.now() + Math.max(baseDelay, Math.min(retryAfterMs, 60 * 60_000)));
+      void scheduleComputerActiveLimit(deps.jobs, computerId, computer.runningSince, at);
+    } else {
+      scheduleComputerSleep(deps.jobs, computerId, retryAfterMs);
+    }
+  };
+  if (deadline && activeSince && deadline.getTime() > Date.now()) {
+    await scheduleComputerActiveLimit(deps.jobs, computerId, computer.runningSince!, deadline);
+    return;
+  }
+  // A distinct key keeps the maximum runtime from moving when viewers reschedule idle sleep.
+  if (!activeSince && deadline && deadline.getTime() <= Date.now()) return;
 
   if (computer.controlBotId && computer.controlLeaseId && !hasActiveComputerControl(computer)) {
     await expireComputerControl(deps, computer.id, computer.controlLeaseId);
     computer = await loadComputer(deps.prisma, computerId);
     if (!computer?.providerRef || computer.state !== "running") return;
+    if (activeSince && computer.runningSince?.toISOString() !== activeSince) return;
   }
+  const ref = toComputerRef(computer);
+  const protectUse = async () => {
+    retry(0, true);
+    if (activeSince) {
+      await powerProvider(deps.sandbox, ref)?.keepAlive?.(ref, { onlyIfRunning: true });
+    }
+  };
   if (hasActiveComputerControl(computer)) {
-    scheduleComputerSleep(deps.jobs, computerId);
+    await protectUse();
     return;
+  }
+
+  if (activeSince && computer.executionRunId) {
+    const { executionRunId } = computer;
+    const run = await deps.prisma.run.findFirst({
+      where: { id: executionRunId, spaceId: computer.spaceId },
+      select: { status: true },
+    });
+    if (run && !["completed", "failed", "cancelled"].includes(run.status)) {
+      retry();
+      return;
+    }
+    // A stranded pre-lease binding to an ended run must not hold a new runtime indefinitely.
+    const cleared = await deps.prisma.computer.updateMany({
+      where: { id: computerId, state: "running", executionRunId, updatedAt: computer.updatedAt },
+      data: {
+        executionRunId: null,
+        executionBotId: null,
+        executionLeaseExpiresAt: null,
+        updatedAt: computer.updatedAt,
+      },
+    });
+    if (cleared.count !== 1) {
+      retry();
+      return;
+    }
   }
 
   const activeStatuses = COMPUTER_ACTIVE_RUN_STATUSES.filter(
     (status) => status !== "waiting_takeover",
   );
-  if (await findActiveRun(deps.prisma, computerId, activeStatuses)) {
-    scheduleComputerSleep(deps.jobs, computerId);
+  const runHolds = () =>
+    activeSince
+      ? deps.prisma.run.findFirst({
+          where: { bot: { computerId }, ...executingRun(new Date()) },
+          select: { id: true },
+        })
+      : findActiveRun(deps.prisma, computerId, activeStatuses);
+  if (await runHolds()) {
+    await protectUse();
     return;
   }
 
-  const ref = toComputerRef(computer);
   const ctx: AdapterContext = {
     operationId: "computer.sleep",
     traceId: "computer.sleep",
@@ -243,33 +323,54 @@ export async function sleepComputerIfIdle(
   };
   let stopped = await savedComputerPowerState(deps, computer, ref, ctx);
   if (
+    !activeSince &&
     !stopped &&
     !computer.restorePending &&
     (await hasActiveBackgroundWork(deps.sandbox, ref, ctx, computerId))
   ) {
-    scheduleComputerSleep(deps.jobs, computerId);
+    retry();
     await deps.sandbox.keepAlive?.(ref);
     return;
   }
 
   const checkpointedAt = new Date(Math.max(Date.now(), computer.updatedAt.getTime() + 1));
+  const parked = activeSince
+    ? await parkedTakeoverLeases(deps.prisma, computerId, checkpointedAt)
+    : [];
+  const limitGuard = (now: Date): Prisma.ComputerWhereInput =>
+    activeSince
+      ? {
+          runningSince: new Date(activeSince),
+          bots: { none: { runs: { some: executingRun(now) } } },
+          OR: [
+            { controlHolder: { not: "user" } },
+            { controlLeaseId: null },
+            { controlLeaseExpiresAt: null },
+            { controlLeaseExpiresAt: { lte: now } },
+          ],
+        }
+      : {};
   const recorded = await deps.prisma.computer.updateMany({
     where: {
       id: computerId,
       state: "running",
       maintenanceId: null,
       providerRef: computer.providerRef,
+      ...(computer.providerAuthority !== undefined
+        ? { providerAuthority: computer.providerAuthority }
+        : {}),
       kind: computer.kind,
       screenGeneration: computer.screenGeneration,
       stopRequestedAt: null,
       updatedAt: computer.updatedAt,
       executionRunId: null,
-      executionLeases: { none: { expiresAt: { gt: checkpointedAt } } },
+      ...limitGuard(checkpointedAt),
+      ...blockingLeases(parked, checkpointedAt),
     },
     data: { state: "suspending", updatedAt: checkpointedAt },
   });
   if (recorded.count !== 1) {
-    scheduleComputerSleep(deps.jobs, computerId);
+    retry();
     return;
   }
   const suspensionClaim = {
@@ -280,7 +381,11 @@ export async function sleepComputerIfIdle(
     // The database revokes screen capabilities when running becomes suspending.
     screenGeneration: computer.screenGeneration + 1,
     maintenanceId: null,
+    ...(computer.providerAuthority !== undefined
+      ? { providerAuthority: computer.providerAuthority }
+      : {}),
     updatedAt: checkpointedAt,
+    ...(activeSince ? { runningSince: new Date(activeSince) } : {}),
   };
 
   let damaged = false;
@@ -289,7 +394,14 @@ export async function sleepComputerIfIdle(
       stopped = await savedComputerPowerState(deps, computer, ref, ctx);
     }
     if (!stopped && !computer.restorePending) {
-      const loss = await checkpointComputerBeforeStop(deps, computer, ref, ctx, suspensionClaim);
+      const loss = await checkpointComputerBeforeStop(
+        deps,
+        computer,
+        ref,
+        ctx,
+        suspensionClaim,
+        parked,
+      );
       damaged = loss === "damaged";
       if (loss === "gone") stopped = loss;
     }
@@ -298,11 +410,7 @@ export async function sleepComputerIfIdle(
       where: { ...suspensionClaim, stopRequestedAt: null },
       data: { state: "running" },
     });
-    scheduleComputerSleep(
-      deps.jobs,
-      computerId,
-      error instanceof SandboxRateLimitError ? error.retryAfterMs : undefined,
-    );
+    retry(error instanceof SandboxRateLimitError ? error.retryAfterMs : undefined);
     if (!(error instanceof ComputerCheckpointChangedError)) throw error;
     return;
   }
@@ -313,8 +421,8 @@ export async function sleepComputerIfIdle(
         where: { id: computerId },
         select: { state: true, providerRef: true, updatedAt: true },
       }),
-      findActiveRun(deps.prisma, computerId, activeStatuses),
-      stopped || damaged || computer.restorePending
+      runHolds(),
+      activeSince || stopped || damaged || computer.restorePending
         ? false
         : hasActiveBackgroundWork(deps.sandbox, ref, ctx, computerId),
     ]);
@@ -323,7 +431,7 @@ export async function sleepComputerIfIdle(
         where: suspensionClaim,
         data: { state: "running" },
       });
-      scheduleComputerSleep(deps.jobs, computerId);
+      retry();
       if (backgroundAfterCheckpoint) await deps.sandbox.keepAlive?.(ref);
       return;
     }
@@ -336,7 +444,7 @@ export async function sleepComputerIfIdle(
         where: suspensionClaim,
         data: { state: "running" },
       });
-      scheduleComputerSleep(deps.jobs, computerId);
+      retry();
       return;
     }
   }
@@ -345,7 +453,7 @@ export async function sleepComputerIfIdle(
   try {
     stopped ??= await requestClaimedComputerStop(
       deps,
-      { ...suspensionClaim, executionLeases: { none: { expiresAt: { gt: new Date() } } } },
+      { ...limitGuard(new Date()), ...blockingLeases(parked, new Date()), ...suspensionClaim },
       ref,
       ctx,
     );
@@ -360,22 +468,39 @@ export async function sleepComputerIfIdle(
     if (quarantined && changed.count === 1) {
       await publishComputerPowerStatus(deps, computer, "quarantined");
     }
-    if (!quarantined) scheduleComputerSleep(deps.jobs, computerId);
+    if (!quarantined)
+      retry(error instanceof SandboxRateLimitError ? error.retryAfterMs : undefined);
     throw error;
   }
   const state = stopped === "gone" ? "stopped" : damaged ? "needs_recovery" : "suspended";
-  const settled = await deps.prisma.computer.updateMany({
-    where: { ...suspensionClaim, stopRequestedAt: stopRequired ? { not: null } : null },
-    data: {
-      state,
-      stopRequestedAt: null,
-      ...(damaged || stopped === "gone" ? { restorePending: true } : {}),
-      ...(stopped === "gone" ? { providerRef: null } : {}),
-      ...stoppedComputerControl,
-    },
-  });
-  if (settled.count === 1) await publishComputerPowerStatus(deps, computer, state);
-  else if (stopRequired) throw new ComputerCheckpointChangedError();
+  const pauseReason = state === "suspended" && activeSince && stopRequired ? "active_limit" : null;
+  const settle = (prisma: Pick<PrismaClient, "computer">) =>
+    prisma.computer.updateMany({
+      where: { ...suspensionClaim, stopRequestedAt: stopRequired ? { not: null } : null },
+      data: {
+        state,
+        stopRequestedAt: null,
+        ...(computer.runningSince ? { runningSince: null } : {}),
+        ...(pauseReason ? { suspensionReason: pauseReason } : {}),
+        ...(damaged || stopped === "gone" ? { restorePending: true } : {}),
+        ...(stopped === "gone" ? { providerRef: null } : {}),
+        ...stoppedComputerControl,
+      },
+    });
+  const settled =
+    parked.length > 0
+      ? await deps.prisma.$transaction(async (tx) => {
+          const result = await settle(tx);
+          if (result.count === 1) {
+            await expireComputerExecutionLeases(tx, { computerId, OR: [...parked] });
+          }
+          return result;
+        })
+      : await settle(deps.prisma);
+  if (settled.count === 1) {
+    await publishComputerPowerStatus(deps, computer, state, pauseReason);
+    if (pauseReason) await notifyWorkspaceSaveChanged(deps, computer);
+  } else if (stopRequired) throw new ComputerCheckpointChangedError();
 }
 
 function loadComputer(prisma: PrismaClient, computerId: string) {
@@ -391,6 +516,8 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
       screenGeneration: true,
       state: true,
       homeRevisionAt: true,
+      runningSince: true,
+      executionRunId: true,
       restorePending: true,
       spaceId: true,
       userId: true,
@@ -401,6 +528,41 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
       updatedAt: true,
     },
   });
+}
+
+function executingRun(now: Date): Prisma.RunWhereInput {
+  return { status: { in: ["leased", "running"] }, leaseExpiresAt: { gt: now } };
+}
+
+function blockingLeases(parked: ParkedComputerLeases, now: Date): Prisma.ComputerWhereInput {
+  return {
+    executionLeases: {
+      none: { expiresAt: { gt: now }, ...(parked.length ? { NOT: [...parked] } : {}) },
+    },
+  };
+}
+
+async function parkedTakeoverLeases(
+  prisma: PrismaClient,
+  computerId: string,
+  now: Date,
+): Promise<ParkedComputerLeases> {
+  const leases = await prisma.computerExecutionLease.findMany({
+    where: { computerId, expiresAt: { gt: now } },
+    select: { botId: true, runId: true, fence: true },
+  });
+  if (leases.length === 0) return [];
+  const waiting = await prisma.run.findMany({
+    where: {
+      bot: { computerId },
+      id: { in: leases.map((lease) => lease.runId) },
+      status: "waiting_takeover",
+    },
+    select: { id: true, botId: true },
+  });
+  return leases.filter((lease) =>
+    waiting.some((run) => run.id === lease.runId && run.botId === lease.botId),
+  );
 }
 
 function findActiveRun(prisma: PrismaClient, computerId: string, statuses: readonly string[]) {

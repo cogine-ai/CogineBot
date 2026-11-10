@@ -1,4 +1,9 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Computer paused at its runtime limit.": "电脑已达到运行时长上限并暂停。",
+  "Background tasks may have stopped.": "后台任务可能已经停止。",
+  "Continue using computer": "继续使用电脑",
+  "At the runtime limit, pausing may stop background tasks.":
+    "达到运行时长上限后，暂停可能会停止后台任务。",
   "Saving workspace…": "正在保存工作区…",
   "{files} files processed · {size}": "已处理 {files} 个文件 · {size}",
   "Computer still running. Workspace not saved.": "电脑仍在运行，工作区未保存。",

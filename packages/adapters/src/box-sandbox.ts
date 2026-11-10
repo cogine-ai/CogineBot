@@ -81,6 +81,10 @@ interface BoxCommandResult {
 }
 
 export class BoxSandboxProvider implements SandboxProvider {
+  billsWhileRunning(): boolean {
+    return true;
+  }
+
   private readonly client: BoxSandboxSdk;
   private readonly desktops = new LinuxDesktop({
     environment: async () => ({
@@ -185,7 +189,8 @@ export class BoxSandboxProvider implements SandboxProvider {
           { boxId: request.providerRef },
           { signal: context.signal },
         );
-        if (existing.box.state === "archived") {
+        const started = existing.box.state === "archived";
+        if (started) {
           await this.client.resume(
             {
               boxId: request.providerRef,
@@ -194,7 +199,8 @@ export class BoxSandboxProvider implements SandboxProvider {
             { signal: context.signal },
           );
         }
-        return this.ref(request.providerRef, request.botId, false);
+        const ref = this.ref(request.providerRef, request.botId, false);
+        return started ? { ...ref, started } : ref;
       } catch (error) {
         if (!isUnrecoverableBoxError(error)) throw error;
         this.forget(request.providerRef);

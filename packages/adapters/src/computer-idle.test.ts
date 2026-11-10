@@ -6,6 +6,12 @@ import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  computerActiveDeadline,
+  computerMaxActiveMs,
+  createComputerActiveLimitRecovery,
+  DEFAULT_COMPUTER_MAX_ACTIVE_MS,
+} from "./computer-active-limit.js";
+import {
   BACKGROUND_WORK_LAUNCH,
   BACKGROUND_WORK_PROBE,
   CANCEL_COMPUTER_RUN_WORK,
@@ -15,6 +21,7 @@ import {
   sandboxIdleMs,
   scheduleComputerSleep,
   sleepComputerIfIdle,
+  touchRunningComputer,
 } from "./computer-idle.js";
 import { e2bCreateOptions } from "./e2b-sandbox.js";
 
@@ -643,6 +650,170 @@ describe("CANCEL_PRIMARY_BROWSER_WORK", () => {
   });
 });
 
+describe("computer active time limit", () => {
+  const startedAt = new Date("2026-01-01T00:00:00Z");
+  beforeEach(() => {
+    vi.stubEnv("SANDBOX_IDLE_MS", undefined);
+    vi.stubEnv("COMPUTER_MAX_ACTIVE_MS", undefined);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(startedAt.getTime() + 2 * 60 * 60_000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    [undefined, DEFAULT_COMPUTER_MAX_ACTIVE_MS],
+    [" 0 ", 0],
+    ["10800000", 10800000],
+    ["59999", DEFAULT_COMPUTER_MAX_ACTIVE_MS],
+    ["bad", DEFAULT_COMPUTER_MAX_ACTIVE_MS],
+  ])("honors the runtime policy value %s", (value, expected) => {
+    vi.stubEnv("COMPUTER_MAX_ACTIVE_MS", value);
+    expect(computerMaxActiveMs()).toBe(expected);
+  });
+
+  it("does not infer a deadline from observation or apply it to desktop or unbilled hosts", () => {
+    const billable = idleHarness({ billable: true });
+    const ref = { id: "test", botId: "bot", providerRef: "test", kind: "e2b" as const };
+    expect(computerActiveDeadline(billable.deps.sandbox, ref, null)).toBeUndefined();
+    expect(
+      computerActiveDeadline(billable.deps.sandbox, { ...ref, kind: "desktop" }, startedAt),
+    ).toBeUndefined();
+    expect(computerActiveDeadline(idleHarness().deps.sandbox, ref, startedAt)).toBeUndefined();
+    expect(computerActiveDeadline(billable.deps.sandbox, ref, startedAt)).toEqual(new Date());
+  });
+
+  it("keeps the same fixed deadline when a queued check runs early", async () => {
+    vi.setSystemTime(Date.now() - 1);
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+    expect(h.sandbox.stop).not.toHaveBeenCalled();
+    expect(h.jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availableAt: new Date(Date.now() + 1),
+        payload: { computerId: h.computer.id, activeSince: startedAt.toISOString() },
+      }),
+    );
+  });
+
+  it("still checks the maximum when idle sleep is disabled, without waiting on background work", async () => {
+    vi.stubEnv("SANDBOX_IDLE_MS", "0");
+    const h = idleHarness({
+      runningSince: startedAt,
+      billable: true,
+      providerBackgroundWorkStatus: "active",
+    });
+    await sleepComputerIfIdle(h.deps, h.computer.id);
+    expect(h.sandbox.stop).not.toHaveBeenCalled();
+    await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+    expect(h.sandbox.inspectBackgroundWork).not.toHaveBeenCalled();
+    expect(h.sandbox.exportWorkspace).toHaveBeenCalledOnce();
+    expect(h.sandbox.stop).toHaveBeenCalledOnce();
+    expect(h.computer).toMatchObject({
+      state: "suspended",
+      runningSince: null,
+      suspensionReason: "active_limit",
+    });
+  });
+
+  it("ignores a disabled limit and a job from the previous runtime", async () => {
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    await sleepComputerIfIdle(
+      h.deps,
+      h.computer.id,
+      new Date(startedAt.getTime() - 1).toISOString(),
+    );
+    vi.stubEnv("COMPUTER_MAX_ACTIVE_MS", "0");
+    await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+    expect(h.sandbox.stop).not.toHaveBeenCalled();
+    expect(h.prisma.computer.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("lets actual control and live execution defer the runtime limit", async () => {
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    Object.assign(h.computer, {
+      controlHolder: "user",
+      controlLeaseId: "lease",
+      controlLeaseExpiresAt: new Date(Date.now() + 1000),
+    });
+    await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+    expect(h.prisma.run.findFirst).not.toHaveBeenCalled();
+    Object.assign(h.computer, {
+      controlHolder: "none",
+      controlLeaseId: null,
+      controlLeaseExpiresAt: null,
+    });
+    h.prisma.run.findFirst.mockResolvedValueOnce({ id: "executing" });
+    await sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString());
+    expect(h.prisma.run.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          bot: { computerId: h.computer.id },
+          status: { in: ["leased", "running"] },
+          leaseExpiresAt: { gt: new Date() },
+        },
+      }),
+    );
+    expect(h.sandbox.exportWorkspace).not.toHaveBeenCalled();
+    expect(h.sandbox.stop).not.toHaveBeenCalled();
+    expect(h.jobs.enqueue).toHaveBeenCalledTimes(2);
+    expect(h.sandbox.keepAlive).toHaveBeenCalledWith(expect.anything(), { onlyIfRunning: true });
+    expect(h.jobs.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        availableAt: new Date(Date.now() + 60_000),
+      }),
+    );
+  });
+
+  it("keeps the saved revision and exposes an uncertain stop instead of a limit pause", async () => {
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    h.sandbox.stop.mockRejectedValueOnce(new Error("Synthetic stop timeout"));
+    await expect(
+      sleepComputerIfIdle(h.deps, h.computer.id, startedAt.toISOString()),
+    ).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+    expect(h.computer).toMatchObject({ state: "quarantined", runningSince: startedAt });
+    expect(h.computer).not.toHaveProperty("suspensionReason");
+    expect(h.events.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { status: "error", powerState: "quarantined" },
+      }),
+    );
+  });
+
+  it("does not extend provider timeout from a viewer at the limit", async () => {
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    await touchRunningComputer(h.deps, h.computer);
+    expect(h.sandbox.keepAlive).not.toHaveBeenCalled();
+    expect(h.jobs.enqueue).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() - 1);
+    await touchRunningComputer(h.deps, h.computer);
+    expect(h.sandbox.keepAlive).toHaveBeenCalledWith(expect.anything(), { onlyIfRunning: true });
+    expect(h.jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: { computerId: h.computer.id } }),
+    );
+  });
+
+  it("reconciles overdue deadlines without replacing queued retries", async () => {
+    const h = idleHarness({ runningSince: startedAt, billable: true });
+    h.prisma.computer.findMany.mockResolvedValue([h.computer]);
+    const recover = createComputerActiveLimitRecovery(h.deps);
+    await recover();
+    await recover();
+    expect(h.prisma.computer.findMany).toHaveBeenCalledOnce();
+    expect(h.jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        keepExisting: true,
+        availableAt: new Date(),
+        payload: { computerId: h.computer.id, activeSince: startedAt.toISOString() },
+      }),
+    );
+  });
+});
+
 describe("e2b create options", () => {
   it("pauses on timeout instead of killing the sandbox", () => {
     const opts = e2bCreateOptions("bot-1", "e2b_test");
@@ -659,6 +830,8 @@ function idleHarness(
     backgroundWorkProbeFailed?: boolean;
     exportError?: Error;
     providerBackgroundWorkStatus?: "active" | "idle" | "unknown";
+    billable?: boolean;
+    runningSince?: Date;
   } = {},
 ) {
   const backgroundWorkProbeCodes = [...(options.backgroundWorkProbeCodes ?? [])];
@@ -667,6 +840,7 @@ function idleHarness(
     homeKey: "team-workspace",
     homeRevision: "rev-before",
     homeRevisionAt: null,
+    runningSince: options.runningSince ?? null,
     restorePending: false,
     scope: "team",
     controlFence: 0,
@@ -696,6 +870,7 @@ function idleHarness(
     computer: {
       findFirst: vi.fn(async () => ({ ...computer })),
       findUnique: vi.fn(async () => ({ ...computer })),
+      findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(async (args) => {
         if (args.where.updatedAt && args.where.updatedAt.getTime() !== computer.updatedAt.getTime())
           return { count: 0 };
@@ -724,6 +899,8 @@ function idleHarness(
       }),
     },
     run: { findFirst: vi.fn().mockResolvedValue(null) },
+    computerExecutionLease: { findMany: vi.fn().mockResolvedValue([]) },
+    chatGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     agentHome: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     bot: {
       findMany: vi.fn().mockResolvedValue([{ id: "bot", thread: { id: "thread" } }]),
@@ -739,6 +916,7 @@ function idleHarness(
       computer.screenGeneration = screenGeneration + 1;
   }
   const sandbox = {
+    billsWhileRunning: () => options.billable === true,
     execute: vi.fn(async function* () {
       const code = backgroundWorkProbeCodes.shift() ?? options.backgroundWorkProbeCode ?? 1;
       if (code === 1 && !options.backgroundWorkProbeFailed) {

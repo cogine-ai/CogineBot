@@ -161,6 +161,7 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
+import { ComputerActiveLimit } from "../components/computer/ComputerActiveLimit";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { FilesApp } from "../components/computer/FilesApp";
 import { WorkspaceSaveStatus } from "../components/computer/WorkspaceSaveStatus";
@@ -4541,6 +4542,7 @@ export function ShellPage() {
         </Button>
       </div>
     ) : null;
+  const capPaused = computer?.state === "suspended" && computer.suspensionReason === "active_limit";
   const saveFailure = computer?.state === "running" && computer.workspaceSaveFailure;
   const savingWorkspace =
     computer?.state === "stopping" && computer.workspaceSaveProgress !== undefined;
@@ -6163,6 +6165,13 @@ export function ShellPage() {
                     <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                       <Trans>Open in full window</Trans>
                     </div>
+                  ) : capPaused ? (
+                    <div className="grid h-full place-items-center px-6 text-center text-sm">
+                      <ComputerActiveLimit
+                        computer={computer}
+                        onContinue={() => void openComputer()}
+                      />
+                    </div>
                   ) : savingWorkspace ? (
                     <div className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground">
                       <WorkspaceSaveStatus computer={computer} />
@@ -6211,7 +6220,8 @@ export function ShellPage() {
                         ))}
                     </div>
                   )}
-                  {!computerScreenError &&
+                  {!capPaused &&
+                  !computerScreenError &&
                   !showingRecoveryHint &&
                   !computerStateRequiresRecovery(computer?.state) &&
                   computer?.state !== "stopping" ? (
@@ -6232,6 +6242,11 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                {computer?.state === "running" && computer.activeLimitAt ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <Trans>At the runtime limit, pausing may stop background tasks.</Trans>
+                  </p>
+                ) : null}
                 {saveFailure ? <WorkspaceSaveStatus computer={computer} /> : null}
                 {saveFailure ||
                 computer?.state === "suspended" ||
@@ -7234,7 +7249,14 @@ export function ShellPage() {
                     : undefined
                 }
               >
-                {savingWorkspace ? (
+                {capPaused ? (
+                  <div className="grid h-full place-items-center text-center text-sm">
+                    <ComputerActiveLimit
+                      computer={computer}
+                      onContinue={() => void openComputer(computerBot.id)}
+                    />
+                  </div>
+                ) : savingWorkspace ? (
                   <div className="grid h-full place-items-center text-center text-sm text-muted-foreground">
                     <WorkspaceSaveStatus computer={computer} />
                   </div>

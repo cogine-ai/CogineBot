@@ -305,6 +305,27 @@ describe("computer screen", () => {
     expect(view.querySelector("[data-keyboard-bar]")).toBeNull();
   });
 
+  it("explains a runtime-limit pause and resumes without taking control", async () => {
+    respond({
+      ...botWorking,
+      state: "suspended",
+      suspensionReason: "active_limit",
+      busyBotName: null,
+    });
+    const view = await render();
+    expect(view.textContent).toContain("Computer paused at its runtime limit.");
+    expect(view.textContent).toContain("Background tasks may have stopped.");
+    expect(calls("computer/boot")).toEqual([]);
+    const resume = Array.from(view.querySelectorAll("button")).find(
+      (button) => button.textContent === "Continue using computer",
+    );
+    expect(resume).toBeDefined();
+    await act(async () => resume?.click());
+    await settle();
+    expect(calls("computer/boot")).toHaveLength(1);
+    expect(calls("computer/takeover")).toEqual([]);
+  });
+
   it("shows the workspace failure reason and opens the live files for inspection", async () => {
     rpc.mockImplementation(async (method: string) => {
       if (method === "computer/status") {

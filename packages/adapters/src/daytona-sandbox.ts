@@ -49,6 +49,10 @@ type PendingDaytonaConnection = {
 };
 
 export class DaytonaSandboxProvider implements SandboxProvider {
+  billsWhileRunning(): boolean {
+    return true;
+  }
+
   private readonly client: DaytonaSandboxSdk;
   private readonly boxes = new Map<string, Sandbox>();
   private readonly connections = new Map<string, PendingDaytonaConnection>();

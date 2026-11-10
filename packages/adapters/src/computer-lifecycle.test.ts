@@ -1563,7 +1563,8 @@ describe("Team Computer wake", () => {
       importWorkspace: vi.fn().mockResolvedValue(undefined),
       execute,
     } as unknown as SandboxProvider;
-    return { ref, prisma, sandbox, execute, findMany };
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    return { ref, prisma, sandbox, execute, findMany, enqueue };
   }
 
   async function boot(harness: ReturnType<typeof wakeHarness>) {
@@ -1576,7 +1577,7 @@ describe("Team Computer wake", () => {
           home: {
             exportHome: vi.fn().mockReturnValue((async function* () {})()),
           } as unknown as AgentHomeStore,
-          jobs: {} as JobPublisher,
+          jobs: { enqueue: harness.enqueue } as unknown as JobPublisher,
           events: {} as ThreadEvents,
           dataDir,
         },
@@ -1606,6 +1607,31 @@ describe("Team Computer wake", () => {
       expect.objectContaining({ botId: "bot-1" }),
     );
   });
+
+  it.each([false, true])(
+    "only records a new billed epoch on a proven start (%s)",
+    async (started) => {
+      const harness = wakeHarness("running", vi.fn().mockResolvedValue([]), {
+        fresh: false,
+        started,
+      });
+      harness.sandbox.billsWhileRunning = () => true;
+      await expect(boot(harness)).resolves.toEqual(harness.ref);
+      const last = vi.mocked(harness.prisma.computer.updateMany).mock.lastCall?.[0];
+      if (started) {
+        expect(last?.data).toMatchObject({ runningSince: expect.any(Date) });
+        const runningSince = last?.data.runningSince as Date;
+        expect(harness.enqueue).toHaveBeenCalledWith(
+          expect.objectContaining({
+            payload: { computerId: "computer-1", activeSince: runningSince.toISOString() },
+          }),
+        );
+      } else {
+        expect(last?.data).not.toHaveProperty("runningSince");
+        expect(harness.enqueue).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("does not look for deleted bots' folders when reconnecting to a running Team Computer", async () => {
     const harness = wakeHarness("running");

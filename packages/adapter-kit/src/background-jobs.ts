@@ -30,7 +30,10 @@ const payloadSchemas = {
   }),
   "routine.retry": z.object({ runId: z.string().min(1) }),
   "computer.update": z.object({ updateId: z.string().min(1) }),
-  "computer.sleep": z.object({ computerId: z.string().min(1) }),
+  "computer.sleep": z.object({
+    computerId: z.string().min(1),
+    activeSince: z.iso.datetime().optional(),
+  }),
   "computer.control-expire": z.object({
     computerId: z.string().min(1),
     leaseId: z.string().min(1),
@@ -126,12 +129,22 @@ export function routineRetryJob(runId: string, availableAt: Date): BackgroundJob
   };
 }
 
-export function computerSleepJob(computerId: string, availableAt: Date): BackgroundJob {
+export function computerSleepJob(
+  computerId: string,
+  availableAt: Date,
+  activeLimit?: { since: Date; limitMs: number },
+): BackgroundJob {
+  const key = computerSleepJobKey(computerId);
   return {
     name: "computer.sleep",
-    payload: { computerId },
+    payload: {
+      computerId,
+      ...(activeLimit ? { activeSince: activeLimit.since.toISOString() } : {}),
+    },
     availableAt,
-    replaceKey: computerSleepJobKey(computerId),
+    replaceKey: activeLimit
+      ? `${key}:limit:${activeLimit.since.getTime()}:${activeLimit.limitMs}`
+      : key,
   };
 }
 

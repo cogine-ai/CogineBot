@@ -59,6 +59,7 @@ import {
   codexLiveListsModel,
   commentTicket,
   compatibleThinkingLevels,
+  computerActiveDeadline,
   computerSupportsTerminal,
   computerSupportsUpdate,
   computerUpdateView,
@@ -110,11 +111,13 @@ import {
   parseModelSecret,
   persistPreparedSecret,
   planLiveConnectionSync,
+  powerProvider,
   prepareApiInstall,
   prepareGraphqlInstall,
   prepareManagedConnectorForTransaction,
   prepareStoredModelAuth,
   probeCatalogProviderModels,
+  probeComputerPower,
   probeOpenAiCompatibleModels,
   provisionComputer,
   publishComputerPowerStatus,
@@ -1379,7 +1382,12 @@ export function createRouter(deps: RouterDeps) {
                   providerRef: computer.providerRef,
                   space: { deletionClaimId: claimId },
                 },
-                data: { state: "stopped", providerRef: null },
+                data: {
+                  state: "stopped",
+                  providerRef: null,
+                  runningSince: null,
+                  suspensionReason: null,
+                },
               });
             }
             await assertClaim();
@@ -2424,6 +2432,8 @@ export function createRouter(deps: RouterDeps) {
                   : previous,
                 data: {
                   state: damaged && !gone ? "needs_recovery" : "stopped",
+                  ...(bot.computer.runningSince ? { runningSince: null } : {}),
+                  ...(bot.computer.suspensionReason ? { suspensionReason: null } : {}),
                   stopRequestedAt: null,
                   ...(gone ? { providerRef: null } : {}),
                   ...(damaged || gone ? { restorePending: true } : {}),
@@ -3242,7 +3252,15 @@ export function createRouter(deps: RouterDeps) {
           bot.computer.kind !== "desktop" &&
           bot.computer.providerRef &&
           !needsProviderIdentityProof(deps.sandbox, toComputerRef(bot.computer)) &&
-          (await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(bot.computer)))
+          (await matchesComputerProvisionRoute(deps.sandbox, toComputerRef(bot.computer))) &&
+          (powerProvider(deps.sandbox, toComputerRef(bot.computer))?.billsWhileRunning?.(
+            toComputerRef(bot.computer),
+          ) !== true ||
+            (await probeComputerPower(
+              deps.sandbox,
+              toComputerRef(bot.computer),
+              computerContext(context.actor, bot.id, "boot"),
+            )) === "running")
         ) {
           try {
             await ensureComputerWorkspaceLayout(
@@ -3383,6 +3401,8 @@ export function createRouter(deps: RouterDeps) {
             where: { ...suspensionClaim, stopRequestedAt: stopRequested ? { not: null } : null },
             data: {
               state,
+              ...(bot.computer.runningSince ? { runningSince: null } : {}),
+              ...(bot.computer.suspensionReason ? { suspensionReason: null } : {}),
               stopRequestedAt: null,
               ...(state === "needs_recovery" || stopped === "gone" ? { restorePending: true } : {}),
               ...(stopped === "gone" ? { providerRef: null } : {}),
@@ -4088,6 +4108,15 @@ export function createRouter(deps: RouterDeps) {
       heartbeat: authed.computer.heartbeat.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (bot.computer?.state === "running" && bot.computer.providerRef) {
+          const ref = toComputerRef(bot.computer);
+          const deadline = computerActiveDeadline(deps.sandbox, ref, bot.computer.runningSince);
+          if (
+            deadline &&
+            deadline.getTime() <= Date.now() &&
+            !hasActiveComputerControl(bot.computer)
+          ) {
+            return { ok: true as const };
+          }
           const touched = await deps.prisma.computer.updateMany({
             where: {
               id: bot.computer.id,
@@ -4116,10 +4145,8 @@ export function createRouter(deps: RouterDeps) {
           await touchRunningComputer(
             { sandbox: deps.sandbox, jobs: deps.jobs },
             {
-              id: bot.computer.id,
-              homeKey: bot.computer.homeKey,
+              ...bot.computer,
               providerRef: bot.computer.providerRef,
-              kind: bot.computer.kind,
             },
           ).catch(() => undefined);
         }
@@ -8943,7 +8970,7 @@ async function clearGoneSandbox(
       maintenanceId: null,
       stopRequestedAt: null,
     },
-    data: { state: "stopped", providerRef: null },
+    data: { state: "stopped", providerRef: null, runningSince: null, suspensionReason: null },
   });
   return null;
 }

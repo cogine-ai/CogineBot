@@ -373,6 +373,10 @@ interface CreateOSScreenConnection {
 }
 
 export class CreateOSSandboxProvider implements SandboxProvider {
+  billsWhileRunning(): boolean {
+    return true;
+  }
+
   private readonly baseUrl: string;
   private readonly shape: string;
   private readonly rootfs: string;
@@ -424,7 +428,8 @@ export class CreateOSSandboxProvider implements SandboxProvider {
         if (existing.status === "destroyed" || existing.status === "failed") {
           throw new Error(`CreateOS sandbox is ${existing.status}`);
         }
-        if (existing.status === "paused" || existing.status === "error") {
+        const started = existing.status === "paused" || existing.status === "error";
+        if (started) {
           await this.postJson(
             `/v1/sandboxes/${encodeURIComponent(existing.id)}/resume`,
             undefined,
@@ -432,7 +437,8 @@ export class CreateOSSandboxProvider implements SandboxProvider {
           );
         }
         if (existing.status !== "running") await this.waitUntilRunning(existing.id, context);
-        return this.ref(existing.id, request.botId, false);
+        const ref = this.ref(existing.id, request.botId, false);
+        return started ? { ...ref, started } : ref;
       } catch (error) {
         if (!isUnrecoverableCreateOSError(error)) throw error;
       }

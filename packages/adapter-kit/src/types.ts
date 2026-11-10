@@ -831,7 +831,7 @@ export interface BackgroundJobPayloads {
   "run.continue": { runId: string; quotaWaitRevision?: number };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "routine.retry": { runId: string };
-  "computer.sleep": { computerId: string };
+  "computer.sleep": { computerId: string; activeSince?: string };
   "computer.update": { updateId: string };
   "computer.control-expire": { computerId: string; leaseId: string };
   "skill.teaching-expire": { skillId: string };

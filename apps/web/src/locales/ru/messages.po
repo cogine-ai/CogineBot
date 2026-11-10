@@ -7394,3 +7394,19 @@ msgstr "Не удалось записать рабочее пространст
 #: src/pages/Shell.tsx
 msgid "View files"
 msgstr "Посмотреть файлы"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Computer paused at its runtime limit."
+msgstr "Компьютер приостановлен по достижении лимита времени работы."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Background tasks may have stopped."
+msgstr "Фоновые задачи могли остановиться."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Continue using computer"
+msgstr "Продолжить работу с компьютером"
+
+#: src/pages/Shell.tsx
+msgid "At the runtime limit, pausing may stop background tasks."
+msgstr "При достижении лимита времени работы приостановка может остановить фоновые задачи."

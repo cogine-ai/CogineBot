@@ -442,6 +442,7 @@ export async function checkpointAndRecordComputerWorkspace(
   context: AdapterContext,
   options?: Pick<CheckpointOptions, "onExported" | "onStagingFailure"> & {
     claim?: Prisma.ComputerWhereInput;
+    parkedLeases?: ParkedComputerLeases;
     shouldReportFailure?: (error: unknown) => Promise<boolean>;
   },
 ): Promise<string> {
@@ -457,7 +458,7 @@ export async function checkpointAndRecordComputerWorkspace(
     ...(computer.providerAuthority ? { providerAuthority: computer.providerAuthority } : {}),
   } satisfies Prisma.ComputerWhereInput;
   const starting = await deps.prisma.computer.findFirst({
-    where: { ...target, ...checkpointAvailable(context, new Date()) },
+    where: { ...target, ...checkpointAvailable(context, new Date(), options?.parkedLeases) },
     select: {
       state: true,
       screenGeneration: true,
@@ -520,7 +521,10 @@ export async function checkpointAndRecordComputerWorkspace(
             async (tx) => {
               // Acquire the same row that lifecycle writers and execution lease claims use.
               await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerRecord.id} FOR UPDATE`;
-              const where = { ...fence, ...checkpointAvailable(context, new Date()) };
+              const where = {
+                ...fence,
+                ...checkpointAvailable(context, new Date(), options?.parkedLeases),
+              };
               const owned = await tx.computer.findFirst({
                 where,
                 select: { updatedAt: true, homeRevision: true },
@@ -544,13 +548,19 @@ export async function checkpointAndRecordComputerWorkspace(
               }
               context.signal.throwIfAborted();
               const ready = await tx.computer.findFirst({
-                where: { ...fence, ...checkpointAvailable(context, new Date()) },
+                where: {
+                  ...fence,
+                  ...checkpointAvailable(context, new Date(), options?.parkedLeases),
+                },
                 select: { id: true },
               });
               if (!ready) throw new ComputerCheckpointChangedError();
               const revision = await install(owned.homeRevision);
               const saved = await tx.computer.updateMany({
-                where: { ...fence, ...checkpointAvailable(context, new Date()) },
+                where: {
+                  ...fence,
+                  ...checkpointAvailable(context, new Date(), options?.parkedLeases),
+                },
                 data: {
                   homeRevision: revision,
                   homeRevisionAt: new Date(),
@@ -583,7 +593,7 @@ export async function checkpointAndRecordComputerWorkspace(
       await recordWorkspaceSaveFailure(
         deps,
         computerRecord,
-        () => ({ ...fence, ...checkpointAvailable(context, new Date()) }),
+        () => ({ ...fence, ...checkpointAvailable(context, new Date(), options?.parkedLeases) }),
         context,
         workspaceSaveFailureReason(error, storageFailure),
       );
@@ -599,10 +609,17 @@ export async function checkpointAndRecordComputerWorkspace(
   }
 }
 
-function checkpointAvailable(context: AdapterContext, now: Date): Prisma.ComputerWhereInput {
+export type ParkedComputerLeases = readonly { botId: string; runId: string; fence: number }[];
+
+function checkpointAvailable(
+  context: AdapterContext,
+  now: Date,
+  parked: ParkedComputerLeases = [],
+): Prisma.ComputerWhereInput {
   const lease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
   const own = lease ? { runId: lease.ownerId, fence: lease.fence } : undefined;
   const live = { expiresAt: { gt: now } };
+  const allowed = own ? [...parked, own] : [...parked];
   return {
     OR: [
       { controlHolder: { not: "user" } },
@@ -612,7 +629,7 @@ function checkpointAvailable(context: AdapterContext, now: Date): Prisma.Compute
       ...(context.botId ? [{ controlBotId: context.botId }] : []),
     ],
     executionLeases: {
-      none: { ...live, ...(own ? { NOT: own } : {}) },
+      none: { ...live, ...(allowed.length ? { NOT: allowed } : {}) },
       ...(own && context.runId === own.runId
         ? { some: { ...live, ...own, botId: context.botId } }
         : {}),

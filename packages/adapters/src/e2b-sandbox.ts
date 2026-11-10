@@ -151,6 +151,10 @@ function errorMessage(error: unknown): string {
 }
 
 export class E2BSandboxProvider implements SandboxProvider {
+  billsWhileRunning(): boolean {
+    return true;
+  }
+
   private readonly desktops = new LinuxDesktop({
     environment: async () => ({
       homeDir: "/home/user",
@@ -289,12 +293,16 @@ export class E2BSandboxProvider implements SandboxProvider {
     try {
       if (id) {
         try {
-          const desktop = await this.box({
-            id,
-            providerRef: id,
-            kind: "e2b",
-            botId: request.botId,
-          });
+          const ref = { id, providerRef: id, kind: "e2b" as const, botId: request.botId };
+          let started = false;
+          if (this.sdk.getInfo) {
+            const state = await this.inspectPowerState(ref, _context).catch(() => "unknown");
+            _context.signal.throwIfAborted();
+            assertCurrent();
+            started = state === "stopped";
+            if (started || state === "gone") this.forgetCached(id);
+          }
+          const desktop = await this.box(ref);
           assertCurrent();
           return {
             id: desktop.sandboxId,
@@ -302,6 +310,7 @@ export class E2BSandboxProvider implements SandboxProvider {
             kind: "e2b",
             providerRef: desktop.sandboxId,
             fresh: false,
+            ...(started ? { started: true } : {}),
           };
         } catch (error) {
           assertCurrent();

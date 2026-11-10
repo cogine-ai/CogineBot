@@ -1023,6 +1023,8 @@ export const ComputerStatusSchema = z.object({
   powerState: z.enum(["stopping", "needs_recovery", "quarantined"]).optional(),
   recoveryBlocked: z.boolean().optional(),
   workspaceSaveProgress: WorkspaceSaveProgressSchema.nullable().optional(),
+  activeLimitAt: z.iso.datetime().optional(),
+  suspensionReason: z.literal("active_limit").optional(),
   workspaceSaveFailure: WorkspaceSaveFailureReasonSchema.optional(),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),

@@ -7394,3 +7394,19 @@ msgstr "Der Arbeitsbereich konnte nicht gespeichert werden."
 #: src/pages/Shell.tsx
 msgid "View files"
 msgstr "Dateien anzeigen"
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Computer paused at its runtime limit."
+msgstr "Der Computer wurde beim Erreichen der Laufzeitgrenze pausiert."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Background tasks may have stopped."
+msgstr "Hintergrundaufgaben wurden möglicherweise beendet."
+
+#: src/components/computer/ComputerActiveLimit.tsx
+msgid "Continue using computer"
+msgstr "Computer weiterverwenden"
+
+#: src/pages/Shell.tsx
+msgid "At the runtime limit, pausing may stop background tasks."
+msgstr "Beim Erreichen der Laufzeitgrenze kann das Pausieren Hintergrundaufgaben beenden."
