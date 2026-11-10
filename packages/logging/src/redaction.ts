@@ -227,6 +227,24 @@ function* jsonStrings(text: string): Generator<{ index: number; token: string }>
   }
 }
 
+/** Check whether decoding a valid JSON document silently discarded any object members. */
+export function hasDuplicateJsonFields(text: string, decoded: unknown): boolean {
+  const separator = /\s*:/y;
+  let fieldCount = 0;
+  for (const { index, token } of jsonStrings(text)) {
+    separator.lastIndex = index + token.length;
+    if (separator.test(text)) fieldCount++;
+  }
+  const pending = [decoded];
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object") continue;
+    if (!Array.isArray(value)) fieldCount -= Object.keys(value).length;
+    for (const entry of Object.values(value)) pending.push(entry);
+  }
+  return fieldCount > 0;
+}
+
 function jsonStringSpans(text: string): { start: number; end: number }[] {
   const encodedStrings: { start: number; end: number }[] = [];
   for (const { index, token } of jsonStrings(text)) {
@@ -665,6 +683,21 @@ export function redactSecretText(text: string): string {
 
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Match credential names for user-visible data while retaining real numeric token counters. */
+export function isSecretFieldForDisplay(key: string, value: unknown): boolean {
+  const normalized = normalizeKey(key);
+  const text = typeof value === "string" ? value.trim() : "";
+  const numeric =
+    typeof value === "number" || (text !== "" && NUMERIC_VALUE.exec(text)?.[0] === text);
+  const counter = TOKEN_COUNT_KEY.test(normalized) || normalized === "tokenbudget";
+  if (counter) return !numeric || (normalized === "tokens" && typeof value !== "number");
+  const credentialName = normalized.replace(
+    /(?:confirmation|confirm|text|base64|b64|pem|der|jwk|pkcs8)$/,
+    "",
+  );
+  return NATURAL_CREDENTIAL_KEY.test(normalized) || NATURAL_CREDENTIAL_KEY.test(credentialName);
 }
 
 function shouldRedactKey(key: string): boolean {

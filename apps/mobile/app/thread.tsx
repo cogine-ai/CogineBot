@@ -102,6 +102,7 @@ import { useReducedMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppConnectCard } from "../components/AppConnectCard";
 import { AskActions } from "../components/AskActions";
+import { ApprovalDetails } from "../components/approval-details";
 import { AttachmentLabel } from "../components/attachment-label";
 import { BotAvatar } from "../components/bot-avatar";
 import { ChoiceCard } from "../components/ChoiceCard";
@@ -4753,6 +4754,7 @@ function ChoiceAskCard({
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const actions = ask.actions ?? [];
+  const approval = isApprovalAskBlock(ask);
   return (
     <View
       style={{
@@ -4784,6 +4786,7 @@ function ChoiceAskCard({
           {ask.detail}
         </Text>
       ) : null}
+      {approval && ask.approvalDetails ? <ApprovalDetails detail={ask.approvalDetails} /> : null}
       {ask.status === "answered" ? (
         <Text
           {...actionProps}
@@ -4794,7 +4797,7 @@ function ChoiceAskCard({
             fontWeight: "600",
           }}
         >
-          {formatApprovalAnswer(ask.answer, ask.actions, isApprovalAskBlock(ask))}
+          {formatApprovalAnswer(ask.answer, ask.actions, approval)}
         </Text>
       ) : canAnswer ? (
         <AskActions

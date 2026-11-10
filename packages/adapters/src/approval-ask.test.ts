@@ -3,6 +3,181 @@ import { buildApprovalAskBlock } from "./approval-ask.js";
 import { connectorBatchActionNames } from "./composio-batch.js";
 
 describe("buildApprovalAskBlock", () => {
+  it("retains every batch occurrence, long argument and destination in expandable details", () => {
+    const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
+    const body = `${"x".repeat(9_100)} final line`;
+    const args = {
+      extra: null,
+      tools: [
+        { tool_slug: "GMAIL_SEND", account: "work", arguments: { body, to: "first@example.test" } },
+        { tool_slug: "GMAIL_SEND", account: "personal", arguments: '{"to":"second@example.test"}' },
+        { tool_slug: "GMAIL_SEND", arguments: {} },
+        { arguments: { channel: "unknown-target" } },
+      ],
+    };
+    const block = buildApprovalAskBlock("effect", wrapper, args, [], {
+      batch: connectorBatchActionNames(wrapper, args),
+      resolvedScope: {
+        action: wrapper,
+        connection: "Mail",
+        managedAccounts: [
+          {
+            id: "connection",
+            connectorId: "composio",
+            externalId: " GMAIL ",
+            providerRef: "work",
+            displayName: "Work mail",
+          },
+        ],
+        batch: { items: "tools", action: "tool_slug" },
+      },
+    });
+    expect(block.approvalDetails).toContain('Connection: "Mail"');
+    expect(block.approvalDetails).toContain('1. "GMAIL_SEND" · "Work mail"');
+    expect(block.approvalDetails).toContain('2. "GMAIL_SEND" · Explicit account');
+    expect(block.approvalDetails).toContain('3. "GMAIL_SEND" · Provider-selected account (gmail)');
+    expect(block.approvalDetails!.indexOf("4.")).toBeLessThan(block.approvalDetails!.indexOf(body));
+    expect(block.approvalDetails).toContain(body);
+    expect(block.approvalDetails).toContain("first@example.test");
+    expect(block.approvalDetails).toContain("second@example.test");
+    expect(block.approvalDetails).toContain("unknown-target");
+    expect(block.approvalDetails?.match(/"tool_slug": "GMAIL_SEND"/g)).toHaveLength(3);
+    expect(block.approvalDetails).toContain('"extra": null');
+    expect(block.actions?.map((action) => action.id)).toEqual(["allow", "deny"]);
+  });
+
+  it("does not expose protected values from encoded objects, URLs, headers or preview text", () => {
+    const block = buildApprovalAskBlock(
+      "effect",
+      "demo_send",
+      {
+        url: "https://account:private-password@example.test/?token=private-token&ref=report",
+        body: '{"secret":"private-body","recipient":"person@example.test","value":"fixture-known"}',
+        headers: [["Authorization", "private-header"], { name: "Cookie", value: "private-cookie" }],
+      },
+      ["fixture-known"],
+      { resolvedScope: { action: "demo_send" } },
+    );
+    const card = JSON.stringify(block);
+    for (const secret of [
+      "private-password",
+      "private-token",
+      "private-body",
+      "private-header",
+      "private-cookie",
+      "fixture-known",
+    ])
+      expect(card).not.toContain(secret);
+    expect(block.approvalDetails).toContain("person@example.test");
+    expect(block.approvalDetails).toContain("ref=report");
+    expect(block.approvalDetails).toContain("[redacted]");
+  });
+
+  it("keeps safe counts and lists while hiding known encoded values and raw credential headers", () => {
+    const secret = "fixture with spaces";
+    const quoted = 'fixture "quoted" text';
+    const encoded = encodeURIComponent(secret);
+    const requestUrl = `https://example.test/${encoded}?label=visible&label=${encoded}`;
+    const block = buildApprovalAskBlock(
+      "effect",
+      "demo_send",
+      {
+        title: "Before\u202eAfter",
+        body: JSON.stringify(JSON.stringify({ summary: quoted, status: "visible" })),
+        headers: "Authorization: synthetic-raw-header\r\nX-Example: visible",
+        maxTokens: 300,
+        tokenBudget: 600,
+        usage: { tokens: 5, tokenizer: "example tokenizer" },
+        secretary: "ordinary label",
+        encodedUsage: '{ "tokenBudget": 300, "maxTokens": "500" }',
+        passwd: "fixture-passwd-field",
+        note: "Passwd: fixture-passwd-inline\nThen continue.",
+        query: "ordinary search",
+        fileContents: "-----BEGIN PRIVATE KEY-----\nfixture-pem-body\n-----END PRIVATE KEY-----",
+        email: "person@example.test",
+        accessToken: "fixture-path-field",
+        private_key: "fixture-signing-private-field",
+        privateKeyPem: "fixture-pem-private-field",
+        secretAccessKey: "fixture-storage-secret-field",
+        storageAccessKeyId: "fixture-storage-id-field",
+        session_id: "fixture-session-field",
+        publicKey: "fixture-public-key",
+        publicKeyPem: "fixture-public-pem",
+        accessTokens: ["fixture-oauth-list-field"],
+        tokens: ["fixture-bare-token-list-field"],
+        credentials: ["fixture-credential-list-field"],
+        passwordConfirmation: "fixture-confirmation-field",
+        named: { name: "API key", value: "fixture-key-field" },
+        labels: ["cookie", "ordinary label"],
+      },
+      [secret, quoted],
+      {
+        resolvedScope: {
+          action: "demo_send",
+          destination: (args) => {
+            const target = new URL(requestUrl);
+            target.pathname += `/${encodeURIComponent(String(args.accessToken))}`;
+            return { method: "POST", url: target.href };
+          },
+        },
+      },
+    );
+    expect(block.detail).toContain("Before\\u202eAfter");
+    expect(block.approvalDetails).toContain('Destination: POST "https://example.test/');
+    expect(block.approvalDetails).toContain("/%5Bredacted%5D/%5Bredacted%5D?");
+    expect(block.approvalDetails).toContain("label=visible&label=%5Bredacted%5D");
+    expect(block.approvalDetails).toContain("X-Example: visible");
+    expect(block.approvalDetails).toContain('"maxTokens": 300');
+    expect(block.approvalDetails).toContain('"tokenBudget": 600');
+    expect(block.approvalDetails).toContain('"tokens": 5');
+    expect(block.approvalDetails).toContain('"tokenizer": "example tokenizer"');
+    expect(block.approvalDetails).toContain('"secretary": "ordinary label"');
+    expect(block.approvalDetails).toContain(
+      JSON.stringify('{ "tokenBudget": 300, "maxTokens": "500" }'),
+    );
+    expect(block.approvalDetails).toContain("ordinary search");
+    expect(block.approvalDetails).toContain("person@example.test");
+    expect(block.approvalDetails).toContain("Then continue.");
+    expect(block.approvalDetails).toContain("fixture-public-key");
+    expect(block.approvalDetails).toContain("fixture-public-pem");
+    expect(block.approvalDetails).toContain("ordinary label");
+    for (const protectedText of [
+      secret,
+      encoded,
+      quoted,
+      "synthetic-raw-header",
+      "quoted",
+      "fixture-path-field",
+      "fixture-passwd-field",
+      "fixture-passwd-inline",
+      "fixture-pem-body",
+      "fixture-signing-private-field",
+      "fixture-pem-private-field",
+      "fixture-storage-secret-field",
+      "fixture-storage-id-field",
+      "fixture-session-field",
+      "fixture-oauth-list-field",
+      "fixture-bare-token-list-field",
+      "fixture-credential-list-field",
+      "fixture-confirmation-field",
+      "fixture-key-field",
+    ]) {
+      expect(JSON.stringify(block)).not.toContain(protectedText);
+    }
+  });
+
+  it("does not present an encoded object whose original fields cannot all be reviewed", () => {
+    const block = buildApprovalAskBlock(
+      "effect",
+      "demo_send",
+      { body: '{"note":"fixture-known-value","note":"visible"}' },
+      ["fixture-known-value"],
+      { resolvedScope: { action: "demo_send" } },
+    );
+    expect(block.approvalDetails).toBeUndefined();
+    expect(JSON.stringify(block)).not.toContain("fixture-known-value");
+  });
+
   it("offers permanent approval only for the full list stored in the card", () => {
     const wrapper = "COMPOSIO_MULTI_EXECUTE_TOOL";
     const actions = ["X".repeat(4_000)];

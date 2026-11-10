@@ -804,7 +804,7 @@ code-b
         toolCalls: [
           {
             name: "destination.write",
-            args: { collection: "notes", title: "Rakazo result", body: prompt },
+            args: { collection: "notes", title: "Demo note", body: prompt },
           },
         ],
         complete: true,

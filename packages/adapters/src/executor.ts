@@ -232,6 +232,7 @@ import {
   claimApprovedEffect,
   claimIntendedEffect,
   completeExternalEffect,
+  connectorApprovalFromEffect,
   createApprovedEffectReplayQueue,
   DENIED_ACTION_ERROR,
   isToolPauseResult,
@@ -6976,28 +6977,101 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return pauseForApproval();
           };
 
+          /** Show the stored intended effect using metadata only from its matching connector route. */
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
             await flushConnectionNarration(executionId);
-            const block = buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
-              reviewReason,
-              routineSiteDetail,
-              batch,
-              allowBatchAlways: managedBatch,
-              sharedPageUpdate: sharedPageUpdate && {
-                title: sharedPageUpdate.page.title,
-                detail: sharedPageUpdate.detail,
+            const request = applied!.effect.request;
+            const connectorApproval = connectorApprovalFromEffect(request);
+            const storedRoute = connectorApproval?.route;
+            const matchesStoredRoute = !storedRoute || approvalRoutesMatch(storedRoute, liveRoute);
+            const action = connectorApproval?.toolName ?? name;
+            const routine = name === "schedule_create" && routineSiteApprovalDetails(request);
+            const ordinary =
+              !authenticatedRequest &&
+              !sharedPageUpdate &&
+              name !== AGENT_CONNECTION_RESPONSE_TOOL &&
+              name !== "request_secret" &&
+              name !== "request_takeover";
+            const persistedArgs =
+              connectorApproval?.args ??
+              (routine ? routine.args : undefined) ??
+              (request && typeof request === "object" && !Array.isArray(request)
+                ? (request as Record<string, unknown>)
+                : undefined);
+            const connection = storedRoute?.connectionId
+              ? connectorContext.connectedConnections?.find(
+                  (account) =>
+                    account.id === storedRoute.connectionId &&
+                    account.connectorId === storedRoute.connectorId,
+                )?.displayName
+              : connectorTool?.route?.catalogGroup;
+            const managedAccounts =
+              (connectorApproval?.connectorId ?? liveRoute?.connectorId) === "composio"
+                ? (connectorContext.connectedConnections ?? []).filter(
+                    (account) => account.connectorId === "composio",
+                  )
+                : undefined;
+            let approvalReason = reviewReason;
+            if (!approvalReason && ordinary && !routineSiteDetail && batch?.complete !== false) {
+              if (approvalResolved.source === "require_approval")
+                approvalReason = "A rule requires confirmation for this action.";
+              else if (siteGate === "new")
+                approvalReason = "This destination has not been approved.";
+              else if (connectorReadGated)
+                approvalReason =
+                  "This run has external input and the connection has not been approved for it.";
+              else if (requiresUnattendedApproval)
+                approvalReason = "This action needs confirmation when run in the background.";
+            }
+            const block = buildApprovalAskBlock(
+              applied!.effect.id,
+              name,
+              ordinary ? (persistedArgs ?? {}) : args,
+              runSecrets,
+              {
+                resolvedScope:
+                  ordinary && persistedArgs && matchesStoredRoute
+                    ? {
+                        action,
+                        connection,
+                        destination: storedRoute && connectorTool?.approvalDestination,
+                        batch: connectorTool?.batch,
+                        managedAccounts,
+                      }
+                    : undefined,
+                reviewReason: approvalReason,
+                routineSiteDetail,
+                batch:
+                  batch && persistedArgs
+                    ? connectorBatchActionNames(
+                        connectorApproval?.toolName ?? wireToolName,
+                        persistedArgs,
+                        connectorTool?.batch,
+                      )
+                    : batch,
+                allowBatchAlways: connectorApproval?.connectorId
+                  ? connectorApproval.connectorId === "composio"
+                  : managedBatch,
+                sharedPageUpdate: sharedPageUpdate && {
+                  title: sharedPageUpdate.page.title,
+                  detail: sharedPageUpdate.detail,
+                },
+                allowSiteAlways: !approvalResolved.matchingRules.some(
+                  (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
+                ),
               },
-              allowSiteAlways: !approvalResolved.matchingRules.some(
-                (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
-              ),
-            });
+            );
+            let approvalDisplayError: string | undefined;
             if (authenticatedRequest && (!credentialBinding || !block.detail)) {
-              const result = {
-                error: credentialBinding
-                  ? "The authenticated request cannot be shown in full for approval."
-                  : BOT_SECRET_HTTP_APPROVAL_CHANGED,
-              };
+              approvalDisplayError = credentialBinding
+                ? "The authenticated request cannot be shown in full for approval."
+                : BOT_SECRET_HTTP_APPROVAL_CHANGED;
+            } else if (ordinary && !block.approvalDetails) {
+              approvalDisplayError = "The request cannot be shown in full for approval.";
+            }
+            if (approvalDisplayError) {
+              const result = { error: approvalDisplayError };
               return (await completeEffect(deps, applied!.effect.id, "intended", result))
                 ? result
                 : uncertainEffectResult(name);

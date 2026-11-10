@@ -115,23 +115,26 @@ describe("OpenAPI connector import", () => {
     expect(JSON.stringify(listed)).not.toContain("inputSchema");
     expect(search!.description).toContain("Contacts API:");
     expect(search!.description).toContain("operation_00");
-    await expect(
-      provider.resolveCall(
-        {
-          tool: execute!.name,
-          args: { id: `Contacts API${separator}operation_20`, arguments: { limit: 5 } },
-          executionId: "execute",
-          route: execute!.route,
-        },
-        context,
-      ),
-    ).resolves.toMatchObject({
+    const resolved = await provider.resolveCall(
+      {
+        tool: execute!.name,
+        args: { id: `Contacts API${separator}operation_20`, arguments: { limit: 5 } },
+        executionId: "execute",
+        route: execute!.route,
+      },
+      context,
+    );
+    expect(resolved).toMatchObject({
       tool: { name: "operation_20", readOnly: true },
       call: {
         tool: "operation_20",
         args: { limit: 5 },
         route: { connectorId: "installed", resourceId: "api-1", toolName: "operation_20" },
       },
+    });
+    expect(resolved?.tool.approvalDestination?.(resolved.call.args)).toEqual({
+      method: "GET",
+      url: "https://api.example.test/v1/contacts/20",
     });
     const loaded = [];
     for await (const event of provider.execute(

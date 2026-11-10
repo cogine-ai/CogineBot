@@ -346,18 +346,28 @@ export function catalogApprovalInnerArgs(catalog: {
   return inner as Record<string, unknown>;
 }
 
+/** Recover the wire tool and arguments from the persisted connector approval envelope. */
+export function connectorApprovalFromEffect(request: unknown) {
+  const direct = boundDirectApprovalDetails(request, CATALOG_APPROVAL_TOOL);
+  const catalog = catalogApprovalDetails(request, CATALOG_APPROVAL_TOOL);
+  if (!direct && !catalog) return undefined;
+  const route = direct?.route ?? catalog?.route;
+  return {
+    route,
+    connectorId: route?.connectorId ?? (catalog && catalogApprovalConnectorId(catalog.toolName)),
+    toolName: route?.toolName ?? (catalog && parseCatalogApprovalTarget(catalog.args)?.toolName),
+    args: direct?.args ?? (catalog && catalogApprovalInnerArgs(catalog)),
+  };
+}
+
 /** Derive the list from the persisted dispatch. A batch card comes from connector metadata. */
 export async function connectorBatchApprovalFromEffect(
   effect: { kind: string; request: unknown },
   { batchCard, loadInstalledKind }: ApprovalBatchResolutionContext,
 ) {
-  const bound = boundDirectApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
-  const catalog = catalogApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
-  const route = bound?.route ?? catalog?.route;
-  if (bound || catalog) {
-    const connectorId =
-      route?.connectorId ?? (catalog && catalogApprovalConnectorId(catalog.toolName));
-    const name = route?.toolName ?? (catalog && parseCatalogApprovalTarget(catalog.args)?.toolName);
+  const connector = connectorApprovalFromEffect(effect.request);
+  if (connector) {
+    const { route, connectorId, toolName: name, args } = connector;
     if (!name || name.toUpperCase() !== COMPOSIO_MULTI_EXECUTE_TOOL) return undefined;
     if (!batchCard && connectorId === "installed") {
       const kind = route && (await loadInstalledKind(route.resourceId));
@@ -365,7 +375,6 @@ export async function connectorBatchApprovalFromEffect(
     } else if (!batchCard && connectorId !== "mcp" && connectorId !== "composio") {
       return undefined;
     }
-    const args = bound?.args ?? (catalog && catalogApprovalInnerArgs(catalog));
     return connectorBatchActionNames(name, args);
   }
   if (

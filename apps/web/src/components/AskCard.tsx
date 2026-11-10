@@ -63,6 +63,7 @@ export function AskCard({
 }) {
   const { t } = useLingui();
   const [editing, setEditing] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [answer, setAnswer] = useState("");
   const [username, setUsername] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -122,6 +123,22 @@ export function AskCard({
         <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted px-3.5 py-3 font-mono text-[12.5px] leading-[1.7] text-muted-foreground">
           {block.detail}
         </pre>
+      ) : null}
+      {approvalActions && block.approvalDetails ? (
+        <details
+          data-testid="action-approval-details"
+          className="mt-3 text-[13.5px] text-muted-foreground"
+          onToggle={(event) => setDetailsExpanded(event.currentTarget.open)}
+        >
+          <summary className="cursor-pointer focus-visible:outline-ring">
+            <Trans>Details</Trans>
+          </summary>
+          {detailsExpanded ? (
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted px-3.5 py-3 font-mono text-[12.5px] leading-[1.7]">
+              {block.approvalDetails}
+            </pre>
+          ) : null}
+        </details>
       ) : null}
       {block.status === "answered" ? (
         <div className="mt-3.5 text-[13.5px] font-medium text-success">

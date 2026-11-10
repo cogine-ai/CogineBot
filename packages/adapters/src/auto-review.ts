@@ -13,6 +13,12 @@ import type {
 import type { AutoReviewJudgeDecision } from "@rakazo/core";
 import { redactSecrets } from "@rakazo/core";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
+import {
+  hasDuplicateJsonFields,
+  isSecretFieldForDisplay,
+  redactSecretText,
+} from "@rakazo/logging/redaction";
+import { CONNECTOR_REDACTION_MAX_DEPTH, knownJsonSecretRedactions } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
@@ -175,41 +181,199 @@ export function isAutoReviewCheckerConfigured(input: {
   return Boolean(input.hasUserCredentialForProvider?.(checker.provider));
 }
 
+type ReviewAudience = "automatic" | "manual";
+
 export function redactToolArgsForReview(
   args: Record<string, unknown>,
   secrets: string[],
 ): Record<string, unknown> | undefined {
+  return redactToolArgs(args, secrets, "automatic");
+}
+
+/** Protect fields before the manual card is written to the thread and realtime events. */
+export function redactToolArgsForApproval(
+  args: Record<string, unknown>,
+  secrets: string[],
+): Record<string, unknown> | undefined {
+  return redactToolArgs(args, secrets, "manual");
+}
+
+function redactToolArgs(
+  args: Record<string, unknown>,
+  secrets: string[],
+  audience: ReviewAudience,
+): Record<string, unknown> | undefined {
   try {
-    return redactReviewObject(args, secrets);
+    const known =
+      audience === "manual"
+        ? knownJsonSecretRedactions(secrets, JSON.stringify(args).length)
+        : secrets;
+    return redactReviewObject(args, known, audience, 0);
   } catch {
-    // Colliding redacted keys cannot represent every argument.
     return undefined;
   }
 }
 
-function redactReviewObject(value: object, secrets: string[]): Record<string, unknown> {
+/** A credential field is distinct from ordinary counts such as maxTokens. */
+function sensitiveApprovalField(name: string, value: unknown): boolean {
+  return (
+    isSecretFieldForDisplay(name, value) ||
+    /(?:accesskey(?:id)?|clientassertion|passphrase|sessionid|sessionkey|signature|xsession)(?:s|value|confirmation|confirm|text)?$/i.test(
+      name.replace(/[^a-z0-9]/gi, ""),
+    )
+  );
+}
+
+/** Keep manual entries distinct after redaction; ambiguous input still stops automatic review. */
+function redactReviewObject(
+  value: object,
+  secrets: string[],
+  audience: ReviewAudience,
+  depth: number,
+): Record<string, unknown> {
   const entries = new Map<string, unknown>();
+  const manual = audience === "manual";
+  const sensitive = manual
+    ? sensitiveApprovalField
+    : (key: string) => SENSITIVE_REVIEW_ARG_KEY.test(key);
+  const credentialEntry =
+    manual &&
+    "name" in value &&
+    "value" in value &&
+    typeof value.name === "string" &&
+    sensitiveApprovalField(value.name, value.value);
+  let originalLabels: Set<string> | undefined;
+  const ordinals = new Map<string, number>();
   for (const [key, nestedValue] of Object.entries(value)) {
-    const redactedKey = redactSecrets(key, secrets);
-    if (entries.has(redactedKey)) throw new Error("Review argument keys collide after redaction.");
+    const label = redactSecrets(key, secrets);
+    let redactedKey = label;
+    if (entries.has(redactedKey)) {
+      if (!manual) throw new Error("Review argument keys collide after redaction.");
+      originalLabels ??= new Set(Object.keys(value).map((key) => redactSecrets(key, secrets)));
+      let ordinal = ordinals.get(label) ?? 2;
+      do {
+        redactedKey = `${label} (${ordinal++})`;
+      } while (entries.has(redactedKey) || originalLabels.has(redactedKey));
+      ordinals.set(label, ordinal);
+    }
     entries.set(
       redactedKey,
-      SENSITIVE_REVIEW_ARG_KEY.test(key)
+      sensitive(key, nestedValue) || (credentialEntry && key === "value")
         ? "[redacted]"
-        : redactNestedReviewValue(nestedValue, secrets),
+        : redactNestedReviewValue(
+            nestedValue,
+            secrets,
+            audience,
+            depth + 1,
+            manual && /headers$/i.test(key),
+          ),
     );
   }
   return Object.fromEntries(entries);
 }
 
-function redactNestedReviewValue(value: unknown, secrets: string[]): unknown {
-  if (typeof value === "string") return redactSecrets(value, secrets);
-  if (Array.isArray(value)) {
-    return value.map((item) => redactNestedReviewValue(item, secrets));
+/** Inspect encoded documents and header containers without changing unaffected literal strings. */
+function redactNestedReviewValue(
+  value: unknown,
+  secrets: string[],
+  audience: ReviewAudience,
+  depth: number,
+  headers = false,
+): unknown {
+  if (audience === "manual" && depth > CONNECTOR_REDACTION_MAX_DEPTH)
+    throw new Error("Approval arguments are nested too deeply.");
+  if (typeof value === "string") {
+    if (audience === "manual") {
+      const trimmed = value.trim();
+      if (["{", "[", '"'].includes(trimmed[0] ?? "")) {
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(trimmed);
+        } catch {
+          // A string need not be JSON.
+        }
+        if (decoded !== undefined) {
+          if (hasDuplicateJsonFields(trimmed, decoded))
+            throw new Error("Approval arguments include ambiguous JSON object keys.");
+          const protectedValue = redactNestedReviewValue(
+            decoded,
+            secrets,
+            audience,
+            depth + 1,
+            headers,
+          );
+          const protectedJson = JSON.stringify(protectedValue);
+          return protectedJson === JSON.stringify(decoded)
+            ? redactSecrets(value, secrets)
+            : protectedJson;
+        }
+      }
+      if (headers) {
+        return redactSecretText(
+          redactSecrets(value, secrets).replace(
+            /^([\w-]+)([ \t]*:[ \t]*)([^\r\n]*)/gm,
+            (line, name: string, separator: string, content: string) =>
+              sensitiveApprovalField(name, content) ? `${name}${separator}[redacted]` : line,
+          ),
+        );
+      }
+      if (/^https?:\/\//i.test(trimmed)) return redactApprovalUrl(value, secrets);
+      return redactSecretText(redactSecrets(value, secrets));
+    }
+    return redactSecrets(value, secrets);
   }
-  if (value !== null && typeof value === "object") return redactReviewObject(value, secrets);
+  if (Array.isArray(value)) {
+    if (
+      headers &&
+      value.length === 2 &&
+      typeof value[0] === "string" &&
+      sensitiveApprovalField(value[0], value[1])
+    )
+      return [redactSecrets(value[0], secrets), "[redacted]"];
+    return value.map((item) =>
+      redactNestedReviewValue(item, secrets, audience, depth + 1, headers),
+    );
+  }
+  if (value !== null && typeof value === "object")
+    return redactReviewObject(value, secrets, audience, depth);
   const literal = String(value);
   return redactSecrets(literal, secrets) === literal ? value : "[redacted]";
+}
+
+/** Redact decoded URL components and keep repeated query values in their original order. */
+export function redactApprovalUrl(value: string, secrets: string[]): string {
+  const url = URL.parse(value.trim());
+  if (!url || !["http:", "https:"].includes(url.protocol))
+    return redactSecretText(redactSecrets(value, secrets));
+  let changed = Boolean(url.username || url.password);
+  url.username = "";
+  url.password = "";
+  const protectEncoded = (segment: string) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return redactSecrets(segment, secrets);
+    }
+    const safe = redactSecretText(redactSecrets(decoded, secrets));
+    if (safe === decoded) return segment;
+    changed = true;
+    return encodeURIComponent(safe);
+  };
+  url.pathname = url.pathname.split("/").map(protectEncoded).join("/");
+  if (url.hash) url.hash = protectEncoded(url.hash.slice(1));
+  const query = new URLSearchParams();
+  let queryChanged = false;
+  for (const [name, content] of url.searchParams) {
+    const key = redactSecrets(name, secrets);
+    const safe = sensitiveApprovalField(name, content)
+      ? "[redacted]"
+      : redactSecretText(redactSecrets(content, secrets));
+    queryChanged ||= key !== name || safe !== content;
+    query.append(key, safe);
+  }
+  if (queryChanged) url.search = query.toString();
+  return redactSecrets(changed || queryChanged ? url.href : value, secrets);
 }
 
 export function reviewArgsJson(args: AutoReviewRequest["args"]): string | undefined {

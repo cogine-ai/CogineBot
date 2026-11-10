@@ -267,6 +267,15 @@ export class InstalledConnectorProvider implements ConnectorProvider {
           inputSchema: operation.inputSchema,
           // The stored method is authoritative: a read-only flag cannot make a write a read.
           readOnly: operation.readOnly && operation.method === "GET",
+          approvalDestination: (args) => {
+            try {
+              const { url } = apiOperationDestination(install.source, operation, args);
+              return { method: operation.method, url: url.href };
+            } catch {
+              // An invalid path is rejected by the same resolver at dispatch.
+              return undefined;
+            }
+          },
           route: {
             connectorId: "installed",
             resourceId: install.id,
@@ -651,16 +660,7 @@ async function executeApiOperation(
       }
     }
   }
-  const consumed = new Set<string>();
-  const path = operation.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
-    const value = args[name];
-    if (value == null) throw new Error(`Missing path parameter ${name}`);
-    if (operation.importPolicy === "openapi-v1" && /^(?:\.|%2e){1,2}$/i.test(String(value)))
-      throw new Error("OpenAPI path parameter cannot be a dot segment");
-    consumed.add(name);
-    return encodeURIComponent(String(value));
-  });
-  const url = joinApiUrl(baseUrl, path);
+  const { url, consumed } = apiOperationDestination(baseUrl, operation, args);
   const headers: Record<string, string> = { accept: "application/json", ...config.headers };
   let body: string | undefined;
   for (const key of operation.headerParameters) {
@@ -738,6 +738,25 @@ async function executeApiOperation(
   } finally {
     await safeFetch.close().catch(() => undefined);
   }
+}
+
+/** Share the exact method path inputs with approval and track which arguments belong to the path. */
+function apiOperationDestination(
+  baseUrl: string,
+  operation: ApiOperation,
+  args: Record<string, unknown>,
+) {
+  const consumed = new Set<string>();
+  const path = operation.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+    const value = args[name];
+    if (value == null) throw new Error(`Missing path parameter ${name}`);
+    if (operation.importPolicy === "openapi-v1" && /^(?:\.|%2e){1,2}$/i.test(String(value)))
+      throw new Error("OpenAPI path parameter cannot be a dot segment");
+    consumed.add(name);
+    return encodeURIComponent(String(value));
+  });
+  const url = joinApiUrl(baseUrl, path);
+  return { url, consumed };
 }
 
 function joinApiUrl(baseUrl: string, path: string): URL {

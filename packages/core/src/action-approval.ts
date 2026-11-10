@@ -240,6 +240,14 @@ export function readBotSecretHttpEffect(request: unknown) {
   };
 }
 
+/** Show direction controls literally so review text keeps its visible order. */
+export function escapeApprovalBidi(value: string): string {
+  return value.replace(
+    /\p{Bidi_Control}/gu,
+    (mark) => `\\u${mark.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 /** Display every dispatched field. No request may be approved from a clipped preview. */
 export function formatBotSecretHttpApprovalDetail(args: unknown): string | undefined {
   const parsed = SecretHttpRequest.safeParse(args);
@@ -254,12 +262,7 @@ export function formatBotSecretHttpApprovalDetail(args: unknown): string | undef
     `content type: ${request.contentType}`,
     ...(request.body === undefined
       ? []
-      : [
-          `body: ${JSON.stringify(request.body).replace(
-            /\p{Bidi_Control}/gu,
-            (mark) => `\\u${mark.charCodeAt(0).toString(16).padStart(4, "0")}`,
-          )}`,
-        ]),
+      : [`body: ${escapeApprovalBidi(JSON.stringify(request.body))}`]),
   ].join("\n");
   return detail.length <= MAX_APPROVAL_DETAIL_LENGTH ? detail : undefined;
 }

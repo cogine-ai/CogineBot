@@ -107,6 +107,8 @@ const AskMessageBlock = z.object({
   /** The pending card presents an exact list of connector actions. */
   approvalScope: z.literal("connector_batch").optional(),
   detail: z.string().optional(),
+  /** Full displayable arguments for this approval effect. The client reveals them on demand. */
+  approvalDetails: z.string().optional(),
   /** This approval requires the full detail to be available on screen. */
   reviewMode: z.literal("screen").optional(),
   input: z.enum(["text", "secret"]).optional(),

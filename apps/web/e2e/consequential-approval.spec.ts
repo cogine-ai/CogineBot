@@ -148,6 +148,16 @@ test("actions run by default while optional confirmations live in Space settings
   expect(listBox).toBeTruthy();
   expect(Math.abs(allowBox!.width - listBox!.width)).toBeLessThan(2);
   await captureScreenshot(page, testInfo, "53-action-confirmation-pending");
+  await expect(page.getByText("A rule requires confirmation for this action.")).toBeVisible();
+  const details = page.getByTestId("action-approval-details");
+  await expect(details.locator("pre")).toHaveCount(0);
+  await details.locator("summary").click();
+  await expect(details.locator("pre")).toContainText('Action: "destination.write"');
+  await expect(details.locator("pre")).toContainText('"collection"');
+  await deny.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "54-action-approval-details-expanded");
+  await details.locator("summary").click();
+  await expect(details.locator("pre")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Deny", exact: true }).click();
   await expect(page.getByText("Denied", { exact: true })).toBeVisible();

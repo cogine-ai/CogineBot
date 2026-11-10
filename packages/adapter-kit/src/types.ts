@@ -274,6 +274,10 @@ export interface ConnectorTool {
   /** Connector-declared batch shape and same-resource write declarations from catalog resolution. */
   batch?: ToolBatch;
   batchWriteActions?: readonly string[];
+  /** Display-only destination from the same installed operation that dispatches the request. */
+  approvalDestination?: (
+    args: Record<string, unknown>,
+  ) => { method: string; url: string } | undefined;
   /** In-process routing metadata. It is never exposed to the model. */
   route?: ConnectorRoute;
 }
