@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { ComputerStatus } from "@rakazo/contracts";
+import { type ComputerStatus, computerStateRequiresRecovery } from "@rakazo/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,8 +42,10 @@ export function ComputerMaintenanceActions({
 
   if (!computer) return null;
 
-  const busy = Boolean(computer.busyBotName) || computer.state === "booting";
+  const busy =
+    Boolean(computer.busyBotName) || computer.state === "booting" || computer.state === "stopping";
   const showRecover =
+    computerStateRequiresRecovery(computer.state) ||
     computer.state === "error" ||
     computer.state === "running" ||
     computer.state === "suspended" ||

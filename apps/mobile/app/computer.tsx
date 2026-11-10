@@ -1,4 +1,8 @@
-import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
+import {
+  type ComputerMode,
+  type ComputerReleaseReason,
+  computerStateRequiresRecovery,
+} from "@rakazo/contracts";
 import { createComputerHeartbeat } from "@rakazo/core";
 import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -275,7 +279,14 @@ export default function Computer() {
     overlay: boolean;
     force?: boolean;
   }) {
-    if (!botId || !visibleRef.current || !refreshController.isActive()) return false;
+    if (
+      !botId ||
+      !visibleRef.current ||
+      !refreshController.isActive() ||
+      computerStateRequiresRecovery(computer?.state) ||
+      computer?.state === "stopping"
+    )
+      return false;
     const action = refreshController.beginAction();
     const actionView = viewEpochRef.current;
     const actionGeneration = screenRecoveryRef.current.generation;
@@ -318,7 +329,13 @@ export default function Computer() {
 
   useEffect(() => {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
-    if (computer?.state === "booting" || computer?.state === "suspended") return;
+    if (
+      computer.state === "booting" ||
+      computer.state === "suspended" ||
+      computer.state === "stopping" ||
+      computerStateRequiresRecovery(computer.state)
+    )
+      return;
     if (autoBooted.current === botId) return;
     autoBooted.current = botId;
     void bootComputer({
@@ -403,8 +420,11 @@ export default function Computer() {
     }
   }
 
+  const powerUnavailable =
+    computerStateRequiresRecovery(computer?.state) || computer?.state === "stopping";
   const placeholder =
-    screenError ?? previewPlaceholder(computer?.state, booting, name, computer?.mode);
+    (!powerUnavailable && screenError) ||
+    previewPlaceholder(computer?.state, booting, name, computer?.mode);
 
   return (
     <ScrollView
@@ -448,12 +468,14 @@ export default function Computer() {
             </Text>
           </View>
         )}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("Open computer")}
-          onPress={() => void openComputer({ takeControl: false })}
-          style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
-        />
+        {!powerUnavailable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("Open computer")}
+            onPress={() => void openComputer({ takeControl: false })}
+            style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
+          />
+        ) : null}
       </View>
       <View
         style={{
@@ -472,14 +494,14 @@ export default function Computer() {
             takeoverRequested={computer?.takeoverRequested ?? false}
             onRelease={releaseComputer}
           />
-        ) : (
+        ) : !powerUnavailable ? (
           <NativeActionButton
             label={t("Take control")}
             prominence="secondary"
             style={{ alignSelf: "center" }}
             onPress={() => void openComputer({ takeControl: true })}
           />
-        )}
+        ) : null}
       </View>
       {computer ? (
         <ComputerMaintenanceActions
@@ -490,7 +512,7 @@ export default function Computer() {
       ) : null}
       <ComputerModePicker
         value={computer?.mode}
-        disabled={switching}
+        disabled={switching || powerUnavailable}
         onChange={(mode) => void setComputerMode(mode)}
       />
 

@@ -994,7 +994,16 @@ export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,
   kind: SandboxKind,
-  state: z.enum(["stopped", "booting", "running", "suspended", "error"]),
+  state: z.enum([
+    "stopped",
+    "booting",
+    "running",
+    "suspended",
+    "error",
+    "stopping",
+    "needs_recovery",
+    "quarantined",
+  ]),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),
   takeoverRequested: z.boolean(),
@@ -1007,6 +1016,10 @@ export const ComputerStatusSchema = z.object({
   terminalAvailable: z.boolean(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
+
+export function computerStateRequiresRecovery(state: ComputerStatus["state"] | undefined): boolean {
+  return state === "needs_recovery" || state === "quarantined";
+}
 
 export const ComputerReleaseReasonSchema = z.enum(["done", "skipped"]);
 export type ComputerReleaseReason = z.infer<typeof ComputerReleaseReasonSchema>;

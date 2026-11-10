@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Computer status unconfirmed": "Computerstatus unbestätigt",
+  "Computer needs recovery": "Computer muss wiederhergestellt werden",
+  "Saving or stopping computer…": "Computer wird gespeichert oder angehalten…",
   "Model limit reached. Resuming at {time}.": "Modelllimit erreicht. Fortsetzung um {time}.",
   "Waiting for the computer before retrying.":
     "Warten, bis der Computer für den nächsten Versuch verfügbar ist.",

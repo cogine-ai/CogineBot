@@ -12,7 +12,9 @@ import {
 import { scheduleComputerSleep } from "./computer-idle.js";
 import {
   ComputerBusyError,
+  ComputerRecoveryRequiredError,
   computerSupportsUpdate,
+  quarantineAbandonedComputerStop,
   replaceComputer,
 } from "./computer-lifecycle.js";
 
@@ -58,6 +60,10 @@ export async function queueComputerUpdate(
   botId: string,
   action: "update" | "recover" = "update",
 ) {
+  if (action === "recover") {
+    const computer = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
+    await quarantineAbandonedComputerStop(deps.prisma, computer);
+  }
   const prepared = await deps.prisma.$transaction(async (tx) => {
     // Mode switches lock this same row before marking a bot as switching.
     // The following statement then observes their committed reservation.
@@ -65,6 +71,14 @@ export async function queueComputerUpdate(
     const computer = await tx.computer.findUniqueOrThrow({ where: { id: computerId } });
     if (action === "update" && !computerSupportsUpdate(computer.kind))
       throw new Error("Computer update is not available on this device");
+    if (
+      action === "update" &&
+      (computer.stopPending ||
+        computer.state === "quarantined" ||
+        computer.state === "needs_recovery")
+    ) {
+      throw new ComputerRecoveryRequiredError();
+    }
     // A run bound to this takeover must keep it. Maintenance does not resume that run.
     if (
       computer.controlHolder === "user" &&

@@ -1,5 +1,9 @@
-import { computerSupportsTerminal, computerSupportsUpdate } from "@rakazo/adapters";
-import type { ComputerStatus } from "@rakazo/contracts";
+import {
+  computerStopClaimIsStale,
+  computerSupportsTerminal,
+  computerSupportsUpdate,
+} from "@rakazo/adapters";
+import { type ComputerStatus, computerStateRequiresRecovery } from "@rakazo/contracts";
 import { COMPUTER_ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
@@ -61,20 +65,35 @@ export function toComputerStatus(
     controlRunId?: string | null;
     homeRevision: string;
     maintenanceId?: string | null;
+    stopPending?: boolean;
+    updatedAt?: Date;
   } | null,
   busyBotName: string | null = null,
 ): ComputerStatus {
-  const state = computer?.maintenanceId
-    ? "booting"
-    : computer?.state === "suspending"
-      ? "running"
-      : computer?.state === "stopped" ||
-          computer?.state === "booting" ||
-          computer?.state === "running" ||
-          computer?.state === "suspended" ||
-          computer?.state === "error"
-        ? computer.state
-        : "stopped";
+  let state: ComputerStatus["state"];
+  switch (computer?.state) {
+    case "quarantined":
+    case "needs_recovery":
+      state = computer.state;
+      break;
+    case "suspending":
+      state = "stopping";
+      break;
+    case "stopped":
+    case "booting":
+    case "running":
+    case "suspended":
+    case "error":
+      state = computer.maintenanceId ? "booting" : computer.state;
+      break;
+    default:
+      state = "stopped";
+  }
+  if (computer?.stopPending) {
+    state = computerStopClaimIsStale(computer.updatedAt) ? "quarantined" : "stopping";
+  }
+  const unavailable = state === "stopping" || computerStateRequiresRecovery(state);
+  const screenAvailable = !computer?.maintenanceId && (state === "running" || state === "booting");
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
   return {
@@ -82,15 +101,17 @@ export function toComputerStatus(
     mode: computer?.scope === "dedicated" ? "dedicated" : "team",
     kind,
     state,
-    controlHolder: (computer?.controlHolder ?? "none") as ComputerStatus["controlHolder"],
-    controlBotId: computer?.controlBotId ?? null,
-    takeoverRequested: Boolean(computer?.controlRunId),
-    screenAvailable: !computer?.maintenanceId && (state === "running" || state === "booting"),
+    controlHolder: (unavailable
+      ? "none"
+      : (computer?.controlHolder ?? "none")) as ComputerStatus["controlHolder"],
+    controlBotId: unavailable ? null : (computer?.controlBotId ?? null),
+    takeoverRequested: !unavailable && Boolean(computer?.controlRunId),
+    screenAvailable,
     screenWidth: screen.width,
     screenHeight: screen.height,
     homeRevision: computer?.homeRevision ?? null,
     busyBotName,
-    canUpdate: computerSupportsUpdate(kind),
+    canUpdate: !unavailable && computerSupportsUpdate(kind),
     terminalAvailable: computerSupportsTerminal(kind),
   };
 }

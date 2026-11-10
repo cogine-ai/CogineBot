@@ -30,6 +30,7 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
+  computerStateRequiresRecovery,
   DelegatedApprovalAction,
   MESSAGE_REACTIONS,
   type MessageReaction,
@@ -3972,6 +3973,11 @@ export function ShellPage() {
   }) {
     const cached = computerCacheRef.current.get(targetBotId);
     const targetComputer = computer?.botId === targetBotId ? computer : (cached?.computer ?? null);
+    if (
+      computerStateRequiresRecovery(targetComputer?.state) ||
+      targetComputer?.state === "stopping"
+    )
+      return false;
     const targetScreen = computer?.botId === targetBotId ? screenUrl : (cached?.screenUrl ?? null);
     const needsBoot = force || targetComputer?.state !== "running" || !targetScreen;
     const pending = computerBootAttempt.current;
@@ -4419,6 +4425,11 @@ export function ShellPage() {
     }
     setComputerOpen(true);
     computerVisible.current = true;
+    if (
+      computerStateRequiresRecovery(targetComputer?.state) ||
+      targetComputer?.state === "stopping"
+    )
+      return false;
     const needsTakeover = takeControl && !userHoldsComputerControl(targetComputer, id);
     const blocked = computerTakeoverBlocked(targetComputer, snapshot?.run?.status);
     try {
@@ -6057,7 +6068,15 @@ export function ShellPage() {
                   ) : panel === "settings" ? (
                     <Trans>Settings</Trans>
                   ) : active ? (
-                    (computer?.state ?? active.status)
+                    computer?.state === "quarantined" ? (
+                      <Trans>Computer status unconfirmed</Trans>
+                    ) : computer?.state === "needs_recovery" ? (
+                      <Trans>Computer needs recovery</Trans>
+                    ) : computer?.state === "stopping" ? (
+                      <Trans>Saving or stopping computer…</Trans>
+                    ) : (
+                      (computer?.state ?? active.status)
+                    )
                   ) : (
                     <Trans>Group</Trans>
                   )}
@@ -6116,7 +6135,9 @@ export function ShellPage() {
                     <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                       <Trans>Open in full window</Trans>
                     </div>
-                  ) : computer?.kind === "desktop" ? (
+                  ) : computer?.kind === "desktop" &&
+                    !computerStateRequiresRecovery(computer.state) &&
+                    computer.state !== "stopping" ? (
                     <DesktopKindEmptyState className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground/80" />
                   ) : computer?.state === "running" &&
                     screenPresented &&
@@ -6158,7 +6179,10 @@ export function ShellPage() {
                         ))}
                     </div>
                   )}
-                  {!computerScreenError && !showingRecoveryHint ? (
+                  {!computerScreenError &&
+                  !showingRecoveryHint &&
+                  !computerStateRequiresRecovery(computer?.state) &&
+                  computer?.state !== "stopping" ? (
                     <button
                       type="button"
                       data-testid="computer-preview-open"
@@ -7179,9 +7203,11 @@ export function ShellPage() {
                 ) : (
                   <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                     {computerScreenError ??
-                      (computer?.state === "suspended"
-                        ? t`Computer is asleep`
-                        : computerLabel(computer?.mode, computerBot.name))}
+                      computerPlaceholder(
+                        computer?.state,
+                        booting,
+                        computerLabel(computer?.mode, computerBot.name),
+                      )}
                   </div>
                 )}
               </ComputerWorkspace>
@@ -9555,6 +9581,9 @@ function computerPlaceholder(
   booting: boolean,
   label: string,
 ) {
+  if (state === "quarantined") return t`Computer status unconfirmed`;
+  if (state === "needs_recovery") return t`Computer needs recovery`;
+  if (state === "stopping") return t`Saving or stopping computer…`;
   if (state === "booting" || booting) return t`Booting live desktop…`;
   if (state === "running") return label;
   if (state === "suspended") return t`Computer is asleep. Open it to wake.`;

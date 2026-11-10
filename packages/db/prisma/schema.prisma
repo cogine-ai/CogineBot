@@ -1247,6 +1247,8 @@ model Computer {
   homeRevision            String                   @default("empty")
   homeRevisionAt          DateTime?
   restorePending          Boolean                  @default(false)
+  stopPending             Boolean                  @default(false)
+  autoRecoveredAt         DateTime?
   kind                    String
   providerRef             String?
   state                   String                   @default("stopped")

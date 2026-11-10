@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRouterClient } from "@orpc/server";
-import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
+import { SandboxDamagedError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
 import {
   ComputerCheckpointChangedError,
   DesktopSandboxProvider,
@@ -37,6 +37,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const keepAlive = vi.fn().mockResolvedValue(undefined);
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const stopProvider = vi.fn().mockResolvedValue(undefined);
+  const inspectPowerState = vi.fn().mockResolvedValue("unknown");
   const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
   const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
   const providerWrite = vi.fn().mockResolvedValue(undefined);
@@ -45,6 +46,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let desktop: DesktopSandboxProvider;
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
+  let statusComputer: () => Promise<unknown>;
   let readComputerFile: () => Promise<unknown>;
   let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
@@ -94,6 +96,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
         keepAlive,
         exportWorkspace,
         stop: stopProvider,
+        inspectPowerState,
         readFile: providerRead,
         writeFile: providerWrite,
         isRunning: desktop.isRunning.bind(desktop),
@@ -110,6 +113,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
+    statusComputer = () => client.computer.status({ botId });
     readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
     uploadComputerFile = () =>
       client.computer.uploadFile({
@@ -125,6 +129,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     keepAlive.mockClear();
     enqueue.mockClear();
     stopProvider.mockClear();
+    inspectPowerState.mockClear();
     exportWorkspace.mockClear();
     providerRead.mockClear();
     providerWrite.mockClear();
@@ -284,6 +289,84 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     ).toMatchObject({
       state: "running",
       homeRevision: "last-saved-revision",
+    });
+  });
+
+  it("quarantines an unconfirmed manual Stop and blocks implicit boot", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { restorePending: true, homeRevision: "last-valid" },
+    });
+    stopProvider.mockImplementationOnce(async () => {
+      expect(
+        await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+      ).toMatchObject({ state: "suspending", stopPending: true });
+      throw new Error("provider connection closed after accepting the request");
+    });
+    await expect(stopComputer()).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "The computer's stop could not be confirmed.",
+    });
+    await expect(statusComputer()).resolves.toMatchObject({
+      state: "quarantined",
+      screenAvailable: false,
+      controlHolder: "none",
+      takeoverRequested: false,
+    });
+    await expect(bootComputer()).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      providerRef: "heartbeat-provider",
+      homeRevision: "last-valid",
+      stopPending: false,
+    });
+  });
+
+  it("does not resume or export a confirmed stopped computer with an unchanged saved home", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        homeRevision: "last-valid",
+        homeRevisionAt: new Date(),
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+    inspectPowerState.mockResolvedValueOnce("stopped");
+    await expect(stopComputer()).resolves.toMatchObject({ state: "stopped" });
+    expect(exportWorkspace).not.toHaveBeenCalled();
+    expect(stopProvider).not.toHaveBeenCalled();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({ homeRevision: "last-valid", providerRef: "heartbeat-provider" });
+  });
+
+  it("keeps the prior revision and marks a stopped damaged computer for recovery", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: {
+        homeRevision: "last-valid",
+        controlHolder: "none",
+        controlLeaseId: null,
+        controlLeaseExpiresAt: null,
+      },
+    });
+    exportWorkspace.mockImplementationOnce(async function* () {
+      yield await Promise.reject(new SandboxDamagedError());
+    });
+    await expect(stopComputer()).resolves.toMatchObject({
+      state: "needs_recovery",
+      screenAvailable: false,
+    });
+    expect(stopProvider).toHaveBeenCalledOnce();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      homeRevision: "last-valid",
+      providerRef: "heartbeat-provider",
+      restorePending: true,
     });
   });
 

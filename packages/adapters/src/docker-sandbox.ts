@@ -12,6 +12,7 @@ import type {
   PageBrowserResult,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -184,6 +185,18 @@ export class DockerSandboxProvider implements SandboxProvider {
     return (await this.containerRunning(computer, context)) === true;
   }
 
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    const running = await this.containerRunning(computer, context);
+    return running === null
+      ? ("unknown" as const)
+      : running
+        ? ("running" as const)
+        : ("stopped" as const);
+  }
+
   async prepare(_computer: ComputerRef, _context: AdapterContext): Promise<void> {}
 
   async *execute(
@@ -342,7 +355,7 @@ export class DockerSandboxProvider implements SandboxProvider {
         return null;
       }
       const body = await readSandboxJson<{ running?: boolean }>(res, context.signal);
-      return body.running === true;
+      return typeof body.running === "boolean" ? body.running : null;
     } catch (error) {
       if (context.signal.aborted) throw error;
       return null;
@@ -535,14 +548,14 @@ export class DockerSandboxProvider implements SandboxProvider {
     }
   }
 
-  async stop(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async stop(computer: ComputerRef, context: AdapterContext): Promise<"gone" | undefined> {
     const res = await fetch(this.url(`/computers/${computer.id}/stop`), {
       method: "POST",
       headers: this.headers(context, computer.botId),
       signal: context.signal,
     });
-    // 404 means the supervisor no longer has the container, which is the state we want.
-    if (!res.ok && res.status !== 404) {
+    if (res.status === 404) return "gone";
+    if (!res.ok) {
       throw new Error(
         `sandbox stop failed: ${res.status} ${await safeBody(res, context.signal)}`.trim(),
       );

@@ -31,6 +31,38 @@ describe("toComputerStatus", () => {
     expect(toComputerStatus("bot-1", computer, "Writer").busyBotName).toBe("Writer");
   });
 
+  it.each([
+    ["suspending", false, new Date(), "stopping"],
+    ["suspending", true, new Date(0), "quarantined"],
+    ["needs_recovery", false, new Date(), "needs_recovery"],
+    ["quarantined", false, new Date(), "quarantined"],
+  ])(
+    "reports %s without exposing its screen or stale control",
+    (state, stopPending, updatedAt, expected) => {
+      expect(
+        toComputerStatus("bot-1", {
+          kind: "e2b",
+          state,
+          stopPending,
+          updatedAt,
+          scope: "team",
+          controlHolder: "user",
+          controlBotId: "bot-1",
+          controlRunId: "run-1",
+          homeRevision: "r1",
+          maintenanceId: "old-maintenance",
+        }),
+      ).toMatchObject({
+        state: expected,
+        screenAvailable: false,
+        controlHolder: "none",
+        takeoverRequested: false,
+        canUpdate: false,
+        homeRevision: "r1",
+      });
+    },
+  );
+
   it("hides update on desktop computers", () => {
     expect(
       toComputerStatus("bot-1", {

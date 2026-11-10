@@ -7338,3 +7338,15 @@ msgstr ""
 #: src/components/pages/PageShareControl.tsx
 msgid "Who can open this page"
 msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Computer status unconfirmed"
+msgstr "Status do computador não confirmado"
+
+#: src/pages/Shell.tsx
+msgid "Computer needs recovery"
+msgstr "O computador precisa ser recuperado"
+
+#: src/pages/Shell.tsx
+msgid "Saving or stopping computer…"
+msgstr "Salvando ou parando o computador…"

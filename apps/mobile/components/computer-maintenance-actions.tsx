@@ -29,7 +29,11 @@ export function ComputerMaintenanceActions({
   const navigation = useNavigation();
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const busy = Boolean(computer?.busyBotName) || computer?.state === "booting" || pending !== null;
+  const busy =
+    Boolean(computer?.busyBotName) ||
+    computer?.state === "booting" ||
+    computer?.state === "stopping" ||
+    pending !== null;
 
   async function run(action: Action) {
     if (busy) return;

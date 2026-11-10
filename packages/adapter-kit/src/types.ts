@@ -98,6 +98,8 @@ export interface WorkspaceExportLimits {
   maxFiles: number;
 }
 
+export type SandboxPowerState = "running" | "stopped" | "gone" | "unknown";
+
 export interface ComputerRef {
   id: string;
   botId: string;

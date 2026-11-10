@@ -20,6 +20,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -27,7 +28,11 @@ import type {
   TerminalRequest,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
-import { SandboxUnavailableError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
+import {
+  SandboxDamagedError,
+  SandboxUnavailableError,
+  WorkspaceTooLargeError,
+} from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { boxResponseError, wrapBoxCall } from "./box-errors.js";
@@ -487,16 +492,36 @@ export class BoxSandboxProvider implements SandboxProvider {
     });
   }
 
-  async stop(computer: ComputerRef, context: AdapterContext): Promise<void> {
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    const id = this.id(computer);
+    try {
+      const { box } = await this.client.get({ boxId: id }, { signal: context.signal });
+      if (box.id !== id) return "unknown";
+      if (box.state === "archived") return "stopped";
+      return box.state === "ready" || box.state === "idle" || box.state === "running"
+        ? "running"
+        : "unknown";
+    } catch (error) {
+      if (isUnrecoverableBoxError(error)) return "gone";
+      throw error;
+    }
+  }
+
+  async stop(computer: ComputerRef, context: AdapterContext): Promise<"gone" | undefined> {
     const id = this.id(computer);
     try {
       const current = await this.client.get({ boxId: id }, { signal: context.signal });
+      if (current.box.id !== id) throw new Error("Box status did not match the computer");
       if (current.box.state !== "archived" && current.box.state !== "archiving") {
         await this.client.stop({ boxId: id }, { signal: context.signal });
       }
       await this.waitForState(id, new Set(["archived"]), context);
     } catch (error) {
-      if (!isUnrecoverableBoxError(error)) throw error;
+      if (isUnrecoverableBoxError(error)) return "gone";
+      throw error;
     } finally {
       this.forget(id);
     }
@@ -522,6 +547,7 @@ export class BoxSandboxProvider implements SandboxProvider {
       }
       const response = await this.client.get({ boxId: id }, { signal: context.signal });
       const box = response.box;
+      if (box.id !== id) throw new Error("Box status did not match the computer");
       if (box.state === "ready" || box.state === "idle" || box.state === "running") return box;
       if (box.state === "archived" && !resumed) {
         await this.client.resume(
@@ -530,7 +556,7 @@ export class BoxSandboxProvider implements SandboxProvider {
         );
         resumed = true;
       } else if (box.state === "error") {
-        throw new SandboxUnavailableError();
+        throw new SandboxDamagedError();
       }
       if (Date.now() >= deadline) throw new SandboxUnavailableError();
       await delay(1_000, undefined, { signal: context.signal });
@@ -546,6 +572,7 @@ export class BoxSandboxProvider implements SandboxProvider {
     while (true) {
       if (context.signal.aborted) throw context.signal.reason ?? new Error("Box wait aborted");
       const response = await this.client.get({ boxId: id }, { signal: context.signal });
+      if (response.box.id !== id) throw new Error("Box status did not match the computer");
       if (states.has(response.box.state)) return response.box;
       if (response.box.state === "error") throw new Error(`Box ${id} entered the error state`);
       if (Date.now() >= deadline)

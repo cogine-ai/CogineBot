@@ -7338,3 +7338,15 @@ msgstr ""
 #: src/components/pages/PageShareControl.tsx
 msgid "Who can open this page"
 msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Computer status unconfirmed"
+msgstr "Bilgisayar durumu doğrulanmadı"
+
+#: src/pages/Shell.tsx
+msgid "Computer needs recovery"
+msgstr "Bilgisayarın kurtarılması gerekiyor"
+
+#: src/pages/Shell.tsx
+msgid "Saving or stopping computer…"
+msgstr "Bilgisayar kaydediliyor veya durduruluyor…"

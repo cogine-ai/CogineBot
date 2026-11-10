@@ -455,7 +455,7 @@ describe("Docker sandbox", () => {
       providerRef: "computer",
     } as const;
 
-    await expect(provider.stop(computer, context)).resolves.toBeUndefined();
+    await expect(provider.stop(computer, context)).resolves.toBe("gone");
     await expect(provider.destroy(computer, context)).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

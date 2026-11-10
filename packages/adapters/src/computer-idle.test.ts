@@ -299,7 +299,7 @@ describe("sandbox idle", () => {
       harness.sandbox.exportWorkspace.mock.invocationCallOrder[0]!,
     );
     expect(harness.sandbox.stop).toHaveBeenCalledOnce();
-    expect(harness.prisma.computer.update).toHaveBeenCalledWith({
+    expect(harness.prisma.computer.updateMany).toHaveBeenCalledWith({
       where: {
         id: harness.computer.id,
         state: "suspending",
@@ -308,9 +308,11 @@ describe("sandbox idle", () => {
         screenGeneration: 1,
         maintenanceId: null,
         updatedAt: expect.any(Date),
+        stopPending: true,
       },
       data: {
         state: "suspended",
+        stopPending: false,
         controlHolder: "none",
         controlLeaseId: null,
         controlLeaseExpiresAt: null,
@@ -356,7 +358,11 @@ describe("sandbox idle", () => {
 
   it("retains the saved revision when the database transition after stopping fails", async () => {
     const harness = idleHarness();
-    harness.prisma.computer.update.mockRejectedValueOnce(new Error("database unavailable"));
+    const updateMany = harness.prisma.computer.updateMany.getMockImplementation()!;
+    harness.prisma.computer.updateMany.mockImplementation(async (args) => {
+      if (args.data.state === "suspended") throw new Error("database unavailable");
+      return updateMany(args);
+    });
     harness.sandbox.stop.mockImplementationOnce(async () => {
       expect(harness.computer.homeRevision).toBe("rev-checkpoint");
     });
@@ -656,6 +662,7 @@ function idleHarness(
     providerRef: "computer",
     kind: "e2b",
     screenGeneration: 0,
+    stopPending: false,
     maintenanceId: null,
     state: "running",
     spaceId: "workspace",

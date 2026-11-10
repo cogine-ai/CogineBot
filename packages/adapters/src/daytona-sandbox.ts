@@ -18,6 +18,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
@@ -34,6 +35,7 @@ import {
 } from "./computer-workspace.js";
 import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
+import { withAbort } from "./web-ssrf.js";
 
 const DAYTONA_SCREEN_TTL_SECONDS = 3_600;
 
@@ -407,15 +409,36 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     );
   }
 
-  async stop(computer: ComputerRef, _context: AdapterContext): Promise<void> {
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    const id = computer.providerRef || computer.id;
+    try {
+      const sandbox = await withAbort(this.client.get(id), context.signal);
+      if (sandbox.id !== id) return "unknown";
+      if (sandbox.state === SandboxState.STOPPED || sandbox.state === SandboxState.ARCHIVED) {
+        return "stopped";
+      }
+      return sandbox.state === SandboxState.STARTED ? "running" : "unknown";
+    } catch (error) {
+      if (isUnrecoverableDaytonaError(error)) return "gone";
+      throw error;
+    }
+  }
+
+  async stop(computer: ComputerRef, _context: AdapterContext): Promise<"gone" | undefined> {
     const id = computer.providerRef || computer.id;
     const finish = this.beginTeardownOperation(id);
     try {
       const { sandbox, previews } = await this.beginTeardown(id);
-      if (!sandbox) return;
+      if (!sandbox) return "gone";
       await Promise.all(previews.map((preview) => this.revokeScreenPreview(sandbox, preview)));
       await sandbox.computerUse.stop().catch(() => undefined);
       await sandbox.stop(120);
+    } catch (error) {
+      if (isUnrecoverableDaytonaError(error)) return "gone";
+      throw error;
     } finally {
       finish();
     }
@@ -530,7 +553,9 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     this.forget(id);
     if (existing) return { sandbox: existing, previews };
     try {
-      return { sandbox: await this.client.get(id), previews };
+      const sandbox = await this.client.get(id);
+      if (sandbox.id !== id) throw new Error("Daytona status did not match the computer");
+      return { sandbox, previews };
     } catch (error) {
       if (isUnrecoverableDaytonaError(error)) return { sandbox: undefined, previews };
       throw error;

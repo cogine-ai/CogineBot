@@ -116,6 +116,7 @@ describe("computer provisioning", () => {
             updatedAt: expect.any(Date),
             providerRef: "provider-1",
             kind: "cloud",
+            stopPending: false,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
         }),
@@ -855,12 +856,20 @@ describe("computer provisioning", () => {
           context,
         );
         if (rollbackFails) {
-          await expect(result).rejects.toMatchObject({ errors: [failure, rollbackError] });
+          await expect(result).rejects.toMatchObject({
+            errors: [
+              failure,
+              expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+            ],
+          });
         } else {
           await expect(result).rejects.toBe(failure);
         }
         expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(ref, context);
-        expect(sandbox.destroy).toHaveBeenCalledExactlyOnceWith(ref, context);
+        expect(sandbox.destroy).toHaveBeenCalledExactlyOnceWith(ref, {
+          ...context,
+          signal: expect.any(AbortSignal),
+        });
         expect(sandbox.stop).not.toHaveBeenCalled();
         expect(prisma.computer.updateMany).toHaveBeenLastCalledWith({
           where: {
@@ -871,7 +880,13 @@ describe("computer provisioning", () => {
             kind: "box",
             updatedAt: expect.any(Date),
           },
-          data: { state: stage === "prepare" ? "running" : "error" },
+          data: rollbackFails
+            ? expect.objectContaining({
+                state: "quarantined",
+                providerRef: ref.providerRef,
+                stopPending: false,
+              })
+            : { state: stage === "prepare" ? "running" : "error" },
         });
         expect(original).toMatchObject({
           state: "running",
@@ -1013,6 +1028,7 @@ describe("computer provisioning", () => {
             providerRef: "provider-1",
             kind: "box",
             updatedAt: expect.any(Date),
+            stopPending: false,
             bots: { some: { id: "bot-1", archivedAt: null, computerSwitching: false } },
           },
           data: {
@@ -1086,7 +1102,10 @@ describe("computer provisioning", () => {
       ).rejects.toThrow("provider preparation failed");
       expect(prepare).toHaveBeenCalledWith(ref, context);
       expect(releaseScreen).toHaveBeenCalledWith(ref, context);
-      expect(cleanup === "destroy" ? destroy : stop).toHaveBeenCalledWith(ref, context);
+      expect(cleanup === "destroy" ? destroy : stop).toHaveBeenCalledWith(ref, {
+        ...context,
+        signal: expect.any(AbortSignal),
+      });
       expect(cleanup === "destroy" ? stop : destroy).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
@@ -1151,7 +1170,7 @@ describe("computer provisioning", () => {
       ).rejects.toThrow("Computer is busy");
       expect(sandbox.execute).toHaveBeenCalled();
       expect(releaseScreen).toHaveBeenCalledWith(ref, context);
-      expect(stop).toHaveBeenCalledWith(ref, context);
+      expect(stop).toHaveBeenCalledWith(ref, { ...context, signal: expect.any(AbortSignal) });
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -1204,7 +1223,10 @@ describe("computer provisioning", () => {
         context,
       );
       await expect(result).rejects.toMatchObject({
-        errors: [prepareError, rollbackError],
+        errors: [
+          prepareError,
+          expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+        ],
       });
       expect(updateMany).toHaveBeenLastCalledWith({
         where: {
@@ -1215,11 +1237,13 @@ describe("computer provisioning", () => {
           kind: "e2b",
           updatedAt: expect.any(Date),
         },
-        data: {
-          state: "error",
+        data: expect.objectContaining({
+          state: "quarantined",
           providerRef: "new-provider-1",
           kind: "e2b",
-        },
+          restorePending: true,
+          stopPending: false,
+        }),
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });
@@ -1311,16 +1335,28 @@ describe("computer provisioning", () => {
         if (recordFails) {
           await expect(result).rejects.toBeInstanceOf(AggregateError);
           await expect(result).rejects.toMatchObject({
-            errors: [prepareError, rollbackError, recordError],
+            errors: [
+              prepareError,
+              expect.objectContaining({ name: "SandboxUnsafeStopError", cause: rollbackError }),
+              recordError,
+            ],
           });
         } else {
           await expect(result).rejects.toBe(prepareError);
         }
-        expect(destroy).toHaveBeenCalledExactlyOnceWith(ref, context);
+        expect(destroy).toHaveBeenCalledExactlyOnceWith(ref, {
+          ...context,
+          signal: expect.any(AbortSignal),
+        });
         expect(updateMany).toHaveBeenCalledTimes(2);
         expect(updateMany).toHaveBeenLastCalledWith(
           expect.objectContaining({
-            data: { state: "error", providerRef: "new-provider-1", kind: "e2b" },
+            data: expect.objectContaining({
+              state: "quarantined",
+              providerRef: "new-provider-1",
+              kind: "e2b",
+              stopPending: false,
+            }),
           }),
         );
       } finally {
@@ -3125,14 +3161,19 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-        data: { state: "suspending", updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        where: { id: "computer-1", state: "suspending", updatedAt: expect.any(Date) },
-        data: { state: "stopped" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          stopPending: false,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "stopped" }),
       }),
     );
   });
@@ -3178,14 +3219,19 @@ describe("computer replacement", () => {
       1,
       expect.objectContaining({
         where: expect.objectContaining({ id: "computer-1", state: "suspended" }),
-        data: { state: "suspending", updatedAt: expect.any(Date) },
+        data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
       }),
     );
     expect(updateMany).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        where: { id: "computer-1", state: "suspending", updatedAt: expect.any(Date) },
-        data: { state: "suspended" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          stopPending: false,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "suspended" }),
       }),
     );
   });
@@ -3244,7 +3290,7 @@ describe("computer replacement", () => {
         1,
         expect.objectContaining({
           where: expect.objectContaining({ id: "computer-1", state: "stopped" }),
-          data: { state: "suspending", updatedAt: expect.any(Date) },
+          data: { state: "suspending", stopPending: false, updatedAt: expect.any(Date) },
         }),
       );
     } finally {
@@ -3395,8 +3441,14 @@ describe("computer replacement", () => {
       ).rejects.toThrow("ECONNRESET");
       expect(destroy).not.toHaveBeenCalled();
       expect(updateMany).toHaveBeenLastCalledWith({
-        where: { id: "computer-1", maintenanceId: null, updatedAt: expect.any(Date) },
-        data: { state: "running" },
+        where: expect.objectContaining({
+          id: "computer-1",
+          state: "suspending",
+          maintenanceId: null,
+          stopPending: false,
+          updatedAt: expect.any(Date),
+        }),
+        data: expect.objectContaining({ state: "running" }),
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });

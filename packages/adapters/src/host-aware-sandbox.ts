@@ -8,6 +8,7 @@ import type {
   ControlLeaseRef,
   PortableFile,
   ProcessEvent,
+  SandboxPowerState,
   SandboxProvider,
   ScreenRequest,
   StreamedPortableFile,
@@ -107,6 +108,15 @@ export class HostAwareSandbox implements SandboxProvider {
     const provider = (await this.hostEnabled()) ? this.host : this.isolated;
     if (provider.describe().id !== computer.kind) return false;
     return provider.isRunning?.(computer, context) ?? false;
+  }
+
+  async inspectPowerState(
+    computer: ComputerRef,
+    context: AdapterContext,
+  ): Promise<SandboxPowerState> {
+    const provider = this.route(computer);
+    if (provider.describe().id !== computer.kind) return "unknown";
+    return provider.inspectPowerState?.(computer, context) ?? "unknown";
   }
 
   prepare(computer: ComputerRef, context: AdapterContext) {
@@ -217,10 +227,18 @@ export class HostAwareSandbox implements SandboxProvider {
   }
 
   stop(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).stop(computer, context);
+    return this.teardownProvider(computer).stop(computer, context);
   }
 
   destroy(computer: ComputerRef, context: AdapterContext) {
-    return this.route(computer).destroy(computer, context);
+    return this.teardownProvider(computer).destroy(computer, context);
+  }
+
+  private teardownProvider(computer: ComputerRef): SandboxProvider {
+    const provider = this.route(computer);
+    if (provider.describe().id !== computer.kind) {
+      throw new Error("The computer's provider is unavailable");
+    }
+    return provider;
   }
 }

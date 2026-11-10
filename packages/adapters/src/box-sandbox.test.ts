@@ -1,6 +1,6 @@
 import type { Command200Response } from "@asciidev/box-sdk";
 import { FetchError } from "@asciidev/box-sdk";
-import { SandboxUnavailableError } from "@rakazo/adapter-kit";
+import { SandboxDamagedError, SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { parse } from "shell-quote";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BoxSandboxProvider, type BoxSandboxSdk, isUnrecoverableBoxError } from "./box-sandbox.js";
@@ -213,7 +213,7 @@ describe("BoxSandboxProvider", () => {
         { id: "bx_testbox2", providerRef: "bx_testbox2", kind: "box", botId: "home" },
         context,
       ),
-    ).rejects.toBeInstanceOf(SandboxUnavailableError);
+    ).rejects.toBeInstanceOf(SandboxDamagedError);
     expect(fixture.command).not.toHaveBeenCalled();
     expect(fixture.create).not.toHaveBeenCalled();
   });

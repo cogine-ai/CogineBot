@@ -8,7 +8,7 @@ import type {
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { IsoDate, RUN_TRIGGERS } from "@rakazo/contracts";
+import { computerStateRequiresRecovery, IsoDate, RUN_TRIGGERS } from "@rakazo/contracts";
 import {
   isActive,
   isBackgroundRunTrigger,
@@ -89,6 +89,9 @@ const computerStates: ReadonlySet<unknown> = new Set<ComputerStatus["state"]>([
   "running",
   "suspended",
   "error",
+  "stopping",
+  "needs_recovery",
+  "quarantined",
 ]);
 
 export function activeThreadRuns(
@@ -726,7 +729,7 @@ export function computerPanelNeedsMaintenance(
   state: ComputerStatus["state"] | undefined,
   booting: boolean,
 ): boolean {
-  return !booting && state === "error";
+  return !booting && (state === "error" || computerStateRequiresRecovery(state));
 }
 
 export function reduceComputerStatus(
@@ -784,12 +787,17 @@ export function reduceComputerStatus(
   }
   const status = event.payload.status;
   if (!isComputerState(status)) return prev;
-  const screenAvailable = status === "running" || status === "booting" || prev.screenAvailable;
+  const unavailable = status === "stopping" || computerStateRequiresRecovery(status);
+  const screenAvailable =
+    !unavailable && (status === "running" || status === "booting" || prev.screenAvailable);
   if (status === prev.state && screenAvailable === prev.screenAvailable) return prev;
   return {
     ...prev,
     state: status,
     screenAvailable,
+    ...(unavailable
+      ? { controlHolder: "none", controlBotId: null, takeoverRequested: false, canUpdate: false }
+      : {}),
   };
 }
 

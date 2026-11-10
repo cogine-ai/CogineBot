@@ -96,8 +96,8 @@ describePostgres("idle missing-computer suspension claim", () => {
         state: "running",
         controlHolder: "user",
         controlLeaseId: "old-control",
-        controlLeaseExpiresAt: new Date("2100-01-01"),
-        controlBotId: "old-bot",
+        controlLeaseExpiresAt: new Date("2000-01-01"),
+        controlBotId: null,
         controlRunId: "old-run",
         updatedAt: new Date("2000-01-01"),
       },
@@ -109,6 +109,18 @@ describePostgres("idle missing-computer suspension claim", () => {
     await database.prisma.organization.deleteMany({ where: { id: organizationId } });
     await database.prisma.$disconnect();
     await database.pool.end();
+  });
+
+  it("does not touch a workspace while the user still controls its computer", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { controlBotId: "active-viewer", controlLeaseExpiresAt: new Date("2100-01-01") },
+    });
+    await sleepComputerIfIdle(deps, computerId);
+    expect(clearCounts).toEqual([]);
+    expect(commit).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledOnce();
   });
 
   it("clears only the claimed dead resource and control while preserving its saved home", async () => {
@@ -143,8 +155,8 @@ describePostgres("idle missing-computer suspension claim", () => {
       homeRevision: "saved-before",
       controlHolder: "user",
       controlLeaseId: "old-control",
-      controlLeaseExpiresAt: new Date("2100-01-01"),
-      controlBotId: "old-bot",
+      controlLeaseExpiresAt: new Date("2000-01-01"),
+      controlBotId: null,
       controlRunId: "old-run",
     });
     expect(stop).not.toHaveBeenCalled();

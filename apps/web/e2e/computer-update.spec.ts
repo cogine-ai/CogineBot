@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import type { ComputerUpdate } from "@rakazo/contracts";
+import { expect, type Route, test } from "@playwright/test";
+import type { ComputerStatus, ComputerUpdate } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 test("computer maintenance shows durable background progress and failure recovery", async ({
@@ -115,4 +115,58 @@ test("computer maintenance shows durable background progress and failure recover
   updates = [];
   await expect(dialog).not.toBeVisible();
   await expect(page.getByRole("button", { name: /Recovering Team Computer/ })).toHaveCount(0);
+});
+
+test("an unconfirmed computer stop offers explicit recovery without attempting to boot", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `computer-power-${Date.now()}@example.test`, "password12", "Computer Power");
+  await completeOnboarding(page);
+
+  function markUnconfirmed(status: ComputerStatus | undefined) {
+    if (!status) return;
+    status.state = "quarantined";
+    status.screenAvailable = false;
+    status.canUpdate = false;
+  }
+
+  async function patchStatus(
+    route: Route,
+    getStatus: (json: unknown) => ComputerStatus | undefined,
+  ) {
+    const response = await route.fetch();
+    const body = (await response.json()) as { json?: unknown };
+    markUnconfirmed(getStatus(body.json));
+    await route.fulfill({ response, json: body });
+  }
+  await page.route("**/rpc/bootstrap", (route) =>
+    patchStatus(
+      route,
+      (json) => (json as { thread?: { computer?: ComputerStatus } })?.thread?.computer,
+    ),
+  );
+  await page.route("**/rpc/threads/get", (route) =>
+    patchStatus(route, (json) => (json as { computer?: ComputerStatus })?.computer),
+  );
+  await page.route("**/rpc/computer/status", (route) =>
+    patchStatus(route, (json) => json as ComputerStatus),
+  );
+  let bootRequests = 0;
+  await page.route("**/rpc/computer/boot", (route) => {
+    bootRequests += 1;
+    return route.abort();
+  });
+  await page.reload();
+
+  await page.getByTitle("Agent computer").click();
+  const preview = page.getByTestId("computer-preview");
+  await expect(preview.getByText("Computer status unconfirmed", { exact: true })).toBeVisible();
+  await expect(preview.getByTestId("computer-preview-open")).toHaveCount(0);
+  await expect(preview.locator("iframe")).toHaveCount(0);
+  await page.getByTestId("computer-more-button").click();
+  await expect(page.getByRole("menuitem", { name: "Update computer", exact: true })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "computer-stop-unconfirmed");
+  await page.getByRole("menuitem", { name: "Recover computer", exact: true }).click();
+  await expect(page.getByRole("alertdialog").getByRole("heading")).toHaveText("Recover computer?");
+  expect(bootRequests).toBe(0);
 });

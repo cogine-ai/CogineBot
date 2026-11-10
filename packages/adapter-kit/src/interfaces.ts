@@ -56,6 +56,7 @@ import type {
   PortableFile,
   ProcessEvent,
   SandboxCapabilities,
+  SandboxPowerState,
   ScreenRequest,
   ScreenSession,
   SecretChangeListener,
@@ -117,6 +118,8 @@ export interface SandboxProvider {
   provisionKind?(): Promise<ComputerRef["kind"]>;
   /** Read-only probe: true only when this exact reference is already running. */
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
+  /** Read the exact reference without starting it. Unknown is never proof of a stop. */
+  inspectPowerState?(computer: ComputerRef, context: AdapterContext): Promise<SandboxPowerState>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */
   prepare(computer: ComputerRef, context: AdapterContext): Promise<void>;
   execute(
@@ -191,7 +194,8 @@ export interface SandboxProvider {
     /** Earlier-attempt cleanup must not start the computer or revoke newer user control. */
     options?: { onlyIfRunning?: boolean },
   ): Promise<void>;
-  stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
+  /** Resolve only after the provider confirms the computer is stopped or gone. */
+  stop(computer: ComputerRef, context: AdapterContext): Promise<void> | Promise<"gone" | undefined>;
   destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
 }
 

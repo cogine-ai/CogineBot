@@ -40,6 +40,22 @@ export class SandboxUnavailableError extends Error {
   }
 }
 
+/** The provider confirmed that the computer can no longer start programs. */
+export class SandboxDamagedError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super("The computer needs recovery.", options);
+    this.name = "SandboxDamagedError";
+  }
+}
+
+/** A stop or teardown request ended without confirming the computer is offline. */
+export class SandboxUnsafeStopError extends Error {
+  constructor(cause?: unknown) {
+    super("The computer's stop could not be confirmed.", { cause });
+    this.name = "SandboxUnsafeStopError";
+  }
+}
+
 /** Saving stopped before replacing the stored workspace. */
 export class WorkspaceTooLargeError extends Error {
   readonly code = "WORKSPACE_TOO_LARGE";
