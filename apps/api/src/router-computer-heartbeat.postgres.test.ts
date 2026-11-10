@@ -8,6 +8,7 @@ import {
   ComputerCheckpointChangedError,
   DesktopSandboxProvider,
   LocalAgentHomeStore,
+  toComputerRef,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
@@ -561,14 +562,17 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
 
     await expect(bootComputer()).resolves.toMatchObject({ state: "running" });
-    const bytes = await desktop.readFile(ref, `bots/${botId}/notes.txt`, context);
-    expect(Buffer.from(bytes).toString()).toBe("saved Desktop notes");
-    expect(
-      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
-    ).toMatchObject({
-      providerRef: ref.providerRef,
-      restorePending: false,
+    const restored = await database.prisma.computer.findUniqueOrThrow({
+      where: { id: computerId },
     });
+    expect(restored.providerRef).not.toBe(ref.providerRef);
+    expect(restored.restorePending).toBe(false);
+    const bytes = await desktop.readFile(
+      toComputerRef(restored),
+      `bots/${botId}/notes.txt`,
+      context,
+    );
+    expect(Buffer.from(bytes).toString()).toBe("saved Desktop notes");
   });
 
   it.each([
