@@ -1,6 +1,9 @@
 import dns from "node:dns";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { fetch as undiciFetch } from "undici";
 import { describe, expect, it, vi } from "vitest";
+import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import {
   assertSafeRemoteUrl,
   createPrivateNetworkFetch,
@@ -348,6 +351,36 @@ describe("remote MCP URL policy", () => {
       );
     } finally {
       await safeFetch.close();
+    }
+  });
+
+  it("checks authorization on a real local socket before sending any HTTP request", async () => {
+    const received = vi.fn();
+    const server = createServer((_request, response) => {
+      received();
+      response.end("fixture");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    const fetch = createPrivateNetworkFetch(undefined, async () => [
+      { address: "127.0.0.1", family: 4 },
+    ]);
+    try {
+      if (!address || typeof address === "string") throw new Error("Missing local server port");
+      const refusal = new ActionRuleDispatchError("The destination rule changed");
+      const beforeDispatch = vi.fn(async () => {
+        throw refusal;
+      });
+      await expect(
+        fetch(`http://127.0.0.1:${address.port}/fixture`, {}, beforeDispatch),
+      ).rejects.toBe(refusal);
+      expect(beforeDispatch).toHaveBeenCalledOnce();
+      expect(received).not.toHaveBeenCalled();
+    } finally {
+      await fetch.close(true);
+      server.close();
+      await once(server, "close");
     }
   });
 

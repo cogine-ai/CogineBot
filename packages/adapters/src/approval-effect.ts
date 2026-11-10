@@ -445,9 +445,15 @@ export function resolveDuplicateEffectGate(
     return { action: "return", result: effect.result ?? { duplicate: true } };
   }
   if (effect.status === "denied") {
+    const result = effect.result as { refused?: unknown; error?: unknown } | null | undefined;
     return {
       action: "return",
-      result: { error: DENIED_ACTION_ERROR },
+      result: {
+        error:
+          result?.refused === "unattended" && typeof result.error === "string"
+            ? result.error
+            : DENIED_ACTION_ERROR,
+      },
     };
   }
   if (effect.status === "executing") {

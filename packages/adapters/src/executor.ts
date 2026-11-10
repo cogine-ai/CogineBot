@@ -87,6 +87,7 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   RUN_QUOTA_WAIT_MAX_MS,
   runQuotaWaitStateSchema,
+  SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
@@ -124,6 +125,7 @@ import {
   nextCronDateAcross,
   nextFence,
   normalizeRunError,
+  OUTBOUND_HTTP_TOOLS,
   outboundSiteGate,
   PlatformModelForbiddenError,
   pageReplyTaskPrompt,
@@ -255,6 +257,8 @@ import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.j
 import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import {
   allowPrivateHttpSecretOrigins,
+  BOT_SECRET_HTTP_APPROVAL_CHANGED,
+  BotSecretHttpRequestError,
   botSecretToolView,
   commandCredentialRedactions,
   findBotSecret,
@@ -263,6 +267,8 @@ import {
   listBotSecrets,
   loadBotCommandEnvironment,
   normalizeSecretDestination,
+  prepareBotSecretHttpEffect,
+  readBotSecretHttpEffect,
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
@@ -3283,7 +3289,9 @@ export function buildApprovalContinuation(
       }
       const routine =
         effect.kind === "schedule_create" && routineSiteApprovalDetails(effect.request);
-      return `${effect.kind}: ${formatRequest(routine ? routine.args : effect.request)}`;
+      const authenticated =
+        effect.kind === "secret_request" && readBotSecretHttpEffect(effect.request);
+      return `${effect.kind}: ${formatRequest(routine ? routine.args : authenticated ? authenticated.args : effect.request)}`;
     }),
   ].join("\n");
 }
@@ -6045,11 +6053,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               // still matches the first-approval effect key and execute payload.
               const routine =
                 name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
+              const authenticated =
+                name === "secret_request" && readBotSecretHttpEffect(approvedRequest);
               args = routine
                 ? routine.args
-                : restoredPageEffect
-                  ? args
-                  : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
+                : authenticated
+                  ? authenticated.args
+                  : restoredPageEffect
+                    ? args
+                    : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
             // Bound / shrink-direct approvals may skip catalog parse — reject before execute
             // if they no longer match the live schema.
@@ -6113,13 +6125,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : undefined;
           const declaredReadOnly = connectorTool?.readOnly;
           const authenticatedRequest = name === "secret_request";
-          const sendsToSite = name === "web_fetch" || authenticatedRequest;
+          const sendsToSite = OUTBOUND_HTTP_TOOLS.has(name);
           const outboundUrl =
             sendsToSite && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
           const outboundSite = outboundUrl ? urlSite(outboundUrl) : undefined;
           if (sendsToSite && !outboundSite) {
             return { error: "url must be an http(s) URL without credentials" };
           }
+          if (
+            authenticatedRequest &&
+            (!SecretHttpRequest.safeParse(args).success ||
+              (outboundUrl && new URL(outboundUrl).hash))
+          )
+            return { error: "Invalid authenticated request." };
           if (name === "web_fetch" && outboundUrl) {
             if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
               return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
@@ -6127,16 +6145,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             effectRequest = args;
           }
           const rules = await loadApprovalRules();
-          const siteGate =
-            outboundUrl && outboundSite
-              ? outboundSiteGate({
-                  site: outboundSite,
-                  trusted:
-                    (name === "web_fetch" && searchResultUrls.has(outboundUrl)) ||
-                    (await trust.loadTrustedSites()).has(outboundSite),
-                  rules,
-                })
-              : "allow";
+          const siteTrusted = Boolean(
+            outboundUrl &&
+              outboundSite &&
+              ((name === "web_fetch" && searchResultUrls.has(outboundUrl)) ||
+                (await trust.loadTrustedSites()).has(outboundSite)),
+          );
+          const siteGate = outboundSite
+            ? outboundSiteGate({ site: outboundSite, trusted: siteTrusted, rules })
+            : "allow";
           const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
           const connectorKind = connectorKindFromToolName(name, connectorProviders);
           const wireToolName = liveRoute?.toolName ?? name;
@@ -6395,12 +6412,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
           if (
             plan === "allow" &&
-            batch &&
+            (batch || authenticatedRequest) &&
             gated &&
             autoReviewPref &&
             approvalResolved.source === "default"
           ) {
-            // If Auto Review is on but has no checker, an uncovered batch needs a person.
+            // A batch or authenticated action still needs review when its checker is unavailable.
             plan = "ask";
           }
           let reviewReason: string | undefined;
@@ -6462,7 +6479,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     });
                   return proposed.request;
                 }
-              : undefined;
+              : authenticatedRequest && !(run.trigger === "webhook" && siteGate === "new")
+                ? () => prepareBotSecretHttpEffect(deps.prisma, run, args)
+                : undefined;
           let applied: Awaited<ReturnType<typeof recordEffect>> | undefined;
           try {
             if (blocked) {
@@ -6503,8 +6522,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           } catch (error) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
+            if (error instanceof BotSecretHttpRequestError) return { error: error.message };
             throw error;
           }
+          const credentialBinding =
+            authenticatedRequest && applied
+              ? readBotSecretHttpEffect(applied.effect.request)?.credential
+              : undefined;
           const refuseIntendedEffect = async (
             reason: "repeat" | "unattended",
             response: { error: string },
@@ -6526,7 +6550,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (locked.count !== 1) return null;
               return tx.externalEffect.updateMany({
                 where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
-                data: { status: "denied", result: { refused: reason } },
+                data: {
+                  status: "denied",
+                  result:
+                    reason === "unattended"
+                      ? { refused: reason, ...response }
+                      : { refused: reason },
+                },
               });
             });
             if (!refused) return pauseForApproval();
@@ -6958,10 +6988,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (
               authenticatedRequest &&
               outboundUrl &&
-              (outboundUrl.length > MAX_FETCH_URL_LENGTH || containsSecret(outboundUrl, runSecrets))
+              (!credentialBinding ||
+                outboundUrl.length > MAX_FETCH_URL_LENGTH ||
+                containsSecret(outboundUrl, runSecrets))
             ) {
               const result = {
-                error: "The authenticated request URL cannot be shown in full for approval.",
+                error: credentialBinding
+                  ? "The authenticated request URL cannot be shown in full for approval."
+                  : BOT_SECRET_HTTP_APPROVAL_CHANGED,
               };
               return (await completeEffect(deps, applied!.effect.id, "intended", result))
                 ? result
@@ -8440,7 +8474,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
             return finish(await forgetBotSecret(deps.prisma, run, parsed.data));
           }
-          if (name === "secret_request") {
+          if (authenticatedRequest) {
+            if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             try {
               const result = await requestWithBotSecret({
                 prisma: deps.prisma,
@@ -8450,14 +8485,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 signal: context.signal,
                 remote: deps.secretHttp,
                 registerRedactions: registerRunSecrets,
+                credentialBinding,
                 beforeDispatch: async () => {
-                  if (await rulesBlockDispatch())
+                  const currentRules = await loadApprovalRules();
+                  const current = resolveRules(currentRules);
+                  if (current.decision === "deny")
                     throw new ActionRuleDispatchError(policyBlock.error);
+                  if (
+                    !claimedApproval &&
+                    (current.decision === "ask" ||
+                      (approvalResolved.source === "always_allow" &&
+                        current.source !== "always_allow") ||
+                      (siteGate === "allow" &&
+                        outboundSite &&
+                        outboundSiteGate({
+                          site: outboundSite,
+                          trusted: siteTrusted,
+                          rules: currentRules,
+                        }) === "new"))
+                  )
+                    throw new ActionRuleDispatchError(
+                      "The authenticated request needs a new approval because its action rules changed.",
+                    );
+                  if (!(await renewRunLease(deps, runId, workerId, fence)))
+                    throw new BotSecretHttpRequestError("The run no longer owns this request.");
                 },
               });
               return finish(result);
             } catch (error) {
-              if (error instanceof ActionRuleDispatchError) return finishPolicyBlock();
+              if (error instanceof ActionRuleDispatchError) {
+                trust.invalidateDestinationTrust();
+                return finish({ ...policyBlock, error: error.message }, "error");
+              }
               return finish({ error: "Invalid authenticated request." });
             }
           }

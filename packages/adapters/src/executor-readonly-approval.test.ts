@@ -38,7 +38,7 @@ import { ComputerScreenUnavailableError } from "./computer-screens.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 import type { ExecutorDeps } from "./executor.js";
-import { createRunExecutor } from "./executor.js";
+import { buildApprovalContinuation, createRunExecutor } from "./executor.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
@@ -466,6 +466,7 @@ function fixture({
     yield { type: "result" as const, data: { item: call.args.id } };
   });
   let calls: {
+    name?: string;
     args: Record<string, unknown>;
     executionId: string;
     catalogId?: string;
@@ -475,7 +476,7 @@ function fixture({
     for (const call of calls) {
       if (call.claimBefore) await request.claimSteering?.([]);
       const result = await request.executeTool!(
-        catalog ? catalogToolName : name,
+        catalog ? catalogToolName : (call.name ?? name),
         catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
         undefined,
@@ -3164,16 +3165,32 @@ describe("authenticated request destination policy", () => {
       secretHttp: { fetch, resolveHostname },
       ...options,
     });
-    const loadCredential = vi.fn(async () => ({
+    const credential = {
       id: "fixture-key",
       name: args.name,
       origin: new URL(url).origin,
       auth: { type: "bearer" },
+      revision: "first-revision",
       ciphertext: "synthetic-key",
-    }));
-    Object.assign(f.prisma.botSecret, { findFirst: loadCredential });
+    };
+    const findCredential = vi.fn(
+      async ({
+        where,
+        select,
+      }: {
+        where: { id?: string; revision?: string };
+        select?: Record<string, boolean>;
+      }) =>
+        (where.id && where.id !== credential.id) ||
+        (where.revision && where.revision !== credential.revision)
+          ? null
+          : select
+            ? Object.fromEntries(Object.entries(credential).filter(([key]) => select[key]))
+            : credential,
+    );
+    Object.assign(f.prisma.botSecret, { findFirst: findCredential });
     f.setCalls([{ args, executionId: "request" }]);
-    return { ...f, fetch, resolveHostname, loadCredential };
+    return { ...f, fetch, resolveHostname, findCredential, credential };
   }
 
   beforeEach(() => reviewMock.mockReset());
@@ -3187,7 +3204,7 @@ describe("authenticated request destination policy", () => {
     await f.run();
     expect(f.results[0]).toMatchObject({ code: "action_rule_blocked" });
     expect(reviewMock).not.toHaveBeenCalled();
-    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.findCredential).not.toHaveBeenCalled();
     expect(f.resolveHostname).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -3195,7 +3212,10 @@ describe("authenticated request destination policy", () => {
   it("asks with the exact destination and method, then sends the approved request once", async () => {
     const f = authFixture({ rules: [toolAllow] });
     await f.run();
-    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.findCredential).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ name: args.name }),
+      select: { name: true, origin: true, auth: true, id: true, revision: true },
+    });
     expect(f.fetch).not.toHaveBeenCalled();
     const [card] = f.pauseRunForInput.mock.calls[0]![0].blocks;
     expect(card).toMatchObject({
@@ -3207,8 +3227,15 @@ describe("authenticated request destination policy", () => {
         { id: "deny", label: "Deny" },
       ],
     });
-    expect(f.effects[0]).toMatchObject({ status: "intended", request: args });
+    expect(f.effects[0]).toMatchObject({
+      status: "intended",
+      request: ["bot_secret_http", { id: f.credential.id, revision: f.credential.revision }, args],
+    });
     f.effects[0]!.status = "approved";
+    const prompt = buildApprovalContinuation([f.effects[0]!], JSON.stringify);
+    expect(prompt).toContain(JSON.stringify(args));
+    expect(prompt).not.toContain(f.credential.revision);
+    expect(prompt).not.toContain(f.credential.id);
     await f.run();
     await f.run();
     expect(f.fetch).toHaveBeenCalledOnce();
@@ -3279,9 +3306,12 @@ describe("authenticated request destination policy", () => {
       error: expect.stringContaining("a webhook run cannot ask"),
     });
     expect(f.effects[0]).toMatchObject({ status: "denied", result: { refused: "unattended" } });
+    const refused = f.results[0];
+    await f.run();
+    expect(f.results.at(-1)).toEqual(refused);
     expect(reviewMock).not.toHaveBeenCalled();
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
-    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.findCredential).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
@@ -3294,7 +3324,7 @@ describe("authenticated request destination policy", () => {
     });
     await f.run();
     expect(f.pauseRunForInput).toHaveBeenCalledOnce();
-    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.findCredential).toHaveBeenCalledTimes(1);
     expect(reviewMock).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -3309,6 +3339,90 @@ describe("authenticated request destination policy", () => {
       status: "completed",
       result: { code: "action_rule_blocked" },
     });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["approval", "legacy", "dispatch"] as const)(
+    "does not send after a credential changes at %s",
+    async (phase) => {
+      const f = authFixture(
+        { rules: phase === "dispatch" ? [siteAllow, toolAllow] : [toolAllow] },
+        () => {
+          if (phase === "dispatch") f.credential.revision = "changed";
+        },
+      );
+      if (phase !== "dispatch") {
+        await f.run();
+        f.effects[0]!.status = "approved";
+        if (phase === "legacy") f.effects[0]!.request = args;
+        else f.credential.revision = "changed";
+      }
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toEqual({
+        error:
+          "The saved credential changed or was not bound to this request. Ask for a new approval.",
+      });
+      expect(f.effects[0]).toMatchObject({ status: "completed" });
+    },
+  );
+
+  it.each(["removed site", "removed tool", "added require"] as const)(
+    "checks the original policy at dispatch after %s",
+    async (change) => {
+      const rules: ActionApprovalRule[] = [siteAllow, toolAllow];
+      const f = authFixture({ rules }, () => {
+        if (change === "removed site") rules.splice(0, 1);
+        else if (change === "removed tool") rules.splice(1, 1);
+        else rules.push({ ...siteAllow, effect: "require_approval" });
+      });
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results[0]).toMatchObject({
+        code: "action_rule_blocked",
+        error: expect.stringContaining("action rules changed"),
+      });
+    },
+  );
+
+  it("asks about the authenticated action when the site is trusted and Auto Review has no checker", async () => {
+    const f = authFixture({ autoReview: true, reviewProvider: null, rules: [siteAllow] });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not send if the run loses ownership while resolving the destination", async () => {
+    const f = authFixture({ rules: [siteAllow, toolAllow] }, () => {
+      f.runRecord.status = "cancelled";
+    });
+    await f.run();
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.results[0]).toMatchObject({ error: "The run no longer owns this request." });
+  });
+
+  it("does not use an exact search hit to authorize an authenticated request", async () => {
+    const search = vi.fn(async () => [{ url, title: "Example", snippet: "Search result" }]);
+    const f = authFixture({
+      rules: [toolAllow],
+      webProvider: {
+        describe: () => ({
+          id: "test-web",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true, keyless: true },
+        }),
+        fetch: vi.fn(),
+        search,
+      },
+    });
+    f.setCalls([
+      { name: "web_search", args: { query: "example" }, executionId: "search" },
+      { args, executionId: "request" },
+    ]);
+    await f.run();
+    expect(search).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
     expect(f.fetch).not.toHaveBeenCalled();
   });
 

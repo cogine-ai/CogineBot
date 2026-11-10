@@ -5,6 +5,7 @@ import {
   containsSecret,
   displayedBatchApprovalRuleNames,
   messagingProviderName,
+  OUTBOUND_HTTP_TOOLS,
   redactSecrets,
   SITE_SENDING_TOOLS,
   sanitizeMessagingLabel,
@@ -96,7 +97,7 @@ export function buildApprovalAskBlock(
       ],
     };
   }
-  const siteSending = SITE_SENDING_TOOLS.has(toolName) || toolName === "secret_request";
+  const siteSending = OUTBOUND_HTTP_TOOLS.has(toolName);
   const destination =
     siteSending && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
@@ -123,7 +124,7 @@ export function buildApprovalAskBlock(
   const displayedDetail = safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined;
   const batchRules = batch && displayedBatchApprovalRuleNames(batch, displayedDetail);
   const alwaysLabel = siteSending
-    ? fetchSite && toolName !== "secret_request" && options?.allowSiteAlways !== false
+    ? fetchSite && SITE_SENDING_TOOLS.has(toolName) && options?.allowSiteAlways !== false
       ? `Always allow ${fetchSite}`
       : undefined
     : batch
@@ -194,7 +195,7 @@ function formatApprovalDetail(
     lines.push(`method: ${String(args.method ?? "GET")}`, `credential: ${String(args.name ?? "")}`);
   }
   if (fetchUrl) lines.push(`url: ${fetchUrl}`);
-  if (!SITE_SENDING_TOOLS.has(toolName)) {
+  if (toolName !== "web_fetch") {
     for (const key of ["collection", "title", "to", "subject", "amount", "body"]) {
       const value = args[key];
       if (value == null || value === "") continue;

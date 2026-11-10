@@ -200,7 +200,12 @@ export function newSiteOutcome(input: {
   return input.trigger === "webhook" ? "deny" : "ask";
 }
 
+/** Tools whose approval cards can save a durable site allowance. */
 export const SITE_SENDING_TOOLS: ReadonlySet<string> = new Set(["web_fetch"]);
+export const OUTBOUND_HTTP_TOOLS: ReadonlySet<string> = new Set([
+  ...SITE_SENDING_TOOLS,
+  "secret_request",
+]);
 
 /** Site rules use the same private-suffix-aware identity as outbound requests. */
 export function canonicalApprovalSite(value: string): string | undefined {
