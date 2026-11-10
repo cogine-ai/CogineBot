@@ -35,6 +35,8 @@ describe("E2B computer backend", () => {
     await expect(
       provider.connectScreen(ref, { view: "stream", onlyIfRunning: true }, context),
     ).resolves.toMatchObject({ url: null });
+    await provider.setScreenControl(ref, false, context, "expired-control");
+    expect(attachRunning).toHaveBeenCalledTimes(2);
     expect(attachRunning).toHaveBeenCalledWith(
       "paused",
       expect.objectContaining({ signal: context.signal }),
@@ -143,6 +145,36 @@ describe("E2B computer backend", () => {
     expect(old.setTimeout).toHaveBeenCalledOnce();
     expect(sdk.connect).not.toHaveBeenCalled();
     expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("rechecks power when the non-resuming attach loses a pause race", async () => {
+    const getInfo = vi
+      .fn()
+      .mockResolvedValueOnce({ sandboxId: "retained", state: "running" })
+      .mockResolvedValueOnce({ sandboxId: "retained", state: "paused" });
+    const attachRunning = vi.fn().mockResolvedValue(undefined);
+    const connect = vi.fn().mockResolvedValue({ sandboxId: "retained" });
+    const provider = new E2BSandboxProvider("test-key", {
+      getInfo,
+      attachRunning,
+      connect,
+      create: vi.fn(),
+      pause: vi.fn(),
+    });
+    await expect(
+      provider.provision(
+        {
+          botId: "bot",
+          homePath: "/unused",
+          providerKind: "e2b",
+          providerRef: "retained",
+        },
+        context,
+      ),
+    ).resolves.toMatchObject({ started: true, fresh: false });
+    expect(getInfo).toHaveBeenCalledTimes(2);
+    expect(attachRunning).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledOnce();
   });
 
   it("lets two concurrent attendance viewers finish independently and releases their registry", async () => {

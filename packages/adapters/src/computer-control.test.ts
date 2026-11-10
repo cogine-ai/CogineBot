@@ -189,7 +189,13 @@ describe("computer control leases", () => {
         stopRequestedAt: null,
         controlLeaseId: "lease-1",
       },
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
     expect(harness.events.finalizeComputerControlRelease).toHaveBeenCalledWith(
       expect.objectContaining({ leaseId: "lease-1", reason: "expired" }),
@@ -273,7 +279,13 @@ describe("computer control leases", () => {
         stopRequestedAt: null,
         controlLeaseId: "lease-1",
       },
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
   });
 

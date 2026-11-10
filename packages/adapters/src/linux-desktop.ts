@@ -264,14 +264,15 @@ export class LinuxDesktop {
     interactive: boolean,
     context: AdapterContext,
     token?: string,
+    host = this.host,
   ) {
     if (!token) {
       if (interactive) throw new Error("interactive screen requires a control token");
       return;
     }
     const env = interactive
-      ? (await this.ensure(computer, context)).env
-      : await this.host.environment(computer);
+      ? (await this.ensure(computer, context, host)).env
+      : await host.environment(computer);
     const pending = interactive
       ? []
       : this.pendingCleanups(computer, context).filter((entry) => entry.token === token);
@@ -285,6 +286,7 @@ export class LinuxDesktop {
         token,
       ),
       context,
+      host,
     );
     for (const entry of pending) this.forgetCleanup(computer, context, entry);
   }

@@ -298,19 +298,43 @@ export class E2BSandboxProvider implements SandboxProvider {
       if (id) {
         try {
           const ref = { id, providerRef: id, kind: "e2b" as const, botId: request.botId };
-          let started = false;
+          let state: SandboxPowerState = "unknown";
+          let desktop: Sandbox | undefined;
           if (this.sdk.getInfo) {
             const signal = AbortSignal.any([_context.signal, AbortSignal.timeout(10_000)]);
-            const state = await this.inspectPowerState(ref, { ..._context, signal }).catch(
-              () => "unknown",
-            );
-            _context.signal.throwIfAborted();
-            assertCurrent();
-            if (state === "unknown") throw new SandboxUnavailableError();
-            started = state === "stopped";
-            if (started || state === "gone") this.forgetCached(id);
+            const readPower = async () => {
+              const result = await this.inspectPowerState(ref, { ..._context, signal }).catch(
+                () => "unknown" as const,
+              );
+              _context.signal.throwIfAborted();
+              assertCurrent();
+              if (result === "unknown") throw new SandboxUnavailableError();
+              return result;
+            };
+            state = await readPower();
+            if (state === "running" && this.sdk.attachRunning) {
+              desktop = await this.attachRunningBox(ref, signal);
+              assertCurrent();
+              if (desktop) {
+                if (Date.now() - (this.lastTouchedAt.get(id) ?? 0) >= 60_000) {
+                  await withAbort(desktop.setTimeout(sandboxIdleMs()), signal);
+                  assertCurrent();
+                  this.lastTouchedAt.set(id, Date.now());
+                }
+                this.boxes.set(id, desktop);
+              } else {
+                // The previous running observation no longer authorizes a resume.
+                state = await readPower();
+                if (state === "running") throw new SandboxUnavailableError();
+              }
+            }
+            if (state === "running" && !desktop) {
+              desktop = this.boxes.get(id);
+              if (!desktop) throw new SandboxUnavailableError();
+            }
+            if (state === "stopped" || state === "gone") this.forgetCached(id);
           }
-          const desktop = await this.box(ref);
+          desktop ??= await this.box(ref);
           assertCurrent();
           return {
             id: desktop.sandboxId,
@@ -318,7 +342,7 @@ export class E2BSandboxProvider implements SandboxProvider {
             kind: "e2b",
             providerRef: desktop.sandboxId,
             fresh: false,
-            ...(started ? { started: true } : {}),
+            ...(state === "stopped" ? { started: true } : {}),
           };
         } catch (error) {
           assertCurrent();
@@ -431,6 +455,17 @@ export class E2BSandboxProvider implements SandboxProvider {
     context: AdapterContext,
     controlToken?: string,
   ): Promise<void> {
+    if (!interactive && controlToken && this.sdk.attachRunning) {
+      const desktop = await this.attachRunningBox(computer, context.signal);
+      if (!desktop) return;
+      return this.desktops.setScreenControl(
+        computer,
+        interactive,
+        context,
+        controlToken,
+        this.desktopHost(async () => desktop),
+      );
+    }
     return this.desktops.setScreenControl(computer, interactive, context, controlToken);
   }
   async sendInput(

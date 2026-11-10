@@ -118,7 +118,6 @@ import {
   prepareManagedConnectorForTransaction,
   prepareStoredModelAuth,
   probeCatalogProviderModels,
-  probeComputerPower,
   probeOpenAiCompatibleModels,
   provisionComputer,
   publishComputerPowerStatus,
@@ -3259,14 +3258,9 @@ export function createRouter(deps: RouterDeps) {
           !bot.computer.stopRequestedAt &&
           bot.computer.kind !== "desktop" &&
           ref &&
+          !billable &&
           !needsProviderIdentityProof(deps.sandbox, ref) &&
-          (await matchesComputerProvisionRoute(deps.sandbox, ref)) &&
-          (!billable ||
-            (await probeComputerPower(
-              deps.sandbox,
-              ref,
-              computerContext(context.actor, bot.id, "boot"),
-            )) === "running")
+          (await matchesComputerProvisionRoute(deps.sandbox, ref))
         ) {
           try {
             await ensureComputerWorkspaceLayout(

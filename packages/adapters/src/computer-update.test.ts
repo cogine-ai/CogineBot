@@ -259,7 +259,13 @@ describe("background computer maintenance", () => {
         stopRequestedAt: null,
         controlLeaseId: expect.any(String),
       },
-      data: { state: "stopped", providerRef: null },
+      data: {
+        state: "stopped",
+        providerRef: null,
+        runningSince: null,
+        runningObservedAt: null,
+        suspensionReason: null,
+      },
     });
     expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
   });

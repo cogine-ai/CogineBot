@@ -20,6 +20,7 @@ describe("DaytonaSandboxProvider", () => {
     await expect(
       provider.connectScreen(ref, { view: "stream", onlyIfRunning: true }, context),
     ).resolves.toMatchObject({ url: null });
+    await provider.setScreenControl(ref, false, context, "expired-control");
     expect(f.start).not.toHaveBeenCalled();
     expect(f.executeCommand).not.toHaveBeenCalled();
   });

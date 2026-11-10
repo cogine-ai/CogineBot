@@ -26,6 +26,7 @@ import type {
   TerminalRequest,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
+import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import { screenSessionKey } from "./computer-screens.js";
 import { normalizeWorkspacePath, shellQuote, workspacePath } from "./computer-support.js";
@@ -274,6 +275,20 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     context: AdapterContext,
     controlToken?: string,
   ): Promise<void> {
+    if (!interactive && controlToken) {
+      const id = computer.providerRef || computer.id;
+      const sandbox = await withAbort(this.client.get(id), context.signal);
+      if (sandbox.id !== id) throw new SandboxUnavailableError();
+      if (sandbox.state === SandboxState.STOPPED || sandbox.state === SandboxState.ARCHIVED) return;
+      if (sandbox.state !== SandboxState.STARTED) throw new SandboxUnavailableError();
+      return this.desktops.setScreenControl(
+        computer,
+        interactive,
+        context,
+        controlToken,
+        this.desktopHost(async () => sandbox),
+      );
+    }
     return this.desktops.setScreenControl(computer, interactive, context, controlToken);
   }
   async sendInput(

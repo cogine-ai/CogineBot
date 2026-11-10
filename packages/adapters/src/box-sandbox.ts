@@ -334,6 +334,11 @@ export class BoxSandboxProvider implements SandboxProvider {
     context: AdapterContext,
     controlToken?: string,
   ): Promise<void> {
+    if (!interactive && controlToken) {
+      const state = await this.inspectPowerState(computer, context);
+      if (state === "stopped" || state === "gone") return;
+      if (state !== "running") throw new SandboxUnavailableError();
+    }
     return this.desktops.setScreenControl(computer, interactive, context, controlToken);
   }
   async sendInput(
