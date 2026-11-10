@@ -6112,26 +6112,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? (resolvedTool ?? connectorTools.get(name))
             : undefined;
           const declaredReadOnly = connectorTool?.readOnly;
-          const fetchUrl =
-            name === "web_fetch" ? normalizedHttpUrl(String(args.url ?? "")) : undefined;
-          const fetchSite = fetchUrl ? urlSite(fetchUrl) : undefined;
-          if (name === "web_fetch" && !fetchSite) {
+          const authenticatedRequest = name === "secret_request";
+          const sendsToSite = name === "web_fetch" || authenticatedRequest;
+          const outboundUrl =
+            sendsToSite && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
+          const outboundSite = outboundUrl ? urlSite(outboundUrl) : undefined;
+          if (sendsToSite && !outboundSite) {
             return { error: "url must be an http(s) URL without credentials" };
           }
-          if (fetchUrl && fetchUrl.length > MAX_FETCH_URL_LENGTH)
-            return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
-          if (fetchUrl) {
-            args = { ...args, url: fetchUrl };
+          if (name === "web_fetch" && outboundUrl) {
+            if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
+              return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
+            args = { ...args, url: outboundUrl };
             effectRequest = args;
           }
           const rules = await loadApprovalRules();
           const siteGate =
-            fetchUrl && fetchSite
+            outboundUrl && outboundSite
               ? outboundSiteGate({
-                  site: fetchSite,
+                  site: outboundSite,
                   trusted:
-                    searchResultUrls.has(fetchUrl) ||
-                    (await trust.loadTrustedSites()).has(fetchSite),
+                    (name === "web_fetch" && searchResultUrls.has(outboundUrl)) ||
+                    (await trust.loadTrustedSites()).has(outboundSite),
                   rules,
                 })
               : "allow";
@@ -6324,8 +6326,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   toolName: name,
                   connectorKind,
                   readOnly: declaredReadOnly,
-                  site: fetchSite,
-                  rules,
+                  site: outboundSite,
+                  // Site trust does not authorize the authenticated action itself.
+                  rules: authenticatedRequest
+                    ? rules.filter(
+                        (rule) => rule.matchKind !== "site" || rule.effect !== "always_allow",
+                      )
+                    : rules,
                 });
           };
           const approvalResolved = resolveRules(rules);
@@ -6397,7 +6404,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             plan = "ask";
           }
           let reviewReason: string | undefined;
-          const newSite = siteGate === "new" && fetchUrl !== undefined;
+          // The URL-only reviewer is for an unauthenticated read. Other actions still
+          // require their complete arguments, even when a destination is new.
+          const newSite = siteGate === "new" && name === "web_fetch";
           if (plan === "judge") {
             const rawArgsJson = reviewArgsJson(args);
             if (rawArgsJson === undefined) {
@@ -6591,7 +6600,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!injectedReview && !checker) return;
             try {
               const task =
-                newSite || trust.state.pageInput ? await trust.loadOwnerWords() : ownerTaskPrompt;
+                authenticatedRequest || newSite || trust.state.pageInput
+                  ? await trust.loadOwnerWords()
+                  : ownerTaskPrompt;
               const reviewContext: AdapterContext = {
                 operationId: `auto-review:${runId}`,
                 traceId: `auto-review:${runId}`,
@@ -6672,7 +6683,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               // Resolve checker credentials first so all currently known secrets are redacted.
               const reviewArgs = redactToolArgsForReview(
-                newSite ? { url: fetchUrl } : args,
+                newSite ? { url: outboundUrl } : args,
                 runSecrets,
               );
               const redactedArgsJson = reviewArgs && reviewArgsJson(reviewArgs);
@@ -6743,6 +6754,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (
             applied &&
             applied.effect.status !== "denied" &&
+            (!authenticatedRequest || applied.effect.status === "intended") &&
             plan === "judge" &&
             (injectedReview || checker)
           ) {
@@ -6774,6 +6786,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           if (
             siteGate === "new" &&
+            (!applied || applied.effect.status === "intended") &&
             newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
           ) {
             if (applied) {
@@ -6782,7 +6795,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 data: { status: "denied" },
               });
             }
-            return { error: `Fetching ${fetchSite} needs approval, and a webhook run cannot ask.` };
+            const action = authenticatedRequest
+              ? "Sending an authenticated request to"
+              : "Fetching";
+            return {
+              error: `${action} ${outboundSite} needs approval, and a webhook run cannot ask.`,
+            };
           }
 
           const needsApproval = gateDecision === "ask";
@@ -6937,6 +6955,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
+            if (
+              authenticatedRequest &&
+              outboundUrl &&
+              (outboundUrl.length > MAX_FETCH_URL_LENGTH || containsSecret(outboundUrl, runSecrets))
+            ) {
+              const result = {
+                error: "The authenticated request URL cannot be shown in full for approval.",
+              };
+              return (await completeEffect(deps, applied!.effect.id, "intended", result))
+                ? result
+                : uncertainEffectResult(name);
+            }
             await flushConnectionNarration(executionId);
             const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
             return pause.owned ? pause.result : pauseForApproval();
@@ -7050,7 +7080,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
           if (!pendingPeerConnectorClaim && (await rulesBlockDispatch()))
             return finishPolicyBlock();
-          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
+          if (name === "web_fetch" && outboundSite && siteGate === "new") {
+            (await trust.loadTrustedSites()).add(outboundSite);
+          }
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -7720,7 +7752,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   site !== undefined &&
                   outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
                 // An exact search hit grants its URL. Site authority is separate.
-                if (site === fetchSite && siteAllowed) return;
+                if (site === outboundSite && siteAllowed) return;
                 if (
                   site &&
                   resolved.decision === "allow" &&
@@ -8418,9 +8450,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 signal: context.signal,
                 remote: deps.secretHttp,
                 registerRedactions: registerRunSecrets,
+                beforeDispatch: async () => {
+                  if (await rulesBlockDispatch())
+                    throw new ActionRuleDispatchError(policyBlock.error);
+                },
               });
               return finish(result);
-            } catch {
+            } catch (error) {
+              if (error instanceof ActionRuleDispatchError) return finishPolicyBlock();
               return finish({ error: "Invalid authenticated request." });
             }
           }

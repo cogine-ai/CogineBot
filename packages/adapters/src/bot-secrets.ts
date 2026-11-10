@@ -14,6 +14,7 @@ import {
 } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
+import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
@@ -592,6 +593,7 @@ export async function requestWithBotSecret(input: {
   request: unknown;
   signal: AbortSignal;
   remote?: RemoteTransportDependencies;
+  beforeDispatch?: () => Promise<void>;
   registerRedactions?: (values: string[]) => void;
 }): Promise<unknown> {
   const request = SecretHttpRequest.parse(input.request);
@@ -646,13 +648,11 @@ export async function requestWithBotSecret(input: {
   try {
     headers.set(headerName, headerValue);
     const response = await withAbort(
-      fetch(url, {
-        method: request.method,
-        headers,
-        body: request.body,
-        redirect: "manual",
-        signal,
-      }),
+      fetch(
+        url,
+        { method: request.method, headers, body: request.body, redirect: "manual", signal },
+        input.beforeDispatch,
+      ),
       signal,
     );
     const bytes = await readBodyCapped(response, 1_000_000, signal);
@@ -670,7 +670,8 @@ export async function requestWithBotSecret(input: {
       body: safe.length > 20_000 ? safe.slice(0, 20_000) : JSON.parse(safe),
       truncated: safe.length > 20_000,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ActionRuleDispatchError) throw error;
     return { error: "Authenticated request failed. Check the destination and credential." };
   } finally {
     controller.abort();

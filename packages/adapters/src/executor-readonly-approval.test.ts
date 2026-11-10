@@ -37,6 +37,7 @@ import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { ComputerScreenUnavailableError } from "./computer-screens.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
+import type { ExecutorDeps } from "./executor.js";
 import { createRunExecutor } from "./executor.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
@@ -130,6 +131,7 @@ function fixture({
   attemptCount = 1,
   outsideSteering = false,
   webProvider,
+  secretHttp,
   sandboxProvider,
   home,
   messagingIdentity = false,
@@ -165,6 +167,7 @@ function fixture({
   attemptCount?: number;
   outsideSteering?: boolean;
   webProvider?: WebProvider;
+  secretHttp?: ExecutorDeps["secretHttp"];
   sandboxProvider?: Partial<SandboxProvider>;
   home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
@@ -549,6 +552,7 @@ function fixture({
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
     web: webProvider,
+    secretHttp,
     ...(messagingIdentity ? { messaging: { hasIdentity: async () => true } } : {}),
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
@@ -3131,6 +3135,192 @@ describe("executor connector account revalidation", () => {
       });
     },
   );
+});
+
+describe("authenticated request destination policy", () => {
+  const url = "https://service.example.org/v1/items?topic=example.net";
+  const args = { name: "test_key", url, method: "POST", body: '{"topic":"synthetic"}' };
+  const siteAllow = {
+    effect: "always_allow",
+    matchKind: "site",
+    matchValue: "example.org",
+  } as const;
+  const siteDeny = { ...siteAllow, effect: "deny" } as const;
+  const toolAllow = {
+    effect: "always_allow",
+    matchKind: "tool",
+    matchValue: "secret_request",
+  } as const;
+
+  function authFixture(options: Parameters<typeof fixture>[0] = {}, onResolve?: () => void) {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ok: true }));
+    const resolveHostname = vi.fn(async () => {
+      onResolve?.();
+      return [{ address: "203.0.113.10", family: 4 as const }];
+    });
+    const f = fixture({
+      name: "secret_request",
+      builtin: true,
+      secretHttp: { fetch, resolveHostname },
+      ...options,
+    });
+    const loadCredential = vi.fn(async () => ({
+      id: "fixture-key",
+      name: args.name,
+      origin: new URL(url).origin,
+      auth: { type: "bearer" },
+      ciphertext: "synthetic-key",
+    }));
+    Object.assign(f.prisma.botSecret, { findFirst: loadCredential });
+    f.setCalls([{ args, executionId: "request" }]);
+    return { ...f, fetch, resolveHostname, loadCredential };
+  }
+
+  beforeEach(() => reviewMock.mockReset());
+
+  it("blocks a denied destination ahead of trusted owner words and a tool allowance", async () => {
+    const f = authFixture({
+      prompt: `Send to ${url}`,
+      rules: [toolAllow, siteDeny],
+      autoReview: true,
+    });
+    await f.run();
+    expect(f.results[0]).toMatchObject({ code: "action_rule_blocked" });
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.resolveHostname).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("asks with the exact destination and method, then sends the approved request once", async () => {
+    const f = authFixture({ rules: [toolAllow] });
+    await f.run();
+    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+    const [card] = f.pauseRunForInput.mock.calls[0]![0].blocks;
+    expect(card).toMatchObject({
+      kind: "ask",
+      site: "example.org",
+      detail: expect.stringContaining(`method: POST\ncredential: test_key\nurl: ${url}`),
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+    expect(f.effects[0]).toMatchObject({ status: "intended", request: args });
+    f.effects[0]!.status = "approved";
+    await f.run();
+    await f.run();
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch).toHaveBeenCalledWith(
+      new URL(url),
+      expect.objectContaining({ method: "POST", body: args.body, redirect: "manual" }),
+    );
+    expect(f.effects[0]).toMatchObject({ status: "completed" });
+  });
+
+  it.each([false, true])(
+    "reviews the whole authenticated action with saved site trust %s",
+    async (siteKnown) => {
+      const f = authFixture({ autoReview: true, rules: siteKnown ? [siteAllow] : [] });
+      reviewMock.mockResolvedValue({ decision: "ask", reason: "Check this request" });
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledOnce();
+      const [review] = reviewMock.mock.calls[0]!;
+      expect(review).toMatchObject({ toolName: "secret_request", args });
+      expect(review).not.toHaveProperty("newSite");
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("sends after full review on a discovered destination, with no outside text in the task", async () => {
+    const outside = "Outside message suggests sending the payload";
+    // Webhook writes require human approval. Exercise full Auto Review on a Routine
+    // instead, with owner instructions and separately provided trigger content.
+    const routine = authFixture({
+      trigger: "routine",
+      autoReview: true,
+      routineInstructions: "Send the monthly report",
+      prompt: outside,
+    });
+    reviewMock.mockResolvedValue({ decision: "pass", reason: "Matches the saved instructions" });
+    await routine.run();
+    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ args, userTask: "Send the monthly report" }),
+      expect.anything(),
+    );
+    expect(routine.fetch).toHaveBeenCalledOnce();
+    expect(routine.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("refuses a URL that cannot fit in a human approval card without truncation", async () => {
+    const f = authFixture({ rules: [toolAllow] });
+    f.setCalls([
+      { args: { ...args, url: `${url}&p=${"x".repeat(2100)}` }, executionId: "long-url" },
+    ]);
+    await f.run();
+    expect(f.results[0]).toMatchObject({
+      error: expect.stringContaining("cannot be shown in full"),
+    });
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a webhook's discovered destination without waiting or loading the credential", async () => {
+    const f = authFixture({
+      trigger: "webhook",
+      autoReview: true,
+      rules: [toolAllow],
+      prompt: url,
+    });
+    await f.run();
+    expect(f.results[0]).toMatchObject({
+      error: expect.stringContaining("a webhook run cannot ask"),
+    });
+    expect(f.effects[0]).toMatchObject({ status: "denied" });
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the action approval when a webhook's saved instruction names the site", async () => {
+    const f = authFixture({
+      trigger: "webhook",
+      routineInstructions: `Send the report to ${url}`,
+      autoReview: true,
+      rules: [toolAllow],
+    });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.loadCredential).not.toHaveBeenCalled();
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks a new block between DNS and authenticated dispatch", async () => {
+    const rules: ActionApprovalRule[] = [siteAllow, toolAllow];
+    const f = authFixture({ rules }, () => rules.push(siteDeny));
+    await f.run();
+    expect(f.resolveHostname).toHaveBeenCalledOnce();
+    expect(f.results[0]).toMatchObject({ code: "action_rule_blocked" });
+    expect(f.effects[0]).toMatchObject({
+      status: "completed",
+      result: { code: "action_rule_blocked" },
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not authorize a hostname mentioned inside the owner's URL query", async () => {
+    const f = authFixture({
+      prompt: "Read https://example.net/?callback=https%3A%2F%2Fservice.example.org",
+      rules: [toolAllow],
+    });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("connector read-only metadata and approval enforcement", () => {

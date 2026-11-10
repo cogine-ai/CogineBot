@@ -9,7 +9,7 @@ import {
   SITE_SENDING_TOOLS,
   sanitizeMessagingLabel,
 } from "@rakazo/core";
-import { urlSite } from "@rakazo/core/egress";
+import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
 const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
@@ -96,8 +96,9 @@ export function buildApprovalAskBlock(
       ],
     };
   }
-  const siteSending = SITE_SENDING_TOOLS.has(toolName);
-  const destination = siteSending && typeof args.url === "string" ? args.url : undefined;
+  const siteSending = SITE_SENDING_TOOLS.has(toolName) || toolName === "secret_request";
+  const destination =
+    siteSending && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
   const routineSiteApproval = options?.routineSiteDetail !== undefined;
   const batch = options?.batch;
@@ -122,7 +123,7 @@ export function buildApprovalAskBlock(
   const displayedDetail = safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined;
   const batchRules = batch && displayedBatchApprovalRuleNames(batch, displayedDetail);
   const alwaysLabel = siteSending
-    ? fetchSite && options?.allowSiteAlways !== false
+    ? fetchSite && toolName !== "secret_request" && options?.allowSiteAlways !== false
       ? `Always allow ${fetchSite}`
       : undefined
     : batch
@@ -188,6 +189,9 @@ function formatApprovalDetail(
     lines.push(
       "Bots, groups, chats, files, memory, and integrations in this space stay separate from other spaces.",
     );
+  }
+  if (toolName === "secret_request") {
+    lines.push(`method: ${String(args.method ?? "GET")}`, `credential: ${String(args.name ?? "")}`);
   }
   if (fetchUrl) lines.push(`url: ${fetchUrl}`);
   if (!SITE_SENDING_TOOLS.has(toolName)) {

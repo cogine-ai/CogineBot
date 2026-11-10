@@ -9,6 +9,7 @@ import {
   resolveLoginFill,
   resolveRequestSecretDestination,
 } from "./bot-secrets.js";
+import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
 afterEach(() => {
@@ -239,6 +240,14 @@ describe("authenticated secret requests", () => {
     expect(String(url)).toBe("http://192.168.2.10:8080/v1/items");
     expect(init?.redirect).toBe("manual");
     expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${secret}`);
+    fetch.mockClear();
+    const refusal = new ActionRuleDispatchError("Destination is blocked");
+    const beforeDispatch = vi.fn(async () => {
+      throw refusal;
+    });
+    await expect(requestWithBotSecret({ ...input, beforeDispatch })).rejects.toBe(refusal);
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("refuses an opted-in private destination that resolves publicly", async () => {
