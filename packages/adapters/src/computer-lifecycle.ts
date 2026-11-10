@@ -219,9 +219,14 @@ export async function quarantineAbandonedComputerOperation(
 
 async function guardComputerBoot(
   prisma: PrismaClient,
-  computer: Parameters<typeof quarantineAbandonedComputerOperation>[1],
+  computer: Parameters<typeof quarantineAbandonedComputerOperation>[1] & {
+    maintenanceId: string | null;
+  },
   context: AdapterContext,
 ): Promise<void> {
+  if (computer.maintenanceId && computer.maintenanceId !== context.operationId) {
+    throw new ComputerBusyError();
+  }
   if (
     computer.state === "quarantined" ||
     computer.state === "needs_recovery" ||
@@ -249,8 +254,6 @@ export async function provisionComputer(
   onProgress?: ComputerUpdateProgress,
 ): Promise<ComputerRef> {
   let existing = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
-  if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
-    throw new ComputerBusyError();
   await guardComputerBoot(deps.prisma, existing, context);
   if (existing.controlLeaseId && !hasActiveComputerControl(existing)) {
     await expireComputerControl(deps, existing.id, existing.controlLeaseId);

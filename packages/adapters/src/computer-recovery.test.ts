@@ -339,6 +339,27 @@ describe("computer recovery preserves live work", () => {
     },
   );
 
+  it("preserves maintenance reserved while an earlier boot was waiting", async () => {
+    const { deps, row, computer } = await fixture();
+    row.state = "suspending";
+    row.kind = "e2b";
+    row.providerRef = "previous-computer";
+    computer.findUniqueOrThrow.mockResolvedValueOnce({ ...row });
+    row.state = "stopped";
+    row.maintenanceId = "other-operation";
+    const switched = createRunSandbox("docker", {});
+
+    await expect(
+      provisionComputer({ ...deps, sandbox: switched }, row.id, context),
+    ).rejects.toBeInstanceOf(ComputerBusyError);
+    expect(computer.updateMany).not.toHaveBeenCalled();
+    expect(row).toMatchObject({
+      state: "stopped",
+      maintenanceId: "other-operation",
+      providerRef: "previous-computer",
+    });
+  });
+
   it("renews a live restore through import and reconnect without a fixed deadline", async () => {
     const { deps, row } = await fixture();
     row.restorePending = true;
