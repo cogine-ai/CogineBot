@@ -6822,15 +6822,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           if (
             siteGate === "new" &&
-            (!applied || applied.effect.status === "intended") &&
             newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
           ) {
             const action = authenticatedRequest
               ? "Sending an authenticated request to"
               : "Fetching";
-            return refuseIntendedEffect("unattended", {
+            const refusal = {
               error: `${action} ${outboundSite} needs approval, and a webhook run cannot ask.`,
-            });
+            };
+            if (!applied || applied.effect.status === "intended")
+              return refuseIntendedEffect("unattended", refusal);
+            if (
+              name === "web_fetch" &&
+              applied.effect.status === "denied" &&
+              applied.effect.result == null
+            )
+              return refusal;
           }
 
           const needsApproval = gateDecision === "ask";
@@ -8486,8 +8493,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 remote: deps.secretHttp,
                 registerRedactions: registerRunSecrets,
                 credentialBinding,
-                beforeDispatch: async () => {
-                  const currentRules = await loadApprovalRules();
+                beforeDispatch: async (tx) => {
+                  const currentRules = await loadApprovalRules(tx);
                   const current = resolveRules(currentRules);
                   if (current.decision === "deny")
                     throw new ActionRuleDispatchError(policyBlock.error);
@@ -8507,7 +8514,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     throw new ActionRuleDispatchError(
                       "The authenticated request needs a new approval because its action rules changed.",
                     );
-                  if (!(await renewRunLease(deps, runId, workerId, fence)))
+                  if (!(await renewRunLease(deps, runId, workerId, fence, tx)))
                     throw new BotSecretHttpRequestError("The run no longer owns this request.");
                 },
               });

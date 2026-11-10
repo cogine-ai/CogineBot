@@ -1,6 +1,6 @@
 import { runContinueJob, runQuotaResumeJob } from "@rakazo/adapter-kit";
 import { runQuotaWaitStateSchema } from "@rakazo/contracts";
-import type { PrismaClient } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { ExecutorDeps } from "./executor.js";
 import type { TakeoverResumeCheckpoint } from "./takeover-resume.js";
@@ -11,8 +11,9 @@ export async function renewRunLease(
   runId: string,
   workerId: string,
   fence: number,
+  store: Pick<Prisma.TransactionClient, "run"> = deps.prisma,
 ): Promise<boolean> {
-  const renewed = await deps.prisma.run.updateMany({
+  const renewed = await store.run.updateMany({
     where: {
       id: runId,
       status: "running",

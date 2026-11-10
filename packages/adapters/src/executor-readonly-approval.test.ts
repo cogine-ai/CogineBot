@@ -3401,6 +3401,18 @@ describe("authenticated request destination policy", () => {
     expect(f.results[0]).toMatchObject({ error: "The run no longer owns this request." });
   });
 
+  it("returns a tool error when a saved private origin is no longer permitted", async () => {
+    const f = authFixture();
+    f.credential.origin = "http://192.168.2.10:8080";
+    f.setCalls([
+      { args: { ...args, url: `${f.credential.origin}/v1/items` }, executionId: "private" },
+    ]);
+    await f.run();
+    expect(f.results[0]).toEqual({ error: "Invalid authenticated request." });
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it("does not use an exact search hit to authorize an authenticated request", async () => {
     const search = vi.fn(async () => [{ url, title: "Example", snippet: "Search result" }]);
     const f = authFixture({

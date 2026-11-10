@@ -599,7 +599,12 @@ function credentialHttpDestination(
   row: unknown,
   url: URL,
 ): { error: string } | { destination: BotSecretDestination } {
-  const destination = normalizeSecretDestination(row);
+  let destination: BotSecretDestination;
+  try {
+    destination = normalizeSecretDestination(row);
+  } catch {
+    return { error: "Invalid authenticated request." };
+  }
   if (destination.auth.type === "login") {
     return { error: "Website logins can only be filled into their site with browser_act." };
   }
@@ -658,7 +663,7 @@ export async function prepareBotSecretHttpEffect(
     throw new BotSecretHttpRequestError(
       "Credential is unavailable. Use request_secret to save it first.",
     );
-  const resolved = credentialHttpDestination(row, new URL(request.url));
+  const resolved = credentialHttpDestination(row, new URL(request.url.trim()));
   if ("error" in resolved) throw new BotSecretHttpRequestError(resolved.error);
   return [BOT_SECRET_HTTP_REQUEST_KIND, { id: row.id, revision: row.revision }, args];
 }
@@ -671,7 +676,7 @@ export async function requestWithBotSecret(input: {
   request: unknown;
   signal: AbortSignal;
   remote?: RemoteTransportDependencies;
-  beforeDispatch?: () => Promise<void>;
+  beforeDispatch?: (tx?: Prisma.TransactionClient) => Promise<void>;
   credentialBinding?: BotSecretHttpBinding;
   registerRedactions?: (values: string[]) => void;
 }): Promise<unknown> {
@@ -685,16 +690,22 @@ export async function requestWithBotSecret(input: {
         : "Credential is unavailable. Use request_secret to save it first.",
     };
   }
-  const url = new URL(request.url);
+  const url = new URL(request.url.trim());
   const resolved = credentialHttpDestination(row, url);
   if ("error" in resolved) return resolved;
   const destination = resolved.destination;
   const beforeDispatch = input.credentialBinding
-    ? async () => {
-        await input.beforeDispatch?.();
-        const current = await input.prisma.botSecret.findFirst({ where, select: { id: true } });
-        if (!current) throw new BotSecretHttpRequestError(BOT_SECRET_HTTP_APPROVAL_CHANGED);
-      }
+    ? () =>
+        withTransactionRetry(() =>
+          input.prisma.$transaction(
+            async (tx) => {
+              const current = await tx.botSecret.findFirst({ where, select: { id: true } });
+              if (!current) throw new BotSecretHttpRequestError(BOT_SECRET_HTTP_APPROVAL_CHANGED);
+              await input.beforeDispatch?.(tx);
+            },
+            { isolationLevel: "RepeatableRead" },
+          ),
+        )
     : input.beforeDispatch;
   const controller = new AbortController();
   const signal = combineSignals(input.signal, controller.signal, AbortSignal.timeout(30_000));
