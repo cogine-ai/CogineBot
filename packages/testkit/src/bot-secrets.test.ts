@@ -246,6 +246,47 @@ describeIntegration("reusable credential lifecycle", () => {
           name: "secret_request",
           args: { name: destination.name, url: `${destination.origin}/v1/items` },
         };
+        const approveAuthenticatedRequest = async (runId: string) => {
+          const message = await vi.waitFor(
+            async () => {
+              const effect = await handles.prisma.externalEffect.findFirstOrThrow({
+                where: { runId, kind: "secret_request", status: "intended" },
+              });
+              const card = await handles.prisma.message.findFirstOrThrow({
+                where: { runId, role: "bot" },
+                orderBy: { seq: "desc" },
+              });
+              expect(card.blocks).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    approvalEffectId: effect.id,
+                    reviewMode: "screen",
+                    detail: expect.stringContaining(`url: ${request.args.url}`),
+                  }),
+                ]),
+              );
+              return card;
+            },
+            { timeout: 15_000 },
+          );
+          await rpc(seeded.cookie, "threads/answer", {
+            botId: seeded.bot.id,
+            runId,
+            messageId: message.id,
+            answer: "allow",
+          });
+          await vi.waitFor(
+            async () => {
+              expect(
+                await handles.prisma.run.findUniqueOrThrow({ where: { id: runId } }),
+              ).toMatchObject({
+                status: "completed",
+                error: null,
+              });
+            },
+            { timeout: 15_000 },
+          );
+        };
         const useRun = await nextRun([
           { name: "list_secrets", args: {} },
           {
@@ -255,12 +296,8 @@ describeIntegration("reusable credential lifecycle", () => {
           request,
         ]);
         await approve(useRun);
-        expect(await handles.prisma.run.findUniqueOrThrow({ where: { id: useRun } })).toMatchObject(
-          {
-            status: "completed",
-            error: null,
-          },
-        );
+        expect(fetch).not.toHaveBeenCalled();
+        await approveAuthenticatedRequest(useRun);
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(
           await handles.prisma.externalEffect.findFirstOrThrow({
@@ -294,7 +331,7 @@ describeIntegration("reusable credential lifecycle", () => {
         expect(
           await handles.prisma.botSecret.findUniqueOrThrow({ where: { id: stored.id } }),
         ).not.toMatchObject({ ciphertext: stored.ciphertext });
-        await nextRun([request]);
+        await approveAuthenticatedRequest(await nextRun([request]));
         expect(new Headers(fetch.mock.calls.at(-1)?.[1]?.headers).get("Authorization")).toBe(
           `Bearer ${key}-rotated`,
         );
