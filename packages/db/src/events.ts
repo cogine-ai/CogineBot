@@ -968,8 +968,7 @@ async function commitAnswerRunInput(
       request !== null &&
       typeof request === "object" &&
       Object.hasOwn(request, "requestKind");
-    const authenticated =
-      approvalEffect.kind === "secret_request" && readBotSecretHttpEffect(request);
+    const authenticated = approvalEffect.kind === "secret_request";
     if (sharedPageRequest || authenticated || pendingAsk.reviewMode === "screen") {
       if (
         run.userId !== input.answeredByUserId ||
@@ -979,9 +978,12 @@ async function commitAnswerRunInput(
       )
         return null;
       if (authenticated) {
-        const detail = formatBotSecretHttpApprovalDetail(authenticated.args);
-        if (pendingAsk.reviewMode !== "screen" || !detail || pendingAsk.detail !== detail)
-          return null;
+        if (input.answer === "allow") {
+          const bound = readBotSecretHttpEffect(request);
+          const detail = bound && formatBotSecretHttpApprovalDetail(bound.args);
+          if (pendingAsk.reviewMode !== "screen" || !detail || pendingAsk.detail !== detail)
+            return null;
+        }
       } else {
         const bound = SharedPageUpdateRequestSchema.safeParse(request);
         if (

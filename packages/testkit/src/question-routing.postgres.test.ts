@@ -177,6 +177,50 @@ describe.skipIf(!enabled).sequential("question routing (PostgreSQL)", () => {
     },
   );
 
+  it("allows an owner to dismiss a legacy authenticated card without authorizing anything", async () => {
+    const id = randomUUID();
+    const f = await fixture([
+      {
+        kind: "ask",
+        approvalEffectId: id,
+        text: "Review before secret_request",
+        status: "pending",
+        actions: [
+          { id: "allow", label: "Allow once" },
+          { id: "always", label: "Always allow this tool" },
+          { id: "deny", label: "Deny" },
+        ],
+      },
+    ]);
+    await db.prisma.externalEffect.create({
+      data: {
+        id,
+        runId: f.run.id,
+        spaceId: f.spaceId,
+        kind: "secret_request",
+        idempotencyKey: id,
+        status: "intended",
+        request: { name: "fixture_key", url: "https://example.org/items" },
+      },
+    });
+    const answer = (value: string) =>
+      answerRunInput(db.prisma, {
+        spaceId: f.spaceId,
+        threadId: f.threadId,
+        runId: f.run.id,
+        messageId: f.card.id,
+        answeredByUserId: f.userId,
+        answer: value,
+      });
+    expect(await answer("allow")).toBe(false);
+    expect(await answer("always")).toBe(false);
+    expect(await db.prisma.actionApprovalRule.count({ where: { spaceId: f.spaceId } })).toBe(0);
+    expect(await answer("deny")).toBe(true);
+    expect(await db.prisma.externalEffect.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      status: "denied",
+    });
+  });
+
   it("starts separate work after an intervening message and retires the old ordinary question", async () => {
     const f = await fixture();
     await createThreadMessage(db.prisma, {
