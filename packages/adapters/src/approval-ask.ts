@@ -60,6 +60,7 @@ const APPROVAL_DESTINATION_KEYS = [
   "method",
 ];
 
+/** Put destination and account fields before the remaining arguments. */
 function orderedApprovalArgs(args: Record<string, unknown>, actionKey?: string) {
   const keys = actionKey ? [actionKey, ...APPROVAL_DESTINATION_KEYS] : APPROVAL_DESTINATION_KEYS;
   const first = keys.flatMap((key) => (Object.hasOwn(args, key) ? [[key, args[key]]] : []));
@@ -111,6 +112,7 @@ function expandedApprovalDetail(
   return escapeApprovalBidi(lines.join("\n"));
 }
 
+/** Show a bound account label when available. Default account selection belongs to the provider. */
 function managedApprovalAccount(
   item: Record<string, unknown>,
   action: string,
@@ -129,6 +131,7 @@ function managedApprovalAccount(
   return toolkit ? `Provider-selected account (${toolkit})` : "Provider-selected account";
 }
 
+/** Keep specialized approvals on their own cards and disclose ordinary arguments on demand. */
 export function buildApprovalAskBlock(
   effectId: string,
   toolName: string,

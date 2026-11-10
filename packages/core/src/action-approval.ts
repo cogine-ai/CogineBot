@@ -240,6 +240,7 @@ export function readBotSecretHttpEffect(request: unknown) {
   };
 }
 
+/** Show direction controls literally so review text keeps its visible order. */
 export function escapeApprovalBidi(value: string): string {
   return value.replace(
     /\p{Bidi_Control}/gu,

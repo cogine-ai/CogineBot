@@ -185,6 +185,7 @@ export function redactToolArgsForReview(
   return redactToolArgs(args, secrets, "automatic");
 }
 
+/** Protect fields before the manual card is written to the thread and realtime events. */
 export function redactToolArgsForApproval(
   args: Record<string, unknown>,
   secrets: string[],
@@ -211,11 +212,18 @@ function redactToolArgs(
 /** A credential field is distinct from ordinary counts such as maxTokens. */
 function sensitiveApprovalField(name: string): boolean {
   const key = name.replace(/[-_ ]/g, "");
-  return /(?:password|secret|apikey|authorization|cookie|credential|token|signature)(?:value|confirmation|confirm|text)?$/i.test(
-    key,
+  return (
+    /privatekey/i.test(key) ||
+    /(?:accesskey(?:id)?|apikey|authorization|clientassertion|cookie|credential|passphrase|password|secret|sessionid|sessionkey|signature|xsession)(?:s|value|confirmation|confirm|text)?$/i.test(
+      key,
+    ) ||
+    /(?:token(?:value|confirmation|confirm|text)?|(?:access|auth|bearer|id|refresh|session)tokens)$/i.test(
+      key,
+    )
   );
 }
 
+/** Keep manual entries distinct after redaction; ambiguous input still stops automatic review. */
 function redactReviewObject(
   value: object,
   secrets: string[],
@@ -262,6 +270,7 @@ function redactReviewObject(
   return Object.fromEntries(entries);
 }
 
+/** Inspect encoded documents and header containers without changing unaffected literal strings. */
 function redactNestedReviewValue(
   value: unknown,
   secrets: string[],
@@ -322,6 +331,7 @@ function redactNestedReviewValue(
   return redactSecrets(literal, secrets) === literal ? value : "[redacted]";
 }
 
+/** Redact decoded URL components and keep repeated query values in their original order. */
 export function redactApprovalUrl(value: string, secrets: string[]): string {
   const url = URL.parse(value.trim());
   if (!url || !["http:", "https:"].includes(url.protocol)) return redactSecrets(value, secrets);

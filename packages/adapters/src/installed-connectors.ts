@@ -740,6 +740,7 @@ async function executeApiOperation(
   }
 }
 
+/** Share the exact method path inputs with approval and track which arguments belong to the path. */
 function apiOperationDestination(
   baseUrl: string,
   operation: ApiOperation,

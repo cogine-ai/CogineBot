@@ -87,6 +87,14 @@ describe("buildApprovalAskBlock", () => {
         headers: "Authorization: synthetic-raw-header\r\nX-Example: visible",
         maxTokens: 300,
         accessToken: "fixture-path-field",
+        private_key: "fixture-signing-private-field",
+        privateKeyPem: "fixture-pem-private-field",
+        secretAccessKey: "fixture-storage-secret-field",
+        session_id: "fixture-session-field",
+        publicKey: "fixture-public-key",
+        publicKeyPem: "fixture-public-pem",
+        accessTokens: ["fixture-oauth-list-field"],
+        credentials: ["fixture-credential-list-field"],
         passwordConfirmation: "fixture-confirmation-field",
         named: { name: "API key", value: "fixture-key-field" },
         labels: ["cookie", "ordinary label"],
@@ -109,6 +117,8 @@ describe("buildApprovalAskBlock", () => {
     expect(block.approvalDetails).toContain("label=visible&label=%5Bredacted%5D");
     expect(block.approvalDetails).toContain("X-Example: visible");
     expect(block.approvalDetails).toContain('"maxTokens": 300');
+    expect(block.approvalDetails).toContain("fixture-public-key");
+    expect(block.approvalDetails).toContain("fixture-public-pem");
     expect(block.approvalDetails).toContain("ordinary label");
     for (const protectedText of [
       secret,
@@ -117,6 +127,12 @@ describe("buildApprovalAskBlock", () => {
       "synthetic-raw-header",
       "quoted",
       "fixture-path-field",
+      "fixture-signing-private-field",
+      "fixture-pem-private-field",
+      "fixture-storage-secret-field",
+      "fixture-session-field",
+      "fixture-oauth-list-field",
+      "fixture-credential-list-field",
       "fixture-confirmation-field",
       "fixture-key-field",
     ]) {

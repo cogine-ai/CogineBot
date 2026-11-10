@@ -6977,6 +6977,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return pauseForApproval();
           };
 
+          /** Show the stored intended effect using metadata only from its matching connector route. */
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
             await flushConnectionNarration(executionId);
