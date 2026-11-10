@@ -33,6 +33,22 @@ export function sanitizeConnectorError(error: unknown, secrets: string[] = []): 
 export const CONNECTOR_REDACTION_MAX_DEPTH = 64;
 export const CONNECTOR_REDACTION_MAX_NODES = 100_000;
 
+/** Include the JSON-escaped spellings that can appear inside serialized strings. */
+export function knownJsonSecretRedactions(secrets: string[], sourceLength: number): string[] {
+  const active = secrets.filter(Boolean);
+  const redactions = new Set(active);
+  for (const secret of active) {
+    let encoded = secret;
+    for (;;) {
+      const next = JSON.stringify(encoded).slice(1, -1);
+      if (next === encoded || next.length > sourceLength) break;
+      redactions.add(next);
+      encoded = next;
+    }
+  }
+  return [...redactions].sort((a, b) => b.length - a.length);
+}
+
 /** Redact complete JSON values and embedded JSON text before results leave a provider. */
 export function redactConnectorPayload(value: unknown, secrets: string[]): unknown {
   const redacted = tryRedactConnectorPayload(value, secrets);
@@ -48,17 +64,7 @@ export function tryRedactConnectorPayload(
   try {
     const source = JSON.stringify(value);
     if (source === undefined) throw new Error("redaction_error");
-    const redactions = new Set(secrets.filter(Boolean));
-    for (const secret of secrets.filter(Boolean)) {
-      let encoded = secret;
-      for (;;) {
-        const next = JSON.stringify(encoded).slice(1, -1);
-        if (next === encoded || next.length > source.length) break;
-        redactions.add(next);
-        encoded = next;
-      }
-    }
-    const known = [...redactions].sort((a, b) => b.length - a.length);
+    const known = knownJsonSecretRedactions(secrets, source.length);
     const sourceBytes = Buffer.byteLength(source, "utf8");
     // Work scales with the caller-bounded payload; large opaque images get no new size cap.
     const maxWorkBytes = Math.max(sourceBytes * 8, 1_048_576);

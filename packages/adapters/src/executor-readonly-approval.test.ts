@@ -5497,6 +5497,11 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(reviewMock).not.toHaveBeenCalled();
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+      expect(block).toMatchObject({
+        approvalDetails: expect.stringContaining('"key-[redacted] (2)": "second"'),
+      });
+      expect(JSON.stringify(block)).not.toContain("fixture-value");
     });
 
     it("redacts run secrets from automatic review task and bot context", async () => {
@@ -5540,6 +5545,39 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
+  });
+});
+
+it("does not recreate an approval card with metadata from a different connector route", async () => {
+  const name = "demo_send_message";
+  const args = { id: "same-arguments" };
+  const f = fixture({
+    name,
+    readOnly: false,
+    rules: [{ effect: "require_approval", matchKind: "tool", matchValue: name }],
+  });
+  f.effects.push({
+    id: "old-effect",
+    kind: name,
+    idempotencyKey: approvalEffectKey(f.runRecord.id, name, args),
+    runId: f.runRecord.id,
+    spaceId: f.runRecord.spaceId,
+    status: "intended",
+    request: boundDirectApprovalRequest(
+      { connectorId: "demo", resourceId: "previous-route", toolName: name },
+      args,
+      CATALOG_APPROVAL_TOOL,
+    ),
+  });
+  f.setCalls([{ args, executionId: "same-call" }]);
+
+  await f.run();
+
+  expect(f.execute).not.toHaveBeenCalled();
+  expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  expect(f.effects[0]).toMatchObject({
+    status: "completed",
+    result: { error: "The request cannot be shown in full for approval." },
   });
 });
 

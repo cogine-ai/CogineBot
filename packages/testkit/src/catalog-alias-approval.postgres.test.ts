@@ -398,6 +398,17 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
           toolName: action,
         });
         expect((request[3] as { resourceRevision: unknown }).resourceRevision).toBeTruthy();
+        const card = await handles.prisma.message.findFirstOrThrow({
+          where: { runId: sent.runId, role: "bot" },
+          orderBy: { seq: "desc" },
+        });
+        const ask = (
+          card.blocks as { kind?: string; approvalEffectId?: string; approvalDetails?: string }[]
+        ).find((block) => block.kind === "ask" && block.approvalEffectId === effect.id);
+        const details = ask?.approvalDetails;
+        expect(details).toContain(`Connection: ${JSON.stringify(labelA)}`);
+        expect(details).toContain(`Action: ${JSON.stringify(action)}`);
+        expect(details).toContain(approved.event.summary);
         if (mode === "revoke") await native.revoke(connections[0]!, context);
         else if (mode === "block") {
           await handles.prisma.actionApprovalRule.create({
@@ -444,10 +455,6 @@ describe.skipIf(!enabled)("catalog aliases through native accounts and durable a
             where: { id: connections[0] },
             data: { displayName: "Renamed account" },
           });
-        const card = await handles.prisma.message.findFirstOrThrow({
-          where: { runId: sent.runId, role: "bot" },
-          orderBy: { seq: "desc" },
-        });
         const savedRow = await handles.prisma.externalEffect.findUniqueOrThrow({
           where: { idempotencyKey: JSON.stringify(["runtime_checkpoint", sent.runId]) },
         });
