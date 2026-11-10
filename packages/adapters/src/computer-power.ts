@@ -1,6 +1,5 @@
 import type {
   AdapterContext,
-  AgentHomeStore,
   ComputerRef,
   SandboxPowerState,
   SandboxProvider,
@@ -143,7 +142,7 @@ export async function savedComputerPowerState(
 }
 
 export async function saveComputerBeforeStop(
-  deps: { prisma: PrismaClient; sandbox: SandboxProvider; home: AgentHomeStore },
+  deps: Parameters<typeof checkpointAndRecordComputerWorkspace>[0],
   computer: Parameters<typeof checkpointAndRecordComputerWorkspace>[1] &
     Parameters<typeof savedComputerPowerState>[1],
   ref: ComputerRef,
@@ -157,7 +156,7 @@ export async function saveComputerBeforeStop(
 
 /** Only loss during the provider export can fall back to the previous revision. */
 export async function checkpointComputerBeforeStop(
-  deps: { prisma: PrismaClient; sandbox: SandboxProvider; home: AgentHomeStore },
+  deps: Parameters<typeof checkpointAndRecordComputerWorkspace>[0],
   computer: Parameters<typeof checkpointAndRecordComputerWorkspace>[1],
   ref: ComputerRef,
   context: AdapterContext,
@@ -168,6 +167,7 @@ export async function checkpointComputerBeforeStop(
   await verifyComputerProvider(deps.sandbox, ref, context);
   let exported = false;
   let stagingFailed = false;
+  let loss: "gone" | "damaged" | undefined;
   try {
     await checkpointAndRecordComputerWorkspace(
       { ...deps, sandbox: provider },
@@ -182,22 +182,25 @@ export async function checkpointComputerBeforeStop(
         onStagingFailure: () => {
           stagingFailed = true;
         },
+        shouldReportFailure: async (error) => {
+          if (exported || stagingFailed) return true;
+          if (isSandboxDamaged(error)) loss = "damaged";
+          else if (
+            !isSandboxUnsafeStop(error) &&
+            ((ref.kind === "e2b" &&
+              canTrustComputerGoneError(deps.sandbox, ref) &&
+              isSandboxGoneError(error)) ||
+              (await inspectComputerPower(deps.sandbox, ref, context)) === "gone")
+          ) {
+            loss = "gone";
+          }
+          return loss === undefined;
+        },
       },
     );
     return undefined;
   } catch (error) {
-    if (!exported && !stagingFailed && !context.signal.aborted) {
-      if (isSandboxDamaged(error)) return "damaged";
-      if (
-        !isSandboxUnsafeStop(error) &&
-        ((ref.kind === "e2b" &&
-          canTrustComputerGoneError(deps.sandbox, ref) &&
-          isSandboxGoneError(error)) ||
-          (await inspectComputerPower(deps.sandbox, ref, context)) === "gone")
-      ) {
-        return "gone";
-      }
-    }
+    if (loss) return loss;
     throw error;
   }
 }

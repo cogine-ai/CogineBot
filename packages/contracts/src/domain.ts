@@ -990,6 +990,22 @@ export type ComputerUpdate = z.infer<typeof ComputerUpdateSchema>;
 
 export const COMPUTER_RATE_LIMITED_ERROR_MESSAGE = "Too many computer requests. Try again later.";
 
+export const WorkspaceSaveProgressSchema = z.object({
+  files: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+});
+export type WorkspaceSaveProgress = z.infer<typeof WorkspaceSaveProgressSchema>;
+
+export const WorkspaceSaveFailureReasonSchema = z.enum([
+  "disk_space",
+  "too_large",
+  "too_many_files",
+  "rate_limited",
+  "export_failed",
+  "storage_failed",
+]);
+export type WorkspaceSaveFailureReason = z.infer<typeof WorkspaceSaveFailureReasonSchema>;
+
 export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,
@@ -1006,6 +1022,8 @@ export const ComputerStatusSchema = z.object({
   ]),
   powerState: z.enum(["stopping", "needs_recovery", "quarantined"]).optional(),
   recoveryBlocked: z.boolean().optional(),
+  workspaceSaveProgress: WorkspaceSaveProgressSchema.nullable().optional(),
+  workspaceSaveFailure: WorkspaceSaveFailureReasonSchema.optional(),
   controlHolder: z.enum(["bot", "user", "none"]),
   controlBotId: Id.nullable(),
   takeoverRequested: z.boolean(),

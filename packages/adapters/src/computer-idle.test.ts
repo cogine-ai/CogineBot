@@ -189,7 +189,11 @@ describe("sandbox idle", () => {
       field === "providerRef" ? "new-provider" : "computer",
     );
     expect(harness.sandbox.stop).not.toHaveBeenCalled();
-    expect(harness.events.append).not.toHaveBeenCalled();
+    expect(
+      harness.events.append.mock.calls.every(
+        ([event]) => event.payload.workspaceSaveChanged === true,
+      ),
+    ).toBe(true);
   });
 
   it("does not suspend a computer while bot-launched background work is active", async () => {
@@ -353,7 +357,11 @@ describe("sandbox idle", () => {
     });
     expect(harness.sandbox.stop).not.toHaveBeenCalled();
     expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
-    expect(harness.events.append).not.toHaveBeenCalled();
+    expect(
+      harness.events.append.mock.calls.every(
+        ([event]) => event.payload.workspaceSaveChanged === true,
+      ),
+    ).toBe(true);
   });
 
   it("retains the saved revision when the database transition after stopping fails", async () => {
@@ -421,7 +429,11 @@ describe("sandbox idle", () => {
       await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).rejects.toThrow();
 
       expect(harness.computer.state).toBe("suspending");
-      expect(harness.events.append).not.toHaveBeenCalled();
+      expect(
+        harness.events.append.mock.calls.every(
+          ([event]) => event.payload.workspaceSaveChanged === true,
+        ),
+      ).toBe(true);
     },
   );
 });

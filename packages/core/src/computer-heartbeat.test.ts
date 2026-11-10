@@ -29,6 +29,22 @@ it("waits for the visible caller to enable attendance and sends only one heartbe
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("uses a shorter interval during an observed save and returns to normal attendance", async () => {
+  vi.useFakeTimers();
+  const ping = vi.fn().mockResolvedValue(undefined);
+  let saving = true;
+  const heartbeat = createComputerHeartbeat({ ping, intervalMs: () => (saving ? 2000 : 60_000) });
+  heartbeat.setEnabled(true);
+  await vi.advanceTimersByTimeAsync(1999);
+  expect(ping).toHaveBeenCalledTimes(1);
+  saving = false;
+  await vi.advanceTimersByTimeAsync(1);
+  expect(ping).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(59_999);
+  expect(ping).toHaveBeenCalledTimes(2);
+  heartbeat.dispose();
+});
+
 it("does not overlap requests or burst after a long timer gap", async () => {
   vi.useFakeTimers();
   const pending = deferred();

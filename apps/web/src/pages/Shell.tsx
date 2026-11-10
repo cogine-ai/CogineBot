@@ -163,6 +163,7 @@ import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { FilesApp } from "../components/computer/FilesApp";
+import { WorkspaceSaveStatus } from "../components/computer/WorkspaceSaveStatus";
 import { DelegatedApprovalCard } from "../components/DelegatedApprovalCard";
 import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
@@ -644,6 +645,13 @@ export function ShellPage() {
         ? "running-event"
         : "snapshot",
     );
+    if (
+      event.type === "computer.status" &&
+      event.payload.workspaceSaveChanged === true &&
+      next?.botId === event.botId
+    ) {
+      recheckComputerStatus.current?.(event.botId);
+    }
   }
 
   function updateSnapshot(update: (prev: ThreadSnapshot | null) => ThreadSnapshot | null) {
@@ -4315,6 +4323,7 @@ export function ShellPage() {
       spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId ?? null) &&
       selection === currentSpaceSelectionGeneration();
     const heartbeat = createComputerHeartbeat({
+      intervalMs: () => (computerRef.current?.state === "stopping" ? 2000 : 60_000),
       ping: async (signal) => {
         const requestEpoch = visibilityEpoch;
         const current = () => !signal.aborted && requestEpoch === visibilityEpoch && presented();
@@ -4532,6 +4541,9 @@ export function ShellPage() {
         </Button>
       </div>
     ) : null;
+  const saveFailure = computer?.state === "running" && computer.workspaceSaveFailure;
+  const savingWorkspace =
+    computer?.state === "stopping" && computer.workspaceSaveProgress !== undefined;
   const computerPreviewScreen =
     !computerOpen &&
     computer?.kind !== "desktop" &&
@@ -6082,7 +6094,9 @@ export function ShellPage() {
                   ) : panel === "settings" ? (
                     <Trans>Settings</Trans>
                   ) : active ? (
-                    computer?.state === "quarantined" ? (
+                    panel === "computer" && savingWorkspace ? (
+                      <Trans>Computer</Trans>
+                    ) : computer?.state === "quarantined" ? (
                       <Trans>Computer status unconfirmed</Trans>
                     ) : computer?.state === "needs_recovery" ? (
                       <Trans>Computer needs recovery</Trans>
@@ -6149,6 +6163,10 @@ export function ShellPage() {
                     <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
                       <Trans>Open in full window</Trans>
                     </div>
+                  ) : savingWorkspace ? (
+                    <div className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground">
+                      <WorkspaceSaveStatus computer={computer} />
+                    </div>
                   ) : computer?.kind === "desktop" &&
                     !computerStateRequiresRecovery(computer.state) &&
                     computer.state !== "stopping" ? (
@@ -6214,7 +6232,9 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
-                {computer?.state === "suspended" ||
+                {saveFailure ? <WorkspaceSaveStatus computer={computer} /> : null}
+                {saveFailure ||
+                computer?.state === "suspended" ||
                 computerStateRequiresRecovery(computer?.state) ? (
                   <div className="mt-3">
                     <Button
@@ -6226,15 +6246,15 @@ export function ShellPage() {
                         setSavedFilesBotId(savedFilesBotId === active.id ? null : active.id)
                       }
                     >
-                      <Trans>Files</Trans>
+                      {saveFailure ? <Trans>View files</Trans> : <Trans>Files</Trans>}
                     </Button>
                     {savedFilesBotId === active.id ? (
                       <div className="mt-2 h-64 overflow-hidden rounded-md border border-border">
                         <FilesApp
-                          key={active.id}
+                          key={`${active.id}:${saveFailure ? "live" : "saved"}`}
                           botId={active.id}
                           canUpload={false}
-                          savedOnly
+                          savedOnly={!saveFailure}
                           visible
                         />
                       </div>
@@ -7214,7 +7234,11 @@ export function ShellPage() {
                     : undefined
                 }
               >
-                {computer?.kind === "desktop" ? (
+                {savingWorkspace ? (
+                  <div className="grid h-full place-items-center text-center text-sm text-muted-foreground">
+                    <WorkspaceSaveStatus computer={computer} />
+                  </div>
+                ) : computer?.kind === "desktop" ? (
                   <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-sm text-muted-foreground/80" />
                 ) : computer?.state === "running" &&
                   screenPresented &&

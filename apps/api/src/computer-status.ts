@@ -7,6 +7,7 @@ import {
   toComputerRef,
 } from "@rakazo/adapters";
 import type { ComputerStatus } from "@rakazo/contracts";
+import { WorkspaceSaveFailureReasonSchema, WorkspaceSaveProgressSchema } from "@rakazo/contracts";
 import { COMPUTER_ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
@@ -73,6 +74,8 @@ export function toComputerStatus(
     maintenanceId?: string | null;
     stopRequestedAt?: Date | null;
     updatedAt?: Date;
+    workspaceSaveProgress?: unknown;
+    workspaceSaveFailure?: unknown;
   } | null,
   busyBotName: string | null = null,
   sandbox?: SandboxProvider,
@@ -120,6 +123,29 @@ export function toComputerStatus(
     !computer?.maintenanceId &&
     computer?.state !== "restoring" &&
     (state === "running" || state === "booting");
+  const storedProgress = computer?.workspaceSaveProgress;
+  const storedFailure = computer?.workspaceSaveFailure;
+  const progress =
+    !computer?.stopRequestedAt &&
+    computer?.state === "suspending" &&
+    storedProgress &&
+    typeof storedProgress === "object" &&
+    "claimAt" in storedProgress &&
+    storedProgress.claimAt === computer.updatedAt?.toISOString() &&
+    "observedAt" in storedProgress &&
+    typeof storedProgress.observedAt === "string" &&
+    Number.isFinite(Date.parse(storedProgress.observedAt)) &&
+    !computerStopClaimIsStale(new Date(storedProgress.observedAt)) &&
+    "progress" in storedProgress
+      ? WorkspaceSaveProgressSchema.nullable().safeParse(storedProgress.progress)
+      : undefined;
+  const failure =
+    state === "running" &&
+    storedFailure &&
+    typeof storedFailure === "object" &&
+    "reason" in storedFailure
+      ? WorkspaceSaveFailureReasonSchema.safeParse(storedFailure.reason)
+      : undefined;
   const screen = computerScreenSize(computer?.kind);
   const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
   return {
@@ -129,6 +155,8 @@ export function toComputerStatus(
     state: unavailable ? "error" : state,
     ...(powerState ? { powerState } : {}),
     ...(recoveryBlocked ? { recoveryBlocked: true } : {}),
+    ...(progress?.success ? { workspaceSaveProgress: progress.data } : {}),
+    ...(failure?.success ? { workspaceSaveFailure: failure.data } : {}),
     controlHolder: (unavailable
       ? "none"
       : (computer?.controlHolder ?? "none")) as ComputerStatus["controlHolder"],

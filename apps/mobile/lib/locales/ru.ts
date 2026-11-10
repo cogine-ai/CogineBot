@@ -1,4 +1,17 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Saving workspace…": "Сохранение рабочего пространства…",
+  "{files} files processed · {size}": "Обработано файлов: {files} · {size}",
+  "Computer still running. Workspace not saved.":
+    "Компьютер продолжает работать. Рабочее пространство не сохранено.",
+  "Not enough disk space to save the workspace.":
+    "Недостаточно места на диске для сохранения рабочего пространства.",
+  "The computer's files are too large to save.": "Файлы компьютера слишком велики для сохранения.",
+  "The computer has too many files to save.": "На компьютере слишком много файлов для сохранения.",
+  "The computer provider is limiting save requests.":
+    "Поставщик компьютера ограничивает запросы на сохранение.",
+  "The computer could not export its files.": "Не удалось экспортировать файлы компьютера.",
+  "The workspace could not be stored.": "Не удалось записать рабочее пространство.",
+  "View files": "Посмотреть файлы",
   Files: "Файлы",
   "No files": "Нет файлов",
   "Could not load files": "Не удалось загрузить файлы",

@@ -86,6 +86,51 @@ describe("toComputerStatus", () => {
     expect(toComputerStatus("bot-1", computer, null, original).recoveryBlocked).toBeUndefined();
   });
 
+  it("only projects recent progress for the current save and exposes failure while running", () => {
+    const now = new Date();
+    const computer = {
+      kind: "e2b",
+      state: "suspending",
+      scope: "team",
+      controlHolder: "none",
+      homeRevision: "last-valid",
+      updatedAt: now,
+      workspaceSaveProgress: {
+        claimAt: now.toISOString(),
+        observedAt: now.toISOString(),
+        progress: { files: 2, bytes: 137 },
+      },
+      workspaceSaveFailure: { reason: "disk_space" },
+    };
+    expect(toComputerStatus("bot", computer)).toMatchObject({
+      powerState: "stopping",
+      workspaceSaveProgress: { files: 2, bytes: 137 },
+    });
+    expect(
+      toComputerStatus("bot", { ...computer, updatedAt: new Date(0) }).workspaceSaveProgress,
+    ).toBeUndefined();
+    expect(
+      toComputerStatus("bot", {
+        ...computer,
+        workspaceSaveProgress: {
+          ...computer.workspaceSaveProgress,
+          observedAt: new Date(0).toISOString(),
+        },
+      }).workspaceSaveProgress,
+    ).toBeUndefined();
+    expect(
+      toComputerStatus("bot", { ...computer, stopRequestedAt: now }).workspaceSaveProgress,
+    ).toBeUndefined();
+    expect(toComputerStatus("bot", computer).workspaceSaveFailure).toBeUndefined();
+    expect(toComputerStatus("bot", { ...computer, state: "running" })).toMatchObject({
+      state: "running",
+      workspaceSaveFailure: "disk_space",
+    });
+    expect(
+      toComputerStatus("bot", { ...computer, state: "quarantined" }).workspaceSaveFailure,
+    ).toBeUndefined();
+  });
+
   it("hides update on desktop computers", () => {
     expect(
       toComputerStatus("bot-1", {

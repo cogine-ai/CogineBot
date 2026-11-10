@@ -14,7 +14,7 @@ import {
   SandboxUnavailableError,
   SandboxUnresponsiveError,
 } from "@rakazo/adapter-kit";
-import { clearThread, type PrismaClient, type ThreadEvents } from "@rakazo/db";
+import { clearThread, Prisma, type PrismaClient, type ThreadEvents } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   acquireComputerExecutionLease,
@@ -1038,6 +1038,8 @@ describe("computer provisioning", () => {
             providerRef: next.providerRef,
             kind: next.kind,
             restorePending: false,
+            workspaceSaveFailure: Prisma.DbNull,
+            workspaceSaveProgress: Prisma.DbNull,
           },
         });
         expect(destroy).not.toHaveBeenCalled();
@@ -1611,6 +1613,9 @@ describe("Team Computer wake", () => {
     await expect(boot(harness)).resolves.toEqual(harness.ref);
 
     expect(harness.findMany).not.toHaveBeenCalled();
+    const last = vi.mocked(harness.prisma.computer.updateMany).mock.lastCall?.[0];
+    expect(last?.data).not.toHaveProperty("workspaceSaveFailure");
+    expect(last?.data).not.toHaveProperty("workspaceSaveProgress");
   });
 
   it.each([
@@ -1627,6 +1632,11 @@ describe("Team Computer wake", () => {
 
       await expect(boot(harness)).resolves.toEqual(harness.ref);
 
+      const last = vi.mocked(harness.prisma.computer.updateMany).mock.lastCall?.[0];
+      expect(last?.data).toMatchObject({
+        workspaceSaveFailure: Prisma.DbNull,
+        workspaceSaveProgress: Prisma.DbNull,
+      });
       expect(harness.execute).toHaveBeenCalledWith(
         harness.ref,
         {
@@ -1637,6 +1647,21 @@ describe("Team Computer wake", () => {
       );
     },
   );
+
+  it("clears an old save failure when preparation fails after a same-reference restart", async () => {
+    const harness = wakeHarness("running", vi.fn(), { started: true });
+    const failure = new Error("Synthetic preparation failure");
+    vi.mocked(harness.sandbox.prepare).mockRejectedValueOnce(failure);
+
+    await expect(boot(harness)).rejects.toBe(failure);
+
+    const last = vi.mocked(harness.prisma.computer.updateMany).mock.lastCall?.[0];
+    expect(last?.data).toMatchObject({
+      state: "running",
+      workspaceSaveFailure: Prisma.DbNull,
+      workspaceSaveProgress: Prisma.DbNull,
+    });
+  });
 
   it("does not hold the boot past the folder cleanup's time budget", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

@@ -7354,3 +7354,43 @@ msgstr "Сохранение или остановка компьютера…"
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
 msgstr "Попросите администратора развёртывания восстановить исходные настройки поставщика компьютера, затем повторите попытку."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "Saving workspace…"
+msgstr "Сохранение рабочего пространства…"
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "{files} files processed · {size}"
+msgstr "Обработано файлов: {files} · {size}"
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "Computer still running. Workspace not saved."
+msgstr "Компьютер продолжает работать. Рабочее пространство не сохранено."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "Not enough disk space to save the workspace."
+msgstr "Недостаточно места на диске для сохранения рабочего пространства."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "The computer's files are too large to save."
+msgstr "Файлы компьютера слишком велики для сохранения."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "The computer has too many files to save."
+msgstr "На компьютере слишком много файлов для сохранения."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "The computer provider is limiting save requests."
+msgstr "Поставщик компьютера ограничивает запросы на сохранение."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "The computer could not export its files."
+msgstr "Не удалось экспортировать файлы компьютера."
+
+#: src/components/computer/WorkspaceSaveStatus.tsx
+msgid "The workspace could not be stored."
+msgstr "Не удалось записать рабочее пространство."
+
+#: src/pages/Shell.tsx
+msgid "View files"
+msgstr "Посмотреть файлы"
