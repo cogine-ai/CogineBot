@@ -2,7 +2,7 @@
  * The caller confirms the current target is running before sending provider attendance. */
 export function createComputerHeartbeat(options: {
   ping: (signal: AbortSignal) => Promise<unknown>;
-  intervalMs?: number;
+  intervalMs?: number | (() => number);
 }) {
   let enabled = false;
   let disposed = false;
@@ -26,7 +26,11 @@ export function createComputerHeartbeat(options: {
           // Wait out transports that ignored abort before attending the new visible epoch.
           void ping();
         } else {
-          timer = setTimeout(() => void ping(), options.intervalMs ?? 60_000);
+          const interval = options.intervalMs;
+          timer = setTimeout(
+            () => void ping(),
+            typeof interval === "function" ? interval() : (interval ?? 60_000),
+          );
         }
       }
     }

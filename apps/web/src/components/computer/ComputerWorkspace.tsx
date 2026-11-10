@@ -6,6 +6,7 @@ import type { PointerEvent, ReactNode, RefObject } from "react";
 import { lazy, Suspense, useCallback, useRef, useState } from "react";
 import { ErrorBoundary, SectionLoadFailed } from "../ErrorBoundary";
 import { FilesApp } from "./FilesApp";
+import { WorkspaceSaveStatus } from "./WorkspaceSaveStatus";
 
 // xterm is only needed once someone opens the terminal.
 const TerminalApp = lazy(() => import("./TerminalApp"));
@@ -38,6 +39,7 @@ export function ComputerWorkspace({
   const { t } = useLingui();
   const desktop = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<App[]>([]);
+  const [readOnlyFiles, setReadOnlyFiles] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [positions, setPositions] = useState<Partial<Record<App, Position>>>({});
   const running = computer?.state === "running";
@@ -50,6 +52,7 @@ export function ComputerWorkspace({
   ];
 
   const toggle = (app: App) => {
+    if (app === "files") setReadOnlyFiles(false);
     if (collapsed) {
       setCollapsed(false);
       setOpen((current) => [...current.filter((item) => item !== app), app]);
@@ -61,6 +64,11 @@ export function ComputerWorkspace({
   };
   const focus = (app: App) =>
     setOpen((current) => [...current.filter((item) => item !== app), app]);
+  const showFiles = () => {
+    setReadOnlyFiles(true);
+    setCollapsed(false);
+    focus("files");
+  };
   const move = useCallback(
     (app: App, position: Position) => setPositions((current) => ({ ...current, [app]: position })),
     [],
@@ -69,70 +77,77 @@ export function ComputerWorkspace({
   if (!dock) return <div className="relative h-full min-h-0">{children}</div>;
 
   return (
-    <div ref={desktop} className="relative h-full min-h-0 overflow-hidden">
-      {children}
-      {apps
-        .filter((app) => open.includes(app.id))
-        .map((app) => (
-          <WorkspaceWindow
-            key={app.id}
-            title={app.label}
-            hidden={collapsed}
-            bounds={desktop}
-            position={positions[app.id] ?? defaultPosition(app.id, desktop.current)}
-            zIndex={10 + open.indexOf(app.id)}
-            onMove={(position) => move(app.id, position)}
-            onFocus={() => focus(app.id)}
-            onClose={() => toggle(app.id)}
-          >
-            {app.id === "terminal" ? (
-              <ErrorBoundary fallback={<SectionLoadFailed />}>
-                <Suspense fallback={null}>
-                  <TerminalApp
-                    key={botId}
-                    botId={botId}
-                    canUseShell={shellAvailable && hasControl}
-                    onTakeControl={shellAvailable ? onTakeControl : undefined}
-                  />
-                </Suspense>
-              </ErrorBoundary>
-            ) : (
-              <FilesApp
-                key={botId}
-                botId={botId}
-                canUpload={hasControl && running}
-                visible={!collapsed}
-              />
-            )}
-          </WorkspaceWindow>
-        ))}
-      <nav className="absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 gap-1 rounded-2xl border border-border bg-card/90 p-1.5 shadow-lg backdrop-blur">
-        {hasScreen ? (
-          <Button
-            variant="ghost"
-            size="icon-lg"
-            aria-label={t`Browser`}
-            aria-pressed={screenVisible}
-            className={cn("rounded-xl", screenVisible && "bg-accent")}
-            onClick={() => setCollapsed((current) => (open.length ? !current : false))}
-          >
-            <Globe />
-          </Button>
-        ) : null}
-        {apps.map((app) => (
-          <Button
-            key={app.id}
-            variant="ghost"
-            size="icon-lg"
-            aria-label={app.label}
-            aria-pressed={!collapsed && open.includes(app.id)}
-            className={cn("rounded-xl", !collapsed && open.includes(app.id) && "bg-accent")}
-            onClick={() => toggle(app.id)}
-          >
-            {app.icon}
-          </Button>
-        ))}
-      </nav>
+    <div className="flex h-full min-h-0 flex-col">
+      {running && computer.workspaceSaveFailure ? (
+        <div className="px-[18px] pb-2">
+          <WorkspaceSaveStatus computer={computer} onViewFiles={showFiles} />
+        </div>
+      ) : null}
+      <div ref={desktop} className="relative min-h-0 flex-1 overflow-hidden">
+        {children}
+        {apps
+          .filter((app) => open.includes(app.id))
+          .map((app) => (
+            <WorkspaceWindow
+              key={app.id}
+              title={app.label}
+              hidden={collapsed}
+              bounds={desktop}
+              position={positions[app.id] ?? defaultPosition(app.id, desktop.current)}
+              zIndex={10 + open.indexOf(app.id)}
+              onMove={(position) => move(app.id, position)}
+              onFocus={() => focus(app.id)}
+              onClose={() => toggle(app.id)}
+            >
+              {app.id === "terminal" ? (
+                <ErrorBoundary fallback={<SectionLoadFailed />}>
+                  <Suspense fallback={null}>
+                    <TerminalApp
+                      key={botId}
+                      botId={botId}
+                      canUseShell={shellAvailable && hasControl}
+                      onTakeControl={shellAvailable ? onTakeControl : undefined}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
+              ) : (
+                <FilesApp
+                  key={botId}
+                  botId={botId}
+                  canUpload={hasControl && running && !readOnlyFiles}
+                  visible={!collapsed}
+                />
+              )}
+            </WorkspaceWindow>
+          ))}
+        <nav className="absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 gap-1 rounded-2xl border border-border bg-card/90 p-1.5 shadow-lg backdrop-blur">
+          {hasScreen ? (
+            <Button
+              variant="ghost"
+              size="icon-lg"
+              aria-label={t`Browser`}
+              aria-pressed={screenVisible}
+              className={cn("rounded-xl", screenVisible && "bg-accent")}
+              onClick={() => setCollapsed((current) => (open.length ? !current : false))}
+            >
+              <Globe />
+            </Button>
+          ) : null}
+          {apps.map((app) => (
+            <Button
+              key={app.id}
+              variant="ghost"
+              size="icon-lg"
+              aria-label={app.label}
+              aria-pressed={!collapsed && open.includes(app.id)}
+              className={cn("rounded-xl", !collapsed && open.includes(app.id) && "bg-accent")}
+              onClick={() => toggle(app.id)}
+            >
+              {app.icon}
+            </Button>
+          ))}
+        </nav>
+      </div>
     </div>
   );
 }

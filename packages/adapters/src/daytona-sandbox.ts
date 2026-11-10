@@ -41,8 +41,10 @@ const DAYTONA_SCREEN_TTL_SECONDS = 3_600;
 
 export type DaytonaSandboxSdk = Pick<Daytona, "create" | "get">;
 
+type DaytonaConnection = { sandbox: Sandbox; started?: true };
+
 type PendingDaytonaConnection = {
-  promise: Promise<Sandbox>;
+  promise: Promise<DaytonaConnection>;
   signals: Set<AbortSignal | undefined>;
 };
 
@@ -152,9 +154,10 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     try {
       if (id) {
         try {
-          const sandbox = await this.connect(id, _context.signal);
+          const { sandbox, started } = await this.connect(id, _context.signal);
           assertCurrent();
-          return this.ref(sandbox, request.botId, false);
+          const ref = this.ref(sandbox, request.botId, false);
+          return started ? { ...ref, started } : ref;
         } catch (error) {
           assertCurrent();
           if (!isUnrecoverableDaytonaError(error)) throw error;
@@ -472,9 +475,9 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     };
   }
 
-  private async connect(id: string, signal?: AbortSignal): Promise<Sandbox> {
+  private async connect(id: string, signal?: AbortSignal): Promise<DaytonaConnection> {
     const existing = this.boxes.get(id);
-    if (existing) return existing;
+    if (existing) return { sandbox: existing };
     const pending = this.connections.get(id);
     if (pending) {
       pending.signals.add(signal);
@@ -494,7 +497,8 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       if (this.connections.get(id) !== connection) {
         throw new Error("Daytona connection was invalidated during teardown");
       }
-      if (sandbox.state !== SandboxState.STARTED) {
+      const started = sandbox.state !== SandboxState.STARTED;
+      if (started) {
         // A shared connection may still have another caller that needs this start.
         if (![...signals].some((caller) => !caller?.aborted)) signal?.throwIfAborted();
         await sandbox.start(120);
@@ -503,7 +507,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
         throw new Error("Daytona connection was invalidated during teardown");
       }
       this.boxes.set(id, sandbox);
-      return sandbox;
+      return started ? { sandbox, started: true as const } : { sandbox };
     })()
       .catch((error: unknown) => {
         if (this.connections.get(id) !== connection) {
@@ -520,7 +524,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
   }
 
   private async box(computer: ComputerRef): Promise<Sandbox> {
-    return this.connect(computer.providerRef || computer.id);
+    return (await this.connect(computer.providerRef || computer.id)).sandbox;
   }
 
   private beginTeardownOperation(id: string): () => void {

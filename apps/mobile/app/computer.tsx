@@ -1,6 +1,6 @@
 import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
 import { computerStateRequiresRecovery, currentComputerStatus } from "@rakazo/contracts";
-import { createComputerHeartbeat } from "@rakazo/core";
+import { createComputerHeartbeat, formatFileSize } from "@rakazo/core";
 import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import type { RefObject } from "react";
@@ -438,9 +438,23 @@ export default function Computer() {
   useEffect(() => {
     if (powerUnavailable) setComputerOpen(false);
   }, [powerUnavailable]);
+  const saveProgress = computer?.workspaceSaveProgress;
+  const saveFailure = computer?.state === "running" ? computer.workspaceSaveFailure : undefined;
+  const saveFailureText = saveFailure
+    ? {
+        disk_space: t("Not enough disk space to save the workspace."),
+        too_large: t("The computer's files are too large to save."),
+        too_many_files: t("The computer has too many files to save."),
+        rate_limited: t("The computer provider is limiting save requests."),
+        export_failed: t("The computer could not export its files."),
+        storage_failed: t("The workspace could not be stored."),
+      }[saveFailure]
+    : undefined;
   const placeholder =
     (!powerUnavailable && screenError) ||
-    previewPlaceholder(computer?.state, booting, name, computer?.mode);
+    (saveProgress !== undefined
+      ? t("Saving workspace…")
+      : previewPlaceholder(computer?.state, booting, name, computer?.mode));
 
   return (
     <ScrollView
@@ -482,6 +496,14 @@ export default function Computer() {
             <Text style={{ color: tokens.mutedForeground, textAlign: "center" }}>
               {placeholder}
             </Text>
+            {saveProgress ? (
+              <Text style={{ color: tokens.mutedForeground, marginTop: 8 }}>
+                {t("{files} files processed · {size}", {
+                  files: String(saveProgress.files),
+                  size: formatFileSize(saveProgress.bytes),
+                })}
+              </Text>
+            ) : null}
           </View>
         )}
         {!powerUnavailable ? (
@@ -526,11 +548,32 @@ export default function Computer() {
           onChanged={refreshAfterMaintenance}
         />
       ) : null}
+      {saveFailureText ? (
+        <View
+          style={{
+            marginTop: 12,
+            gap: 4,
+            paddingLeft: 8,
+            borderLeftWidth: 2,
+            borderLeftColor: tokens.warning,
+          }}
+        >
+          <Text style={{ color: tokens.warning }}>
+            {t("Computer still running. Workspace not saved.")}
+          </Text>
+          <Text style={{ color: tokens.mutedForeground }}>{saveFailureText}</Text>
+        </View>
+      ) : null}
       {botId &&
-      (computer?.state === "suspended" ||
+      (saveFailure ||
+        computer?.state === "suspended" ||
         savedStoppedComputer ||
         computerStateRequiresRecovery(computer?.state)) ? (
-        <ComputerSavedFiles key={targetKey} botId={botId} />
+        <ComputerSavedFiles
+          key={`${targetKey}:${saveFailure ? "live" : "saved"}`}
+          botId={botId}
+          live={Boolean(saveFailure)}
+        />
       ) : null}
       <ComputerModePicker
         value={computer?.mode}

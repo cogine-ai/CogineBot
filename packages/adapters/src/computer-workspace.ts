@@ -11,13 +11,22 @@ import type {
   StreamedPortableFile,
   WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
-import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
-import type { ComputerMode } from "@rakazo/contracts";
+import { SandboxDamagedError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
+import type { ComputerMode, WorkspaceSaveProgress } from "@rakazo/contracts";
 import { parseScreenLeaseId } from "@rakazo/core";
 import { browserProfilePathForScreen } from "@rakazo/core/node/desktop-runtime";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import {
+  notifyWorkspaceSaveChanged,
+  recordWorkspaceSaveFailure,
+  WorkspaceSaveDiskSpaceError,
+  workspaceSaveFailureReason,
+  writeWorkspaceSaveProgress,
+} from "./computer-save-status.js";
 import { normalizeWorkspacePath, teamBotWorkspaceDirectory } from "./computer-support.js";
+import { isSandboxGoneError } from "./e2b-sandbox.js";
 import type { HomePublisher } from "./home.js";
 import { createStagingDirectory, LocalAgentHomeStore } from "./home.js";
 import { shouldSkipPortableWorkspaceFile, WORKSPACE_SAVE_LIMITS } from "./workspace-save-policy.js";
@@ -32,6 +41,7 @@ const FILE_DISK_OVERHEAD_BYTES = 4096;
 type CheckpointOptions = {
   onExported?: () => void;
   onStagingFailure?: () => void;
+  onProgress?: (progress: WorkspaceSaveProgress, finished?: boolean) => Promise<void>;
   prisma?: PrismaClient;
   publish?: (
     install: (currentRevision: string) => Promise<string>,
@@ -280,11 +290,12 @@ export async function checkpointComputerWorkspace(
   options?: CheckpointOptions,
   saveLimits: WorkspaceExportLimits = WORKSPACE_SAVE_LIMITS,
 ): Promise<string> {
-  const { prisma, publish } = options ?? {};
+  const { prisma, publish, onProgress } = options ?? {};
   const publisher = (staging?: string): HomePublisher | undefined =>
     prisma && publish ? { prisma, publish: (install) => publish(install, staging) } : undefined;
   context.signal.throwIfAborted();
   if (computer.kind === "docker" && home instanceof LocalAgentHomeStore) {
+    options?.onExported?.();
     return home.revise(homeKey, publisher());
   }
   const failStaging: (error: unknown) => never = (error) => {
@@ -302,8 +313,9 @@ export async function checkpointComputerWorkspace(
   }
   try {
     const free = await freeSaveDisk(staging.path).catch(failStaging);
-    if (free < 0) throw new WorkspaceTooLargeError("bytes");
+    if (free < 0) throw new WorkspaceSaveDiskSpaceError();
     const limits = { ...saveLimits, maxBytes: Math.min(saveLimits.maxBytes, free) };
+    const diskLimited = limits.maxBytes < saveLimits.maxBytes;
     let bytes = 0;
     let files = 0;
     let unchecked = 0;
@@ -311,9 +323,18 @@ export async function checkpointComputerWorkspace(
       unchecked += size;
       if (unchecked < FREE_DISK_CHECK_BYTES) return;
       unchecked = 0;
-      if ((await freeSaveDisk(staging.path)) < 0) throw new WorkspaceTooLargeError("bytes");
+      if ((await freeSaveDisk(staging.path)) < 0) throw new WorkspaceSaveDiskSpaceError();
     };
-    for await (const file of sandbox.exportWorkspace(computer, context, limits)) {
+    const exportFiles = async function* () {
+      try {
+        yield* sandbox.exportWorkspace(computer, context, limits);
+      } catch (error) {
+        if (diskLimited && error instanceof WorkspaceTooLargeError && error.limit === "bytes")
+          throw new WorkspaceSaveDiskSpaceError();
+        throw error;
+      }
+    };
+    for await (const file of exportFiles()) {
       let relative: string;
       try {
         context.signal.throwIfAborted();
@@ -330,17 +351,24 @@ export async function checkpointComputerWorkspace(
         file,
         async (size) => {
           bytes += size;
-          if (bytes > limits.maxBytes) throw new WorkspaceTooLargeError("bytes");
+          if (bytes > limits.maxBytes) {
+            throw diskLimited
+              ? new WorkspaceSaveDiskSpaceError()
+              : new WorkspaceTooLargeError("bytes");
+          }
           await checkDisk(size);
           context.signal.throwIfAborted();
         },
         failStaging,
+        onProgress ? () => onProgress({ files: files - 1, bytes }) : undefined,
       );
+      await onProgress?.({ files, bytes });
     }
+    await onProgress?.({ files, bytes }, true);
     options?.onExported?.();
     context.signal.throwIfAborted();
     if ((await freeSaveDisk(staging.path).catch(failStaging)) < 0)
-      throw new WorkspaceTooLargeError("bytes");
+      throw new WorkspaceSaveDiskSpaceError();
     const install = () => home.commit(homeKey, staging.path, context);
     const revision =
       home instanceof LocalAgentHomeStore
@@ -361,7 +389,12 @@ async function freeSaveDisk(directory: string) {
 
 /** Remote exports quiesce browsers, so a run must not checkpoint while peers are driving them. */
 export async function checkpointRunComputerWorkspace(
-  deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
+  deps: {
+    home: AgentHomeStore;
+    sandbox: SandboxProvider;
+    prisma: PrismaClient;
+    events?: ThreadEvents;
+  },
   computerRecord: { id: string; homeKey: string; scope: string; spaceId: string },
   computer: ComputerRef,
   context: AdapterContext,
@@ -398,12 +431,18 @@ export async function checkpointRunComputerWorkspace(
 }
 
 export async function checkpointAndRecordComputerWorkspace(
-  deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
+  deps: {
+    home: AgentHomeStore;
+    sandbox: SandboxProvider;
+    prisma: PrismaClient;
+    events?: ThreadEvents;
+  },
   computerRecord: { id: string; homeKey: string; scope: string; spaceId: string },
   computer: ComputerRef,
   context: AdapterContext,
   options?: Pick<CheckpointOptions, "onExported" | "onStagingFailure"> & {
     claim?: Prisma.ComputerWhereInput;
+    shouldReportFailure?: (error: unknown) => Promise<boolean>;
   },
 ): Promise<string> {
   const target = {
@@ -415,6 +454,7 @@ export async function checkpointAndRecordComputerWorkspace(
     stopRequestedAt: null,
     providerRef: computer.providerRef,
     kind: computer.kind,
+    ...(computer.providerAuthority ? { providerAuthority: computer.providerAuthority } : {}),
   } satisfies Prisma.ComputerWhereInput;
   const starting = await deps.prisma.computer.findFirst({
     where: { ...target, ...checkpointAvailable(context, new Date()) },
@@ -426,69 +466,137 @@ export async function checkpointAndRecordComputerWorkspace(
       controlFence: true,
       controlLeaseId: true,
       executionFence: true,
+      providerAuthority: true,
+      workspaceSaveFailure: true,
     },
   });
   if (!starting) throw new ComputerCheckpointChangedError();
-  const fence = { ...target, ...starting };
-  return checkpointComputerWorkspace(
-    deps.home,
-    deps.sandbox,
-    computerRecord.homeKey,
-    computer,
-    context,
-    {
-      ...options,
-      prisma: deps.prisma,
-      publish: async (install, staging) =>
-        deps.prisma.$transaction(
-          async (tx) => {
-            // Acquire the same row that lifecycle writers and execution lease claims use.
-            await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerRecord.id} FOR UPDATE`;
-            const where = { ...fence, ...checkpointAvailable(context, new Date()) };
-            const owned = await tx.computer.findFirst({
-              where,
-              select: { updatedAt: true, homeRevision: true },
-            });
-            if (!owned) throw new ComputerCheckpointChangedError();
-            context.signal.throwIfAborted();
-            if (deps.home instanceof LocalAgentHomeStore) {
-              await deps.home.reconcileCheckpoint(computerRecord.homeKey, owned.homeRevision);
-            }
-            if (staging && computerRecord.scope === "team") {
-              const home = deps.home;
-              await removeDeletedStagedWorkspaces(
-                tx,
-                computerRecord.spaceId,
-                staging,
-                (directory) =>
-                  home instanceof LocalAgentHomeStore
-                    ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
-                    : rm(path.join(staging, directory), { recursive: true, force: true }),
+  const { workspaceSaveFailure, ...checkpointIdentity } = starting;
+  const fence = { ...target, ...checkpointIdentity };
+  const claimAt = options?.claim?.updatedAt;
+  const progressClaim = deps.events && claimAt instanceof Date ? claimAt : undefined;
+  const initialProgress =
+    computer.kind === "docker" && deps.home instanceof LocalAgentHomeStore
+      ? null
+      : { files: 0, bytes: 0 };
+  let progressVisible =
+    progressClaim !== undefined &&
+    (await writeWorkspaceSaveProgress(deps, fence, progressClaim, initialProgress));
+  if (progressVisible) await notifyWorkspaceSaveChanged(deps, computerRecord);
+  let lastProgress = Date.now();
+  let storageFailure = false;
+  let failed = false;
+  try {
+    return await checkpointComputerWorkspace(
+      deps.home,
+      deps.sandbox,
+      computerRecord.homeKey,
+      computer,
+      context,
+      {
+        onExported: () => {
+          storageFailure = true;
+          options?.onExported?.();
+        },
+        onStagingFailure: () => {
+          storageFailure = true;
+          options?.onStagingFailure?.();
+        },
+        onProgress: progressClaim
+          ? async (progress, finished) => {
+              if (!progressVisible || (!finished && Date.now() - lastProgress < 1000)) return;
+              lastProgress = Date.now();
+              progressVisible = await writeWorkspaceSaveProgress(
+                deps,
+                fence,
+                progressClaim,
+                progress,
               );
             }
-            context.signal.throwIfAborted();
-            const ready = await tx.computer.findFirst({
-              where: { ...fence, ...checkpointAvailable(context, new Date()) },
-              select: { id: true },
-            });
-            if (!ready) throw new ComputerCheckpointChangedError();
-            const revision = await install(owned.homeRevision);
-            const saved = await tx.computer.updateMany({
-              where: { ...fence, ...checkpointAvailable(context, new Date()) },
-              data: {
-                homeRevision: revision,
-                homeRevisionAt: new Date(),
-                autoRecoveredAt: null,
-                updatedAt: owned.updatedAt,
-              },
-            });
-            if (saved.count !== 1) throw new ComputerCheckpointChangedError();
-            return revision;
-          },
-          { timeout: 20_000 },
-        ),
-    },
-  );
+          : undefined,
+        prisma: deps.prisma,
+        publish: async (install, staging) =>
+          deps.prisma.$transaction(
+            async (tx) => {
+              // Acquire the same row that lifecycle writers and execution lease claims use.
+              await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerRecord.id} FOR UPDATE`;
+              const where = { ...fence, ...checkpointAvailable(context, new Date()) };
+              const owned = await tx.computer.findFirst({
+                where,
+                select: { updatedAt: true, homeRevision: true },
+              });
+              if (!owned) throw new ComputerCheckpointChangedError();
+              context.signal.throwIfAborted();
+              if (deps.home instanceof LocalAgentHomeStore) {
+                await deps.home.reconcileCheckpoint(computerRecord.homeKey, owned.homeRevision);
+              }
+              if (staging && computerRecord.scope === "team") {
+                const home = deps.home;
+                await removeDeletedStagedWorkspaces(
+                  tx,
+                  computerRecord.spaceId,
+                  staging,
+                  (directory) =>
+                    home instanceof LocalAgentHomeStore
+                      ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
+                      : rm(path.join(staging, directory), { recursive: true, force: true }),
+                );
+              }
+              context.signal.throwIfAborted();
+              const ready = await tx.computer.findFirst({
+                where: { ...fence, ...checkpointAvailable(context, new Date()) },
+                select: { id: true },
+              });
+              if (!ready) throw new ComputerCheckpointChangedError();
+              const revision = await install(owned.homeRevision);
+              const saved = await tx.computer.updateMany({
+                where: { ...fence, ...checkpointAvailable(context, new Date()) },
+                data: {
+                  homeRevision: revision,
+                  homeRevisionAt: new Date(),
+                  workspaceSaveProgress: Prisma.DbNull,
+                  workspaceSaveFailure: Prisma.DbNull,
+                  autoRecoveredAt: null,
+                  updatedAt: owned.updatedAt,
+                },
+              });
+              if (saved.count !== 1) throw new ComputerCheckpointChangedError();
+              return revision;
+            },
+            { timeout: 20_000 },
+          ),
+      },
+    );
+  } catch (error) {
+    const defaultReport =
+      storageFailure ||
+      !(
+        error instanceof SandboxDamagedError ||
+        (computer.kind === "e2b" && isSandboxGoneError(error))
+      );
+    if (
+      !context.signal.aborted &&
+      !(error instanceof ComputerCheckpointChangedError) &&
+      (options?.shouldReportFailure ? await options.shouldReportFailure(error) : defaultReport)
+    ) {
+      failed = true;
+      await recordWorkspaceSaveFailure(
+        deps,
+        computerRecord,
+        () => ({ ...fence, ...checkpointAvailable(context, new Date()) }),
+        context,
+        workspaceSaveFailureReason(error, storageFailure),
+      );
+    }
+    throw error;
+  } finally {
+    if (progressClaim) {
+      await writeWorkspaceSaveProgress(deps, fence, progressClaim, undefined);
+    }
+    if (progressClaim || failed || workspaceSaveFailure) {
+      await notifyWorkspaceSaveChanged(deps, computerRecord);
+    }
+  }
 }
 
 function checkpointAvailable(context: AdapterContext, now: Date): Prisma.ComputerWhereInput {
@@ -558,6 +666,7 @@ async function writePortableFile(
   file: PortableFile | StreamedPortableFile,
   count: (bytes: number) => Promise<void>,
   failStaging: (error: unknown) => never,
+  onWritten?: () => Promise<void>,
 ) {
   let handle: FileHandle;
   try {
@@ -590,6 +699,7 @@ async function writePortableFile(
       } catch (error) {
         failStaging(error);
       }
+      await onWritten?.();
     }
     complete = true;
   } finally {

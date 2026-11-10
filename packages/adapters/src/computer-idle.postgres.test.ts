@@ -10,8 +10,9 @@ import type {
   JobPublisher,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
+import { SandboxRateLimitError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { createDb } from "@rakazo/db";
+import { clearThread, createDb, createThreadEvents } from "@rakazo/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sleepComputerIfIdle } from "./computer-idle.js";
 import {
@@ -268,6 +269,228 @@ describePostgres("safe workspace publication", () => {
     const ref = { id, botId: context.botId, providerRef: id, kind: "e2b" } as const;
     return { id, record, ref, homeRevision };
   }
+
+  it("publishes completed files and written bytes during a claimed save without changing its stamp", async () => {
+    const { id, record, ref } = await seed();
+    const prisma = database.prisma;
+    const claimed = await prisma.computer.update({
+      where: { id },
+      data: { state: "suspending" },
+    });
+    const bot = await prisma.bot.create({
+      data: {
+        spaceId,
+        userId: context.userId,
+        computerId: id,
+        name: "Progress test",
+        color: "slate",
+        thread: { create: { spaceId, userId: context.userId } },
+      },
+      include: { thread: true },
+    });
+    const groups = await Promise.all(
+      [false, true].map((archived) =>
+        prisma.chatGroup.create({
+          data: {
+            spaceId,
+            userId: context.userId,
+            name: "Progress group",
+            archivedAt: archived ? new Date() : null,
+            members: { create: { botId: bot.id } },
+            thread: { create: { spaceId, userId: context.userId } },
+          },
+          include: { thread: true },
+        }),
+      ),
+    );
+    const events = createThreadEvents(prisma);
+    const sandbox = {
+      async *exportWorkspace() {
+        const initial = await prisma.computer.findUniqueOrThrow({ where: { id } });
+        expect(initial.workspaceSaveProgress).toMatchObject({ progress: { files: 0, bytes: 0 } });
+        yield { path: "empty.txt", content: Buffer.alloc(0) };
+        yield {
+          path: "notes.txt",
+          body: (async function* () {
+            await delay(1100);
+            yield Buffer.from("abc");
+            const partial = await prisma.computer.findUniqueOrThrow({ where: { id } });
+            expect(partial.updatedAt).toEqual(claimed.updatedAt);
+            expect(partial.workspaceSaveProgress).toMatchObject({
+              claimAt: claimed.updatedAt.toISOString(),
+              progress: { files: 1, bytes: 3 },
+            });
+            yield Buffer.from("de");
+          })(),
+        };
+      },
+    } as unknown as SandboxProvider;
+    const revision = await checkpointAndRecordComputerWorkspace(
+      { prisma, home, sandbox, events },
+      record,
+      ref,
+      context,
+      { claim: { state: "suspending", updatedAt: claimed.updatedAt } },
+    );
+    expect(await home.readFile(id, "notes.txt", context)).toBe("abcde");
+    for (const thread of [bot.thread, groups[0]!.thread, groups[1]!.thread]) {
+      expect(
+        await prisma.event.findMany({
+          where: { threadId: thread!.id, type: "computer.status" },
+          select: { botId: true, payload: true },
+        }),
+      ).toEqual(
+        thread?.id === groups[1]!.thread?.id
+          ? []
+          : [
+              { botId: bot.id, payload: { workspaceSaveChanged: true } },
+              { botId: bot.id, payload: { workspaceSaveChanged: true } },
+            ],
+      );
+    }
+    expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      homeRevision: revision,
+      updatedAt: claimed.updatedAt,
+      workspaceSaveProgress: null,
+      workspaceSaveFailure: null,
+    });
+  });
+
+  it("classifies an in-place revision failure as storage without fabricating copied bytes", async () => {
+    const { id, record, ref, homeRevision } = await seed();
+    const prisma = database.prisma;
+    const claimed = await prisma.computer.update({
+      where: { id },
+      data: { kind: "docker", state: "suspending" },
+    });
+    const error = new Error("synthetic revision failure");
+    const revise = vi.spyOn(home, "revise").mockImplementationOnce(async () => {
+      const current = await prisma.computer.findUniqueOrThrow({ where: { id } });
+      expect(current.workspaceSaveProgress).toMatchObject({ progress: null });
+      throw error;
+    });
+    try {
+      await expect(
+        checkpointAndRecordComputerWorkspace(
+          { prisma, home, sandbox: {} as SandboxProvider, events: createThreadEvents(prisma) },
+          record,
+          { ...ref, kind: "docker" },
+          context,
+          { claim: { state: "suspending", updatedAt: claimed.updatedAt } },
+        ),
+      ).rejects.toBe(error);
+    } finally {
+      revise.mockRestore();
+    }
+    expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      homeRevision,
+      workspaceSaveProgress: null,
+      workspaceSaveFailure: { reason: "storage_failed" },
+    });
+  });
+
+  it("deduplicates a failure across retries and reasons until a successful save", async () => {
+    const { id, record, ref, homeRevision } = await seed();
+    const prisma = database.prisma;
+    const addLinkedBot = () =>
+      prisma.bot.create({
+        data: {
+          spaceId,
+          userId: context.userId,
+          computerId: id,
+          name: "Save test",
+          color: "slate",
+          thread: { create: { spaceId, userId: context.userId } },
+        },
+        include: { thread: true },
+      });
+    const bot = await addLinkedBot();
+    const threadId = bot.thread!.id;
+    const events = createThreadEvents(prisma);
+    const fail = (error: Error, sink?: ThreadEvents) =>
+      checkpointAndRecordComputerWorkspace(
+        {
+          prisma,
+          home,
+          events: sink,
+          sandbox: {
+            async *exportWorkspace() {
+              yield await Promise.reject(error);
+            },
+          } as unknown as SandboxProvider,
+        },
+        record,
+        ref,
+        context,
+      );
+    const rateLimited = new SandboxRateLimitError();
+    await expect(fail(rateLimited)).rejects.toBe(rateLimited);
+    const beforeEvents = await prisma.computer.findUniqueOrThrow({ where: { id } });
+    expect(beforeEvents.workspaceSaveFailure).toMatchObject({
+      reason: "rate_limited",
+      notifiedThreadIds: [],
+    });
+    expect(await prisma.message.count({ where: { threadId, role: "system" } })).toBe(0);
+
+    await Promise.all([
+      expect(fail(rateLimited, events)).rejects.toBe(rateLimited),
+      expect(fail(rateLimited, events)).rejects.toBe(rateLimited),
+    ]);
+    const limit = new WorkspaceTooLargeError("files");
+    await expect(fail(limit, events)).rejects.toBe(limit);
+    const newlyLinked = await addLinkedBot();
+    await expect(fail(limit, events)).rejects.toBe(limit);
+    const notices = (target = threadId) =>
+      prisma.message.findMany({
+        where: { threadId: target, role: "system" },
+        orderBy: { seq: "asc" },
+      });
+    expect(await notices()).toMatchObject([
+      { clientNonce: (beforeEvents.workspaceSaveFailure as { nonce: string }).nonce },
+    ]);
+    expect(await notices(newlyLinked.thread!.id)).toMatchObject([
+      { clientNonce: (await notices())[0]!.clientNonce },
+    ]);
+    expect(await prisma.event.count({ where: { threadId, type: "thread.message.created" } })).toBe(
+      1,
+    );
+    expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      homeRevision,
+      workspaceSaveFailure: { reason: "too_many_files" },
+    });
+    expect(await home.readFile(id, "notes.txt", context)).toBe("last valid home");
+
+    await clearThread(prisma, { spaceId, threadId, botId: bot.id });
+    expect(await notices()).toHaveLength(0);
+    await expect(fail(limit, events)).rejects.toBe(limit);
+    expect(await notices()).toHaveLength(0);
+    const previousNonce = (await notices(newlyLinked.thread!.id))[0]!.clientNonce;
+
+    await checkpointAndRecordComputerWorkspace(
+      {
+        prisma,
+        home,
+        events,
+        sandbox: {
+          async *exportWorkspace() {
+            yield { path: "notes.txt", content: Buffer.from("new save") };
+          },
+        } as unknown as SandboxProvider,
+      },
+      record,
+      ref,
+      context,
+    );
+    expect(
+      (await prisma.computer.findUniqueOrThrow({ where: { id } })).workspaceSaveFailure,
+    ).toBeNull();
+    await expect(fail(limit, events)).rejects.toBe(limit);
+    const after = await notices();
+    expect(after).toHaveLength(1);
+    expect(after[0]!.clientNonce).not.toBe(previousNonce);
+    expect(await notices(newlyLinked.thread!.id)).toHaveLength(2);
+    expect(await home.readFile(id, "notes.txt", context)).toBe("new save");
+  });
 
   it.each(["generation", "restore pending", "expired lease", "revision record"] as const)(
     "retains the last valid home if %s invalidates publication",

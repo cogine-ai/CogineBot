@@ -1246,6 +1246,8 @@ model Computer {
   homeKey                 String                   @unique
   homeRevision            String                   @default("empty")
   homeRevisionAt          DateTime?
+  workspaceSaveProgress   Json?
+  workspaceSaveFailure    Json?
   restorePending          Boolean                  @default(false)
   stopRequestedAt         DateTime?
   autoRecoveredAt         DateTime?

@@ -1,4 +1,20 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Saving workspace…": "Arbeitsbereich wird gespeichert…",
+  "{files} files processed · {size}": "{files} Dateien verarbeitet · {size}",
+  "Computer still running. Workspace not saved.":
+    "Der Computer läuft weiter. Der Arbeitsbereich wurde nicht gespeichert.",
+  "Not enough disk space to save the workspace.":
+    "Nicht genug Speicherplatz zum Speichern des Arbeitsbereichs.",
+  "The computer's files are too large to save.":
+    "Die Dateien des Computers sind zu groß zum Speichern.",
+  "The computer has too many files to save.":
+    "Der Computer enthält zu viele Dateien zum Speichern.",
+  "The computer provider is limiting save requests.":
+    "Der Computeranbieter begrenzt Speicheranfragen.",
+  "The computer could not export its files.":
+    "Der Computer konnte seine Dateien nicht exportieren.",
+  "The workspace could not be stored.": "Der Arbeitsbereich konnte nicht gespeichert werden.",
+  "View files": "Dateien anzeigen",
   Files: "Dateien",
   "No files": "Keine Dateien",
   "Could not load files": "Dateien konnten nicht geladen werden",

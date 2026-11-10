@@ -1256,20 +1256,20 @@ describe("DaytonaSandboxProvider", () => {
   it("reconnects stopped sandboxes and replaces missing ones", async () => {
     const existing = daytonaFixture({ id: "existing", state: "stopped" });
     const provider = new DaytonaSandboxProvider({ apiKey: "test-key" }, existing.client);
-    const reconnected = await provider.provision(
-      {
-        botId: "bot-a",
-        homePath: "/unused",
-        providerRef: "existing",
-        providerKind: "daytona",
-      },
-      context,
-    );
+    const request = {
+      botId: "bot-a",
+      homePath: "/unused",
+      providerRef: "existing",
+      providerKind: "daytona" as const,
+    };
+    const reconnected = await provider.provision(request, context);
     expect(existing.start).toHaveBeenCalledWith(120);
     expect(reconnected).toMatchObject({
       providerRef: "existing",
       fresh: false,
+      started: true,
     });
+    expect(await provider.provision(request, context)).not.toHaveProperty("started");
 
     const replacement = daytonaFixture({ id: "replacement" });
     replacement.get.mockRejectedValueOnce({ statusCode: 404 });
@@ -1305,6 +1305,7 @@ describe("DaytonaSandboxProvider", () => {
     ]);
     await Promise.all(computers.map((computer) => provider.prepare(computer, context)));
 
+    expect(computers.map((computer) => computer.started)).toEqual([true, true]);
     expect(fixture.get).toHaveBeenCalledTimes(1);
     expect(fixture.start).toHaveBeenCalledTimes(1);
     expect(

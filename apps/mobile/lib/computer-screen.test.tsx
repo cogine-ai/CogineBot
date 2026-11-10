@@ -305,6 +305,43 @@ describe("computer screen", () => {
     expect(view.querySelector("[data-keyboard-bar]")).toBeNull();
   });
 
+  it("shows the workspace failure reason and opens the live files for inspection", async () => {
+    rpc.mockImplementation(async (method: string) => {
+      if (method === "computer/status") {
+        return { ...botWorking, workspaceSaveFailure: "too_many_files" };
+      }
+      if (method === "computer/files") return [{ path: "report.txt", kind: "file" }];
+      return {};
+    });
+    const view = await render();
+    expect(view.textContent).toContain("Computer still running. Workspace not saved.");
+    expect(view.textContent).toContain("The computer has too many files to save.");
+    const files = Array.from(view.querySelectorAll("button")).find(
+      (button) => button.textContent === "View files",
+    );
+    expect(files).toBeDefined();
+    await act(async () => files?.click());
+    await settle();
+    expect(calls("computer/files")).toEqual([
+      ["computer/files", { botId: "bot-1", path: "", source: undefined }, expect.anything()],
+    ]);
+    expect(view.textContent).toContain("report.txt");
+  });
+
+  it("shows the saved bytes and completed files during the stopping state", async () => {
+    respond({
+      ...botWorking,
+      state: "error",
+      powerState: "stopping",
+      screenAvailable: false,
+      workspaceSaveProgress: { files: 5, bytes: 2048 },
+    });
+    const view = await render();
+    expect(view.textContent).toContain("Saving workspace…");
+    expect(view.textContent).toContain("5 files processed · 2 KB");
+    expect(calls("computer/boot")).toEqual([]);
+  });
+
   it("still boots a new computer with the empty revision and omits saved Files", async () => {
     respond({
       ...botWorking,

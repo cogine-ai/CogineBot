@@ -14,8 +14,8 @@ import {
 } from "@rakazo/adapter-kit";
 import type { ComputerUpdate } from "@rakazo/contracts";
 import { COMPUTER_ACTIVE_RUN_STATUSES, parseScreenLeaseId, screenLeaseId } from "@rakazo/core";
-import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { expireComputerExecutionLeases, parseComputerMode } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { expireComputerExecutionLeases, Prisma, parseComputerMode } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import {
   clearInactiveUserComputerControl,
@@ -491,6 +491,10 @@ export async function provisionComputer(
   });
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
+  const clearedWorkspaceSaveStatus = {
+    workspaceSaveFailure: Prisma.DbNull,
+    workspaceSaveProgress: Prisma.DbNull,
+  };
   let recoveryStarted = false;
   let claimRef = previousRef;
   let fallbackRef = previousRef;
@@ -699,6 +703,9 @@ export async function provisionComputer(
         kind: ref.kind,
         ...(ref.providerAuthority ? { providerAuthority: ref.providerAuthority } : {}),
         restorePending: false,
+        ...(replacement || recoveryStarted || ref.started === true
+          ? clearedWorkspaceSaveStatus
+          : {}),
         ...(!reconnecting || recoveryStarted
           ? {
               controlHolder: activeControl ? "user" : controlHolder,
@@ -768,6 +775,12 @@ export async function provisionComputer(
                   ? "running"
                   : "error",
           stopRequestedAt: null,
+          // The provider completed the restart even if preparation did not.
+          ...(provisioned?.started === true &&
+          provisioned.providerRef === previousRef.providerRef &&
+          provisioned.kind === previousRef.kind
+            ? clearedWorkspaceSaveStatus
+            : {}),
           ...(unsafe || rollbackError || damaged || recoveryStarted || claimState === "restoring"
             ? { restorePending: true, ...stoppedComputerControl }
             : {}),

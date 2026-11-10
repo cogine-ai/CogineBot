@@ -5,6 +5,7 @@ import path from "node:path";
 import type { AdapterContext, JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import { SandboxDamagedError } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ComputerBusyError,
@@ -448,6 +449,18 @@ describe("computer recovery preserves live work", () => {
       finishReconnecting();
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the failure episode on a reconnect and clears it on a replacement", async () => {
+    const { deps, row } = await fixture();
+    const tracked = Object.assign(row, { workspaceSaveFailure: { reason: "export_failed" } });
+    await provisionComputer(deps, row.id, context);
+    expect(tracked.workspaceSaveFailure).toEqual({ reason: "export_failed" });
+
+    row.providerRef = null;
+    row.state = "stopped";
+    await provisionComputer(deps, row.id, context);
+    expect(tracked.workspaceSaveFailure).toBe(Prisma.DbNull);
   });
 
   it("uses only one automatic attempt per saved workspace", async () => {

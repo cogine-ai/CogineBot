@@ -12,7 +12,7 @@ import { NativeActionButton } from "./native-action-button";
 type Entry = { path: string; kind: "file" | "dir" };
 const MIME_TYPE = "application/octet-stream";
 
-export function ComputerSavedFiles({ botId }: { botId: string }) {
+export function ComputerSavedFiles({ botId, live = false }: { botId: string; live?: boolean }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
   const [open, setOpen] = useState(false);
@@ -36,7 +36,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
         if (!current()) return;
         const files = await rpc<Entry[]>(
           "computer/files",
-          { botId, path, source: "saved" },
+          { botId, path, source: live ? undefined : "saved" },
           { requestContext, signal: controller.signal },
         );
         if (current()) setEntries(files);
@@ -48,7 +48,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
       controller.abort();
       if (active.current === session) active.current = null;
     };
-  }, [botId, open, path, t]);
+  }, [botId, live, open, path, t]);
 
   function navigate(next: string) {
     setEntries(null);
@@ -71,7 +71,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
       if (!current()) return;
       const { contentBase64 } = await rpc<{ contentBase64: string }>(
         "computer/downloadFile",
-        { botId, path: entry.path, source: "saved" },
+        { botId, path: entry.path, source: live ? undefined : "saved" },
         { requestContext, timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS, signal: controller.signal },
       );
       if (!current()) return;
@@ -106,7 +106,7 @@ export function ComputerSavedFiles({ botId }: { botId: string }) {
   return (
     <View style={{ marginTop: 16, gap: 8 }}>
       <NativeActionButton
-        label={t("Files")}
+        label={live ? t("View files") : t("Files")}
         prominence="secondary"
         selected={open}
         disabled={downloading}
