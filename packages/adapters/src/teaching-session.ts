@@ -23,11 +23,8 @@ import {
   type PrismaClient,
   type ThreadEvents,
 } from "@rakazo/db";
-import {
-  type InteractiveComputerSnapshot,
-  revokeScreenControl,
-  touchInteractiveComputer,
-} from "./computer-control.js";
+import type { InteractiveComputerSnapshot } from "./computer-control.js";
+import { revokeScreenControl, touchInteractiveComputer } from "./computer-control.js";
 import { scheduleComputerSleep } from "./computer-idle.js";
 import { toComputerRef } from "./computer-support.js";
 

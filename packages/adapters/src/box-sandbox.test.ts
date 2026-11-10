@@ -1,4 +1,5 @@
-import { type Command200Response, FetchError } from "@asciidev/box-sdk";
+import type { Command200Response } from "@asciidev/box-sdk";
+import { FetchError } from "@asciidev/box-sdk";
 import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { parse } from "shell-quote";
 import { afterEach, describe, expect, it, vi } from "vitest";

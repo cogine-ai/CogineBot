@@ -7,6 +7,7 @@ import {
   skillTeachingExpireJob,
   skillTeachingExpireJobKey,
 } from "@rakazo/adapter-kit";
+import type { InteractiveComputerSnapshot } from "@rakazo/adapters";
 import {
   acquireComputerExecutionLease,
   appendRecordingEvent,
@@ -18,7 +19,6 @@ import {
   expireTaughtSkillTeaching,
   extendActiveComputerControl,
   getActiveTeachingSession,
-  type InteractiveComputerSnapshot,
   mapTaughtSkill,
   observeStopSnapshot,
   parsePlaybook,
