@@ -386,6 +386,7 @@ function loadComputer(prisma: PrismaClient, computerId: string) {
       homeKey: true,
       scope: true,
       providerRef: true,
+      providerAuthority: true,
       kind: true,
       screenGeneration: true,
       state: true,

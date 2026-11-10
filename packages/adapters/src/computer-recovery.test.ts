@@ -287,7 +287,7 @@ describe("computer recovery preserves live work", () => {
     }
   });
 
-  it("renews a live restore without capping how long the import may take", async () => {
+  it("renews a live restore through import and reconnect without a fixed deadline", async () => {
     const { deps, row } = await fixture();
     row.restorePending = true;
     const importWorkspace = deps.sandbox.importWorkspace.bind(deps.sandbox);
@@ -299,6 +299,14 @@ describe("computer recovery preserves live work", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let markReconnecting!: () => void;
+    let finishReconnecting!: () => void;
+    const reconnecting = new Promise<void>((resolve) => {
+      markReconnecting = resolve;
+    });
+    const reconnectGate = new Promise<void>((resolve) => {
+      finishReconnecting = resolve;
+    });
     vi.spyOn(deps.sandbox, "importWorkspace").mockImplementationOnce(async (...args) => {
       ready();
       await gate;
@@ -306,7 +314,11 @@ describe("computer recovery preserves live work", () => {
     });
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     try {
-      const restoring = provisionComputer(deps, row.id, context);
+      const restoring = provisionComputer(deps, row.id, context, "none", async (stage) => {
+        if (stage !== "reconnecting") return;
+        markReconnecting();
+        await reconnectGate;
+      });
       await started;
       const stamp = row.updatedAt.getTime();
       await vi.advanceTimersByTimeAsync(6 * 60_000);
@@ -315,10 +327,19 @@ describe("computer recovery preserves live work", () => {
         ComputerBusyError,
       );
       release();
+      await reconnecting;
+      const reconnectStamp = row.updatedAt.getTime();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(row.updatedAt.getTime()).toBeGreaterThanOrEqual(reconnectStamp + 5 * 60_000);
+      await expect(provisionComputer(deps, row.id, context)).rejects.toBeInstanceOf(
+        ComputerBusyError,
+      );
+      finishReconnecting();
       await restoring;
       expect(row).toMatchObject({ state: "running", restorePending: false });
     } finally {
       release();
+      finishReconnecting();
       vi.useRealTimers();
     }
   });

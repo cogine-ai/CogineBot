@@ -29,6 +29,7 @@ import {
   isSandboxDamaged,
   isSandboxUnsafeStop,
   markClaimedComputerStop,
+  matchesComputerProvider,
   requestClaimedComputerStop,
   saveComputerBeforeStop,
   stoppedComputerControl,
@@ -249,6 +250,21 @@ export async function provisionComputer(
   if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
     throw new ComputerBusyError();
   await guardComputerBoot(deps.prisma, existing, context);
+  if (existing.providerRef && !matchesComputerProvider(deps.sandbox, toComputerRef(existing))) {
+    await deps.prisma.computer.updateMany({
+      where: {
+        id: computerId,
+        state: existing.state,
+        kind: existing.kind,
+        providerRef: existing.providerRef,
+        providerAuthority: existing.providerAuthority,
+        updatedAt: existing.updatedAt,
+        stopRequestedAt: null,
+      },
+      data: { state: "quarantined", ...stoppedComputerControl },
+    });
+    throw new ComputerRecoveryRequiredError();
+  }
   if (existing.controlLeaseId && !hasActiveComputerControl(existing)) {
     await expireComputerControl(deps, existing.id, existing.controlLeaseId);
     existing = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
@@ -290,7 +306,12 @@ export async function provisionComputer(
             ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
             : {}),
         },
-        data: { updatedAt: new Date() },
+        data: {
+          updatedAt: new Date(),
+          ...(deps.sandbox.providerAuthority
+            ? { providerAuthority: deps.sandbox.providerAuthority(ref.kind) }
+            : {}),
+        },
       });
       if (retained.count !== 1) throw new ComputerBusyError();
       try {
@@ -431,8 +452,12 @@ export async function provisionComputer(
   let recoveryStarted = false;
   let claimRef = previousRef;
   let fallbackRef = previousRef;
+  let fallbackAuthority: string | null | undefined = existing.providerAuthority;
+  const authorityFor = (ref: ComputerRef) => deps.sandbox.providerAuthority?.(ref.kind);
   let claimState = "booting";
   let restorePending = existing.restorePending || !existing.providerRef;
+  let restoreContext = context;
+  let finishRestoreRenewal: (() => Promise<void>) | undefined;
   const bootClaim = () => ({
     id: computerId,
     state: claimState,
@@ -445,9 +470,15 @@ export async function provisionComputer(
     const target = candidate
       ? { providerRef: candidate.providerRef, kind: candidate.kind }
       : undefined;
+    const providerAuthority = candidate && authorityFor(candidate);
     const marked = await deps.prisma.computer.updateMany({
       where: { ...bootClaim(), stopRequestedAt: null },
-      data: { ...target, restorePending: true, updatedAt: claimStamp },
+      data: {
+        ...target,
+        ...(providerAuthority ? { providerAuthority } : {}),
+        restorePending: true,
+        updatedAt: claimStamp,
+      },
     });
     if (marked.count !== 1) throw new ComputerBusyError();
     if (target) claimRef = target;
@@ -465,9 +496,10 @@ export async function provisionComputer(
       },
       context,
     );
-    provisioned = ref;
-    await deps.sandbox.prepare(ref, context);
-    return ref;
+    const providerAuthority = authorityFor(ref);
+    provisioned = providerAuthority ? { ...ref, providerAuthority } : ref;
+    await deps.sandbox.prepare(provisioned, context);
+    return provisioned;
   };
   try {
     await onProgress?.("recreating");
@@ -498,6 +530,7 @@ export async function provisionComputer(
         },
         data: {
           ...damagedRef,
+          ...(damaged.providerAuthority ? { providerAuthority: damaged.providerAuthority } : {}),
           autoRecoveredAt: new Date(),
           ...(replacingDamaged ? { restorePending: true } : {}),
           updatedAt: claimStamp,
@@ -517,11 +550,17 @@ export async function provisionComputer(
       const nextRef = stopped === "gone" ? null : damaged.providerRef;
       const cleared = await deps.prisma.computer.updateMany({
         where: { ...bootClaim(), stopRequestedAt: { not: null } },
-        data: { providerRef: nextRef, stopRequestedAt: null, updatedAt: claimStamp },
+        data: {
+          providerRef: nextRef,
+          ...(nextRef === null && damaged.providerAuthority ? { providerAuthority: null } : {}),
+          stopRequestedAt: null,
+          updatedAt: claimStamp,
+        },
       });
       if (cleared.count !== 1) throw new ComputerBusyError();
       claimRef = { providerRef: nextRef, kind: damaged.kind };
       fallbackRef = claimRef;
+      fallbackAuthority = nextRef ? damaged.providerAuthority : null;
       provisioned = undefined;
       ref = await provision(nextRef ?? undefined);
     }
@@ -539,7 +578,12 @@ export async function provisionComputer(
       const startedAt = new Date(Math.max(Date.now(), claimStamp.getTime() + 1));
       const current = await deps.prisma.computer.updateMany({
         where: { ...bootClaim(), stopRequestedAt: null },
-        data: { ...target, state: "restoring", updatedAt: startedAt },
+        data: {
+          ...target,
+          ...(ref.providerAuthority ? { providerAuthority: ref.providerAuthority } : {}),
+          state: "restoring",
+          updatedAt: startedAt,
+        },
       });
       if (current.count !== 1) throw new ComputerBusyError();
       claimState = "restoring";
@@ -565,32 +609,39 @@ export async function provisionComputer(
             renewal = undefined;
           });
       }, 30_000);
-      try {
-        await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, {
-          ...context,
-          signal,
-        });
-      } finally {
+      finishRestoreRenewal = async () => {
         clearInterval(timer);
         await renewal;
-      }
-      signal.throwIfAborted();
+      };
+      restoreContext = { ...context, signal };
+      await restoreComputerWorkspace(
+        deps.home,
+        deps.sandbox,
+        existing.homeKey,
+        ref,
+        restoreContext,
+      );
     }
+    restoreContext.signal.throwIfAborted();
     await onProgress?.("reconnecting");
     await ensureComputerWorkspaceLayout(
       deps.sandbox,
       ref,
       parseComputerMode(existing.scope),
       context.botId,
-      context,
+      restoreContext,
     );
     // Bots deleted while this computer was not running could not remove their folders then.
     // Skip only plain reconnects; a provider may start or replace the computer during one.
     if (existing.scope === "team" && (!reconnecting || replacement || ref.started === true)) {
-      await removeDeletedBotWorkspaces(deps, ref, existing.spaceId, context).catch((error) => {
-        getLogger().error("team bot folder cleanup", error);
-      });
+      await removeDeletedBotWorkspaces(deps, ref, existing.spaceId, restoreContext).catch(
+        (error) => {
+          getLogger().error("team bot folder cleanup", error);
+        },
+      );
     }
+    await finishRestoreRenewal?.();
+    restoreContext.signal.throwIfAborted();
     const activeControl = hasActiveComputerControl(existing);
     const activated = await deps.prisma.computer.updateMany({
       where: {
@@ -604,6 +655,7 @@ export async function provisionComputer(
         state: "running",
         providerRef: ref.providerRef,
         kind: ref.kind,
+        ...(ref.providerAuthority ? { providerAuthority: ref.providerAuthority } : {}),
         restorePending: false,
         ...(!reconnecting || recoveryStarted
           ? {
@@ -625,6 +677,7 @@ export async function provisionComputer(
     }
     return ref;
   } catch (error) {
+    await finishRestoreRenewal?.();
     // A failed reconnect never owns an existing workspace, even if setup failed.
     const unsafe = isSandboxUnsafeStop(error);
     const damaged = isSandboxDamaged(error);
@@ -636,7 +689,12 @@ export async function provisionComputer(
         ? { ...context, signal: AbortSignal.timeout(120_000) }
         : context;
       try {
-        await markClaimedComputerStop(deps.prisma, bootClaim(), cleanup, target);
+        await markClaimedComputerStop(deps.prisma, bootClaim(), cleanup, {
+          ...target,
+          ...(provisioned.providerAuthority
+            ? { providerAuthority: provisioned.providerAuthority }
+            : {}),
+        });
         claimRef = target;
         await deps.sandbox
           .releaseScreen?.(provisioned, cleanup, { onlyIfRunning: true })
@@ -672,10 +730,24 @@ export async function provisionComputer(
             ? { restorePending: true, ...stoppedComputerControl }
             : {}),
           ...((damaged || rollbackError) && provisioned
-            ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
+            ? {
+                providerRef: provisioned.providerRef,
+                kind: provisioned.kind,
+                ...(provisioned.providerAuthority
+                  ? { providerAuthority: provisioned.providerAuthority }
+                  : {}),
+              }
             : rolledBack === "gone"
               ? {
                   ...fallbackRef,
+                  ...(fallbackAuthority !== undefined
+                    ? {
+                        providerAuthority:
+                          fallbackRef.providerRef === claimRef.providerRef
+                            ? null
+                            : fallbackAuthority,
+                      }
+                    : {}),
                   providerRef:
                     fallbackRef.providerRef === claimRef.providerRef
                       ? null

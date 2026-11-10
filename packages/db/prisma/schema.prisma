@@ -1251,6 +1251,7 @@ model Computer {
   autoRecoveredAt         DateTime?
   kind                    String
   providerRef             String?
+  providerAuthority       String?
   state                   String                   @default("stopped")
   controlHolder           String                   @default("none")
   controlLeaseId          String?

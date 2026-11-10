@@ -95,6 +95,7 @@ import {
   loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
+  matchesComputerProvider,
   mcpServerHealthDto,
   modelConnectionErrorMessage,
   modelCredentialAuthKindsForSpace,
@@ -3236,7 +3237,8 @@ export function createRouter(deps: RouterDeps) {
           !bot.computer.restorePending &&
           !bot.computer.stopRequestedAt &&
           bot.computer.kind !== "desktop" &&
-          bot.computer.providerRef
+          bot.computer.providerRef &&
+          matchesComputerProvider(deps.sandbox, toComputerRef(bot.computer))
         ) {
           try {
             await ensureComputerWorkspaceLayout(

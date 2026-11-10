@@ -22,17 +22,37 @@ export const stoppedComputerControl = {
   controlRunId: null,
 } as const;
 
+export function matchesComputerProvider(sandbox: SandboxProvider, ref: ComputerRef): boolean {
+  return !ref.providerAuthority || sandbox.providerAuthority?.(ref.kind) === ref.providerAuthority;
+}
+
+function powerProvider(sandbox: SandboxProvider, ref: ComputerRef): SandboxProvider | undefined {
+  if (!matchesComputerProvider(sandbox, ref)) return undefined;
+  return sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
+}
+
+function needsProviderIdentityProof(sandbox: SandboxProvider, ref: ComputerRef): boolean {
+  return Boolean(
+    sandbox.providerForPower &&
+      !ref.providerAuthority &&
+      ref.kind !== "desktop" &&
+      sandbox.describe().id.replace(/-emulator$/, "") !== ref.kind,
+  );
+}
+
 export async function inspectComputerPower(
   sandbox: SandboxProvider,
   ref: ComputerRef,
   context: AdapterContext,
 ): Promise<SandboxPowerState> {
-  const provider = sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
+  const provider = powerProvider(sandbox, ref);
   if (!provider?.inspectPowerState || context.signal.aborted) return "unknown";
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
-  return withAbort(provider.inspectPowerState(ref, { ...context, signal }), signal).catch(
-    () => "unknown" as const,
-  );
+  const state = await withAbort(
+    provider.inspectPowerState(ref, { ...context, signal }),
+    signal,
+  ).catch(() => "unknown" as const);
+  return state === "gone" && needsProviderIdentityProof(sandbox, ref) ? "unknown" : state;
 }
 
 /** Match the provider before deciding that a stopped computer needs no new export. */
@@ -100,18 +120,26 @@ export async function checkpointComputerBeforeStop(
   context: AdapterContext,
   claim: Prisma.ComputerWhereInput,
 ): Promise<"gone" | "damaged" | undefined> {
+  const provider = powerProvider(deps.sandbox, ref);
+  if (!provider) throw new Error("The original computer provider is unavailable");
   let exported = false;
   let stagingFailed = false;
   try {
-    await checkpointAndRecordComputerWorkspace(deps, computer, ref, context, {
-      claim,
-      onExported: () => {
-        exported = true;
+    await checkpointAndRecordComputerWorkspace(
+      { ...deps, sandbox: provider },
+      computer,
+      ref,
+      context,
+      {
+        claim,
+        onExported: () => {
+          exported = true;
+        },
+        onStagingFailure: () => {
+          stagingFailed = true;
+        },
       },
-      onStagingFailure: () => {
-        stagingFailed = true;
-      },
-    });
+    );
     return undefined;
   } catch (error) {
     if (!exported && !stagingFailed && !context.signal.aborted) {
@@ -157,7 +185,7 @@ export async function markClaimedComputerStop(
   prisma: PrismaClient,
   claim: Prisma.ComputerWhereInput & { updatedAt: Date },
   context: AdapterContext,
-  target?: { providerRef: string; kind: ComputerRef["kind"] },
+  target?: { providerRef: string; kind: ComputerRef["kind"]; providerAuthority?: string | null },
 ): Promise<void> {
   context.signal.throwIfAborted();
   const pending = await prisma.computer.updateMany({
@@ -189,8 +217,13 @@ export async function confirmComputerStop(
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]);
   try {
     signal.throwIfAborted();
-    const provider = sandbox.providerForPower ? sandbox.providerForPower(ref) : sandbox;
+    const provider = powerProvider(sandbox, ref);
     if (!provider) throw new Error("The original computer provider is unavailable");
+    if (needsProviderIdentityProof(sandbox, ref)) {
+      const current = await inspectComputerPower(sandbox, ref, context);
+      if (current !== "running" && current !== "stopped")
+        throw new Error("The original computer could not be verified at this provider");
+    }
     const providerContext = { ...context, signal };
     const request =
       operation === "destroy" && options

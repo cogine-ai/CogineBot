@@ -122,6 +122,8 @@ export interface SandboxProvider {
   isRunning?(computer: ComputerRef, context: AdapterContext): Promise<boolean>;
   /** Select the configured provider that owns an existing reference for power operations. */
   providerForPower?(computer: ComputerRef): SandboxProvider | undefined;
+  /** Opaque identity of the configured provider account and endpoint for this kind. */
+  providerAuthority?(kind: ComputerRef["kind"]): string | undefined;
   /** Read the exact reference without starting it. Unknown is never proof of a stop. */
   inspectPowerState?(computer: ComputerRef, context: AdapterContext): Promise<SandboxPowerState>;
   /** Perform idempotent provider setup after the lifecycle has captured the reference. */

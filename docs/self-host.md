@@ -1154,7 +1154,7 @@ db:migrate`; a missing script or failed migration must exit nonzero. API and wor
 never run administrator DDL. Keep them stopped after a failed migration or readiness
 check. The maintenance check authenticates roles and keys but does not reverse
 schema changes. A manual rollback must use the reviewed current maintenance image
-to verify the database first, then restore only cached runtime images with
+to run `db:row-security verify --computer-rollback` first, then restore only cached runtime images with
 `--no-deps --no-build --pull never`.
 
 The updater sidecar has its own image and tag so an update never recreates the process performing

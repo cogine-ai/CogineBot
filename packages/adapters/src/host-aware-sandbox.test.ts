@@ -22,6 +22,7 @@ const ctx = {
 
 describe("host-aware sandbox", () => {
   it("retires through the recorded provider when its original configuration is still available", async () => {
+    vi.spyOn(E2BSandboxProvider.prototype, "inspectPowerState").mockResolvedValue("stopped");
     const destroyed = vi
       .spyOn(E2BSandboxProvider.prototype, "destroy")
       .mockResolvedValue(undefined);
@@ -41,6 +42,49 @@ describe("host-aware sandbox", () => {
     await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).rejects.toMatchObject({
       name: "SandboxUnsafeStopError",
     });
+  });
+
+  it("routes a Docker reference after switching to a configured remote provider", async () => {
+    const destroyed = vi
+      .spyOn(DockerSandboxProvider.prototype, "destroy")
+      .mockResolvedValue(undefined);
+    const opts = { supervisorToken: "synthetic-token", supervisorUrl: "http://supervisor.test" };
+    const original = createRunSandbox("docker", opts);
+    const switched = createRunSandbox("e2b", { ...opts, e2bApiKey: "synthetic-key" });
+    const ref = {
+      id: "old",
+      botId: "bot",
+      kind: "docker",
+      providerRef: "old",
+      providerAuthority: original.providerAuthority?.("docker"),
+    } as const;
+    await expect(confirmComputerStop(switched, ref, ctx, "destroy")).resolves.toBe("gone");
+    expect(destroyed).toHaveBeenCalledOnce();
+
+    const different = createRunSandbox("docker", { ...opts, supervisorUrl: "http://other.test" });
+    await expect(confirmComputerStop(different, ref, ctx, "destroy")).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+    expect(destroyed).toHaveBeenCalledOnce();
+  });
+
+  it("does not pass emulator references to a live provider", async () => {
+    const live = vi.spyOn(E2BSandboxProvider.prototype, "destroy");
+    const sandbox = createRunSandbox("e2b-emulator", { e2bApiKey: "synthetic-key" });
+    const ref = await sandbox.provision({ botId: "bot", homePath: "/unused" }, ctx);
+    await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).resolves.toBe("gone");
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unbound switched reference unknown when a different account cannot find it", async () => {
+    vi.spyOn(E2BSandboxProvider.prototype, "inspectPowerState").mockResolvedValue("gone");
+    const destroy = vi.spyOn(E2BSandboxProvider.prototype, "destroy");
+    const sandbox = createRunSandbox("docker", { e2bApiKey: "synthetic-key" });
+    const ref = { id: "old", botId: "bot", kind: "e2b", providerRef: "old" } as const;
+    await expect(confirmComputerStop(sandbox, ref, ctx, "destroy")).rejects.toMatchObject({
+      name: "SandboxUnsafeStopError",
+    });
+    expect(destroy).not.toHaveBeenCalled();
   });
 
   const hostRoot = mkdtempSync(path.join(tmpdir(), "rakazo-host-root-"));
