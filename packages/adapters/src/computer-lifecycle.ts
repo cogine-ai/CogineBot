@@ -330,6 +330,7 @@ export async function provisionComputer(
   });
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
+  let restorePending = existing.restorePending || !existing.providerRef;
   try {
     await onProgress?.("recreating");
     const ref = await deps.sandbox.provision(
@@ -356,6 +357,7 @@ export async function provisionComputer(
           data: { restorePending: true, updatedAt: claimStamp },
         });
         if (marked.count !== 1) throw new ComputerBusyError();
+        restorePending = true;
       }
       await onProgress?.("restoring");
       await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, context);
@@ -425,7 +427,7 @@ export async function provisionComputer(
           maintenanceId: existing.maintenanceId ?? null,
         },
         data: {
-          state: reconnecting ? "running" : "error",
+          state: reconnecting && !restorePending ? "running" : "error",
           ...(!reconnecting && rollbackError && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
             : {}),
@@ -973,8 +975,8 @@ export async function replaceComputer(
     // Retry the checkpoint even after an earlier update left the row in error.
     if (
       oldRef &&
-      (mode === "update" ||
-        (existing.state === "running" && mode === "recover" && !existing.restorePending))
+      !existing.restorePending &&
+      (mode === "update" || (existing.state === "running" && mode === "recover"))
     ) {
       await onProgress?.("saving");
       let exported = false;

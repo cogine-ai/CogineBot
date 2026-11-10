@@ -3120,7 +3120,11 @@ export function createRouter(deps: RouterDeps) {
       boot: newWork.computer.boot.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.computer) throw new IsolationError();
-        if (bot.computer.state === "running" && bot.computer.providerRef) {
+        if (
+          bot.computer.state === "running" &&
+          !bot.computer.restorePending &&
+          bot.computer.providerRef
+        ) {
           try {
             await ensureComputerWorkspaceLayout(
               deps.sandbox,
@@ -3605,7 +3609,7 @@ export function createRouter(deps: RouterDeps) {
         const ctx = computerContext(context.actor, bot.id, "files");
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let entries: Awaited<ReturnType<SandboxProvider["listFiles"]>>;
-        if (computer.state === "running" && computer.providerRef) {
+        if (computer.state === "running" && !computer.restorePending && computer.providerRef) {
           await deps.prisma.computer.updateMany({
             where: { id: computer.id, state: "running" },
             data: { updatedAt: new Date() },
@@ -3629,7 +3633,11 @@ export function createRouter(deps: RouterDeps) {
         const ctx = computerContext(context.actor, bot.id, "read");
         const storedPath = resolveBotWorkspacePath(computerMode, bot.id, input.path);
         let content: string;
-        if (bot.computer.state === "running" && bot.computer.providerRef) {
+        if (
+          bot.computer.state === "running" &&
+          !bot.computer.restorePending &&
+          bot.computer.providerRef
+        ) {
           await deps.prisma.computer.updateMany({
             where: { id: bot.computer.id, state: "running" },
             data: { updatedAt: new Date() },
@@ -3658,7 +3666,7 @@ export function createRouter(deps: RouterDeps) {
         const computer = bot.computer;
         if (!computer) throw new IsolationError();
         // The stopped-computer home store is text-only; binary transfer needs the live machine.
-        if (computer.state !== "running" || !computer.providerRef) {
+        if (computer.state !== "running" || computer.restorePending || !computer.providerRef) {
           throw new ORPCError("CONFLICT", { message: "Start the computer first." });
         }
         await keepComputerAwake(deps, computer.id);

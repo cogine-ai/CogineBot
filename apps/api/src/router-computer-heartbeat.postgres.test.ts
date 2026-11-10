@@ -34,9 +34,12 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const stopProvider = vi.fn().mockResolvedValue(undefined);
   const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
+  const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
   let root: string;
+  let home: LocalAgentHomeStore;
   let heartbeat: () => Promise<unknown>;
   let stopComputer: () => Promise<unknown>;
+  let readComputerFile: () => Promise<unknown>;
 
   beforeAll(async () => {
     database = createDb(databaseUrl!);
@@ -74,10 +77,11 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       },
     });
     root = await mkdtemp(path.join(tmpdir(), "computer-router-test-"));
+    home = new LocalAgentHomeStore(root, database.prisma);
     const deps = {
       prisma: instrumented as unknown as PrismaClient,
-      sandbox: { keepAlive, exportWorkspace, stop: stopProvider },
-      home: new LocalAgentHomeStore(root, database.prisma),
+      sandbox: { keepAlive, exportWorkspace, stop: stopProvider, readFile: providerRead },
+      home,
       jobs: { enqueue, cancel: vi.fn() },
       env: { defaultProvider: "fake", defaultModel: "fake", sandboxProvider: "fake" },
       dataDir: root,
@@ -85,12 +89,14 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     heartbeat = () => client.computer.heartbeat({ botId });
     stopComputer = () => client.computer.stop({ botId });
+    readComputerFile = () => client.computer.readFile({ botId, path: "notes.txt" });
   });
 
   beforeEach(async () => {
     keepAlive.mockClear();
     enqueue.mockClear();
     stopProvider.mockClear();
+    providerRead.mockClear();
     casCounts.length = 0;
     afterSnapshot = undefined;
     botId = `heartbeat-bot-${randomUUID()}`;
@@ -172,6 +178,25 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       homeRevision: "last-saved-revision",
       homeRevisionAt: null,
     });
+  });
+
+  it("previews the saved home while the live provider still has a pending restore", async () => {
+    await home.writeFile(computerId, `bots/${botId}/notes.txt`, "last saved notes", {
+      ...actor,
+      operationId: "save-test",
+      traceId: "save-test",
+      signal: new AbortController().signal,
+    });
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { restorePending: true },
+    });
+
+    await expect(readComputerFile()).resolves.toEqual({
+      path: "notes.txt",
+      content: "last saved notes",
+    });
+    expect(providerRead).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -826,6 +826,7 @@ describe("computer provisioning", () => {
               ? vi
                   .fn()
                   .mockResolvedValueOnce({ count: 1 })
+                  .mockResolvedValueOnce({ count: 1 })
                   .mockRejectedValueOnce(failure)
                   .mockResolvedValue({ count: 1 })
               : vi.fn().mockResolvedValue({ count: 1 }),
@@ -870,7 +871,7 @@ describe("computer provisioning", () => {
             kind: "box",
             updatedAt: expect.any(Date),
           },
-          data: { state: "running" },
+          data: { state: stage === "prepare" ? "running" : "error" },
         });
         expect(original).toMatchObject({
           state: "running",

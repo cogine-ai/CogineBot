@@ -17,6 +17,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterContext, AgentHomeStore, PortableFile } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -25,6 +27,8 @@ import { fileHandlePath } from "./file-handle-path.js";
 const SAVE_STAGING_PREFIX = "workspace-save-";
 const STAGING_HEARTBEAT_MS = 30_000;
 const STALE_STAGING_MS = 5 * 60_000;
+const HOME_LOCK_WAIT_MS = 20_000;
+const SQLITE_BUSY = 5;
 
 export interface HomePublisher {
   prisma: PrismaClient;
@@ -97,14 +101,60 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     });
   }
 
+  async removeHome(botId: string) {
+    await this.withBotWrite(botId, async () => {
+      const directory = this.botDir(botId);
+      await rm(directory, { recursive: true, force: true });
+      await rm(`${directory}.previous`, { recursive: true, force: true });
+      await rm(this.pendingPath(botId), { force: true });
+      await rm(this.markerPath(botId), { force: true });
+    });
+  }
+
   async checkout(botId: string, dest: string, _context: AdapterContext): Promise<string> {
     await this.waitForBotWrite(botId);
-    await this.recoverInterruptedCommit(botId);
-    await mkdir(dest, { recursive: true });
-    const src = this.botDir(botId);
-    await mkdir(src, { recursive: true });
-    await copyDir(src, dest);
-    return "working";
+    return this.withHomeLock(botId, async () => {
+      await this.recoverInterruptedCommit(botId);
+      await mkdir(dest, { recursive: true });
+      const src = this.botDir(botId);
+      await mkdir(src, { recursive: true });
+      await copyDir(src, dest);
+      return "working";
+    });
+  }
+
+  /** API and worker share the volume. An OS-backed lock outlives a timed-out DB transaction. */
+  async withHomeLock<T>(botId: string, work: () => Promise<T>): Promise<T> {
+    const unlock = await this.lockHome(botId);
+    try {
+      return await work();
+    } finally {
+      unlock();
+    }
+  }
+
+  private async lockHome(botId: string) {
+    this.botDir(botId);
+    const directory = path.join(this.root, "workspace-locks");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    // Keep the empty lock file stable. Replacing it while another process holds it
+    // would let two processes lock different inodes for the same home.
+    const database = new DatabaseSync(path.join(directory, `${botId}.sqlite`), { timeout: 0 });
+    const deadline = performance.now() + HOME_LOCK_WAIT_MS;
+    try {
+      while (true) {
+        try {
+          database.exec("BEGIN IMMEDIATE");
+          return () => database.close();
+        } catch (error) {
+          if (!isBusyLock(error) || performance.now() >= deadline) throw error;
+          await delay(50);
+        }
+      }
+    } catch (error) {
+      database.close();
+      throw error;
+    }
   }
 
   async createStaging() {
@@ -332,17 +382,22 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     { directory = "", skipHidden = false }: { directory?: string; skipHidden?: boolean } = {},
   ): AsyncIterable<PortableFile> {
     await this.waitForBotWrite(botId);
-    await this.recoverInterruptedCommit(botId);
-    const dir = this.botDir(botId);
-    // Resolve the configured store first so a linked home cannot redefine containment.
-    const storeRoot = await resolveExportPath(this.root);
-    if (!storeRoot) return;
-    const home = await resolveExportPath(dir);
-    if (home !== safeJoin(storeRoot, `homes/${botId}`)) return;
-    const expected = safeJoin(home, directory);
-    const root = await resolveExportPath(expected);
-    if (root !== expected) return;
-    yield* walkFiles(root, root, skipHidden);
+    const unlock = await this.lockHome(botId);
+    try {
+      await this.recoverInterruptedCommit(botId);
+      const dir = this.botDir(botId);
+      // Resolve the configured store first so a linked home cannot redefine containment.
+      const storeRoot = await resolveExportPath(this.root);
+      if (!storeRoot) return;
+      const home = await resolveExportPath(dir);
+      if (home !== safeJoin(storeRoot, `homes/${botId}`)) return;
+      const expected = safeJoin(home, directory);
+      const root = await resolveExportPath(expected);
+      if (root !== expected) return;
+      yield* walkFiles(root, root, skipHidden);
+    } finally {
+      unlock();
+    }
   }
 
   async readFile(
@@ -352,9 +407,11 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     options?: { maxBytes?: number },
   ): Promise<string> {
     await this.waitForBotWrite(botId);
-    await this.recoverInterruptedCommit(botId);
-    const full = await containedExistingPath(this.botDir(botId), filePath);
-    const handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const handle = await this.withHomeLock(botId, async () => {
+      await this.recoverInterruptedCommit(botId);
+      const full = await containedExistingPath(this.botDir(botId), filePath);
+      return open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    });
     try {
       if (options?.maxBytes !== undefined) {
         const info = await handle.stat();
@@ -392,24 +449,26 @@ export class LocalAgentHomeStore implements AgentHomeStore {
 
   async list(botId: string, dirPath: string, _context: AdapterContext) {
     await this.waitForBotWrite(botId);
-    await this.recoverInterruptedCommit(botId);
-    const root = this.botDir(botId);
-    const candidate = safeJoin(root, dirPath);
-    const full = await ensureContainedDirectory(root, candidate);
-    const entries = await readdir(full, { withFileTypes: true });
-    const listed = await Promise.all(
-      entries.map(async (entry) => {
-        const child = await containedTarget(root, path.join(full, entry.name)).catch(() => null);
-        if (!child) return null;
-        const info = await stat(child);
-        return {
-          path: path.posix.join(dirPath.replace(/\\/g, "/"), entry.name),
-          kind: info.isDirectory() ? ("dir" as const) : ("file" as const),
-          size: info.size,
-        };
-      }),
-    );
-    return listed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    return this.withHomeLock(botId, async () => {
+      await this.recoverInterruptedCommit(botId);
+      const root = this.botDir(botId);
+      const candidate = safeJoin(root, dirPath);
+      const full = await ensureContainedDirectory(root, candidate);
+      const entries = await readdir(full, { withFileTypes: true });
+      const listed = await Promise.all(
+        entries.map(async (entry) => {
+          const child = await containedTarget(root, path.join(full, entry.name)).catch(() => null);
+          if (!child) return null;
+          const info = await stat(child);
+          return {
+            path: path.posix.join(dirPath.replace(/\\/g, "/"), entry.name),
+            kind: info.isDirectory() ? ("dir" as const) : ("file" as const),
+            size: info.size,
+          };
+        }),
+      );
+      return listed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    });
   }
 
   private markerPath(botId: string) {
@@ -464,7 +523,7 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     this.botWrites.set(botId, queued);
     await previous.catch(() => undefined);
     try {
-      return await work();
+      return await this.withHomeLock(botId, work);
     } finally {
       release();
       if (this.botWrites.get(botId) === queued) this.botWrites.delete(botId);
@@ -474,6 +533,15 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   private async waitForBotWrite(botId: string) {
     await (this.botWrites.get(botId) ?? Promise.resolve());
   }
+}
+
+function isBusyLock(error: unknown) {
+  return (
+    error instanceof Error &&
+    "errcode" in error &&
+    typeof error.errcode === "number" &&
+    (error.errcode & 0xff) === SQLITE_BUSY
+  );
 }
 
 function ignoreMissingFile(error: NodeJS.ErrnoException) {

@@ -666,10 +666,14 @@ export async function destroyBot(
     }),
   );
   if (dedicated) {
-    await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
-      recursive: true,
-      force: true,
-    }).catch(() => undefined);
+    if (deps.home instanceof LocalAgentHomeStore) {
+      await deps.home.removeHome(dedicated.homeKey).catch(() => undefined);
+    } else {
+      await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
+        recursive: true,
+        force: true,
+      }).catch(() => undefined);
+    }
   }
   await removeTeamBrowserProfile(deps, bot.id, sharedComputer, context);
   await removeTeamBotWorkspace(deps, bot, context).catch((error) => {
@@ -931,18 +935,20 @@ async function removeStoredTeamDirectory(
     const homeDir = resolveAgentHomePath(home, computer.homeKey, deps.dataDir ?? "./data");
     return removeContainedDirectory(homeDir, parent, name);
   }
-  await prisma.$transaction(
-    async (tx) => {
-      await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computer.id} FOR UPDATE`;
-      const record = await tx.computer.findFirst({
-        where: { id: computer.id, homeKey: computer.homeKey, scope: "team" },
-        select: { homeRevision: true, kind: true },
-      });
-      if (!record || !REMOTE_TEAM_SANDBOX_KINDS.has(record.kind)) return;
-      await home.reconcileCheckpoint(computer.homeKey, record.homeRevision);
-      await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name);
-    },
-    { timeout: 20_000 },
+  await home.withHomeLock(computer.homeKey, () =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computer.id} FOR UPDATE`;
+        const record = await tx.computer.findFirst({
+          where: { id: computer.id, homeKey: computer.homeKey, scope: "team" },
+          select: { homeRevision: true, kind: true },
+        });
+        if (!record || !REMOTE_TEAM_SANDBOX_KINDS.has(record.kind)) return;
+        await home.reconcileCheckpoint(computer.homeKey, record.homeRevision);
+        await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name);
+      },
+      { timeout: 20_000 },
+    ),
   );
 }
 
