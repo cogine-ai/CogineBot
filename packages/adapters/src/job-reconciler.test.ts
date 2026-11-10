@@ -8,6 +8,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { createThreadMessage } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import { returnBotMessageOutcome } from "./bot-messages.js";
 import {
@@ -235,6 +236,161 @@ describe("createJobReconciler", () => {
     } finally {
       pending.resolve();
       await reconciler.stop();
+    }
+  });
+
+  it("recovers runs, retries and expired control while an active-limit scan is pending", async () => {
+    const pending = deferred();
+    const now = new Date();
+    const prisma = retryScanPrisma(
+      [
+        { id: "queued", status: "queued", updatedAt: now },
+        { id: "retry", status: "failed", updatedAt: now, routineRetryAt: now },
+      ],
+      fakePrisma(
+        [],
+        [],
+        [
+          {
+            id: "computer",
+            controlBotId: "bot",
+            controlLeaseId: "lease",
+            controlLeaseExpiresAt: now,
+            updatedAt: now,
+          },
+        ],
+      ),
+    );
+    const { jobs, enqueue } = publisher();
+    const reconcileComputerActiveLimits = vi.fn(() => pending.promise);
+    const reconciler = createJobReconciler({ prisma, jobs, reconcileComputerActiveLimits });
+    const first = reconciler.reconcileOnce();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "routine.retry" }));
+      expect(enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "computer.control-expire" }),
+      );
+      await first;
+      enqueue.mockClear();
+      await reconciler.reconcileOnce();
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
+      expect(reconcileComputerActiveLimits).toHaveBeenCalledOnce();
+      expect(prisma.run.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({ taskId: true }),
+        }),
+      );
+    } finally {
+      pending.resolve();
+      await first;
+      await reconciler.stop();
+    }
+  });
+
+  it.each(["active-limit", "group"] as const)(
+    "waits for both provider cleanups before releasing leadership when %s finishes first",
+    async (first) => {
+      const activeLimit = deferred();
+      const group = deferred();
+      const leadership = {
+        tryAcquire: vi.fn(async () => true),
+        release: vi.fn(async () => undefined),
+      };
+      const reconcileComputerActiveLimits = vi.fn(() => activeLimit.promise);
+      const reconcileGroupRunTeardowns = vi.fn(() => group.promise);
+      const { jobs } = publisher();
+      const reconciler = createJobReconciler({
+        prisma: fakePrisma(),
+        jobs,
+        leadership,
+        reconcileComputerActiveLimits,
+        reconcileGroupRunTeardowns,
+      });
+      const pass = reconciler.reconcileOnce();
+      await vi.waitFor(() => {
+        expect(reconcileComputerActiveLimits).toHaveBeenCalledOnce();
+        expect(reconcileGroupRunTeardowns).toHaveBeenCalledOnce();
+      });
+      const stopped = reconciler.stop();
+      try {
+        expect(leadership.release).not.toHaveBeenCalled();
+        (first === "active-limit" ? activeLimit : group).resolve();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(leadership.release).not.toHaveBeenCalled();
+        await reconciler.reconcileOnce();
+        expect(reconcileComputerActiveLimits).toHaveBeenCalledOnce();
+      } finally {
+        activeLimit.resolve();
+        group.resolve();
+        await Promise.all([pass, stopped]);
+      }
+      expect(leadership.release).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["throw", "reject"] as const)(
+    "logs an active-limit %s and permits the next recovery pass",
+    async (mode) => {
+      const failure = new Error("Synthetic provider scan failure");
+      const error = vi.spyOn(getLogger(), "error").mockImplementation(() => undefined);
+      const reconcileComputerActiveLimits = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          if (mode === "throw") throw failure;
+          return Promise.reject(failure);
+        })
+        .mockResolvedValue(undefined);
+      const { jobs } = publisher();
+      const reconciler = createJobReconciler({
+        prisma: fakePrisma(),
+        jobs,
+        reconcileComputerActiveLimits,
+      });
+      try {
+        await reconciler.reconcileOnce();
+        expect(error).toHaveBeenCalledWith("computer active limit reconciliation", failure);
+        await reconciler.reconcileOnce();
+        expect(reconcileComputerActiveLimits).toHaveBeenCalledTimes(2);
+        await expect(reconciler.stop()).resolves.toBeUndefined();
+      } finally {
+        await reconciler.stop();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("finishes stopping after a pending active-limit scan rejects", async () => {
+    const pending = deferred();
+    const failure = new Error("Synthetic late provider scan failure");
+    const error = vi.spyOn(getLogger(), "error").mockImplementation(() => undefined);
+    const leadership = {
+      tryAcquire: vi.fn(async () => true),
+      release: vi.fn(async () => undefined),
+    };
+    const { jobs } = publisher();
+    const reconciler = createJobReconciler({
+      prisma: fakePrisma(),
+      jobs,
+      leadership,
+      reconcileComputerActiveLimits: () =>
+        pending.promise.then(() => {
+          throw failure;
+        }),
+    });
+    try {
+      await reconciler.reconcileOnce();
+      const stopped = reconciler.stop();
+      expect(leadership.release).not.toHaveBeenCalled();
+      pending.resolve();
+      await expect(stopped).resolves.toBeUndefined();
+      expect(error).toHaveBeenCalledWith("computer active limit reconciliation", failure);
+      expect(leadership.release).toHaveBeenCalledOnce();
+    } finally {
+      pending.resolve();
+      await reconciler.stop();
+      error.mockRestore();
     }
   });
 
@@ -784,7 +940,13 @@ describe("createJobReconciler", () => {
       release: vi.fn(async () => undefined),
     };
     const { jobs, enqueue } = publisher();
-    const reconciler = createJobReconciler({ prisma, jobs, leadership });
+    const reconcileComputerActiveLimits = vi.fn(async () => undefined);
+    const reconciler = createJobReconciler({
+      prisma,
+      jobs,
+      leadership,
+      reconcileComputerActiveLimits,
+    });
 
     await reconciler.reconcileOnce();
     await reconciler.stop();
@@ -794,6 +956,7 @@ describe("createJobReconciler", () => {
     expect(prisma.computer.findMany).not.toHaveBeenCalled();
     expect(prisma.messagingOutbound.findFirst).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
+    expect(reconcileComputerActiveLimits).not.toHaveBeenCalled();
     expect(leadership.release).toHaveBeenCalledOnce();
   });
 
