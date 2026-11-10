@@ -754,16 +754,29 @@ async function* walkE2BWorkspace(
   }
   if (limits) {
     for (const { relative, mode } of files) {
-      yield {
-        path: relative,
-        executable: Boolean(mode & 0o100),
-        body: streamWorkspaceBody(() =>
-          desktop.files.read(workspacePath(E2B_WORKSPACE, relative), {
-            format: "stream",
-            signal: context.signal,
-          }),
-        ),
-      };
+      const file = { path: relative, executable: Boolean(mode & 0o100) };
+      const read = () =>
+        desktop.files.read(workspacePath(E2B_WORKSPACE, relative), {
+          format: "stream",
+          signal: context.signal,
+        });
+      if (!relative.startsWith(".browser-profiles/")) {
+        yield { ...file, body: streamWorkspaceBody(read) };
+        continue;
+      }
+      // A profile file may disappear after listing. Omit it before staging creates a file.
+      const body = await read().catch((error: unknown) => {
+        context.signal.throwIfAborted();
+        if (error instanceof FileNotFoundError) return null;
+        throw error;
+      });
+      if (body === null) continue;
+      try {
+        yield { ...file, body: streamWorkspaceBody(async () => body) };
+      } finally {
+        // Staging can reject the file on limits before it starts consuming the body.
+        if (!body.locked) void body.cancel().catch(() => undefined);
+      }
     }
     for (const relative of directories) yield* walkE2BWorkspace(desktop, relative, context, limits);
     return;
