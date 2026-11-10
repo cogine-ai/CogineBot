@@ -1687,7 +1687,7 @@ export async function pauseRunForTakeover(
       activeUserLease && computer?.controlBotId && computer.controlBotId !== input.botId,
     );
     const marked = await tx.computer.updateMany({
-      where: { id: input.computerId, spaceId: input.spaceId },
+      where: { id: input.computerId, spaceId: input.spaceId, restorePending: false },
       data: retainControl
         ? { state: "running", controlRunId: input.runId }
         : preserveForeignLease

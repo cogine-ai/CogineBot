@@ -24,6 +24,7 @@ function fixture(
     screenGeneration: 0,
     providerRef: "fake-provider",
     state: "running",
+    restorePending: false,
     controlHolder: "user",
     controlLeaseId: "lease",
     controlBotId: "bot",
@@ -118,6 +119,20 @@ describe("screen capability lifecycle authorization", () => {
       if (change === "holder") computer.controlHolder = "agent";
       if (change === "bot") computer.controlBotId = "other";
       expect((await request()).status).toBe(403);
+    },
+  );
+  it.each(["booting", "restore pending"] as const)(
+    "revokes the interactive URL but keeps watching during %s",
+    async (change) => {
+      const control = fixture(true);
+      const view = fixture();
+      expect((await control.request()).status).toBe(200);
+      for (const { computer } of [control, view]) {
+        if (change === "booting") computer.state = "booting";
+        else computer.restorePending = true;
+      }
+      expect((await control.request()).status).toBe(403);
+      expect((await view.request()).status).toBe(200);
     },
   );
   it("rejects legacy stateless capabilities", async () => {

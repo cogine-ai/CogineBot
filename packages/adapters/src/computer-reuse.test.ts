@@ -28,14 +28,17 @@ async function fixture() {
     scope: "team",
     state: "running",
     screenGeneration: 7,
+    restorePending: false,
     maintenanceId: null as string | null,
     controlLeaseId: null,
     updatedAt: new Date("2024-01-01T00:00:00Z"),
   };
   let assigned = true;
+  let switching = false;
   const updateMany = vi.fn(async ({ where, data }) => {
     if (
       !assigned ||
+      (switching && where.bots?.some?.computerSwitching === false) ||
       Object.entries(where).some(
         ([key, value]) => key in row && row[key as keyof typeof row] !== value,
       )
@@ -85,6 +88,9 @@ async function fixture() {
     updateMany,
     unassign: () => {
       assigned = false;
+    },
+    beginSwitch: () => {
+      switching = true;
     },
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };
@@ -137,40 +143,52 @@ describe("running Docker computer reuse", () => {
     },
   );
 
-  it.each(["state", "provider", "kind", "generation", "maintenance", "ownership", "cancel"])(
-    "rejects reuse when %s changes during the read-only probe",
-    async (change) => {
-      const f = await fixture();
-      const abort = new AbortController();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => {
-          if (change === "state") f.row.state = "stopped";
-          if (change === "provider") f.row.providerRef = "replacement";
-          if (change === "kind") f.row.kind = "desktop";
-          if (change === "generation") f.row.screenGeneration++;
-          if (change === "maintenance") f.row.maintenanceId = "maintenance";
-          if (change === "ownership") f.unassign();
-          if (change === "cancel") abort.abort(new Error("cancelled"));
-          return Response.json({ running: true });
-        }),
-      );
-      try {
-        await expect(
-          provisionComputer(f.deps, "computer", { ...context, signal: abort.signal }),
-        ).rejects.toThrow(change === "cancel" ? "cancelled" : new ComputerBusyError());
-        if (change !== "cancel") {
-          expect(f.updateMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-              where: expect.objectContaining({ bots: { some: { id: "bot", archivedAt: null } } }),
+  it.each([
+    "state",
+    "provider",
+    "kind",
+    "generation",
+    "maintenance",
+    "ownership",
+    "switch",
+    "restore",
+    "cancel",
+  ])("rejects reuse when %s changes during the read-only probe", async (change) => {
+    const f = await fixture();
+    const abort = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (change === "state") f.row.state = "stopped";
+        if (change === "provider") f.row.providerRef = "replacement";
+        if (change === "kind") f.row.kind = "desktop";
+        if (change === "generation") f.row.screenGeneration++;
+        if (change === "maintenance") f.row.maintenanceId = "maintenance";
+        if (change === "ownership") f.unassign();
+        if (change === "switch") f.beginSwitch();
+        if (change === "restore") f.row.restorePending = true;
+        if (change === "cancel") abort.abort(new Error("cancelled"));
+        return Response.json({ running: true });
+      }),
+    );
+    try {
+      await expect(
+        provisionComputer(f.deps, "computer", { ...context, signal: abort.signal }),
+      ).rejects.toThrow(change === "cancel" ? "cancelled" : new ComputerBusyError());
+      if (change !== "cancel") {
+        expect(f.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              restorePending: false,
+              bots: { some: { id: "bot", archivedAt: null, computerSwitching: false } },
             }),
-          );
-        } else expect(f.updateMany).not.toHaveBeenCalled();
-        expect(f.provision).not.toHaveBeenCalled();
-        expect(f.prepare).not.toHaveBeenCalled();
-      } finally {
-        await f.cleanup();
-      }
-    },
-  );
+          }),
+        );
+      } else expect(f.updateMany).not.toHaveBeenCalled();
+      expect(f.provision).not.toHaveBeenCalled();
+      expect(f.prepare).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  });
 });

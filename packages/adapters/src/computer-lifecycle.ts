@@ -26,13 +26,13 @@ import {
 } from "./computer-control.js";
 import { toComputerRef } from "./computer-support.js";
 import {
-  checkpointComputerWorkspace,
+  checkpointAndRecordComputerWorkspace,
   ensureComputerWorkspaceLayout,
   removeDeletedBotWorkspaces,
   restoreComputerWorkspace,
 } from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
-import { resolveAgentHomePath } from "./home.js";
+import { LocalAgentHomeStore, resolveAgentHomePath } from "./home.js";
 
 type ComputerUpdateProgress = (
   stage: Exclude<ComputerUpdate["stage"], "preparing">,
@@ -174,11 +174,20 @@ export async function provisionComputer(
     }
   }
   const homePath = resolveAgentHomePath(deps.home, existing.homeKey, deps.dataDir ?? "./data");
-  await mkdir(homePath, { recursive: true });
+  if (deps.home instanceof LocalAgentHomeStore) {
+    await deps.home.ensureHomeDirectory(existing.homeKey);
+  } else {
+    await mkdir(homePath, { recursive: true });
+  }
 
   // Re-provisioning a live computer enters booting and revokes its screen URLs.
   // A provider-confirmed live reference needs setup, not a new lifecycle claim.
-  if (existing.state === "running" && existing.providerRef && deps.sandbox.isRunning) {
+  if (
+    existing.state === "running" &&
+    !existing.restorePending &&
+    existing.providerRef &&
+    deps.sandbox.isRunning
+  ) {
     const ref = toComputerRef(existing);
     if (await deps.sandbox.isRunning(ref, context)) {
       context.signal.throwIfAborted();
@@ -189,8 +198,11 @@ export async function provisionComputer(
           providerRef: existing.providerRef,
           kind: existing.kind,
           screenGeneration: existing.screenGeneration,
+          restorePending: false,
           maintenanceId: existing.maintenanceId ?? null,
-          ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+          ...(context.botId
+            ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+            : {}),
         },
         data: { updatedAt: new Date() },
       });
@@ -203,7 +215,7 @@ export async function provisionComputer(
         context.botId,
         context,
       );
-      return ref;
+      return ref.kind === "desktop" ? { ...ref, fresh: false } : ref;
     }
   }
 
@@ -310,12 +322,28 @@ export async function provisionComputer(
       id: computerId,
       ...claimWhere,
       maintenanceId: existing.maintenanceId ?? null,
-      ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+      ...(context.botId
+        ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+        : {}),
     },
-    data: { state: "booting", updatedAt: claimStamp },
+    data: {
+      state: "booting",
+      updatedAt: claimStamp,
+      ...(!existing.providerRef ? { restorePending: true } : {}),
+    },
   });
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
+  let restorePending = existing.restorePending || !existing.providerRef;
+  const markRestorePending = async () => {
+    if (restorePending) return;
+    const marked = await deps.prisma.computer.updateMany({
+      where: { id: computerId, state: "booting", updatedAt: claimStamp, ...previousRef },
+      data: { restorePending: true, updatedAt: claimStamp },
+    });
+    if (marked.count !== 1) throw new ComputerBusyError();
+    restorePending = true;
+  };
   try {
     await onProgress?.("recreating");
     const ref = await deps.sandbox.provision(
@@ -324,17 +352,22 @@ export async function provisionComputer(
         homePath,
         providerRef: existing.providerRef ?? undefined,
         providerKind: existing.kind as ComputerRef["kind"],
+        ...(existing.kind === "desktop" && existing.providerRef
+          ? { beforeWorkspaceReplacement: markRestorePending }
+          : {}),
       },
       context,
     );
     provisioned = ref;
     await deps.sandbox.prepare(ref, context);
     const replacement =
+      restorePending ||
       ref.fresh === true ||
       !existing.providerRef ||
       existing.providerRef !== ref.providerRef ||
       existing.kind !== ref.kind;
     if (replacement) {
+      await markRestorePending();
       await onProgress?.("restoring");
       await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, context);
     }
@@ -361,12 +394,15 @@ export async function provisionComputer(
         updatedAt: claimStamp,
         ...previousRef,
         maintenanceId: existing.maintenanceId ?? null,
-        ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
+        ...(context.botId
+          ? { bots: { some: { id: context.botId, archivedAt: null, computerSwitching: false } } }
+          : {}),
       },
       data: {
         state: "running",
         providerRef: ref.providerRef,
         kind: ref.kind,
+        restorePending: false,
         ...(!reconnecting
           ? {
               controlHolder: activeControl ? "user" : controlHolder,
@@ -402,7 +438,7 @@ export async function provisionComputer(
           maintenanceId: existing.maintenanceId ?? null,
         },
         data: {
-          state: reconnecting ? "running" : "error",
+          state: reconnecting && !restorePending ? "running" : "error",
           ...(!reconnecting && rollbackError && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
             : {}),
@@ -948,39 +984,33 @@ export async function replaceComputer(
   let tornDown = false;
   try {
     // Retry the checkpoint even after an earlier update left the row in error.
-    if (oldRef && (mode === "update" || (existing.state === "running" && mode === "recover"))) {
+    if (
+      oldRef &&
+      !existing.restorePending &&
+      (mode === "update" || (existing.state === "running" && mode === "recover"))
+    ) {
       await onProgress?.("saving");
-      let revision: string | undefined;
       let exported = false;
       let stagingFailed = false;
       try {
-        revision = await checkpointComputerWorkspace(
-          deps.home,
-          deps.sandbox,
-          existing.homeKey,
-          oldRef,
-          context,
-          {
-            onExported: () => {
-              exported = true;
-            },
-            onStagingFailure: () => {
-              stagingFailed = true;
-            },
+        await checkpointAndRecordComputerWorkspace(deps, existing, oldRef, context, {
+          claim: {
+            state: "suspending",
+            updatedAt: claimStamp,
+            maintenanceId: existing.maintenanceId ?? null,
           },
-        );
-      } catch (error) {
-        // Recover can fall back when exporting fails. Staging and post-export
-        // failures must leave the old provider intact.
-        if (stagingFailed || exported || (!isSandboxGoneError(error) && mode !== "recover"))
-          throw error;
-      }
-      if (revision !== undefined) {
-        const recorded = await deps.prisma.computer.updateMany({
-          where: { id: computerId, state: "suspending", updatedAt: claimStamp },
-          data: { homeRevision: revision, updatedAt: claimStamp },
+          onExported: () => {
+            exported = true;
+          },
+          onStagingFailure: () => {
+            stagingFailed = true;
+          },
         });
-        if (recorded.count !== 1) throw new ComputerBusyError();
+      } catch (error) {
+        // Only confirmed provider loss before a completed export permits fallback.
+        if (context.signal.aborted || stagingFailed || exported || !isSandboxGoneError(error)) {
+          throw error;
+        }
       }
     }
     await onProgress?.("recreating");

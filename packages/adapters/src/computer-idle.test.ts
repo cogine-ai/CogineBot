@@ -648,6 +648,11 @@ function idleHarness(
     id: "computer-id",
     homeKey: "team-workspace",
     homeRevision: "rev-before",
+    homeRevisionAt: null,
+    restorePending: false,
+    scope: "team",
+    controlFence: 0,
+    executionFence: 0,
     providerRef: "computer",
     kind: "e2b",
     screenGeneration: 0,
@@ -664,7 +669,13 @@ function idleHarness(
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
   };
   const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([{ id: computer.id }]),
+    $transaction: vi.fn(async (work: (tx: PrismaClient) => Promise<unknown>) =>
+      work(prisma as unknown as PrismaClient),
+    ),
+    botDeletion: { findMany: vi.fn().mockResolvedValue([]) },
     computer: {
+      findFirst: vi.fn(async () => ({ ...computer })),
       findUnique: vi.fn(async () => ({ ...computer })),
       updateMany: vi.fn(async (args) => {
         if (args.where.updatedAt && args.where.updatedAt.getTime() !== computer.updatedAt.getTime())

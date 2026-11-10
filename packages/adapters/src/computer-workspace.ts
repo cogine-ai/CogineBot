@@ -1,5 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { constants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { mkdir, open, readdir, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import type {
   AdapterContext,
@@ -7,46 +8,42 @@ import type {
   ComputerRef,
   PortableFile,
   SandboxProvider,
+  StreamedPortableFile,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
+import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
 import type { ComputerMode } from "@rakazo/contracts";
 import { parseScreenLeaseId } from "@rakazo/core";
 import { browserProfilePathForScreen } from "@rakazo/core/node/desktop-runtime";
-import type { PrismaClient } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { normalizeWorkspacePath, teamBotWorkspaceDirectory } from "./computer-support.js";
-import { LocalAgentHomeStore } from "./home.js";
+import type { HomePublisher } from "./home.js";
+import { createStagingDirectory, LocalAgentHomeStore } from "./home.js";
+import { shouldSkipPortableWorkspaceFile, WORKSPACE_SAVE_LIMITS } from "./workspace-save-policy.js";
+
+export { shouldSkipPortableWorkspaceFile } from "./workspace-save-policy.js";
 
 export const PORTABLE_TRANSFER_BATCH_BYTES = 8 * 1024 * 1024;
+const SAVE_DISK_RESERVE_BYTES = 2 * 1024 ** 3;
+const FREE_DISK_CHECK_BYTES = 256 * 1024 ** 2;
+const FILE_DISK_OVERHEAD_BYTES = 4096;
 
-const skippedBrowserProfileDirectories = new Set([
-  "Cache",
-  "Code Cache",
-  "GPUCache",
-  "GrShaderCache",
-  "ShaderCache",
-  "DawnGraphiteCache",
-  "DawnWebGPUCache",
-  "Crashpad",
-]);
-const skippedBrowserProfileFiles = new Set([
-  "BrowserMetrics",
-  "DevToolsActivePort",
-  "SingletonCookie",
-  "SingletonLock",
-  "SingletonSocket",
-  ".parentlock",
-  "lock",
-]);
+type CheckpointOptions = {
+  onExported?: () => void;
+  onStagingFailure?: () => void;
+  prisma?: PrismaClient;
+  publish?: (
+    install: (currentRevision: string) => Promise<string>,
+    staging?: string,
+  ) => Promise<string>;
+};
 
-/** Excludes transient browser state that is unsafe or wasteful to restore. */
-export function shouldSkipPortableWorkspaceFile(relative: string) {
-  if (!relative.startsWith(".browser-profiles/")) return false;
-  const segments = relative.split("/");
-  const name = segments.at(-1) ?? "";
-  return (
-    segments.some((segment) => skippedBrowserProfileDirectories.has(segment)) ||
-    skippedBrowserProfileFiles.has(name)
-  );
+export class ComputerCheckpointChangedError extends Error {
+  constructor() {
+    super("The computer changed while its files were being saved. Try again.");
+    this.name = "ComputerCheckpointChangedError";
+  }
 }
 
 export async function restoreComputerWorkspace(
@@ -84,6 +81,7 @@ export async function ensureComputerWorkspaceLayout(
 }
 
 const TEAM_BOT_FOLDER_NAME = /^[A-Za-z0-9_-]+$/;
+const TEAM_BROWSER_PROFILE_NAME = /^chromium-bot-[0-9a-f]{32}$/;
 
 /** A bot id that names exactly one folder under bots/ on a Team Computer. */
 export function isTeamBotFolderName(botId: string) {
@@ -93,7 +91,7 @@ export function isTeamBotFolderName(botId: string) {
 /** The bot's browser profile folder under .browser-profiles on a Team Computer. */
 export function teamBrowserProfileName(botId: string) {
   const name = path.posix.basename(browserProfilePathForScreen(botId));
-  if (!/^chromium-bot-[0-9a-f]{32}$/.test(name)) return null;
+  if (!TEAM_BROWSER_PROFILE_NAME.test(name)) return null;
   return name;
 }
 
@@ -279,44 +277,92 @@ export async function checkpointComputerWorkspace(
   homeKey: string,
   computer: ComputerRef,
   context: AdapterContext,
-  options?: { onExported?: () => void; onStagingFailure?: () => void },
+  options?: CheckpointOptions,
+  saveLimits: WorkspaceExportLimits = WORKSPACE_SAVE_LIMITS,
 ): Promise<string> {
+  const { prisma, publish } = options ?? {};
+  const publisher = (staging?: string): HomePublisher | undefined =>
+    prisma && publish ? { prisma, publish: (install) => publish(install, staging) } : undefined;
+  context.signal.throwIfAborted();
   if (computer.kind === "docker" && home instanceof LocalAgentHomeStore) {
-    return home.revise(homeKey);
+    return home.revise(homeKey, publisher());
   }
   const failStaging: (error: unknown) => never = (error) => {
     options?.onStagingFailure?.();
     throw error;
   };
-  let staging: string;
+  let staging: Awaited<ReturnType<typeof createStagingDirectory>>;
   try {
-    staging = await mkdtemp(path.join(tmpdir(), "rakazo-workspace-"));
+    staging =
+      home instanceof LocalAgentHomeStore
+        ? await home.createStaging()
+        : await createStagingDirectory();
   } catch (error) {
     failStaging(error);
   }
   try {
-    for await (const file of sandbox.exportWorkspace(computer, context)) {
+    const free = await freeSaveDisk(staging.path).catch(failStaging);
+    if (free < 0) throw new WorkspaceTooLargeError("bytes");
+    const limits = { ...saveLimits, maxBytes: Math.min(saveLimits.maxBytes, free) };
+    let bytes = 0;
+    let files = 0;
+    let unchecked = 0;
+    const checkDisk = async (size: number) => {
+      unchecked += size;
+      if (unchecked < FREE_DISK_CHECK_BYTES) return;
+      unchecked = 0;
+      if ((await freeSaveDisk(staging.path)) < 0) throw new WorkspaceTooLargeError("bytes");
+    };
+    for await (const file of sandbox.exportWorkspace(computer, context, limits)) {
+      let relative: string;
       try {
-        await writePortableFile(staging, file);
+        context.signal.throwIfAborted();
+        relative = normalizeWorkspacePath(file.path);
+        if (shouldSkipPortableWorkspaceFile(relative)) continue;
+        if (++files > limits.maxFiles) throw new WorkspaceTooLargeError("files");
+        await checkDisk(FILE_DISK_OVERHEAD_BYTES);
       } catch (error) {
         failStaging(error);
       }
+      await writePortableFile(
+        staging.path,
+        relative,
+        file,
+        async (size) => {
+          bytes += size;
+          if (bytes > limits.maxBytes) throw new WorkspaceTooLargeError("bytes");
+          await checkDisk(size);
+          context.signal.throwIfAborted();
+        },
+        failStaging,
+      );
     }
     options?.onExported?.();
-    return await home.commit(homeKey, staging, context);
+    context.signal.throwIfAborted();
+    if ((await freeSaveDisk(staging.path).catch(failStaging)) < 0)
+      throw new WorkspaceTooLargeError("bytes");
+    const install = () => home.commit(homeKey, staging.path, context);
+    const revision =
+      home instanceof LocalAgentHomeStore
+        ? await home.commit(homeKey, staging.path, context, publisher(staging.path))
+        : await (publish?.(install, staging.path) ?? install());
+    return revision;
   } finally {
-    try {
-      await rm(staging, { recursive: true, force: true });
-    } catch (error) {
-      failStaging(error);
-    }
+    await staging.remove().catch((error) => {
+      getLogger().warn("workspace staging cleanup", { error });
+    });
   }
+}
+
+async function freeSaveDisk(directory: string) {
+  const disk = await statfs(directory);
+  return Number(disk.bavail) * Number(disk.bsize) - SAVE_DISK_RESERVE_BYTES;
 }
 
 /** Remote exports quiesce browsers, so a run must not checkpoint while peers are driving them. */
 export async function checkpointRunComputerWorkspace(
   deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
-  computerRecord: { id: string; homeKey: string; scope: string },
+  computerRecord: { id: string; homeKey: string; scope: string; spaceId: string },
   computer: ComputerRef,
   context: AdapterContext,
 ): Promise<string | undefined> {
@@ -324,35 +370,28 @@ export async function checkpointRunComputerWorkspace(
     return checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
   }
   const now = new Date();
-  const ownLease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
   const claimed = await deps.prisma.computer.updateMany({
     where: {
       id: computerRecord.id,
       state: "running",
       providerRef: computer.providerRef,
-      executionLeases: {
-        none: {
-          expiresAt: { gt: now },
-          ...(ownLease ? { NOT: { runId: ownLease.ownerId, fence: ownLease.fence } } : {}),
-        },
-      },
-      OR: [
-        { controlHolder: { not: "user" } },
-        { controlLeaseId: null },
-        { controlLeaseExpiresAt: null },
-        { controlLeaseExpiresAt: { lte: now } },
-        ...(context.botId ? [{ controlBotId: context.botId }] : []),
-      ],
+      ...checkpointAvailable(context, now),
     },
     data: { state: "suspending", updatedAt: now },
   });
   // The last finishing run or the already scheduled idle job will checkpoint the shared home.
   if (claimed.count !== 1) return undefined;
+  const claim = { state: "suspending", updatedAt: now };
   try {
-    return await checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
+    return await checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context, {
+      claim,
+    });
+  } catch (error) {
+    if (!(error instanceof ComputerCheckpointChangedError)) throw error;
+    return undefined;
   } finally {
     await deps.prisma.computer.updateMany({
-      where: { id: computerRecord.id, state: "suspending", providerRef: computer.providerRef },
+      where: { id: computerRecord.id, ...claim, providerRef: computer.providerRef },
       data: { state: "running" },
     });
   }
@@ -360,32 +399,201 @@ export async function checkpointRunComputerWorkspace(
 
 export async function checkpointAndRecordComputerWorkspace(
   deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
-  computerRecord: { id: string; homeKey: string },
+  computerRecord: { id: string; homeKey: string; scope: string; spaceId: string },
   computer: ComputerRef,
   context: AdapterContext,
+  options?: Pick<CheckpointOptions, "onExported" | "onStagingFailure"> & {
+    claim?: Prisma.ComputerWhereInput;
+  },
 ): Promise<string> {
-  const revision = await checkpointComputerWorkspace(
+  const target = {
+    state: { in: ["running", "suspending"] },
+    ...options?.claim,
+    id: computerRecord.id,
+    homeKey: computerRecord.homeKey,
+    restorePending: false,
+    providerRef: computer.providerRef,
+    kind: computer.kind,
+  } satisfies Prisma.ComputerWhereInput;
+  const starting = await deps.prisma.computer.findFirst({
+    where: { ...target, ...checkpointAvailable(context, new Date()) },
+    select: {
+      state: true,
+      screenGeneration: true,
+      maintenanceId: true,
+      homeRevision: true,
+      controlFence: true,
+      controlLeaseId: true,
+      executionFence: true,
+    },
+  });
+  if (!starting) throw new ComputerCheckpointChangedError();
+  const fence = { ...target, ...starting };
+  return checkpointComputerWorkspace(
     deps.home,
     deps.sandbox,
     computerRecord.homeKey,
     computer,
     context,
+    {
+      ...options,
+      prisma: deps.prisma,
+      publish: async (install, staging) =>
+        deps.prisma.$transaction(
+          async (tx) => {
+            // Acquire the same row that lifecycle writers and execution lease claims use.
+            await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerRecord.id} FOR UPDATE`;
+            const where = { ...fence, ...checkpointAvailable(context, new Date()) };
+            const owned = await tx.computer.findFirst({
+              where,
+              select: { updatedAt: true, homeRevision: true },
+            });
+            if (!owned) throw new ComputerCheckpointChangedError();
+            context.signal.throwIfAborted();
+            if (deps.home instanceof LocalAgentHomeStore) {
+              await deps.home.reconcileCheckpoint(computerRecord.homeKey, owned.homeRevision);
+            }
+            if (staging && computerRecord.scope === "team") {
+              const home = deps.home;
+              await removeDeletedStagedWorkspaces(
+                tx,
+                computerRecord.spaceId,
+                staging,
+                (directory) =>
+                  home instanceof LocalAgentHomeStore
+                    ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
+                    : rm(path.join(staging, directory), { recursive: true, force: true }),
+              );
+            }
+            context.signal.throwIfAborted();
+            const ready = await tx.computer.findFirst({
+              where: { ...fence, ...checkpointAvailable(context, new Date()) },
+              select: { id: true },
+            });
+            if (!ready) throw new ComputerCheckpointChangedError();
+            const revision = await install(owned.homeRevision);
+            const saved = await tx.computer.updateMany({
+              where: { ...fence, ...checkpointAvailable(context, new Date()) },
+              data: {
+                homeRevision: revision,
+                homeRevisionAt: new Date(),
+                updatedAt: owned.updatedAt,
+              },
+            });
+            if (saved.count !== 1) throw new ComputerCheckpointChangedError();
+            return revision;
+          },
+          { timeout: 20_000 },
+        ),
+    },
   );
-  await deps.prisma.computer.updateMany({
-    where: { id: computerRecord.id },
-    data: { homeRevision: revision },
-  });
-  return revision;
 }
 
-async function writePortableFile(root: string, file: PortableFile) {
-  const relative = normalizeWorkspacePath(file.path);
-  if (!relative) throw new Error("Workspace snapshots cannot contain an empty file path");
-  const target = path.resolve(root, relative);
-  const resolvedRoot = path.resolve(root);
-  if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new Error("Workspace snapshot path escapes its staging directory");
+function checkpointAvailable(context: AdapterContext, now: Date): Prisma.ComputerWhereInput {
+  const lease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
+  const own = lease ? { runId: lease.ownerId, fence: lease.fence } : undefined;
+  const live = { expiresAt: { gt: now } };
+  return {
+    OR: [
+      { controlHolder: { not: "user" } },
+      { controlLeaseId: null },
+      { controlLeaseExpiresAt: null },
+      { controlLeaseExpiresAt: { lte: now } },
+      ...(context.botId ? [{ controlBotId: context.botId }] : []),
+    ],
+    executionLeases: {
+      none: { ...live, ...(own ? { NOT: own } : {}) },
+      ...(own && context.runId === own.runId
+        ? { some: { ...live, ...own, botId: context.botId } }
+        : {}),
+    },
+  };
+}
+
+/** A snapshot from a still-running Team Computer may predate the deletion. */
+async function removeDeletedStagedWorkspaces(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  spaceId: string,
+  staging: string,
+  discard: (directory: string) => Promise<void>,
+) {
+  const [folders, profiles] = await Promise.all([
+    stagedTeamEntries(path.join(staging, "bots"), TEAM_BOT_FOLDER_NAME),
+    stagedTeamEntries(path.join(staging, ".browser-profiles"), TEAM_BROWSER_PROFILE_NAME),
+  ]);
+  if (!folders.size && !profiles.size) return;
+
+  // Match the browser's UTF-8 SHA-256 name without returning the space's deletion history.
+  const deleted = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM bot_deletions
+    WHERE "spaceId" = ${spaceId}
+      AND (
+        id = ANY(${[...folders]}::text[])
+        OR ('chromium-bot-' || left(encode(sha256(convert_to(id, 'UTF8')), 'hex'), 32))
+          = ANY(${[...profiles]}::text[])
+      )
+  `;
+  for (const { id } of deleted) {
+    if (folders.has(id)) await discard(`bots/${id}`);
+    const profile = teamBrowserProfileName(id);
+    if (profile && profiles.has(profile)) await discard(`.browser-profiles/${profile}`);
   }
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, file.content, { mode: file.executable ? 0o700 : 0o600 });
+}
+
+async function stagedTeamEntries(directory: string, pattern: RegExp) {
+  try {
+    return new Set((await readdir(directory)).filter((name) => pattern.test(name)));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    return new Set<string>();
+  }
+}
+
+async function writePortableFile(
+  root: string,
+  relative: string,
+  file: PortableFile | StreamedPortableFile,
+  count: (bytes: number) => Promise<void>,
+  failStaging: (error: unknown) => never,
+) {
+  let handle: FileHandle;
+  try {
+    if (!relative) throw new Error("Workspace snapshots cannot contain an empty file path");
+    const target = path.resolve(root, relative);
+    const resolvedRoot = path.resolve(root);
+    if (!target.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new Error("Workspace snapshot path escapes its staging directory");
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    handle = await open(
+      target,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      file.executable ? 0o700 : 0o600,
+    );
+  } catch (error) {
+    failStaging(error);
+  }
+  let complete = false;
+  try {
+    // Iterator failures belong to the provider; only local writes mark staging failed.
+    for await (const chunk of "body" in file ? file.body : [file.content]) {
+      try {
+        await count(chunk.byteLength);
+        for (let offset = 0; offset < chunk.byteLength; ) {
+          const { bytesWritten } = await handle.write(chunk, offset, chunk.byteLength - offset);
+          if (bytesWritten === 0) throw new Error("Workspace file write made no progress");
+          offset += bytesWritten;
+        }
+      } catch (error) {
+        failStaging(error);
+      }
+    }
+    complete = true;
+  } finally {
+    await handle.close().catch((error) => {
+      if (complete) failStaging(error);
+      getLogger().warn("workspace staging file cleanup", { error });
+    });
+  }
 }

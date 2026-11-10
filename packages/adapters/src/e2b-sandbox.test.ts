@@ -1523,6 +1523,162 @@ async function withRetainedE2BServer(
 }
 
 describe("workspace export activity", () => {
+  it("streams bounded workspace reads and cancels the remote body when the consumer leaves", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from([0, 255]));
+      },
+      cancel,
+    });
+    const desktop = {
+      sandboxId: "streamed-export",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+      commands: { run: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }) },
+      files: {
+        list: vi.fn().mockResolvedValue([{ name: "binary.dat", type: "file", mode: 0o700 }]),
+        read: vi.fn().mockResolvedValue(body),
+      },
+    };
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue(desktop),
+      connect: vi.fn(),
+      pause: vi.fn(),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const computer = await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+    const files = provider.exportWorkspace(computer, context, { maxBytes: 4, maxFiles: 1 });
+    for await (const file of files) {
+      expect(file).toMatchObject({ path: "binary.dat", executable: true });
+      expect(desktop.files.read).not.toHaveBeenCalled();
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      for await (const chunk of file.body) {
+        expect(chunk).toEqual(Uint8Array.from([0, 255]));
+        break;
+      }
+    }
+    expect(desktop.files.read).toHaveBeenCalledWith(expect.stringMatching(/\/binary\.dat$/), {
+      format: "stream",
+      signal: context.signal,
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  async function* profileExport(
+    read: (path: string) => Promise<ReadableStream<Uint8Array>>,
+    signal = context.signal,
+  ) {
+    const desktop = {
+      sandboxId: "profile-export",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+      commands: { run: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }) },
+      files: {
+        list: vi.fn(async (path: string) => {
+          if (path.endsWith("/.browser-profiles")) {
+            return [
+              { name: "transient", type: "file", mode: 0o600 },
+              { name: "Cookies", type: "file", mode: 0o600 },
+            ];
+          }
+          return [
+            { name: ".browser-profiles", type: "dir" },
+            { name: "document", type: "file", mode: 0o600 },
+          ];
+        }),
+        read,
+      },
+    };
+    const provider = new E2BSandboxProvider("test-key", {
+      create: vi.fn().mockResolvedValue(desktop),
+      connect: vi.fn(),
+      pause: vi.fn(),
+    });
+    const operation = { ...context, signal };
+    const computer = await provider.provision({ botId: "bot", homePath: "/unused" }, operation);
+    yield* provider.exportWorkspace(computer, operation, { maxBytes: 4, maxFiles: 2 });
+  }
+
+  async function collectProfileExport(files: ReturnType<typeof profileExport>) {
+    const saved: Record<string, number[]> = {};
+    for await (const file of files) {
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      const bytes: number[] = [];
+      for await (const chunk of file.body) bytes.push(...chunk);
+      saved[file.path] = bytes;
+    }
+    return saved;
+  }
+
+  function profileFile(bytes: number[]) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from(bytes));
+        controller.close();
+      },
+    });
+  }
+
+  it("omits a vanished profile entry and keeps the document and remaining profile bytes", async () => {
+    const files = profileExport(async (path) => {
+      if (path.endsWith("/transient")) throw new FileNotFoundError("Path not found");
+      return profileFile(path.endsWith("/Cookies") ? [0, 255] : [4]);
+    });
+    await expect(collectProfileExport(files)).resolves.toEqual({
+      document: [4],
+      ".browser-profiles/Cookies": [0, 255],
+    });
+  });
+
+  it.each([
+    ["ordinary file missing", "/document", new FileNotFoundError("Path not found")],
+    ["profile permission failure", "/transient", new Error("Permission denied")],
+    ["provider gone", "/transient", new SandboxNotFoundError("Sandbox not found")],
+  ])("keeps a %s fatal during export", async (_name, suffix, failure) => {
+    const files = profileExport(async (path) => {
+      if (path.endsWith(suffix)) throw failure;
+      return profileFile([1]);
+    });
+    await expect(collectProfileExport(files)).rejects.toBe(failure);
+  });
+
+  it("does not mistake an aborted profile open for a vanished file", async () => {
+    const abort = new AbortController();
+    const failure = new Error("Stop export");
+    const files = profileExport(async (path) => {
+      if (path.endsWith("/transient")) {
+        abort.abort(failure);
+        throw new FileNotFoundError("Path not found");
+      }
+      return profileFile([1]);
+    }, abort.signal);
+    await expect(collectProfileExport(files)).rejects.toBe(failure);
+  });
+
+  it("propagates a profile stream failure after receiving bytes", async () => {
+    const failure = new Error("Connection reset");
+    const files = profileExport(async (path) => {
+      if (!path.endsWith("/transient")) return profileFile([1]);
+      let sent = false;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) controller.error(failure);
+          else controller.enqueue(Uint8Array.from([1, 2]));
+          sent = true;
+        },
+      });
+    });
+    await expect(collectProfileExport(files)).rejects.toBe(failure);
+  });
+
+  it("cancels an opened profile body if staging rejects it before reading", async () => {
+    const cancel = vi.fn();
+    const iterator = profileExport(async () => new ReadableStream<Uint8Array>({ cancel }));
+    expect((await iterator.next()).value).toMatchObject({ path: "document" });
+    expect((await iterator.next()).value).toMatchObject({ path: ".browser-profiles/transient" });
+    await iterator.return(undefined);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("renews the captured active export handle without reconnecting and preserves file bytes", async () => {
     vi.useFakeTimers();
     let list!: (entries: unknown[]) => void;

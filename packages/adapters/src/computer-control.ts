@@ -36,6 +36,39 @@ export function hasActiveComputerControl(
   );
 }
 
+export type InteractiveComputerSnapshot = {
+  id: string;
+  providerRef: string | null;
+  screenGeneration: number;
+  controlLeaseId: string | null;
+};
+
+/** Refresh activity only while the provider and the user's control are still current. */
+export async function touchInteractiveComputer(
+  prisma: PrismaClient,
+  botId: string,
+  computer: InteractiveComputerSnapshot,
+): Promise<boolean> {
+  if (!computer.providerRef || !computer.controlLeaseId) return false;
+  const now = new Date();
+  const available = await prisma.computer.updateMany({
+    where: {
+      id: computer.id,
+      state: "running",
+      restorePending: false,
+      providerRef: computer.providerRef,
+      screenGeneration: computer.screenGeneration,
+      controlHolder: "user",
+      controlBotId: botId,
+      controlLeaseId: computer.controlLeaseId,
+      controlLeaseExpiresAt: { gt: now },
+      bots: { some: { id: botId, archivedAt: null, computerSwitching: false } },
+    },
+    data: { updatedAt: now },
+  });
+  return available.count === 1;
+}
+
 /** User takeover of this bot with no run bound to it. Maintenance may claim it. */
 export function isIdleOwnComputerTakeover(
   computer:

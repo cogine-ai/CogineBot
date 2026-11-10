@@ -73,6 +73,7 @@ import type {
   SemanticMemorySaveRequest,
   SnapshotRef,
   SpeechClip,
+  StreamedPortableFile,
   TerminalRequest,
   TransactionalEmail,
   VoiceCapabilities,
@@ -86,6 +87,7 @@ import type {
   WebSearchCapabilities,
   WebSearchHit,
   WebSearchRequest,
+  WorkspaceExportLimits,
 } from "./types.js";
 
 export interface SandboxProvider {
@@ -103,6 +105,8 @@ export interface SandboxProvider {
       homePath: string;
       providerRef?: string;
       providerKind?: ComputerRef["kind"];
+      /** Persist restore intent before replacing workspace bytes under an existing reference. */
+      beforeWorkspaceReplacement?: () => Promise<void>;
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
@@ -167,6 +171,11 @@ export interface SandboxProvider {
   ): Promise<Uint8Array>;
   writeFile(computer: ComputerRef, file: PortableFile, context: AdapterContext): Promise<void>;
   exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   importWorkspace(
     computer: ComputerRef,
     files: AsyncIterable<PortableFile>,

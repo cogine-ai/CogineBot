@@ -1,4 +1,5 @@
 import type { Command200Response } from "@asciidev/box-sdk";
+import { FetchError } from "@asciidev/box-sdk";
 import { SandboxUnavailableError } from "@rakazo/adapter-kit";
 import { parse } from "shell-quote";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -376,6 +377,153 @@ describe("BoxSandboxProvider", () => {
     );
   });
 
+  it("opens bounded workspace transfers lazily and refuses a truncated manifest", async () => {
+    const fixture = boxFixture();
+    const target = "/home/user/rakazo-home/notes/report.txt";
+    fixture.files.set(target, Buffer.from("saved"));
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    const limits = { maxBytes: 5, maxFiles: 1 };
+    for await (const file of provider.exportWorkspace(computer, context, limits)) {
+      expect(file.path).toBe("notes/report.txt");
+      expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+      expect(fixture.artifactRaw.mock.calls[0]?.[0].path).toMatch(/\.manifest$/);
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      const chunks = [];
+      for await (const chunk of file.body) chunks.push(chunk);
+      expect(Buffer.concat(chunks).toString()).toBe("saved");
+    }
+    expect(fixture.artifactRaw).toHaveBeenCalledTimes(2);
+    expect(
+      fixture.command.mock.calls.some(([call]) =>
+        call.commandRequest.command.includes("-regextype posix-extended"),
+      ),
+    ).toBe(true);
+    expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
+
+    fixture.artifactRaw.mockClear();
+    fixture.artifactRaw.mockResolvedValueOnce({
+      raw: new Response(["workspace-list-v1", "notes/report.txt", "600", "5", ""].join("\0")),
+    });
+    const incomplete = provider.exportWorkspace(computer, context, limits)[Symbol.asyncIterator]();
+    expect(await incomplete.next()).toMatchObject({ value: { path: "notes/report.txt" } });
+    await expect(incomplete.next()).rejects.toThrow("incomplete workspace listing");
+    expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+    expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
+  });
+
+  it("allows the full file limit while bounding the manifest to one extra record", async () => {
+    const fixture = boxFixture();
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    const maxFiles = 1_000_000;
+    const entries = provider
+      .exportWorkspace(computer, context, { maxBytes: 5 * 1024 ** 3, maxFiles })
+      [Symbol.asyncIterator]();
+    await expect(entries.next()).resolves.toMatchObject({ done: true });
+    const command = fixture.command.mock.calls
+      .map(([call]) => call.commandRequest.command)
+      .find((script) => script.includes("workspace-list-v1"));
+    expect(command).toContain("head -z -n 3000003");
+    const blocks = Number(command?.match(/ulimit -f (\d+)/)?.[1]);
+    expect(blocks * 1024).toBeGreaterThan(maxFiles * (4096 + 4 + 20 + 3));
+  });
+
+  it.each(["headers", "manifest body", "file body"] as const)(
+    "times out stalled Box workspace %s and removes the manifest",
+    async (stage) => {
+      const fixture = boxFixture();
+      const filePath = "/home/user/rakazo-home/report.txt";
+      fixture.files.set(filePath, Buffer.from("data"));
+      const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+      const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+      vi.useFakeTimers();
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new DOMException("Read timed out", "TimeoutError")), ms);
+        return controller.signal;
+      });
+      const cancel = vi.fn();
+      const body = new ReadableStream<Uint8Array>({ cancel });
+      const original = fixture.artifactRaw.getMockImplementation()!;
+      fixture.artifactRaw.mockImplementation(async (request, options) => {
+        const stalled =
+          stage === "file body" ? request.path === filePath : request.path.endsWith(".manifest");
+        if (!stalled) return original(request, options);
+        if (stage !== "headers") return { raw: new Response(body) };
+        const signal = options?.signal;
+        return new Promise((_, reject) => {
+          signal?.addEventListener("abort", () => reject(new FetchError(signal.reason)), {
+            once: true,
+          });
+        });
+      });
+      const save = async () => {
+        for await (const file of provider.exportWorkspace(computer, context, {
+          maxBytes: 4,
+          maxFiles: 1,
+        })) {
+          if (!("body" in file)) throw new Error("Expected a streamed file");
+          await file.body[Symbol.asyncIterator]().next();
+        }
+      };
+      const result = expect(save()).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await result;
+      expect(cancel).toHaveBeenCalledTimes(stage === "headers" ? 0 : 1);
+      expect(body.locked).toBe(false);
+      expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
+    },
+  );
+
+  it("keeps a progressing Box workspace download alive beyond 30 seconds", async () => {
+    const fixture = boxFixture();
+    const filePath = "/home/user/rakazo-home/report.txt";
+    fixture.files.set(filePath, Buffer.from("data"));
+    const provider = new BoxSandboxProvider({ apiKey: "test-key" }, fixture.client);
+    const computer = await provider.provision({ botId: "bot-a", homePath: "/unused" }, context);
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Read timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    const original = fixture.artifactRaw.getMockImplementation()!;
+    let transfer: AbortSignal | undefined;
+    fixture.artifactRaw.mockImplementation(async (request, options) => {
+      if (request.path !== filePath) return original(request, options);
+      transfer = options?.signal;
+      return {
+        raw: new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              setTimeout(() => controller.enqueue(Buffer.from("da")), 20_000);
+              setTimeout(() => {
+                controller.enqueue(Buffer.from("ta"));
+                controller.close();
+              }, 40_000);
+            },
+          }),
+        ),
+      };
+    });
+    const save = async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const file of provider.exportWorkspace(computer, context, {
+        maxBytes: 4,
+        maxFiles: 1,
+      })) {
+        if (!("body" in file)) throw new Error("Expected a streamed file");
+        for await (const chunk of file.body) chunks.push(chunk);
+      }
+      return Buffer.concat(chunks).toString("utf8");
+    };
+    const result = expect(save()).resolves.toBe("data");
+    await vi.advanceTimersByTimeAsync(40_000);
+    await result;
+    expect(transfer?.aborted).toBe(false);
+  });
+
   it.each([undefined, "1", "20"])(
     "cancels oversized downloads with content-length %s",
     async (contentLength) => {
@@ -584,6 +732,21 @@ function boxFixture(options: { state?: string } = {}) {
         return finished({ stdout: `https://box-test-${port}.on.ascii.dev?_token=secret` });
       }
       if (command.includes("TEST_VALUE=works")) return finished({ stdout: "hello\n" });
+      const manifest = command.match(/\/tmp\/workspace-save-[a-f0-9-]+\.manifest/)?.[0];
+      if (manifest && command.includes("workspace-list-v1")) {
+        const prefix = "/home/user/rakazo-home/";
+        const fields = ["workspace-list-v1"];
+        for (const [filePath, bytes] of files) {
+          if (filePath.startsWith(prefix))
+            fields.push(filePath.slice(prefix.length), "600", String(bytes.byteLength));
+        }
+        files.set(manifest, Buffer.from([...fields, "workspace-list-complete", ""].join("\0")));
+        return finished();
+      }
+      if (manifest && command.includes("rm -f")) {
+        files.delete(manifest);
+        return finished();
+      }
       if (command.includes("find ") && command.includes("rakazo-home/bin")) {
         const target = "/home/user/rakazo-home/bin/tool";
         return finished({
@@ -635,7 +798,7 @@ function boxFixture(options: { state?: string } = {}) {
         };
       },
     ),
-    artifactRaw: vi.fn(async ({ path }: { path: string }) => {
+    artifactRaw: vi.fn(async ({ path }: { path: string }, _options?: { signal?: AbortSignal }) => {
       const content = path.startsWith("/tmp/rakazo-observe-")
         ? Uint8Array.from([1, 2, 3])
         : (files.get(path) ?? new Uint8Array());

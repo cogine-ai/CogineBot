@@ -7,6 +7,7 @@ import {
   skillTeachingExpireJob,
   skillTeachingExpireJobKey,
 } from "@rakazo/adapter-kit";
+import type { InteractiveComputerSnapshot } from "@rakazo/adapters";
 import {
   acquireComputerExecutionLease,
   appendRecordingEvent,
@@ -567,8 +568,9 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       actor: Actor,
       botId: string,
       mapped: TeachComputerInput,
+      expectedComputer: InteractiveComputerSnapshot,
     ): Promise<"recorded" | "idle" | "stale"> {
-      return recordTeachingInputEvent(deps, actor, botId, mapped);
+      return recordTeachingInputEvent(deps, actor, botId, mapped, expectedComputer);
     },
   };
 }

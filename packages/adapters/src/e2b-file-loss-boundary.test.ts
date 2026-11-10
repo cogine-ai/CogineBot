@@ -90,10 +90,12 @@ it("retains a running computer and saved revision after an SDK file 404 during i
   const computer = {
     id: "computer-fixture",
     homeKey: "home-fixture",
+    scope: "dedicated",
     homeRevision: "saved-revision",
     providerRef: "running-sandbox",
     kind: "e2b",
     screenGeneration: 0,
+    restorePending: false,
     maintenanceId: null,
     state: "running",
     spaceId: "space-fixture",
@@ -123,7 +125,11 @@ it("retains a running computer and saved revision after an SDK file 404 during i
   const enqueue = vi.fn();
   const deps = {
     prisma: {
-      computer: { findUnique: vi.fn(async () => ({ ...computer })), updateMany },
+      computer: {
+        findUnique: vi.fn(async () => ({ ...computer })),
+        findFirst: vi.fn(async () => ({ ...computer })),
+        updateMany,
+      },
       run: { findFirst: vi.fn(async () => null) },
     } as unknown as PrismaClient,
     sandbox: {

@@ -39,7 +39,7 @@ import {
   teamBrowserProfileName,
   withCleanupDeadline,
 } from "./computer-workspace.js";
-import { resolveAgentHomePath } from "./home.js";
+import { LocalAgentHomeStore, resolveAgentHomePath } from "./home.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -509,7 +509,11 @@ export async function archiveBot(
     });
     if (dedicated) {
       await tx.computer.updateMany({
-        where: { id: dedicated.id, state: { not: "running" } },
+        where: {
+          id: dedicated.id,
+          state: { not: "running" },
+          NOT: { state: "error", restorePending: true },
+        },
         data: { state: "stopped" },
       });
     }
@@ -527,14 +531,26 @@ export async function archiveBot(
   const currentDedicated = dedicated
     ? await deps.prisma.computer.findUnique({ where: { id: dedicated.id } })
     : null;
-  if (currentDedicated?.providerRef && currentDedicated.state === "running") {
+  if (
+    currentDedicated?.providerRef &&
+    (currentDedicated.state === "running" ||
+      (currentDedicated.state === "error" && currentDedicated.restorePending))
+  ) {
     const ref = toComputerRef(currentDedicated);
-    await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, context);
-    await deps.sandbox.stop(ref, context);
+    const childContext = {
+      ...context,
+      botId: bot.id,
+      runId: undefined,
+      screenLeaseId: undefined,
+    };
+    if (!currentDedicated.restorePending) {
+      await checkpointAndRecordComputerWorkspace(deps, currentDedicated, ref, childContext);
+    }
+    await deps.sandbox.stop(ref, childContext);
     await deps.prisma.computer.updateMany({
       where: {
         id: currentDedicated.id,
-        state: "running",
+        state: currentDedicated.state,
         providerRef: currentDedicated.providerRef,
       },
       data: { state: "stopped" },
@@ -613,6 +629,10 @@ export async function destroyBot(
           WHERE "botId" = ${bot.id}
         `;
       }
+      // Serialize the deletion marker with a Team Computer's final workspace publication.
+      await tx.$queryRaw`
+        SELECT id FROM computers WHERE "scopeKey" = ${computerScopeKey("team", bot.spaceId)} FOR UPDATE
+      `;
       await tx.botDeletion.create({
         data: {
           id: bot.id,
@@ -662,10 +682,14 @@ export async function destroyBot(
     }),
   );
   if (dedicated) {
-    await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
-      recursive: true,
-      force: true,
-    }).catch(() => undefined);
+    if (deps.home instanceof LocalAgentHomeStore) {
+      await deps.home.removeHome(dedicated.homeKey).catch(() => undefined);
+    } else {
+      await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
+        recursive: true,
+        force: true,
+      }).catch(() => undefined);
+    }
   }
   await removeTeamBrowserProfile(deps, bot.id, sharedComputer, context);
   await removeTeamBotWorkspace(deps, bot, context).catch((error) => {
@@ -846,6 +870,7 @@ async function removeTeamBrowserProfile(
   deps: BotLifecycleDeps,
   botId: string,
   computer: {
+    id: string;
     scope: string;
     homeKey: string;
     kind: string;
@@ -875,8 +900,7 @@ async function removeTeamBrowserProfile(
     });
   }
   if (!REMOTE_TEAM_SANDBOX_KINDS.has(computer.kind)) return;
-  const homeDir = resolveAgentHomePath(deps.home, computer.homeKey, deps.dataDir ?? "./data");
-  await removeContainedDirectory(homeDir, ".browser-profiles", name).catch((error) => {
+  await removeStoredTeamDirectory(deps, computer, ".browser-profiles", name).catch((error) => {
     getLogger().error("team browser profile cleanup", error);
   });
 }
@@ -897,8 +921,7 @@ async function removeTeamBotWorkspace(
   // restore from it. Any other home may be mounted by a running computer, where a bot could
   // swap bots/ for a symlink between the checks and rm, so it is only cleaned inside the computer.
   if (REMOTE_TEAM_SANDBOX_KINDS.has(computer.kind)) {
-    const homeDir = resolveAgentHomePath(deps.home, computer.homeKey, deps.dataDir ?? "./data");
-    await removeContainedDirectory(homeDir, "bots", bot.id).catch((error) => {
+    await removeStoredTeamDirectory(deps, computer, "bots", bot.id).catch((error) => {
       getLogger().error("team bot folder cleanup", error);
     });
   }
@@ -917,8 +940,43 @@ async function removeTeamBotWorkspace(
   });
 }
 
+async function removeStoredTeamDirectory(
+  deps: BotLifecycleDeps,
+  computer: { id: string; homeKey: string },
+  parent: ".browser-profiles" | "bots",
+  name: string,
+) {
+  const { home, prisma } = deps;
+  if (!(home instanceof LocalAgentHomeStore)) {
+    const homeDir = resolveAgentHomePath(home, computer.homeKey, deps.dataDir ?? "./data");
+    return removeContainedDirectory(homeDir, parent, name);
+  }
+  await home.withHomeLock(computer.homeKey, () =>
+    prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computer.id} FOR UPDATE`;
+        const record = await tx.computer.findFirst({
+          where: { id: computer.id, homeKey: computer.homeKey, scope: "team" },
+          select: { homeRevision: true, kind: true },
+        });
+        if (!record || !REMOTE_TEAM_SANDBOX_KINDS.has(record.kind)) return;
+        await home.reconcileCheckpoint(computer.homeKey, record.homeRevision);
+        await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name, (directory) =>
+          home.discardSavedDirectory(computer.homeKey, directory),
+        );
+      },
+      { timeout: 20_000 },
+    ),
+  );
+}
+
 /** Delete one folder in the team home. A symlinked parent is refused; a final symlink is unlinked. */
-async function removeContainedDirectory(root: string, parent: string, name: string) {
+async function removeContainedDirectory(
+  root: string,
+  parent: string,
+  name: string,
+  retire?: (directory: string) => Promise<void>,
+) {
   const target = path.join(root, parent, name);
   const info = await lstat(target).catch((error: unknown) => {
     if (isMissing(error)) return null;
@@ -948,7 +1006,8 @@ async function removeContainedDirectory(root: string, parent: string, name: stri
   ) {
     throw new Error("folder escapes the team home");
   }
-  await rm(resolvedTarget, { recursive: true, force: true });
+  if (retire) await retire(resolvedTarget);
+  else await rm(resolvedTarget, { recursive: true, force: true });
 }
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {

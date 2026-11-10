@@ -14,6 +14,8 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import {
@@ -37,6 +39,7 @@ import {
 } from "./computer-workspace.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { readBodyCapped } from "./web-ssrf.js";
+import { streamWorkspaceBody } from "./workspace-save-policy.js";
 
 const CREATEOS_WORKSPACE = "/home/desktop/rakazo-home";
 const CREATEOS_BROWSER_PROFILES = `${CREATEOS_WORKSPACE}/.browser-profiles`;
@@ -666,10 +669,17 @@ print(json.dumps(out))
     await this.putFile(computer, file, context);
   }
 
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   async *exportWorkspace(
     computer: ComputerRef,
     context: AdapterContext,
-  ): AsyncIterable<PortableFile> {
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     // Dirty state does not survive a process restart or a second provider
     // instance, and skipping the walk commits an empty checkpoint over the home.
     if (!(await this.hasExportableWorkspaceFiles(computer, "", context))) return;
@@ -680,7 +690,7 @@ print(json.dumps(out))
       ["bash", "-lc", quiesceBrowserProfilesCommand(createosDesktopEnv())],
       context,
     );
-    yield* this.walkWorkspace(computer, "", context);
+    yield* this.walkWorkspace(computer, "", context, limits);
   }
 
   async importWorkspace(
@@ -1360,12 +1370,33 @@ raise SystemExit(1)
     computer: ComputerRef,
     directory: string,
     context: AdapterContext,
-  ): AsyncIterable<PortableFile> {
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const entries = await this.listFiles(computer, directory, context);
     for (const entry of entries) {
-      if (shouldSkipCreateOSWorkspaceFile(entry.path)) continue;
+      if (shouldSkipCreateOSWorkspaceFile(entry.path, entry.kind === "dir")) continue;
       if (entry.kind === "dir") {
-        yield* this.walkWorkspace(computer, entry.path, context);
+        yield* this.walkWorkspace(computer, entry.path, context, limits);
+      } else if (limits) {
+        yield {
+          path: entry.path,
+          executable: entry.executable,
+          body: streamWorkspaceBody(async () => {
+            const target = workspacePath(CREATEOS_WORKSPACE, entry.path);
+            const route = `/v1/sandboxes/${encodeURIComponent(computer.providerRef)}/files?path=${encodeURIComponent(target)}`;
+            const response = await this.request(
+              "GET",
+              route,
+              undefined,
+              context,
+              undefined,
+              undefined,
+              "application/octet-stream",
+              "headers",
+            );
+            return response.body;
+          }, CREATEOS_SUCCESS_RESPONSE_TIMEOUT_MS),
+        };
       } else {
         yield {
           path: entry.path,
@@ -1383,7 +1414,7 @@ raise SystemExit(1)
   ): Promise<boolean> {
     const entries = await this.listFiles(computer, directory, context);
     for (const entry of entries) {
-      if (shouldSkipCreateOSWorkspaceFile(entry.path)) continue;
+      if (shouldSkipCreateOSWorkspaceFile(entry.path, entry.kind === "dir")) continue;
       if (entry.kind === "file") return true;
       if (await this.hasExportableWorkspaceFiles(computer, entry.path, context)) return true;
     }
@@ -1564,6 +1595,7 @@ raise SystemExit(1)
     contentType?: string,
     timeoutMs = 30_000,
     accept?: string,
+    timeoutScope: "response" | "headers" = "response",
   ): Promise<Response> {
     const url = new URL(path, `${this.baseUrl}/`);
     const headers = new Headers({
@@ -1571,9 +1603,23 @@ raise SystemExit(1)
       ...(accept ? { Accept: accept } : {}),
       ...(contentType ? { "Content-Type": contentType } : {}),
     });
-    const timeout = AbortSignal.timeout(timeoutMs);
+    const headerDeadline = timeoutScope === "headers" ? new AbortController() : undefined;
+    const timer =
+      headerDeadline &&
+      setTimeout(() => {
+        headerDeadline.abort(
+          new DOMException("CreateOS response headers timed out", "TimeoutError"),
+        );
+      }, timeoutMs);
+    timer?.unref();
+    const timeout = headerDeadline?.signal ?? AbortSignal.timeout(timeoutMs);
     const signal = AbortSignal.any([context.signal, timeout]);
-    const response = await this.fetchImpl(url, { method, headers, body, signal });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, { method, headers, body, signal });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (!response.ok) {
       const message = await readCreateOSErrorMessage(response, signal);
       throw new CreateOSHttpError(response.status, message || response.statusText);
@@ -1679,7 +1725,7 @@ function isTransientCreateOSHttpStatus(status: number): boolean {
   return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
 }
 
-function shouldSkipCreateOSWorkspaceFile(relative: string): boolean {
+function shouldSkipCreateOSWorkspaceFile(relative: string, isDirectory = false): boolean {
   if (relative === ".rakazo" || relative.startsWith(".rakazo/")) return true;
   if (
     relative.startsWith(`${BROWSER_PROFILE_DIR}/`) &&
@@ -1687,7 +1733,7 @@ function shouldSkipCreateOSWorkspaceFile(relative: string): boolean {
   ) {
     return true;
   }
-  return shouldSkipPortableWorkspaceFile(relative);
+  return shouldSkipPortableWorkspaceFile(relative, isDirectory);
 }
 
 export function isAllowedCreateOSScreenUrl(resolved: URL, baseUrl: string): boolean {

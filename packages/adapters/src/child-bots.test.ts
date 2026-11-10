@@ -4,6 +4,7 @@ import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -39,6 +40,7 @@ import { LocalAgentHomeStore } from "./home.js";
 
 const fsHooks = vi.hoisted(() => ({
   afterRealpath: undefined as ((resolved: string) => Promise<void>) | undefined,
+  beforeRm: undefined as ((target: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("@rakazo/db", async (importOriginal) => ({
@@ -56,6 +58,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const resolved = await actual.realpath(...args);
       await fsHooks.afterRealpath?.(String(resolved));
       return resolved;
+    },
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      await fsHooks.beforeRm?.(String(args[0]));
+      return actual.rm(...args);
     },
   };
 });
@@ -1314,6 +1320,60 @@ describe("destroyBot", () => {
     }
   });
 
+  it("detaches a deleted Team workspace before waiting on recursive reclamation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "team-retired-home-test-"));
+    const home = new LocalAgentHomeStore(root);
+    const team = {
+      id: "team-computer",
+      homeKey: "team-workspace-1",
+      kind: "e2b",
+      providerRef: null,
+      scope: "team",
+      state: "stopped",
+    };
+    const target = path.join(home.pathFor(team.homeKey), "bots", "bot-1");
+    const staging = path.join(root, "staging");
+    await seedFile(target, "notes.txt", "remove");
+    await home.writeFile(team.homeKey, "shared/notes.txt", "keep", context);
+    let startCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      startCleanup = resolve;
+    });
+    let resumeCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      resumeCleanup = resolve;
+    });
+    fsHooks.beforeRm = async (directory) => {
+      if (path.dirname(directory) !== staging) return;
+      startCleanup();
+      await cleanupGate;
+    };
+    try {
+      await destroyBot(
+        {
+          prisma: deletionPrisma(team),
+          sandbox: {} as SandboxProvider,
+          home,
+          jobs: { cancel: vi.fn() } as unknown as JobPublisher,
+        },
+        { id: "bot-1", spaceId: "workspace-1", name: "Researcher", archivedAt: null },
+        context,
+        { deleteMemories: true },
+      );
+      await cleanupStarted;
+      await expect(access(target)).rejects.toMatchObject({ code: "ENOENT" });
+      const reader = new LocalAgentHomeStore(root);
+      await expect(reader.readFile(team.homeKey, "shared/notes.txt", context)).resolves.toBe(
+        "keep",
+      );
+    } finally {
+      resumeCleanup();
+      fsHooks.beforeRm = undefined;
+      await vi.waitFor(async () => expect(await readdir(staging)).toEqual([]));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports deletion success when the in-computer folder cleanup never finishes", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -1878,9 +1938,11 @@ describe("archiveBot", () => {
     );
   });
 
-  it("surfaces computer stop failures and leaves the provider state retryable", async () => {
+  it.each([false, true])("keeps a failed stop retryable (%s)", async (pending) => {
     const archivedAt = new Date("2026-08-16T12:00:00.000Z");
+    const updatedAt = new Date("2026-08-16T12:00:00.000Z");
     const updateComputer = vi.fn().mockResolvedValue({});
+    const findCheckpoint = vi.fn().mockResolvedValue({ state: "running", updatedAt });
     const transaction = vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
       callback({
         ...noGroupMemberships(),
@@ -1894,7 +1956,10 @@ describe("archiveBot", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        computer: {
+          findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
@@ -1903,12 +1968,14 @@ describe("archiveBot", () => {
       homeKey: "bot-1",
       kind: "cloud",
       providerRef: "provider-1",
-      state: "running",
+      state: pending ? "error" : "running",
+      restorePending: pending,
     };
     const stop = vi.fn().mockRejectedValue(new Error("stop failed"));
     const prisma = {
       computer: {
         findUnique: vi.fn().mockResolvedValue(dedicated),
+        findFirst: findCheckpoint,
         update: updateComputer,
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1933,11 +2000,25 @@ describe("archiveBot", () => {
           jobs: { cancel: vi.fn() } as unknown as JobPublisher,
         },
         { id: "bot-1", spaceId: "workspace-1", name: "Researcher", archivedAt },
-        context,
+        { ...context, botId: "parent", runId: "parent-run", screenLeaseId: "parent-run:3" },
       ),
     ).rejects.toThrow("stop failed");
 
-    expect(stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ providerRef: "provider-1" }),
+      expect.objectContaining({ botId: "bot-1", runId: undefined, screenLeaseId: undefined }),
+    );
+    if (pending) {
+      expect(findCheckpoint).not.toHaveBeenCalled();
+    } else {
+      expect(findCheckpoint).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            executionLeases: { none: { expiresAt: { gt: expect.any(Date) } } },
+          }),
+        }),
+      );
+    }
     expect(updateComputer).not.toHaveBeenCalled();
   });
 
@@ -1965,13 +2046,17 @@ describe("archiveBot", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        computer: {
+          findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         bot: { update: vi.fn().mockResolvedValue({}) },
       }),
     );
     const prisma = {
       computer: {
         findUnique: vi.fn().mockResolvedValueOnce(booting).mockResolvedValueOnce(running),
+        findFirst: vi.fn().mockResolvedValue({ state: "running", updatedAt: new Date() }),
         updateMany,
       },
       run: { findMany: vi.fn().mockResolvedValue([]) },
@@ -2132,7 +2217,10 @@ function deletionPrisma(team: { id: string }) {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       computerExecutionLease: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      computer: {
+        findFirst: vi.fn().mockResolvedValue({ homeRevision: "empty", ...team }),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       botDeletion: { create: vi.fn().mockResolvedValue({}) },
       bot: { delete: vi.fn().mockResolvedValue({}) },
     }),

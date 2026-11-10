@@ -23,10 +23,13 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
   TerminalRequest,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
-import { SandboxUnavailableError } from "@rakazo/adapter-kit";
+import { SandboxUnavailableError, WorkspaceTooLargeError } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
+import { getLogger } from "@rakazo/logging";
 import { boxResponseError, wrapBoxCall } from "./box-errors.js";
 import { normalizeWorkspacePath, shellQuote, workspacePath } from "./computer-support.js";
 import {
@@ -36,6 +39,7 @@ import {
 import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import { withAbort } from "./web-ssrf.js";
+import { streamWorkspaceBody, workspaceSaveFindExpression } from "./workspace-save-policy.js";
 
 const BOX_API_BASE = "https://ascii.dev/api/box/v1";
 const BOX_WORKSPACE = "/home/user/rakazo-home";
@@ -45,6 +49,7 @@ const BOX_API_COMMAND_TIMEOUT_SECONDS = 600;
 const BOX_TTL_SECONDS = 2 * 60 * 60;
 const BOX_DELETE_TIMEOUT_MS = 60_000;
 const BOX_EXPORT_CONCURRENCY = 16;
+const BOX_WORKSPACE_IDLE_TIMEOUT_MS = 30_000;
 
 export type BoxSandboxSdk = Pick<
   BoxApi,
@@ -369,12 +374,38 @@ export class BoxSandboxProvider implements SandboxProvider {
     await this.writeFiles(this.id(computer), [file], context);
   }
 
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
   async *exportWorkspace(
     computer: ComputerRef,
     context: AdapterContext,
-  ): AsyncIterable<PortableFile> {
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const id = this.id(computer);
     await this.desktops.stopBrowsers(computer, context);
+    if (limits) {
+      let count = 0;
+      let bytes = 0;
+      for await (const entry of this.boundedWorkspaceEntries(id, limits.maxFiles, context)) {
+        if (++count > limits.maxFiles) throw new WorkspaceTooLargeError("files");
+        bytes += entry.size;
+        if (bytes > limits.maxBytes) throw new WorkspaceTooLargeError("bytes");
+        yield {
+          path: entry.path,
+          executable: entry.executable,
+          body: this.streamWorkspaceArtifact(
+            id,
+            workspacePath(BOX_WORKSPACE, entry.path),
+            context.signal,
+          ),
+        };
+      }
+      return;
+    }
     const entries = await this.listWorkspaceFiles(id, context);
     for (let index = 0; index < entries.length; index += BOX_EXPORT_CONCURRENCY) {
       const files = await Promise.all(
@@ -577,6 +608,58 @@ export class BoxSandboxProvider implements SandboxProvider {
     return parseBoxFileEntries(result.stdout).filter(
       (entry) => entry.kind === "file" && !shouldSkipPortableWorkspaceFile(entry.path),
     );
+  }
+
+  private async *boundedWorkspaceEntries(id: string, maxFiles: number, context: AdapterContext) {
+    // Detached command polling keeps only a tail of stdout. Stream the complete listing as a file.
+    const manifest = `/tmp/workspace-save-${randomUUID()}.manifest`;
+    try {
+      const result = await this.runCommand(
+        id,
+        writeWorkspaceManifestCommand(manifest, maxFiles),
+        undefined,
+        60_000,
+        context.signal,
+      );
+      if (result.exitCode !== 0) throw new Error("Could not enumerate the Box workspace");
+      yield* readWorkspaceManifest(this.streamWorkspaceArtifact(id, manifest, context.signal));
+    } finally {
+      try {
+        const cleanup = await this.runCommand(
+          id,
+          `rm -f -- ${shellQuote(manifest)}`,
+          undefined,
+          5_000,
+        );
+        if (cleanup.exitCode !== 0) getLogger().warn("Could not remove the workspace manifest");
+      } catch (error) {
+        getLogger().warn("workspace manifest cleanup", { error });
+      }
+    }
+  }
+
+  private streamWorkspaceArtifact(id: string, filePath: string, signal: AbortSignal) {
+    return streamWorkspaceBody(async () => {
+      const deadline = new AbortController();
+      const timer = setTimeout(
+        () => deadline.abort(new DOMException("Box workspace response timed out", "TimeoutError")),
+        BOX_WORKSPACE_IDLE_TIMEOUT_MS,
+      );
+      timer.unref();
+      try {
+        const { raw } = await this.client.artifactRaw(
+          { boxId: id, path: filePath },
+          { signal: AbortSignal.any([signal, deadline.signal]) },
+        );
+        return raw.body;
+      } catch (error) {
+        signal.throwIfAborted();
+        deadline.signal.throwIfAborted();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }, BOX_WORKSPACE_IDLE_TIMEOUT_MS);
   }
 
   private async readRemoteFile(
@@ -881,6 +964,78 @@ function listBoxWorkspaceFilesCommand(): string {
     '  printf \'%s\\tfile\\t%s\\t%s\\n\' "$encoded" "$size" "$executable"',
     "done",
   ].join("\n");
+}
+
+const BOX_MANIFEST_HEADER = "workspace-list-v1";
+const BOX_MANIFEST_END = "workspace-list-complete";
+const BOX_MANIFEST_PATH_BYTES = 4096;
+
+function writeWorkspaceManifestCommand(manifest: string, maxFiles: number): string {
+  // Keep one extra record to distinguish an exactly full workspace from an over-limit one.
+  const records = maxFiles + 1;
+  const manifestBytes =
+    records * (BOX_MANIFEST_PATH_BYTES + 4 + 20 + 3) +
+    BOX_MANIFEST_HEADER.length +
+    BOX_MANIFEST_END.length +
+    2;
+  return [
+    "set -eC",
+    "umask 077",
+    `ulimit -f ${Math.ceil(manifestBytes / 1024)}`,
+    `cd ${shellQuote(BOX_WORKSPACE)}`,
+    "{",
+    `  printf '%s\\0' '${BOX_MANIFEST_HEADER}'`,
+    "  set +e",
+    `  find . ${workspaceSaveFindExpression()} -printf '%P\\0%m\\0%s\\0' | head -z -n ${records * 3}`,
+    `  statuses=("\${PIPESTATUS[@]}")`,
+    "  set -e",
+    "  if (( statuses[1] != 0 || (statuses[0] != 0 && statuses[0] != 141) )); then exit 1; fi",
+    `  printf '%s\\0' '${BOX_MANIFEST_END}'`,
+    `} > ${shellQuote(manifest)}`,
+  ].join("\n");
+}
+
+async function* readWorkspaceManifest(chunks: AsyncIterable<Uint8Array>) {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let pending = "";
+  let header = false;
+  const fields: string[] = [];
+  for await (const chunk of chunks) {
+    pending += decoder.decode(chunk, { stream: true });
+    let end = pending.indexOf("\0");
+    while (end !== -1) {
+      const field = pending.slice(0, end);
+      pending = pending.slice(end + 1);
+      end = pending.indexOf("\0");
+      if (field.length > BOX_MANIFEST_PATH_BYTES) throw new Error("Invalid Box workspace listing");
+      if (!header) {
+        if (field !== BOX_MANIFEST_HEADER) throw new Error("Invalid Box workspace listing");
+        header = true;
+      } else {
+        fields.push(field);
+      }
+      if (fields.length !== 3) continue;
+      const [relative, mode, size] = fields.splice(0, 3);
+      const bytes = Number(size);
+      if (
+        !relative ||
+        !mode ||
+        !/^[0-7]{1,4}$/.test(mode) ||
+        !size ||
+        !/^\d+$/.test(size) ||
+        !Number.isSafeInteger(bytes)
+      ) {
+        throw new Error("Invalid Box workspace listing");
+      }
+      const filePath = normalizeWorkspacePath(relative);
+      if (filePath !== relative) throw new Error("Invalid Box workspace path");
+      yield { path: filePath, size: bytes, executable: Boolean(Number.parseInt(mode, 8) & 0o100) };
+    }
+    if (pending.length > BOX_MANIFEST_PATH_BYTES) throw new Error("Invalid Box workspace listing");
+  }
+  pending += decoder.decode();
+  const complete = pending.length === 0 && fields.length === 1 && fields[0] === BOX_MANIFEST_END;
+  if (!header || !complete) throw new Error("Box returned an incomplete workspace listing");
 }
 
 function parseBoxFileEntries(output: string): ComputerFileEntry[] {

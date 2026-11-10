@@ -27,6 +27,8 @@ import type {
   SandboxProvider,
   ScreenRequest,
   ScreenSession,
+  StreamedPortableFile,
+  WorkspaceExportLimits,
 } from "@rakazo/adapter-kit";
 import { boundedSandboxCommandTimeoutMs } from "@rakazo/core";
 import {
@@ -46,6 +48,7 @@ import {
   win32NtRelativeAvailable,
 } from "./desktop-sandbox-win32-path.js";
 import { sandboxCommandEnvironment } from "./sandbox-command-environment.js";
+import { shouldSkipPortableWorkspaceFile } from "./workspace-save-policy.js";
 
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
@@ -81,7 +84,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
   }
 
   async provision(
-    request: { botId: string; homePath: string },
+    request: Parameters<SandboxProvider["provision"]>[0],
     _context: AdapterContext,
   ): Promise<ComputerRef> {
     const home = path.resolve(
@@ -92,20 +95,25 @@ export class DesktopSandboxProvider implements SandboxProvider {
     const existing = [...this.boxes.values()].find(
       (box) => box.ref.botId === request.botId || box.home === home,
     );
-    if (existing) {
+    const current = await desktopWorkspaceDirectory(home);
+    if (current && !current.isDirectory())
+      throw new Error("The desktop workspace is not a directory");
+    if (existing && current) {
       existing.running = true;
       return { ...existing.ref, fresh: false };
     }
     const id = `desktop-${request.botId}`;
-    // Recursive mkdir returns undefined when the directory already exists. This
-    // survives adapter/process restarts and distinguishes live files from a new home.
-    const created = await mkdir(home, { recursive: true });
+    // A recreated directory has the same provider reference. Record restore intent first.
+    if (!current) {
+      await request.beforeWorkspaceReplacement?.();
+      await mkdir(home, { recursive: true });
+    }
     const ref: ComputerRef = {
       id,
       botId: request.botId,
       kind: "desktop",
       providerRef: home,
-      fresh: created !== undefined,
+      fresh: !current,
     };
     this.boxes.set(id, {
       ref,
@@ -117,6 +125,11 @@ export class DesktopSandboxProvider implements SandboxProvider {
   }
 
   async prepare(_computer: ComputerRef, _context: AdapterContext): Promise<void> {}
+
+  async isRunning(computer: ComputerRef): Promise<boolean> {
+    const box = this.boxFor(computer);
+    return !!box?.running && (await desktopWorkspaceDirectory(box.home))?.isDirectory() === true;
+  }
 
   async *execute(
     computer: ComputerRef,
@@ -135,7 +148,23 @@ export class DesktopSandboxProvider implements SandboxProvider {
       yield { type: "exit", code: 1 };
       return;
     }
-    await mkdir(cwd, { recursive: true });
+    if (!(await desktopWorkspaceDirectory(box.home))?.isDirectory()) {
+      yield { type: "stderr", data: "desktop workspace is unavailable" };
+      yield { type: "exit", code: 1 };
+      return;
+    }
+    if (cwd !== box.home) {
+      if (isAllowedDesktopPath(cwd, [box.home])) {
+        // Create only descendants of the existing workspace. The final name is never opened.
+        await localWorkspaceTarget(
+          box.home,
+          path.join(path.relative(box.home, cwd), "_cwd"),
+          false,
+        );
+      } else {
+        await mkdir(cwd, { recursive: true });
+      }
+    }
     const argv = request.argv.length ? request.argv : ["echo", "ready"];
     yield* streamLocalCommand(
       argv,
@@ -242,9 +271,19 @@ export class DesktopSandboxProvider implements SandboxProvider {
     }
   }
 
-  async *exportWorkspace(computer: ComputerRef): AsyncIterable<PortableFile> {
+  exportWorkspace(computer: ComputerRef, context: AdapterContext): AsyncIterable<PortableFile>;
+  exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile>;
+  async *exportWorkspace(
+    computer: ComputerRef,
+    context: AdapterContext,
+    limits?: WorkspaceExportLimits,
+  ): AsyncIterable<PortableFile | StreamedPortableFile> {
     const box = this.requiredBox(computer);
-    yield* walkDesktopWorkspace(box.home, "");
+    yield* walkDesktopWorkspace(box.home, "", limits ? context.signal : undefined);
   }
 
   async importWorkspace(
@@ -664,21 +703,83 @@ function hasErrorCode(error: unknown, code: string): error is NodeJS.ErrnoExcept
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-async function* walkDesktopWorkspace(home: string, directory: string): AsyncIterable<PortableFile> {
+function desktopWorkspaceDirectory(directory: string) {
+  return lstat(directory).catch((error: unknown) => {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  });
+}
+
+async function* walkDesktopWorkspace(
+  home: string,
+  directory: string,
+  signal?: AbortSignal,
+): AsyncIterable<PortableFile | StreamedPortableFile> {
   const target = await localWorkspaceTarget(home, directory, true);
   for (const entry of await readdir(target, { withFileTypes: true })) {
+    signal?.throwIfAborted();
+    if (signal && entry.isSymbolicLink()) continue;
     const relative = normalizeWorkspacePath(directory ? `${directory}/${entry.name}` : entry.name);
-    const child = await localWorkspaceTarget(home, relative, true).catch(() => null);
+    const child = signal
+      ? path.join(target, entry.name)
+      : await localWorkspaceTarget(home, relative, true).catch(() => null);
     if (!child) continue;
-    const info = await stat(child);
-    if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative);
+    const info = signal ? await lstat(child) : await stat(child);
+    if (signal && info.isSymbolicLink()) throw new Error("A workspace entry changed during export");
+    if (signal && shouldSkipPortableWorkspaceFile(relative, info.isDirectory())) continue;
+    if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative, signal);
     else if (info.isFile()) {
-      yield {
-        path: relative,
-        content: new Uint8Array(await readFile(child)),
-        executable: Boolean(info.mode & 0o100),
-      };
+      const metadata = { path: relative, executable: Boolean(info.mode & 0o100) };
+      if (signal) {
+        yield {
+          ...metadata,
+          body: streamContainedDesktopFile(home, child, info, signal),
+        };
+      } else {
+        yield { ...metadata, content: new Uint8Array(await readFile(child)) };
+      }
     }
+  }
+}
+
+async function* streamContainedDesktopFile(
+  home: string,
+  target: string,
+  expected: { dev: number; ino: number },
+  signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  const resolvedHome = await realpath(home);
+  const parent = await realpath(path.dirname(target));
+  if (!isAllowedDesktopPath(parent, [resolvedHome])) {
+    throw new Error("Path escapes the computer workspace");
+  }
+  const parentHandle = await open(parent, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+  try {
+    const containedParent = await assertContainedDirectoryHandle(
+      parentHandle,
+      parent,
+      resolvedHome,
+    );
+    const name = path.basename(target);
+    const handle = await open(
+      childPathViaDirFd(parentHandle.fd, name) ?? path.join(containedParent, name),
+      constants.O_RDONLY | O_NOFOLLOW,
+    );
+    try {
+      const opened = await handle.stat();
+      if (opened.dev !== expected.dev || opened.ino !== expected.ino) {
+        throw new Error("A workspace entry changed during export");
+      }
+      await assertContainedFileHandle(handle, resolvedHome, parentHandle, containedParent, name);
+      for await (const chunk of handle.createReadStream({ autoClose: false, signal })) {
+        yield chunk as Uint8Array;
+      }
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await parentHandle.close();
   }
 }
 

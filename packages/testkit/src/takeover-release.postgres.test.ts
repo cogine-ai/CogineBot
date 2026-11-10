@@ -272,6 +272,30 @@ describe.skipIf(!enabled).sequential("takeover release settlement (PostgreSQL)",
     },
   );
 
+  it("does not promote a restoring computer or publish a takeover receipt", async () => {
+    const input = await gatedTakeover();
+    await db.prisma.computer.update({
+      where: { id: f.computer.id },
+      data: { state: "booting", restorePending: true },
+    });
+    const before = await computer();
+
+    await expect(pauseRunForTakeover(db.prisma, input, realtime)).rejects.toThrow(
+      /^Computer was not available to mark for takeover$/,
+    );
+    expect(await computer()).toEqual(before);
+    expect(await run()).toMatchObject({ status: "running", leaseOwner: "worker" });
+    expect(
+      await db.prisma.attempt.findUniqueOrThrow({ where: { id: input.attemptId } }),
+    ).toMatchObject({ status: "running", finishedAt: null });
+    expect(
+      await db.prisma.externalEffect.findUniqueOrThrow({ where: { id: input.effect.id } }),
+    ).toMatchObject({ status: "approved" });
+    expect(await db.prisma.message.count({ where: { runId: f.run.id } })).toBe(1);
+    expect(await events()).toHaveLength(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it.each(["denied", "executing", "completed", "kind", "run", "space"] as const)(
     "atomic gated takeover rejects a %s effect and rolls back every pause write",
     async (mismatch) => {

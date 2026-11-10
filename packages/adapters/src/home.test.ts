@@ -3,16 +3,19 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalAgentHomeStore } from "./home.js";
 
@@ -21,6 +24,7 @@ const hooks = vi.hoisted(() => ({
   beforeReaddir: undefined as ((target: string) => Promise<void>) | undefined,
   beforeOpen: undefined as ((target: string) => Promise<void>) | undefined,
   afterOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  beforeRm: undefined as ((target: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -42,6 +46,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       await hooks.afterOpen?.(String(args[0]));
       return handle;
     },
+    rm: async (...args: Parameters<typeof fs.rm>) => {
+      await hooks.beforeRm?.(String(args[0]));
+      return fs.rm(...args);
+    },
   };
 });
 
@@ -59,6 +67,7 @@ afterEach(async () => {
   hooks.beforeReaddir = undefined;
   hooks.beforeOpen = undefined;
   hooks.afterOpen = undefined;
+  hooks.beforeRm = undefined;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -80,6 +89,120 @@ async function exported(store: LocalAgentHomeStore, directory = "") {
 }
 
 describe("LocalAgentHomeStore path containment", () => {
+  it("keeps the saved home readable while a restore consumer waits", async () => {
+    const { root, store, home } = await fixture();
+    await writeFile(path.join(home, "notes.txt"), "saved notes");
+    const exportStream = store.exportHome("bot-1", context)[Symbol.asyncIterator]();
+    const secondStore = new LocalAgentHomeStore(root);
+    try {
+      expect(await exportStream.next()).toMatchObject({ value: { path: "notes.txt" } });
+      await expect(secondStore.readFile("bot-1", "notes.txt", context)).resolves.toBe(
+        "saved notes",
+      );
+      await expect(secondStore.list("bot-1", "", context)).resolves.toMatchObject([
+        { path: "notes.txt", kind: "file" },
+      ]);
+    } finally {
+      await exportStream.return?.();
+    }
+  });
+
+  it("recovers a legacy backup without consulting the computer table", async () => {
+    const { root, home } = await fixture();
+    const transact = vi.fn();
+    const store = new LocalAgentHomeStore(root, {
+      $transaction: transact,
+    } as unknown as PrismaClient);
+    await writeFile(path.join(home, "notes.txt"), "legacy backup");
+    await rename(home, `${home}.previous`);
+
+    await expect(store.readFile("bot-1", "notes.txt", context)).resolves.toBe("legacy backup");
+    expect(transact).not.toHaveBeenCalled();
+  });
+
+  it("finishes publication before removing a detached backup recursively", async () => {
+    const { root, store, home } = await fixture();
+    const source = path.join(root, "checkpoint-source");
+    const staging = path.join(root, "staging");
+    await mkdir(source);
+    await writeFile(path.join(home, "notes.txt"), "old notes");
+    await writeFile(path.join(source, "notes.txt"), "new notes");
+    let committedRevision = "old-revision";
+    let inTransaction = false;
+    let cleanupHeldTransaction: boolean | undefined;
+    let startCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      startCleanup = resolve;
+    });
+    let resumeCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      resumeCleanup = resolve;
+    });
+    hooks.beforeRm = async (target) => {
+      if (path.dirname(target) !== staging) return;
+      cleanupHeldTransaction = inTransaction;
+      startCleanup();
+      await cleanupGate;
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      computer: { findFirst: vi.fn(async () => ({ homeRevision: committedRevision })) },
+    };
+    const prisma = {
+      async $transaction<T>(work: (client: typeof tx) => Promise<T>) {
+        inTransaction = true;
+        try {
+          return await work(tx);
+        } finally {
+          inTransaction = false;
+        }
+      },
+    } as unknown as PrismaClient;
+
+    try {
+      const revision = await store.commit("bot-1", source, context, {
+        prisma,
+        async publish(install) {
+          committedRevision = await install(committedRevision);
+          return committedRevision;
+        },
+      });
+      await cleanupStarted;
+      expect(revision).toBe(committedRevision);
+      expect(cleanupHeldTransaction).toBe(false);
+      const reader = new LocalAgentHomeStore(root);
+      await expect(reader.readFile("bot-1", "notes.txt", context)).resolves.toBe("new notes");
+    } finally {
+      resumeCleanup();
+      await vi.waitFor(async () => expect(await readdir(staging)).toEqual([]));
+    }
+  });
+
+  it("reaps only stale owned save directories on its data volume", async () => {
+    const { root, store } = await fixture();
+    const staging = await store.createStaging();
+    const parent = path.join(root, "staging");
+    const stale = path.join(parent, "workspace-save-STALEx");
+    const unrelated = path.join(parent, "workspace-save-unrelated");
+    const outside = path.join(root, "outside");
+    const link = path.join(parent, "workspace-save-OUTSID");
+    const old = new Date(Date.now() - 60 * 60_000);
+    await Promise.all([mkdir(stale), mkdir(unrelated), mkdir(outside)]);
+    try {
+      await symlink(outside, link, "dir");
+      await Promise.all(
+        [staging.path, stale, unrelated, outside].map((directory) => utimes(directory, old, old)),
+      );
+      await store.removeStaleStaging();
+      await expect(stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+      for (const directory of [staging.path, unrelated, outside, link]) {
+        expect((await stat(directory)).isDirectory()).toBe(true);
+      }
+    } finally {
+      await staging.remove();
+    }
+  });
+
   it("keeps revision metadata external without reserving a workspace file name", async () => {
     const { root, store } = await fixture();
     const source = path.join(root, "checkpoint-source");
