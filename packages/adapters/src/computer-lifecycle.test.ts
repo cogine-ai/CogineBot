@@ -50,7 +50,7 @@ describe("computer provisioning", () => {
       .fn()
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 })
-      .mockResolvedValueOnce({ count: 0 });
+      .mockResolvedValue({ count: 1 });
     const computerRow = {
       id: "computer-1",
       homeKey: "bot-1",
@@ -828,6 +828,7 @@ describe("computer provisioning", () => {
                   .fn()
                   .mockResolvedValueOnce({ count: 1 })
                   .mockResolvedValueOnce({ count: 1 })
+                  .mockResolvedValueOnce({ count: 1 })
                   .mockRejectedValueOnce(failure)
                   .mockResolvedValue({ count: 1 })
               : vi.fn().mockResolvedValue({ count: 1 }),
@@ -865,7 +866,9 @@ describe("computer provisioning", () => {
         } else {
           await expect(result).rejects.toBe(failure);
         }
-        expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(ref, context);
+        expect(sandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(ref, context, {
+          onlyIfRunning: true,
+        });
         expect(sandbox.destroy).toHaveBeenCalledExactlyOnceWith(ref, {
           ...context,
           signal: expect.any(AbortSignal),
@@ -886,7 +889,7 @@ describe("computer provisioning", () => {
                 providerRef: ref.providerRef,
                 stopRequestedAt: null,
               })
-            : { state: stage === "prepare" ? "running" : "error" },
+            : { state: stage === "prepare" ? "running" : "error", stopRequestedAt: null },
         });
         expect(original).toMatchObject({
           state: "running",
@@ -1101,7 +1104,7 @@ describe("computer provisioning", () => {
         ),
       ).rejects.toThrow("provider preparation failed");
       expect(prepare).toHaveBeenCalledWith(ref, context);
-      expect(releaseScreen).toHaveBeenCalledWith(ref, context);
+      expect(releaseScreen).toHaveBeenCalledWith(ref, context, { onlyIfRunning: true });
       expect(cleanup === "destroy" ? destroy : stop).toHaveBeenCalledWith(ref, {
         ...context,
         signal: expect.any(AbortSignal),
@@ -1112,7 +1115,7 @@ describe("computer provisioning", () => {
     }
   });
 
-  it("releases the screen when activation fails on a resumed Team computer", async () => {
+  it("does not touch the provider after a newer Team boot claim wins", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-team-activation-rollback-"));
     const ref = {
       id: "provider-1",
@@ -1127,7 +1130,7 @@ describe("computer provisioning", () => {
       .fn()
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 })
-      .mockResolvedValueOnce({ count: 0 });
+      .mockResolvedValue({ count: 0 });
     const prisma = {
       computer: {
         findUniqueOrThrow: vi.fn().mockResolvedValue({
@@ -1169,8 +1172,8 @@ describe("computer provisioning", () => {
         ),
       ).rejects.toThrow("Computer is busy");
       expect(sandbox.execute).toHaveBeenCalled();
-      expect(releaseScreen).toHaveBeenCalledWith(ref, context);
-      expect(stop).toHaveBeenCalledWith(ref, { ...context, signal: expect.any(AbortSignal) });
+      expect(releaseScreen).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -1297,7 +1300,10 @@ describe("computer provisioning", () => {
       };
       const updateMany = vi.fn().mockResolvedValue({ count: 1 });
       if (recordFails)
-        updateMany.mockResolvedValueOnce({ count: 1 }).mockRejectedValueOnce(recordError);
+        updateMany
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 1 })
+          .mockRejectedValueOnce(recordError);
       const prisma = {
         computer: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
@@ -1348,7 +1354,7 @@ describe("computer provisioning", () => {
           ...context,
           signal: expect.any(AbortSignal),
         });
-        expect(updateMany).toHaveBeenCalledTimes(2);
+        expect(updateMany).toHaveBeenCalledTimes(3);
         expect(updateMany).toHaveBeenLastCalledWith(
           expect.objectContaining({
             data: expect.objectContaining({
@@ -1485,7 +1491,7 @@ describe("computer provisioning", () => {
         ),
       ).resolves.toEqual(ref);
       expect(importWorkspace).toHaveBeenCalledTimes(1);
-      expect(updateMany).toHaveBeenCalledTimes(3);
+      expect(updateMany).toHaveBeenCalledTimes(4);
       expect(updateMany).toHaveBeenLastCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({

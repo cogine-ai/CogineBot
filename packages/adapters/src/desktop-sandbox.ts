@@ -289,9 +289,12 @@ export class DesktopSandboxProvider implements SandboxProvider {
   async importWorkspace(
     computer: ComputerRef,
     files: AsyncIterable<PortableFile>,
-    _context: AdapterContext,
+    context: AdapterContext,
   ) {
-    for await (const file of files) await this.writeFile(computer, file);
+    for await (const file of files) {
+      context.signal.throwIfAborted();
+      await this.writeFile(computer, file);
+    }
   }
 
   async snapshot(computer: ComputerRef, _context: AdapterContext) {

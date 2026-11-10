@@ -158,6 +158,7 @@ export async function requestClaimedComputerStop(
   ref: ComputerRef,
   context: AdapterContext,
   operation: "stop" | "destroy" = "stop",
+  releaseScreen = false,
 ): Promise<"stopped" | "gone"> {
   context.signal.throwIfAborted();
   const pending = await deps.prisma.computer.updateMany({
@@ -165,6 +166,11 @@ export async function requestClaimedComputerStop(
     data: { stopRequestedAt: new Date(), updatedAt: claim.updatedAt },
   });
   if (pending.count !== 1) throw new ComputerCheckpointChangedError();
+  if (releaseScreen) {
+    await deps.sandbox
+      .releaseScreen?.(ref, context, { onlyIfRunning: true })
+      .catch(() => undefined);
+  }
   return confirmComputerStop(deps.sandbox, ref, context, operation);
 }
 
@@ -185,7 +191,8 @@ export async function confirmComputerStop(
   } catch (error) {
     if (hasErrorName(error, "SandboxNotFoundError") && !isSandboxUnsafeStop(error)) return "gone";
     const state = await inspectComputerPower(sandbox, ref, context);
-    if (state === "gone" || (operation === "stop" && state === "stopped")) return state;
+    // A paused resource can still receive a delayed stop. Only confirmed absence is conclusive.
+    if (state === "gone") return state;
     throw new SandboxUnsafeStopError(error);
   }
 }

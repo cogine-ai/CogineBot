@@ -468,13 +468,20 @@ export class LocalAgentHomeStore implements AgentHomeStore {
 
   async readFileBytes(botId: string, filePath: string, maxBytes?: number): Promise<Buffer> {
     const unlock = await this.lockReadableHome(botId);
-    const handle = await (async () => {
-      const full = await containedExistingPath(this.botDir(botId), filePath);
-      return open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const { handle, root } = await (async () => {
+      const root = await realpath(this.botDir(botId));
+      const full = await containedExistingPath(root, filePath);
+      const handle = await open(
+        full,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      );
+      return { handle, root };
     })().finally(unlock);
     try {
-      if (maxBytes === undefined) return await handle.readFile();
       const info = await handle.stat();
+      if (!info.isFile()) throw new Error("Home entry is not a regular file");
+      assertContained(root, await fileHandlePath(handle.fd));
+      if (maxBytes === undefined) return await handle.readFile();
       const tooLarge = () => new Error(`agent home file exceeds ${maxBytes} bytes`);
       if (info.size > maxBytes) throw tooLarge();
       const chunks: Buffer[] = [];

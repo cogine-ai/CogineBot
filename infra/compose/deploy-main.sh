@@ -562,7 +562,7 @@ rollback() {
         echo "The administrator migration termination could not be verified; runtime recovery was not started." >&2; exit 1
       fi
     fi
-    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify; then
+    if ! docker_command "${ROLLBACK_TIMEOUT}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" run --rm --no-deps --pull never -T migrate pnpm --filter @rakazo/api run db:row-security verify --computer-rollback; then
       echo "Database readiness failed; runtime recovery was not started." >&2; exit 1
     fi
   fi

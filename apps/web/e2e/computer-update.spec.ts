@@ -165,6 +165,16 @@ test("an unconfirmed computer stop offers explicit recovery without attempting t
   await expect(preview.getByText("Computer status unconfirmed", { exact: true })).toBeVisible();
   await expect(preview.getByTestId("computer-preview-open")).toHaveCount(0);
   await expect(preview.locator("iframe")).toHaveCount(0);
+  const savedFiles = page
+    .getByRole("button", { name: "Files", exact: true })
+    .filter({
+      visible: true,
+    })
+    .and(page.locator("[aria-expanded]"));
+  await savedFiles.click();
+  await expect(savedFiles).toHaveAttribute("aria-expanded", "true");
+  expect(bootRequests).toBe(0);
+  await savedFiles.click();
   await page.getByTestId("computer-more-button").click();
   await expect(page.getByRole("menuitem", { name: "Recover computer", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Update computer", exact: true })).toHaveCount(0);

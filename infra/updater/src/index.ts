@@ -690,7 +690,7 @@ export function createUpdaterApp(
     steps.splice(1, 0, {
       id: "verify-rollback",
       label: "Verify database readiness before rollback",
-      ...composeMigrationArgv(composeTarget, "verify"),
+      ...composeMigrationArgv(composeTarget, "verify-rollback"),
     });
     return rememberRun(
       await execute({
@@ -940,7 +940,10 @@ export function createUpdaterApp(
                 {
                   id: "verify-recovery",
                   label: "Verify database readiness before recovery",
-                  ...composeMigrationArgv(migrationTarget, "verify"),
+                  ...composeMigrationArgv(
+                    migrationTarget,
+                    step.id === "verify-rollback" ? "verify" : "verify-rollback",
+                  ),
                 },
                 {
                   ...composeEnv,

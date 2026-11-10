@@ -301,6 +301,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       where: { id: computerId },
       data: { restorePending: true, homeRevision: "last-valid" },
     });
+    // A delayed provider request can still be pending even if a read observes a pause.
+    inspectPowerState.mockResolvedValueOnce("unknown").mockResolvedValueOnce("stopped");
     stopProvider.mockImplementationOnce(async () => {
       expect(
         await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),

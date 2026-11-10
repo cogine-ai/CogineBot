@@ -25,15 +25,15 @@ import {
   revokeScreenControl,
 } from "./computer-control.js";
 import {
-  checkpointComputerBeforeStop,
-  confirmComputerStop,
   isSandboxDamaged,
   isSandboxUnsafeStop,
   requestClaimedComputerStop,
+  saveComputerBeforeStop,
   stoppedComputerControl,
 } from "./computer-power.js";
 import { toComputerRef } from "./computer-support.js";
 import {
+  ComputerCheckpointChangedError,
   ensureComputerWorkspaceLayout,
   removeDeletedBotWorkspaces,
   restoreComputerWorkspace,
@@ -519,7 +519,18 @@ export async function provisionComputer(
     if (replacement) {
       await markRestorePending();
       await onProgress?.("restoring");
-      await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, context);
+      // A provider may reuse an id or local workspace across boot claims.
+      const current = await deps.prisma.computer.updateMany({
+        where: { ...bootClaim(), stopRequestedAt: null },
+        data: { updatedAt: claimStamp },
+      });
+      if (current.count !== 1) throw new ComputerBusyError();
+      const restoreBudget = claimStamp.getTime() + BOOT_CLAIM_STALE_MS - Date.now() - 10_000;
+      if (restoreBudget <= 0) throw new ComputerBusyError();
+      await restoreComputerWorkspace(deps.home, deps.sandbox, existing.homeKey, ref, {
+        ...context,
+        signal: AbortSignal.any([context.signal, AbortSignal.timeout(restoreBudget)]),
+      });
     }
     await onProgress?.("reconnecting");
     await ensureComputerWorkspaceLayout(
@@ -575,7 +586,7 @@ export async function provisionComputer(
     const damaged = isSandboxDamaged(error);
     const rollbackError =
       provisioned && !unsafe && !damaged && (!reconnecting || provisioned.fresh === true)
-        ? await rollbackProvisionedComputer(deps.sandbox, provisioned, context)
+        ? await rollbackProvisionedComputer(deps, bootClaim(), provisioned, context)
         : undefined;
     try {
       await deps.prisma.computer.updateMany({
@@ -589,8 +600,9 @@ export async function provisionComputer(
                 : reconnecting && !restorePending
                   ? "running"
                   : "error",
+          stopRequestedAt: null,
           ...(unsafe || rollbackError || damaged || recoveryStarted
-            ? { stopRequestedAt: null, restorePending: true, ...stoppedComputerControl }
+            ? { restorePending: true, ...stoppedComputerControl }
             : {}),
           ...((damaged || rollbackError) && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
@@ -644,20 +656,24 @@ async function waitForComputerReady(
 }
 
 async function rollbackProvisionedComputer(
-  sandbox: SandboxProvider,
+  deps: { prisma: PrismaClient; sandbox: SandboxProvider },
+  claim: Prisma.ComputerWhereInput & { updatedAt: Date },
   computer: ComputerRef,
   context: AdapterContext,
 ): Promise<unknown | undefined> {
   try {
-    await sandbox.releaseScreen?.(computer, context).catch(() => undefined);
-    await confirmComputerStop(
-      sandbox,
+    await requestClaimedComputerStop(
+      deps,
+      claim,
       computer,
       context.signal.aborted ? { ...context, signal: AbortSignal.timeout(120_000) } : context,
       computer.fresh ? "destroy" : "stop",
+      true,
     );
     return undefined;
   } catch (error) {
+    // A successor can adopt the same provider identity. The old claimant must leave it alone.
+    if (error instanceof ComputerCheckpointChangedError) return undefined;
     return error;
   }
 }
@@ -1157,7 +1173,7 @@ export async function replaceComputer(
       (mode === "update" || (existing.state === "running" && mode === "recover"))
     ) {
       await onProgress?.("saving");
-      await checkpointComputerBeforeStop(deps, existing, oldRef, context, suspensionClaim);
+      await saveComputerBeforeStop(deps, existing, oldRef, context, suspensionClaim);
     }
     await onProgress?.("recreating");
     if (oldRef) {

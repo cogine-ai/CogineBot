@@ -162,6 +162,7 @@ import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
+import { FilesApp } from "../components/computer/FilesApp";
 import { DelegatedApprovalCard } from "../components/DelegatedApprovalCard";
 import { DeploymentTransferTools } from "../components/DeploymentTransfer";
 import { lazyOverlay } from "../components/ErrorBoundary";
@@ -952,6 +953,7 @@ export function ShellPage() {
   const pendingBrowserNotifications = useRef(new Map<string, PendingBrowserNotification>());
   const computerVisible = useRef(false);
   const computerSelection = currentSpaceSelectionGeneration();
+  const [savedFilesBotId, setSavedFilesBotId] = useState<string | null>(null);
   const watchingComputer = panel === "computer" || computerOpen;
   computerVisible.current = watchingComputer;
   const autoSpoken = useRef<string | null>(null);
@@ -6212,6 +6214,27 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                {computer?.state === "suspended" ||
+                computerStateRequiresRecovery(computer?.state) ? (
+                  <div className="mt-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-expanded={savedFilesBotId === active.id}
+                      onClick={() =>
+                        setSavedFilesBotId(savedFilesBotId === active.id ? null : active.id)
+                      }
+                    >
+                      <Trans>Files</Trans>
+                    </Button>
+                    {savedFilesBotId === active.id ? (
+                      <div className="mt-2 h-64 overflow-hidden rounded-md border border-border">
+                        <FilesApp key={active.id} botId={active.id} canUpload={false} visible />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <RoutineListHeader
                   onCreate={() => {
                     setRoutineDraft(emptyRoutineDraft());
