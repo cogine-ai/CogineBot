@@ -462,6 +462,23 @@ describe("CreateOSSandboxProvider", () => {
     expect(files.map((file) => file.path)).toEqual(["notes.txt"]);
   });
 
+  it("streams the existing binary file route only when the bounded consumer opens it", async () => {
+    const fixture = createosFixture();
+    const files = provider(fixture).exportWorkspace(computer, context, {
+      maxBytes: 5,
+      maxFiles: 1,
+    });
+    for await (const file of files) {
+      expect(file.path).toBe("notes.txt");
+      expect(fixture.calls.filter((call) => call.includes("/files"))).toEqual([]);
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      const chunks = [];
+      for await (const chunk of file.body) chunks.push(chunk);
+      expect(Buffer.concat(chunks).toString()).toBe("notes");
+    }
+    expect(fixture.calls.filter((call) => call.includes("/files"))).toHaveLength(1);
+  });
+
   it("forgets per-sandbox state on stop and destroy", async () => {
     const fixture = createosFixture();
     const target = provider(fixture);

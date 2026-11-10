@@ -1523,6 +1523,47 @@ async function withRetainedE2BServer(
 }
 
 describe("workspace export activity", () => {
+  it("streams bounded workspace reads and cancels the remote body when the consumer leaves", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from([0, 255]));
+      },
+      cancel,
+    });
+    const desktop = {
+      sandboxId: "streamed-export",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+      commands: { run: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }) },
+      files: {
+        list: vi.fn().mockResolvedValue([{ name: "binary.dat", type: "file", mode: 0o700 }]),
+        read: vi.fn().mockResolvedValue(body),
+      },
+    };
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn().mockResolvedValue(desktop),
+      connect: vi.fn(),
+      pause: vi.fn(),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const computer = await provider.provision({ botId: "bot", homePath: "/unused" }, context);
+    const files = provider.exportWorkspace(computer, context, { maxBytes: 4, maxFiles: 1 });
+    for await (const file of files) {
+      expect(file).toMatchObject({ path: "binary.dat", executable: true });
+      expect(desktop.files.read).not.toHaveBeenCalled();
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      for await (const chunk of file.body) {
+        expect(chunk).toEqual(Uint8Array.from([0, 255]));
+        break;
+      }
+    }
+    expect(desktop.files.read).toHaveBeenCalledWith(expect.stringMatching(/\/binary\.dat$/), {
+      format: "stream",
+      signal: context.signal,
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("renews the captured active export handle without reconnecting and preserves file bytes", async () => {
     vi.useFakeTimers();
     let list!: (entries: unknown[]) => void;

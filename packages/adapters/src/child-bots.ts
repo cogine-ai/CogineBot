@@ -39,7 +39,7 @@ import {
   teamBrowserProfileName,
   withCleanupDeadline,
 } from "./computer-workspace.js";
-import { resolveAgentHomePath } from "./home.js";
+import { LocalAgentHomeStore, resolveAgentHomePath } from "./home.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -850,6 +850,7 @@ async function removeTeamBrowserProfile(
   deps: BotLifecycleDeps,
   botId: string,
   computer: {
+    id: string;
     scope: string;
     homeKey: string;
     kind: string;
@@ -879,8 +880,7 @@ async function removeTeamBrowserProfile(
     });
   }
   if (!REMOTE_TEAM_SANDBOX_KINDS.has(computer.kind)) return;
-  const homeDir = resolveAgentHomePath(deps.home, computer.homeKey, deps.dataDir ?? "./data");
-  await removeContainedDirectory(homeDir, ".browser-profiles", name).catch((error) => {
+  await removeStoredTeamDirectory(deps, computer, ".browser-profiles", name).catch((error) => {
     getLogger().error("team browser profile cleanup", error);
   });
 }
@@ -901,8 +901,7 @@ async function removeTeamBotWorkspace(
   // restore from it. Any other home may be mounted by a running computer, where a bot could
   // swap bots/ for a symlink between the checks and rm, so it is only cleaned inside the computer.
   if (REMOTE_TEAM_SANDBOX_KINDS.has(computer.kind)) {
-    const homeDir = resolveAgentHomePath(deps.home, computer.homeKey, deps.dataDir ?? "./data");
-    await removeContainedDirectory(homeDir, "bots", bot.id).catch((error) => {
+    await removeStoredTeamDirectory(deps, computer, "bots", bot.id).catch((error) => {
       getLogger().error("team bot folder cleanup", error);
     });
   }
@@ -919,6 +918,32 @@ async function removeTeamBotWorkspace(
   ).catch((error) => {
     getLogger().error("team bot folder cleanup", error);
   });
+}
+
+async function removeStoredTeamDirectory(
+  deps: BotLifecycleDeps,
+  computer: { id: string; homeKey: string },
+  parent: ".browser-profiles" | "bots",
+  name: string,
+) {
+  const { home, prisma } = deps;
+  if (!(home instanceof LocalAgentHomeStore)) {
+    const homeDir = resolveAgentHomePath(home, computer.homeKey, deps.dataDir ?? "./data");
+    return removeContainedDirectory(homeDir, parent, name);
+  }
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computer.id} FOR UPDATE`;
+      const record = await tx.computer.findFirst({
+        where: { id: computer.id, homeKey: computer.homeKey, scope: "team" },
+        select: { homeRevision: true, kind: true },
+      });
+      if (!record || !REMOTE_TEAM_SANDBOX_KINDS.has(record.kind)) return;
+      await home.reconcileCheckpoint(computer.homeKey, record.homeRevision);
+      await removeContainedDirectory(home.pathFor(computer.homeKey), parent, name);
+    },
+    { timeout: 20_000 },
+  );
 }
 
 /** Delete one folder in the team home. A symlinked parent is refused; a final symlink is unlinked. */

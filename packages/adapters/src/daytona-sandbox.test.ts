@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import type { Sandbox } from "@daytona/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaytonaSandboxProvider, type DaytonaSandboxSdk } from "./daytona-sandbox.js";
@@ -1171,6 +1172,26 @@ describe("DaytonaSandboxProvider", () => {
       path: "bin/tool",
       content: binary,
       executable: true,
+    });
+    const downloadFileStream = vi
+      .fn()
+      .mockResolvedValue(
+        Readable.from([Buffer.from(binary.subarray(0, 2)), Buffer.from(binary.subarray(2))]),
+      );
+    fixture.sandbox.fs.downloadFileStream = downloadFileStream;
+    for await (const file of provider.exportWorkspace(computer, context, {
+      maxBytes: binary.byteLength,
+      maxFiles: 1,
+    })) {
+      expect(file).toMatchObject({ path: "bin/tool", executable: true });
+      expect(downloadFileStream).not.toHaveBeenCalled();
+      if (!("body" in file)) throw new Error("Expected a streamed file");
+      const chunks = [];
+      for await (const chunk of file.body) chunks.push(chunk);
+      expect(Buffer.concat(chunks)).toEqual(Buffer.from(binary));
+    }
+    expect(downloadFileStream).toHaveBeenCalledWith(expect.stringMatching(/\/bin\/tool$/), {
+      signal: context.signal,
     });
 
     const observation = await provider.observe(computer, context);

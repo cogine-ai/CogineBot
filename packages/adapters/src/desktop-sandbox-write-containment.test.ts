@@ -80,6 +80,26 @@ async function pathExists(target: string) {
 }
 
 describe("desktop sandbox write containment without O_NOFOLLOW", () => {
+  it("does not read a substituted file during a streamed export", async () => {
+    const { root, desktop, computer } = await fixture("stream-contained");
+    const outside = path.join(root, "outside.txt");
+    const inside = path.join(computer.providerRef, "notes.txt");
+    await writeFile(outside, "private outside bytes");
+    await writeFile(inside, "workspace bytes");
+    const files = desktop.exportWorkspace(computer, ctx, { maxBytes: 100, maxFiles: 1 });
+    const entries = files[Symbol.asyncIterator]();
+    try {
+      const first = await entries.next();
+      if (first.done || !("body" in first.value)) throw new Error("Expected a streamed file");
+      await rm(inside);
+      await symlink(outside, inside);
+      await expect(first.value.body[Symbol.asyncIterator]().next()).rejects.toThrow();
+      expect(await readFile(outside, "utf8")).toBe("private outside bytes");
+    } finally {
+      await entries.return?.();
+    }
+  });
+
   it("rejects an existing final symlink without changing its outside target", async () => {
     const { root, desktop, computer } = await fixture("static-link");
     const outside = path.join(root, "outside.txt");

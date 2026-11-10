@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, AgentHomeStore, PortableFile } from "@rakazo/adapter-kit";
+import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { fileHandlePath } from "./file-handle-path.js";
 
@@ -25,7 +26,22 @@ const SAVE_STAGING_PREFIX = "workspace-save-";
 const STAGING_HEARTBEAT_MS = 30_000;
 const STALE_STAGING_MS = 5 * 60_000;
 
-export type HomePublisher = (install: () => Promise<string>) => Promise<string>;
+export interface HomePublisher {
+  prisma: PrismaClient;
+  publish(install: (currentRevision: string) => Promise<string>): Promise<string>;
+}
+
+interface PendingCheckpoint {
+  revision: string;
+  baseRevision: string;
+  previousMarker: string | null;
+  replaceHome: boolean;
+  hadHome: boolean;
+}
+
+function newHomeRevision() {
+  return `rev-${Date.now()}-${randomUUID().slice(0, 8)}`;
+}
 
 export async function createStagingDirectory(parent = tmpdir()) {
   await mkdir(parent, { recursive: true });
@@ -47,8 +63,12 @@ export async function createStagingDirectory(parent = tmpdir()) {
 export class LocalAgentHomeStore implements AgentHomeStore {
   private readonly saveStaging = new Set<string>();
   private readonly botWrites = new Map<string, Promise<void>>();
+  private nextStagingSweep = 0;
 
-  constructor(private readonly root: string) {}
+  constructor(
+    private readonly root: string,
+    private readonly prisma?: PrismaClient,
+  ) {}
 
   describe() {
     return {
@@ -70,6 +90,13 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     return path.resolve(this.botDir(botId));
   }
 
+  async ensureHomeDirectory(botId: string) {
+    await this.withBotWrite(botId, async () => {
+      await this.recoverInterruptedCommit(botId);
+      await mkdir(this.botDir(botId), { recursive: true });
+    });
+  }
+
   async checkout(botId: string, dest: string, _context: AdapterContext): Promise<string> {
     await this.waitForBotWrite(botId);
     await this.recoverInterruptedCommit(botId);
@@ -81,6 +108,13 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   }
 
   async createStaging() {
+    const now = Date.now();
+    if (now >= this.nextStagingSweep) {
+      this.nextStagingSweep = now + STALE_STAGING_MS;
+      await this.removeStaleStaging(now).catch((error) => {
+        getLogger().warn("workspace staging cleanup", { error });
+      });
+    }
     const staging = await createStagingDirectory(path.join(this.root, "staging"));
     this.saveStaging.add(staging.path);
     return {
@@ -121,63 +155,160 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     botId: string,
     src: string,
     _context: AdapterContext,
-    publish: HomePublisher = (install) => install(),
+    publisher?: HomePublisher,
   ): Promise<string> {
     return this.withBotWrite(botId, async () => {
-      await this.recoverInterruptedCommit(botId);
       const dest = this.botDir(botId);
       const parent = path.dirname(dest);
       const staged = this.saveStaging.has(src);
       const staging = staged ? src : path.join(parent, `.${botId}.staging-${randomUUID()}`);
-      const previous = `${dest}.previous`;
-      const retired = `${previous}-${randomUUID()}`;
-      let displaced: string | undefined;
-      let installed = false;
       await mkdir(parent, { recursive: true });
       try {
         if (!staged) {
           await mkdir(staging, { recursive: true });
           await copyDir(src, staging);
         }
-        const revision = await this.publishRevision(botId, async (record) =>
-          publish(async () => {
-            await rm(previous, { recursive: true, force: true });
-            if (await pathExists(dest)) {
-              await rename(dest, previous);
-              displaced = previous;
-            }
-            await rename(staging, dest);
-            installed = true;
-            const revision = await record();
-            if (displaced) {
-              // Move the backup to an attempt-owned name while publication still holds the row.
-              await rename(previous, retired);
-              displaced = retired;
-            }
-            return revision;
-          }),
-        );
-        if (displaced) await this.cleanCommittedPath(displaced);
-        return revision;
-      } catch (error) {
+        if (publisher) return await this.publishCheckpoint(botId, staging, publisher);
+        await this.recoverInterruptedCommit(botId);
+        const previous = `${dest}.previous`;
+        const hadHome = await pathExists(dest);
+        await rm(previous, { recursive: true, force: true });
+        if (hadHome) await rename(dest, previous);
+        let installed = false;
         try {
+          await rename(staging, dest);
+          installed = true;
+          const revision = newHomeRevision();
+          await this.writeMarker(botId, revision);
+          await this.cleanCommittedPath(previous);
+          return revision;
+        } catch (error) {
           if (installed) await rename(dest, staging);
-          if (displaced) await rename(displaced, dest);
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            "Workspace save could not be rolled back",
-          );
+          if (hadHome) await rename(previous, dest);
+          throw error;
         }
-        throw error;
       } finally {
         if (!staged) await this.cleanCommittedPath(staging);
       }
     });
   }
 
-  async revise(botId: string, publish: HomePublisher = (install) => install()): Promise<string> {
-    return this.withBotWrite(botId, async () => this.publishRevision(botId, publish));
+  async revise(botId: string, publisher?: HomePublisher): Promise<string> {
+    return this.withBotWrite(botId, async () => {
+      if (publisher) return this.publishCheckpoint(botId, undefined, publisher);
+      await this.recoverInterruptedCommit(botId);
+      const revision = newHomeRevision();
+      await this.writeMarker(botId, revision);
+      return revision;
+    });
+  }
+
+  private async publishCheckpoint(
+    botId: string,
+    staging: string | undefined,
+    { publish, prisma }: HomePublisher,
+  ) {
+    const revision = newHomeRevision();
+    const dest = this.botDir(botId);
+    const previous = `${dest}.previous`;
+    let started = false;
+    try {
+      await publish(async (baseRevision) => {
+        const pending: PendingCheckpoint = {
+          revision,
+          baseRevision,
+          previousMarker: await this.readMarker(botId),
+          replaceHome: staging !== undefined,
+          hadHome: await pathExists(dest),
+        };
+        if (staging) await rm(previous, { recursive: true, force: true });
+        await this.writeMetadata(this.pendingPath(botId), JSON.stringify(pending));
+        started = true;
+        if (staging) {
+          if (pending.hadHome) await rename(dest, previous);
+          await rename(staging, dest);
+        }
+        await this.writeMarker(botId, revision);
+        return revision;
+      });
+    } catch (error) {
+      if (started) {
+        // A failed or unacknowledged DB commit must be reconciled under a new row lock.
+        try {
+          if ((await this.settleCheckpoint(botId, prisma)) === revision) return revision;
+        } catch (settlementError) {
+          throw new AggregateError(
+            [error, settlementError],
+            "Workspace save needs to be reconciled",
+          );
+        }
+      }
+      throw error;
+    }
+    await this.settleCheckpoint(botId, prisma);
+    return revision;
+  }
+
+  private pendingPath(botId: string) {
+    this.botDir(botId);
+    return path.join(this.root, "home-revisions", `${botId}.pending.json`);
+  }
+
+  private async settleCheckpoint(botId: string, prisma: PrismaClient) {
+    return prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+        SELECT id FROM computers WHERE "homeKey" = ${botId} FOR UPDATE
+      `;
+        const record = await tx.computer.findFirst({
+          where: { homeKey: botId },
+          select: { homeRevision: true },
+        });
+        if (!record) throw new Error("Could not confirm the computer's saved revision");
+        await this.reconcileCheckpoint(botId, record.homeRevision);
+        return record.homeRevision;
+      },
+      { timeout: 20_000 },
+    );
+  }
+
+  /** The caller holds the Computer row lock, including when finishing another process's save. */
+  async reconcileCheckpoint(botId: string, committedRevision: string) {
+    const journal = this.pendingPath(botId);
+    const raw = await readFile(journal, "utf8").catch(ignoreMissingFile);
+    const dest = this.botDir(botId);
+    const previous = `${dest}.previous`;
+    if (raw === null) {
+      await this.recoverLegacyBackup(dest, previous);
+      return;
+    }
+    const pending = JSON.parse(raw) as PendingCheckpoint;
+    if (pending.revision === committedRevision) {
+      if (pending.replaceHome && !(await pathExists(dest))) {
+        throw new Error("The saved workspace directory is missing");
+      }
+      await this.writeMarker(botId, pending.revision);
+      if (pending.replaceHome) await rm(previous, { recursive: true, force: true });
+    } else if (pending.baseRevision === committedRevision) {
+      if (pending.replaceHome) {
+        if (await pathExists(previous)) {
+          await rm(dest, { recursive: true, force: true });
+          await rename(previous, dest);
+        } else if (!pending.hadHome) {
+          await rm(dest, { recursive: true, force: true });
+        } else if (!(await pathExists(dest))) {
+          throw new Error("The previous workspace directory is missing");
+        }
+      }
+      await this.writeMarker(botId, pending.previousMarker);
+    } else {
+      throw new Error("The workspace save does not match the recorded revision");
+    }
+    await rm(journal, { force: true });
+  }
+
+  private async recoverLegacyBackup(dest: string, previous: string) {
+    if ((await pathExists(previous)) && !(await pathExists(dest))) await rename(previous, dest);
   }
 
   private async cleanCommittedPath(directory: string) {
@@ -281,40 +412,27 @@ export class LocalAgentHomeStore implements AgentHomeStore {
     return listed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   }
 
-  private async publishRevision(botId: string, publish: HomePublisher) {
-    const revision = `rev-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const directory = path.join(this.root, "home-revisions");
-    const file = path.join(directory, `${botId}.txt`);
+  private markerPath(botId: string) {
+    this.botDir(botId);
+    return path.join(this.root, "home-revisions", `${botId}.txt`);
+  }
+
+  private readMarker(botId: string) {
+    return readFile(this.markerPath(botId), "utf8").catch(ignoreMissingFile);
+  }
+
+  private async writeMarker(botId: string, revision: string | null) {
+    const file = this.markerPath(botId);
+    if (revision === null) await rm(file, { force: true });
+    else await this.writeMetadata(file, revision);
+  }
+
+  private async writeMetadata(file: string, content: string) {
     const staged = `${file}.${randomUUID()}.tmp`;
-    const previous = await readFile(file, "utf8").catch((error) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    let published = false;
-    const write = async (value: string) => {
-      await mkdir(directory, { recursive: true });
-      await writeFile(staged, value, "utf8");
-      await rename(staged, file);
-    };
     try {
-      return await publish(async () => {
-        await write(revision);
-        published = true;
-        return revision;
-      });
-    } catch (error) {
-      if (published) {
-        try {
-          if (previous === null) await rm(file, { force: true });
-          else await write(previous);
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            "Workspace revision could not be rolled back",
-          );
-        }
-      }
-      throw error;
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(staged, content, { encoding: "utf8", mode: 0o600 });
+      await rename(staged, file);
     } finally {
       await this.cleanCommittedPath(staged);
     }
@@ -323,7 +441,15 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   private async recoverInterruptedCommit(botId: string) {
     const dest = this.botDir(botId);
     const previous = `${dest}.previous`;
-    if (!(await pathExists(dest)) && (await pathExists(previous))) await rename(previous, dest);
+    if (
+      (await pathExists(this.pendingPath(botId))) ||
+      ((await pathExists(previous)) && !(await pathExists(dest)))
+    ) {
+      if (this.prisma) await this.settleCheckpoint(botId, this.prisma);
+      else if (await pathExists(this.pendingPath(botId)))
+        throw new Error("The saved workspace needs to be reconciled");
+      else await this.recoverLegacyBackup(dest, previous);
+    }
   }
 
   private async withBotWrite<T>(botId: string, work: () => Promise<T>): Promise<T> {
@@ -348,6 +474,11 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   private async waitForBotWrite(botId: string) {
     await (this.botWrites.get(botId) ?? Promise.resolve());
   }
+}
+
+function ignoreMissingFile(error: NodeJS.ErrnoException) {
+  if (error.code === "ENOENT") return null;
+  throw error;
 }
 
 export function resolveAgentHomePath(home: AgentHomeStore, homeKey: string, dataDir = "./data") {
@@ -433,7 +564,8 @@ async function pathExists(target: string) {
   try {
     await access(target);
     return true;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return false;
   }
 }

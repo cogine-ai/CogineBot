@@ -32,7 +32,7 @@ import {
   restoreComputerWorkspace,
 } from "./computer-workspace.js";
 import { isSandboxGoneError } from "./e2b-sandbox.js";
-import { resolveAgentHomePath } from "./home.js";
+import { LocalAgentHomeStore, resolveAgentHomePath } from "./home.js";
 
 type ComputerUpdateProgress = (
   stage: Exclude<ComputerUpdate["stage"], "preparing">,
@@ -174,11 +174,20 @@ export async function provisionComputer(
     }
   }
   const homePath = resolveAgentHomePath(deps.home, existing.homeKey, deps.dataDir ?? "./data");
-  await mkdir(homePath, { recursive: true });
+  if (deps.home instanceof LocalAgentHomeStore) {
+    await deps.home.ensureHomeDirectory(existing.homeKey);
+  } else {
+    await mkdir(homePath, { recursive: true });
+  }
 
   // Re-provisioning a live computer enters booting and revokes its screen URLs.
   // A provider-confirmed live reference needs setup, not a new lifecycle claim.
-  if (existing.state === "running" && existing.providerRef && deps.sandbox.isRunning) {
+  if (
+    existing.state === "running" &&
+    !existing.restorePending &&
+    existing.providerRef &&
+    deps.sandbox.isRunning
+  ) {
     const ref = toComputerRef(existing);
     if (await deps.sandbox.isRunning(ref, context)) {
       context.signal.throwIfAborted();
@@ -189,6 +198,7 @@ export async function provisionComputer(
           providerRef: existing.providerRef,
           kind: existing.kind,
           screenGeneration: existing.screenGeneration,
+          restorePending: false,
           maintenanceId: existing.maintenanceId ?? null,
           ...(context.botId ? { bots: { some: { id: context.botId, archivedAt: null } } } : {}),
         },

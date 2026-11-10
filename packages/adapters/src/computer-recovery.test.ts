@@ -155,6 +155,21 @@ async function fixture(provider: "fake" | "desktop" = "fake") {
 }
 
 describe("computer recovery preserves live work", () => {
+  it("retries restoration for a live reference that is still marked pending", async () => {
+    const { deps, row, first } = await fixture();
+    row.restorePending = true;
+    const restore = vi.spyOn(deps.sandbox, "importWorkspace");
+
+    const current = await provisionComputer(deps, row.id, context);
+
+    expect(current.providerRef).toBe(first.providerRef);
+    expect(restore).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({ state: "running", restorePending: false });
+    expect(
+      new TextDecoder().decode(await deps.sandbox.readFile(current, "notes.txt", context)),
+    ).toBe("checkpoint");
+  });
+
   it("blocks competing maintenance and boots while an update owns the computer", async () => {
     const { deps, row } = await fixture();
     row.maintenanceId = "other-update";

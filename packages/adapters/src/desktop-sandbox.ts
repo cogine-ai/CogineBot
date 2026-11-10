@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { constants, createReadStream } from "node:fs";
+import { constants } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -687,9 +687,12 @@ async function* walkDesktopWorkspace(
     signal?.throwIfAborted();
     if (signal && entry.isSymbolicLink()) continue;
     const relative = normalizeWorkspacePath(directory ? `${directory}/${entry.name}` : entry.name);
-    const child = await localWorkspaceTarget(home, relative, true).catch(() => null);
+    const child = signal
+      ? path.join(target, entry.name)
+      : await localWorkspaceTarget(home, relative, true).catch(() => null);
     if (!child) continue;
-    const info = await stat(child);
+    const info = signal ? await lstat(child) : await stat(child);
+    if (signal && info.isSymbolicLink()) throw new Error("A workspace entry changed during export");
     if (signal && shouldSkipPortableWorkspaceFile(relative, info.isDirectory())) continue;
     if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative, signal);
     else if (info.isFile()) {
@@ -697,15 +700,53 @@ async function* walkDesktopWorkspace(
       if (signal) {
         yield {
           ...metadata,
-          body: (async function* () {
-            for await (const chunk of createReadStream(child, { signal }))
-              yield chunk as Uint8Array;
-          })(),
+          body: streamContainedDesktopFile(home, child, info, signal),
         };
       } else {
         yield { ...metadata, content: new Uint8Array(await readFile(child)) };
       }
     }
+  }
+}
+
+async function* streamContainedDesktopFile(
+  home: string,
+  target: string,
+  expected: { dev: number; ino: number },
+  signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  const resolvedHome = await realpath(home);
+  const parent = await realpath(path.dirname(target));
+  if (!isAllowedDesktopPath(parent, [resolvedHome])) {
+    throw new Error("Path escapes the computer workspace");
+  }
+  const parentHandle = await open(parent, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+  try {
+    const containedParent = await assertContainedDirectoryHandle(
+      parentHandle,
+      parent,
+      resolvedHome,
+    );
+    const name = path.basename(target);
+    const handle = await open(
+      childPathViaDirFd(parentHandle.fd, name) ?? path.join(containedParent, name),
+      constants.O_RDONLY | O_NOFOLLOW,
+    );
+    try {
+      const opened = await handle.stat();
+      if (opened.dev !== expected.dev || opened.ino !== expected.ino) {
+        throw new Error("A workspace entry changed during export");
+      }
+      await assertContainedFileHandle(handle, resolvedHome, parentHandle, containedParent, name);
+      for await (const chunk of handle.createReadStream({ autoClose: false, signal })) {
+        yield chunk as Uint8Array;
+      }
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await parentHandle.close();
   }
 }
 

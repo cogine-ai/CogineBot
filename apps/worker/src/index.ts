@@ -203,7 +203,10 @@ async function main() {
   await connector.start();
   integrationSettings.warmDirectories();
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
-  const home = new LocalAgentHomeStore(dataDir);
+  const home = new LocalAgentHomeStore(dataDir, prisma);
+  await home.removeStaleStaging().catch((error) => {
+    logger.warn("workspace staging cleanup", { error });
+  });
   const shutdown = new AbortController();
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
   const runs = new RunStarter(realtime, { signal: shutdown.signal });

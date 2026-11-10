@@ -31,7 +31,11 @@ const FILE_DISK_OVERHEAD_BYTES = 4096;
 type CheckpointOptions = {
   onExported?: () => void;
   onStagingFailure?: () => void;
-  publish?: (install: () => Promise<string>, staging?: string) => Promise<string>;
+  prisma?: PrismaClient;
+  publish?: (
+    install: (currentRevision: string) => Promise<string>,
+    staging?: string,
+  ) => Promise<string>;
 };
 
 export class ComputerCheckpointChangedError extends Error {
@@ -274,10 +278,12 @@ export async function checkpointComputerWorkspace(
   options?: CheckpointOptions,
   saveLimits: WorkspaceExportLimits = WORKSPACE_SAVE_LIMITS,
 ): Promise<string> {
-  const publish: HomePublisher = (install) => options?.publish?.(install) ?? install();
+  const { prisma, publish } = options ?? {};
+  const publisher = (staging?: string): HomePublisher | undefined =>
+    prisma && publish ? { prisma, publish: (install) => publish(install, staging) } : undefined;
   context.signal.throwIfAborted();
   if (computer.kind === "docker" && home instanceof LocalAgentHomeStore) {
-    return home.revise(homeKey, publish);
+    return home.revise(homeKey, publisher());
   }
   const failStaging: (error: unknown) => never = (error) => {
     options?.onStagingFailure?.();
@@ -326,12 +332,11 @@ export async function checkpointComputerWorkspace(
     context.signal.throwIfAborted();
     if ((await freeSaveDisk(staging.path).catch(failStaging)) < 0)
       throw new WorkspaceTooLargeError("bytes");
-    const publishStaging: HomePublisher = (install) =>
-      options?.publish?.(install, staging.path) ?? install();
+    const install = () => home.commit(homeKey, staging.path, context);
     const revision =
       home instanceof LocalAgentHomeStore
-        ? await home.commit(homeKey, staging.path, context, publishStaging)
-        : await publishStaging(() => home.commit(homeKey, staging.path, context));
+        ? await home.commit(homeKey, staging.path, context, publisher(staging.path))
+        : await (publish?.(install, staging.path) ?? install());
     return revision;
   } finally {
     try {
@@ -363,14 +368,7 @@ export async function checkpointRunComputerWorkspace(
       id: computerRecord.id,
       state: "running",
       providerRef: computer.providerRef,
-      executionLeases: checkpointExecutionLeases(context, now),
-      OR: [
-        { controlHolder: { not: "user" } },
-        { controlLeaseId: null },
-        { controlLeaseExpiresAt: null },
-        { controlLeaseExpiresAt: { lte: now } },
-        ...(context.botId ? [{ controlBotId: context.botId }] : []),
-      ],
+      ...checkpointAvailable(context, now),
     },
     data: { state: "suspending", updatedAt: now },
   });
@@ -397,7 +395,9 @@ export async function checkpointAndRecordComputerWorkspace(
   computerRecord: { id: string; homeKey: string; scope: string; spaceId: string },
   computer: ComputerRef,
   context: AdapterContext,
-  options?: Omit<CheckpointOptions, "publish"> & { claim?: Prisma.ComputerWhereInput },
+  options?: Pick<CheckpointOptions, "onExported" | "onStagingFailure"> & {
+    claim?: Prisma.ComputerWhereInput;
+  },
 ): Promise<string> {
   const target = {
     state: { in: ["running", "suspending"] },
@@ -408,18 +408,8 @@ export async function checkpointAndRecordComputerWorkspace(
     providerRef: computer.providerRef,
     kind: computer.kind,
   } satisfies Prisma.ComputerWhereInput;
-  const available = (now = new Date()) => ({
-    OR: [
-      { controlHolder: { not: "user" } },
-      { controlLeaseId: null },
-      { controlLeaseExpiresAt: null },
-      { controlLeaseExpiresAt: { lte: now } },
-      ...(context.botId ? [{ controlBotId: context.botId }] : []),
-    ],
-    executionLeases: checkpointExecutionLeases(context, now),
-  });
   const starting = await deps.prisma.computer.findFirst({
-    where: { ...target, ...available() },
+    where: { ...target, ...checkpointAvailable(context, new Date()) },
     select: {
       state: true,
       screenGeneration: true,
@@ -440,21 +430,34 @@ export async function checkpointAndRecordComputerWorkspace(
     context,
     {
       ...options,
+      prisma: deps.prisma,
       publish: async (install, staging) =>
         deps.prisma.$transaction(
           async (tx) => {
             // Acquire the same row that lifecycle writers and execution lease claims use.
             await tx.$queryRaw`SELECT id FROM computers WHERE id = ${computerRecord.id} FOR UPDATE`;
-            const where = { ...fence, ...available() };
-            const owned = await tx.computer.findFirst({ where, select: { updatedAt: true } });
+            const where = { ...fence, ...checkpointAvailable(context, new Date()) };
+            const owned = await tx.computer.findFirst({
+              where,
+              select: { updatedAt: true, homeRevision: true },
+            });
             if (!owned) throw new ComputerCheckpointChangedError();
             context.signal.throwIfAborted();
+            if (deps.home instanceof LocalAgentHomeStore) {
+              await deps.home.reconcileCheckpoint(computerRecord.homeKey, owned.homeRevision);
+            }
             if (staging && computerRecord.scope === "team") {
               await removeDeletedStagedWorkspaces(tx, computerRecord.spaceId, staging);
             }
-            const revision = await install();
+            context.signal.throwIfAborted();
+            const ready = await tx.computer.findFirst({
+              where: { ...fence, ...checkpointAvailable(context, new Date()) },
+              select: { id: true },
+            });
+            if (!ready) throw new ComputerCheckpointChangedError();
+            const revision = await install(owned.homeRevision);
             const saved = await tx.computer.updateMany({
-              where,
+              where: { ...fence, ...checkpointAvailable(context, new Date()) },
               data: {
                 homeRevision: revision,
                 homeRevisionAt: new Date(),
@@ -470,15 +473,24 @@ export async function checkpointAndRecordComputerWorkspace(
   );
 }
 
-function checkpointExecutionLeases(context: AdapterContext, now: Date) {
+function checkpointAvailable(context: AdapterContext, now: Date): Prisma.ComputerWhereInput {
   const lease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
   const own = lease ? { runId: lease.ownerId, fence: lease.fence } : undefined;
   const live = { expiresAt: { gt: now } };
   return {
-    none: { ...live, ...(own ? { NOT: own } : {}) },
-    ...(own && context.runId === own.runId
-      ? { some: { ...live, ...own, botId: context.botId } }
-      : {}),
+    OR: [
+      { controlHolder: { not: "user" } },
+      { controlLeaseId: null },
+      { controlLeaseExpiresAt: null },
+      { controlLeaseExpiresAt: { lte: now } },
+      ...(context.botId ? [{ controlBotId: context.botId }] : []),
+    ],
+    executionLeases: {
+      none: { ...live, ...(own ? { NOT: own } : {}) },
+      ...(own && context.runId === own.runId
+        ? { some: { ...live, ...own, botId: context.botId } }
+        : {}),
+    },
   };
 }
 

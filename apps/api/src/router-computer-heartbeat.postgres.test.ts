@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createRouterClient } from "@orpc/server";
+import { WorkspaceTooLargeError } from "@rakazo/adapter-kit";
+import { LocalAgentHomeStore } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
@@ -27,7 +32,11 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const casCounts: number[] = [];
   const keepAlive = vi.fn().mockResolvedValue(undefined);
   const enqueue = vi.fn().mockResolvedValue(undefined);
+  const stopProvider = vi.fn().mockResolvedValue(undefined);
+  const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
+  let root: string;
   let heartbeat: () => Promise<unknown>;
+  let stopComputer: () => Promise<unknown>;
 
   beforeAll(async () => {
     database = createDb(databaseUrl!);
@@ -64,20 +73,24 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
         },
       },
     });
+    root = await mkdtemp(path.join(tmpdir(), "computer-router-test-"));
     const deps = {
       prisma: instrumented as unknown as PrismaClient,
-      sandbox: { keepAlive },
-      jobs: { enqueue },
+      sandbox: { keepAlive, exportWorkspace, stop: stopProvider },
+      home: new LocalAgentHomeStore(root, database.prisma),
+      jobs: { enqueue, cancel: vi.fn() },
       env: { defaultProvider: "fake", defaultModel: "fake", sandboxProvider: "fake" },
-      dataDir: "/tmp/heartbeat-postgres-test",
+      dataDir: root,
     } as unknown as RouterDeps;
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     heartbeat = () => client.computer.heartbeat({ botId });
+    stopComputer = () => client.computer.stop({ botId });
   });
 
   beforeEach(async () => {
     keepAlive.mockClear();
     enqueue.mockClear();
+    stopProvider.mockClear();
     casCounts.length = 0;
     afterSnapshot = undefined;
     botId = `heartbeat-bot-${randomUUID()}`;
@@ -111,6 +124,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   });
 
   afterAll(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
     if (!database) return;
     await database.prisma.organization.deleteMany({ where: { id: organizationId } });
     await database.prisma.$disconnect();
@@ -134,6 +148,30 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     });
     expect(computer.controlLeaseId).toBe("heartbeat-human-lease");
     expect(computer.controlLeaseExpiresAt).toEqual(new Date("2030-01-01"));
+  });
+
+  it("keeps the provider running when manual Stop exceeds the workspace save limit", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { controlBotId: botId, homeRevision: "last-saved-revision" },
+    });
+    exportWorkspace.mockImplementationOnce(async function* () {
+      yield await Promise.reject(new WorkspaceTooLargeError("files"));
+    });
+
+    await expect(stopComputer()).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "The computer has too many files to save",
+    });
+    expect(stopProvider).not.toHaveBeenCalled();
+    expect(
+      await database.prisma.computer.findUniqueOrThrow({ where: { id: computerId } }),
+    ).toMatchObject({
+      state: "running",
+      providerRef: "heartbeat-provider",
+      homeRevision: "last-saved-revision",
+      homeRevisionAt: null,
+    });
   });
 
   it.each([

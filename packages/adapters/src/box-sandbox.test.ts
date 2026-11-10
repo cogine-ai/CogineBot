@@ -376,7 +376,7 @@ describe("BoxSandboxProvider", () => {
     );
   });
 
-  it("opens bounded workspace transfers lazily and refuses an incomplete listing", async () => {
+  it("opens bounded workspace transfers lazily and refuses a truncated manifest", async () => {
     const fixture = boxFixture();
     const target = "/home/user/rakazo-home/notes/report.txt";
     fixture.files.set(target, Buffer.from("saved"));
@@ -385,30 +385,30 @@ describe("BoxSandboxProvider", () => {
     const limits = { maxBytes: 5, maxFiles: 1 };
     for await (const file of provider.exportWorkspace(computer, context, limits)) {
       expect(file.path).toBe("notes/report.txt");
-      expect(fixture.artifactRaw).not.toHaveBeenCalled();
+      expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+      expect(fixture.artifactRaw.mock.calls[0]?.[0].path).toMatch(/\.manifest$/);
       if (!("body" in file)) throw new Error("Expected a streamed file");
       const chunks = [];
       for await (const chunk of file.body) chunks.push(chunk);
       expect(Buffer.concat(chunks).toString()).toBe("saved");
     }
-    expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+    expect(fixture.artifactRaw).toHaveBeenCalledTimes(2);
     expect(
       fixture.command.mock.calls.some(([call]) =>
         call.commandRequest.command.includes("-regextype posix-extended"),
       ),
     ).toBe(true);
+    expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
 
-    const command = fixture.command.getMockImplementation()!;
-    fixture.command.mockImplementation(async (...args) => {
-      if (args[0].commandRequest.command.includes("workspace-list-complete")) {
-        return finished({ stdout: `${Buffer.from(target).toString("base64")}\tfile\t5\t0\n` });
-      }
-      return command(...args);
-    });
     fixture.artifactRaw.mockClear();
+    fixture.artifactRaw.mockResolvedValueOnce({
+      raw: new Response(["workspace-list-v1", "notes/report.txt", "600", "5", ""].join("\0")),
+    });
     const incomplete = provider.exportWorkspace(computer, context, limits)[Symbol.asyncIterator]();
+    expect(await incomplete.next()).toMatchObject({ value: { path: "notes/report.txt" } });
     await expect(incomplete.next()).rejects.toThrow("incomplete workspace listing");
-    expect(fixture.artifactRaw).not.toHaveBeenCalled();
+    expect(fixture.artifactRaw).toHaveBeenCalledOnce();
+    expect([...fixture.files.keys()].filter((key) => key.endsWith(".manifest"))).toEqual([]);
   });
 
   it.each([undefined, "1", "20"])(
@@ -619,6 +619,21 @@ function boxFixture(options: { state?: string } = {}) {
         return finished({ stdout: `https://box-test-${port}.on.ascii.dev?_token=secret` });
       }
       if (command.includes("TEST_VALUE=works")) return finished({ stdout: "hello\n" });
+      const manifest = command.match(/\/tmp\/workspace-save-[a-f0-9-]+\.manifest/)?.[0];
+      if (manifest && command.includes("workspace-list-v1")) {
+        const prefix = "/home/user/rakazo-home/";
+        const fields = ["workspace-list-v1"];
+        for (const [filePath, bytes] of files) {
+          if (filePath.startsWith(prefix))
+            fields.push(filePath.slice(prefix.length), "600", String(bytes.byteLength));
+        }
+        files.set(manifest, Buffer.from([...fields, "workspace-list-complete", ""].join("\0")));
+        return finished();
+      }
+      if (manifest && command.includes("rm -f")) {
+        files.delete(manifest);
+        return finished();
+      }
       if (command.includes("find ") && command.includes("rakazo-home/bin")) {
         const target = "/home/user/rakazo-home/bin/tool";
         return finished({
@@ -637,11 +652,7 @@ function boxFixture(options: { state?: string } = {}) {
             return `${Buffer.from(filePath).toString("base64")}\tfile\t${content.byteLength}\t${executable}\n`;
           })
           .join("");
-        return finished({
-          stdout: command.includes("workspace-list-complete")
-            ? `${stdout}workspace-list-complete\n`
-            : stdout,
-        });
+        return finished({ stdout });
       }
       if (command.includes("import -window root")) {
         return finished({

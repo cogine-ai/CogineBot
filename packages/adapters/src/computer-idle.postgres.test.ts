@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FileNotFoundError, SandboxNotFoundError } from "@e2b/desktop";
@@ -9,7 +9,7 @@ import type {
   JobPublisher,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sleepComputerIfIdle } from "./computer-idle.js";
@@ -356,6 +356,108 @@ describePostgres("safe workspace publication", () => {
       homeRevisionAt: expect.any(Date),
       updatedAt: record.updatedAt,
       state: "running",
+    });
+  });
+
+  it.each(["uncommitted", "committed"] as const)(
+    "recovers an %s save left behind by another process",
+    async (outcome) => {
+      const { id, homeRevision } = await seed();
+      const nextRevision = "rev-interrupted-fixture";
+      const oldHome = home.pathFor(id);
+      const previous = `${oldHome}.previous`;
+      const markerDir = path.join(root, "home-revisions");
+      const pending = path.join(markerDir, `${id}.pending.json`);
+      const marker = path.join(markerDir, `${id}.txt`);
+      await writeFile(
+        pending,
+        JSON.stringify({
+          revision: nextRevision,
+          baseRevision: homeRevision,
+          previousMarker: homeRevision,
+          replaceHome: true,
+          hadHome: true,
+        }),
+      );
+      await rename(oldHome, previous);
+      await mkdir(oldHome);
+      await writeFile(path.join(oldHome, "notes.txt"), "staged home");
+      await writeFile(marker, nextRevision);
+      if (outcome === "committed") {
+        await database.prisma.computer.update({
+          where: { id },
+          data: { homeRevision: nextRevision },
+        });
+      }
+
+      const reopened = new LocalAgentHomeStore(root, database.prisma);
+      expect(await reopened.readFile(id, "notes.txt", context)).toBe(
+        outcome === "committed" ? "staged home" : "last valid home",
+      );
+      expect(await readFile(marker, "utf8")).toBe(
+        outcome === "committed" ? nextRevision : homeRevision,
+      );
+      expect(await readdir(path.dirname(oldHome))).not.toContain(path.basename(previous));
+      expect(await readdir(markerDir)).not.toContain(path.basename(pending));
+    },
+  );
+
+  it("does not roll back another process's publication after its own transaction fails", async () => {
+    const { id, record, ref } = await seed();
+    const prisma = database.prisma;
+    const winner = new LocalAgentHomeStore(root, prisma);
+    const injected = new Error("Synthetic transaction failure after installation");
+    const broken = prisma.$extends({
+      query: {
+        computer: {
+          async updateMany({ args, query }) {
+            if (args.data.homeRevision) throw injected;
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const provider = (content: string) =>
+      ({
+        async *exportWorkspace() {
+          yield { path: "notes.txt", content: Buffer.from(content) };
+        },
+      }) as unknown as SandboxProvider;
+    let winnerRevision: string | undefined;
+    const delayedRollback = {
+      computer: broken.computer,
+      async $transaction<T>(
+        work: (tx: Prisma.TransactionClient) => Promise<T>,
+        options: { timeout: number },
+      ) {
+        try {
+          return await broken.$transaction(work, options);
+        } catch (error) {
+          if (error === injected) {
+            winnerRevision = await checkpointAndRecordComputerWorkspace(
+              { prisma, home: winner, sandbox: provider("winner data") },
+              record,
+              ref,
+              context,
+            );
+          }
+          throw error;
+        }
+      },
+    } as unknown as PrismaClient;
+
+    await expect(
+      checkpointAndRecordComputerWorkspace(
+        { prisma: delayedRollback, home, sandbox: provider("failed data") },
+        record,
+        ref,
+        context,
+      ),
+    ).rejects.toBe(injected);
+    expect(winnerRevision).toMatch(/^rev-/);
+    expect(await winner.readFile(id, "notes.txt", context)).toBe("winner data");
+    expect(await prisma.computer.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      homeRevision: winnerRevision,
     });
   });
 });

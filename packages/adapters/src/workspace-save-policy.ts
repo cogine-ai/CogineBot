@@ -1,3 +1,4 @@
+// Modified to apply the workspace policy to streamed provider responses.
 import type { WorkspaceExportLimits } from "@rakazo/adapter-kit";
 import { shellQuote } from "@rakazo/core/node/desktop-runtime";
 
@@ -93,8 +94,9 @@ export function workspaceSaveFindExpression(): string {
 
 /** Open one file on demand and cancel its transfer if staging stops reading it. */
 export async function* streamWorkspaceBody(open: () => Promise<ReadableStream<Uint8Array> | null>) {
-  const reader = (await open())?.getReader();
-  if (!reader) return;
+  const body = await open();
+  if (!body) throw new Error("The provider returned no workspace file body");
+  const reader = body.getReader();
   let finished = false;
   try {
     while (true) {
