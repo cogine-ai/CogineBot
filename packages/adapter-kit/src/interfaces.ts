@@ -106,8 +106,10 @@ export interface SandboxProvider {
       homePath: string;
       providerRef?: string;
       providerKind?: ComputerRef["kind"];
+      /** Allocate a distinct local workspace when the previous reference cannot be reused. */
+      isolateWorkspaceGeneration?: boolean;
       /** Persist restore intent before replacing workspace bytes under an existing reference. */
-      beforeWorkspaceReplacement?: () => Promise<void>;
+      beforeWorkspaceReplacement?: (candidate?: ComputerRef) => Promise<void>;
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;

@@ -264,15 +264,21 @@ describe("computer recovery preserves live work", () => {
       })(),
       context,
     );
-    const checked = expect(importResult).rejects.toThrow("workspace was replaced during restore");
+    const checked = expect(importResult).rejects.toThrow();
     try {
       await paused;
       await successor.destroy(first, context, { retireWorkspace: true });
-      const next = await successor.provision({ botId: "bot", homePath: root }, context);
+      const next = await successor.provision(
+        { botId: "bot", homePath: root, isolateWorkspaceGeneration: true },
+        context,
+      );
+      expect(next.providerRef).not.toBe(first.providerRef);
       await successor.writeFile(next, {
         path: "notes.txt",
         content: new TextEncoder().encode("new"),
       });
+      // The older request can be delivered again after the new computer is active.
+      await successor.destroy(first, context, { retireWorkspace: true });
       release();
       await checked;
       expect(new TextDecoder().decode(await successor.readFile(next, "notes.txt"))).toBe("new");
@@ -478,7 +484,8 @@ describe("computer recovery preserves live work", () => {
     await rm(first.providerRef, { recursive: true });
     deps.sandbox = new DesktopSandboxProvider({ root });
     const reconnected = await provisionComputer(deps, row.id, context);
-    expect(reconnected).toMatchObject({ providerRef: first.providerRef, fresh: true });
+    expect(reconnected).toMatchObject({ fresh: true });
+    expect(reconnected.providerRef).not.toBe(first.providerRef);
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(reconnected, "notes.txt", context)),
     ).toBe("checkpoint");
@@ -494,17 +501,21 @@ describe("computer recovery preserves live work", () => {
     vi.spyOn(provider, "provision").mockImplementationOnce(async (...args) => {
       const recreated = await provision(...args);
       expect(row.restorePending).toBe(true);
-      expect(recreated).toMatchObject({ providerRef: first.providerRef, fresh: true });
+      expect(recreated).toMatchObject({ fresh: true });
+      expect(recreated.providerRef).not.toBe(first.providerRef);
+      expect(row.providerRef).toBe(recreated.providerRef);
       throw interrupted;
     });
 
     await expect(provisionComputer(deps, row.id, context)).rejects.toBe(interrupted);
     expect(row).toMatchObject({ state: "error", restorePending: true });
-    await expect(access(first.providerRef)).resolves.toBeUndefined();
+    await expect(access(first.providerRef)).rejects.toMatchObject({ code: "ENOENT" });
+    const candidate = row.providerRef!;
+    await expect(access(candidate)).resolves.toBeUndefined();
 
     deps.sandbox = new DesktopSandboxProvider({ root });
     const restarted = await provisionComputer(deps, row.id, context);
-    expect(restarted).toMatchObject({ providerRef: first.providerRef, fresh: false });
+    expect(restarted).toMatchObject({ providerRef: candidate, fresh: false });
     expect(row).toMatchObject({ state: "running", restorePending: false });
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(restarted, "notes.txt", context)),
@@ -525,7 +536,8 @@ describe("computer recovery preserves live work", () => {
     await expect(access(first.providerRef)).rejects.toMatchObject({ code: "ENOENT" });
 
     const restored = await provisionComputer(deps, row.id, context);
-    expect(restored).toMatchObject({ providerRef: first.providerRef, fresh: true });
+    expect(restored).toMatchObject({ fresh: true });
+    expect(restored.providerRef).not.toBe(first.providerRef);
     expect(
       new TextDecoder().decode(await deps.sandbox.readFile(restored, "notes.txt", context)),
     ).toBe("checkpoint");

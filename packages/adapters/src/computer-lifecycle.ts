@@ -440,13 +440,17 @@ export async function provisionComputer(
     ...claimRef,
     maintenanceId: existing.maintenanceId ?? null,
   });
-  const markRestorePending = async () => {
-    if (restorePending) return;
+  const markRestorePending = async (candidate?: ComputerRef) => {
+    if (restorePending && !candidate) return;
+    const target = candidate
+      ? { providerRef: candidate.providerRef, kind: candidate.kind }
+      : undefined;
     const marked = await deps.prisma.computer.updateMany({
       where: { ...bootClaim(), stopRequestedAt: null },
-      data: { restorePending: true, updatedAt: claimStamp },
+      data: { ...target, restorePending: true, updatedAt: claimStamp },
     });
     if (marked.count !== 1) throw new ComputerBusyError();
+    if (target) claimRef = target;
     restorePending = true;
   };
   const provision = async (providerRef?: string) => {
@@ -456,9 +460,8 @@ export async function provisionComputer(
         homePath,
         providerRef,
         providerKind: existing.kind as ComputerRef["kind"],
-        ...(existing.kind === "desktop" && providerRef
-          ? { beforeWorkspaceReplacement: markRestorePending }
-          : {}),
+        isolateWorkspaceGeneration: true,
+        beforeWorkspaceReplacement: markRestorePending,
       },
       context,
     );
@@ -1206,9 +1209,7 @@ export async function replaceComputer(
         oldRef,
         context,
         "destroy",
-        oldRef.kind === "desktop" && existing.restorePending
-          ? { retireWorkspace: true }
-          : undefined,
+        oldRef.kind === "desktop" ? { retireWorkspace: true } : undefined,
       );
       stopRequested = true;
     }
