@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, open, rm, statfs } from "node:fs/promises";
+import { mkdir, open, readdir, rm, statfs } from "node:fs/promises";
 import path from "node:path";
 import type {
   AdapterContext,
@@ -80,6 +80,7 @@ export async function ensureComputerWorkspaceLayout(
 }
 
 const TEAM_BOT_FOLDER_NAME = /^[A-Za-z0-9_-]+$/;
+const TEAM_BROWSER_PROFILE_NAME = /^chromium-bot-[0-9a-f]{32}$/;
 
 /** A bot id that names exactly one folder under bots/ on a Team Computer. */
 export function isTeamBotFolderName(botId: string) {
@@ -89,7 +90,7 @@ export function isTeamBotFolderName(botId: string) {
 /** The bot's browser profile folder under .browser-profiles on a Team Computer. */
 export function teamBrowserProfileName(botId: string) {
   const name = path.posix.basename(browserProfilePathForScreen(botId));
-  if (!/^chromium-bot-[0-9a-f]{32}$/.test(name)) return null;
+  if (!TEAM_BROWSER_PROFILE_NAME.test(name)) return null;
   return name;
 }
 
@@ -448,10 +449,14 @@ export async function checkpointAndRecordComputerWorkspace(
             }
             if (staging && computerRecord.scope === "team") {
               const home = deps.home;
-              await removeDeletedStagedWorkspaces(tx, computerRecord.spaceId, (directory) =>
-                home instanceof LocalAgentHomeStore
-                  ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
-                  : rm(path.join(staging, directory), { recursive: true, force: true }),
+              await removeDeletedStagedWorkspaces(
+                tx,
+                computerRecord.spaceId,
+                staging,
+                (directory) =>
+                  home instanceof LocalAgentHomeStore
+                    ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
+                    : rm(path.join(staging, directory), { recursive: true, force: true }),
               );
             }
             context.signal.throwIfAborted();
@@ -501,15 +506,41 @@ function checkpointAvailable(context: AdapterContext, now: Date): Prisma.Compute
 
 /** A snapshot from a still-running Team Computer may predate the deletion. */
 async function removeDeletedStagedWorkspaces(
-  tx: Pick<Prisma.TransactionClient, "botDeletion">,
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   spaceId: string,
+  staging: string,
   discard: (directory: string) => Promise<void>,
 ) {
-  const deleted = await tx.botDeletion.findMany({ where: { spaceId }, select: { id: true } });
+  const [folders, profiles] = await Promise.all([
+    stagedTeamEntries(path.join(staging, "bots"), TEAM_BOT_FOLDER_NAME),
+    stagedTeamEntries(path.join(staging, ".browser-profiles"), TEAM_BROWSER_PROFILE_NAME),
+  ]);
+  if (!folders.size && !profiles.size) return;
+
+  // Match the browser's UTF-8 SHA-256 name without returning the space's deletion history.
+  const deleted = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM bot_deletions
+    WHERE "spaceId" = ${spaceId}
+      AND (
+        id = ANY(${[...folders]}::text[])
+        OR ('chromium-bot-' || left(encode(sha256(convert_to(id, 'UTF8')), 'hex'), 32))
+          = ANY(${[...profiles]}::text[])
+      )
+  `;
   for (const { id } of deleted) {
-    if (isTeamBotFolderName(id)) await discard(`bots/${id}`);
+    if (folders.has(id)) await discard(`bots/${id}`);
     const profile = teamBrowserProfileName(id);
-    if (profile) await discard(`.browser-profiles/${profile}`);
+    if (profile && profiles.has(profile)) await discard(`.browser-profiles/${profile}`);
+  }
+}
+
+async function stagedTeamEntries(directory: string, pattern: RegExp) {
+  try {
+    return new Set((await readdir(directory)).filter((name) => pattern.test(name)));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    return new Set<string>();
   }
 }
 

@@ -320,35 +320,61 @@ describePostgres("safe workspace publication", () => {
     const { id, record, ref, homeRevision } = await seed();
     const prisma = database.prisma;
     const deletedId = "deleted-bot";
+    const profileOnlyId = "旧-bot-profile";
+    const foreignId = "another-space-bot";
+    const foreignSpaceId = `other-${spaceId}`;
+    const tombstone = (botId: string, tenantId = spaceId) => ({
+      id: botId,
+      spaceId: tenantId,
+      name: "Deleted bot",
+      deletedByUserId: context.userId,
+      memoriesPreserved: true,
+    });
+    await prisma.space.create({
+      data: { id: foreignSpaceId, organizationId, name: "Other Team" },
+    });
+    await prisma.botDeletion.createMany({
+      data: [
+        ...Array.from({ length: 2_000 }, (_, index) => tombstone(`historical-${index}`)),
+        tombstone(profileOnlyId),
+        tombstone(foreignId, foreignSpaceId),
+      ],
+    });
     const deletedPaths = [
       `bots/${deletedId}/notes.txt`,
       `.browser-profiles/${teamBrowserProfileName(deletedId)}/Default/Network/Cookies`,
+      `.browser-profiles/${teamBrowserProfileName(profileOnlyId)}/Local State`,
     ];
-    const survivor = "bots/deleted-bot-other/notes.txt";
+    const survivorPaths = [
+      "bots/deleted-bot-other/notes.txt",
+      `bots/${foreignId}/notes.txt`,
+      `.browser-profiles/${teamBrowserProfileName(foreignId)}/Local State`,
+    ];
     const sandbox = {
       async *exportWorkspace() {
-        for (const filePath of [...deletedPaths, survivor]) {
+        for (const filePath of [...deletedPaths, ...survivorPaths]) {
           yield { path: filePath, content: Buffer.from("new content") };
         }
-        await prisma.botDeletion.create({
-          data: {
-            id: deletedId,
-            spaceId,
-            name: "Deleted bot",
-            deletedByUserId: context.userId,
-            memoriesPreserved: true,
-          },
-        });
+        await prisma.botDeletion.create({ data: tombstone(deletedId) });
       },
     } as unknown as SandboxProvider;
-    const revision = await checkpointAndRecordComputerWorkspace(
-      { prisma, home, sandbox },
-      record,
-      ref,
-      context,
-    );
+    const discard = vi.spyOn(home, "discardStagedDirectory");
+    let revision: string;
+    try {
+      revision = await checkpointAndRecordComputerWorkspace(
+        { prisma, home, sandbox },
+        record,
+        ref,
+        context,
+      );
+      expect(discard).toHaveBeenCalledTimes(deletedPaths.length);
+    } finally {
+      discard.mockRestore();
+    }
     expect(revision).not.toBe(homeRevision);
-    expect(await home.readFile(id, survivor, context)).toBe("new content");
+    for (const filePath of survivorPaths) {
+      expect(await home.readFile(id, filePath, context)).toBe("new content");
+    }
     for (const filePath of deletedPaths) {
       await expect(home.readFile(id, filePath, context)).rejects.toThrow();
     }
