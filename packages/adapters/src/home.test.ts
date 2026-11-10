@@ -3,6 +3,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -23,6 +24,7 @@ const hooks = vi.hoisted(() => ({
   beforeReaddir: undefined as ((target: string) => Promise<void>) | undefined,
   beforeOpen: undefined as ((target: string) => Promise<void>) | undefined,
   afterOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  beforeRm: undefined as ((target: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -44,6 +46,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       await hooks.afterOpen?.(String(args[0]));
       return handle;
     },
+    rm: async (...args: Parameters<typeof fs.rm>) => {
+      await hooks.beforeRm?.(String(args[0]));
+      return fs.rm(...args);
+    },
   };
 });
 
@@ -61,6 +67,7 @@ afterEach(async () => {
   hooks.beforeReaddir = undefined;
   hooks.beforeOpen = undefined;
   hooks.afterOpen = undefined;
+  hooks.beforeRm = undefined;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -111,6 +118,64 @@ describe("LocalAgentHomeStore path containment", () => {
 
     await expect(store.readFile("bot-1", "notes.txt", context)).resolves.toBe("legacy backup");
     expect(transact).not.toHaveBeenCalled();
+  });
+
+  it("finishes publication before removing a detached backup recursively", async () => {
+    const { root, store, home } = await fixture();
+    const source = path.join(root, "checkpoint-source");
+    const staging = path.join(root, "staging");
+    await mkdir(source);
+    await writeFile(path.join(home, "notes.txt"), "old notes");
+    await writeFile(path.join(source, "notes.txt"), "new notes");
+    let committedRevision = "old-revision";
+    let inTransaction = false;
+    let cleanupHeldTransaction: boolean | undefined;
+    let startCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      startCleanup = resolve;
+    });
+    let resumeCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      resumeCleanup = resolve;
+    });
+    hooks.beforeRm = async (target) => {
+      if (path.dirname(target) !== staging) return;
+      cleanupHeldTransaction = inTransaction;
+      startCleanup();
+      await cleanupGate;
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      computer: { findFirst: vi.fn(async () => ({ homeRevision: committedRevision })) },
+    };
+    const prisma = {
+      async $transaction<T>(work: (client: typeof tx) => Promise<T>) {
+        inTransaction = true;
+        try {
+          return await work(tx);
+        } finally {
+          inTransaction = false;
+        }
+      },
+    } as unknown as PrismaClient;
+
+    try {
+      const revision = await store.commit("bot-1", source, context, {
+        prisma,
+        async publish(install) {
+          committedRevision = await install(committedRevision);
+          return committedRevision;
+        },
+      });
+      await cleanupStarted;
+      expect(revision).toBe(committedRevision);
+      expect(cleanupHeldTransaction).toBe(false);
+      const reader = new LocalAgentHomeStore(root);
+      await expect(reader.readFile("bot-1", "notes.txt", context)).resolves.toBe("new notes");
+    } finally {
+      resumeCleanup();
+      await vi.waitFor(async () => expect(await readdir(staging)).toEqual([]));
+    }
   });
 
   it("reaps only stale owned save directories on its data volume", async () => {

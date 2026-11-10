@@ -447,7 +447,12 @@ export async function checkpointAndRecordComputerWorkspace(
               await deps.home.reconcileCheckpoint(computerRecord.homeKey, owned.homeRevision);
             }
             if (staging && computerRecord.scope === "team") {
-              await removeDeletedStagedWorkspaces(tx, computerRecord.spaceId, staging);
+              const home = deps.home;
+              await removeDeletedStagedWorkspaces(tx, computerRecord.spaceId, (directory) =>
+                home instanceof LocalAgentHomeStore
+                  ? home.discardStagedDirectory(computerRecord.homeKey, staging, directory)
+                  : rm(path.join(staging, directory), { recursive: true, force: true }),
+              );
             }
             context.signal.throwIfAborted();
             const ready = await tx.computer.findFirst({
@@ -498,15 +503,13 @@ function checkpointAvailable(context: AdapterContext, now: Date): Prisma.Compute
 async function removeDeletedStagedWorkspaces(
   tx: Pick<Prisma.TransactionClient, "botDeletion">,
   spaceId: string,
-  staging: string,
+  discard: (directory: string) => Promise<void>,
 ) {
   const deleted = await tx.botDeletion.findMany({ where: { spaceId }, select: { id: true } });
   for (const { id } of deleted) {
-    if (isTeamBotFolderName(id))
-      await rm(path.join(staging, "bots", id), { recursive: true, force: true });
+    if (isTeamBotFolderName(id)) await discard(`bots/${id}`);
     const profile = teamBrowserProfileName(id);
-    if (profile)
-      await rm(path.join(staging, ".browser-profiles", profile), { recursive: true, force: true });
+    if (profile) await discard(`.browser-profiles/${profile}`);
   }
 }
 

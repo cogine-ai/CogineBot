@@ -43,6 +43,11 @@ interface PendingCheckpoint {
   hadHome: boolean;
 }
 
+interface WorkspaceRetirement {
+  staging?: Awaited<ReturnType<typeof createStagingDirectory>>;
+  count: number;
+}
+
 function newHomeRevision() {
   return `rev-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
@@ -67,6 +72,7 @@ export async function createStagingDirectory(parent = tmpdir()) {
 export class LocalAgentHomeStore implements AgentHomeStore {
   private readonly saveStaging = new Set<string>();
   private readonly botWrites = new Map<string, Promise<void>>();
+  private readonly retiredStaging = new Map<string, WorkspaceRetirement>();
   private nextStagingSweep = 0;
 
   constructor(
@@ -126,11 +132,32 @@ export class LocalAgentHomeStore implements AgentHomeStore {
   /** API and worker share the volume. An OS-backed lock outlives a timed-out DB transaction. */
   async withHomeLock<T>(botId: string, work: () => Promise<T>): Promise<T> {
     const unlock = await this.lockHome(botId);
+    const retired: WorkspaceRetirement = { count: 0 };
+    this.retiredStaging.set(botId, retired);
     try {
       return await work();
     } finally {
+      this.retiredStaging.delete(botId);
       unlock();
+      // Each directory has already been detached under the lock. Recursive removal
+      // cannot block database settlement or touch the next published home.
+      void retired.staging?.remove().catch((error) => {
+        getLogger().warn("workspace save cleanup", { error });
+      });
     }
+  }
+
+  private async retireDirectory(botId: string, directory: string) {
+    if (!(await pathExists(directory))) return;
+    const retired = this.retiredStaging.get(botId);
+    if (!retired) throw new Error("Workspace retirement requires the home lock");
+    retired.staging ??= await createStagingDirectory(path.join(this.root, "staging"));
+    await rename(directory, path.join(retired.staging.path, String(++retired.count)));
+  }
+
+  async discardStagedDirectory(botId: string, staging: string, directory: string) {
+    if (!this.saveStaging.has(staging)) throw new Error("Workspace staging is not owned");
+    await this.retireDirectory(botId, safeJoin(staging, directory));
   }
 
   private async lockHome(botId: string, mode: "shared" | "exclusive" = "exclusive") {
@@ -296,7 +323,7 @@ export class LocalAgentHomeStore implements AgentHomeStore {
           replaceHome: staging !== undefined,
           hadHome: await pathExists(dest),
         };
-        if (staging) await rm(previous, { recursive: true, force: true });
+        if (staging) await this.retireDirectory(botId, previous);
         await this.writeMetadata(this.pendingPath(botId), JSON.stringify(pending));
         started = true;
         if (staging) {
@@ -363,14 +390,14 @@ export class LocalAgentHomeStore implements AgentHomeStore {
         throw new Error("The saved workspace directory is missing");
       }
       await this.writeMarker(botId, pending.revision);
-      if (pending.replaceHome) await rm(previous, { recursive: true, force: true });
+      if (pending.replaceHome) await this.retireDirectory(botId, previous);
     } else if (pending.baseRevision === committedRevision) {
       if (pending.replaceHome) {
         if (await pathExists(previous)) {
-          await rm(dest, { recursive: true, force: true });
+          await this.retireDirectory(botId, dest);
           await rename(previous, dest);
         } else if (!pending.hadHome) {
-          await rm(dest, { recursive: true, force: true });
+          await this.retireDirectory(botId, dest);
         } else if (!(await pathExists(dest))) {
           throw new Error("The previous workspace directory is missing");
         }

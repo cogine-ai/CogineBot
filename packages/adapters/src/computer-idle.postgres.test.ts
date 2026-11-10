@@ -312,7 +312,7 @@ describePostgres("safe workspace publication", () => {
         homeRevisionAt: null,
         state: "running",
       });
-      expect(await readdir(path.join(root, "staging"))).toEqual([]);
+      await vi.waitFor(async () => expect(await readdir(path.join(root, "staging"))).toEqual([]));
     },
   );
 
