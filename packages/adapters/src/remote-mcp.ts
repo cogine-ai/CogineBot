@@ -220,7 +220,22 @@ export function createSafeRemoteFetch(
   /** Backend-only protocol acknowledgement; requests remain redirect:manual and never follow Location. */
   acceptManualStatus?: (url: URL, method: string, status: number) => boolean,
 ): SafeRemoteFetch {
-  const lookup = createSafeLookup(resolve, policy);
+  return createGuardedRemoteFetch(
+    baseFetch,
+    createSafeLookup(resolve, policy),
+    (url) => inspectSafeRemoteUrl(url, resolve, policy),
+    "Connector redirects are not allowed",
+    acceptManualStatus,
+  );
+}
+
+function createGuardedRemoteFetch(
+  baseFetch: typeof globalThis.fetch | undefined,
+  lookup: LookupFunction,
+  inspect: (url: string) => Promise<{ url: URL; addresses: ResolvedAddress[] }>,
+  redirectError: string,
+  acceptManualStatus?: (url: URL, method: string, status: number) => boolean,
+): SafeRemoteFetch {
   const dispatcher = new Agent({ connect: { lookup } });
   const guardedClients = new Set<UndiciClient>();
   // Injected fetches are not given this Agent; they keep the original hostname
@@ -235,7 +250,7 @@ export function createSafeRemoteFetch(
       throw new Error("Connector fetch requires a URL, not a Request");
     }
     init?.signal?.throwIfAborted();
-    const { url, addresses } = await inspectSafeRemoteUrl(String(input), resolve, policy);
+    const { url, addresses } = await inspect(String(input));
     if (beforeDispatch && !usePackageFetch) await beforeDispatch();
     init?.signal?.throwIfAborted();
     let refusal: ActionRuleDispatchError | undefined;
@@ -286,7 +301,7 @@ export function createSafeRemoteFetch(
       response.status < 400 &&
       !acceptManualStatus?.(url, init?.method ?? "GET", response.status)
     ) {
-      throw new Error("Connector redirects are not allowed");
+      throw new Error(redirectError);
     }
     return response;
   };
@@ -325,45 +340,20 @@ export function createPrivateNetworkFetch(
   baseFetch?: typeof globalThis.fetch,
   resolve: ResolveHostname = resolveHostname,
 ): SafeRemoteFetch {
-  const dispatcher = new Agent({
-    connect: { lookup: createAddressCheckedLookup(resolve, assertPrivateAddresses) },
-  });
-  const usePackageFetch = fetchPairedWithDispatcher(baseFetch) === dispatcherFetch;
-  const privateFetch = async (input: string | URL | Request, init?: RequestInit) => {
-    if (typeof input !== "string" && !(input instanceof URL)) {
-      throw new Error("Connector fetch requires a URL, not a Request");
-    }
-    const url = new URL(String(input));
-    if (url.username || url.password || url.hash) {
-      throw new Error("Private fetch URL must not contain credentials or a fragment");
-    }
-    const addresses = await resolve(url.hostname.replace(/^\[|\]$/g, ""));
-    assertPrivateAddresses(addresses);
-    let response: Response;
-    try {
-      const requestInit = { ...init, redirect: "manual" as const };
-      response = usePackageFetch
-        ? await dispatcherFetch(url, {
-            ...requestInit,
-            dispatcher,
-          } as RequestInit & { dispatcher: Agent })
-        : await withPinnedDnsLookup(url.hostname, addresses, () =>
-            baseFetch!(url, requestInitWithHost(url, requestInit)),
-          );
-    } catch (error) {
-      const detail = transportFailureDetail(error);
-      throw new Error(`Could not reach ${url.host}${detail ? `: ${detail}` : ""}`, {
-        cause: error,
-      });
-    }
-    if (response.status >= 300 && response.status < 400) {
-      throw new Error("Private fetch redirects are not allowed");
-    }
-    return response;
-  };
-  const result = privateFetch as SafeRemoteFetch;
-  result.close = () => dispatcher.close();
-  return result;
+  return createGuardedRemoteFetch(
+    baseFetch,
+    createAddressCheckedLookup(resolve, assertPrivateAddresses),
+    async (input) => {
+      const url = new URL(input);
+      if (url.username || url.password || url.hash) {
+        throw new Error("Private fetch URL must not contain credentials or a fragment");
+      }
+      const addresses = await resolve(url.hostname.replace(/^\[|\]$/g, ""));
+      assertPrivateAddresses(addresses);
+      return { url, addresses };
+    },
+    "Private fetch redirects are not allowed",
+  );
 }
 
 const MAX_CAUSE_DEPTH = 5;

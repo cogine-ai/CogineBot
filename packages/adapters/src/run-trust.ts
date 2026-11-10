@@ -304,7 +304,11 @@ export function createRunTrust(
         select: { request: true, result: true },
       })
       .then(async (rows) => {
-        const sites = sitesInText(await loadInitialOwnerWords());
+        const sites = sitesInText(
+          [await loadInitialOwnerWords(), input.waitingAnswer?.ownerWords]
+            .filter(Boolean)
+            .join("\n"),
+        );
         if (run.trigger === "routine" || run.trigger === "webhook") {
           for (const site of input.routineSites ?? []) sites.add(site);
         }

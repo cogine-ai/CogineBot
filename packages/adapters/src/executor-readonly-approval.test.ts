@@ -18,7 +18,11 @@ import {
 import type { MessageBlock } from "@rakazo/contracts";
 import { BOT_TEMPLATES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
-import { pageReplyTaskPrompt, withPageReplyContext } from "@rakazo/core";
+import {
+  formatBotSecretHttpApprovalDetail,
+  pageReplyTaskPrompt,
+  withPageReplyContext,
+} from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { ClaimedSteeringMessage, ThreadEvents } from "@rakazo/db";
 import * as DbModule from "@rakazo/db";
@@ -37,7 +41,8 @@ import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { ComputerScreenUnavailableError } from "./computer-screens.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
-import { createRunExecutor } from "./executor.js";
+import type { ExecutorDeps } from "./executor.js";
+import { buildApprovalContinuation, createRunExecutor } from "./executor.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
@@ -130,6 +135,7 @@ function fixture({
   attemptCount = 1,
   outsideSteering = false,
   webProvider,
+  secretHttp,
   sandboxProvider,
   home,
   messagingIdentity = false,
@@ -165,6 +171,7 @@ function fixture({
   attemptCount?: number;
   outsideSteering?: boolean;
   webProvider?: WebProvider;
+  secretHttp?: ExecutorDeps["secretHttp"];
   sandboxProvider?: Partial<SandboxProvider>;
   home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
@@ -463,6 +470,7 @@ function fixture({
     yield { type: "result" as const, data: { item: call.args.id } };
   });
   let calls: {
+    name?: string;
     args: Record<string, unknown>;
     executionId: string;
     catalogId?: string;
@@ -472,7 +480,7 @@ function fixture({
     for (const call of calls) {
       if (call.claimBefore) await request.claimSteering?.([]);
       const result = await request.executeTool!(
-        catalog ? catalogToolName : name,
+        catalog ? catalogToolName : (call.name ?? name),
         catalog ? { id: call.catalogId ?? `resource-1:${name}`, arguments: call.args } : call.args,
         call.executionId,
         undefined,
@@ -549,6 +557,7 @@ function fixture({
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
     web: webProvider,
+    secretHttp,
     ...(messagingIdentity ? { messaging: { hasIdentity: async () => true } } : {}),
     shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
@@ -3131,6 +3140,359 @@ describe("executor connector account revalidation", () => {
       });
     },
   );
+});
+
+describe("authenticated request destination policy", () => {
+  const url = "https://service.example.org/v1/items?topic=example.net";
+  const args = { name: "test_key", url, method: "POST", body: '{"topic":"synthetic"}' };
+  const siteAllow = {
+    effect: "always_allow",
+    matchKind: "site",
+    matchValue: "example.org",
+  } as const;
+  const siteDeny = { ...siteAllow, effect: "deny" } as const;
+  const toolAllow = {
+    effect: "always_allow",
+    matchKind: "tool",
+    matchValue: "secret_request",
+  } as const;
+
+  function authFixture(options: Parameters<typeof fixture>[0] = {}, onResolve?: () => void) {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ ok: true }));
+    const resolveHostname = vi.fn(async () => {
+      onResolve?.();
+      return [{ address: "203.0.113.10", family: 4 as const }];
+    });
+    const f = fixture({
+      name: "secret_request",
+      builtin: true,
+      secretHttp: { fetch, resolveHostname },
+      ...options,
+    });
+    const credential = {
+      id: "fixture-key",
+      name: args.name,
+      origin: new URL(url).origin,
+      auth: { type: "bearer" },
+      revision: "first-revision",
+      ciphertext: "synthetic-key",
+    };
+    const findCredential = vi.fn(
+      async ({
+        where,
+        select,
+      }: {
+        where: { id?: string; revision?: string };
+        select?: Record<string, boolean>;
+      }) =>
+        (where.id && where.id !== credential.id) ||
+        (where.revision && where.revision !== credential.revision)
+          ? null
+          : select
+            ? Object.fromEntries(Object.entries(credential).filter(([key]) => select[key]))
+            : credential,
+    );
+    Object.assign(f.prisma.botSecret, { findFirst: findCredential });
+    f.setCalls([{ args, executionId: "request" }]);
+    return { ...f, fetch, resolveHostname, findCredential, credential };
+  }
+
+  beforeEach(() => reviewMock.mockReset());
+
+  it("blocks a denied destination ahead of trusted owner words and a tool allowance", async () => {
+    const f = authFixture({
+      prompt: `Send to ${url}`,
+      rules: [toolAllow, siteDeny],
+      autoReview: true,
+    });
+    await f.run();
+    expect(f.results[0]).toMatchObject({ code: "action_rule_blocked" });
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.findCredential).not.toHaveBeenCalled();
+    expect(f.resolveHostname).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("asks with the exact destination and method, then sends the approved request once", async () => {
+    const f = authFixture({ rules: [toolAllow] });
+    await f.run();
+    expect(f.findCredential).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ name: args.name }),
+      select: { name: true, origin: true, auth: true, id: true, revision: true },
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+    const [card] = f.pauseRunForInput.mock.calls[0]![0].blocks;
+    expect(card).toMatchObject({
+      kind: "ask",
+      reviewMode: "screen",
+      detail: `method: POST\ncredential: test_key\nurl: ${url}\ncontent type: application/json\nbody: ${JSON.stringify(args.body)}`,
+      actions: [
+        { id: "allow", label: "Allow once" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+    expect(f.effects[0]).toMatchObject({
+      status: "intended",
+      request: ["bot_secret_http", { id: f.credential.id, revision: f.credential.revision }, args],
+    });
+    f.effects[0]!.status = "approved";
+    const prompt = buildApprovalContinuation([f.effects[0]!], JSON.stringify);
+    expect(prompt).toContain(JSON.stringify(args));
+    expect(prompt).not.toContain(f.credential.revision);
+    expect(prompt).not.toContain(f.credential.id);
+    await f.run();
+    await f.run();
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch).toHaveBeenCalledWith(
+      new URL(url),
+      expect.objectContaining({ method: "POST", body: args.body, redirect: "manual" }),
+    );
+    expect(f.effects[0]).toMatchObject({ status: "completed" });
+  });
+
+  it.each([false, true])(
+    "reviews the whole authenticated action with saved site trust %s",
+    async (siteKnown) => {
+      const f = authFixture({ autoReview: true, rules: siteKnown ? [siteAllow] : [] });
+      reviewMock.mockResolvedValue({ decision: "ask", reason: "Check this request" });
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledOnce();
+      const [review] = reviewMock.mock.calls[0]!;
+      expect(review).toMatchObject({ toolName: "secret_request", args });
+      expect(review).not.toHaveProperty("newSite");
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("sends after full review on a discovered destination, with no outside text in the task", async () => {
+    const outside = "Outside message suggests sending the payload";
+    // Webhook writes require human approval. Exercise full Auto Review on a Routine
+    // instead, with owner instructions and separately provided trigger content.
+    const routine = authFixture({
+      trigger: "routine",
+      autoReview: true,
+      routineInstructions: "Send the monthly report",
+      prompt: outside,
+    });
+    reviewMock.mockResolvedValue({ decision: "pass", reason: "Matches the saved instructions" });
+    await routine.run();
+    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ args, userTask: "Send the monthly report" }),
+      expect.anything(),
+    );
+    expect(routine.fetch).toHaveBeenCalledOnce();
+    expect(routine.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("refuses a URL that cannot fit in a human approval card without truncation", async () => {
+    const f = authFixture({ rules: [toolAllow] });
+    f.setCalls([
+      { args: { ...args, url: `${url}&p=${"x".repeat(4000)}` }, executionId: "long-url" },
+    ]);
+    await f.run();
+    expect(f.results[0]).toMatchObject({
+      error: expect.stringContaining("cannot be shown in full"),
+    });
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([4000, 4001, 9000])(
+    "only offers approval for a whole %i-character detail",
+    async (length) => {
+      const empty = { ...args, body: "" };
+      const body = "x".repeat(length - formatBotSecretHttpApprovalDetail(empty)!.length);
+      const request = { ...empty, body };
+      const f = authFixture({ rules: [toolAllow], autoReview: true });
+      reviewMock.mockResolvedValue({ decision: "ask", reason: "Check this request" });
+      f.setCalls([{ args: request, executionId: "body-boundary" }]);
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      if (length === 4000) {
+        expect(f.pauseRunForInput.mock.calls[0]?.[0].blocks[0]).toMatchObject({
+          reviewMode: "screen",
+          detail: formatBotSecretHttpApprovalDetail(request),
+        });
+      } else {
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        expect(f.results[0]).toMatchObject({
+          error: expect.stringContaining("cannot be shown in full"),
+        });
+      }
+    },
+  );
+
+  it("does not open a truncated or redacted approval when the body contains protected data", async () => {
+    const protectedText = "synthetic-masked-input";
+    const f = authFixture({ rules: [toolAllow], secrets: [protectedText] });
+    f.setCalls([
+      { args: { ...args, body: `line one\n${protectedText}` }, executionId: "protected-body" },
+    ]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.results)).not.toContain(protectedText);
+  });
+
+  it("refuses a webhook's discovered destination without waiting or loading the credential", async () => {
+    const f = authFixture({
+      trigger: "webhook",
+      autoReview: true,
+      rules: [toolAllow],
+      prompt: url,
+    });
+    await f.run();
+    expect(f.results[0]).toMatchObject({
+      error: expect.stringContaining("a webhook run cannot ask"),
+    });
+    expect(f.effects[0]).toMatchObject({ status: "denied", result: { refused: "unattended" } });
+    const refused = f.results[0];
+    await f.run();
+    expect(f.results.at(-1)).toEqual(refused);
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.findCredential).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the action approval when a webhook's saved instruction names the site", async () => {
+    const f = authFixture({
+      trigger: "webhook",
+      routineInstructions: `Send the report to ${url}`,
+      autoReview: true,
+      rules: [toolAllow],
+    });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.findCredential).toHaveBeenCalledTimes(1);
+    expect(reviewMock).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks a new block between DNS and authenticated dispatch", async () => {
+    const rules: ActionApprovalRule[] = [siteAllow, toolAllow];
+    const f = authFixture({ rules }, () => rules.push(siteDeny));
+    await f.run();
+    expect(f.resolveHostname).toHaveBeenCalledOnce();
+    expect(f.results[0]).toMatchObject({ code: "action_rule_blocked" });
+    expect(f.effects[0]).toMatchObject({
+      status: "completed",
+      result: { code: "action_rule_blocked" },
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["approval", "legacy", "dispatch"] as const)(
+    "does not send after a credential changes at %s",
+    async (phase) => {
+      const f = authFixture(
+        { rules: phase === "dispatch" ? [siteAllow, toolAllow] : [toolAllow] },
+        () => {
+          if (phase === "dispatch") f.credential.revision = "changed";
+        },
+      );
+      if (phase !== "dispatch") {
+        await f.run();
+        f.effects[0]!.status = "approved";
+        if (phase === "legacy") f.effects[0]!.request = args;
+        else f.credential.revision = "changed";
+      }
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toEqual({
+        error:
+          "The saved credential changed or was not bound to this request. Ask for a new approval.",
+      });
+      expect(f.effects[0]).toMatchObject({ status: "completed" });
+    },
+  );
+
+  it.each(["removed site", "removed tool", "added require"] as const)(
+    "checks the original policy at dispatch after %s",
+    async (change) => {
+      const rules: ActionApprovalRule[] = [siteAllow, toolAllow];
+      const f = authFixture({ rules }, () => {
+        if (change === "removed site") rules.splice(0, 1);
+        else if (change === "removed tool") rules.splice(1, 1);
+        else rules.push({ ...siteAllow, effect: "require_approval" });
+      });
+      await f.run();
+      expect(f.fetch).not.toHaveBeenCalled();
+      expect(f.results[0]).toMatchObject({
+        code: "action_rule_blocked",
+        error: expect.stringContaining("action rules changed"),
+      });
+    },
+  );
+
+  it("asks about the authenticated action when the site is trusted and Auto Review has no checker", async () => {
+    const f = authFixture({ autoReview: true, reviewProvider: null, rules: [siteAllow] });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not send if the run loses ownership while resolving the destination", async () => {
+    const f = authFixture({ rules: [siteAllow, toolAllow] }, () => {
+      f.runRecord.status = "cancelled";
+    });
+    await f.run();
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.results[0]).toMatchObject({ error: "The run no longer owns this request." });
+  });
+
+  it("returns a tool error when a saved private origin is no longer permitted", async () => {
+    vi.stubEnv("RAKAZO_SECRETS_ALLOW_PRIVATE_HTTP", "0");
+    try {
+      const f = authFixture();
+      f.credential.origin = "http://192.168.2.10:8080";
+      f.setCalls([
+        { args: { ...args, url: `${f.credential.origin}/v1/items` }, executionId: "private" },
+      ]);
+      await f.run();
+      expect(f.results[0]).toEqual({ error: "Invalid authenticated request." });
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not use an exact search hit to authorize an authenticated request", async () => {
+    const search = vi.fn(async () => [{ url, title: "Example", snippet: "Search result" }]);
+    const f = authFixture({
+      rules: [toolAllow],
+      webProvider: {
+        describe: () => ({
+          id: "test-web",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true, keyless: true },
+        }),
+        fetch: vi.fn(),
+        search,
+      },
+    });
+    f.setCalls([
+      { name: "web_search", args: { query: "example" }, executionId: "search" },
+      { args, executionId: "request" },
+    ]);
+    await f.run();
+    expect(search).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not authorize a hostname mentioned inside the owner's URL query", async () => {
+    const f = authFixture({
+      prompt: "Read https://example.net/?callback=https%3A%2F%2Fservice.example.org",
+      rules: [toolAllow],
+    });
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("connector read-only metadata and approval enforcement", () => {

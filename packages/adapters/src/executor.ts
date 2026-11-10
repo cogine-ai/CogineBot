@@ -87,6 +87,7 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   RUN_QUOTA_WAIT_MAX_MS,
   runQuotaWaitStateSchema,
+  SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
@@ -124,11 +125,13 @@ import {
   nextCronDateAcross,
   nextFence,
   normalizeRunError,
+  OUTBOUND_HTTP_TOOLS,
   outboundSiteGate,
   PlatformModelForbiddenError,
   pageReplyTaskPrompt,
   planActionGate,
   promptInvokesSkill,
+  readBotSecretHttpEffect,
   redactSecrets,
   renderBotDirectory,
   resolveActionApprovalDetail,
@@ -255,6 +258,8 @@ import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.j
 import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import {
   allowPrivateHttpSecretOrigins,
+  BOT_SECRET_HTTP_APPROVAL_CHANGED,
+  BotSecretHttpRequestError,
   botSecretToolView,
   commandCredentialRedactions,
   findBotSecret,
@@ -263,6 +268,7 @@ import {
   listBotSecrets,
   loadBotCommandEnvironment,
   normalizeSecretDestination,
+  prepareBotSecretHttpEffect,
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
@@ -3283,7 +3289,9 @@ export function buildApprovalContinuation(
       }
       const routine =
         effect.kind === "schedule_create" && routineSiteApprovalDetails(effect.request);
-      return `${effect.kind}: ${formatRequest(routine ? routine.args : effect.request)}`;
+      const authenticated =
+        effect.kind === "secret_request" && readBotSecretHttpEffect(effect.request);
+      return `${effect.kind}: ${formatRequest(routine ? routine.args : authenticated ? authenticated.args : effect.request)}`;
     }),
   ].join("\n");
 }
@@ -6045,11 +6053,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               // still matches the first-approval effect key and execute payload.
               const routine =
                 name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
+              const authenticated =
+                name === "secret_request" && readBotSecretHttpEffect(approvedRequest);
               args = routine
                 ? routine.args
-                : restoredPageEffect
-                  ? args
-                  : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
+                : authenticated
+                  ? authenticated.args
+                  : restoredPageEffect
+                    ? args
+                    : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
             // Bound / shrink-direct approvals may skip catalog parse — reject before execute
             // if they no longer match the live schema.
@@ -6112,29 +6124,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? (resolvedTool ?? connectorTools.get(name))
             : undefined;
           const declaredReadOnly = connectorTool?.readOnly;
-          const fetchUrl =
-            name === "web_fetch" ? normalizedHttpUrl(String(args.url ?? "")) : undefined;
-          const fetchSite = fetchUrl ? urlSite(fetchUrl) : undefined;
-          if (name === "web_fetch" && !fetchSite) {
+          const authenticatedRequest = name === "secret_request";
+          const sendsToSite = OUTBOUND_HTTP_TOOLS.has(name);
+          const outboundUrl =
+            sendsToSite && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
+          const outboundSite = outboundUrl ? urlSite(outboundUrl) : undefined;
+          if (sendsToSite && !outboundSite) {
             return { error: "url must be an http(s) URL without credentials" };
           }
-          if (fetchUrl && fetchUrl.length > MAX_FETCH_URL_LENGTH)
-            return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
-          if (fetchUrl) {
-            args = { ...args, url: fetchUrl };
+          if (
+            authenticatedRequest &&
+            (!SecretHttpRequest.safeParse(args).success ||
+              (outboundUrl && new URL(outboundUrl).hash))
+          )
+            return { error: "Invalid authenticated request." };
+          if (name === "web_fetch" && outboundUrl) {
+            if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
+              return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
+            args = { ...args, url: outboundUrl };
             effectRequest = args;
           }
           const rules = await loadApprovalRules();
-          const siteGate =
-            fetchUrl && fetchSite
-              ? outboundSiteGate({
-                  site: fetchSite,
-                  trusted:
-                    searchResultUrls.has(fetchUrl) ||
-                    (await trust.loadTrustedSites()).has(fetchSite),
-                  rules,
-                })
-              : "allow";
+          const siteTrusted = Boolean(
+            outboundUrl &&
+              outboundSite &&
+              ((name === "web_fetch" && searchResultUrls.has(outboundUrl)) ||
+                (await trust.loadTrustedSites()).has(outboundSite)),
+          );
+          const siteGate = outboundSite
+            ? outboundSiteGate({ site: outboundSite, trusted: siteTrusted, rules })
+            : "allow";
           const connectorProviders = connectedPlugins.map((plugin) => plugin.provider);
           const connectorKind = connectorKindFromToolName(name, connectorProviders);
           const wireToolName = liveRoute?.toolName ?? name;
@@ -6324,8 +6343,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   toolName: name,
                   connectorKind,
                   readOnly: declaredReadOnly,
-                  site: fetchSite,
-                  rules,
+                  site: outboundSite,
+                  // Site trust does not authorize the authenticated action itself.
+                  rules: authenticatedRequest
+                    ? rules.filter(
+                        (rule) => rule.matchKind !== "site" || rule.effect !== "always_allow",
+                      )
+                    : rules,
                 });
           };
           const approvalResolved = resolveRules(rules);
@@ -6388,16 +6412,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
           if (
             plan === "allow" &&
-            batch &&
+            (batch || authenticatedRequest) &&
             gated &&
             autoReviewPref &&
             approvalResolved.source === "default"
           ) {
-            // If Auto Review is on but has no checker, an uncovered batch needs a person.
+            // A batch or authenticated action still needs review when its checker is unavailable.
             plan = "ask";
           }
           let reviewReason: string | undefined;
-          const newSite = siteGate === "new" && fetchUrl !== undefined;
+          // The URL-only reviewer is for an unauthenticated read. Other actions still
+          // require their complete arguments, even when a destination is new.
+          const newSite = siteGate === "new" && name === "web_fetch";
           if (plan === "judge") {
             const rawArgsJson = reviewArgsJson(args);
             if (rawArgsJson === undefined) {
@@ -6453,7 +6479,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     });
                   return proposed.request;
                 }
-              : undefined;
+              : authenticatedRequest && !(run.trigger === "webhook" && siteGate === "new")
+                ? () => prepareBotSecretHttpEffect(deps.prisma, run, args)
+                : undefined;
           let applied: Awaited<ReturnType<typeof recordEffect>> | undefined;
           try {
             if (blocked) {
@@ -6494,8 +6522,54 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           } catch (error) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
+            if (error instanceof BotSecretHttpRequestError) return { error: error.message };
             throw error;
           }
+          const credentialBinding =
+            authenticatedRequest && applied
+              ? readBotSecretHttpEffect(applied.effect.request)?.credential
+              : undefined;
+          const refuseIntendedEffect = async (
+            reason: "repeat" | "unattended",
+            response: { error: string },
+          ) => {
+            if (!applied) return response;
+            const effectId = applied.effect.id;
+            const refused = await deps.prisma.$transaction(async (tx) => {
+              // Keep the refusal write ordered with Stop, pause and worker transfer.
+              const locked = await tx.run.updateMany({
+                where: {
+                  id: runId,
+                  spaceId: run.spaceId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                },
+                data: { leaseFence: fence },
+              });
+              if (locked.count !== 1) return null;
+              return tx.externalEffect.updateMany({
+                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
+                data: {
+                  status: "denied",
+                  result:
+                    reason === "unattended"
+                      ? { refused: reason, ...response }
+                      : { refused: reason },
+                },
+              });
+            });
+            if (!refused) return pauseForApproval();
+            if (refused.count === 1) return response;
+            const current = await deps.prisma.externalEffect.findUnique({
+              where: { id: applied.effect.id },
+            });
+            if (current) {
+              const replay = resolveDuplicateEffectGate(current, name);
+              if (replay.action === "return") return replay.result;
+            }
+            return uncertainEffectResult(name);
+          };
           if (
             (!applied || applied.effect.status === "intended") &&
             repeatsDeniedAction(
@@ -6517,36 +6591,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             )
           ) {
             context.signal.throwIfAborted();
-            if (!applied) return { error: DENIED_ACTION_ERROR };
-            const effectId = applied.effect.id;
-            const refused = await deps.prisma.$transaction(async (tx) => {
-              // Keep the refusal write ordered with Stop, pause and worker transfer.
-              const locked = await tx.run.updateMany({
-                where: {
-                  id: runId,
-                  spaceId: run.spaceId,
-                  status: "running",
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                },
-                data: { leaseFence: fence },
-              });
-              if (locked.count !== 1) return null;
-              return tx.externalEffect.updateMany({
-                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
-                data: { status: "denied", result: { refused: "repeat" } },
-              });
-            });
-            if (!refused) return pauseForApproval();
-            if (refused.count === 1) return { error: DENIED_ACTION_ERROR };
-            const current = await deps.prisma.externalEffect.findUnique({
-              where: { id: applied.effect.id },
-            });
-            if (current) {
-              const replay = resolveDuplicateEffectGate(current, name);
-              if (replay.action === "return") return replay.result;
-            }
-            return uncertainEffectResult(name);
+            return refuseIntendedEffect("repeat", { error: DENIED_ACTION_ERROR });
           }
           const sharedPageUpdate =
             pageMode === "write" && applied
@@ -6591,7 +6636,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!injectedReview && !checker) return;
             try {
               const task =
-                newSite || trust.state.pageInput ? await trust.loadOwnerWords() : ownerTaskPrompt;
+                authenticatedRequest || newSite || trust.state.pageInput
+                  ? await trust.loadOwnerWords()
+                  : ownerTaskPrompt;
               const reviewContext: AdapterContext = {
                 operationId: `auto-review:${runId}`,
                 traceId: `auto-review:${runId}`,
@@ -6672,7 +6719,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               // Resolve checker credentials first so all currently known secrets are redacted.
               const reviewArgs = redactToolArgsForReview(
-                newSite ? { url: fetchUrl } : args,
+                newSite ? { url: outboundUrl } : args,
                 runSecrets,
               );
               const redactedArgsJson = reviewArgs && reviewArgsJson(reviewArgs);
@@ -6743,6 +6790,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (
             applied &&
             applied.effect.status !== "denied" &&
+            (!authenticatedRequest || applied.effect.status === "intended") &&
             plan === "judge" &&
             (injectedReview || checker)
           ) {
@@ -6776,13 +6824,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             siteGate === "new" &&
             newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
           ) {
-            if (applied) {
-              await deps.prisma.externalEffect.updateMany({
-                where: { id: applied.effect.id, status: "intended" },
-                data: { status: "denied" },
-              });
-            }
-            return { error: `Fetching ${fetchSite} needs approval, and a webhook run cannot ask.` };
+            const action = authenticatedRequest
+              ? "Sending an authenticated request to"
+              : "Fetching";
+            const refusal = {
+              error: `${action} ${outboundSite} needs approval, and a webhook run cannot ask.`,
+            };
+            if (!applied || applied.effect.status === "intended")
+              return refuseIntendedEffect("unattended", refusal);
+            if (
+              name === "web_fetch" &&
+              applied.effect.status === "denied" &&
+              applied.effect.result == null
+            )
+              return refusal;
           }
 
           const needsApproval = gateDecision === "ask";
@@ -6875,7 +6930,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             throw uncertainEffectError(name);
           };
 
-          const showApprovalCard = async () => {
+          const showApprovalCard = async (block: MessageBlock) => {
             if (!(await renewRunLease(deps, runId, workerId, fence))) {
               // Another worker owns the run now; exit without leaving a local pause card.
               return pauseForApproval();
@@ -6893,21 +6948,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ...(isSteeringContinuation && lastScriptedState
                   ? { scriptedState: scriptedStateJson(lastScriptedState) }
                   : {}),
-                blocks: [
-                  buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
-                    reviewReason,
-                    routineSiteDetail,
-                    batch,
-                    allowBatchAlways: managedBatch,
-                    sharedPageUpdate: sharedPageUpdate && {
-                      title: sharedPageUpdate.page.title,
-                      detail: sharedPageUpdate.detail,
-                    },
-                    allowSiteAlways: !approvalResolved.matchingRules.some(
-                      (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
-                    ),
-                  }),
-                ],
+                blocks: [block],
               },
               executionId,
               undefined,
@@ -6938,7 +6979,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
             await flushConnectionNarration(executionId);
-            const pause = await requestPause(showApprovalCard, observer?.beforeInputPause);
+            const block = buildApprovalAskBlock(applied!.effect.id, name, args, runSecrets, {
+              reviewReason,
+              routineSiteDetail,
+              batch,
+              allowBatchAlways: managedBatch,
+              sharedPageUpdate: sharedPageUpdate && {
+                title: sharedPageUpdate.page.title,
+                detail: sharedPageUpdate.detail,
+              },
+              allowSiteAlways: !approvalResolved.matchingRules.some(
+                (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
+              ),
+            });
+            if (authenticatedRequest && (!credentialBinding || !block.detail)) {
+              const result = {
+                error: credentialBinding
+                  ? "The authenticated request cannot be shown in full for approval."
+                  : BOT_SECRET_HTTP_APPROVAL_CHANGED,
+              };
+              return (await completeEffect(deps, applied!.effect.id, "intended", result))
+                ? result
+                : uncertainEffectResult(name);
+            }
+            const pause = await requestPause(
+              () => showApprovalCard(block),
+              observer?.beforeInputPause,
+            );
             return pause.owned ? pause.result : pauseForApproval();
           };
 
@@ -7050,7 +7117,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
           if (!pendingPeerConnectorClaim && (await rulesBlockDispatch()))
             return finishPolicyBlock();
-          if (fetchSite && siteGate === "new") (await trust.loadTrustedSites()).add(fetchSite);
+          if (name === "web_fetch" && outboundSite && siteGate === "new") {
+            (await trust.loadTrustedSites()).add(outboundSite);
+          }
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -7720,7 +7789,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   site !== undefined &&
                   outboundSiteGate({ site, trusted: trustedSites.has(site), rules }) === "allow";
                 // An exact search hit grants its URL. Site authority is separate.
-                if (site === fetchSite && siteAllowed) return;
+                if (site === outboundSite && siteAllowed) return;
                 if (
                   site &&
                   resolved.decision === "allow" &&
@@ -8408,7 +8477,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
             return finish(await forgetBotSecret(deps.prisma, run, parsed.data));
           }
-          if (name === "secret_request") {
+          if (authenticatedRequest) {
+            if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             try {
               const result = await requestWithBotSecret({
                 prisma: deps.prisma,
@@ -8418,9 +8488,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 signal: context.signal,
                 remote: deps.secretHttp,
                 registerRedactions: registerRunSecrets,
+                credentialBinding,
+                beforeDispatch: async (tx) => {
+                  const currentRules = await loadApprovalRules(tx);
+                  const current = resolveRules(currentRules);
+                  if (current.decision === "deny")
+                    throw new ActionRuleDispatchError(policyBlock.error);
+                  if (
+                    !claimedApproval &&
+                    (current.decision === "ask" ||
+                      (approvalResolved.source === "always_allow" &&
+                        current.source !== "always_allow") ||
+                      (siteGate === "allow" &&
+                        outboundSite &&
+                        outboundSiteGate({
+                          site: outboundSite,
+                          trusted: siteTrusted,
+                          rules: currentRules,
+                        }) === "new"))
+                  )
+                    throw new ActionRuleDispatchError(
+                      "The authenticated request needs a new approval because its action rules changed.",
+                    );
+                  if (!(await renewRunLease(deps, runId, workerId, fence, tx)))
+                    throw new BotSecretHttpRequestError("The run no longer owns this request.");
+                },
               });
               return finish(result);
-            } catch {
+            } catch (error) {
+              if (error instanceof ActionRuleDispatchError) {
+                trust.invalidateDestinationTrust();
+                return finish({ ...policyBlock, error: error.message }, "error");
+              }
               return finish({ error: "Invalid authenticated request." });
             }
           }

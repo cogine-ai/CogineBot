@@ -12,8 +12,10 @@ import {
   isPrivateNetworkHost,
   SecretHttpRequest,
 } from "@rakazo/contracts";
+import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
+import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
@@ -584,22 +586,26 @@ export async function forgetBotSecret(prisma: PrismaClient, scope: BotSecretScop
   return { removed: true };
 }
 
-/** Credentials are resolved only inside this destination-bound HTTP boundary. */
-export async function requestWithBotSecret(input: {
-  prisma: PrismaClient;
-  secretStore: SecretStore;
-  scope: BotSecretScope;
-  request: unknown;
-  signal: AbortSignal;
-  remote?: RemoteTransportDependencies;
-  registerRedactions?: (values: string[]) => void;
-}): Promise<unknown> {
-  const request = SecretHttpRequest.parse(input.request);
-  const row = await input.prisma.botSecret.findFirst({
-    where: { ...scopeFields(input.scope), name: request.name },
-  });
-  if (!row) return { error: "Credential is unavailable. Use request_secret to save it first." };
-  const destination = normalizeSecretDestination(row);
+type BotSecretHttpBinding = Pick<
+  Extract<ExpectedBotSecret, { kind: "present" }>,
+  "id" | "revision"
+>;
+
+export const BOT_SECRET_HTTP_APPROVAL_CHANGED =
+  "The saved credential changed or was not bound to this request. Ask for a new approval.";
+
+export class BotSecretHttpRequestError extends ActionRuleDispatchError {}
+
+function credentialHttpDestination(
+  row: unknown,
+  url: URL,
+): { error: string } | { destination: BotSecretDestination } {
+  let destination: BotSecretDestination;
+  try {
+    destination = normalizeSecretDestination(row);
+  } catch {
+    return { error: "Invalid authenticated request." };
+  }
   if (destination.auth.type === "login") {
     return { error: "Website logins can only be filled into their site with browser_act." };
   }
@@ -608,10 +614,70 @@ export async function requestWithBotSecret(input: {
       error: `${UNUSABLE_CREDENTIAL}. Command variables are only available to shell commands, as $${commandVariableName(destination.name)}.`,
     };
   }
-  const url = new URL(request.url);
   if (url.origin !== destination.origin || url.username || url.password || url.hash) {
     return { error: "This credential cannot be sent to that destination." };
   }
+  return { destination };
+}
+
+export async function prepareBotSecretHttpEffect(
+  prisma: PrismaClient,
+  scope: BotSecretScope,
+  args: Record<string, unknown>,
+) {
+  const request = SecretHttpRequest.parse(args);
+  const row = await prisma.botSecret.findFirst({
+    where: { ...scopeFields(scope), name: request.name },
+    select: { ...metadata, id: true, revision: true },
+  });
+  if (!row)
+    throw new BotSecretHttpRequestError(
+      "Credential is unavailable. Use request_secret to save it first.",
+    );
+  const resolved = credentialHttpDestination(row, new URL(request.url.trim()));
+  if ("error" in resolved) throw new BotSecretHttpRequestError(resolved.error);
+  return [BOT_SECRET_HTTP_REQUEST_KIND, { id: row.id, revision: row.revision }, args];
+}
+
+/** Credentials are resolved only inside this destination-bound HTTP boundary. */
+export async function requestWithBotSecret(input: {
+  prisma: PrismaClient;
+  secretStore: SecretStore;
+  scope: BotSecretScope;
+  request: unknown;
+  signal: AbortSignal;
+  remote?: RemoteTransportDependencies;
+  beforeDispatch?: (tx?: Prisma.TransactionClient) => Promise<void>;
+  credentialBinding?: BotSecretHttpBinding;
+  registerRedactions?: (values: string[]) => void;
+}): Promise<unknown> {
+  const request = SecretHttpRequest.parse(input.request);
+  const where = { ...scopeFields(input.scope), name: request.name, ...input.credentialBinding };
+  const row = await input.prisma.botSecret.findFirst({ where });
+  if (!row) {
+    return {
+      error: input.credentialBinding
+        ? BOT_SECRET_HTTP_APPROVAL_CHANGED
+        : "Credential is unavailable. Use request_secret to save it first.",
+    };
+  }
+  const url = new URL(request.url.trim());
+  const resolved = credentialHttpDestination(row, url);
+  if ("error" in resolved) return resolved;
+  const destination = resolved.destination;
+  const beforeDispatch = input.credentialBinding
+    ? () =>
+        withTransactionRetry(() =>
+          input.prisma.$transaction(
+            async (tx) => {
+              const current = await tx.botSecret.findFirst({ where, select: { id: true } });
+              if (!current) throw new BotSecretHttpRequestError(BOT_SECRET_HTTP_APPROVAL_CHANGED);
+              await input.beforeDispatch?.(tx);
+            },
+            { isolationLevel: "RepeatableRead" },
+          ),
+        )
+    : input.beforeDispatch;
   const controller = new AbortController();
   const signal = combineSignals(input.signal, controller.signal, AbortSignal.timeout(30_000));
   const plaintext = await input.secretStore.load(row.ciphertext, {
@@ -646,13 +712,11 @@ export async function requestWithBotSecret(input: {
   try {
     headers.set(headerName, headerValue);
     const response = await withAbort(
-      fetch(url, {
-        method: request.method,
-        headers,
-        body: request.body,
-        redirect: "manual",
-        signal,
-      }),
+      fetch(
+        url,
+        { method: request.method, headers, body: request.body, redirect: "manual", signal },
+        beforeDispatch,
+      ),
       signal,
     );
     const bytes = await readBodyCapped(response, 1_000_000, signal);
@@ -670,7 +734,9 @@ export async function requestWithBotSecret(input: {
       body: safe.length > 20_000 ? safe.slice(0, 20_000) : JSON.parse(safe),
       truncated: safe.length > 20_000,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof BotSecretHttpRequestError) return { error: error.message };
+    if (error instanceof ActionRuleDispatchError) throw error;
     return { error: "Authenticated request failed. Check the destination and credential." };
   } finally {
     controller.abort();

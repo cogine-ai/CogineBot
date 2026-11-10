@@ -178,6 +178,7 @@ describe("run destination trust", () => {
     outside?: boolean;
     trigger?: string;
     connectedProviders?: string[];
+    waitingAnswer?: Parameters<typeof createRunTrust>[1]["waitingAnswer"];
     passedEffects?: Array<{ kind: string; request: unknown; result?: unknown }>;
   }) {
     let outside = input.outside ?? false;
@@ -196,6 +197,7 @@ describe("run destination trust", () => {
       {
         run: { id: "run", userId: "owner", spaceId: "space", trigger: input.trigger ?? "user" },
         sourceMessage: { role: "user", blocks: [{ kind: "text", text: "Read docs.example.com" }] },
+        waitingAnswer: input.waitingAnswer,
         ownerStartedRun: input.trigger === undefined,
         messagingChannelRun: false,
         restored: false,
@@ -280,6 +282,17 @@ describe("run destination trust", () => {
     expect(findFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: { threadId: run.threadId, id: "page-answer" } }),
     );
+  });
+
+  it("trusts destinations from the authenticated waiting answer, not its Page title", async () => {
+    const { trust } = fixture({
+      waitingAnswer: {
+        includesPage: true,
+        ownerWords: "Send to https://answer.example.org/path",
+        promptContext: { pageId: "page-1", title: "https://page.example.net" },
+      },
+    });
+    expect(await trust.loadTrustedSites()).toEqual(new Set(["example.com", "example.org"]));
   });
 
   it("adds later owner destinations without losing sites already approved in the run", async () => {

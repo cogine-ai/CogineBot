@@ -4,15 +4,17 @@ import {
   type ConnectorBatchActionNames,
   containsSecret,
   displayedBatchApprovalRuleNames,
+  formatBotSecretHttpApprovalDetail,
+  MAX_APPROVAL_DETAIL_LENGTH,
   messagingProviderName,
+  OUTBOUND_HTTP_TOOLS,
   redactSecrets,
   SITE_SENDING_TOOLS,
   sanitizeMessagingLabel,
 } from "@rakazo/core";
-import { urlSite } from "@rakazo/core/egress";
+import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 
 const MAX_APPROVAL_SUMMARY_LENGTH = 500;
-const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
 export const MAX_FETCH_URL_LENGTH = 2_048;
 
 export type SharedPageApprovalSummary = { title: string; detail: string };
@@ -48,7 +50,7 @@ export function buildApprovalAskBlock(
     allowBatchAlways?: boolean;
     sharedPageUpdate?: SharedPageApprovalSummary;
   },
-): MessageBlock {
+): Extract<MessageBlock, { kind: "ask" }> {
   if (toolName === "save_page" && options?.sharedPageUpdate) {
     const { title, detail } = options.sharedPageUpdate;
     return {
@@ -96,8 +98,25 @@ export function buildApprovalAskBlock(
       ],
     };
   }
-  const siteSending = SITE_SENDING_TOOLS.has(toolName);
-  const destination = siteSending && typeof args.url === "string" ? args.url : undefined;
+  if (toolName === "secret_request") {
+    const detail = formatBotSecretHttpApprovalDetail(args);
+    const complete = detail && !containsSecret([detail, args], secrets) ? detail : undefined;
+    return {
+      kind: "ask",
+      approvalEffectId: effectId,
+      reviewMode: "screen",
+      text: "Review before secret_request",
+      detail: complete,
+      status: "pending",
+      actions: [
+        ...(complete ? [{ id: "allow", label: "Allow once" }] : []),
+        { id: "deny", label: "Deny" },
+      ],
+    };
+  }
+  const siteSending = OUTBOUND_HTTP_TOOLS.has(toolName);
+  const destination =
+    siteSending && typeof args.url === "string" ? normalizedHttpUrl(args.url) : undefined;
   const fetchSite = destination ? urlSite(destination) : undefined;
   const routineSiteApproval = options?.routineSiteDetail !== undefined;
   const batch = options?.batch;
@@ -122,7 +141,7 @@ export function buildApprovalAskBlock(
   const displayedDetail = safeDetail ? truncate(safeDetail, MAX_APPROVAL_DETAIL_LENGTH) : undefined;
   const batchRules = batch && displayedBatchApprovalRuleNames(batch, displayedDetail);
   const alwaysLabel = siteSending
-    ? fetchSite && options?.allowSiteAlways !== false
+    ? fetchSite && SITE_SENDING_TOOLS.has(toolName) && options?.allowSiteAlways !== false
       ? `Always allow ${fetchSite}`
       : undefined
     : batch
@@ -190,7 +209,7 @@ function formatApprovalDetail(
     );
   }
   if (fetchUrl) lines.push(`url: ${fetchUrl}`);
-  if (!SITE_SENDING_TOOLS.has(toolName)) {
+  if (toolName !== "web_fetch") {
     for (const key of ["collection", "title", "to", "subject", "amount", "body"]) {
       const value = args[key];
       if (value == null || value === "") continue;

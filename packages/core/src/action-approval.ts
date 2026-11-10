@@ -1,5 +1,6 @@
 import type { ActionApprovalRule as StoredActionApprovalRule } from "@rakazo/contracts";
-import { urlSite } from "./egress.js";
+import { SecretHttpRequest } from "@rakazo/contracts";
+import { normalizedHttpUrl, urlSite } from "./egress.js";
 
 const APPROVAL_EXEMPT_TOOLS = new Set([
   "computer_observe",
@@ -200,7 +201,68 @@ export function newSiteOutcome(input: {
   return input.trigger === "webhook" ? "deny" : "ask";
 }
 
+/** Tools whose approval cards can save a durable site allowance. */
 export const SITE_SENDING_TOOLS: ReadonlySet<string> = new Set(["web_fetch"]);
+export const OUTBOUND_HTTP_TOOLS: ReadonlySet<string> = new Set([
+  ...SITE_SENDING_TOOLS,
+  "secret_request",
+]);
+
+export const MAX_APPROVAL_DETAIL_LENGTH = 4_000;
+
+export const BOT_SECRET_HTTP_REQUEST_KIND = "bot_secret_http";
+
+export function readBotSecretHttpEffect(request: unknown) {
+  if (
+    !Array.isArray(request) ||
+    request.length !== 3 ||
+    request[0] !== BOT_SECRET_HTTP_REQUEST_KIND
+  )
+    return undefined;
+  const [, credential, args]: unknown[] = request;
+  if (
+    !credential ||
+    typeof credential !== "object" ||
+    !("id" in credential) ||
+    !("revision" in credential) ||
+    typeof credential.id !== "string" ||
+    !credential.id ||
+    typeof credential.revision !== "string" ||
+    !credential.revision ||
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args)
+  )
+    return undefined;
+  return {
+    args: args as Record<string, unknown>,
+    credential: { id: credential.id, revision: credential.revision },
+  };
+}
+
+/** Display every dispatched field. No request may be approved from a clipped preview. */
+export function formatBotSecretHttpApprovalDetail(args: unknown): string | undefined {
+  const parsed = SecretHttpRequest.safeParse(args);
+  if (!parsed.success) return undefined;
+  const request = parsed.data;
+  const url = normalizedHttpUrl(request.url);
+  if (!url || new URL(url).hash) return undefined;
+  const detail = [
+    `method: ${request.method}`,
+    `credential: ${request.name}`,
+    `url: ${url}`,
+    `content type: ${request.contentType}`,
+    ...(request.body === undefined
+      ? []
+      : [
+          `body: ${JSON.stringify(request.body).replace(
+            /\p{Bidi_Control}/gu,
+            (mark) => `\\u${mark.charCodeAt(0).toString(16).padStart(4, "0")}`,
+          )}`,
+        ]),
+  ].join("\n");
+  return detail.length <= MAX_APPROVAL_DETAIL_LENGTH ? detail : undefined;
+}
 
 /** Site rules use the same private-suffix-aware identity as outbound requests. */
 export function canonicalApprovalSite(value: string): string | undefined {
