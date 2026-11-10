@@ -3278,7 +3278,7 @@ describe("authenticated request destination policy", () => {
     expect(f.results[0]).toMatchObject({
       error: expect.stringContaining("a webhook run cannot ask"),
     });
-    expect(f.effects[0]).toMatchObject({ status: "denied" });
+    expect(f.effects[0]).toMatchObject({ status: "denied", result: { refused: "unattended" } });
     expect(reviewMock).not.toHaveBeenCalled();
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.loadCredential).not.toHaveBeenCalled();

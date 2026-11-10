@@ -6505,6 +6505,41 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (error instanceof SharedPageUpdateRefusal) return error.result;
             throw error;
           }
+          const refuseIntendedEffect = async (
+            reason: "repeat" | "unattended",
+            response: { error: string },
+          ) => {
+            if (!applied) return response;
+            const effectId = applied.effect.id;
+            const refused = await deps.prisma.$transaction(async (tx) => {
+              // Keep the refusal write ordered with Stop, pause and worker transfer.
+              const locked = await tx.run.updateMany({
+                where: {
+                  id: runId,
+                  spaceId: run.spaceId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                },
+                data: { leaseFence: fence },
+              });
+              if (locked.count !== 1) return null;
+              return tx.externalEffect.updateMany({
+                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
+                data: { status: "denied", result: { refused: reason } },
+              });
+            });
+            if (!refused) return pauseForApproval();
+            if (refused.count === 1) return response;
+            const current = await deps.prisma.externalEffect.findUnique({
+              where: { id: applied.effect.id },
+            });
+            if (current) {
+              const replay = resolveDuplicateEffectGate(current, name);
+              if (replay.action === "return") return replay.result;
+            }
+            return uncertainEffectResult(name);
+          };
           if (
             (!applied || applied.effect.status === "intended") &&
             repeatsDeniedAction(
@@ -6526,36 +6561,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             )
           ) {
             context.signal.throwIfAborted();
-            if (!applied) return { error: DENIED_ACTION_ERROR };
-            const effectId = applied.effect.id;
-            const refused = await deps.prisma.$transaction(async (tx) => {
-              // Keep the refusal write ordered with Stop, pause and worker transfer.
-              const locked = await tx.run.updateMany({
-                where: {
-                  id: runId,
-                  spaceId: run.spaceId,
-                  status: "running",
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                },
-                data: { leaseFence: fence },
-              });
-              if (locked.count !== 1) return null;
-              return tx.externalEffect.updateMany({
-                where: { id: effectId, runId, spaceId: run.spaceId, status: "intended" },
-                data: { status: "denied", result: { refused: "repeat" } },
-              });
-            });
-            if (!refused) return pauseForApproval();
-            if (refused.count === 1) return { error: DENIED_ACTION_ERROR };
-            const current = await deps.prisma.externalEffect.findUnique({
-              where: { id: applied.effect.id },
-            });
-            if (current) {
-              const replay = resolveDuplicateEffectGate(current, name);
-              if (replay.action === "return") return replay.result;
-            }
-            return uncertainEffectResult(name);
+            return refuseIntendedEffect("repeat", { error: DENIED_ACTION_ERROR });
           }
           const sharedPageUpdate =
             pageMode === "write" && applied
@@ -6789,18 +6795,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (!applied || applied.effect.status === "intended") &&
             newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
           ) {
-            if (applied) {
-              await deps.prisma.externalEffect.updateMany({
-                where: { id: applied.effect.id, status: "intended" },
-                data: { status: "denied" },
-              });
-            }
             const action = authenticatedRequest
               ? "Sending an authenticated request to"
               : "Fetching";
-            return {
+            return refuseIntendedEffect("unattended", {
               error: `${action} ${outboundSite} needs approval, and a webhook run cannot ask.`,
-            };
+            });
           }
 
           const needsApproval = gateDecision === "ask";
