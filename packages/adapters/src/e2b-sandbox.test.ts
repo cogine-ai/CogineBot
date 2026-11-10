@@ -155,6 +155,77 @@ describe("E2B computer backend", () => {
     expect(create).toHaveBeenCalledOnce();
   });
 
+  it.each<[string, boolean]>([
+    ["success", false],
+    ["transport", false],
+    ["gone", false],
+    ["success", true],
+    ["transport", true],
+    ["gone", true],
+  ])("ignores stopped cold renewal %s with successor attendance %s", async (outcome, next) => {
+    let complete!: () => void;
+    let reject!: (error: unknown) => void;
+    const renewal = new Promise<void>((resolve, fail) => {
+      complete = resolve;
+      reject = fail;
+    });
+    let renewing!: () => void;
+    const started = new Promise<void>((resolve) => {
+      renewing = resolve;
+    });
+    const old = {
+      sandboxId: "existing",
+      setTimeout: vi.fn(() => {
+        renewing();
+        return renewal;
+      }),
+    } as unknown as Sandbox;
+    let attach!: (desktop: Sandbox) => void;
+    const attachment = new Promise<Sandbox>((resolve) => {
+      attach = resolve;
+    });
+    const current = {
+      sandboxId: "existing",
+      setTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Sandbox;
+    const sdk: E2BSandboxSdk = {
+      create: vi.fn(),
+      connect: vi.fn(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      attachRunning: vi.fn().mockResolvedValueOnce(old).mockReturnValue(attachment),
+    };
+    const provider = new E2BSandboxProvider("test-key", sdk);
+    const registry = Reflect.get(provider, "computerOperations") as Map<
+      string,
+      { pending: number }
+    >;
+    const touched = Reflect.get(provider, "lastTouchedAt") as Map<string, number>;
+    const ref = { id: "existing", providerRef: "existing", botId: "bot", kind: "e2b" as const };
+    const stopped = provider.keepAlive(ref, { onlyIfRunning: true });
+    await started;
+    await provider.stop(ref, context);
+    expect(registry.size).toBe(0);
+    const successor = next ? provider.keepAlive(ref, { onlyIfRunning: true }) : undefined;
+    const successorSlot = registry.get(ref.id);
+    if (outcome === "gone") reject(new SandboxNotFoundError("Synthetic sandbox unavailable"));
+    else if (outcome === "transport") reject(new Error("Synthetic transport unavailable"));
+    else complete();
+    await stopped;
+    expect(touched.has(ref.id)).toBe(false);
+    expect(registry.size).toBe(next ? 1 : 0);
+    if (successor) {
+      expect(registry.get(ref.id)).toBe(successorSlot);
+      expect(successorSlot?.pending).toBe(1);
+      attach(current);
+      await successor;
+      expect(current.setTimeout).toHaveBeenCalledOnce();
+    }
+    expect(registry.size).toBe(0);
+    expect(old.setTimeout).toHaveBeenCalledOnce();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
   it("lets two concurrent attendance viewers finish independently and releases their registry", async () => {
     let first!: (desktop: Sandbox) => void;
     let second!: (desktop: Sandbox) => void;
