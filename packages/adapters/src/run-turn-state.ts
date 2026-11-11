@@ -7,7 +7,7 @@ import {
 import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
 import { approvedEffectOccurrence } from "./approval-effect.js";
-import { FIND_TOOL, isDeferredTool, USE_TOOL } from "./builtin-tool-bridge.js";
+import { FIND_TOOL, USE_TOOL } from "./builtin-tool-bridge.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
 import { createProtectedToolTranscriptSanitizer } from "./protected-tool-checkpoint.js";
@@ -81,7 +81,7 @@ export interface RunTurnCheckpointState {
   pendingExecutionId?: string;
   pendingToolName?: string;
   pendingCaptures: Map<string, () => string>;
-  hasBuiltinBridge?: true;
+  bridgeToolNames?: ReadonlySet<string>;
 }
 
 /** Restore saved assignments and tool availability; execution still rechecks parameters and policy. */
@@ -101,6 +101,14 @@ export function createRunTurnCheckpointState(input: {
       : readSharedPageApprovalCheckpoint(input.blob, input.runId);
   const approval = connectionApproval ?? sharedPageApproval;
   const transcript = approval ? approval.transcript : input.blob;
+  const { listed, deferred } = partitionRuntimeTools(input.tools);
+  const namedTools = namedAgentTools(listed);
+  const runnable = new Map(
+    [
+      ...namedTools.map(({ name, tool }) => [name, tool] as const),
+      ...deferred.map((tool) => [tool.name, tool] as const),
+    ].filter(([name]) => name !== FIND_TOOL && name !== USE_TOOL),
+  );
   const state: RunTurnCheckpointState = {
     blob: transcript,
     stored: input.blob !== undefined,
@@ -110,7 +118,7 @@ export function createRunTurnCheckpointState(input: {
     counts: input.counts ?? new Map(),
     occurrences: [],
     pendingCaptures: new Map(),
-    ...(input.tools.some((tool) => isDeferredTool(tool.name)) ? { hasBuiltinBridge: true } : {}),
+    ...(deferred.length ? { bridgeToolNames: new Set(runnable.keys()) } : {}),
   };
   if (transcript === undefined) return state;
   const saved = restoreTurnCheckpoint(transcript, input.model);
@@ -118,15 +126,7 @@ export function createRunTurnCheckpointState(input: {
   const unresolved = new Set(unresolvedTurnCheckpointCalls(saved.messages));
   if (![...unresolved].some((call) => call.id === saved.pendingToolCallId))
     throw new Error("Unsupported turn checkpoint");
-  const { listed, deferred } = partitionRuntimeTools(input.tools);
-  const namedTools = namedAgentTools(listed);
   const available = new Map(namedTools.map(({ name, tool }) => [name, tool]));
-  const runnable = new Map(
-    [
-      ...namedTools.map(({ name, tool }) => [name, tool] as const),
-      ...deferred.map((tool) => [tool.name, tool] as const),
-    ].filter(([name]) => name !== FIND_TOOL && name !== USE_TOOL),
-  );
   const isBridge = (tool: ConnectorTool) =>
     tool.name === USE_TOOL && tool.route?.connectorId === "builtin";
   const realTool = (tool: ConnectorTool, args: Record<string, unknown>) =>
@@ -135,6 +135,7 @@ export function createRunTurnCheckpointState(input: {
   for (const call of unresolved) {
     if (saved.executionMode !== "sequential" && call.id !== saved.pendingToolCallId) continue;
     const tool = available.get(call.name);
+    if (tool && call.argumentsError && call.id !== saved.pendingToolCallId) continue;
     if (!tool || !realTool(tool, call.arguments))
       throw new Error("Pending checkpoint tool is no longer available");
     if (call.id !== saved.pendingToolCallId) continue;
@@ -275,7 +276,7 @@ export async function persistRunTurnCheckpoint(
     );
     saved.messages = saved.messages.map(
       createProtectedToolTranscriptSanitizer(
-        state.hasBuiltinBridge === true,
+        state.bridgeToolNames,
         () => runSecrets,
         unstartedCalls,
       ),

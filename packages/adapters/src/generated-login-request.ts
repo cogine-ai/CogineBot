@@ -1,5 +1,7 @@
+import { createHmac } from "node:crypto";
 import type { AdapterContext, SecretStore } from "@rakazo/adapter-kit";
 import { GenerateSecretInput } from "@rakazo/contracts";
+import { resolveEncryptionKey } from "@rakazo/core";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { runLoginGenerationKind, withTransactionRetry } from "@rakazo/db";
@@ -9,6 +11,13 @@ import { persistPreparedSecret } from "./secret-persistence.js";
 type LoginGeneration = Extract<GenerateSecretInput, { type: "login" }>;
 type LoginRun = { id: string; userId: string; spaceId: string };
 type LoginEffectRequest = { type: "login"; name: string; origin: string; inputId: string };
+
+export function loginGenerationEffectArgs(runId: string, args: LoginGeneration) {
+  const username = createHmac("sha256", resolveEncryptionKey())
+    .update(JSON.stringify(["login-generation-username-v1", runId, args.username]))
+    .digest("hex");
+  return { ...args, username };
+}
 
 export function readLoginEffectRequest(value: unknown): LoginEffectRequest | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return;
@@ -91,7 +100,11 @@ export async function loadLoginGenerationInput(input: {
       Number.isSafeInteger(
         approvedEffectOccurrence(
           effectKey,
-          approvalEffectKey(run.id, "generate_secret", parsed.data),
+          approvalEffectKey(
+            run.id,
+            "generate_secret",
+            loginGenerationEffectArgs(run.id, parsed.data),
+          ),
         ),
       )
     )

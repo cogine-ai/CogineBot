@@ -3,8 +3,9 @@ import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 
 const HTTPS_SITE_NOTICE = "HTTPS site ";
 const COMMAND_VARIABLE_NOTICE = "Also save as command variable ";
+const PURPOSE_NOTICE = "Purpose — ";
 const CREDENTIAL_NOTICE_LINE = new RegExp(
-  `^${HTTPS_SITE_NOTICE}(\`+) ([^\\s/?#@]+) \\1$|^${COMMAND_VARIABLE_NOTICE}[A-Z0-9_]+$|\\uE000`,
+  `^${HTTPS_SITE_NOTICE}(\`+) ([^\\s/?#@]+) \\1$|^${COMMAND_VARIABLE_NOTICE}[A-Z0-9_]+$|^${PURPOSE_NOTICE}(.*)$|\\uE000`,
   "gm",
 );
 
@@ -15,7 +16,7 @@ export function websiteCredentialNotice(host: string, purpose: string, variable?
   const destination = `${HTTPS_SITE_NOTICE}${delimiter} ${host} ${delimiter}`;
   const pairing = variable ? `${COMMAND_VARIABLE_NOTICE}${variable}` : undefined;
   // The purpose is model-authored. Give it one labeled line separate from verified fields.
-  const reason = `Purpose — ${purpose.replace(/\s+/g, " ").trim()}`;
+  const reason = `${PURPOSE_NOTICE}${purpose.replace(/\s+/g, " ").trim()}`;
   return [destination, pairing, reason].filter(Boolean).join("\n");
 }
 
@@ -62,14 +63,24 @@ const ENDS_SENTENCE = /[.!?:;]\s*$/;
  * so it stays easy to tune against real transcripts.
  */
 export function speakable(input: string): string {
+  return simplifySpeechText(input, true);
+}
+
+function simplifySpeechText(input: string, readPurpose: boolean): string {
   if (!input) return "";
   const literal: string[] = [];
-  // Keep the exact site and variable in credential notices while simplifying Markdown.
-  let text = input.replace(
-    CREDENTIAL_NOTICE_LINE,
-    (value, _delimiter, host) =>
-      `\uE000${literal.push(host === undefined ? value : `${HTTPS_SITE_NOTICE}${host}`) - 1}\uE001`,
-  );
+  // Keep destinations literal and retain the label on the short spoken purpose.
+  let text = input.replace(CREDENTIAL_NOTICE_LINE, (value, _delimiter, host, purpose) => {
+    let spoken = host === undefined ? value : `${HTTPS_SITE_NOTICE}${host}`;
+    if (purpose !== undefined) {
+      if (!readPurpose) return value;
+      const reason = simplifySpeechText(purpose, false)
+        .replaceAll("\u0000", " ")
+        .replace(BOUNDARY, "$2, ");
+      spoken = reason ? `${PURPOSE_NOTICE}${reason}` : "";
+    }
+    return `\uE000${literal.push(spoken) - 1}\uE001`;
+  });
 
   text = text.replace(/```([^\n]*)\n[\s\S]*?(?:```|$)/g, (_m, fence: string) =>
     describeCodeBlock(fence),

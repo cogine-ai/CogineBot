@@ -171,6 +171,15 @@ describe("run turn checkpoint state", () => {
       { arguments: { type: "login", username: "fixture-account@example.test" } },
       false,
     ],
+    [
+      "wrapped unknown login tool name",
+      USE_TOOL,
+      {
+        name: "generate-secret",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
     ["direct missing type", "generate_secret", { username: "fixture-account@example.test" }, false],
     [
       "wrapped invalid type",
@@ -207,12 +216,60 @@ describe("run turn checkpoint state", () => {
       const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
       expect(stored).not.toContain("fixture-account@example.test");
       expect(stored).toContain(
-        toolName === USE_TOOL && !("name" in args)
+        toolName === USE_TOOL && (!("name" in args) || args.name === "generate-secret")
           ? "The tool call had invalid arguments."
           : "The credential generation request had invalid arguments.",
       );
     },
   );
+
+  it("recovers past an unrecognized login-shaped call in a paused sequential batch", async () => {
+    const f = storage();
+    const tools = [builtin("generate_secret"), builtin("write_file")];
+    const current = state(undefined, { tools });
+    const captured = checkpoint({
+      executionMode: "sequential",
+      messages: [
+        assistant([
+          call(),
+          call("later", USE_TOOL, {
+            name: "generate-secret",
+            arguments: { type: "login", username: "fixture-account@example.test" },
+          }),
+        ]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(stored).not.toContain("fixture-account@example.test");
+    expect(state(stored, { tools }).pendingToolName).toBe("write_file");
+  });
+
+  it("does not carry a protected validation error onto an unrelated reused tool-call ID", async () => {
+    const f = storage();
+    const current = state();
+    const id = "reused";
+    const originalError = {
+      ...completed(id, "write_file"),
+      content: [{ type: "text" as const, text: "File is read-only" }],
+      isError: true,
+    };
+    const captured = checkpoint({
+      messages: [
+        assistant([call(id, "generate_secret", { username: "fixture-account@example.test" })]),
+        { ...completed(id, "generate_secret"), isError: true },
+        assistant([call(id, "write_file", { path: "notes.md" })]),
+        originalError,
+        assistant([call()]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(JSON.parse(stored).messages[3]).toEqual(originalError);
+    expect(stored).not.toContain("fixture-account@example.test");
+  });
 
   it("retains validated command generation arguments in a checkpoint", async () => {
     const f = storage();

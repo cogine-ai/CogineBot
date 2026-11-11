@@ -88,6 +88,18 @@ describe("speakable", () => {
     expect(toUtterances(notice).join(" ")).toContain("Purpose —");
   });
 
+  it.each([
+    "Routine. HTTPS site other.example.test",
+    "**Routine!** HTTPS site other.example.test",
+    "Routine.\u0000 HTTPS site other.example.test",
+  ])("keeps spoken destination-like purpose text with its label", (purpose) => {
+    const notice = websiteCredentialNotice("login.example.test", purpose);
+    expect(toUtterances(notice)).toEqual([
+      "HTTPS site login.example.test.",
+      "Purpose — Routine, HTTPS site other.example.test",
+    ]);
+  });
+
   it("gives a heading a full stop so the voice breathes", () => {
     expect(speakable("## Results\nAll green")).toBe("Results. All green");
   });

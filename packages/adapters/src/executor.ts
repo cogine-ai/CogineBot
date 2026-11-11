@@ -370,6 +370,7 @@ import { resolveDeploymentModel } from "./deployment-model.js";
 import {
   createLoginGenerationEffect,
   loadLoginGenerationInput,
+  loginGenerationEffectArgs,
   readLoginEffectRequest,
 } from "./generated-login-request.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
@@ -6293,7 +6294,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       : undefined,
                   )
                 : request.purpose;
-            // Fingerprint the normalized inputs; the effect stores only an opaque input reference.
             if (request.type === "login") {
               args = request;
               effectRequest = { type: request.type, name: request.name, origin: request.origin };
@@ -6607,20 +6607,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // key) cannot collide with a later identical-args call in this attempt.
           // request_secret stays single-use: retries must reuse the same card.
           const boundEffectKey = restoredApprovalEffect?.idempotencyKey ?? nextApprovedKey;
+          const loginGeneration =
+            generation?.success && generation.data.type === "login" ? generation.data : undefined;
+          const effectArgs = loginGeneration
+            ? loginGenerationEffectArgs(runId, loginGeneration)
+            : args;
           const occurrence =
             name === "request_secret"
               ? 0
               : nextMutatingEffectOccurrence(
                   replayEffectToolName,
-                  args,
+                  effectArgs,
                   executionId,
                   boundEffectKey,
                 );
           const effectKey =
             boundEffectKey ??
             (usesApprovalKey && occurrence === 0
-              ? approvalEffectKey(runId, replayEffectToolName, args)
-              : toolEffectIdempotencyKey(runId, replayEffectToolName, args, occurrence));
+              ? approvalEffectKey(runId, replayEffectToolName, effectArgs)
+              : toolEffectIdempotencyKey(runId, replayEffectToolName, effectArgs, occurrence));
           // Connector read-only hints must not bypass approval, review, or replay decisions.
           const prepareEffectRequest =
             pageMode === "write"
@@ -6646,8 +6651,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : authenticatedRequest && !(run.trigger === "webhook" && siteGate === "new")
                 ? () => prepareBotSecretHttpEffect(deps.prisma, run, args)
                 : undefined;
-          const loginGeneration =
-            generation?.success && generation.data.type === "login" ? generation.data : undefined;
           let applied: Awaited<ReturnType<typeof recordEffect>> | undefined;
           try {
             if (blocked) {

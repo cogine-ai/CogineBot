@@ -405,7 +405,17 @@ export class PiAgentRuntime implements AgentRuntime {
         };
         resumeHost = host;
         const tools = toAgentTools(toolDefs, host);
-        const hasToolBridge = toolDefs.some((tool) => isDeferredTool(tool.name));
+        const deferredNames = toolDefs
+          .filter((tool) => isDeferredTool(tool.name))
+          .map(({ name }) => name);
+        const hasToolBridge = deferredNames.length > 0;
+        const bridgeToolNames = hasToolBridge
+          ? new Set(
+              [...tools.map(({ name }) => name), ...deferredNames].filter(
+                (name) => name !== FIND_TOOL && name !== USE_TOOL,
+              ),
+            )
+          : undefined;
         const canMessageUser = toolDefs.some((tool) => tool.name === "message_user");
         const pageToolSecrets = request.pageToolSecrets ?? (() => []);
         const seenSteeringIds: string[] = [];
@@ -447,7 +457,7 @@ export class PiAgentRuntime implements AgentRuntime {
         }
         const history =
           restored?.messages.map(
-            createProtectedToolTranscriptSanitizer(hasToolBridge, pageToolSecrets),
+            createProtectedToolTranscriptSanitizer(bridgeToolNames, pageToolSecrets),
           ) ??
           toHistory(
             withoutSteeringMessages(request.history, initialSteering),
@@ -481,7 +491,7 @@ export class PiAgentRuntime implements AgentRuntime {
         const thinkingLevel = thinkingLevelFor(model, request.model.thinkingLevel);
         let piSession: PiSessionHandle | undefined;
         const sanitizeRecorded = createProtectedToolTranscriptSanitizer(
-          hasToolBridge,
+          bridgeToolNames,
           pageToolSecrets,
         );
         // Never write an unscoped transcript. Production requests carry userId;

@@ -19,7 +19,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 /** Filter protected inputs at transcript sinks without changing live Pi messages. */
 export function createProtectedToolTranscriptSanitizer(
-  hasBuiltinBridge: boolean,
+  bridgeToolNames: ReadonlySet<string> | undefined,
   secrets: () => string[],
   unstartedCalls?: ReadonlySet<string>,
 ) {
@@ -30,14 +30,15 @@ export function createProtectedToolTranscriptSanitizer(
       let changed = false;
       const content = message.content.map((part) => {
         if (part.type !== "toolCall") return part;
-        const bridge = hasBuiltinBridge && part.name === USE_TOOL;
-        const wrappedLogin = bridge && part.arguments.name === "generate_secret";
+        protectedErrors.delete(part.id);
+        const bridge = part.name === USE_TOOL ? bridgeToolNames : undefined;
+        const innerName = part.arguments.name;
+        const innerArgs = part.arguments.arguments;
+        const wrappedLogin = bridge && innerName === "generate_secret";
         if (wrappedLogin || part.name === "generate_secret") {
           const parsed = part.argumentsError
             ? undefined
-            : GenerateSecretInput.safeParse(
-                wrappedLogin ? part.arguments.arguments : part.arguments,
-              );
+            : GenerateSecretInput.safeParse(wrappedLogin ? innerArgs : part.arguments);
           if (parsed?.success && parsed.data.type === "command") return part;
           changed = true;
           const savedLogin =
@@ -69,11 +70,18 @@ export function createProtectedToolTranscriptSanitizer(
         }
         const wrapped =
           bridge &&
-          (part.arguments.name === SAVE_PAGE_TOOL ||
-            (part.arguments.name === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
+          (innerName === SAVE_PAGE_TOOL ||
+            (innerName === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
         if (!wrapped && part.name !== SAVE_PAGE_TOOL) {
           pageCalls.delete(part.id);
-          if (bridge && typeof part.arguments.name !== "string") {
+          if (
+            bridge &&
+            (typeof innerName !== "string" ||
+              (!bridge.has(innerName) &&
+                record(innerArgs) &&
+                innerArgs.type === "login" &&
+                "username" in innerArgs))
+          ) {
             changed = true;
             protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
             return { ...part, arguments: {}, argumentsError: INVALID_BRIDGED_CALL };
@@ -102,6 +110,7 @@ export function createProtectedToolTranscriptSanitizer(
     }
     if (message.role !== "toolResult") return message;
     const protectedError = protectedErrors.get(message.toolCallId);
+    protectedErrors.delete(message.toolCallId);
     if (protectedError && message.isError) {
       return {
         ...message,

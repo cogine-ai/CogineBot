@@ -14,6 +14,7 @@ import {
 import {
   createLoginGenerationEffect,
   loadLoginGenerationInput,
+  loginGenerationEffectArgs,
   readLoginEffectRequest,
 } from "./generated-login-request.js";
 import { withSecretPersistence } from "./secret-persistence.js";
@@ -349,7 +350,19 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
         command: true,
       });
       if (args.type !== "login") throw new Error("Fixture expects a website login");
-      const effectKey = approvalEffectKey(f.run.id, "generate_secret", args);
+      const effectKey = approvalEffectKey(
+        f.run.id,
+        "generate_secret",
+        loginGenerationEffectArgs(f.run.id, args),
+      );
+      expect(effectKey).not.toBe(approvalEffectKey(f.run.id, "generate_secret", args));
+      expect(effectKey).not.toBe(
+        approvalEffectKey(
+          f.run.id,
+          "generate_secret",
+          loginGenerationEffectArgs(f.run.id, { ...args, username: "other@example.test" }),
+        ),
+      );
       const signal = new AbortController().signal;
       const effect = await createLoginGenerationEffect({
         prisma,
