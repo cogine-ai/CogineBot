@@ -464,9 +464,33 @@ export function encodeEditedLoginSecret(
     !username.hidden &&
     password?.label === DEFAULT_LOGIN_FIELD_LABELS[1] &&
     password.hidden
-  )
-    return encodeLoginSecret({ username: username.value, password: password.value });
+  ) {
+    const pair = LoginSecretValue.safeParse({ username: username.value, password: password.value });
+    if (pair.success) return encodeLoginSecret(pair.data);
+  }
   return encodeLoginSecret(login);
+}
+
+/** Browser and native autofill hints for conventional and translated login labels. */
+export function loginFieldAutocomplete(
+  field: Pick<NamedLoginField, "label" | "hidden">,
+  localLabels: { username: string; email: string; password: string },
+): "new-password" | "username" | "email" | undefined {
+  const normalize = (label: string) => label.trim().toLowerCase();
+  const label = normalize(field.label);
+  if (field.hidden)
+    return label === "password" || label === normalize(localLabels.password)
+      ? "new-password"
+      : undefined;
+  if (label === "username" || label === "user name" || label === normalize(localLabels.username))
+    return "username";
+  if (
+    label === "email" ||
+    label === "e-mail" ||
+    label === "email address" ||
+    label === normalize(localLabels.email)
+  )
+    return "email";
 }
 
 export function parseLoginSecretWrite(plaintext: string): StoredLoginSecretValue {

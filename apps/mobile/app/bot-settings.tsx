@@ -663,14 +663,14 @@ export default function BotSettingsScreen() {
                 />
               ) : null}
             </View>
-            {me?.spaceId && bot && bot.id === botId ? (
+            {bot?.spaceId && bot.id === botId ? (
               <NativeActionButton
                 label={t("Credentials")}
                 prominence="plain"
                 onPress={() =>
                   router.push({
                     pathname: "/space-credentials",
-                    params: { spaceId: me.spaceId, botId },
+                    params: { spaceId: bot.spaceId, botId },
                   })
                 }
               />

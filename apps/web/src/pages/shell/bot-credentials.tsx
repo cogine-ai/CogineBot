@@ -15,6 +15,7 @@ import {
   LOGIN_FIELD_LIMIT,
   LOGIN_VALUE_TOO_LONG,
   NamedLoginSecretValue as LoginFieldsSchema,
+  loginFieldAutocomplete,
 } from "@rakazo/contracts";
 import {
   Button,
@@ -416,7 +417,13 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
                 value={field.value}
                 maxLength={4096}
                 type={field.hidden ? "password" : "text"}
-                autoComplete="new-password"
+                autoComplete={
+                  loginFieldAutocomplete(field, {
+                    username: t`Username`,
+                    email: t`Email`,
+                    password: t`Password`,
+                  }) ?? (field.hidden ? "new-password" : "off")
+                }
                 spellCheck={false}
                 onChange={(event) => change({ value: event.target.value })}
               />

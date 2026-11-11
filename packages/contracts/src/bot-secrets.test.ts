@@ -10,6 +10,7 @@ import {
   encodeLoginSecret,
   isCloudMetadataHost,
   isPrivateNetworkHost,
+  loginFieldAutocomplete,
   loginSecretFields,
   parseLoginSecretWrite,
   SecretHttpRequest,
@@ -398,4 +399,24 @@ it("preserves an unchanged legacy login layout during value replacement", () => 
   expect(JSON.parse(encodeEditedLoginSecret({ fields: changed }, true))).toEqual({
     fields: changed,
   });
+});
+
+it("uses named storage when a valid edited field exceeds legacy pair limits", () => {
+  const fields = [
+    { label: "Username", value: "a".repeat(513), hidden: false },
+    { label: "Password", value: "fixture-value", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({ fields });
+});
+
+it("suggests autofill only for a matching label and visibility", () => {
+  const labels = { username: "用户名", email: "邮箱", password: "密码" };
+  expect(loginFieldAutocomplete({ label: labels.username, hidden: false }, labels)).toBe(
+    "username",
+  );
+  expect(loginFieldAutocomplete({ label: labels.email, hidden: false }, labels)).toBe("email");
+  expect(loginFieldAutocomplete({ label: labels.password, hidden: true }, labels)).toBe(
+    "new-password",
+  );
+  expect(loginFieldAutocomplete({ label: labels.email, hidden: true }, labels)).toBeUndefined();
 });

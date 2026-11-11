@@ -14,6 +14,7 @@ import {
   isIdentityConfirmationRequired,
   LOGIN_FIELD_LIMIT,
   LOGIN_VALUE_TOO_LONG,
+  loginFieldAutocomplete,
   NamedLoginSecretValue,
 } from "@rakazo/contracts";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -505,14 +506,14 @@ function CredentialEditor({
       origin: type === "command" ? "" : (row?.origin ?? origin.trim()),
       auth,
     };
-    const plaintext =
-      type === "login" && login.success
-        ? encodeEditedLoginSecret(login.data, !!row && !row.namedLogin)
-        : value;
     clear();
     setBusy(true);
     setError("");
     try {
+      const plaintext =
+        type === "login" && login.success
+          ? encodeEditedLoginSecret(login.data, !!row && !row.namedLogin)
+          : value;
       await onSave({
         botId,
         destination,
@@ -604,15 +605,11 @@ function CredentialEditor({
                   setValue={(value) => change({ value })}
                   maxLength={4096}
                   hidden={field.hidden}
-                  autoFill={
-                    field.hidden && /^password$/i.test(field.label)
-                      ? "new-password"
-                      : !field.hidden && /^(username|user name)$/i.test(field.label)
-                        ? "username"
-                        : !field.hidden && /^(email|e-mail|email address)$/i.test(field.label)
-                          ? "email"
-                          : undefined
-                  }
+                  autoFill={loginFieldAutocomplete(field, {
+                    username: t("Username"),
+                    email: t("Email"),
+                    password: t("Password"),
+                  })}
                 />
                 <View style={styles.row}>
                   <Text style={{ flex: 1, color: tokens.foreground }}>{t("Hide value")}</Text>
