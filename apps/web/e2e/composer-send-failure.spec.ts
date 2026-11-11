@@ -144,7 +144,9 @@ for (const routeKind of ["existing chat", "new chat"] as const) {
       await captureScreenshot(page, testInfo, "image-input-replay-new-chat");
       await link.click();
       await expect(page).toHaveURL(new RegExp(`/app/g/${groupId}$`));
-      await expect(page.getByText(text, { exact: true })).toBeVisible();
+      await expect(
+        page.getByTestId("message-user-bubble").and(page.getByText(text, { exact: true })),
+      ).toBeVisible();
       await openNewGroup(page);
       await expect(composer).toHaveValue(text);
       await expect(error).toHaveText(/Already sent as an image\. Your draft is kept\./);
