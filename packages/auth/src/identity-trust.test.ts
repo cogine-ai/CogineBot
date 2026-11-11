@@ -574,28 +574,28 @@ describe("confirmation for protected reads", () => {
     expect((await f.request("/confirm-identity", { password: "offline-password12" })).status).toBe(
       401,
     );
-    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
     expect(
       (await f.request("/confirm-identity", { password: "wrong-fixture" }, first.token)).status,
     ).toBe(400);
-    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
     expect(
       (await f.request("/confirm-identity", { password: "offline-password12" }, first.token))
         .status,
     ).toBe(200);
-    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(true);
-    expect(await f.auth.hasRecentIdentityConfirmation({ ...scope, userId: "other-fixture" })).toBe(
-      false,
-    );
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeGreaterThan(Date.now());
     expect(
-      await f.auth.hasRecentIdentityConfirmation({ ...scope, sessionId: secondSession.session.id }),
-    ).toBe(false);
+      await f.auth.identityConfirmationExpiry({ ...scope, userId: "other-fixture" }),
+    ).toBeNull();
+    expect(
+      await f.auth.identityConfirmationExpiry({ ...scope, sessionId: secondSession.session.id }),
+    ).toBeNull();
     const proof = f.data.verification!.find(
       (entry) => entry.identifier === `identity-confirmed-${scope.sessionId}`,
     )!;
     expect(proof.value).toBe(scope.userId);
     proof.expiresAt = new Date(0);
-    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
   });
 
   it("rejects a wrong email code and consumes a correct code once", async () => {

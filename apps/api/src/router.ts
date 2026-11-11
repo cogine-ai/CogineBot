@@ -1138,11 +1138,11 @@ export function createRouter(deps: RouterDeps) {
       throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Credential is unavailable" });
     }
     if (
+      (stillAuthorized && !(await stillAuthorized())) ||
       !(await deps.prisma.botSecret.findFirst({
         where: { ...where, id: row.id },
         select: { id: true },
-      })) ||
-      (stillAuthorized && !(await stillAuthorized()))
+      }))
     )
       throw new ORPCError("NOT_FOUND", { message: "Credential not found" });
     return credential;
@@ -7635,26 +7635,26 @@ export function createRouter(deps: RouterDeps) {
       ),
       reveal: authed.botSecrets.reveal.handler(async ({ context, input }) => {
         const { sessionId, actor } = context;
-        const requireConfirmation = async () => {
-          const confirmed =
-            sessionId &&
-            (await runAsSystem("read identity confirmation for a protected credential", () =>
-              deps.auth.hasRecentIdentityConfirmation({ sessionId, userId: actor.userId }),
-            ));
-          if (!confirmed)
+        const expiry = sessionId
+          ? await runAsSystem("read identity confirmation for a protected credential", () =>
+              deps.auth.identityConfirmationExpiry({ sessionId, userId: actor.userId }),
+            )
+          : null;
+        const requireConfirmation = () => {
+          if (!expiry || expiry <= Date.now())
             throw new ORPCError(IDENTITY_CONFIRMATION_REQUIRED, {
               status: 403,
               message: "Confirm it's you",
             });
         };
-        await requireConfirmation();
+        requireConfirmation();
         const credential = await readOwnedBotCredential(
           actor,
           input,
           false,
           context.stillAuthorized,
         );
-        await requireConfirmation();
+        requireConfirmation();
         return "fields" in credential ? { fields: [...credential.fields] } : credential;
       }),
       list: authed.botSecrets.list.handler(async ({ context, input }) => {

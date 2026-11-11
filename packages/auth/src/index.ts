@@ -20,7 +20,7 @@ import {
 } from "better-auth/api";
 import { bearer, organization } from "better-auth/plugins";
 import { accountSecurity, oidcProofKey, sessionForAuthHook } from "./account-security.js";
-import { hasRecentIdentityConfirmation, identityConfirmation } from "./identity-confirmation.js";
+import { identityConfirmation, identityConfirmationExpiry } from "./identity-confirmation.js";
 import type { OidcConfig } from "./oidc.js";
 import { isCurrentOidcAccount, oidcDiscovery } from "./oidc.js";
 
@@ -568,8 +568,8 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
   });
   return Object.assign(auth, {
     ssoAvailability: () => discovery?.availability(),
-    hasRecentIdentityConfirmation: async (session: { sessionId: string; userId: string }) =>
-      hasRecentIdentityConfirmation((await auth.$context).internalAdapter, session),
+    identityConfirmationExpiry: async (session: { sessionId: string; userId: string }) =>
+      identityConfirmationExpiry((await auth.$context).internalAdapter, session),
     disposeOidcDiscovery: () => discovery?.dispose(),
   });
 }

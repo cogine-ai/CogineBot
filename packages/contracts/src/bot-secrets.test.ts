@@ -420,3 +420,14 @@ it("suggests autofill only for a matching label and visibility", () => {
   );
   expect(loginFieldAutocomplete({ label: labels.email, hidden: true }, labels)).toBeUndefined();
 });
+
+it("normalizes labels and visible values before preserving a legacy pair", () => {
+  const fields = [
+    { label: "Username ", value: ` ${"a".repeat(512)} `, hidden: false },
+    { label: "Password", value: " hidden value ", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({
+    username: "a".repeat(512),
+    password: " hidden value ",
+  });
+});

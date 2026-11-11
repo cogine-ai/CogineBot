@@ -45,21 +45,22 @@ async function reservePasswordAttempt(
 }
 
 /**
- * Whether this session confirmed its identity within the window: by password or emailed code
- * through `/confirm-identity`, or by a fresh SSO sign-in. Bound to the session and its user.
+ * The deadline for this session's confirmation by password, emailed code or fresh SSO.
+ * Returning the deadline lets the caller recheck it after a protected read without another lookup.
  */
-export async function hasRecentIdentityConfirmation(
+export async function identityConfirmationExpiry(
   adapter: { findVerificationValue(identifier: string): Promise<Verification | null> },
   session: { sessionId: string; userId: string },
-): Promise<boolean> {
+): Promise<number | null> {
   const proofs = await Promise.all(
     [confirmationKey(session.sessionId), oidcProofKey(session.sessionId)].map((identifier) =>
       adapter.findVerificationValue(identifier),
     ),
   );
-  return proofs.some(
-    (proof) => proof?.value === session.userId && proof.expiresAt.getTime() > Date.now(),
+  const expiry = Math.max(
+    ...proofs.map((proof) => (proof?.value === session.userId ? proof.expiresAt.getTime() : 0)),
   );
+  return expiry > Date.now() ? expiry : null;
 }
 
 const hashCode = (code: string) => createHash("sha256").update(code).digest("hex");

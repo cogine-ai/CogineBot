@@ -456,10 +456,11 @@ export function encodeEditedLoginSecret(
   login: NamedLoginSecretValue,
   keepLegacyPair: boolean,
 ): string {
-  const [username, password] = login.fields;
+  const normalized = NamedLoginSecretValue.parse(login);
+  const [username, password] = normalized.fields;
   if (
     keepLegacyPair &&
-    login.fields.length === 2 &&
+    normalized.fields.length === 2 &&
     username?.label === DEFAULT_LOGIN_FIELD_LABELS[0] &&
     !username.hidden &&
     password?.label === DEFAULT_LOGIN_FIELD_LABELS[1] &&
@@ -468,7 +469,7 @@ export function encodeEditedLoginSecret(
     const pair = LoginSecretValue.safeParse({ username: username.value, password: password.value });
     if (pair.success) return encodeLoginSecret(pair.data);
   }
-  return encodeLoginSecret(login);
+  return JSON.stringify(normalized);
 }
 
 /** Browser and native autofill hints for conventional and translated login labels. */

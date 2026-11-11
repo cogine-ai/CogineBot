@@ -144,7 +144,7 @@ function botSecretDeps(seed: Row[] = []) {
     }),
     load: vi.fn(async (ciphertext: string) => plaintexts.get(ciphertext)),
   };
-  const auth = { hasRecentIdentityConfirmation: vi.fn(async () => false) };
+  const auth = { identityConfirmationExpiry: vi.fn(async (): Promise<number | null> => null) };
   const deps = {
     auth,
     prisma: prisma as unknown as PrismaClient,
@@ -667,12 +667,12 @@ describe("Space credential management", () => {
     expect(refused.status).toBe(403);
     expect(refused.text).toContain("IDENTITY_CONFIRMATION_REQUIRED");
     expect(refused.text).not.toContain(FAKE_VALUE);
-    expect(auth.hasRecentIdentityConfirmation).toHaveBeenCalledWith({
+    expect(auth.identityConfirmationExpiry).toHaveBeenCalledWith({
       sessionId: "session-1",
       userId: actor.userId,
     });
     expect(secrets.load).not.toHaveBeenCalled();
-    auth.hasRecentIdentityConfirmation.mockResolvedValue(true);
+    auth.identityConfirmationExpiry.mockResolvedValue(Date.now() + 60_000);
     for (const botId of ["bot-2", "bot-other", "bot-archived", "bot-remote"]) {
       const attempt = await call("reveal", { ...input, botId }, context);
       expect(attempt.status).toBe(404);
@@ -684,10 +684,20 @@ describe("Space credential management", () => {
     const actual = await call("reveal", input, context);
     expect(actual.body.json).toEqual({ value: FAKE_VALUE });
 
-    auth.hasRecentIdentityConfirmation.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const expiredDuringRead = await call("reveal", input, context);
-    expect(expiredDuringRead.status).toBe(403);
-    expect(expiredDuringRead.text).not.toContain(FAKE_VALUE);
+    const expiry = Date.now() + 30_000;
+    auth.identityConfirmationExpiry.mockResolvedValueOnce(expiry);
+    const clock = vi.spyOn(Date, "now");
+    secrets.load.mockImplementationOnce(async () => {
+      clock.mockReturnValue(expiry + 1);
+      return FAKE_VALUE;
+    });
+    try {
+      const expiredDuringRead = await call("reveal", input, context);
+      expect(expiredDuringRead.status).toBe(403);
+      expect(expiredDuringRead.text).not.toContain(FAKE_VALUE);
+    } finally {
+      clock.mockRestore();
+    }
 
     secrets.load.mockImplementationOnce(async () => {
       rows[0]!.revision = "updated-during-read";
