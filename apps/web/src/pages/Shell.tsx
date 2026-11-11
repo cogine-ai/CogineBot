@@ -3907,6 +3907,20 @@ export function ShellPage() {
     if (text && id) void speaker.speak(text, { botId: id, messageId: message.id });
   }, []);
 
+  function openChatSettings(target: { botId: string } | { groupId: string }) {
+    const isBot = "botId" in target;
+    const id = isBot ? target.botId : target.groupId;
+    const destKey =
+      userId && bootstrapMe?.spaceId
+        ? rightPanelStorageKey(userId, bootstrapMe.spaceId, isBot ? "bot" : "group", id)
+        : null;
+    explicitPanelTarget.current = destKey;
+    pendingPanelRestore.current = null;
+    navigate(isBot ? `/app/${id}` : `/app/g/${id}`);
+    setPanelState(isBot ? "settings" : "group-settings");
+    setRestoredPanelKey(destKey);
+  }
+
   function openNewChat() {
     setPanel(null);
     const params = new URLSearchParams(searchParams);
@@ -6050,9 +6064,9 @@ export function ShellPage() {
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
-              onChooseImageModel={() => {
-                if (active) setPanel("settings");
-                else if (activeGroup) setPanel("group-settings");
+              imageAdmissionMessages={activeSnapshot?.messages}
+              onChooseImageModel={(targetBotId) => {
+                if (targetBotId) openChatSettings({ botId: targetBotId });
                 else openSettings("models");
               }}
               onRunErrorPresented={handleRunErrorPresented}
@@ -6706,21 +6720,7 @@ export function ShellPage() {
               setBotMenu(null);
             }}
             onEdit={() => {
-              const destKey =
-                userId && bootstrapMe?.spaceId
-                  ? rightPanelStorageKey(
-                      userId,
-                      bootstrapMe.spaceId,
-                      contextBot ? "bot" : "group",
-                      contextChat.id,
-                    )
-                  : null;
-              explicitPanelTarget.current = destKey;
-              pendingPanelRestore.current = null;
-              navigate(contextBot ? `/app/${contextBot.id}` : `/app/g/${contextGroup!.id}`);
-              // Mark the destination key restored so we do not write settings onto the source chat.
-              setPanelState(contextBot ? "settings" : "group-settings");
-              setRestoredPanelKey(destKey);
+              openChatSettings(contextBot ? { botId: contextBot.id } : { groupId: contextChat.id });
               setBotMenu(null);
             }}
             onDuplicate={() => {
@@ -8022,6 +8022,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 export const Composer = memo(function Composer({
   imageAdmissionRevision = "",
   imageAdmissionTarget,
+  imageAdmissionMessages,
   pageSession,
   draftKey,
   active,
@@ -8058,6 +8059,7 @@ export const Composer = memo(function Composer({
 }: {
   imageAdmissionRevision?: string;
   imageAdmissionTarget?: Parameters<typeof rpc.threads.imageInput>[0];
+  imageAdmissionMessages?: readonly ThreadMessage[];
   pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
@@ -8072,7 +8074,7 @@ export const Composer = memo(function Composer({
   runError: string | null;
   runErrorId: string | null;
   onAddKey?: () => void;
-  onChooseImageModel?: () => void;
+  onChooseImageModel?: (botId?: string) => void;
   onRunErrorPresented: (runId: string) => void;
   onDismissError: () => void;
   sending: boolean;
@@ -8708,11 +8710,19 @@ export const Composer = memo(function Composer({
                       mentions: selectedMentions,
                       hasAttachments: true,
                     });
+                    const page = !plan.rerouteGroupId
+                      ? pageSession?.send(
+                          plan.trimmed,
+                          imageAdmissionMessages ?? [],
+                          replyTarget?.id,
+                        )
+                      : undefined;
                     return {
                       ...(plan.rerouteGroupId
                         ? { groupId: plan.rerouteGroupId }
                         : (imageAdmissionTarget ?? artifactTarget)),
                       text: plan.trimmed,
+                      pageContext: page?.pageContext,
                       mentions: plan.mentionPayload,
                     };
                   })()}

@@ -3,7 +3,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { threadModelImageInput } from "./thread-image-admission.js";
 import type { ThreadTarget } from "./thread-target.js";
-import { sendThreadMessage } from "./thread-target.js";
+import { sendThreadMessage, threadImageInputStatus } from "./thread-target.js";
 
 // Exercise the shared production send entrypoint with an owned stored image.
 // No model transport or credential material is needed to reject known text-only input.
@@ -444,6 +444,7 @@ describe("current image send admission", () => {
       tx.run.findMany.mockResolvedValue([
         {
           id: "waiting",
+          botId: "bot-1",
           taskId: "task-waiting",
           status: "waiting_input",
           trigger: "routine",
@@ -459,6 +460,15 @@ describe("current image send admission", () => {
           pageOnly ? { text: undefined, pageContext: { pageId: "page-1" } } : {},
         ),
       ).rejects.toMatchObject({ code: "CONFLICT" });
+      if (pageOnly) {
+        const status = await threadImageInputStatus(
+          { prisma: tx as unknown as PrismaClient },
+          { userId: "user-1", spaceId: "space-1" } as Actor,
+          { kind: "bot", botId: "bot-1", threadId: "thread-1" } as ThreadTarget,
+          { pageContext: { pageId: "page-1" } },
+        );
+        expect(status).toEqual({ status: "unsupported", botId: "bot-1" });
+      }
       expect(tx.message.create).not.toHaveBeenCalled();
     },
   );
@@ -534,25 +544,34 @@ describe("current image send admission", () => {
     expect(tx.message.create).not.toHaveBeenCalled();
   });
 
-  it("checks the private continuation instead of the busy external channel model", async () => {
-    const { tx, send } = fixture();
-    tx.run.findMany.mockResolvedValue([
-      {
-        id: "channel",
-        taskId: "task-channel",
-        status: "running",
-        trigger: "messaging",
-        sourceMessage: { blocks: [{ kind: "channel_message", channelId: "channel-1" }] },
-        modelProvider: "openrouter",
-        modelId: "openai/gpt-4o",
-      },
-    ] as never);
-    await expect(send()).rejects.toMatchObject({
-      code: "CONFLICT",
-      data: { imageInputStatus: "unsupported" },
-    });
-    expect(tx.message.create).not.toHaveBeenCalled();
-  });
+  it.each(["running channel", "quota-held DM"])(
+    "checks private continuation instead of %s",
+    async (delivery) => {
+      const { tx, send } = fixture();
+      tx.run.findMany.mockResolvedValue([
+        {
+          id: "channel",
+          taskId: "task-channel",
+          status: delivery === "running channel" ? "running" : "waiting_limit",
+          trigger: "messaging",
+          modelPinned: true,
+          sourceMessage: {
+            blocks:
+              delivery === "running channel"
+                ? [{ kind: "channel_message", channelId: "channel-1" }]
+                : [],
+          },
+          modelProvider: "openrouter",
+          modelId: "openai/gpt-4o",
+        },
+      ] as never);
+      await expect(send()).rejects.toMatchObject({
+        code: "CONFLICT",
+        data: { imageInputStatus: "unsupported" },
+      });
+      expect(tx.message.create).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([true, false])(
     "uses only the backup on the current lease (matching: %s)",

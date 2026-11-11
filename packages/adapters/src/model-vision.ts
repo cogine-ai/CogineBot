@@ -50,8 +50,7 @@ export function connectionModelImageInput(
       modelIdSupportsImages(secret.visionModelIds, modelId) ||
       (secret.visionModelIds === undefined &&
         credential.supportsImages === true &&
-        credential.defaultModel?.trim() === modelId.trim()) ||
-      undefined
+        credential.defaultModel?.trim() === modelId.trim())
     );
   }
   if (provider === CHATGPT_PLAN_PROVIDER_ID && secret.kind === "oauth") {

@@ -84,3 +84,18 @@ it("ignores a late capability answer after the actual recipient changes", async 
     botId: "bot-b",
   });
 });
+
+it("opens settings for the actual blocked group recipient", async () => {
+  vi.mocked(rpc.threads.imageInput).mockResolvedValue({ status: "unsupported", botId: "bot-b" });
+  const onChooseModel = vi.fn();
+  await act(async () =>
+    root.render(
+      <ImageInputChoice {...props} target={{ groupId: "group-a" }} onChooseModel={onChooseModel} />,
+    ),
+  );
+  const button = [...container.querySelectorAll("button")].find(
+    (item) => item.textContent === "Choose model",
+  )!;
+  act(() => button.click());
+  expect(onChooseModel).toHaveBeenCalledWith("bot-b");
+});

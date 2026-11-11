@@ -4269,6 +4269,7 @@ describe("bot model auth on save", () => {
         : null;
     });
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       userModelCredential: { findFirst: credentialFindFirst },
       secret: { findFirst: secretFindFirst },
       bot: { findFirst: vi.fn(async () => bot), update: botUpdate },

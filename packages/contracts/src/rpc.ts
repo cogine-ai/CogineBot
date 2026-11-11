@@ -277,6 +277,10 @@ const imageInputFields = {
   text: threadSendFields.shape.text,
   mentions: threadSendFields.shape.mentions,
 };
+const imageInputResult = z.object({
+  status: z.enum(["supported", "unsupported", "unknown"]),
+  botId: Id.optional(),
+});
 const threadSendResult = z.object({
   taskId: Id,
   runId: Id,
@@ -558,11 +562,14 @@ export const appContract = {
     imageInput: oc
       .input(
         z.union([
-          threadTarget.safeExtend(imageInputFields),
+          threadTarget.safeExtend({
+            ...imageInputFields,
+            pageContext: PageReplyContextSchema.optional(),
+          }),
           z.object({ draftGroupBotIds: CreateGroupInput.shape.botIds, ...imageInputFields }),
         ]),
       )
-      .output(z.object({ status: z.enum(["supported", "unsupported", "unknown"]) })),
+      .output(imageInputResult),
     send: oc.input(threadSendInput).output(threadSendResult),
     sendWithRoutines: oc
       .input(

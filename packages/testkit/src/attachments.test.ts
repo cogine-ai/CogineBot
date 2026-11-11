@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ThreadSnapshot } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { lockBotModelSetting } from "../../../apps/api/src/bot-update.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -76,6 +77,7 @@ describeAttachments("chat attachments", () => {
     });
     expect(await rpc(app, cookie, "threads/imageInput", { botId: bot.id })).toEqual({
       status: "unsupported",
+      botId: bot.id,
     });
     const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
     const messageCount = await prisma.message.count({ where: { threadId } });
@@ -214,8 +216,8 @@ describeAttachments("chat attachments", () => {
     ).toBe(1);
   });
 
-  it.each(["run", "bot"] as const)(
-    "waits for the %s model update before admitting a send",
+  it.each(["run", "bot", "finalizer"] as const)(
+    "serializes image admission with a concurrent %s write",
     async (scope) => {
       const cookie = await signup(
         app,
@@ -286,9 +288,17 @@ describeAttachments("chat attachments", () => {
         async (tx) => {
           const data = { modelId: "deepseek/deepseek-v4-pro" };
           if (run) await tx.run.update({ where: { id: run.id }, data });
-          else await tx.bot.update({ where: { id: bot.id }, data });
+          else if (scope === "bot") {
+            await lockBotModelSetting(tx, bot.id);
+            await tx.bot.update({ where: { id: bot.id }, data });
+          } else {
+            // Finalization locks Thread first, then updates the Bot timestamp.
+            await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
+          }
           entered();
           await resume;
+          if (scope === "finalizer")
+            await tx.bot.update({ where: { id: bot.id }, data: { updatedAt: new Date() } });
         },
         { timeout: 10_000 },
       );
@@ -307,7 +317,7 @@ describeAttachments("chat attachments", () => {
             async () => {
               const rows = await prisma.$queryRaw<
                 Array<{ blocked: boolean }>
-              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : "%bots%FOR SHARE%"}) AS blocked`;
+              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : scope === "bot" ? "%pg_advisory_xact_lock%" : "%threads%FOR NO KEY UPDATE%"}) AS blocked`;
               return rows[0]?.blocked;
             },
             { interval: 10, timeout: 3000 },
@@ -317,6 +327,13 @@ describeAttachments("chat attachments", () => {
         release();
         await switching;
         response = await sending;
+      }
+      if (scope === "finalizer") {
+        expect(response!.status).toBe(200);
+        expect(
+          await prisma.message.count({ where: { threadId, clientNonce: "image-model-switch" } }),
+        ).toBe(1);
+        return;
       }
       expect(response!.status).toBe(409);
       expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
@@ -368,7 +385,10 @@ describeAttachments("chat attachments", () => {
       imageHandling: "confirm",
       clientNonce: "group-image-atomic",
     };
-    expect(await rpc(app, cookie, "threads/imageInput", both)).toEqual({ status: "unsupported" });
+    expect(await rpc(app, cookie, "threads/imageInput", both)).toEqual({
+      status: "unsupported",
+      botId: second.id,
+    });
     const draftGroup = {
       draftGroupBotIds: [first.id, second.id],
       text: both.text,
@@ -376,6 +396,7 @@ describeAttachments("chat attachments", () => {
     };
     expect(await rpc(app, cookie, "threads/imageInput", draftGroup)).toEqual({
       status: "unsupported",
+      botId: second.id,
     });
     expect(
       await rpc(app, cookie, "threads/imageInput", { ...draftGroup, mentions: [first.id] }),

@@ -62,7 +62,7 @@ describe("commitBotUpdate", () => {
     const update = vi
       .fn()
       .mockResolvedValue({ id: "bot-1", name: "Chief", title: "", description: "" });
-    const tx = { bot: { update } };
+    const tx = { bot: { update }, $queryRaw: vi.fn() };
     const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
       operation(tx),
     );
@@ -91,7 +91,7 @@ describe("commitBotUpdate", () => {
 
   it("does not write or emit when transactional model validation rejects", async () => {
     const update = vi.fn();
-    const tx = { bot: { update } };
+    const tx = { bot: { update }, $queryRaw: vi.fn() };
     const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
       operation(tx),
     );

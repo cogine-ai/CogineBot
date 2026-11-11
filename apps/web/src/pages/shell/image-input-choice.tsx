@@ -15,12 +15,12 @@ export function ImageInputChoice({
   onChange: (value: ImageHandling) => void;
   target: Parameters<typeof rpc.threads.imageInput>[0];
   revision: string;
-  onChooseModel?: () => void;
+  onChooseModel?: (botId?: string) => void;
 }) {
   const { t } = useLingui();
   const query = JSON.stringify(target);
   const key = JSON.stringify([revision, query]);
-  const [result, setResult] = useState<{ key: string; status: ImageInputStatus }>();
+  const [result, setResult] = useState<{ key: string; status: ImageInputStatus; botId?: string }>();
   useEffect(() => {
     let generation = 0;
     const request = JSON.parse(query) as typeof target;
@@ -28,8 +28,8 @@ export function ImageInputChoice({
       if (!("draftGroupBotIds" in request) && !request.botId && !request.groupId) return;
       const latest = ++generation;
       void rpc.threads.imageInput(request).then(
-        ({ status }) => {
-          if (latest === generation) setResult({ key, status });
+        ({ status, botId }) => {
+          if (latest === generation) setResult({ key, status, botId });
         },
         () => {
           if (latest === generation) setResult({ key, status: "unknown" });
@@ -80,7 +80,12 @@ export function ImageInputChoice({
               type="button"
               variant="ghost"
               className="min-h-11"
-              onClick={onChooseModel}
+              onClick={() =>
+                onChooseModel(
+                  (result?.key === key ? result.botId : undefined) ??
+                    ("botId" in target ? target.botId : undefined),
+                )
+              }
             >{t`Choose model`}</Button>
           ) : null}
         </>

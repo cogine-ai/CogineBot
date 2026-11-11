@@ -945,7 +945,11 @@ function Thread({
     value: ImageHandling;
   }>({ thread: threadKey, value: "confirm" });
   const imageHandling = imageChoice.thread === threadKey ? imageChoice.value : "confirm";
-  const [imageAdmission, setImageAdmission] = useState<{ key: string; status: ImageInputStatus }>();
+  const [imageAdmission, setImageAdmission] = useState<{
+    key: string;
+    status: ImageInputStatus;
+    botId?: string;
+  }>();
   const hasPendingImages = activePendingAttachments.some((item) =>
     item.mimeType.startsWith("image/"),
   );
@@ -962,9 +966,12 @@ function Thread({
   useEffect(() => {
     if (!hasPendingImages || !imageQuery) return;
     let cancelled = false;
-    void rpc<{ status: ImageInputStatus }>("threads/imageInput", JSON.parse(imageQuery)).then(
-      ({ status }) => {
-        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status });
+    void rpc<{ status: ImageInputStatus; botId?: string }>(
+      "threads/imageInput",
+      JSON.parse(imageQuery),
+    ).then(
+      ({ status, botId }) => {
+        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status, botId });
       },
       () => {
         if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status: "unknown" });
@@ -2965,18 +2972,14 @@ function Thread({
       attempt={attempt}
       onRetry={() => void deliver(attempt, true)}
       onChooseModel={() => {
-        if (attempt.payload.groupTarget)
-          router.push({
-            pathname: "/group-settings",
-            params: { groupId: attempt.payload.groupTarget },
-          });
-        else if (attempt.payload.botTarget)
-          router.push({ pathname: "/bot-settings", params: { botId: attempt.payload.botTarget } });
+        const targetBot = attempt.imageInputBotId ?? attempt.payload.botTarget;
+        if (targetBot) router.push({ pathname: "/bot-settings", params: { botId: targetBot } });
       }}
       onRetryAsFile={() => {
         if (!attempt.imageInputStatus || attempt.state === "pending") return;
         attempt.payload = { ...attempt.payload, imageHandling: "file" };
         attempt.imageInputStatus = undefined;
+        attempt.imageInputBotId = undefined;
         void deliver(attempt, true);
       }}
       onDelete={() => feedback.discard(attempt)}
@@ -3334,11 +3337,12 @@ function Thread({
             status={imageAdmission?.key === imageAdmissionKey ? imageAdmission.status : "unknown"}
             onChange={(value) => setImageChoice({ thread: threadKey, value })}
             onChooseModel={() => {
-              const target = imageQuery ? JSON.parse(imageQuery) : {};
-              if (target.groupId)
-                router.push({ pathname: "/group-settings", params: { groupId: target.groupId } });
-              else if (target.botId)
-                router.push({ pathname: "/bot-settings", params: { botId: target.botId } });
+              const target = imageQuery ? (JSON.parse(imageQuery) as { botId?: string }) : {};
+              const targetBot =
+                (imageAdmission?.key === imageAdmissionKey ? imageAdmission.botId : undefined) ??
+                target.botId;
+              if (targetBot)
+                router.push({ pathname: "/bot-settings", params: { botId: targetBot } });
             }}
           />
         ) : null}
@@ -3346,6 +3350,11 @@ function Thread({
           imageHandling={imageHandling}
           onImageQuery={(text, mentions) => {
             const plan = resolveComposerSendPlan({ text, mentions, hasAttachments: true });
+            const selectedPage = replyPage.current;
+            const page =
+              !plan.rerouteGroupId && selectedPage?.scope === previewScope
+                ? pageReply(plan.trimmed, snap?.messages ?? [], selectedPage.page, replyTarget?.id)
+                : undefined;
             setImageQuery(
               JSON.stringify({
                 ...(plan.rerouteGroupId
@@ -3354,6 +3363,7 @@ function Thread({
                     ? { groupId }
                     : { botId }),
                 text: plan.trimmed,
+                pageContext: page?.pageContext,
                 mentions: plan.mentionPayload,
               }),
             );

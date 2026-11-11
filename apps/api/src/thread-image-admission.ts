@@ -116,7 +116,8 @@ export async function resolveThreadImageInput(
     if (row) {
       const secret = parseModelSecret(await configuration.secrets.load(row.ciphertext, row.id));
       if (provider === "openai-compatible" || provider === CHATGPT_PLAN_PROVIDER_ID) {
-        supportsImages = connectionModelImageInput(provider, id, credential, secret);
+        const configured = connectionModelImageInput(provider, id, credential, secret);
+        supportsImages = provider === "openai-compatible" ? configured || undefined : configured;
       } else if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
         const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
           waitMs: 0,
@@ -147,10 +148,10 @@ export async function threadModelImageInput(
   return (await resolveThreadImageInput(...args)).status;
 }
 
-export function assertImageInputStatus(status: ImageInputStatus): void {
+export function assertImageInputStatus(status: ImageInputStatus, botId: string): void {
   if (status === "supported") return;
   throw new ORPCError("CONFLICT", {
     message: status === "unknown" ? MODEL_IMAGE_INPUT_UNKNOWN : MODEL_IMAGE_INPUT_ERROR,
-    data: { reason: "model_image_input_unsupported", imageInputStatus: status },
+    data: { reason: "model_image_input_unsupported", imageInputStatus: status, botId },
   });
 }

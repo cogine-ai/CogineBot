@@ -11,6 +11,11 @@ export class BotInstructionsConflictError extends Error {
   }
 }
 
+/** Serialize model changes with image admission without locking the Bot row during send. */
+export async function lockBotModelSetting(tx: Prisma.TransactionClient, botId: string) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`bot-model:${botId}`}, 2))::text`;
+}
+
 /**
  * Persist a bot row. When profile metadata changes, write `bot.updated` in the same
  * transaction so clients can refresh the accepted profile and notification setting.
@@ -56,12 +61,22 @@ export async function commitBotUpdate(
       throw error;
     }
   };
-  if (!options.emitBotUpdated && !options.validate) return update(options.prisma);
+  const changesModel =
+    options.data.modelProvider !== undefined ||
+    options.data.modelId !== undefined ||
+    options.data.modelCredentialId !== undefined ||
+    options.data.thinkingLevel !== undefined;
+  if (!options.emitBotUpdated && !options.validate && !changesModel) return update(options.prisma);
 
   const save = () =>
     options.prisma.$transaction(
       async (tx) => {
+        if (changesModel) await lockBotModelSetting(tx, options.botId);
         await options.validate?.(tx);
+        // When writing both rows, match Run finalization's Thread → Bot order.
+        if (changesModel && options.emitBotUpdated) {
+          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${options.threadId} FOR UPDATE`;
+        }
         const updated = await update(tx);
         const event = options.emitBotUpdated
           ? await appendEvent(tx, {

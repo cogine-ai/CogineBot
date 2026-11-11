@@ -2384,7 +2384,19 @@ export async function createPendingSteeringRun(
   const origin = steeringOrigin(pending[0]!);
   const batch = pending.filter((item) => steeringOrigin(item) === origin);
   const source = batch.at(-1)!;
-  const modelPin = continuationModelPin(batch);
+  // A later text message does not replace the model selected for an admitted image.
+  const newestAdmittedImage =
+    origin === "app"
+      ? batch.findLast(
+          (item) =>
+            item.modelProvider &&
+            item.modelId &&
+            (item.message.blocks as MessageBlock[]).some(
+              (block) => block.kind === "image" && block.imageHandling === "confirm",
+            ),
+        )
+      : undefined;
+  const modelPin = continuationModelPin(newestAdmittedImage ? [newestAdmittedImage] : batch);
   const selections = batch.map((item) => item.connectionIds ?? []);
   const connectionIds = selections.some((ids) => ids.length)
     ? await ownedConnectionSelection(

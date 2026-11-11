@@ -67,6 +67,7 @@ import {
   resolveGroupSendAttachments,
   resolveSendAttachments,
 } from "./artifacts.js";
+import { lockBotModelSetting } from "./bot-update.js";
 import { resolveBusyBotName, toComputerStatus } from "./computer-status.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 import type { ImageAdmissionConfiguration, ImageAdmissionRun } from "./thread-image-admission.js";
@@ -687,10 +688,8 @@ async function lockImageRecipients(
   threadId: string,
   botIds: string[],
 ) {
-  if (botIds.length) {
-    // Match Bot settings' Bot → Thread order so admission sees a complete model update.
-    await tx.$queryRaw`SELECT id FROM bots WHERE id IN (${Prisma.join(botIds)}) ORDER BY id FOR SHARE`;
-  }
+  // Do not hold a Bot row while waiting for a finalizer that updates it after locking the thread.
+  for (const botId of [...botIds].sort()) await lockBotModelSetting(tx, botId);
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR NO KEY UPDATE`;
   await tx.$queryRaw`SELECT id FROM runs WHERE "threadId" = ${threadId} AND status IN (${Prisma.join([...ACTIVE_RUN_STATUSES])}) FOR UPDATE`;
 }
@@ -723,7 +722,9 @@ async function imageRecipientAdmission(
   const receivesPrivateInput =
     active &&
     (steersUserMessage(active) ||
-      (active.status === "waiting_limit" && isConversationalRun(active.trigger))) &&
+      (active.status === "waiting_limit" &&
+        active.trigger !== "messaging" &&
+        isConversationalRun(active.trigger))) &&
     !isMessagingChannelRun(
       active.trigger,
       active.sourceMessage?.blocks as MessageBlock[] | undefined,
@@ -782,12 +783,45 @@ const imageAdmissionRunSelect = {
   sourceMessage: { select: { blocks: true } },
 } as const;
 
+async function resolveSendPageContext(
+  tx: Prisma.TransactionClient,
+  actor: Actor,
+  target: ThreadTarget,
+  context: PageReplyContext | undefined,
+): Promise<PageTextContext | undefined> {
+  if (!context) return undefined;
+  const page = await tx.page.findFirst({
+    where: {
+      id: context.pageId,
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      ...(target.kind === "group"
+        ? { groupId: target.groupId }
+        : { botId: target.botId, groupId: null }),
+    },
+    select: { id: true, title: true },
+  });
+  if (!page)
+    throw new ORPCError("NOT_FOUND", {
+      message: "This page isn't available",
+      data: { reason: "page_context_unavailable" },
+    });
+  return { pageId: page.id, title: PageTitleSchema.parse(page.title) };
+}
+
 export async function threadImageInputStatus(
   deps: { prisma: PrismaClient; imageAdmission?: ImageAdmissionConfiguration },
   actor: Actor,
   target: ThreadTarget | { kind: "draftGroup"; members: Array<{ botId: string; name: string }> },
-  input: { text?: string; mentions?: MentionTargetInput[] },
-): Promise<{ status: ImageInputStatus }> {
+  input: { text?: string; mentions?: MentionTargetInput[]; pageContext?: PageReplyContext },
+): Promise<{ status: ImageInputStatus; botId?: string }> {
+  const pageContext =
+    target.kind === "draftGroup"
+      ? undefined
+      : await resolveSendPageContext(deps.prisma, actor, target, input.pageContext);
+  const answerText = pageContext
+    ? withPageReplyContext(input.text ?? "", pageContext).trim()
+    : input.text;
   const botIds =
     target.kind === "bot"
       ? [target.botId]
@@ -807,7 +841,7 @@ export async function threadImageInputStatus(
           },
           select: imageAdmissionRunSelect,
         });
-  let status: ImageInputStatus = "supported";
+  let unknownBotId: string | undefined;
   for (const botId of botIds) {
     const result =
       target.kind === "draftGroup"
@@ -816,15 +850,15 @@ export async function threadImageInputStatus(
             deps.prisma,
             actor,
             target.threadId,
-            input.text,
+            answerText,
             botId,
             runs.filter((run) => run.botId === botId),
             deps.imageAdmission,
           );
-    if (result.status === "unsupported") return { status: result.status };
-    if (result.status === "unknown") status = result.status;
+    if (result.status === "unsupported") return { status: result.status, botId };
+    if (result.status === "unknown") unknownBotId ??= botId;
   }
-  return { status };
+  return unknownBotId ? { status: "unknown", botId: unknownBotId } : { status: "supported" };
 }
 
 export async function sendThreadMessage(
@@ -873,26 +907,7 @@ export async function sendThreadMessage(
 
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
-      let pageContext: PageTextContext | undefined;
-      if (input.pageContext) {
-        const page = await tx.page.findFirst({
-          where: {
-            id: input.pageContext.pageId,
-            userId: actor.userId,
-            spaceId: actor.spaceId,
-            ...(target.kind === "group"
-              ? { groupId: target.groupId }
-              : { botId: target.botId, groupId: null }),
-          },
-          select: { id: true, title: true },
-        });
-        if (!page)
-          throw new ORPCError("NOT_FOUND", {
-            message: "This page isn't available",
-            data: { reason: "page_context_unavailable" },
-          });
-        pageContext = { pageId: page.id, title: PageTitleSchema.parse(page.title) };
-      }
+      const pageContext = await resolveSendPageContext(tx, actor, target, input.pageContext);
       const ownerText = input.text ?? "";
       const composedText = pageContext
         ? withPageReplyContext(ownerText, pageContext).trim()
@@ -1004,7 +1019,7 @@ export async function sendThreadMessage(
               deps.imageAdmission,
             )
           : undefined;
-        if (admission) assertImageInputStatus(admission.status);
+        if (admission) assertImageInputStatus(admission.status, target.botId);
         const modelPin = admission?.modelPin;
         const blocks = buildUserMessageBlocks(
           composedText,
@@ -1229,7 +1244,7 @@ export async function sendThreadMessage(
             imageRuns.filter((run) => run.botId === botId),
             deps.imageAdmission,
           );
-          assertImageInputStatus(admission.status);
+          assertImageInputStatus(admission.status, botId);
           if (admission.modelPin) modelPins.set(botId, admission.modelPin);
         }
       }

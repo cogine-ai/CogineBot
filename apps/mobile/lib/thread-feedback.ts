@@ -59,6 +59,7 @@ export type SendAttempt = {
   session: number;
   error?: string;
   imageInputStatus?: Exclude<ImageInputStatus, "supported">;
+  imageInputBotId?: string;
 };
 
 const UPLOAD_TIMEOUT_MS = 60_000;
@@ -299,7 +300,7 @@ export function sendWaitingMessages(force = false): Promise<void> {
           attempt.error = config.errorText(error);
           const rejection = error as {
             code?: unknown;
-            data?: { reason?: unknown; imageInputStatus?: unknown };
+            data?: { reason?: unknown; imageInputStatus?: unknown; botId?: unknown };
           } | null;
           if (
             error === messageRejection &&
@@ -308,6 +309,8 @@ export function sendWaitingMessages(force = false): Promise<void> {
           ) {
             attempt.imageInputStatus =
               rejection.data.imageInputStatus === "unsupported" ? "unsupported" : "unknown";
+            attempt.imageInputBotId =
+              typeof rejection.data.botId === "string" ? rejection.data.botId : undefined;
             attempt.state = "failed";
           }
 
