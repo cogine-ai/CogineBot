@@ -6219,11 +6219,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             generationNotice =
               request.type === "login"
                 ? [
-                    request.purpose,
-                    request.origin,
+                    `HTTPS site ${new URL(request.origin).host}`,
                     request.command
                       ? `Also save as command variable ${commandVariableName(loginCommandName(request.name))}`
                       : undefined,
+                    request.purpose,
                   ]
                     .filter(Boolean)
                     .join("\n")
@@ -8711,9 +8711,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     return;
                   }
                   // The complete website and command destination do not fit the short status.
-                  const text = redactSecrets(
-                    generationNotice ?? generation.data.purpose,
-                    runSecrets,
+                  const text = escapeApprovalBidi(
+                    redactSecrets(generationNotice ?? generation.data.purpose, runSecrets),
                   );
                   const nonce = `${USER_PROGRESS_CLIENT_NONCE_PREFIX}${runId}:credential:${effectId}`;
                   context.signal.throwIfAborted();

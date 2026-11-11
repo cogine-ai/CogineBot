@@ -24,6 +24,7 @@ import {
   formatBotSecretHttpApprovalDetail,
   pageReplyTaskPrompt,
   speechFromBlocks,
+  toUtterances,
   withPageReplyContext,
 } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
@@ -3355,8 +3356,9 @@ describe("generated website logins in a Run", () => {
         f.setCalls([{ args: { ...login, command }, executionId: "generate-login" }]);
         await f.run();
 
-        const notice = [login.purpose, canonicalOrigin];
+        const notice = ["HTTPS site login.example.test"];
         if (command) notice.push("Also save as command variable SITE_ACCOUNT_PASSWORD");
+        notice.push(login.purpose);
         expect(publish).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining({ id: f.runRecord.id }),
@@ -3424,7 +3426,13 @@ describe("generated website logins in a Run", () => {
     });
     Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
     Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
-    const args = { ...login, command: true };
+    const args = {
+      ...login,
+      origin: "https://LOGIN_SITE_EXAMPLE.test:8443/",
+      purpose: "Set up the site login\n```\nA note",
+      command: true,
+    };
+    const pairedOrigin = "https://login_site_example.test:8443";
     f.setCalls([{ args, executionId: "generate-login" }]);
     await f.run();
 
@@ -3434,12 +3442,13 @@ describe("generated website logins in a Run", () => {
       kind: "ask",
       actions: [{ id: "allow" }, { id: "deny" }],
       text: expect.stringContaining(
-        `${login.purpose}\n${canonicalOrigin}\nAlso save as command variable SITE_ACCOUNT_PASSWORD`,
+        `HTTPS site login_site_example.test:8443\nAlso save as command variable SITE_ACCOUNT_PASSWORD\n${args.purpose}`,
       ),
     });
-    expect(speechFromBlocks([block!])).toContain(canonicalOrigin);
-    expect(speechFromBlocks([block!])).toContain("SITE_ACCOUNT_PASSWORD");
-    const request = { ...args, origin: canonicalOrigin };
+    const speech = toUtterances(speechFromBlocks([block!])).join(" ");
+    expect(speech).toContain("HTTPS site login_site_example.test:8443");
+    expect(speech).toContain("Also save as command variable SITE_ACCOUNT_PASSWORD");
+    const request = { ...args, origin: pairedOrigin };
     expect(f.effects).toMatchObject([{ status: "intended", request }]);
     expect(put).not.toHaveBeenCalled();
 
@@ -3454,7 +3463,7 @@ describe("generated website logins in a Run", () => {
     const result = {
       saved: true,
       name: login.name,
-      origin: canonicalOrigin,
+      origin: pairedOrigin,
       auth: { type: "login" },
       command: {
         name: "site-account-password",
