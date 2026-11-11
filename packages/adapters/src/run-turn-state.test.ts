@@ -162,18 +162,31 @@ describe("run turn checkpoint state", () => {
     expect(stored).toContain("Call generate_secret again with the username.");
   });
 
-  it.each([false, true])(
-    "drops raw login validation diagnostics (wrapped: %s)",
-    async (wrapped) => {
+  it.each([
+    ["direct malformed JSON", "generate_secret", {}, true],
+    ["unidentified wrapped malformed JSON", USE_TOOL, {}, true],
+    ["direct missing type", "generate_secret", { username: "fixture-account@example.test" }, false],
+    [
+      "wrapped invalid type",
+      USE_TOOL,
+      {
+        name: "generate_secret",
+        arguments: { type: "unknown", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+  ] as const)(
+    "drops raw login validation diagnostics (%s)",
+    async (_label, toolName, args, malformed) => {
       const f = storage();
       const current = state(undefined, {
         tools: [builtin("generate_secret"), builtin("write_file")],
       });
-      const toolName = wrapped ? USE_TOOL : "generate_secret";
-      const raw = 'Invalid JSON in generate_secret: {"username":"fixture-account@example.test"';
+      const raw = 'Invalid arguments: {"username":"fixture-account@example.test"';
+      const invalid = call("malformed", toolName, args);
       const captured = checkpoint({
         messages: [
-          assistant([{ ...call("malformed", toolName, {}), argumentsError: raw }]),
+          assistant([malformed ? { ...invalid, argumentsError: raw } : invalid]),
           {
             ...completed("malformed", toolName),
             content: [{ type: "text", text: raw }],
@@ -187,9 +200,27 @@ describe("run turn checkpoint state", () => {
       await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
       const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
       expect(stored).not.toContain("fixture-account@example.test");
-      expect(stored).toContain("The credential generation request had invalid arguments.");
+      expect(stored).toContain(
+        toolName === USE_TOOL && malformed
+          ? "The tool call had invalid arguments."
+          : "The credential generation request had invalid arguments.",
+      );
     },
   );
+
+  it("retains validated command generation arguments in a checkpoint", async () => {
+    const f = storage();
+    const current = state(undefined, { tools: [builtin("generate_secret")] });
+    const command = call("pending", USE_TOOL, {
+      name: "generate_secret",
+      arguments: { type: "command", name: "fixture-command", purpose: "Prepare command" },
+    });
+    const captured = checkpoint({ messages: [assistant([command])] });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const saved = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].create.result);
+    expect(saved.messages).toEqual(captured.messages);
+  });
   it("starts fresh with the actual baseline and shares the supplied occurrence map", () => {
     const counts = new Map([[fingerprint, 3]]);
     const current = state(undefined, { counts });

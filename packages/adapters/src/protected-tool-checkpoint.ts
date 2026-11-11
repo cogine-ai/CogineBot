@@ -9,6 +9,7 @@ const REJECTED_PAGE_CALL = "The Page call had invalid or protected arguments. Se
 const UNAVAILABLE_PAGE_RESULT = "The Page result is unavailable.";
 const INVALID_LOGIN_CALL =
   "The credential generation request had invalid arguments. Send a new call.";
+const INVALID_BRIDGED_CALL = "The tool call had invalid arguments. Send a new call.";
 const UNSTARTED_LOGIN_CALL =
   "This login request did not run before the pause. Call generate_secret again with the username.";
 
@@ -23,24 +24,22 @@ export function createProtectedToolTranscriptSanitizer(
   unstartedCalls?: ReadonlySet<string>,
 ) {
   const pageCalls = new Map<string, { name: string; rejected: boolean }>();
-  const loginCalls = new Map<string, string>();
+  const protectedErrors = new Map<string, string>();
   return function sanitize<T extends AgentMessage>(message: T): T {
     if (message.role === "assistant") {
       let changed = false;
       const content = message.content.map((part) => {
         if (part.type !== "toolCall") return part;
-        const wrappedLogin =
-          hasBuiltinBridge &&
-          part.name === USE_TOOL &&
-          (part.arguments.name === "generate_secret" ||
-            (part.arguments.name === undefined &&
-              /\bgenerate_secret\b/.test(part.argumentsError ?? "")));
-        const loginArgs = wrappedLogin ? part.arguments.arguments : part.arguments;
-        const isLogin = record(loginArgs) && loginArgs.type === "login";
-        if ((wrappedLogin || part.name === "generate_secret") && (part.argumentsError || isLogin)) {
+        const bridge = hasBuiltinBridge && part.name === USE_TOOL;
+        const wrappedLogin = bridge && part.arguments.name === "generate_secret";
+        if (wrappedLogin || part.name === "generate_secret") {
+          const parsed = part.argumentsError
+            ? undefined
+            : GenerateSecretInput.safeParse(
+                wrappedLogin ? part.arguments.arguments : part.arguments,
+              );
+          if (parsed?.success && parsed.data.type === "command") return part;
           changed = true;
-          const parsed =
-            isLogin && !part.argumentsError ? GenerateSecretInput.safeParse(loginArgs) : undefined;
           const savedLogin =
             parsed?.success && parsed.data.type === "login" ? parsed.data : undefined;
           const error =
@@ -49,7 +48,10 @@ export function createProtectedToolTranscriptSanitizer(
               : savedLogin
                 ? undefined
                 : INVALID_LOGIN_CALL;
-          loginCalls.set(part.id, error ?? "The protected login request could not be executed.");
+          protectedErrors.set(
+            part.id,
+            error ?? "The protected login request could not be executed.",
+          );
           const safeArgs = savedLogin
             ? {
                 type: "login",
@@ -66,12 +68,16 @@ export function createProtectedToolTranscriptSanitizer(
           };
         }
         const wrapped =
-          hasBuiltinBridge &&
-          part.name === USE_TOOL &&
+          bridge &&
           (part.arguments.name === SAVE_PAGE_TOOL ||
             (part.arguments.name === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
         if (!wrapped && part.name !== SAVE_PAGE_TOOL) {
           pageCalls.delete(part.id);
+          if (bridge && part.argumentsError && typeof part.arguments.name !== "string") {
+            changed = true;
+            protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
+            return { ...part, arguments: {}, argumentsError: INVALID_BRIDGED_CALL };
+          }
           return part;
         }
         const args = wrapped ? part.arguments.arguments : part.arguments;
@@ -95,11 +101,11 @@ export function createProtectedToolTranscriptSanitizer(
       return changed ? { ...message, content } : message;
     }
     if (message.role !== "toolResult") return message;
-    const loginError = loginCalls.get(message.toolCallId);
-    if (loginError && message.isError) {
+    const protectedError = protectedErrors.get(message.toolCallId);
+    if (protectedError && message.isError) {
       return {
         ...message,
-        content: [{ type: "text", text: loginError }],
+        content: [{ type: "text", text: protectedError }],
         details: undefined,
       };
     }
