@@ -350,6 +350,8 @@ export const GenerateSecretInput = z.discriminatedUnion("type", [
 ]);
 export type GenerateSecretInput = z.infer<typeof GenerateSecretInput>;
 
+export const PROTECTED_LOGIN_USERNAME = "[protected username]";
+
 export const LOGIN_FIELD_LIMIT = 8;
 export const LoginFieldLabel = z.string().trim().min(1).max(64);
 const NamedLoginField = z

@@ -8,9 +8,9 @@ import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
 import { approvedEffectOccurrence } from "./approval-effect.js";
 import { FIND_TOOL, isDeferredTool, USE_TOOL } from "./builtin-tool-bridge.js";
-import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
+import { createProtectedToolTranscriptSanitizer } from "./protected-tool-checkpoint.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-checkpoint.js";
 
@@ -268,7 +268,7 @@ export async function persistRunTurnCheckpoint(
   if (capture) {
     const saved = JSON.parse(capture()) as TurnCheckpoint;
     saved.messages = saved.messages.map(
-      createPageTranscriptSanitizer(state.hasBuiltinBridge === true, () => runSecrets),
+      createProtectedToolTranscriptSanitizer(state.hasBuiltinBridge === true, () => runSecrets),
     );
     saved.effectOccurrences = state.occurrences;
     saved.ownInstructionsBaseline = state.ownInstructionsBaseline;

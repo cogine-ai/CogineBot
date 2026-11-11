@@ -97,7 +97,6 @@ import {
   openAiToolParametersNeedNormalization,
 } from "./openai-tool-parameters.js";
 import { affordableOpenRouterOutput } from "./openrouter-output-budget.js";
-import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
@@ -137,6 +136,7 @@ import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
 import type { PiBudgetCorrection, PiDispatchBudget } from "./pi-usage.js";
 import { incompleteModelErrorBodies, observedPiStream } from "./pi-usage.js";
+import { createProtectedToolTranscriptSanitizer } from "./protected-tool-checkpoint.js";
 import { reportedContextWindow } from "./reported-context-window.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import { createRuntimeContextPolicy, VERBATIM_TOOL_RESULTS } from "./runtime-context.js";
@@ -446,7 +446,9 @@ export class PiAgentRuntime implements AgentRuntime {
           markMcpToolResultRoute(result.content, route);
         }
         const history =
-          restored?.messages.map(createPageTranscriptSanitizer(hasToolBridge, pageToolSecrets)) ??
+          restored?.messages.map(
+            createProtectedToolTranscriptSanitizer(hasToolBridge, pageToolSecrets),
+          ) ??
           toHistory(
             withoutSteeringMessages(request.history, initialSteering),
             request.prompt,
@@ -478,7 +480,10 @@ export class PiAgentRuntime implements AgentRuntime {
               : "You are a Rakazo bot with a persistent sandbox filesystem and shell. Be concise."));
         const thinkingLevel = thinkingLevelFor(model, request.model.thinkingLevel);
         let piSession: PiSessionHandle | undefined;
-        const sanitizeRecorded = createPageTranscriptSanitizer(hasToolBridge, pageToolSecrets);
+        const sanitizeRecorded = createProtectedToolTranscriptSanitizer(
+          hasToolBridge,
+          pageToolSecrets,
+        );
         // Never write an unscoped transcript. Production requests carry userId;
         // callers without an authenticated context simply skip optional recording.
         if (this.sessionRecorder && context?.userId) {

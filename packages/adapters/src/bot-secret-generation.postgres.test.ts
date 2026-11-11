@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { GenerateSecretInput } from "@rakazo/contracts";
+import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
-import { createDb } from "@rakazo/db";
+import { answerRunInput, clearEndedRunState, createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { completeExternalEffect } from "./approval-effect.js";
 import {
@@ -10,6 +11,11 @@ import {
   resolveLoginFill,
   shellCommandEnvironment,
 } from "./bot-secrets.js";
+import {
+  createLoginGenerationEffect,
+  loadLoginGenerationInput,
+  readLoginEffectRequest,
+} from "./generated-login-request.js";
 import { withSecretPersistence } from "./secret-persistence.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -331,6 +337,98 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
       remove.mockRestore();
     }
   });
+
+  it.each(["deny", "cancel"] as const)(
+    "clears protected login input after %s",
+    async (terminal) => {
+      const f = await action(`fixture-protected-${terminal}`);
+      const args = GenerateSecretInput.parse({
+        ...login,
+        name: `fixture-protected-${terminal}`,
+        purpose: "Prepare fixture sign-in",
+        command: true,
+      });
+      if (args.type !== "login") throw new Error("Fixture expects a website login");
+      const effectKey = approvalEffectKey(f.run.id, "generate_secret", args);
+      const signal = new AbortController().signal;
+      const effect = await createLoginGenerationEffect({
+        prisma,
+        secretStore,
+        run: f.run,
+        args,
+        context: { ...scope, runId: f.run.id, operationId: f.run.id, traceId: f.run.id, signal },
+        data: {
+          runId: f.run.id,
+          spaceId: scope.spaceId,
+          idempotencyKey: effectKey,
+          kind: "generate_secret",
+          status: "intended",
+          request: {},
+        },
+        lockRun: async (tx) =>
+          (
+            await tx.run.updateMany({
+              where: { id: f.run.id, status: "running" },
+              data: { leaseFence: 1 },
+            })
+          ).count === 1,
+      });
+      expect(JSON.stringify(effect.request)).not.toContain(args.username);
+      const request = readLoginEffectRequest(effect.request);
+      if (!request) throw new Error("Fixture is missing its protected reference");
+      const lookup = { prisma, secretStore, run: f.run, effectKey, request, signal };
+      const row = await prisma.secret.findUniqueOrThrow({ where: { id: request.inputId } });
+      expect(row.ciphertext).not.toContain(args.username);
+      expect(await loadLoginGenerationInput(lookup)).toEqual(args);
+      expect(
+        await loadLoginGenerationInput({ ...lookup, effectKey: "unrelated-effect" }),
+      ).toBeUndefined();
+      if (terminal === "deny") {
+        await prisma.run.update({ where: { id: f.run.id }, data: { status: "waiting_input" } });
+        const message = await prisma.message.create({
+          data: {
+            threadId,
+            runId: f.run.id,
+            seq: 1,
+            role: "bot",
+            botId: scope.botId,
+            blocks: [
+              {
+                kind: "ask",
+                text: "Review before saving a new credential",
+                approvalEffectId: effect.id,
+                status: "pending",
+                actions: [
+                  { id: "allow", label: "Allow once" },
+                  { id: "deny", label: "Deny" },
+                ],
+              },
+            ],
+          },
+        });
+        expect(
+          await answerRunInput(prisma, {
+            ...scope,
+            threadId,
+            runId: f.run.id,
+            messageId: message.id,
+            answeredByUserId: userId,
+            answer: "deny",
+          }),
+        ).toBe(true);
+        expect(
+          await prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+        ).toMatchObject({ status: "denied" });
+      } else {
+        await prisma.$transaction(async (tx) => {
+          await tx.run.update({ where: { id: f.run.id }, data: { status: "cancelled" } });
+          await clearEndedRunState(tx, [f.run]);
+        });
+      }
+      expect(await prisma.secret.findUnique({ where: { id: request.inputId } })).toBeNull();
+      expect(await loadLoginGenerationInput(lookup)).toBeUndefined();
+    },
+  );
 
   it("adopts one candidate when independent Run actions compete for a name", async () => {
     const first = await action("fixture-race");

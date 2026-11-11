@@ -18,7 +18,7 @@ import {
   SecretStoreUnavailableError,
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { BOT_TEMPLATES } from "@rakazo/contracts";
+import { BOT_TEMPLATES, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   formatBotSecretHttpApprovalDetail,
@@ -3332,6 +3332,24 @@ describe("generated website logins in a Run", () => {
     }),
   };
 
+  function captureProtectedInputs(f: ReturnType<typeof fixture>) {
+    type Input = { id: string; userId: string; spaceId: string; kind: string; ciphertext: string };
+    const rows: Input[] = [];
+    Object.assign(f.prisma.secret, {
+      create: vi.fn(async ({ data }: { data: Input }) => {
+        rows.push(data);
+        return data;
+      }),
+      findFirst: vi.fn(
+        async ({ where }: { where: Partial<Input> }) =>
+          rows.find((row) =>
+            Object.entries(where).every(([key, value]) => row[key as keyof Input] === value),
+          ) ?? null,
+      ),
+    });
+    return rows;
+  }
+
   it.each([false, true])(
     "discloses the full site before storing a trusted login (paired: %s)",
     async (command) => {
@@ -3345,6 +3363,7 @@ describe("generated website logins in a Run", () => {
         sandboxProvider,
         secretStore,
       });
+      const pendingInputs = captureProtectedInputs(f);
       Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
       Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
       const publish = vi
@@ -3367,7 +3386,8 @@ describe("generated website logins in a Run", () => {
           undefined,
           expect.stringMatching(/^user-progress:/),
         );
-        expect(publish.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]!);
+        expect(pendingInputs).toHaveLength(1);
+        expect(publish.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[1]!);
         expect(f.pauseRunForInput).not.toHaveBeenCalled();
         const result = {
           saved: true,
@@ -3384,7 +3404,7 @@ describe("generated website logins in a Run", () => {
         await f.run();
         expect(f.results).toMatchObject([result, result]);
         expect(publish).toHaveBeenCalledOnce();
-        expect(put).toHaveBeenCalledTimes(command ? 2 : 1);
+        expect(put).toHaveBeenCalledTimes(command ? 3 : 2);
         expect(create).toHaveBeenCalledTimes(command ? 2 : 1);
       } finally {
         publish.mockRestore();
@@ -3413,69 +3433,156 @@ describe("generated website logins in a Run", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
-  it("shows the full destination and command variable before an approval-bound save", async () => {
-    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
-    const put = vi.spyOn(secretStore, "put");
-    const create = vi.fn(async () => {});
-    const f = fixture({
-      name: "generate_secret",
-      builtin: true,
-      sandboxProvider,
-      secretStore,
-      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "generate_secret" }],
-    });
-    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
-    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
-    const args = {
-      ...login,
-      origin: "https://_LOGIN_.example.test:8443/",
-      purpose: "Set up the site login\n```\nA note",
-      command: true,
-    };
-    const pairedOrigin = "https://_login_.example.test:8443";
-    f.setCalls([{ args, executionId: "generate-login" }]);
-    await f.run();
+  it.each(["approved", "missing", "restored", "denied"])(
+    "settles the exact protected login approval (%s)",
+    async (scenario) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const put = vi.spyOn(secretStore, "put");
+      const create = vi.fn(async () => {});
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        sandboxProvider,
+        secretStore,
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "generate_secret" }],
+      });
+      const pendingInputs = captureProtectedInputs(f);
+      Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+      const args = {
+        ...login,
+        origin: "https://_LOGIN_.example.test:8443/",
+        purpose: "Set up the site login\n```\nA note",
+        command: true,
+      };
+      const pairedOrigin = "https://_login_.example.test:8443";
+      f.setCalls([{ args, executionId: "generate-login" }]);
+      await f.run();
 
-    expect(isApprovalPausedResult(f.results[0])).toBe(true);
-    const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
-    expect(block).toMatchObject({
-      kind: "ask",
-      actions: [{ id: "allow" }, { id: "deny" }],
-      text: expect.stringContaining(
-        "HTTPS site ` _login_.example.test:8443 `\nAlso save as command variable SITE_ACCOUNT_PASSWORD\nPurpose — Set up the site login ``` A note",
-      ),
-    });
-    const speech = toUtterances(speechFromBlocks([block!])).join(" ");
-    expect(speech).toContain("HTTPS site _login_.example.test:8443");
-    expect(speech).toContain("Also save as command variable SITE_ACCOUNT_PASSWORD");
-    const request = { ...args, origin: pairedOrigin };
-    expect(f.effects).toMatchObject([{ status: "intended", request }]);
-    expect(put).not.toHaveBeenCalled();
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+      expect(block).toMatchObject({
+        kind: "ask",
+        actions: [{ id: "allow" }, { id: "deny" }],
+        text: expect.stringContaining(
+          "HTTPS site ` _login_.example.test:8443 `\nAlso save as command variable SITE_ACCOUNT_PASSWORD\nPurpose — Set up the site login ``` A note",
+        ),
+      });
+      const speech = toUtterances(speechFromBlocks([block!])).join(" ");
+      expect(speech).toContain("HTTPS site _login_.example.test:8443");
+      expect(speech).toContain("Also save as command variable SITE_ACCOUNT_PASSWORD");
+      const request = {
+        type: "login",
+        name: args.name,
+        origin: pairedOrigin,
+        inputId: expect.any(String),
+      };
+      expect(f.effects).toMatchObject([{ status: "intended", request }]);
+      expect(JSON.stringify(f.effects)).not.toContain(args.username);
+      const continuation = buildApprovalContinuation(f.effects, JSON.stringify);
+      expect(continuation).toContain("[protected username]");
+      expect(continuation).not.toContain(pendingInputs[0]!.id);
+      expect(JSON.stringify(pendingInputs)).not.toContain(args.username);
+      expect(await secretStore.load(pendingInputs[0]!.ciphertext, pendingInputs[0]!.id)).toContain(
+        args.username,
+      );
+      expect(put).toHaveBeenCalledOnce();
+      expect(create).not.toHaveBeenCalled();
 
-    f.effects[0]!.status = "approved";
-    f.setCalls([
-      {
-        args: { ...login, origin: "https://different.example.test" },
-        executionId: "generate-approved",
-      },
-    ]);
-    await f.run();
-    const result = {
-      saved: true,
-      name: login.name,
-      origin: pairedOrigin,
-      auth: { type: "login" },
-      command: {
-        name: "site-account-password",
-        auth: { type: "command" },
-        variable: "SITE_ACCOUNT_PASSWORD",
-      },
-    };
-    expect(f.results[1]).toEqual(result);
-    expect(f.effects).toMatchObject([{ status: "completed", request, result }]);
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(put).toHaveBeenCalledTimes(2);
-  });
+      const effect = f.effects[0]!;
+      effect.status = scenario === "denied" ? "denied" : "approved";
+      if (scenario === "missing" || scenario === "denied") pendingInputs.length = 0;
+      const restoring = scenario === "restored" || scenario === "denied";
+      const pendingToolCallId = "restore-login";
+      const executionId = JSON.stringify(["pi-tool", "main", pendingToolCallId]);
+      const safeArgs = {
+        type: "login",
+        name: login.name,
+        origin: pairedOrigin,
+        purpose: "Resume protected login",
+        username: PROTECTED_LOGIN_USERNAME,
+      };
+      if (restoring) {
+        const checkpoint: TurnCheckpoint = {
+          version: 1,
+          provider: "scripted",
+          model: "scripted",
+          systemPrompt: "Synthetic approval",
+          pendingToolCallId,
+          effectOccurrences: [{ executionId, fingerprint: effect.idempotencyKey, occurrence: 0 }],
+          messages: [
+            {
+              role: "assistant",
+              api: "openai-completions",
+              provider: "scripted",
+              model: "scripted",
+              content: [
+                {
+                  type: "toolCall",
+                  id: pendingToolCallId,
+                  name: "use_tool",
+                  arguments: { name: "generate_secret", arguments: safeArgs },
+                },
+              ],
+              stopReason: "toolUse",
+              timestamp: 1,
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+            },
+          ],
+        };
+        f.effects.push({
+          id: "login-checkpoint",
+          runId: f.runRecord.id,
+          spaceId: f.runRecord.spaceId,
+          kind: "runtime_checkpoint",
+          status: "runtime_checkpoint",
+          idempotencyKey: JSON.stringify(["runtime_checkpoint", f.runRecord.id]),
+          request: {},
+          result: JSON.stringify(checkpoint),
+        });
+      }
+      f.setCalls([
+        {
+          args: restoring ? safeArgs : { ...login, origin: "https://different.example.test" },
+          executionId: restoring ? executionId : "generate-approved",
+        },
+      ]);
+      await f.run();
+      if (scenario === "missing" || scenario === "denied") {
+        expect(f.results[1]).toEqual({
+          error:
+            scenario === "denied"
+              ? DENIED_ACTION_ERROR
+              : "The protected login request could not be restored.",
+        });
+        expect(create).not.toHaveBeenCalled();
+        expect(put).toHaveBeenCalledOnce();
+        return;
+      }
+      const result = {
+        saved: true,
+        name: login.name,
+        origin: pairedOrigin,
+        auth: { type: "login" },
+        command: {
+          name: "site-account-password",
+          auth: { type: "command" },
+          variable: "SITE_ACCOUNT_PASSWORD",
+        },
+      };
+      expect(f.results[1]).toEqual(result);
+      expect(effect).toMatchObject({ status: "completed", request, result });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(put).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it.each(["allowed", "deny", "stale-binding"])(
     "checks the current authority after loading a saved login (%s)",

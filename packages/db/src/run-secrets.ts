@@ -7,6 +7,11 @@ export function runLoginKind(runId: string, name: string): string {
   return `run-login:${Buffer.from(runId).toString("hex")}:${name}`;
 }
 
+/** Pending generation input uses a reserved suffix outside the saved-login name grammar. */
+export function runLoginGenerationKind(runId: string, effectKey: string): string {
+  return runLoginKind(runId, `generate:${effectKey}`);
+}
+
 /** Call after winning the terminal Run write, inside the same transaction. */
 export async function clearEndedRunState(
   tx: Pick<Prisma.TransactionClient, "externalEffect" | "secret">,

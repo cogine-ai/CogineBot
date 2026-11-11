@@ -1,5 +1,6 @@
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
+import { PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { loadRunTurnCheckpoint, Prisma } from "@rakazo/db";
@@ -99,6 +100,41 @@ function storage() {
 }
 
 describe("run turn checkpoint state", () => {
+  it.each([false, true])(
+    "keeps a protected login username out of checkpoint JSON (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const current = state(undefined, { tools: [builtin("generate_secret")] });
+      const login = {
+        type: "login",
+        name: "fixture-login",
+        origin: "https://example.test",
+        purpose: "Prepare fixture-account@example.test",
+        username: "fixture-account@example.test",
+      };
+      const captured = checkpoint({
+        messages: [
+          assistant([
+            wrapped
+              ? call("pending", USE_TOOL, { name: "generate_secret", arguments: login })
+              : call("pending", "generate_secret", login),
+          ]),
+        ],
+      });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).toContain(PROTECTED_LOGIN_USERNAME);
+      expect(stored).not.toContain(login.username);
+      expect(captured.messages[0]).toEqual(
+        assistant([
+          wrapped
+            ? call("pending", USE_TOOL, { name: "generate_secret", arguments: login })
+            : call("pending", "generate_secret", login),
+        ]),
+      );
+    },
+  );
   it("starts fresh with the actual baseline and shares the supplied occurrence map", () => {
     const counts = new Map([[fingerprint, 3]]);
     const current = state(undefined, { counts });

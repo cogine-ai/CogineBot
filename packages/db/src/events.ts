@@ -70,7 +70,7 @@ import {
   type VerifyRoutineRetryNativeSource,
 } from "./routine-retry.js";
 import { reserveRunProgressResetInTransaction } from "./run-progress.js";
-import { clearEndedRunState } from "./run-secrets.js";
+import { clearEndedRunState, runLoginGenerationKind } from "./run-secrets.js";
 import { isRunResponse, readRunTimingFields } from "./run-timing.js";
 import { loadRunTurnCheckpointSecretEffectId } from "./run-turn-checkpoint.js";
 import { IsolationError } from "./scope.js";
@@ -933,7 +933,12 @@ async function commitAnswerRunInput(
     ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
     : undefined;
   if (login && !login.success) return null;
-  let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
+  let approvalEffect: {
+    id: string;
+    kind: string;
+    request: Prisma.JsonValue;
+    idempotencyKey: string;
+  } | null = null;
   let approvalUserId: string | null = null;
   let approvalSite: string | undefined;
   let approvalTools: string[] = [];
@@ -1118,6 +1123,25 @@ async function commitAnswerRunInput(
         ...(requiresPeerApprovalRecheck ? { requiresPeerApprovalRecheck } : {}),
       },
     });
+    if (!allowed && approvalEffect?.kind === "generate_secret") {
+      const request = approvalEffect.request;
+      if (
+        request &&
+        typeof request === "object" &&
+        !Array.isArray(request) &&
+        request.type === "login" &&
+        typeof request.inputId === "string"
+      ) {
+        await tx.secret.deleteMany({
+          where: {
+            id: request.inputId,
+            userId: run.userId,
+            spaceId: input.spaceId,
+            kind: runLoginGenerationKind(input.runId, approvalEffect.idempotencyKey),
+          },
+        });
+      }
+    }
     // Save the approved destination or individual actions in the same transaction.
     for (const matchValue of approvalSite ? [approvalSite] : approvalTools) {
       await tx.actionApprovalRule.upsert({
