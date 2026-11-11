@@ -97,6 +97,7 @@ import {
   listNativeRoutineTriggersBatch,
   listPiCatalog,
   listScratchpadItems,
+  listSpaceBotCredentialMetadata,
   loadStoredModelSecret,
   McpOAuthBroker,
   mapScratchpadItem,
@@ -161,6 +162,7 @@ import type {
   Actor,
   BoardEvent,
   Bot,
+  BotCredentialRevisionInput,
   BotSecretMetadata,
   BotSecretPutInput,
   BotSecretRemoveInput,
@@ -182,9 +184,12 @@ import {
   BotSecretAuth,
   ComputerCommandSchema,
   DelegatedApprovalAction,
+  decodeLoginSecret,
   foldComputerCommands,
+  IDENTITY_CONFIRMATION_REQUIRED,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
+  loginSecretFields,
   MCP_OAUTH_CLIENT_REQUIRED,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
@@ -1098,6 +1103,49 @@ export function createRouter(deps: RouterDeps) {
       throw mapBotSecretStoreError(error);
     }
     return { ok: true as const };
+  }
+  async function readOwnedBotCredential(
+    actor: Actor,
+    input: BotCredentialRevisionInput,
+    loginOnly: boolean,
+    stillAuthorized?: () => Promise<boolean>,
+  ) {
+    const scope = botSecretScope(actor, input.botId);
+    const where = {
+      ...scope,
+      name: input.name,
+      revision: input.expectedRevision,
+      bot: { spaceId: scope.spaceId, userId: scope.userId, archivedAt: null },
+    };
+    const row = await deps.prisma.botSecret.findFirst({
+      where,
+      select: { id: true, ciphertext: true, auth: true, origin: true, name: true },
+    });
+    if (!row) throw new ORPCError("NOT_FOUND", { message: "Credential not found" });
+    const destination = BotSecretAuth.safeParse(row.auth).data;
+    if (!destination || (loginOnly && destination.type !== "login"))
+      throw new ORPCError("BAD_REQUEST", { message: "Credential is unavailable" });
+    let credential: { value: string } | { fields: ReturnType<typeof loginSecretFields> };
+    try {
+      normalizeSecretDestination({ name: row.name, origin: row.origin, auth: destination });
+      const plaintext = await deps.secrets.load(row.ciphertext, row.id);
+      credential =
+        destination.type === "login"
+          ? { fields: loginSecretFields(decodeLoginSecret(plaintext)) }
+          : { value: plaintext };
+    } catch {
+      // Storage and parse diagnostics can include protected material.
+      throw new ORPCError("SERVICE_UNAVAILABLE", { message: "Credential is unavailable" });
+    }
+    if (
+      !(await deps.prisma.botSecret.findFirst({
+        where: { ...where, id: row.id },
+        select: { id: true },
+      })) ||
+      (stillAuthorized && !(await stillAuthorized()))
+    )
+      throw new ORPCError("NOT_FOUND", { message: "Credential not found" });
+    return credential;
   }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
@@ -7563,6 +7611,48 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     botSecrets: {
+      listForSpace: authed.botSecrets.listForSpace.handler(async ({ context }) => {
+        const { userId, spaceId } = context.actor;
+        const bots = await listSpaceBotCredentialMetadata(deps.prisma, { userId, spaceId });
+        return bots.map(({ id, name, botSecrets }) => ({
+          botId: id,
+          botName: name,
+          credentials: botSecrets.map(botSecretMetadataDto),
+        }));
+      }),
+      loginFieldsForEdit: authed.botSecrets.loginFieldsForEdit.handler(
+        async ({ context, input }) => {
+          const result = await readOwnedBotCredential(
+            context.actor,
+            input,
+            true,
+            context.stillAuthorized,
+          );
+          return "fields" in result
+            ? result.fields.map(({ label, hidden }) => ({ label, hidden }))
+            : [];
+        },
+      ),
+      reveal: authed.botSecrets.reveal.handler(async ({ context, input }) => {
+        const { sessionId, actor } = context;
+        const confirmed =
+          sessionId &&
+          (await runAsSystem("read identity confirmation for a protected credential", () =>
+            deps.auth.hasRecentIdentityConfirmation({ sessionId, userId: actor.userId }),
+          ));
+        if (!confirmed)
+          throw new ORPCError(IDENTITY_CONFIRMATION_REQUIRED, {
+            status: 403,
+            message: "Confirm it's you",
+          });
+        const credential = await readOwnedBotCredential(
+          actor,
+          input,
+          false,
+          context.stillAuthorized,
+        );
+        return "fields" in credential ? { fields: [...credential.fields] } : credential;
+      }),
       list: authed.botSecrets.list.handler(async ({ context, input }) => {
         const rows = await listOwnedBotCredentials(context.actor, input.botId);
         // Legacy editors treat null auth as unavailable and never request a replacement.

@@ -7477,3 +7477,33 @@ msgstr "Visible"
 #: src/components/AskCard.tsx
 msgid "These login values are too long together. Shorten one or more fields."
 msgstr "These login values are too long together. Shorten one or more fields."
+
+msgid "Add field"
+msgstr "Add field"
+
+msgid "Choose a Bot"
+msgstr "Choose a Bot"
+
+msgid "Confirm it's you"
+msgstr "Confirm it's you"
+
+msgid "Could not show the credential"
+msgstr "Could not show the credential"
+
+msgid "Email me a code"
+msgstr "Email me a code"
+
+msgid "Field label"
+msgstr "Field label"
+
+msgid "Hide value"
+msgstr "Hide value"
+
+msgid "No credentials saved in this Space."
+msgstr "No credentials saved in this Space."
+
+msgid "Remove field"
+msgstr "Remove field"
+
+msgid "Show value"
+msgstr "Show value"

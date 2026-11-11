@@ -7406,3 +7406,33 @@ msgstr "Görünür"
 #: src/components/AskCard.tsx
 msgid "These login values are too long together. Shorten one or more fields."
 msgstr "Giriş bilgilerinin toplamı çok uzun. Bir veya daha fazla alanı kısaltın."
+
+msgid "Add field"
+msgstr "Alan ekle"
+
+msgid "Choose a Bot"
+msgstr "Bot seç"
+
+msgid "Confirm it's you"
+msgstr "Kimliğini doğrula"
+
+msgid "Could not show the credential"
+msgstr "Kimlik bilgisi gösterilemedi"
+
+msgid "Email me a code"
+msgstr "E-postayla kod gönder"
+
+msgid "Field label"
+msgstr "Alan etiketi"
+
+msgid "Hide value"
+msgstr "Değeri gizle"
+
+msgid "No credentials saved in this Space."
+msgstr "Bu alanda kayıtlı kimlik bilgisi yok."
+
+msgid "Remove field"
+msgstr "Alanı kaldır"
+
+msgid "Show value"
+msgstr "Değeri göster"

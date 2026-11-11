@@ -7501,3 +7501,33 @@ msgstr "可见"
 #: src/components/AskCard.tsx
 msgid "These login values are too long together. Shorten one or more fields."
 msgstr "登录信息的总长度超出限制。请缩短一个或多个字段。"
+
+msgid "Add field"
+msgstr "添加字段"
+
+msgid "Choose a Bot"
+msgstr "选择 Bot"
+
+msgid "Confirm it's you"
+msgstr "确认是你本人"
+
+msgid "Could not show the credential"
+msgstr "无法显示凭据"
+
+msgid "Email me a code"
+msgstr "通过邮件发送验证码"
+
+msgid "Field label"
+msgstr "字段标签"
+
+msgid "Hide value"
+msgstr "隐藏值"
+
+msgid "No credentials saved in this Space."
+msgstr "此 Space 中没有保存的凭据。"
+
+msgid "Remove field"
+msgstr "移除字段"
+
+msgid "Show value"
+msgstr "显示值"

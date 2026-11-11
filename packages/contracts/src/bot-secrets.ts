@@ -548,6 +548,27 @@ export const EditableBotSecretMetadata = BotSecretMetadata.extend({
   revision: BotSecretRevision,
 });
 
+export const SpaceBotCredentials = z.object({
+  botId: Id,
+  botName: z.string(),
+  credentials: z.array(EditableBotSecretMetadata),
+});
+export type SpaceBotCredentials = z.infer<typeof SpaceBotCredentials>;
+
+export const BotLoginFieldMetadata = z.array(
+  z.object({ label: LoginFieldLabel, hidden: z.boolean() }),
+);
+export type BotLoginFieldMetadata = z.infer<typeof BotLoginFieldMetadata>;
+
+export const RevealedBotCredential = z.union([
+  z.object({ value: z.string() }),
+  z.object({
+    fields: z.array(z.object({ label: LoginFieldLabel, hidden: z.boolean(), value: z.string() })),
+  }),
+]);
+export type RevealedBotCredential = z.infer<typeof RevealedBotCredential>;
+export type BotCredentialRevisionInput = z.infer<typeof BotSecretRemoveForEditInput>;
+
 export const SecretHttpRequest = z
   .object({
     name: BotSecretName,

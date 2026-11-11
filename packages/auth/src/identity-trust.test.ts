@@ -104,6 +104,22 @@ function fixture({
         },
       ),
     },
+    verification: {
+      deleteMany: vi.fn(
+        async ({ where }: { where: { identifier: string; expiresAt: { lte: Date } } }) => {
+          const before = data.verification!.length;
+          for (let i = before - 1; i >= 0; i--) {
+            const entry = data.verification![i]!;
+            if (
+              entry.identifier === where.identifier &&
+              new Date(entry.expiresAt as Date) <= where.expiresAt.lte
+            )
+              data.verification!.splice(i, 1);
+          }
+          return { count: before - data.verification!.length };
+        },
+      ),
+    },
     member: { findMany: vi.fn(async () => []) },
     messagingIdentity: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     organization: { deleteMany: vi.fn(async () => ({ count: 0 })) },
@@ -485,5 +501,65 @@ describe("session credentials", () => {
     const deleted = await f.request("/delete-user", { password: "offline-password12" }, token);
     expect(deleted.status).toBe(200);
     expect(f.data.user).toHaveLength(0);
+  });
+});
+
+describe("confirmation for protected reads", () => {
+  it("requires an authenticated session and binds password confirmation to one session and user", async () => {
+    const f = fixture({ delivery: false });
+    const signup = await f.signup();
+    const first = (await signup.json()) as { token: string };
+    const second = (await (await f.signin()).json()) as { token: string };
+    expect(first.token).toBeTruthy();
+    expect(second.token).not.toBe(first.token);
+    const session = (token: string) =>
+      f.auth.api.getSession({
+        headers: new Headers({ authorization: `Bearer ${token}` }),
+      });
+    const firstSession = (await session(first.token))!;
+    const secondSession = (await session(second.token))!;
+    const scope = { sessionId: firstSession.session.id, userId: firstSession.user.id };
+    expect((await f.request("/confirm-identity", { password: "offline-password12" })).status).toBe(
+      401,
+    );
+    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+    expect(
+      (await f.request("/confirm-identity", { password: "wrong-fixture" }, first.token)).status,
+    ).toBe(400);
+    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+    expect(
+      (await f.request("/confirm-identity", { password: "offline-password12" }, first.token))
+        .status,
+    ).toBe(200);
+    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(true);
+    expect(await f.auth.hasRecentIdentityConfirmation({ ...scope, userId: "other-fixture" })).toBe(
+      false,
+    );
+    expect(
+      await f.auth.hasRecentIdentityConfirmation({ ...scope, sessionId: secondSession.session.id }),
+    ).toBe(false);
+    const proof = f.data.verification!.find(
+      (entry) => entry.identifier === `identity-confirmed-${scope.sessionId}`,
+    )!;
+    expect(proof.value).toBe(scope.userId);
+    proof.expiresAt = new Date(0);
+    expect(await f.auth.hasRecentIdentityConfirmation(scope)).toBe(false);
+  });
+
+  it("rejects a wrong email code and consumes a correct code once", async () => {
+    const f = fixture();
+    const signup = await f.signup();
+    const { token } = (await signup.json()) as { token: string };
+    expect(token).toBeTruthy();
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(400);
+    // A passwordless sign-in has a session but no credential password.
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect(code).toMatch(/^\d{6}$/);
+    const wrongCode = code === "000000" ? "111111" : "000000";
+    expect((await f.request("/confirm-identity", { code: wrongCode }, token)).status).toBe(400);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
   });
 });

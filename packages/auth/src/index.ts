@@ -20,6 +20,7 @@ import {
 } from "better-auth/api";
 import { bearer, organization } from "better-auth/plugins";
 import { accountSecurity, oidcProofKey, sessionForAuthHook } from "./account-security.js";
+import { hasRecentIdentityConfirmation, identityConfirmation } from "./identity-confirmation.js";
 import type { OidcConfig } from "./oidc.js";
 import { isCurrentOidcAccount, oidcDiscovery } from "./oidc.js";
 
@@ -235,6 +236,8 @@ export function authRateLimitOptions(nodeEnv = process.env.NODE_ENV) {
     customRules: {
       ...Object.fromEntries(CREDENTIAL_PATHS.map((path) => [path, rule])),
       "/request-account-deletion": { window: 600, max: 3 },
+      "/request-identity-code": { window: 600, max: 3 },
+      "/confirm-identity": rule,
     },
   };
 }
@@ -355,6 +358,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
       bearer(),
       expo(),
       accountSecurity(env.email, env.oidc?.name, env.oidc?.issuer, env.passwordAuth !== false),
+      identityConfirmation(prisma, env.email, env.passwordAuth !== false),
       ...(discovery ? [discovery.plugin] : []),
       organization({
         allowUserToCreateOrganization: false,
@@ -564,6 +568,8 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
   });
   return Object.assign(auth, {
     ssoAvailability: () => discovery?.availability(),
+    hasRecentIdentityConfirmation: async (session: { sessionId: string; userId: string }) =>
+      hasRecentIdentityConfirmation((await auth.$context).internalAdapter, session),
     disposeOidcDiscovery: () => discovery?.dispose(),
   });
 }

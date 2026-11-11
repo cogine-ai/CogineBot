@@ -177,6 +177,14 @@ function SpaceSettingsForm({ spaceId, name }: { spaceId?: string; name?: string 
               onChange={(value) => void save(value)}
             />
             <SettingsRow
+              title={t("Credentials")}
+              chevron="right"
+              onPress={() => {
+                if (settings.isCurrent())
+                  router.push({ pathname: "/space-credentials", params: { spaceId } });
+              }}
+            />
+            <SettingsRow
               title={t("Models")}
               chevron="right"
               onPress={() => {

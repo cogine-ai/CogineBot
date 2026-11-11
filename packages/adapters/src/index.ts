@@ -22,6 +22,7 @@ export {
   getBotSecretMetadata,
   isNamedBotLogin,
   listBotSecretMetadata,
+  listSpaceBotCredentialMetadata,
   normalizeSecretDestination,
   sameSecretDestination,
   storeBotSecret,

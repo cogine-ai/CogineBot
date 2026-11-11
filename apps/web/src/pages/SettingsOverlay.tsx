@@ -7,6 +7,7 @@ import {
   Cpu,
   CreditCard,
   Gauge,
+  KeyRound,
   MessagesSquare,
   Monitor,
   Settings,
@@ -32,6 +33,7 @@ import {
 import { BillingSettingsPanel } from "./BillingSettingsPanel";
 import { MemorySettingsOverlay } from "./MemorySettingsOverlay";
 import { ModelSettingsOverlay } from "./ModelSettingsOverlay";
+import { BotCredentialsSection } from "./shell/bot-credentials";
 import { VoiceSettingsOverlay } from "./VoiceSettingsOverlay";
 
 export type SettingsSection =
@@ -41,6 +43,7 @@ export type SettingsSection =
   | "voice"
   | "confirmations"
   | "collaboration"
+  | "credentials"
   | "usage"
   | "computer"
   | "billing"
@@ -56,6 +59,7 @@ export function SettingsOverlay({
   space,
   spaces = [],
   currentSpaceId,
+  currentBotId,
   onSpaceChange,
   ownerKey,
   email,
@@ -80,6 +84,7 @@ export function SettingsOverlay({
   space?: { id: string; name: string } | null;
   spaces?: { id: string; name: string }[];
   currentSpaceId?: string | null;
+  currentBotId?: string;
   onSpaceChange?: (spaceId: string) => void;
   ownerKey?: string;
   email?: string | null;
@@ -203,6 +208,7 @@ export function SettingsOverlay({
     { id: "memory", label: t`Memory`, icon: Brain },
     { id: "voice", label: t`Voice`, icon: Volume2 },
     { id: "confirmations", label: t`Confirmations`, icon: ShieldCheck },
+    { id: "credentials", label: t`Credentials`, icon: KeyRound },
     { id: "collaboration", label: t`Bot collaboration`, icon: MessagesSquare },
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
@@ -409,6 +415,9 @@ export function SettingsOverlay({
                       />
                     ) : null}
                     {section === "confirmations" ? <ApprovalRulesSettings /> : null}
+                    {section === "credentials" ? (
+                      <BotCredentialsSection defaultBotId={currentBotId} />
+                    ) : null}
                     {section === "collaboration" ? (
                       <SpaceCollaborationSettings onBusyChange={handleCollaborationBusy} />
                     ) : null}
@@ -432,6 +441,7 @@ const SPACE_SECTIONS = new Set<SettingsSection>([
   "memory",
   "voice",
   "confirmations",
+  "credentials",
   "collaboration",
 ]);
 function TargetMemorySettings({

@@ -7406,3 +7406,33 @@ msgstr "दिखाई दे रहा है"
 #: src/components/AskCard.tsx
 msgid "These login values are too long together. Shorten one or more fields."
 msgstr "लॉगिन मानों की कुल लंबाई बहुत ज़्यादा है। एक या अधिक फ़ील्ड छोटे करें।"
+
+msgid "Add field"
+msgstr "फ़ील्ड जोड़ें"
+
+msgid "Choose a Bot"
+msgstr "बॉट चुनें"
+
+msgid "Confirm it's you"
+msgstr "अपनी पहचान की पुष्टि करें"
+
+msgid "Could not show the credential"
+msgstr "क्रेडेंशियल दिखाया नहीं जा सका"
+
+msgid "Email me a code"
+msgstr "ईमेल से कोड भेजें"
+
+msgid "Field label"
+msgstr "फ़ील्ड का लेबल"
+
+msgid "Hide value"
+msgstr "मान छिपाएँ"
+
+msgid "No credentials saved in this Space."
+msgstr "इस स्पेस में कोई क्रेडेंशियल सहेजा नहीं गया है।"
+
+msgid "Remove field"
+msgstr "फ़ील्ड हटाएँ"
+
+msgid "Show value"
+msgstr "मान दिखाएँ"

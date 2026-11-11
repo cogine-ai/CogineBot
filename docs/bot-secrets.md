@@ -63,7 +63,7 @@ A command variable is redacted from command output in its plain, base64 and URL-
 
 **The bot's shell reads this value.** A command variable is a convenience for the bot, not a boundary against it: the shell command the bot runs, and the code that command starts, can print, encode or send the value. Redaction stops it appearing in a result the model reads; it does not stop a permitted bot, or anything the bot runs, from using it. There is no secrecy from the bot that was given the credential, so treat a command variable as shared with that bot and save only values you would let it use unattended, scoped to what it needs.
 
-Command variables are managed with the same Credentials section as other reusable credentials: web and the Electron-hosted web UI can add, replace and remove one. Mobile has no credentials settings screen, but the request card a bot opens in a thread shows a command variable's variable name in place of a site, so a bot can obtain a command variable value on the phone; listing, adding, replacing and removing one is web and desktop only.
+Command variables are managed with the same Credentials section as other reusable credentials: web and the Electron-hosted web UI can add, replace and remove one. Space settings provides the same credential management on web, desktop, and mobile. The request card a bot opens in a thread shows a command variable’s variable name in place of a site.
 
 ## Saved website logins
 
@@ -97,16 +97,15 @@ The backend decrypts the value and the page browser types it only if the page is
 
 ## Managing saved credentials
 
-Owners can read back what is saved without asking the bot. In the web app, open a bot's settings,
-expand **Advanced**, and use the **Credentials** section. It lists each credential's name, origin
-and authentication type and never its value. From there you can add a credential, replace its value
-on the same destination, or remove one after confirming. Remove deletes the saved value immediately.
-The Electron desktop app hosts the same web UI, so it has the same section.
+Open **Settings → Credentials** in the Space to list the credentials for the bots you own there.
+Each row shows the site or purpose and its bot. Equal credential names on different bots remain
+separate. Choose a bot when you add a credential, or keep the current bot when it is preselected.
+You can replace values on the saved destination or remove a credential. Removing it prevents future
+use by that bot; actions already sent to the site may finish.
 
-Mobile does not host that web settings shell, so it has no credential management screen.
-The thread credential card still works on the phone, including website logins, and that is how a
-bot obtains a value there. Listing, replacing, and removing saved credentials stays on the web
-section. Asking the bot to `forget_secret` a name only removes it; it does not list or replace one.
+The list contains metadata only. **Show value** asks for recent account confirmation and displays
+one credential briefly. Closing the display hides the value. The older bot settings panel still
+offers the compatible add, replace and remove controls.
 
 Two-factor codes, CAPTCHA and passkeys still use `request_takeover`, as does any site where you prefer to sign in yourself.
 

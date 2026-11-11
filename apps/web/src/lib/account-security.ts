@@ -17,9 +17,10 @@ export async function fetchAccountSecurity() {
   }
 }
 
-export async function requestAccountDeletionCode() {
-  const response = await fetch("/api/auth/request-account-deletion", {
+async function postAuth(path: string, proof?: { password: string } | { code: string }) {
+  const response = await fetch(`/api/auth/${path}`, {
     method: "POST",
+    ...(proof && { headers: { "content-type": "application/json" }, body: JSON.stringify(proof) }),
     signal: AbortSignal.timeout(8_000),
   });
   if (!response.ok) {
@@ -32,3 +33,8 @@ export async function requestAccountDeletionCode() {
     throw new Error(authErrorText(body, t`Could not continue`));
   }
 }
+
+export const requestAccountDeletionCode = () => postAuth("request-account-deletion");
+export const requestIdentityCode = () => postAuth("request-identity-code");
+export const confirmIdentity = (proof: { password: string } | { code: string }) =>
+  postAuth("confirm-identity", proof);

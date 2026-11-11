@@ -779,6 +779,27 @@ export function listBotSecretMetadata(prisma: PrismaClient, scope: BotSecretScop
   });
 }
 
+/** The Space view reads only metadata for credentials the current user can manage. */
+export function listSpaceBotCredentialMetadata(
+  prisma: PrismaClient,
+  { userId, spaceId }: Pick<BotSecretScope, "userId" | "spaceId">,
+) {
+  const scope = { userId, spaceId };
+  return prisma.bot.findMany({
+    where: { ...scope, archivedAt: null },
+    select: {
+      id: true,
+      name: true,
+      botSecrets: {
+        where: scope,
+        select: ownerMetadata,
+        orderBy: { name: "asc" },
+      },
+    },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+  });
+}
+
 export function getBotSecretMetadata(
   client: PrismaClient | Prisma.TransactionClient,
   scope: BotSecretScope,

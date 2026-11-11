@@ -19,6 +19,7 @@ import {
   findRunLogin,
   forgetBotSecret,
   generateBotSecret,
+  listSpaceBotCredentialMetadata,
   loadRunLoginRedactions,
   resolveLoginFill,
   shellCommandEnvironment,
@@ -133,6 +134,67 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
         }),
     };
   }
+
+  it("lists scoped credential metadata for active Bots with independent equal names", async () => {
+    const otherUserId = randomUUID();
+    await prisma.user.create({
+      data: { id: otherUserId, name: "Peer", email: `${otherUserId}@example.test` },
+    });
+    const bots = await Promise.all([
+      prisma.bot.create({
+        data: { spaceId: scope.spaceId, userId, name: "Duplicate fixture", color: "ink" },
+      }),
+      prisma.bot.create({
+        data: { spaceId: scope.spaceId, userId, name: "Archived fixture", color: "ink" },
+      }),
+      prisma.bot.create({
+        data: { spaceId: scope.spaceId, userId: otherUserId, name: "Peer fixture", color: "ink" },
+      }),
+    ]);
+    const [duplicate, archived, peer] = bots;
+    const destination = {
+      name: "space-fixture",
+      origin: "https://credential.example.test",
+      auth: { type: "bearer" as const },
+    };
+    const value = "only-synthetic-credential-contents";
+    try {
+      for (const bot of [{ id: scope.botId, userId }, duplicate, archived, peer]) {
+        await storeBotSecret({
+          prisma,
+          secretStore,
+          scope: { ...scope, botId: bot.id, userId: bot.userId },
+          destination,
+          plaintext: value,
+          expectedRevision: null,
+        });
+      }
+      // Archival preserves previously saved credentials.
+      await prisma.bot.update({ where: { id: archived.id }, data: { archivedAt: new Date() } });
+      const read = vi.spyOn(secretStore, "load");
+      try {
+        const result = await listSpaceBotCredentialMetadata(prisma, {
+          userId,
+          spaceId: scope.spaceId,
+        });
+        expect(result.map((bot) => bot.id).sort()).toEqual([scope.botId, duplicate.id].sort());
+        for (const bot of result) {
+          expect(bot.botSecrets).toEqual([
+            expect.objectContaining({ name: destination.name, revision: expect.any(String) }),
+          ]);
+          expect(bot.botSecrets[0]).not.toHaveProperty("ciphertext");
+        }
+        expect(JSON.stringify(result)).not.toContain(value);
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+    } finally {
+      await prisma.botSecret.deleteMany({ where: { ...scope, name: destination.name } });
+      await prisma.bot.deleteMany({ where: { id: { in: bots.map((bot) => bot.id) } } });
+      await prisma.user.delete({ where: { id: otherUserId } });
+    }
+  });
 
   it("exports the saved value through the existing scoped shell environment", async () => {
     const first = await action("fixture-database");
