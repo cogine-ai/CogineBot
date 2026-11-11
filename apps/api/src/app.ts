@@ -87,6 +87,7 @@ import {
 } from "@rakazo/adapters";
 import { createAuth, isBlockedAuthPath, loopbackTwinOrigins } from "@rakazo/auth";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
+import { WEBSITE_LOGIN_CARD_HEADER } from "@rakazo/contracts";
 import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
@@ -851,6 +852,7 @@ async function buildApp(
         sessionId: session?.sessionId,
         sessionAuthenticated: Boolean(session),
         sessionUserId: session?.sessionUserId,
+        supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
         signal: c.req.raw.signal,
         // Same user in the same space, so leaving the space also ends a stream.
         // A database failure rejects this check; only a missing membership is unauthorized.

@@ -1175,6 +1175,8 @@ export interface BrowserActRequest {
 export interface BrowserActResult {
   ok: boolean;
   completed: number;
+  /** Protected login steps whose values were confirmed in their fields. */
+  loginFieldsFilled?: number;
   /** An action may have taken effect before its response was lost. Observe before continuing. */
   uncertain?: boolean;
   /** The bounded navigation/observation wait expired; completed actions must not be replayed. */

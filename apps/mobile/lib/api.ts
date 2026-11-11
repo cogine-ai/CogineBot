@@ -21,6 +21,7 @@ import {
   IsoDate,
   legacyAccountSecurity,
   legacyAuthCapabilitiesSchema,
+  WEBSITE_LOGIN_CARD_HEADER,
 } from "@rakazo/contracts";
 import type { ThreadHistory } from "@rakazo/core";
 import {
@@ -1047,6 +1048,7 @@ export async function rpc<T>(
           "content-type": "application/json",
           origin: "coginebot://",
           ...requestHeaders,
+          [WEBSITE_LOGIN_CARD_HEADER]: "1",
         },
         body: JSON.stringify({ json: body }),
         signal: controller.signal,
@@ -1598,6 +1600,7 @@ export async function subscribeThread(
       accept: "text/event-stream",
       origin: "coginebot://",
       ...context.headers,
+      [WEBSITE_LOGIN_CARD_HEADER]: "1",
     },
     body: JSON.stringify({ json: { ...target, cursor } }),
     signal,

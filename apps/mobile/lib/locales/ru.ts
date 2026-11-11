@@ -1358,4 +1358,15 @@ export const RU_MESSAGES: Record<string, string> = {
   "Reload this connection before saving.": "Перезагрузите это подключение перед сохранением.",
   "Maximum output tokens must be smaller than the context limit.":
     "Лимит выходных токенов должен быть меньше лимита контекста.",
+  "Check again": "Проверить ещё раз",
+  "Could not confirm receipt. Check before entering the information again.":
+    "Не удалось подтвердить получение. Проверьте статус, прежде чем вводить данные снова.",
+  "For this task only": "Только для этой задачи",
+  Hidden: "Скрыто",
+  "Information provided": "Данные предоставлены",
+  "Provide information": "Предоставить данные",
+  "Save for this Bot": "Сохранить для этого бота",
+  Visible: "Видно",
+  "These login values are too long together. Shorten one or more fields.":
+    "Общая длина данных для входа слишком велика. Сократите значения в одном или нескольких полях.",
 };

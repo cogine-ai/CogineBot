@@ -7370,3 +7370,39 @@ msgstr "Este servidor não permite alterar credenciais."
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "Este formulário não permite editar campos nomeados."
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "Não foi possível confirmar o recebimento. Verifique o status antes de inserir os dados novamente."
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "Apenas para esta tarefa"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "Oculto"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "Ocultar {0}"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "Informações fornecidas"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "Fornecer informações"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "Salvar para este bot"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "Visível"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "Os dados de login ultrapassam o limite total. Encurte um ou mais valores."

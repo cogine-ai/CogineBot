@@ -82,15 +82,18 @@ import {
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
   commandVariableName,
+  DEFAULT_LOGIN_FIELD_LABELS,
   disabledBuiltinToolSet,
   GenerateSecretInput,
   HistoryReadInputSchema,
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
+  LoginFieldLabels,
   loginCommandName,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   PROTECTED_LOGIN_USERNAME,
   RUN_QUOTA_WAIT_MAX_MS,
+  RunLoginSubmission,
   runQuotaWaitStateSchema,
   SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
@@ -273,15 +276,18 @@ import {
   findBotSecret,
   findCommandVariableConflict,
   findLoginFillAuthority,
+  findRunLogin,
   forgetBotSecret,
   generateBotSecret,
   listBotSecrets,
   loadBotCommandEnvironment,
+  loadRunLoginRedactions,
   normalizeSecretDestination,
   prepareBotSecretHttpEffect,
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
+  runLoginToolView,
   sameSecretDestination,
   shellCommandEnvironment,
 } from "./bot-secrets.js";
@@ -4415,6 +4421,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         runSecrets.push(...Object.values(agentEnvironment));
         // Encoded forms too: read_file redacts with these values before any shell command runs.
         runSecrets.push(...commandCredentialRedactions(initialBotCommandEnvironment));
+        if (fence > 1)
+          runSecrets.push(
+            ...(await loadRunLoginRedactions(deps.prisma, deps.secretStore, run, runId)),
+          );
         const agentEnvironmentInstruction = formatAgentEnvironmentInstruction({
           ...agentEnvironment,
           ...initialBotCommandEnvironment,
@@ -5681,7 +5691,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           connectionApprovalEffectKey?: string,
           sharedPageApproval?: { effectKey: string; requestDigest: string },
         ) => {
-          if (!scripted)
+          if (
+            !scripted ||
+            input.blocks.some((block) => block.kind === "ask" && block.loginRequestEffectId)
+          )
             await persistTurnCheckpoint(
               executionId,
               pendingSecretEffectId,
@@ -7025,6 +7038,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           const needsApproval = gateDecision === "ask";
           const bypassApproval = gateDecision === "allow" && gated;
+          const secretDestination =
+            name === "request_secret" ? resolveRequestSecretDestination(args) : undefined;
           let claimedEffect = false;
           let claimedApproval = false;
           let pendingPeerConnectorClaim = false;
@@ -7070,6 +7085,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? result
               : ((await completedPageWrite()) ?? uncertainEffectResult(name));
           };
+          const loadTaskLogin = (loginName: string) =>
+            findRunLogin(deps.prisma, deps.secretStore, run, runId, loginName);
+          const recoverSubmittedLogin = async (effect: { id: string; result?: unknown }) => {
+            const destination = secretDestination?.destination;
+            if (destination?.auth.type !== "login") return;
+            const temporary = RunLoginSubmission.safeParse(effect.result).data;
+            const saved = botSecretSubmissionSchema().safeParse(effect.result).data;
+            if (!temporary && !saved) return;
+            let result: unknown = { error: "The supplied login is no longer available." };
+            if (temporary && sameSecretDestination(temporary.loginProvided, destination)) {
+              const current = await loadTaskLogin(destination.name);
+              result =
+                runLoginToolView(destination, current, {
+                  effectId: effect.id,
+                  destination: temporary.loginProvided,
+                }) ?? result;
+            } else if (saved && sameSecretDestination(saved.credentialSaved, destination)) {
+              const current = await findBotSecret(deps.prisma, run, destination.name);
+              if (current && sameSecretDestination(current.destination, destination))
+                result = { saved: true, ...botSecretToolView(current.destination) };
+            }
+            const settled = await deps.prisma.$transaction(async (tx) => {
+              if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+              return completeExternalEffect(tx, effect.id, "executing", result);
+            });
+            return settled ? result : uncertainEffectResult(name);
+          };
 
           const delegatedApprovalScope = (effectId: string) => ({
             spaceId: run.spaceId,
@@ -7101,7 +7143,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const retryGate = resolveDuplicateEffectGate(current, name);
               if (retryGate.action === "return") return replayPageResult(retryGate.result);
               if (retryGate.action === "uncertain") {
-                const recovered = await recoverPageWrite(current);
+                const recovered =
+                  (await recoverSubmittedLogin(current)) ?? (await recoverPageWrite(current));
                 if (recovered !== undefined) return recovered;
                 return settleUncertainEffect(
                   deps.prisma,
@@ -7282,7 +7325,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (applied?.duplicate) {
             const gate = resolveDuplicateEffectGate(applied.effect, name);
             if (gate.action === "return") {
-              if (name === "request_secret") {
+              if (secretDestination && !secretDestination.destination) {
                 const replacementSecret = await deps.prisma.secret.findFirst({
                   where: {
                     spaceId: run.spaceId,
@@ -7339,7 +7382,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return requestApproval();
               }
             } else if (gate.action === "uncertain") {
-              const recovered = await recoverPageWrite(applied.effect);
+              const recovered =
+                (await recoverSubmittedLogin(applied.effect)) ??
+                (await recoverPageWrite(applied.effect));
               if (recovered !== undefined) return recovered;
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
@@ -8086,6 +8131,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             }
             if (name !== "browser_snapshot") workspaceCheckpoint.markDirty();
+            const hasLoginFill =
+              name === "browser_act" &&
+              Array.isArray(args.actions) &&
+              args.actions.some(
+                (step) => step && typeof step === "object" && step.kind === "fill_secret",
+              );
             // Pages can echo a filled login (e.g. a username field), so scrub every page result.
             const redactions = () => [...runSecrets];
             const tool =
@@ -8095,13 +8146,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ? browserSnapshotFromTool
                   : null;
             return computerScreenToolResult(async () => {
+              const computer = await runComputer.get();
+              let fillOutcome: string | undefined;
+              if (hasLoginFill)
+                await showNarrationStatus("Filling protected login fields…").catch(() => undefined);
               const result = tool
-                ? redactBrowserResult(
-                    await tool(browser, await runComputer.get(), context, args),
-                    redactions(),
-                  )
-                : await browserActFromTool(browser, await runComputer.get(), context, args, {
+                ? redactBrowserResult(await tool(browser, computer, context, args), redactions())
+                : await browserActFromTool(browser, computer, context, args, {
                     redactions,
+                    onLoginFillOutcome: (status) => {
+                      fillOutcome = status;
+                    },
                     uploadRoots:
                       computerMode === "team"
                         ? [teamBotWorkspaceDirectory(bot.id), "shared"]
@@ -8115,6 +8170,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         prisma: deps.prisma,
                         secretStore: deps.secretStore,
                         scope: run,
+                        runId,
                         name: step.secret,
                         field: step.field,
                       });
@@ -8163,6 +8219,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 name,
                 result,
               );
+              if (hasLoginFill)
+                await showNarrationStatus(fillOutcome ?? "No login fields were filled.").catch(
+                  () => undefined,
+                );
               return browserResultForModel(result);
             }, finish);
           }
@@ -8830,6 +8890,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 prisma: deps.prisma,
                 secretStore: deps.secretStore,
                 scope: run,
+                runId,
                 args: generation.data,
                 lockRun: async (tx) => {
                   context.signal.throwIfAborted();
@@ -8949,13 +9010,44 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return finish({ error: "Invalid authenticated request." });
             }
           }
-          if (name === "request_secret") {
-            const resolvedSecret = resolveRequestSecretDestination(args);
+          if (secretDestination) {
+            const resolvedSecret = secretDestination;
             if (resolvedSecret.error) return finish({ error: resolvedSecret.error });
             const destination = resolvedSecret.destination;
             const connectionId = resolvedSecret.connectionId;
+            const loginDestination = destination?.auth.type === "login" ? destination : undefined;
+            const loginFields = loginDestination
+              ? LoginFieldLabels.safeParse(args.fields ?? [...DEFAULT_LOGIN_FIELD_LABELS]).data
+              : undefined;
+            if (loginDestination ? !loginFields : args.fields !== undefined)
+              return finish({ error: "Provide 1–8 distinct field labels for a website login." });
+            let loginExpectedRevision: string | null = null;
             if (destination) {
-              const existing = await findBotSecret(deps.prisma, run, destination.name);
+              const taskLogin = loginDestination
+                ? await loadTaskLogin(destination.name)
+                : undefined;
+              if (taskLogin === null)
+                return finish({ error: "The task login is no longer available." });
+              const temporarySubmission = RunLoginSubmission.safeParse(applied?.effect.result).data;
+              if (temporarySubmission) {
+                return finish(
+                  runLoginToolView(destination, taskLogin, {
+                    effectId: applied!.effect.id,
+                    destination: temporarySubmission.loginProvided,
+                  }) ?? { error: "The task login is no longer available." },
+                );
+              }
+              const taskLoginView = runLoginToolView(destination, taskLogin);
+              if (taskLogin && !taskLoginView)
+                return finish({
+                  error:
+                    "A task login with this name is bound to another site. Choose a different name.",
+                });
+              if (taskLoginView && args.replace !== true) return finish(taskLoginView);
+
+              const saved = await findBotSecret(deps.prisma, run, destination.name);
+              const existing = saved?.destination;
+              loginExpectedRevision = saved?.revision ?? null;
               if (existing && !sameSecretDestination(existing, destination)) {
                 return finish({
                   error: "Remove the existing credential before changing its destination.",
@@ -8983,9 +9075,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     : { error: "The saved credential is no longer available." },
                 );
               }
-              if (existing && args.replace !== true) {
+              if (args.replace !== true && existing)
                 return finish({ saved: true, ...botSecretToolView(existing) });
-              }
               // Action approval authorizes showing the card; it is not a credential submission.
               // Return the claim to intended so the answer transaction can approve the saved value.
               if (claimedEffect) {
@@ -8997,14 +9088,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 claimedEffect = false;
               }
             }
-            const secretKind = runSecretKind(runId);
-            const storedSecret = await deps.prisma.secret.findFirst({
-              where: {
-                spaceId: run.spaceId,
-                userId: run.userId,
-                kind: secretKind,
-              },
-            });
+            const storedSecret = destination
+              ? null
+              : await deps.prisma.secret.findFirst({
+                  where: {
+                    spaceId: run.spaceId,
+                    userId: run.userId,
+                    kind: runSecretKind(runId),
+                  },
+                });
             if (storedSecret) {
               const plaintext = await deps.secretStore.load(
                 storedSecret.ciphertext,
@@ -9158,6 +9250,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       text: String(args.label ?? "Code"),
                       input: "secret",
                       ...(destination ? { credential: destination } : {}),
+                      ...(loginFields
+                        ? {
+                            loginFields,
+                            loginBotName: bot.name.trim() || "Bot",
+                            loginRequestEffectId: recordedForAsk.effect.id,
+                            loginExpectedRevision,
+                          }
+                        : {}),
                       purpose: normalizeSecretAskPurpose(
                         args.purpose ? String(args.purpose) : undefined,
                       ),
@@ -9173,8 +9273,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               await notifyRun(deps, run, {
                 kind: "help",
-                title: `${bot.name} needs a code`,
-                body: String(args.label ?? "Code"),
+                title: loginFields
+                  ? `${bot.name} needs sign-in information`
+                  : `${bot.name} needs a code`,
+                body: String(args.label ?? (loginFields ? "Website sign-in" : "Code")),
                 botId: bot.id,
                 threadId: thread.id,
               });
@@ -11565,10 +11667,10 @@ function secretGuidance(pageBrowserAllowed: boolean, disabled?: ReadonlySet<stri
   const clauses: string[] = [];
   if (builtinOffered(disabled, "request_secret")) {
     const fill = builtinOffered(disabled, "browser_act")
-      ? "; fill it with browser_act fill_secret, which only works on the saved site"
+      ? " Fill protected login fields with browser_act fill_secret on the exact site. Filling does not submit the form."
       : "";
     clauses.push(
-      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
+      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when a website needs protected sign-in information. The user chooses whether to save the login for this Bot or use it for the current task.${fill} When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
     );
   }
   if (credentialGenerationAvailable(disabled, pageBrowserAllowed, { type: "command" })) {

@@ -796,6 +796,54 @@ describe("browser tools", () => {
       expect(JSON.stringify(acted)).toMatch(/not on the site/);
     });
 
+    it.each([undefined, -1, 2, null])(
+      "distinguishes unconfirmed fill from pre-dispatch refusal (%s)",
+      async (loginFieldsFilled) => {
+        const refused = loginFieldsFilled === null;
+        const origin = "https://login.example.test";
+        const browser = new FakeBrowserProvider();
+        vi.spyOn(browser, "act").mockResolvedValueOnce({
+          ok: !refused,
+          completed: refused ? 0 : 1,
+          ...(refused && { uncertain: false }),
+          url: origin,
+          title: "Fixture",
+          ...(typeof loginFieldsFilled === "number" && { loginFieldsFilled }),
+        });
+        const onLoginFillOutcome = vi.fn();
+        const result = await browserActFromTool(
+          browser,
+          computer,
+          context,
+          {
+            actions: [
+              {
+                kind: "fill_secret",
+                ref: "fixture-field",
+                secret: "fixture-login",
+                field: "Password",
+              },
+            ],
+          },
+          {
+            resolveSecretFill: async () => savedField("password", "fixture-password", origin),
+            onLoginFillOutcome,
+          },
+        );
+        const note = "The login fill outcome is uncertain. Check the page before trying again.";
+        expect(result).toMatchObject(
+          refused
+            ? { ok: false, completed: 0, uncertain: false }
+            : { ok: true, completed: 1, note },
+        );
+        expect(result).not.toHaveProperty("loginFieldsFilled");
+        if (refused) expect(result).not.toHaveProperty("note");
+        expect(onLoginFillOutcome).toHaveBeenCalledWith(
+          refused ? "No login fields were filled." : note,
+        );
+      },
+    );
+
     it("acts on nothing when a saved login cannot be resolved", async () => {
       const browser = loginPage("https://login.example.test/signin");
       const { email, password } = await refs(browser, "https://login.example.test/signin");

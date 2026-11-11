@@ -7370,3 +7370,39 @@ msgstr "इस सर्वर पर क्रेडेंशियल मे�
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "इस फ़ॉर्म में नाम वाले फ़ील्ड बदले नहीं जा सकते।"
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "जानकारी मिलने की पुष्टि नहीं हो सकी। फिर से जानकारी दर्ज करने से पहले स्थिति जाँचें।"
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "केवल इस काम के लिए"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "छिपा हुआ"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "{0} छिपाएँ"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "जानकारी दे दी गई"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "जानकारी दें"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "इस बॉट के लिए सहेजें"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "दिखाई दे रहा है"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "लॉगिन मानों की कुल लंबाई बहुत ज़्यादा है। एक या अधिक फ़ील्ड छोटे करें।"

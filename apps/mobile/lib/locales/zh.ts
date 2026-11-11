@@ -1302,4 +1302,15 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Reload this connection before saving.": "请先重新加载此连接再保存。",
   "Maximum output tokens must be smaller than the context limit.":
     "输出 token 上限必须小于上下文上限。",
+  "Check again": "重新检查",
+  "Could not confirm receipt. Check before entering the information again.":
+    "无法确认是否已收到。请先检查，再重新输入。",
+  "For this task only": "仅本次任务使用",
+  Hidden: "已隐藏",
+  "Information provided": "已提供信息",
+  "Provide information": "提供信息",
+  "Save for this Bot": "保存供此 Bot 使用",
+  Visible: "可见",
+  "These login values are too long together. Shorten one or more fields.":
+    "登录信息的总长度超出限制。请缩短一个或多个字段。",
 };

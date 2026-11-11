@@ -7370,3 +7370,39 @@ msgstr "Bu sunucuda kimlik bilgileri değiştirilemiyor."
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "Bu form adlandırılmış alanları düzenleyemez."
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "Alındığı doğrulanamadı. Bilgileri yeniden girmeden önce durumu kontrol edin."
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "Yalnızca bu görev için"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "Gizli"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "{0} alanını gizle"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "Bilgiler verildi"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "Bilgi ver"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "Bu bot için kaydet"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "Görünür"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "Giriş bilgilerinin toplamı çok uzun. Bir veya daha fazla alanı kısaltın."

@@ -39,6 +39,7 @@ import {
   BotSecretRemoveForEditInput,
   BotSecretRemoveInput,
   EditableBotSecretMetadata,
+  WebsiteLoginAnswer,
 } from "./bot-secrets.js";
 import {
   DeploymentTransferApproveInput,
@@ -639,15 +640,22 @@ export const appContract = {
       .output(z.object({ ok: z.literal(true) })),
     answer: oc
       .input(
-        threadTarget.safeExtend({
-          runId: Id,
-          messageId: Id,
-          answer: z.string().min(1),
-          /** Carries the call id for an answer spoken during a call. */
-          clientNonce: z.string().min(1).max(200).optional(),
-          /** Only for a login card; `answer` carries its password. */
-          username: z.string().min(1).max(512).optional(),
-        }),
+        threadTarget
+          .safeExtend({
+            runId: Id,
+            messageId: Id,
+            answer: z.string().default(""),
+            /** Carries the call id for an answer spoken during a call. */
+            clientNonce: z.string().min(1).max(200).optional(),
+            /** Only for a login card; `answer` carries its password. */
+            username: z.string().min(1).max(512).optional(),
+            login: WebsiteLoginAnswer.optional(),
+          })
+          .refine(
+            ({ answer, username, login }) =>
+              login === undefined ? answer.length > 0 : answer === "" && username === undefined,
+            "Provide one answer",
+          ),
       )
       .output(z.object({ ok: z.literal(true) })),
     markRead: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),

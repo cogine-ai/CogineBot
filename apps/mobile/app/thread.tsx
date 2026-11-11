@@ -11,6 +11,7 @@ import type {
   MessageBlock,
   MessageReaction,
   Routine,
+  WebsiteLoginAnswer,
 } from "@rakazo/contracts";
 import {
   canReactToThreadMessage,
@@ -45,6 +46,7 @@ import {
   plainTextFromMarkdown,
   projectMessageReactions,
   reconcileThreadScrollState,
+  reconcileWebsiteLoginAnswer,
   replyAttachment,
   resolveComposerSendPlan,
   resolvePersonaColorDef,
@@ -52,6 +54,7 @@ import {
   threadWindowMessages,
   timeSeparatorIds,
   userVisibleMessages,
+  type WebsiteLoginAnswerUnconfirmed,
   withLiveStreamingProgress,
   withoutLegacyPageCardFallbacks,
 } from "@rakazo/core";
@@ -142,6 +145,7 @@ import { ThreadComposer } from "../components/thread-composer";
 import { TimeSeparator } from "../components/time-separator";
 import { VoiceChatCard } from "../components/VoiceChatCard";
 import { WorkingIndicator } from "../components/WorkingIndicator";
+import { WebsiteLoginSheet } from "../components/website-login-sheet";
 import type {
   MobileBot,
   MobileGroup,
@@ -2323,18 +2327,53 @@ function Thread({
   }
 
   const answerMessage = useCallback(
-    async (message: MobileMessage, answer: string, username?: string) => {
+    async (
+      message: MobileMessage,
+      answer: string,
+      username?: string,
+      login?: WebsiteLoginAnswer,
+    ) => {
       const targetBotId = botId;
       const targetGroupId = groupId;
       if (readOnly || (!targetBotId && !targetGroupId) || !message.runId) return;
-      await rpc("threads/answer", {
-        ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
-        runId: message.runId,
-        messageId: message.id,
-        answer,
-        ...(username ? { username } : {}),
-      });
-      if (isCurrentTarget(targetBotId, targetGroupId)) await refresh();
+      const target = targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! };
+      const refreshTarget = () =>
+        isCurrentTarget(targetBotId, targetGroupId) ? refresh() : undefined;
+      try {
+        await rpc("threads/answer", {
+          ...target,
+          runId: message.runId,
+          messageId: message.id,
+          answer,
+          ...(username ? { username } : {}),
+          ...(login ? { login } : {}),
+        });
+      } catch (error) {
+        if (!login) throw error;
+        if (
+          !(await reconcileWebsiteLoginAnswer(
+            message,
+            async () =>
+              (
+                await rpc<{ messages: MobileMessage[] }>("threads/messages", {
+                  ...target,
+                  around: { messageId: message.id },
+                })
+              ).messages,
+            {
+              rejection: error,
+              confirmed: () => {
+                void refreshTarget()?.catch(() => undefined);
+              },
+            },
+          ))
+        )
+          throw error;
+        return;
+      }
+      const next = refreshTarget();
+      if (login) await next?.catch(() => undefined);
+      else await next;
     },
     [botId, groupId, readOnly],
   );
@@ -2785,8 +2824,8 @@ function Thread({
       select: (text) => rowActionsRef.current.select(text),
       speak: (message) => rowActionsRef.current.speak(message),
       react: (message, reaction) => rowActionsRef.current.react(message, reaction),
-      answer: (message, answer, username) =>
-        rowActionsRef.current.answer(message, answer, username),
+      answer: (message, answer, username, login) =>
+        rowActionsRef.current.answer(message, answer, username, login),
       openBot: (id, name) => rowActionsRef.current.openBot(id, name),
       openComputer: (id, name) => rowActionsRef.current.openComputer(id, name),
       previewMarkdown: (target) => rowActionsRef.current.previewMarkdown(target),
@@ -3636,7 +3675,12 @@ type MessageRowActions = {
   select: (text: string) => void;
   speak: (message: MobileMessage) => void;
   react: (message: MobileMessage, reaction: MessageReaction) => void;
-  answer: (message: MobileMessage, answer: string, username?: string) => Promise<void>;
+  answer: (
+    message: MobileMessage,
+    answer: string,
+    username?: string,
+    login?: WebsiteLoginAnswer,
+  ) => Promise<void>;
   openBot: (id: string, name: string) => void;
   openComputer: (id: string, name: string) => void;
   previewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
@@ -4129,7 +4173,12 @@ const MessageBubble = memo(function MessageBubble({
   message: MobileMessage;
   members?: MobileSnapshot["members"];
   canAnswer: boolean;
-  onAnswer: (message: MobileMessage, answer: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: MobileMessage,
+    answer: string,
+    username?: string,
+    login?: WebsiteLoginAnswer,
+  ) => Promise<void>;
   onOpenBot: (botId: string, name: string) => void;
   onOpenComputer: (botId: string, name: string) => void;
   onChoiceDismissed?: (question: string) => void;
@@ -4164,7 +4213,7 @@ const MessageBubble = memo(function MessageBubble({
           ask={ask}
           actionProps={actionProps}
           canAnswer={canAnswer}
-          onAnswer={(answer, username) => onAnswer(message, answer, username)}
+          onAnswer={(answer, username, login) => onAnswer(message, answer, username, login)}
         />
         {appConnectBlocks.map((block, index) => (
           <AppConnectCard
@@ -4944,18 +4993,24 @@ function AskBlock({
 }: {
   ask: Extract<MobileMessage["blocks"][number], { kind: "ask" }>;
   canAnswer: boolean;
-  onAnswer: (answer: string, username?: string) => Promise<void>;
+  onAnswer: (answer: string, username?: string, login?: WebsiteLoginAnswer) => Promise<void>;
   actionProps: MessageActionProps;
 }) {
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const [answer, setAnswer] = useState("");
   const [username, setUsername] = useState("");
+  const [loginSheetOpen, setLoginSheetOpen] = useState(false);
+  const [loginProvided, setLoginProvided] = useState(false);
+  const [loginUnconfirmed, setLoginUnconfirmed] = useState<WebsiteLoginAnswerUnconfirmed | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const answered = ask.status === "answered";
+  const answered = ask.status === "answered" || loginProvided;
   const secretInput = isSecretAskBlock(ask);
   const loginInput = secretInput && ask.credential?.auth.type === "login";
+  const namedFields = loginInput ? ask.loginFields : undefined;
   const incomplete =
     (secretInput ? answer.length === 0 : !answer.trim()) || (loginInput && !username.trim());
   const secretLabel =
@@ -5002,7 +5057,7 @@ function AskBlock({
         {...actionProps}
         style={{ color: tokens.foreground, fontSize: 15.5, fontWeight: "600" }}
       >
-        {ask.text}
+        {ask.loginBotName ? `${ask.loginBotName}\n${ask.text}` : ask.text}
       </Text>
       {secretInput && ask.credential ? (
         <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }}>
@@ -5014,8 +5069,56 @@ function AskBlock({
       ) : null}
       {answered ? (
         <Text style={{ color: tokens.success, fontSize: 14 }}>
-          {secretInput ? t("Saved") : t("Answered: {answer}", { answer: ask.answer ?? t("Done") })}
+          {namedFields
+            ? t("Information provided")
+            : secretInput
+              ? t("Saved")
+              : t("Answered: {answer}", { answer: ask.answer ?? t("Done") })}
         </Text>
+      ) : canAnswer && namedFields && loginUnconfirmed ? (
+        <>
+          <Text style={{ color: tokens.mutedForeground }}>
+            {t("Could not confirm receipt. Check before entering the information again.")}
+          </Text>
+          <NativeActionButton
+            label={t("Check again")}
+            busy={submitting}
+            onPress={() => {
+              setSubmitting(true);
+              void loginUnconfirmed
+                .check()
+                .then((confirmed) => {
+                  setLoginProvided(confirmed);
+                  setLoginUnconfirmed(null);
+                })
+                .catch(() => undefined)
+                .finally(() => setSubmitting(false));
+            }}
+          />
+        </>
+      ) : canAnswer && namedFields ? (
+        <>
+          <NativeActionButton
+            label={t("Provide information")}
+            fill={false}
+            onPress={() => setLoginSheetOpen(true)}
+          />
+          {loginSheetOpen ? (
+            <WebsiteLoginSheet
+              key={ask.loginRequestEffectId}
+              botName={ask.loginBotName}
+              purpose={ask.text}
+              origin={ask.credential!.origin}
+              labels={namedFields}
+              onClose={() => setLoginSheetOpen(false)}
+              onUnconfirmed={setLoginUnconfirmed}
+              onProvide={async (login) => {
+                await onAnswer("", undefined, login);
+                setLoginProvided(true);
+              }}
+            />
+          ) : null}
+        </>
       ) : canAnswer ? (
         <>
           {loginInput ? (

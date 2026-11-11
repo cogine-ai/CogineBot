@@ -8,6 +8,62 @@ type AskSnapshot = {
   activeRuns?: readonly { id: string; status: string }[];
 };
 
+type LoginAnswerMessage = {
+  id: string;
+  runId?: string | null;
+  blocks: readonly { kind: string; status?: string; loginRequestEffectId?: string }[];
+};
+
+function hasWebsiteLoginAnswer(
+  original: LoginAnswerMessage,
+  messages: readonly LoginAnswerMessage[],
+): boolean {
+  const request = original.blocks.find(
+    (block) => block.kind === "ask" && block.status !== "answered" && block.loginRequestEffectId,
+  )?.loginRequestEffectId;
+  const current =
+    original.runId &&
+    request &&
+    messages
+      .find((message) => message.id === original.id && message.runId === original.runId)
+      ?.blocks.find((block) => block.kind === "ask" && block.loginRequestEffectId === request);
+  if (!current) throw new Error("The original protected login card could not be read.");
+  return current.status === "answered";
+}
+
+export class WebsiteLoginAnswerUnconfirmed extends Error {
+  constructor(readonly check: () => Promise<boolean>) {
+    super("The protected login answer could not be confirmed.");
+    this.name = "WebsiteLoginAnswerUnconfirmed";
+  }
+}
+
+export async function reconcileWebsiteLoginAnswer(
+  original: LoginAnswerMessage,
+  read: () => Promise<readonly LoginAnswerMessage[]>,
+  { rejection, confirmed }: { rejection?: unknown; confirmed?: () => void } = {},
+): Promise<boolean> {
+  const check = async () => {
+    const answered = hasWebsiteLoginAnswer(original, await read());
+    if (answered) confirmed?.();
+    return answered;
+  };
+  try {
+    if (await check()) return true;
+  } catch {
+    throw new WebsiteLoginAnswerUnconfirmed(check);
+  }
+  if (
+    rejection &&
+    typeof rejection === "object" &&
+    "status" in rejection &&
+    typeof rejection.status === "number" &&
+    [400, 401, 403, 404, 409, 422].includes(rejection.status)
+  )
+    return false;
+  throw new WebsiteLoginAnswerUnconfirmed(check);
+}
+
 export function latestAnswerableAskMessageId(snapshot: AskSnapshot | null): string | null {
   if (!snapshot) return null;
   const waitingRunIds = new Set(

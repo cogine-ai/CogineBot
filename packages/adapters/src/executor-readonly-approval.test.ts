@@ -18,7 +18,7 @@ import {
   SecretStoreUnavailableError,
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { BOT_TEMPLATES, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
+import { BOT_TEMPLATES, encodeLoginSecret, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   formatBotSecretHttpApprovalDetail,
@@ -39,6 +39,7 @@ import {
   DENIED_ACTION_ERROR,
   isApprovalPausedResult,
 } from "./approval-effect.js";
+import { encodeRunLogin } from "./bot-secrets.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -3307,6 +3308,89 @@ describe("generated command credentials in a Run", () => {
     },
   );
 });
+
+it.each(["temporary", "saved", "invalid", "shadowed", "different-site"])(
+  "reconciles a claimed website login after worker interruption (%s)",
+  async (scenario) => {
+    const temporary = scenario !== "saved";
+    const f = fixture({ name: "request_secret", builtin: true });
+    const origin = "https://login.example.test";
+    const otherOrigin = "https://other.example.test";
+    const credential = { name: "interrupted-login", origin, auth: { type: "login" } };
+    const args = { label: "Fixture sign-in", purpose: "password", credential };
+    const effect = {
+      id: "committed-login",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      kind: "request_secret",
+      idempotencyKey: approvalEffectKey(f.runRecord.id, "request_secret", args),
+      status:
+        scenario === "different-site"
+          ? "completed"
+          : scenario === "shadowed"
+            ? "approved"
+            : "executing",
+      request: args,
+      result: temporary
+        ? { loginProvided: credential, remember: false }
+        : { credentialSaved: credential },
+    };
+    f.effects.push(effect);
+    if (temporary) {
+      Object.assign(f.prisma.run, { findFirst: vi.fn(async () => ({ id: f.runRecord.id })) });
+      Object.assign(f.prisma.externalEffect, { findFirst: vi.fn(async () => effect) });
+      Object.assign(f.prisma.secret, {
+        findFirst: vi.fn(async () => ({
+          id: "temp-row",
+          ciphertext:
+            scenario === "invalid"
+              ? "malformed-fixture"
+              : encodeRunLogin({
+                  origin,
+                  botId: f.runRecord.botId,
+                  effectId: effect.id,
+                  login: encodeLoginSecret({
+                    username: "fixture-account",
+                    password: "fixture-password",
+                  }),
+                }),
+        })),
+      });
+    }
+    if (scenario === "saved" || scenario === "shadowed" || scenario === "different-site") {
+      Object.assign(f.prisma.botSecret, {
+        findFirst: vi.fn(async () => ({
+          ...credential,
+          origin: scenario === "saved" ? origin : otherOrigin,
+          revision: "fixture-revision",
+        })),
+      });
+    }
+    const requested =
+      scenario === "different-site"
+        ? { ...args, credential: { ...credential, origin: otherOrigin } }
+        : args;
+    f.setCalls([{ args: requested, executionId: "resume-login" }]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.results).toMatchObject([
+      scenario === "invalid"
+        ? { error: "The supplied login is no longer available." }
+        : scenario === "different-site"
+          ? { error: expect.stringContaining("bound to another site") }
+          : temporary
+            ? { provided: true, saved: false, ...credential }
+            : { saved: true, ...credential },
+    ]);
+    expect(f.effects).toContainEqual(
+      expect.objectContaining({
+        id: effect.id,
+        status: "completed",
+      }),
+    );
+    expect(JSON.stringify(f.results)).not.toContain("fixture-password");
+  },
+);
 
 describe("generated website logins in a Run", () => {
   const login = {

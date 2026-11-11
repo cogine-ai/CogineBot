@@ -24,6 +24,7 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
   VoiceStatus,
+  WebsiteLoginAnswer,
 } from "@rakazo/contracts";
 import {
   ATTACHMENT_ALLOWED_MIME_TYPES,
@@ -63,6 +64,7 @@ import {
   parseModelOptionKey,
   plainTextFromMarkdown,
   projectMessageReactions,
+  reconcileWebsiteLoginAnswer,
   reorderBotTo,
   replyAttachment,
   resolveComposerSendPlan,
@@ -3463,32 +3465,78 @@ export function ShellPage() {
     [pageProjection],
   );
   const answerMessage = useCallback(
-    async (message: ThreadMessage, text: string, username?: string) => {
+    async (message: ThreadMessage, text: string, username?: string, login?: WebsiteLoginAnswer) => {
       const botId = activeBotId.current;
       const groupId = activeGroupId.current;
       if (!botId && !groupId) return;
-      await rpc.threads.answer({
-        ...(groupId ? { groupId } : { botId: botId! }),
-        runId: message.runId ?? "",
-        messageId: message.id,
-        answer: text,
-        ...(username ? { username } : {}),
-      });
-      updateSnapshot((prev) =>
-        prev?.threadId === message.threadId
-          ? {
-              ...prev,
-              answerableApprovalMessageIds: prev.answerableApprovalMessageIds?.filter((id) =>
-                prev.messages.some((row) => row.id === id && row.runId !== message.runId),
-              ),
-            }
-          : prev,
-      );
-      if (groupId && activeGroupId.current === groupId) {
-        await refreshGroupThreadRef.current(groupId);
-      } else if (botId && activeBotId.current === botId) {
-        await refreshThreadRef.current(botId);
+      const target = groupId ? { groupId } : { botId: botId! };
+      const protectedAnswer = login !== undefined;
+      const markAnswerReceived = () => {
+        updateSnapshot((prev) =>
+          prev?.threadId === message.threadId
+            ? {
+                ...prev,
+                ...(protectedAnswer && {
+                  messages: prev.messages.map((row) =>
+                    row.id === message.id && row.runId === message.runId
+                      ? {
+                          ...row,
+                          blocks: row.blocks.map((block) =>
+                            block.kind === "ask" && block.loginFields
+                              ? { ...block, status: "answered" as const, answer: "" }
+                              : block,
+                          ),
+                        }
+                      : row,
+                  ),
+                }),
+                answerableApprovalMessageIds: prev.answerableApprovalMessageIds?.filter((id) =>
+                  prev.messages.some((row) => row.id === id && row.runId !== message.runId),
+                ),
+              }
+            : prev,
+        );
+      };
+      const refreshTarget = () =>
+        groupId && activeGroupId.current === groupId
+          ? refreshGroupThreadRef.current(groupId)
+          : botId && activeBotId.current === botId
+            ? refreshThreadRef.current(botId)
+            : undefined;
+      try {
+        await rpc.threads.answer({
+          ...target,
+          runId: message.runId ?? "",
+          messageId: message.id,
+          answer: text,
+          ...(username ? { username } : {}),
+          ...(login ? { login } : {}),
+        });
+      } catch (error) {
+        if (!protectedAnswer) throw error;
+        if (
+          !(await reconcileWebsiteLoginAnswer(
+            message,
+            async () =>
+              (
+                await rpc.threads.messages({ ...target, around: { messageId: message.id } })
+              ).messages,
+            {
+              rejection: error,
+              confirmed: () => {
+                markAnswerReceived();
+                void refreshTarget()?.catch(() => undefined);
+              },
+            },
+          ))
+        )
+          throw error;
+        return;
       }
+      markAnswerReceived();
+      const refresh = refreshTarget();
+      if (protectedAnswer) await refresh?.catch(() => undefined);
+      else await refresh;
     },
     [],
   );
@@ -7476,7 +7524,12 @@ const Transcript = memo(function Transcript({
   quotaWaits: { id: string; bot: GroupAvatarMember; label: string }[];
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
-  onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: ThreadMessage,
+    text: string,
+    username?: string,
+    login?: WebsiteLoginAnswer,
+  ) => Promise<void>;
   delegatedApprovals: ReadonlyMap<string, DelegatedApproval[]>;
   onAnswerDelegated: (approval: DelegatedApproval, action: string) => Promise<void>;
   onReply: (message: ThreadMessage) => void;
@@ -9290,7 +9343,12 @@ const MessageView = memo(function MessageView({
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
   message: ThreadMessage;
-  onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: ThreadMessage,
+    text: string,
+    username?: string,
+    login?: WebsiteLoginAnswer,
+  ) => Promise<void>;
   onOpenBot: (botId: string) => void;
   onOpenPeerMessages: (peer: { botId?: string; peerBotId: string; peerBotName: string }) => void;
   speakerName?: string;
@@ -9777,7 +9835,7 @@ const MessageView = memo(function MessageView({
                 key={i}
                 block={block}
                 canAnswer={canAnswer}
-                onAnswer={(text, username) => onAnswer(message, text, username)}
+                onAnswer={(text, username, login) => onAnswer(message, text, username, login)}
               />
             );
           }

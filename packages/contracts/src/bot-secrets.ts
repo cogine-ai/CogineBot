@@ -354,6 +354,16 @@ export const PROTECTED_LOGIN_USERNAME = "[protected username]";
 
 export const LOGIN_FIELD_LIMIT = 8;
 export const LoginFieldLabel = z.string().trim().min(1).max(64);
+export const DEFAULT_LOGIN_FIELD_LABELS = ["Username", "Password"] as const;
+export const WEBSITE_LOGIN_CARD_HEADER = "x-coginebot-website-login-card";
+export const LoginFieldLabels = z
+  .array(LoginFieldLabel)
+  .min(1)
+  .max(LOGIN_FIELD_LIMIT)
+  .refine(
+    (labels) => new Set(labels.map((label) => label.toLowerCase())).size === labels.length,
+    "Give each field a different label",
+  );
 const NamedLoginField = z
   .object({
     label: LoginFieldLabel,
@@ -363,6 +373,7 @@ const NamedLoginField = z
   .transform((field) => (field.hidden ? field : { ...field, value: field.value.trim() }))
   .refine((field) => field.value.length > 0, "Enter a value");
 type NamedLoginField = z.infer<typeof NamedLoginField>;
+export const LOGIN_VALUE_TOO_LONG = "This login is too long";
 
 export const NamedLoginSecretValue = z
   .strictObject({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
@@ -372,9 +383,65 @@ export const NamedLoginSecretValue = z
   )
   .refine(
     (login) => JSON.stringify(login).length <= BOT_SECRET_VALUE_MAX_LENGTH,
-    "This login is too long",
+    LOGIN_VALUE_TOO_LONG,
   );
 export type NamedLoginSecretValue = z.infer<typeof NamedLoginSecretValue>;
+
+export const WebsiteLoginAnswer = z.strictObject({
+  fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT),
+  remember: z.boolean().default(true),
+});
+export type WebsiteLoginAnswer = z.output<typeof WebsiteLoginAnswer>;
+
+/** Validate the labels against the pending card, keeping older pair cards readable. */
+export function loginCardAnswer(
+  labels: readonly string[] | undefined,
+  input: { answer: string; username?: string; login?: WebsiteLoginAnswer },
+) {
+  if (labels) {
+    if (input.answer || input.username !== undefined) return;
+    const parsed = WebsiteLoginAnswer.safeParse(input.login);
+    if (!parsed.success) return;
+    const { fields, remember } = parsed.data;
+    if (
+      fields.length !== labels.length ||
+      fields.some(({ label }, index) => label !== labels[index])
+    )
+      return;
+    const value = NamedLoginSecretValue.safeParse({ fields });
+    if (value.success) return { plaintext: encodeLoginSecret(value.data), remember };
+    return;
+  }
+  if (input.login !== undefined) return;
+  const pair = LoginSecretValue.safeParse({
+    username: input.username?.trim(),
+    password: input.answer,
+  });
+  if (pair.success) return { plaintext: encodeLoginSecret(pair.data), remember: true };
+}
+
+const VISIBLE_LOGIN_LABELS = new Set([
+  "username",
+  "user name",
+  "email",
+  "email address",
+  "e-mail",
+  "phone",
+  "phone number",
+  "mobile number",
+  "account number",
+  "member id",
+  "id",
+  "id number",
+]);
+
+export function loginCardFields(labels: readonly string[]): WebsiteLoginAnswer["fields"] {
+  return labels.map((label) => ({
+    label,
+    value: "",
+    hidden: !VISIBLE_LOGIN_LABELS.has(label.toLowerCase()),
+  }));
+}
 
 type StoredLoginSecretValue = LoginSecretValue | NamedLoginSecretValue;
 
@@ -413,6 +480,10 @@ export function botSecretSubmissionSchema(options?: { allowPrivateHttpOrigin?: b
   return z.object({ credentialSaved: botSecretDestinationSchema(options) });
 }
 export const BotSecretSubmission = botSecretSubmissionSchema();
+export const RunLoginSubmission = z.object({
+  loginProvided: BotSecretDestination,
+  remember: z.literal(false),
+});
 
 /**
  * Owner-facing destination input. Structural only: the origin rules depend on the server's

@@ -1,22 +1,38 @@
 import { randomUUID } from "node:crypto";
-import { GenerateSecretInput } from "@rakazo/contracts";
+import type { ComputerRef } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
+import { encodeLoginSecret, GenerateSecretInput } from "@rakazo/contracts";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
-import { answerRunInput, clearEndedRunState, createDb } from "@rakazo/db";
+import {
+  answerRunInput,
+  clearEndedRunState,
+  createDb,
+  createThreadMessage,
+  RUN_TURN_CHECKPOINT_KIND,
+  runLoginKind,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { completeExternalEffect } from "./approval-effect.js";
 import {
   findLoginFillAuthority,
+  findRunLogin,
+  forgetBotSecret,
   generateBotSecret,
+  loadRunLoginRedactions,
   resolveLoginFill,
   shellCommandEnvironment,
+  storeBotSecret,
 } from "./bot-secrets.js";
+import { browserActFromTool, LOGIN_FIELDS_FILLED_NOTE } from "./browser-tools.js";
+import { FakeBrowserProvider } from "./fake-browser.js";
 import {
   createLoginGenerationEffect,
   loadLoginGenerationInput,
   loginGenerationEffectArgs,
   readLoginEffectRequest,
 } from "./generated-login-request.js";
+import { createRunSecretWriter } from "./run-secret.js";
 import { withSecretPersistence } from "./secret-persistence.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -398,26 +414,23 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
       ).toBeUndefined();
       if (terminal === "deny") {
         await prisma.run.update({ where: { id: f.run.id }, data: { status: "waiting_input" } });
-        const message = await prisma.message.create({
-          data: {
-            threadId,
-            runId: f.run.id,
-            seq: 1,
-            role: "bot",
-            botId: scope.botId,
-            blocks: [
-              {
-                kind: "ask",
-                text: "Review before saving a new credential",
-                approvalEffectId: effect.id,
-                status: "pending",
-                actions: [
-                  { id: "allow", label: "Allow once" },
-                  { id: "deny", label: "Deny" },
-                ],
-              },
-            ],
-          },
+        const message = await createThreadMessage(prisma, {
+          threadId,
+          runId: f.run.id,
+          role: "bot",
+          botId: scope.botId,
+          blocks: [
+            {
+              kind: "ask",
+              text: "Review before saving a new credential",
+              approvalEffectId: effect.id,
+              status: "pending",
+              actions: [
+                { id: "allow", label: "Allow once" },
+                { id: "deny", label: "Deny" },
+              ],
+            },
+          ],
         });
         expect(
           await answerRunInput(prisma, {
@@ -476,6 +489,287 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
       remove.mockRestore();
     }
   });
+
+  it.each([true, false])(
+    "submits exactly one protected login card (save: %s)",
+    async (remember) => {
+      const name = remember ? "fixture-login-saved" : "fixture-login-task";
+      const f = await action(name);
+      const credential = {
+        name,
+        origin: "https://login.example.test",
+        auth: { type: "login" as const },
+      };
+      const fields = [
+        { label: "Email", value: "private-fixture@example.test", hidden: false },
+        { label: "Access PIN", value: "fixture-secret-pin", hidden: true },
+      ];
+      await prisma.run.update({ where: { id: f.run.id }, data: { status: "waiting_input" } });
+      const effect = await prisma.externalEffect.create({
+        data: {
+          runId: f.run.id,
+          spaceId: scope.spaceId,
+          idempotencyKey: `request-login:${f.run.id}`,
+          kind: "request_secret",
+          status: "intended",
+          request: { credential },
+        },
+      });
+      const marker = await prisma.externalEffect.create({
+        data: {
+          runId: f.run.id,
+          spaceId: scope.spaceId,
+          idempotencyKey: JSON.stringify([RUN_TURN_CHECKPOINT_KIND, f.run.id]),
+          kind: RUN_TURN_CHECKPOINT_KIND,
+          status: RUN_TURN_CHECKPOINT_KIND,
+          request: { pendingSecretEffectId: f.effect.id, capture: "none" },
+        },
+      });
+      const message = await createThreadMessage(prisma, {
+        threadId,
+        runId: f.run.id,
+        role: "bot",
+        botId: scope.botId,
+        blocks: [
+          {
+            kind: "ask",
+            text: "Sign in",
+            status: "pending",
+            input: "secret",
+            credential,
+            loginFields: fields.map(({ label }) => label),
+            loginRequestEffectId: effect.id,
+            loginExpectedRevision: null,
+          },
+        ],
+      });
+      const input = {
+        ...scope,
+        threadId,
+        messageId: message.id,
+        runId: f.run.id,
+        answeredByUserId: userId,
+        answer: "",
+        login: { fields, remember },
+      };
+      const writer = createRunSecretWriter(secretStore);
+      const submit = (value = input) => answerRunInput(prisma, value, undefined, writer);
+      expect(await submit()).toBe(false);
+      await prisma.externalEffect.update({
+        where: { id: marker.id },
+        data: { request: { pendingSecretEffectId: effect.id, capture: "none" } },
+      });
+      expect(await submit({ ...input, answeredByUserId: randomUUID() })).toBe(false);
+      expect(await submit({ ...input, login: { fields: [...fields].reverse(), remember } })).toBe(
+        false,
+      );
+      if (remember) {
+        const concurrent = await storeBotSecret({
+          prisma,
+          secretStore,
+          scope,
+          destination: credential,
+          plaintext: encodeLoginSecret({
+            username: "existing-user",
+            password: "existing-password",
+          }),
+        });
+        await expect(submit()).rejects.toThrow("The saved credential changed");
+        expect(
+          await resolveLoginFill({ prisma, secretStore, scope, name, field: "Password" }),
+        ).toMatchObject({ text: "existing-password" });
+        await forgetBotSecret(prisma, scope, name, { expectedRevision: concurrent!.revision });
+      }
+      expect(await submit()).toBe(true);
+      expect(await submit()).toBe(false);
+      const receipt = await prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } });
+      expect(receipt).toMatchObject({
+        status: "approved",
+        result: remember
+          ? { credentialSaved: credential }
+          : { loginProvided: credential, remember: false },
+      });
+      const answered = await prisma.message.findUniqueOrThrow({ where: { id: message.id } });
+      expect(answered.blocks).toEqual([
+        expect.objectContaining({ status: "answered", answer: "" }),
+      ]);
+      for (const field of fields)
+        expect(JSON.stringify({ receipt, answered })).not.toContain(field.value);
+      const saved = await prisma.botSecret.findFirst({ where: { ...scope, name } });
+      expect(Boolean(saved)).toBe(remember);
+      const runLoginWhere = { userId, spaceId: scope.spaceId, kind: runLoginKind(f.run.id, name) };
+      const row = await prisma.secret.findFirst({ where: runLoginWhere });
+      expect(Boolean(row)).toBe(!remember);
+      if (row) {
+        for (const field of fields) expect(row.ciphertext).not.toContain(field.value);
+        const own = await findRunLogin(prisma, secretStore, scope, f.run.id, name);
+        expect(own).toMatchObject({ origin: credential.origin, fields });
+        expect(
+          await findRunLogin(
+            prisma,
+            secretStore,
+            { ...scope, botId: "another-bot" },
+            f.run.id,
+            name,
+          ),
+        ).toBeNull();
+        await expect(
+          findRunLogin(
+            prisma,
+            {
+              load: async () => {
+                throw new SecretStoreUnavailableError();
+              },
+            },
+            scope,
+            f.run.id,
+            name,
+          ),
+        ).rejects.toBeInstanceOf(SecretStoreUnavailableError);
+        expect(await findRunLogin(prisma, secretStore, scope, "another-run", name)).toBeUndefined();
+        expect(await loadRunLoginRedactions(prisma, secretStore, scope, f.run.id)).toEqual(
+          expect.arrayContaining(fields.map(({ value }) => value)),
+        );
+        await expect(
+          loadRunLoginRedactions(
+            prisma,
+            {
+              load: async () => "malformed-fixture",
+            },
+            scope,
+            f.run.id,
+          ),
+        ).rejects.toThrow("The task login is no longer available.");
+        await prisma.externalEffect.update({
+          where: { id: effect.id },
+          data: { status: "uncertain" },
+        });
+        expect(await findRunLogin(prisma, secretStore, scope, f.run.id, name)).toBeNull();
+        expect(await loadRunLoginRedactions(prisma, secretStore, scope, f.run.id)).toEqual(
+          expect.arrayContaining(fields.map(({ value }) => value)),
+        );
+        await prisma.externalEffect.update({
+          where: { id: effect.id },
+          data: { status: "approved" },
+        });
+        await storeBotSecret({
+          prisma,
+          secretStore,
+          scope,
+          destination: credential,
+          plaintext: encodeLoginSecret({
+            username: "persisted-user",
+            password: "persisted-password",
+          }),
+        });
+      }
+      const browser = new FakeBrowserProvider({
+        pages: {
+          [credential.origin]: {
+            html: '<form><input aria-label="Email" type="email"><input aria-label="Access PIN" type="password"><button>Sign in</button></form>',
+          },
+        },
+      });
+      const computer = await prisma.computer.create({
+        data: {
+          spaceId: scope.spaceId,
+          userId,
+          kind: "fake",
+          scopeKey: randomUUID(),
+          homeKey: randomUUID(),
+        },
+      });
+      await prisma.bot.update({ where: { id: scope.botId }, data: { computerId: computer.id } });
+      const workerId = "fixture-login-worker";
+      const fence = 2;
+      const expiresAt = new Date(Date.now() + 60_000);
+      await prisma.run.update({
+        where: { id: f.run.id },
+        data: {
+          status: "running",
+          leaseOwner: workerId,
+          leaseFence: fence,
+          leaseExpiresAt: expiresAt,
+        },
+      });
+      const lease = { computerId: computer.id, runId: f.run.id, botId: scope.botId, fence };
+      await prisma.computerExecutionLease.create({ data: { ...lease, expiresAt } });
+      const ref: ComputerRef = {
+        id: computer.id,
+        botId: scope.botId,
+        kind: "fake",
+        providerRef: computer.id,
+      };
+      const context = {
+        ...scope,
+        runId: f.run.id,
+        operationId: f.run.id,
+        traceId: f.run.id,
+        signal: new AbortController().signal,
+      };
+      try {
+        await browser.navigate(ref, { url: credential.origin }, context);
+        const { elements } = await browser.snapshot(ref, {}, context);
+        const actions = fields.map(({ label }) => ({
+          kind: "fill_secret",
+          ref: elements.find((element) => element.name === label)!.ref,
+          secret: name,
+          field: label,
+        }));
+        const act = vi.spyOn(browser, "act");
+        const fillOutcome = vi.fn();
+        const result = await browserActFromTool(
+          browser,
+          ref,
+          context,
+          { actions },
+          {
+            resolveSecretFill: ({ field }) =>
+              resolveLoginFill({ prisma, secretStore, scope, runId: f.run.id, name, field }),
+            recheckSecretFill: async (credentials) => {
+              const current = await findLoginFillAuthority(prisma, {
+                scope,
+                runId: f.run.id,
+                workerId,
+                fence,
+                computerId: computer.id,
+                computerLease: lease,
+                credentials,
+              });
+              return current ? undefined : { error: "Credential or lease changed" };
+            },
+            redactions: () => fields.map(({ value }) => value),
+            onLoginFillOutcome: fillOutcome,
+          },
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          completed: 2,
+          loginFieldsFilled: 2,
+          note: LOGIN_FIELDS_FILLED_NOTE,
+        });
+        expect(act).toHaveBeenCalledOnce();
+        expect(fillOutcome).toHaveBeenCalledWith(LOGIN_FIELDS_FILLED_NOTE);
+        expect(act.mock.calls[0]![1].actions).toMatchObject([
+          { kind: "fill", field: "username", text: fields[0]!.value, origin: credential.origin },
+          { kind: "fill", field: "password", text: fields[1]!.value, origin: credential.origin },
+        ]);
+        for (const field of fields) expect(JSON.stringify(result)).not.toContain(field.value);
+      } finally {
+        browser.sessions.clear();
+      }
+      if (row) {
+        await prisma.$transaction(async (tx) => {
+          await tx.run.update({ where: { id: f.run.id }, data: { status: "cancelled" } });
+          await clearEndedRunState(tx, [f.run]);
+        });
+        expect(await prisma.secret.findFirst({ where: runLoginWhere })).toBeNull();
+        expect(
+          await resolveLoginFill({ prisma, secretStore, scope, name, field: "password" }),
+        ).toMatchObject({ text: "persisted-password", field: "password" });
+      }
+    },
+  );
 
   it("treats an existing name as occupied even when its saved destination is no longer allowed", async () => {
     const name = "fixture-retired-api";

@@ -1,11 +1,21 @@
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
-import type { ThreadMessage } from "@rakazo/contracts";
-import { commandVariableName } from "@rakazo/contracts";
-import { isApprovalAskBlock, isSecretAskBlock, selectedAskActionLabel } from "@rakazo/core";
-import { Button, Input } from "@rakazo/ui-web";
-import { useState } from "react";
+import type { ThreadMessage, WebsiteLoginAnswer } from "@rakazo/contracts";
+import {
+  commandVariableName,
+  LOGIN_VALUE_TOO_LONG,
+  loginCardFields,
+  NamedLoginSecretValue,
+} from "@rakazo/contracts";
+import {
+  isApprovalAskBlock,
+  isSecretAskBlock,
+  selectedAskActionLabel,
+  WebsiteLoginAnswerUnconfirmed,
+} from "@rakazo/core";
+import { Button, Input, Switch } from "@rakazo/ui-web";
+import { useId, useState } from "react";
 import { errorText } from "../lib/user-error";
 
 export type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
@@ -52,6 +62,135 @@ function secretFieldLabel(purpose: AskBlock["purpose"]): string {
   return t`Code`;
 }
 
+function WebsiteLoginForm({
+  labels,
+  onClose,
+  onProvide,
+  onUnconfirmed,
+}: {
+  labels: readonly string[];
+  onClose: () => void;
+  onProvide: (login: WebsiteLoginAnswer) => Promise<void>;
+  onUnconfirmed: (receipt: WebsiteLoginAnswerUnconfirmed) => void;
+}) {
+  const { t } = useLingui();
+  const [fields, setFields] = useState(() => loginCardFields(labels));
+  const [remember, setRemember] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const limitErrorId = useId();
+  const login = NamedLoginSecretValue.safeParse({ fields });
+  const tooLong =
+    !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
+
+  async function provide() {
+    if (submitting || !login.success) return;
+    setSubmitting(true);
+    setFailed(false);
+    setFields((current) => current.map((field) => ({ ...field, value: "" })));
+    try {
+      await onProvide({ fields: login.data.fields, remember });
+    } catch (error) {
+      if (error instanceof WebsiteLoginAnswerUnconfirmed) onUnconfirmed(error);
+      else setFailed(true);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form
+      className="mt-3.5 flex flex-col gap-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void provide();
+      }}
+    >
+      {fields.map((field, index) => {
+        const change = (update: Partial<WebsiteLoginAnswer["fields"][number]>) => {
+          setFailed(false);
+          setFields((current) =>
+            current.map((entry, at) => (at === index ? { ...entry, ...update } : entry)),
+          );
+        };
+        const label = field.label.toLowerCase();
+        return (
+          <div key={field.label} className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2 text-sm">
+              <span className="break-all">{field.label}</span>
+              <div className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                <span>{field.hidden ? t`Hidden` : t`Visible`}</span>
+                <Switch
+                  size="sm"
+                  aria-label={t`Hide ${field.label}`}
+                  checked={field.hidden}
+                  disabled={submitting}
+                  onCheckedChange={(hidden) => change({ hidden })}
+                />
+              </div>
+            </div>
+            <Input
+              aria-label={field.label}
+              aria-invalid={tooLong || undefined}
+              aria-describedby={tooLong ? limitErrorId : undefined}
+              type={field.hidden ? "password" : "text"}
+              autoComplete={
+                field.hidden && label === "password"
+                  ? "current-password"
+                  : !field.hidden && label === "username"
+                    ? "username"
+                    : "off"
+              }
+              autoCapitalize="none"
+              spellCheck={false}
+              maxLength={4096}
+              disabled={submitting}
+              value={field.value}
+              onChange={(event) => change({ value: event.target.value })}
+            />
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Switch
+          size="sm"
+          aria-label={t`Save for this Bot`}
+          checked={remember}
+          disabled={submitting}
+          onCheckedChange={(checked) => {
+            setFailed(false);
+            setRemember(checked);
+          }}
+        />
+        <Trans>Save for this Bot</Trans>
+      </div>
+      {!remember ? (
+        <p className="text-sm text-muted-foreground">
+          <Trans>For this task only</Trans>
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" disabled={!login.success || submitting}>
+          {submitting ? <Trans>Sending…</Trans> : <Trans>Provide information</Trans>}
+        </Button>
+        <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
+          <Trans>Close</Trans>
+        </Button>
+      </div>
+      {failed ? (
+        <p role="alert" className="text-sm text-destructive">
+          <Trans>Could not submit this answer</Trans>
+        </p>
+      ) : null}
+      {tooLong ? (
+        <p role="alert" id={limitErrorId} className="text-sm text-destructive">
+          <Trans>These login values are too long together. Shorten one or more fields.</Trans>
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
 export function AskCard({
   block,
   canAnswer,
@@ -59,10 +198,15 @@ export function AskCard({
 }: {
   block: AskBlock;
   canAnswer: boolean;
-  onAnswer: (text: string, username?: string) => Promise<void>;
+  onAnswer: (text: string, username?: string, login?: WebsiteLoginAnswer) => Promise<void>;
 }) {
   const { t } = useLingui();
   const [editing, setEditing] = useState(false);
+  const [loginFormOpen, setLoginFormOpen] = useState(true);
+  const [loginProvided, setLoginProvided] = useState(false);
+  const [loginUnconfirmed, setLoginUnconfirmed] = useState<WebsiteLoginAnswerUnconfirmed | null>(
+    null,
+  );
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [answer, setAnswer] = useState("");
   const [username, setUsername] = useState("");
@@ -73,6 +217,7 @@ export function AskCard({
   const askActions = block.actions;
   const secretInput = isSecretAskBlock(block);
   const loginInput = secretInput && block.credential?.auth.type === "login";
+  const namedFields = loginInput ? block.loginFields : undefined;
   const secretLabel = loginInput ? t`Password` : secretFieldLabel(block.purpose);
 
   async function submitAnswer(value: string) {
@@ -104,10 +249,17 @@ export function AskCard({
   return (
     <div
       data-testid={secretInput ? "secret-ask-card" : undefined}
-      className="max-w-[74%] rounded-2xl border border-border bg-card px-5 py-4"
+      className={`rounded-2xl border border-border bg-card px-5 py-4 ${namedFields ? "w-80 max-w-full" : "max-w-[74%]"}`}
     >
       <div className="text-[15.5px] leading-[1.5] text-foreground">
-        {block.reviewMode === "screen" ? block.text : <ChatMarkdown>{block.text}</ChatMarkdown>}
+        {namedFields && block.loginBotName ? (
+          <div className="mb-1 text-sm font-medium">{block.loginBotName}</div>
+        ) : null}
+        {block.reviewMode === "screen" || namedFields ? (
+          block.text
+        ) : (
+          <ChatMarkdown>{block.text}</ChatMarkdown>
+        )}
       </div>
       {secretInput && block.credential ? (
         <div
@@ -140,15 +292,17 @@ export function AskCard({
           ) : null}
         </details>
       ) : null}
-      {block.status === "answered" ? (
+      {block.status === "answered" || loginProvided ? (
         <div className="mt-3.5 text-[13.5px] font-medium text-success">
-          {formatAnsweredState(
-            block.answer,
-            Boolean(approvalActions),
-            secretInput,
-            approvalActions?.find((action) => action.id === block.answer)?.outcome,
-            askActions,
-          )}
+          {namedFields
+            ? t`Information provided`
+            : formatAnsweredState(
+                block.answer,
+                Boolean(approvalActions),
+                secretInput,
+                approvalActions?.find((action) => action.id === block.answer)?.outcome,
+                askActions,
+              )}
         </div>
       ) : !canAnswer ? (
         <div className="mt-3.5 text-[13.5px] font-medium text-muted-foreground">
@@ -180,6 +334,42 @@ export function AskCard({
             </Button>
           ))}
         </div>
+      ) : namedFields && loginUnconfirmed ? (
+        <div className="mt-3.5 flex flex-col items-start gap-2 text-sm">
+          <p role="status">
+            <Trans>Could not confirm receipt. Check before entering the information again.</Trans>
+          </p>
+          <Button
+            disabled={submitting}
+            onClick={() => {
+              setPendingAction("check");
+              void loginUnconfirmed
+                .check()
+                .then((confirmed) => {
+                  setLoginProvided(confirmed);
+                  setLoginUnconfirmed(null);
+                })
+                .catch(() => undefined)
+                .finally(() => setPendingAction(null));
+            }}
+          >
+            <Trans>Check again</Trans>
+          </Button>
+        </div>
+      ) : namedFields ? (
+        loginFormOpen ? (
+          <WebsiteLoginForm
+            key={block.loginRequestEffectId}
+            labels={namedFields}
+            onClose={() => setLoginFormOpen(false)}
+            onProvide={(login) => onAnswer("", undefined, login)}
+            onUnconfirmed={setLoginUnconfirmed}
+          />
+        ) : (
+          <Button className="mt-3.5" onClick={() => setLoginFormOpen(true)}>
+            <Trans>Provide information</Trans>
+          </Button>
+        )
       ) : secretInput ? (
         <form
           className="mt-3.5 flex flex-col gap-2"

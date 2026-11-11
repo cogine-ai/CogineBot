@@ -7465,3 +7465,39 @@ msgstr "此服务器暂不支持修改凭据。"
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "此表单无法编辑命名字段。"
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "无法确认是否已收到。请先检查，再重新输入。"
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "仅本次任务使用"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "已隐藏"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "隐藏 {0}"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "已提供信息"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "提供信息"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "保存供此 Bot 使用"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "可见"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "登录信息的总长度超出限制。请缩短一个或多个字段。"

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, GenerateSecretInput } from "@rakazo/contracts";
 import {
   BOT_SECRET_VALUE_MAX_LENGTH,
@@ -19,7 +20,8 @@ import {
 } from "@rakazo/contracts";
 import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { withTransactionRetry } from "@rakazo/db";
+import { runLoginKind, withTransactionRetry } from "@rakazo/db";
+import * as z from "zod";
 import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
@@ -380,9 +382,9 @@ export function sameSecretDestination(
 export async function findBotSecret(prisma: PrismaClient, scope: BotSecretScope, name: string) {
   const row = await prisma.botSecret.findFirst({
     where: { ...scopeFields(scope), name },
-    select: metadata,
+    select: { ...metadata, revision: true },
   });
-  return row ? normalizeSecretDestination(row) : null;
+  return row ? { destination: normalizeSecretDestination(row), revision: row.revision } : null;
 }
 
 export async function prepareBotSecret(input: {
@@ -651,13 +653,14 @@ export async function generateBotSecret(input: {
   secretStore: SecretStore;
   scope: BotSecretScope;
   args: GenerateSecretInput;
+  runId?: string;
   lockRun: (tx: Prisma.TransactionClient) => Promise<void>;
   commitReceipt: (
     tx: Prisma.TransactionClient,
     result: GeneratedCredentialReceipt,
   ) => Promise<void>;
 }): Promise<{ result: GeneratedCredentialReceipt; redactions: string[] } | { error: string }> {
-  const { prisma, secretStore, scope, args } = input;
+  const { prisma, secretStore, scope, args, runId } = input;
   const { name } = args;
   const nameTaken = {
     error: "A credential with this name already exists. Choose another name.",
@@ -705,7 +708,16 @@ export async function generateBotSecret(input: {
 
   let commitStarted = false;
   try {
-    if (await existing()) return nameTaken;
+    if (
+      (await existing()) ||
+      (args.type === "login" &&
+        runId &&
+        (await prisma.secret.findFirst({
+          where: runLoginSecretWhere(scope, runId, name),
+          select: { id: true },
+        })))
+    )
+      return nameTaken;
     const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
     // The standard pair remains editable and transferable through the existing credential UI.
     // The browser maps it to the same Username and Password labels as a named login.
@@ -969,10 +981,174 @@ export async function requestWithBotSecret(input: {
 export type LoginField = "username" | "password";
 const MIN_REDACTED_VISIBLE_LOGIN_VALUE = 6;
 
-export type LoginCredentialRevision = { id: string; revision: string };
+const RunLoginValue = z.strictObject({
+  origin: z.string(),
+  botId: z.string(),
+  effectId: z.string(),
+  login: z.string(),
+});
 
-export function findLoginFillAuthority(
-  prisma: Pick<Prisma.TransactionClient, "run">,
+export function encodeRunLogin(input: z.infer<typeof RunLoginValue>): string {
+  return JSON.stringify(input);
+}
+
+const runLoginEffectStatuses = ["approved", "executing", "completed"];
+
+class RunLoginUnavailableError extends Error {
+  constructor() {
+    super("The task login is no longer available.");
+    this.name = "RunLoginUnavailableError";
+  }
+}
+
+function runLoginSecretWhere(scope: BotSecretScope, runId: string, name: string) {
+  return { userId: scope.userId, spaceId: scope.spaceId, kind: runLoginKind(runId, name) };
+}
+
+function runLoginEffectWhere(scope: BotSecretScope, runId: string, effectId: string) {
+  return {
+    id: effectId,
+    runId,
+    spaceId: scope.spaceId,
+    kind: "request_secret",
+    status: { in: runLoginEffectStatuses },
+  };
+}
+
+async function readRunLoginValue(
+  secretStore: Pick<SecretStore, "load">,
+  row: { id: string; ciphertext: string },
+  botId: string,
+) {
+  try {
+    const value = RunLoginValue.parse(JSON.parse(await secretStore.load(row.ciphertext, row.id)));
+    if (value.botId === botId)
+      return { ...value, fields: loginSecretFields(decodeLoginSecret(value.login)) };
+  } catch (error) {
+    if (error instanceof SecretStoreUnavailableError) throw error;
+  }
+  throw new RunLoginUnavailableError();
+}
+
+async function readRunLogin(
+  prisma: PrismaClient,
+  secretStore: Pick<SecretStore, "load">,
+  scope: BotSecretScope,
+  runId: string,
+  name: string,
+  row: { id: string; ciphertext: string },
+) {
+  const run = await prisma.run.findFirst({
+    where: {
+      ...scopeFields(scope),
+      id: runId,
+      status: { in: ["queued", "running", "waiting_input", "waiting_takeover"] },
+    },
+    select: { id: true },
+  });
+  if (!run) throw new RunLoginUnavailableError();
+  const value = await readRunLoginValue(secretStore, row, scope.botId);
+  const effect = await prisma.externalEffect.findFirst({
+    where: runLoginEffectWhere(scope, runId, value.effectId),
+    select: { request: true },
+  });
+  const destination =
+    effect && isPlainObject(effect.request)
+      ? resolveRequestSecretDestination(effect.request).destination
+      : undefined;
+  if (
+    destination?.auth.type !== "login" ||
+    destination.name !== name ||
+    destination.origin !== value.origin
+  )
+    throw new RunLoginUnavailableError();
+  return {
+    origin: value.origin,
+    fields: value.fields,
+    credential: { id: row.id, name, effectId: value.effectId } as const,
+  };
+}
+
+/** An invalid existing task login must not fall back to a saved login with the same name. */
+export async function findRunLogin(
+  prisma: PrismaClient,
+  secretStore: Pick<SecretStore, "load">,
+  scope: BotSecretScope,
+  runId: string,
+  name: string,
+) {
+  const row = await prisma.secret.findFirst({
+    where: runLoginSecretWhere(scope, runId, name),
+    select: { id: true, ciphertext: true },
+  });
+  if (!row) return undefined;
+  try {
+    return await readRunLogin(prisma, secretStore, scope, runId, name, row);
+  } catch (error) {
+    if (error instanceof RunLoginUnavailableError) return null;
+    throw error;
+  }
+}
+
+export function runLoginToolView(
+  destination: BotSecretDestination,
+  login: Awaited<ReturnType<typeof findRunLogin>>,
+  receipt?: { effectId: string; destination: BotSecretDestination },
+) {
+  if (
+    !login ||
+    login.origin !== destination.origin ||
+    (receipt &&
+      (login.credential.effectId !== receipt.effectId ||
+        !sameSecretDestination(receipt.destination, destination)))
+  )
+    return undefined;
+  return {
+    provided: true,
+    saved: false,
+    ...destination,
+    fields: login.fields.map(({ label, hidden }) => ({ label, hidden })),
+  };
+}
+
+function loginFillRedactions(fields: ReturnType<typeof loginSecretFields>): string[] {
+  return [
+    ...new Set(
+      fields
+        .filter(({ hidden, value }) => hidden || value.length >= MIN_REDACTED_VISIBLE_LOGIN_VALUE)
+        .flatMap(({ value }) => commandRedactionForms(value)),
+    ),
+  ];
+}
+
+export async function loadRunLoginRedactions(
+  prisma: PrismaClient,
+  secretStore: Pick<SecretStore, "load">,
+  scope: BotSecretScope,
+  runId: string,
+) {
+  const prefix = runLoginKind(runId, "");
+  const rows = await prisma.secret.findMany({
+    where: { userId: scope.userId, spaceId: scope.spaceId, kind: { startsWith: prefix } },
+    select: { id: true, kind: true, ciphertext: true },
+  });
+  const forms = new Set<string>();
+  for (const row of rows) {
+    const name = BotSecretName.safeParse(row.kind.slice(prefix.length));
+    if (!name.success) continue;
+    // A stale approval can forbid future fills while the page still echoes a previous value.
+    const login = await readRunLoginValue(secretStore, row, scope.botId);
+    for (const form of loginFillRedactions(login.fields)) forms.add(form);
+  }
+  return [...forms];
+}
+
+export type LoginCredentialRevision =
+  | { id: string; revision: string }
+  | { id: string; name: string; effectId: string };
+
+export async function findLoginFillAuthority(
+  prisma: Pick<Prisma.TransactionClient, "run" | "secret" | "externalEffect">,
   input: {
     scope: BotSecretScope;
     runId: string;
@@ -985,7 +1161,7 @@ export function findLoginFillAuthority(
 ) {
   const scope = scopeFields(input.scope);
   const now = new Date();
-  return prisma.run.findFirst({
+  const authority = await prisma.run.findFirst({
     where: {
       ...scope,
       id: input.runId,
@@ -997,9 +1173,11 @@ export function findLoginFillAuthority(
         archivedAt: null,
         computerId: input.computerId,
         computerSwitching: false,
-        AND: input.credentials.map((binding) => ({
-          botSecrets: { some: { ...scope, ...binding } },
-        })),
+        AND: input.credentials
+          .filter((binding) => "revision" in binding)
+          .map((binding) => ({
+            botSecrets: { some: { ...scope, ...binding } },
+          })),
         ...(input.computerLease && {
           computer: {
             executionLeases: { some: { ...input.computerLease, expiresAt: { gt: now } } },
@@ -1009,6 +1187,22 @@ export function findLoginFillAuthority(
     },
     select: { bot: { select: { disabledBuiltinTools: true } } },
   });
+  if (!authority) return null;
+  for (const binding of input.credentials) {
+    if ("revision" in binding) continue;
+    const [secret, effect] = await Promise.all([
+      prisma.secret.findFirst({
+        where: { ...runLoginSecretWhere(scope, input.runId, binding.name), id: binding.id },
+        select: { id: true },
+      }),
+      prisma.externalEffect.findFirst({
+        where: runLoginEffectWhere(scope, input.runId, binding.effectId),
+        select: { id: true },
+      }),
+    ]);
+    if (!secret || !effect) return null;
+  }
+  return authority;
 }
 
 /**
@@ -1019,6 +1213,7 @@ export async function resolveLoginFill(input: {
   prisma: PrismaClient;
   secretStore: SecretStore;
   scope: BotSecretScope;
+  runId?: string;
   name: string;
   field: string;
 }): Promise<
@@ -1032,9 +1227,19 @@ export async function resolveLoginFill(input: {
   | { error: string }
 > {
   const where = { ...scopeFields(input.scope), name: input.name };
+  const temporary = input.runId
+    ? await findRunLogin(input.prisma, input.secretStore, input.scope, input.runId, input.name)
+    : undefined;
+  if (temporary === null) return { error: "The task login is no longer available." };
+  if (temporary)
+    return loginFillFromFields(
+      temporary.fields,
+      temporary.origin,
+      temporary.credential,
+      input.field,
+    );
   const row = await input.prisma.botSecret.findFirst({ where });
-  if (!row) return { error: "Login is unavailable. Use request_secret to save it first." };
-  const { id, revision } = row;
+  if (!row) return { error: "Login is unavailable. Use request_secret to request it." };
   if (isCommandCredential(row.auth)) {
     return {
       error: `${UNUSABLE_CREDENTIAL}. Command variables are only available to shell commands.`,
@@ -1057,31 +1262,41 @@ export async function resolveLoginFill(input: {
   if (destination.origin !== storedOrigin.origin) {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
-  const plaintext = await input.secretStore.load(row.ciphertext, row.id);
   let fields: ReturnType<typeof loginSecretFields>;
   try {
-    fields = loginSecretFields(decodeLoginSecret(plaintext));
+    fields = loginSecretFields(
+      decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id)),
+    );
   } catch {
     return { error: UNUSABLE_CREDENTIAL };
   }
-  const label = input.field.trim().toLowerCase();
+  return loginFillFromFields(
+    fields,
+    destination.origin,
+    { id: row.id, revision: row.revision },
+    input.field,
+  );
+}
+
+function loginFillFromFields(
+  fields: ReturnType<typeof loginSecretFields>,
+  origin: string,
+  credential: LoginCredentialRevision,
+  requestedField: string,
+) {
+  const label = requestedField.trim().toLowerCase();
   const field =
     fields.find((entry) => entry.label.toLowerCase() === label) ??
     (label === "username" || label === "password"
       ? fields.find(({ hidden }) => hidden === (label === "password"))
       : undefined);
   if (!field) return { error: "This login has no field with that label." };
-  const redactions = fields
-    .filter(({ hidden, value }) => hidden || value.length >= MIN_REDACTED_VISIBLE_LOGIN_VALUE)
-    .flatMap(({ value }) => {
-      const encoded = percentEncoded(value);
-      return encoded === undefined ? [value] : [value, encoded];
-    });
+  const fieldType: LoginField = field.hidden ? "password" : "username";
   return {
     text: field.value,
-    origin: destination.origin,
-    field: field.hidden ? "password" : "username",
-    redactions: [...new Set(redactions)],
-    credential: { id, revision },
+    origin,
+    field: fieldType,
+    redactions: loginFillRedactions(fields),
+    credential,
   };
 }

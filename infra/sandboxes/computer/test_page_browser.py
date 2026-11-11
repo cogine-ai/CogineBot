@@ -236,10 +236,24 @@ while base.exists():
         with patch.object(helper.page_secrets, "follow_navigation", return_value=False), patch.object(helper.time, "sleep"):
             result = target.act([step])
         self.assertTrue(result["ok"])
+        self.assertEqual(result["loginFieldsFilled"], 1)
         target._exact.login.assert_called_once_with(step)
         target._exact.act.assert_not_called()
         self.assertNotIn(step["text"], json.dumps(target.ab.batch.call_args_list, default=str))
         self.assertNotIn(step["text"], json.dumps(result))
+
+    def test_does_not_count_a_discarded_login_as_filled(self):
+        target = page()
+        first = {"kind": "fill", "ref": ref("first"), "text": "fixture-user",
+                 "origin": "https://login.example.test", "field": "username"}
+        second = {**first, "ref": ref("second"), "field": "password", "text": "fixture-password"}
+        target._exact.login.side_effect = [True, helper.page_secrets.KeysNotKept("Page discarded input")]
+        with patch.object(helper.page_secrets, "follow_navigation", return_value=False):
+            result = target.act([first, second])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(result["loginFieldsFilled"], 1)
 
     def test_rejects_origin_outside_fill_before_any_action(self):
         target = page()
