@@ -16,6 +16,36 @@ import {
 } from "./thread-message-pages.js";
 
 describe("thread message pages", () => {
+  it("keeps named login cards non-interactive for clients without the card contract", () => {
+    const card = {
+      kind: "ask",
+      status: "pending",
+      text: "Sign in",
+      input: "secret",
+      loginFields: ["Username", "Password"],
+      loginRequestEffectId: "effect-1",
+    } as const;
+    const message: ThreadMessage = {
+      id: "login-card",
+      threadId: "thread-1",
+      seq: 7,
+      role: "bot",
+      createdAt: "2026-10-12T00:00:00.000Z",
+      blocks: [{ ...card, loginFields: [...card.loginFields] }],
+    };
+    const fallback = [
+      { kind: "text", text: "Update the app to provide protected sign-in information." },
+    ];
+    const snapshot = { messages: [message] };
+    expect(projectThreadPageFallbacks(snapshot).messages[0]!.blocks).toEqual(fallback);
+    expect(projectThreadPageFallbacks(snapshot, true).messages[0]).toBe(message);
+    for (const type of ["thread.message.created", "thread.message.updated"]) {
+      const event = { type, payload: { blocks: message.blocks } };
+      expect(projectThreadEventPageFallback(event).payload.blocks).toEqual(fallback);
+      expect(projectThreadEventPageFallback(event, true)).toBe(event);
+    }
+  });
+
   it("adds one plain compatibility block to the wire only, with no private link or title", () => {
     const card = {
       kind: "page",

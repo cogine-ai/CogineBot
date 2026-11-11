@@ -5,6 +5,7 @@ import {
   botSecretDestinationSchema,
   GenerateSecretInput,
   LoginFieldLabel,
+  LoginFieldLabels,
   SecretAskPurpose,
   SecretHttpRequest,
   TICKET_PRIORITIES,
@@ -35,7 +36,7 @@ function secretAskToolSurface() {
       allowPrivateHttpOrigins
         ? "HTTPS origin, or an HTTP origin on a private LAN host"
         : "HTTPS origin"
-    }, or connectionId for a one-use connector code. Credential names must start with a lowercase letter and use only lowercase letters, digits, hyphens, or underscores (max 64 characters). For a website login the user wants saved, use auth {type:"login"} with the sign-in page's HTTPS origin; the card asks for a username and password, and browser_act fill_secret types them. For a value this bot's shell commands need, use auth {type:"command"} with no origin; it is exported to them as an environment variable named after the credential in upper case with hyphens as underscores (netbird-setup-key becomes $NETBIRD_SETUP_KEY). Existing named credentials are reused unless replace is true. For 2FA, CAPTCHA, passkeys, or anything else that needs the live desktop, call request_takeover instead.`,
+    }, or connectionId for a one-use connector code. Credential names must start with a lowercase letter and use only lowercase letters, digits, hyphens, or underscores (max 64 characters). For a website login use auth {type:"login"} with the exact HTTPS origin. Pass 1–8 field labels only when the form needs labels other than Username and Password. The user chooses which fields are hidden and whether to save the login for this bot or provide it for the current task. Use browser_act fill_secret with the field labels to fill it. Filling and submitting the website form are separate actions. For a value this bot's shell commands need, use auth {type:"command"} with no origin; it is exported to them as an environment variable named after the credential in upper case with hyphens as underscores (netbird-setup-key becomes $NETBIRD_SETUP_KEY). Existing named credentials are reused unless replace is true. For 2FA, CAPTCHA, passkeys, or anything else that needs the live desktop, call request_takeover instead.`,
     inputSchema: {
       oneOf: [
         {
@@ -48,6 +49,10 @@ function secretAskToolSurface() {
               botSecretDestinationSchema({ allowPrivateHttpOrigin: allowPrivateHttpOrigins }),
               { io: "input" },
             ),
+            fields: {
+              ...z.toJSONSchema(LoginFieldLabels, { io: "input" }),
+              description: "Labels only for a website login. Never pass field values here.",
+            },
             replace: {
               type: "boolean",
               description: "Ask the user to replace an existing credential value.",
@@ -232,7 +237,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   },
   {
     name: "browser_act",
-    description: `Click or fill page elements by ref from browser_snapshot (kinds: ${BROWSER_ACT_KINDS.join(", ")}). click is a real mouse click, and fill on a dropdown takes one of its options' visible labels or values. The result shows the page after the action, and a snapshot covers the whole page, so scrolling is rarely needed. upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret fills a saved login field by label on its saved HTTPS origin (in a frame, the frame's origin). You never see the value, and filling does not submit the form. type presses keys like a keyboard and replaces the field's text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing. Do not replay completed or uncertain actions.`,
+    description: `Click or fill page elements by ref from browser_snapshot (kinds: ${BROWSER_ACT_KINDS.join(", ")}). click is a real mouse click, and fill on a dropdown takes one of its options' visible labels or values. The result shows the page after the action, and a snapshot covers the whole page, so scrolling is rarely needed. upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret fills a protected login field by label on its exact HTTPS origin (in a frame, the frame's origin), using a saved or task-only login. You never see the value, and filling does not submit the form. type presses keys like a keyboard and replaces the field's text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing. Do not replay completed or uncertain actions.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -254,12 +259,12 @@ export const builtinAgentTools: ConnectorTool[] = [
                 maxItems: MAX_BROWSER_UPLOAD_FILES,
                 description: "Workspace files to attach, for upload.",
               },
-              secret: { type: "string", description: "Saved login name for fill_secret." },
+              secret: { type: "string", description: "Protected login name for fill_secret." },
               field: {
                 type: "string",
                 minLength: LoginFieldLabel.minLength ?? undefined,
                 maxLength: LoginFieldLabel.maxLength ?? undefined,
-                description: "Saved login field label.",
+                description: "Protected login field label.",
               },
             },
             required: ["kind", "ref"],

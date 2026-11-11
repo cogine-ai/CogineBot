@@ -125,6 +125,8 @@ export async function browserSnapshotFromTool(
   }
 }
 
+export const LOGIN_FIELDS_FILLED_NOTE = "Login fields filled. No form-submit action was sent.";
+
 export async function browserActFromTool(
   browser: BrowserProvider,
   computer: ComputerRef,
@@ -234,7 +236,32 @@ export async function browserActFromTool(
       Promise.resolve().then(() => browser.act(computer, request, actionContext)),
       actionContext.signal,
     );
-    return redactBrowserResult(formatBrowserResult(result), options.redactions?.() ?? []);
+    const attemptedFills = steps
+      .slice(0, result.completed ?? 0)
+      .filter((step) => step.kind === "fill_secret").length;
+    const verified = result.loginFieldsFilled;
+    const filled =
+      typeof verified === "number" &&
+      Number.isInteger(verified) &&
+      verified >= 0 &&
+      verified <= attemptedFills
+        ? verified
+        : result.ok || attemptedFills === 0
+          ? attemptedFills
+          : undefined;
+    const { loginFieldsFilled: _providerCount, ...browserResult } = result;
+    const outcome =
+      loginCredentials.length > 0 && filled !== undefined
+        ? {
+            ...browserResult,
+            loginFieldsFilled: filled,
+            ...(filled === steps.length &&
+              result.ok && {
+                note: LOGIN_FIELDS_FILLED_NOTE,
+              }),
+          }
+        : browserResult;
+    return redactBrowserResult(formatBrowserResult(outcome), options.redactions?.() ?? []);
   } catch (error) {
     context.signal.throwIfAborted();
     if (preparationSignal.aborted && !dispatchStarted) {
@@ -409,6 +436,7 @@ export function browserResultForModel<T>(result: T): T | AgentToolExecutionResul
           "timedOut",
           "loading",
           "navigationOutcomeKnown",
+          "loginFieldsFilled",
           "fallback",
         ]
           .filter(

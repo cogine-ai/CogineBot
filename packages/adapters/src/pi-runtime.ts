@@ -1680,6 +1680,7 @@ export function prepareRequestSecretArguments(raw: Record<string, unknown>) {
     purpose,
     ...(connectionId ? { connectionId } : {}),
     ...(credential !== undefined ? { credential } : {}),
+    ...(raw.fields === undefined ? {} : { fields: raw.fields }),
     ...(raw.replace === true ? { replace: true } : {}),
   };
 }

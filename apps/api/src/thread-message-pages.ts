@@ -26,15 +26,39 @@ function legacyPageCardBlocks(blocks: MessageBlock[]): MessageBlock[] {
   ];
 }
 
+function projectThreadBlocks(
+  blocks: MessageBlock[],
+  supportsWebsiteLoginCard: boolean,
+): MessageBlock[] {
+  const projected = legacyPageCardBlocks(blocks);
+  if (
+    supportsWebsiteLoginCard ||
+    !projected.some((block) => block?.kind === "ask" && block.loginFields)
+  )
+    return projected;
+  return projected.map((block) =>
+    block?.kind === "ask" && block.loginFields
+      ? {
+          kind: "text",
+          text:
+            block.status === "answered"
+              ? "Sign-in information provided."
+              : "Update the app to provide protected sign-in information.",
+        }
+      : block,
+  );
+}
+
 /** Older clients can render text in the same row. Storage and exports retain the actual blocks. */
 export function projectThreadPageFallbacks<T extends { messages: ThreadMessage[] }>(
   snapshot: T,
+  supportsWebsiteLoginCard = false,
 ): T {
   return {
     ...snapshot,
     messages: snapshot.messages.map((message) => {
       if (message.role !== "bot") return message;
-      const blocks = legacyPageCardBlocks(message.blocks);
+      const blocks = projectThreadBlocks(message.blocks, supportsWebsiteLoginCard);
       return blocks === message.blocks ? message : { ...message, blocks };
     }),
   };
@@ -45,12 +69,12 @@ export function projectThreadEventPageFallback<
     type: string;
     payload: { blocks?: unknown; role?: unknown };
   },
->(event: T): T {
+>(event: T, supportsWebsiteLoginCard = false): T {
   if (event.type !== "thread.message.created" && event.type !== "thread.message.updated")
     return event;
   const { role, blocks } = event.payload;
   if ((role !== undefined && role !== "bot") || !Array.isArray(blocks)) return event;
-  const projected = legacyPageCardBlocks(blocks);
+  const projected = projectThreadBlocks(blocks, supportsWebsiteLoginCard);
   return projected === blocks
     ? event
     : { ...event, payload: { ...event.payload, blocks: projected } };

@@ -3,8 +3,7 @@ import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { SharedPageUpdateRequest } from "@rakazo/contracts";
 import {
   type BotSecretDestination,
-  encodeLoginSecret,
-  LoginSecretValue,
+  loginCardAnswer,
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
   type ProductEvent,
@@ -12,6 +11,7 @@ import {
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   SharedPageUpdateRequestSchema,
   sharedPageUpdateApprovalTitle,
+  type WebsiteLoginAnswer,
 } from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
@@ -279,6 +279,7 @@ export interface AnswerRunInput {
   clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
   username?: string;
+  login?: WebsiteLoginAnswer;
 }
 
 export interface SendUserMessageInput {
@@ -332,6 +333,9 @@ export interface RunSecretWriter {
     userId: string;
     spaceId: string;
     plaintext: string;
+    remember?: boolean;
+    effectId?: string;
+    expectedRevision?: string | null;
     tx: Prisma.TransactionClient;
   }): Promise<void>;
 }
@@ -927,12 +931,19 @@ async function commitAnswerRunInput(
   if (secretAsk && !runSecretWriter) return null;
   if (secretAsk && pendingAsk.credential && run.userId !== input.answeredByUserId) return null;
   const loginAsk = secretAsk && pendingAsk.credential?.auth.type === "login";
-  // A username belongs only to a login card, which cannot be saved without one.
-  if (loginAsk !== Boolean(input.username?.trim())) return null;
-  const login = loginAsk
-    ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
+  const login = loginAsk ? loginCardAnswer(pendingAsk.loginFields, input) : undefined;
+  if (loginAsk ? !login : input.login !== undefined || input.username !== undefined) return null;
+  const pendingSecretEffectId = secretAsk
+    ? await loadRunTurnCheckpointSecretEffectId(tx, { id: input.runId, spaceId: input.spaceId })
     : undefined;
-  if (login && !login.success) return null;
+  const namedLogin = Boolean(login && pendingAsk.loginFields);
+  if (
+    namedLogin &&
+    (!pendingSecretEffectId ||
+      pendingSecretEffectId !== pendingAsk.loginRequestEffectId ||
+      pendingAsk.loginExpectedRevision === undefined)
+  )
+    return null;
   let approvalEffect: {
     id: string;
     kind: string;
@@ -1165,17 +1176,20 @@ async function commitAnswerRunInput(
       });
     }
   } else if (secretAsk) {
-    const pendingSecretEffectId = await loadRunTurnCheckpointSecretEffectId(tx, {
-      id: input.runId,
-      spaceId: input.spaceId,
-    });
     await runSecretWriter!.store({
       botId: run.botId,
       credential: pendingAsk.credential,
       runId: input.runId,
       userId: run.userId,
       spaceId: input.spaceId,
-      plaintext: login?.success ? encodeLoginSecret(login.data) : input.answer,
+      plaintext: login?.plaintext ?? input.answer,
+      ...(namedLogin
+        ? {
+            remember: login!.remember,
+            effectId: pendingSecretEffectId,
+            expectedRevision: pendingAsk.loginExpectedRevision,
+          }
+        : {}),
       tx,
     });
     const approved = await tx.externalEffect.updateMany({
@@ -1188,7 +1202,14 @@ async function commitAnswerRunInput(
       },
       data: {
         status: "approved",
-        ...(pendingAsk.credential ? { result: { credentialSaved: pendingAsk.credential } } : {}),
+        ...(pendingAsk.credential
+          ? {
+              result:
+                login?.remember === false
+                  ? { loginProvided: pendingAsk.credential, remember: false }
+                  : { credentialSaved: pendingAsk.credential },
+            }
+          : {}),
       },
     });
     if (pendingSecretEffectId !== undefined && approved.count !== 1)

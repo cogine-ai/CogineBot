@@ -2,7 +2,11 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import type { AppContract } from "@rakazo/contracts";
-import { LOCAL_SETTINGS_PAGE, LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
+import {
+  LOCAL_SETTINGS_PAGE,
+  LOCAL_SETTINGS_RPC,
+  WEBSITE_LOGIN_CARD_HEADER,
+} from "@rakazo/contracts";
 import { desktopBridge } from "./desktop";
 import type { SessionGate } from "./session-gate";
 
@@ -207,8 +211,10 @@ const link = new RPCLink<RpcClientContext>({
       ...captureRpcRecoveryScope(spaceId),
       sessionGeneration: options.context.ownerGeneration ?? rpcSessionGeneration,
     };
+    const headers = withSpaceHeaders(request.headers, spaceId);
+    headers.set(WEBSITE_LOGIN_CARD_HEADER, "1");
     const response = await fetch(request, {
-      headers: withSpaceHeaders(request.headers, spaceId),
+      headers,
       credentials: "include",
       signal: options.signal,
     });

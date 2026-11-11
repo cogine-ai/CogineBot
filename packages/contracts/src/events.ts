@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { botSecretDestinationSchema } from "./bot-secrets.js";
+import { botSecretDestinationSchema, LoginFieldLabels } from "./bot-secrets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
 import { PAGE_TITLE_MAX_LENGTH, PageTextContextSchema, PageVersionSchema } from "./pages.js";
@@ -118,6 +118,11 @@ const AskMessageBlock = z.object({
   // an ask persisted before an owner toggles the private-HTTP flag still
   // validates on replay.
   credential: botSecretDestinationSchema({ allowPrivateHttpOrigin: true }).optional(),
+  /** Named fields and requesting Bot for the protected website login form. */
+  loginFields: LoginFieldLabels.optional(),
+  loginBotName: z.string().min(1).optional(),
+  loginRequestEffectId: Id.optional(),
+  loginExpectedRevision: z.string().min(1).nullable().optional(),
   /** On a fetch approval, the site an "always" answer allows. */
   site: z.string().optional(),
   status: z.enum(["pending", "answered"]).optional(),

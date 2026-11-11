@@ -681,7 +681,12 @@ class PageBrowser:
             validate_actions(actions)
         except RuntimeError as exc:
             raise PreDispatchRejected(str(exc)) from exc
-        completed, uncertain = 0, False
+        completed, uncertain, login_fields_filled = 0, False, 0
+        protected_fill = any(step.get('origin') is not None for step in actions)
+        def observed(result: dict[str, Any]) -> dict[str, Any]:
+            if protected_fill:
+                result['loginFieldsFilled'] = login_fields_filled
+            return self.observed(result)
         try:
             exact = self.exact()
             exact.client.deadline = self.deadline - SNAPSHOT_RESERVE_S
@@ -696,6 +701,7 @@ class PageBrowser:
                     if step.get('origin') is not None:
                         self.masked.add(step['text'])
                         exact.login(step)
+                        login_fields_filled += 1
                     elif kind == 'click':
                         exact.act(ref,'click')
                     elif kind == 'upload':
@@ -712,13 +718,13 @@ class PageBrowser:
                 uncertain = False
                 if page_secrets.follow_navigation(exact.client,exact.navigation,mark,
                                                   self.deadline - SNAPSHOT_RESERVE_S):
-                    return self.observed({'ok':completed == len(actions),'completed':completed,'uncertain':False,
+                    return observed({'ok':completed == len(actions),'completed':completed,'uncertain':False,
                         'timedOut':True,**({'error':'Navigation wait timed out before the remaining actions.'}
                                          if completed != len(actions) else {})})
             ended = time.time()
             time.sleep(min(ACTION_QUIET_SECONDS,remaining_time(self.deadline)))
             busy = not self.settle(ACTION_WAIT_SECONDS - ACTION_QUIET_SECONDS,quiet_from=ended)
-            return self.observed({'ok':True,'completed':completed,'uncertain':False,
+            return observed({'ok':True,'completed':completed,'uncertain':False,
                                   **({'loading':True} if busy else {})})
         except (Settled,Refused,TypingStopped,KeysNotKept,page_secrets.KeysNotKept) as exc:
             timed_out = False
@@ -728,10 +734,10 @@ class PageBrowser:
                                                               self.deadline - SNAPSHOT_RESERVE_S)
                 except Exception as wait_error:
                     timed_out = isinstance(wait_error,TimeoutError)
-            return self.observed({'ok':False,'completed':completed,'uncertain':False,'error':str(exc),
+            return observed({'ok':False,'completed':completed,'uncertain':False,'error':str(exc),
                                   **({'timedOut':True} if timed_out else {})})
         except Exception as exc:
-            return self.observed({'ok':False,'completed':completed,'uncertain':uncertain,'error':str(exc),
+            return observed({'ok':False,'completed':completed,'uncertain':uncertain,'error':str(exc),
                 'fallback':'computer_act',**({'timedOut':True} if isinstance(exc,TimeoutError) else {})})
 
 

@@ -18,7 +18,7 @@ import {
   SecretStoreUnavailableError,
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { BOT_TEMPLATES, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
+import { BOT_TEMPLATES, encodeLoginSecret, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   formatBotSecretHttpApprovalDetail,
@@ -39,6 +39,7 @@ import {
   DENIED_ACTION_ERROR,
   isApprovalPausedResult,
 } from "./approval-effect.js";
+import { encodeRunLogin } from "./bot-secrets.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import * as ComputerLifecycleModule from "./computer-lifecycle.js";
@@ -3307,6 +3308,61 @@ describe("generated command credentials in a Run", () => {
     },
   );
 });
+
+it.each([true, false])(
+  "reconciles a claimed website login after worker interruption (temporary: %s)",
+  async (temporary) => {
+    const f = fixture({ name: "request_secret", builtin: true });
+    const origin = "https://login.example.test";
+    const credential = { name: "interrupted-login", origin, auth: { type: "login" } };
+    const args = { label: "Fixture sign-in", purpose: "password", credential };
+    const effect = {
+      id: "committed-login",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      kind: "request_secret",
+      idempotencyKey: approvalEffectKey(f.runRecord.id, "request_secret", args),
+      status: "executing",
+      request: args,
+      result: temporary
+        ? { loginProvided: credential, remember: false }
+        : { credentialSaved: credential },
+    };
+    f.effects.push(effect);
+    if (temporary) {
+      Object.assign(f.prisma.run, { findFirst: vi.fn(async () => ({ id: f.runRecord.id })) });
+      Object.assign(f.prisma.externalEffect, { findFirst: vi.fn(async () => effect) });
+      Object.assign(f.prisma.secret, {
+        findFirst: vi.fn(async () => ({
+          id: "temp-row",
+          ciphertext: encodeRunLogin({
+            origin,
+            botId: f.runRecord.botId,
+            effectId: effect.id,
+            login: encodeLoginSecret({ username: "fixture-account", password: "fixture-password" }),
+          }),
+        })),
+      });
+    } else {
+      Object.assign(f.prisma.botSecret, {
+        findFirst: vi.fn(async () => ({
+          ...credential,
+          revision: "fixture-revision",
+        })),
+      });
+    }
+    f.setCalls([{ args, executionId: "resume-login" }]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.results).toMatchObject([
+      temporary ? { provided: true, saved: false, ...credential } : { saved: true, ...credential },
+    ]);
+    expect(f.effects).toContainEqual(
+      expect.objectContaining({ id: effect.id, status: "completed" }),
+    );
+    expect(JSON.stringify(f.results)).not.toContain("fixture-password");
+  },
+);
 
 describe("generated website logins in a Run", () => {
   const login = {

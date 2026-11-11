@@ -795,7 +795,7 @@ describe("saved website logins", () => {
       credential: { id: row.id, revision: row.revision },
     });
     row.revision = "r2";
-    expect(password.credential.revision).not.toBe(row.revision);
+    expect(password.credential).not.toMatchObject({ revision: row.revision });
   });
 
   it("fills a historical pair saved with extra JSON fields", async () => {

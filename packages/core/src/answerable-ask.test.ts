@@ -1,9 +1,59 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   latestAnswerableAskMessageId,
+  reconcileWebsiteLoginAnswer,
   resolveAskChoice,
   selectedAskActionLabel,
+  WebsiteLoginAnswerUnconfirmed,
 } from "./answerable-ask.js";
+
+it("checks the same card again without resubmitting when the first read fails", async () => {
+  const original = {
+    id: "message-1",
+    runId: "run-1",
+    blocks: [{ kind: "ask", status: "pending", loginRequestEffectId: "effect-1" }],
+  };
+  const answered = {
+    ...original,
+    blocks: [{ ...original.blocks[0]!, status: "answered" }],
+  };
+  const responses = [
+    [{ ...answered, runId: "different-run" }],
+    [
+      {
+        ...answered,
+        blocks: [{ ...answered.blocks[0]!, loginRequestEffectId: "different-effect" }],
+      },
+    ],
+    [original],
+    [answered],
+  ];
+  let reads = 0;
+  const confirmed = vi.fn();
+  const receipt = await reconcileWebsiteLoginAnswer(
+    original,
+    async () => {
+      if (reads++ === 0) throw new Error("Read unavailable");
+      return responses[reads - 2]!;
+    },
+    { confirmed },
+  ).catch((error: unknown) => error);
+  expect(receipt).toBeInstanceOf(WebsiteLoginAnswerUnconfirmed);
+  if (!(receipt instanceof WebsiteLoginAnswerUnconfirmed)) throw new Error("Receipt fixture");
+  await expect(receipt.check()).rejects.toThrow("original protected login card");
+  await expect(receipt.check()).rejects.toThrow("original protected login card");
+  await expect(receipt.check()).resolves.toBe(false);
+  await expect(receipt.check()).resolves.toBe(true);
+  expect(confirmed).toHaveBeenCalledOnce();
+  await expect(
+    reconcileWebsiteLoginAnswer(original, async () => [original]),
+  ).rejects.toBeInstanceOf(WebsiteLoginAnswerUnconfirmed);
+  await expect(
+    reconcileWebsiteLoginAnswer(original, async () => [original], {
+      rejection: { status: 400 },
+    }),
+  ).resolves.toBe(false);
+});
 
 describe("latestAnswerableAskMessageId", () => {
   it("finds a waiting prompt even when a newer group run is active", () => {

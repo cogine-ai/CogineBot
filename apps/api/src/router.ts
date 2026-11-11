@@ -1058,6 +1058,7 @@ export function createRouter(deps: RouterDeps) {
     sessionAuthenticated?: boolean;
     /** Server-authenticated user, independent of the currently selected Space. */
     sessionUserId?: string;
+    supportsWebsiteLoginCard?: boolean;
     signal?: AbortSignal;
     /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
     stillAuthorized?: () => Promise<boolean>;
@@ -1632,7 +1633,9 @@ export function createRouter(deps: RouterDeps) {
         botSections,
         archivedBots,
         archivedGroups,
-        thread: thread ? projectThreadPageFallbacks(thread) : null,
+        thread: thread
+          ? projectThreadPageFallbacks(thread, context.supportsWebsiteLoginCard)
+          : null,
         routines,
         spaces: navigation.spaces,
       };
@@ -2776,7 +2779,7 @@ export function createRouter(deps: RouterDeps) {
         );
         return {
           ...groupRepos.mapGroup(group),
-          messages: projectThreadPageFallbacks(page).messages,
+          messages: projectThreadPageFallbacks(page, context.supportsWebsiteLoginCard).messages,
         };
       }),
       duplicate: authed.groups.duplicate.handler(async ({ context, input }) => {
@@ -2916,7 +2919,10 @@ export function createRouter(deps: RouterDeps) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input, {
           includeArchived: true,
         });
-        return projectThreadPageFallbacks(await threadSnapshot(deps, target));
+        return projectThreadPageFallbacks(
+          await threadSnapshot(deps, target),
+          context.supportsWebsiteLoginCard,
+        );
       }),
       messages: authed.threads.messages.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input, {
@@ -2932,6 +2938,7 @@ export function createRouter(deps: RouterDeps) {
             input.includePeerRuns,
             input.includePeerReceipts,
           ),
+          context.supportsWebsiteLoginCard,
         );
       }),
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
@@ -3005,12 +3012,12 @@ export function createRouter(deps: RouterDeps) {
             if (await isPeerRun(deps.prisma, sourceRunId, peerRunCache)) {
               const visible = projectPeerThreadEvent(event);
               if (!visible) continue;
-              yield projectThreadEventPageFallback(visible);
+              yield projectThreadEventPageFallback(visible, context.supportsWebsiteLoginCard);
               continue;
             } else if (await isBackgroundRun(deps.prisma, sourceRunId, backgroundRunCache)) {
               if (!shouldForwardBackgroundThreadEvent(event)) continue;
             }
-            yield projectThreadEventPageFallback(event);
+            yield projectThreadEventPageFallback(event, context.supportsWebsiteLoginCard);
           }
         } finally {
           // Not awaited: closing can queue behind a read that the abort has not landed on yet.
@@ -3406,12 +3413,14 @@ export function createRouter(deps: RouterDeps) {
           answer: input.answer,
           clientNonce: input.clientNonce,
           username: input.username,
+          login: input.login,
         });
         if (!answered) {
           const action = DelegatedApprovalAction.safeParse(input.answer);
           if (
             target.kind === "bot" &&
             !input.username &&
+            !input.login &&
             action.success &&
             (await hasPeerApprovalDecision(deps.prisma, {
               spaceId: context.actor.spaceId,

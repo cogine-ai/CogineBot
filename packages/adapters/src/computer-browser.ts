@@ -278,6 +278,10 @@ export class ComputerBrowserProvider implements BrowserProvider {
       ),
       context.signal,
     );
+    const loginProgress =
+      typeof live?.loginFieldsFilled === "number"
+        ? { loginFieldsFilled: live.loginFieldsFilled }
+        : {};
     // A confirmed refusal is settled: a desktop fallback could repeat an earlier step.
     if (live?.ok === false && live.uncertain === false && live.fallback === undefined) {
       return {
@@ -287,6 +291,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
         url: typeof live.url === "string" ? live.url : "",
         title: typeof live.title === "string" ? live.title : "",
         ...navigationObservation(live),
+        ...loginProgress,
         error: live.error || DETACHED_MESSAGE,
       };
     }
@@ -298,6 +303,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
         url: typeof live?.url === "string" ? live.url : "",
         title: typeof live?.title === "string" ? live.title : "",
         ...navigationObservation(live),
+        ...loginProgress,
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
       };
@@ -308,6 +314,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       url: typeof live.url === "string" ? live.url : "",
       title: typeof live.title === "string" ? live.title : "",
       ...navigationObservation(live),
+      ...loginProgress,
     };
   }
 
