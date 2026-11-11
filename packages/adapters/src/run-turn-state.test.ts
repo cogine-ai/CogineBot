@@ -181,6 +181,21 @@ describe("run turn checkpoint state", () => {
       false,
     ],
     [
+      "wrapped login arguments sent to a file tool",
+      USE_TOOL,
+      {
+        name: "write_file",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+    [
+      "direct login arguments sent to a file tool",
+      "write_file",
+      { type: "login", username: "fixture-account@example.test" },
+      false,
+    ],
+    [
       "wrapped missing tool name",
       USE_TOOL,
       { arguments: { type: "login", username: "fixture-account@example.test" } },
@@ -235,6 +250,34 @@ describe("run turn checkpoint state", () => {
           ? "The credential generation request had invalid arguments."
           : "The tool call had invalid arguments.",
       );
+    },
+  );
+
+  it.each([false, true])(
+    "keeps an offered connector's declared login fields (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const connector = {
+        name: "mcp__accounts__lookup_login",
+        description: "Look up an account by type and username.",
+        route: { connectorId: "mcp", resourceId: "accounts", toolName: "lookup_login" },
+        inputSchema: {
+          type: "object",
+          properties: { type: { const: "login" }, username: { type: "string" } },
+          required: ["type", "username"],
+          additionalProperties: false,
+        },
+      } satisfies ConnectorTool;
+      const current = state(undefined, { tools: [builtin("generate_secret"), connector] });
+      const lookup = { type: "login", username: "fixture-connector@example.test" };
+      const request = wrapped
+        ? call("pending", USE_TOOL, { name: connector.name, arguments: lookup })
+        : call("pending", connector.name, lookup);
+      const captured = checkpoint({ messages: [assistant([request])] });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const saved = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].create.result);
+      expect(saved.messages).toEqual(captured.messages);
     },
   );
 

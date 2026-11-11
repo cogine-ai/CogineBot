@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { GenerateSecretInput, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
+import { BUILTIN_AGENT_TOOL_NAMES } from "./builtin-tools.js";
 import { tryRedactConnectorPayload } from "./connector-safety.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 
@@ -78,12 +79,15 @@ export function createProtectedToolTranscriptSanitizer(
           (innerName === SAVE_PAGE_TOOL ||
             (innerName === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
         if (!wrapped && part.name !== SAVE_PAGE_TOOL) {
+          // Only the generator accepts this input among the built-in tools.
+          // An offered connector can declare these same fields for its own use.
+          const targetName = bridge ? innerName : part.name;
+          const targetArgs = bridge ? innerArgs : part.arguments;
           if (
-            (bridge &&
-              (typeof innerName !== "string" ||
-                ((innerName === "request_secret" || !bridge.has(innerName)) &&
-                  hasLoginUsername(innerArgs)))) ||
-            (part.name === "request_secret" && hasLoginUsername(part.arguments))
+            typeof targetName !== "string" ||
+            (hasLoginUsername(targetArgs) &&
+              (BUILTIN_AGENT_TOOL_NAMES.has(targetName) ||
+                (bridgeToolNames !== undefined && !bridgeToolNames.has(targetName))))
           ) {
             changed = true;
             protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
