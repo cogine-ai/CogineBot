@@ -4,7 +4,12 @@ import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { completeExternalEffect } from "./approval-effect.js";
-import { generateBotSecret, resolveLoginFill, shellCommandEnvironment } from "./bot-secrets.js";
+import {
+  findLoginFillAuthority,
+  generateBotSecret,
+  resolveLoginFill,
+  shellCommandEnvironment,
+} from "./bot-secrets.js";
 import { withSecretPersistence } from "./secret-persistence.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -84,6 +89,7 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
     });
     return {
       effect,
+      run,
       readEffect: () => prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
       generate: () =>
         generateBotSecret({
@@ -207,7 +213,6 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
     });
     expect(password.text).toHaveLength(20);
     expect(JSON.stringify(await generated.readEffect())).not.toContain(password.text);
-    expect(await password.isCurrent()).toBe(true);
     const row = await prisma.botSecret.findFirstOrThrow({ where: { ...scope, name } });
     expect(row.ciphertext).not.toContain(password.text);
     expect(row.auth).toEqual({ type: "login" });
@@ -215,11 +220,65 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
       username: login.username,
       password: password.text,
     });
-    await prisma.botSecret.update({
+
+    const computer = await prisma.computer.create({
+      data: {
+        spaceId: scope.spaceId,
+        userId,
+        kind: "fake",
+        scopeKey: randomUUID(),
+        homeKey: randomUUID(),
+      },
+    });
+    await prisma.bot.update({ where: { id: scope.botId }, data: { computerId: computer.id } });
+    const workerId = "fixture-worker";
+    const fence = 7;
+    const live = new Date(Date.now() + 60_000);
+    const expired = new Date(0);
+    const renewRun = (leaseExpiresAt: Date) =>
+      prisma.run.update({
+        where: { id: generated.run.id },
+        data: { leaseOwner: workerId, leaseFence: fence, leaseExpiresAt },
+      });
+    await renewRun(live);
+    const computerLease = {
+      computerId: computer.id,
+      runId: generated.run.id,
+      botId: scope.botId,
+      fence: 12,
+    };
+    const lease = await prisma.computerExecutionLease.create({
+      data: { ...computerLease, expiresAt: live },
+    });
+    const check = (credential = password.credential) =>
+      findLoginFillAuthority(prisma, {
+        scope,
+        runId: generated.run.id,
+        workerId,
+        fence,
+        computerId: computer.id,
+        computerLease,
+        credentials: [credential],
+      });
+    expect(await check()).toMatchObject({ bot: { disabledBuiltinTools: [] } });
+    await renewRun(expired);
+    expect(await check()).toBeNull();
+    await renewRun(live);
+    await prisma.computerExecutionLease.update({
+      where: { id: lease.id },
+      data: { expiresAt: expired },
+    });
+    expect(await check()).toBeNull();
+    await prisma.computerExecutionLease.update({
+      where: { id: lease.id },
+      data: { expiresAt: live },
+    });
+    const updated = await prisma.botSecret.update({
       where: { id: row.id },
       data: { revision: randomUUID() },
     });
-    expect(await password.isCurrent()).toBe(false);
+    expect(await check()).toBeNull();
+    expect(await check({ id: row.id, revision: updated.revision })).not.toBeNull();
   });
 
   it("rolls back both stages and the receipt when the paired environment alias conflicts", async () => {

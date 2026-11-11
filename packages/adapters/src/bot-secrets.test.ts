@@ -772,7 +772,7 @@ describe("saved website logins", () => {
     expect(() => validateTransferBotSecret(login, plaintext)).toThrow("Credential cannot be used");
   });
 
-  it("supports username/password aliases and rejects a saved revision changed after resolution", async () => {
+  it("supports username/password aliases and binds the saved revision", async () => {
     const { prisma, row } = await encryptedLogin(
       encodeLoginSecret({
         fields: [
@@ -789,10 +789,13 @@ describe("saved website logins", () => {
     });
     const password = await resolveLoginFill({ ...input, field: "password" });
     if ("error" in password) throw new Error(password.error);
-    expect(password).toMatchObject({ text: "fixture-pin", field: "password" });
-    expect(await password.isCurrent()).toBe(true);
+    expect(password).toMatchObject({
+      text: "fixture-pin",
+      field: "password",
+      credential: { id: row.id, revision: row.revision },
+    });
     row.revision = "r2";
-    expect(await password.isCurrent()).toBe(false);
+    expect(password.credential.revision).not.toBe(row.revision);
   });
 
   it("fills a historical pair saved with extra JSON fields", async () => {

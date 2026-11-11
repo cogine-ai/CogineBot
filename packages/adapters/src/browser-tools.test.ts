@@ -30,7 +30,7 @@ const computer: ComputerRef = {
 };
 
 function savedField(field: "username" | "password", text: string, origin: string) {
-  return { field, text, origin, isCurrent: async () => true };
+  return { field, text, origin, credential: { id: "saved-login", revision: "saved-revision" } };
 }
 
 describe("browser tools", () => {
@@ -588,37 +588,32 @@ describe("browser tools", () => {
       expect(JSON.stringify(result)).not.toContain(values.password);
     });
 
-    it.each(["revision", "lease"])(
-      "does not dispatch the batch when the saved login's %s is stale",
-      async (reason) => {
-        const browser = loginPage("https://login.example.test/signin");
-        const { password } = await refs(browser, "https://login.example.test/signin");
-        const act = vi.spyOn(browser, "act");
-        const result = await browserActFromTool(
-          browser,
-          computer,
-          context,
-          {
-            actions: [
-              { kind: "fill_secret", ref: password, secret: "site_login", field: "Sign-in PIN" },
-            ],
+    it("does not dispatch the batch when the saved login is no longer current", async () => {
+      const browser = loginPage("https://login.example.test/signin");
+      const { password } = await refs(browser, "https://login.example.test/signin");
+      const act = vi.spyOn(browser, "act");
+      const result = await browserActFromTool(
+        browser,
+        computer,
+        context,
+        {
+          actions: [
+            { kind: "fill_secret", ref: password, secret: "site_login", field: "Sign-in PIN" },
+          ],
+        },
+        {
+          resolveSecretFill: async () =>
+            savedField("password", values.password, "https://login.example.test"),
+          recheckSecretFill: async (credentials) => {
+            expect(credentials).toEqual([{ id: "saved-login", revision: "saved-revision" }]);
+            return { error: "The saved login changed before filling." };
           },
-          {
-            resolveSecretFill: async () => ({
-              ...savedField("password", values.password, "https://login.example.test"),
-              isCurrent: async () => reason !== "revision",
-            }),
-            recheckSecretFill: async () =>
-              reason === "lease"
-                ? { error: "This run no longer owns the browser action." }
-                : undefined,
-          },
-        );
-        expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
-        expect(act).not.toHaveBeenCalled();
-        expect(JSON.stringify(result)).not.toContain(values.password);
-      },
-    );
+        },
+      );
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(act).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(values.password);
+    });
 
     it("never reports a login-filled field's value, even when too short to redact", async () => {
       const browser = loginPage("https://login.example.test/signin");

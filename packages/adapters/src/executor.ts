@@ -111,6 +111,7 @@ import {
   containsSecret,
   createStreamingRedactor,
   endsSentence,
+  escapeApprovalBidi,
   expandSkillReferencesInPrompt,
   formatSkillRunPrompt,
   formatSkillsCatalogInstruction,
@@ -269,6 +270,7 @@ import {
   commandCredentialRedactions,
   findBotSecret,
   findCommandVariableConflict,
+  findLoginFillAuthority,
   forgetBotSecret,
   generateBotSecret,
   listBotSecrets,
@@ -4461,21 +4463,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ),
           task.connectionIds ?? [],
         );
-        const ownsLiveRunLease = async () =>
-          leaseValid &&
-          !leaseCompleted &&
-          Boolean(
-            await deps.prisma.run.findFirst({
-              where: {
-                id: runId,
-                status: "running",
-                leaseOwner: workerId,
-                leaseFence: fence,
-                leaseExpiresAt: { gt: new Date() },
-              },
-              select: { id: true },
-            }),
-          );
         const mcpBinding = remoteMcpSessions.bind(
           {
             operationId: runId,
@@ -4497,8 +4484,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             connectedProviders: connectedComposio.map((row) => row.provider),
           },
           async () => {
-            if (!(await ownsLiveRunLease()))
-              throw new Error("Run lease expired before remote MCP dispatch");
+            const held =
+              leaseValid &&
+              !leaseCompleted &&
+              (await deps.prisma.run.findFirst({
+                where: {
+                  id: runId,
+                  status: "running",
+                  leaseOwner: workerId,
+                  leaseFence: fence,
+                  leaseExpiresAt: { gt: new Date() },
+                },
+                select: { id: true },
+              }));
+            if (!held) throw new Error("Run lease expired before remote MCP dispatch");
           },
           async (call) => {
             const fresh = await refreshRunConnectorContext(deps.prisma, context, run.taskId);
@@ -6229,8 +6228,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     .filter(Boolean)
                     .join("\n")
                 : request.purpose;
-            // Keep the prior command fingerprint. Website generation binds the normalized site.
-            effectRequest = request.type === "login" ? { ...args, origin: request.origin } : args;
+            // Use the normalized website inputs for both the effect key and its request.
+            if (request.type === "login") args = request;
+            effectRequest = args;
           }
           if (name === "web_fetch" && outboundUrl) {
             if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
@@ -7121,9 +7121,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               else if (requiresUnattendedApproval)
                 approvalReason = "This action needs confirmation when run in the background.";
             }
-            if (generationNotice)
-              approvalReason = [generationNotice, approvalReason].filter(Boolean).join("\n");
             const loginApproval = generation?.success && generation.data.type === "login";
+            if (generationNotice && !loginApproval)
+              approvalReason = [generationNotice, approvalReason].filter(Boolean).join("\n");
             const block = buildApprovalAskBlock(
               applied!.effect.id,
               name,
@@ -7168,7 +7168,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
               },
             );
-            if (loginApproval) block.reviewMode = "screen";
+            // Voice reads only the main text. Keep the complete destination in that text
+            // and preserve the ordinary approval contract for same-owner peer Runs.
+            if (loginApproval && generationNotice)
+              block.text = `${block.text}\n\n${escapeApprovalBidi(redactSecrets(generationNotice, runSecrets))}`;
             let approvalDisplayError: string | undefined;
             if (authenticatedRequest && (!credentialBinding || !block.detail)) {
               approvalDisplayError = credentialBinding
@@ -8033,24 +8036,41 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       registerRunSecrets(resolved.redactions);
                       return resolved;
                     },
-                    recheckSecretFill: async () => {
-                      if (!builtinOffered(await currentDisabledBuiltinTools(), "browser_act"))
-                        return { error: "This tool is disabled for this bot." };
-                      const current = resolveRules(await loadApprovalRules());
-                      if (current.decision === "deny") return policyBlock;
-                      if (
-                        !claimedApproval &&
-                        (current.decision === "ask" ||
-                          (approvalResolved.source === "always_allow" &&
-                            current.source !== "always_allow"))
-                      )
-                        return { error: "This browser action needs approval before filling." };
-                      if (
-                        !(await renewComputerExecutionLease(deps.prisma, computerLease)) ||
-                        !(await ownsLiveRunLease())
-                      )
-                        return { error: "This run no longer owns the browser action." };
-                    },
+                    recheckSecretFill: (credentials) =>
+                      deps.prisma.$transaction(
+                        async (tx) => {
+                          const authority = await findLoginFillAuthority(tx, {
+                            scope: run,
+                            runId,
+                            workerId,
+                            fence,
+                            computerId: storedComputer.id,
+                            computerLease,
+                            credentials,
+                          });
+                          if (!authority)
+                            return {
+                              error:
+                                "The browser action or saved login changed before filling. Inspect the page before retrying.",
+                            };
+                          if (
+                            disabledBuiltinToolSet(authority.bot.disabledBuiltinTools).has(
+                              "browser_act",
+                            )
+                          )
+                            return { error: "This tool is disabled for this bot." };
+                          const current = resolveRules(await loadApprovalRules(tx));
+                          if (current.decision === "deny") return policyBlock;
+                          if (
+                            !claimedApproval &&
+                            (current.decision === "ask" ||
+                              (approvalResolved.source === "always_allow" &&
+                                current.source !== "always_allow"))
+                          )
+                            return { error: "This browser action needs approval before filling." };
+                        },
+                        { isolationLevel: "RepeatableRead" },
+                      ),
                   });
               unchangedVisualStreak = unchangedVisualStreakAfterPageBrowser(
                 unchangedVisualStreak,

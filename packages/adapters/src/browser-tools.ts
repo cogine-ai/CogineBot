@@ -9,7 +9,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import { LoginFieldLabel } from "@rakazo/contracts";
-import type { LoginField } from "./bot-secrets.js";
+import type { LoginCredentialRevision, LoginField } from "./bot-secrets.js";
 import {
   CONNECTOR_REDACTION_MAX_DEPTH,
   CONNECTOR_REDACTION_MAX_NODES,
@@ -73,7 +73,7 @@ export type ResolveSecretFill = (step: SecretFillStep) => Promise<
       text: string;
       origin: string;
       field: LoginField;
-      isCurrent: () => Promise<boolean>;
+      credential: LoginCredentialRevision;
     }
   | { error: string }
 >;
@@ -132,7 +132,9 @@ export async function browserActFromTool(
   args: Record<string, unknown>,
   options: {
     resolveSecretFill?: ResolveSecretFill;
-    recheckSecretFill?: () => Promise<{ error: string; code?: string } | undefined>;
+    recheckSecretFill?: (
+      credentials: readonly LoginCredentialRevision[],
+    ) => Promise<{ error: string; code?: string } | undefined>;
     redactions?: () => string[];
     resolveUploadPath?: (path: string) => string;
     uploadRoots?: string[];
@@ -146,7 +148,7 @@ export async function browserActFromTool(
   try {
     preparationSignal.throwIfAborted();
     const actions: BrowserActStep[] = [];
-    const loginRevisionChecks: Array<() => Promise<boolean>> = [];
+    const loginCredentials: LoginCredentialRevision[] = [];
     const request: BrowserActRequest = { actions, signal: context.signal };
     const steps = parseBrowserActions(args.actions);
     if (
@@ -203,7 +205,7 @@ export async function browserActFromTool(
       }
       preparationSignal.throwIfAborted();
       if ("error" in resolved) return refusedInput(resolved.error);
-      loginRevisionChecks.push(resolved.isCurrent);
+      loginCredentials.push(resolved.credential);
       actions.push({
         kind: "fill",
         ref: step.ref,
@@ -212,19 +214,12 @@ export async function browserActFromTool(
         field: resolved.field,
       });
     }
-    if (loginRevisionChecks.length > 0) {
+    if (loginCredentials.length > 0 && options.recheckSecretFill) {
       try {
-        const current = await withAbort(
-          Promise.all(loginRevisionChecks.map((check) => check())),
+        const refusal = await withAbort(
+          options.recheckSecretFill(loginCredentials),
           preparationSignal,
         );
-        if (current.includes(false))
-          return refusedInput(
-            "A saved login changed before filling. Inspect the page before retrying.",
-          );
-        const refusal = options.recheckSecretFill
-          ? await withAbort(options.recheckSecretFill(), preparationSignal)
-          : undefined;
         if (refusal) return { ...refusedInput(refusal.error), ...refusal };
       } catch {
         preparationSignal.throwIfAborted();

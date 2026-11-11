@@ -20,6 +20,7 @@ import {
 import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
+import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -968,6 +969,48 @@ export async function requestWithBotSecret(input: {
 export type LoginField = "username" | "password";
 const MIN_REDACTED_VISIBLE_LOGIN_VALUE = 6;
 
+export type LoginCredentialRevision = { id: string; revision: string };
+
+export function findLoginFillAuthority(
+  prisma: Pick<Prisma.TransactionClient, "run">,
+  input: {
+    scope: BotSecretScope;
+    runId: string;
+    workerId: string;
+    fence: number;
+    computerId: string;
+    computerLease: ComputerExecutionLease | null;
+    credentials: readonly LoginCredentialRevision[];
+  },
+) {
+  const scope = scopeFields(input.scope);
+  const now = new Date();
+  return prisma.run.findFirst({
+    where: {
+      ...scope,
+      id: input.runId,
+      status: "running",
+      leaseOwner: input.workerId,
+      leaseFence: input.fence,
+      leaseExpiresAt: { gt: now },
+      bot: {
+        archivedAt: null,
+        computerId: input.computerId,
+        computerSwitching: false,
+        AND: input.credentials.map((binding) => ({
+          botSecrets: { some: { ...scope, ...binding } },
+        })),
+        ...(input.computerLease && {
+          computer: {
+            executionLeases: { some: { ...input.computerLease, expiresAt: { gt: now } } },
+          },
+        }),
+      },
+    },
+    select: { bot: { select: { disabledBuiltinTools: true } } },
+  });
+}
+
 /**
  * Resolve one field of a saved website login for a page fill. The caller must pass `origin` to
  * the page browser, which refuses to fill unless the page is still on that origin.
@@ -984,7 +1027,7 @@ export async function resolveLoginFill(input: {
       origin: string;
       field: LoginField;
       redactions: string[];
-      isCurrent: () => Promise<boolean>;
+      credential: LoginCredentialRevision;
     }
   | { error: string }
 > {
@@ -1039,12 +1082,6 @@ export async function resolveLoginFill(input: {
     origin: destination.origin,
     field: field.hidden ? "password" : "username",
     redactions: [...new Set(redactions)],
-    isCurrent: async () =>
-      Boolean(
-        await input.prisma.botSecret.findFirst({
-          where: { ...where, id, revision },
-          select: { id: true },
-        }),
-      ),
+    credential: { id, revision },
   };
 }

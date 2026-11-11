@@ -23,6 +23,7 @@ import type { ActionApprovalRule } from "@rakazo/core";
 import {
   formatBotSecretHttpApprovalDetail,
   pageReplyTaskPrompt,
+  speechFromBlocks,
   withPageReplyContext,
 } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
@@ -3431,12 +3432,13 @@ describe("generated website logins in a Run", () => {
     const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
     expect(block).toMatchObject({
       kind: "ask",
-      reviewMode: "screen",
       actions: [{ id: "allow" }, { id: "deny" }],
-      detail: expect.stringContaining(
+      text: expect.stringContaining(
         `${login.purpose}\n${canonicalOrigin}\nAlso save as command variable SITE_ACCOUNT_PASSWORD`,
       ),
     });
+    expect(speechFromBlocks([block!])).toContain(canonicalOrigin);
+    expect(speechFromBlocks([block!])).toContain("SITE_ACCOUNT_PASSWORD");
     const request = { ...args, origin: canonicalOrigin };
     expect(f.effects).toMatchObject([{ status: "intended", request }]);
     expect(put).not.toHaveBeenCalled();
@@ -3466,7 +3468,7 @@ describe("generated website logins in a Run", () => {
     expect(put).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["allowed", "deny", "expired-run", "expired-computer"])(
+  it.each(["allowed", "deny", "stale-binding"])(
     "checks the current authority after loading a saved login (%s)",
     async (scenario) => {
       const browser = new FakeBrowserProvider();
@@ -3484,8 +3486,14 @@ describe("generated website logins in a Run", () => {
         sandboxProvider,
         rules,
         secretStore: {
-          load: async () =>
-            JSON.stringify({ username: login.username, password: "fixture-private-password" }),
+          load: async () => {
+            if (scenario === "deny")
+              rules.push({ effect: "deny", matchKind: "tool", matchValue: "browser_act" });
+            return JSON.stringify({
+              username: login.username,
+              password: "fixture-private-password",
+            });
+          },
         },
       });
       const lease = {
@@ -3497,9 +3505,6 @@ describe("generated website logins in a Run", () => {
       const acquire = vi
         .spyOn(ComputerLifecycleModule, "acquireDedicatedScreenLeaseFence")
         .mockResolvedValue(lease);
-      const renew = vi
-        .spyOn(ComputerLifecycleModule, "renewComputerExecutionLease")
-        .mockResolvedValue(scenario !== "expired-computer");
       const release = vi
         .spyOn(ComputerLifecycleModule, "releaseComputerExecutionLease")
         .mockResolvedValue();
@@ -3507,12 +3512,10 @@ describe("generated website logins in a Run", () => {
         .spyOn(ComputerWorkspaceModule, "checkpointRunComputerWorkspace")
         .mockResolvedValue(undefined);
       const findLiveRun = vi.fn(async () =>
-        scenario === "expired-run" ? null : { id: f.runRecord.id },
+        scenario === "stale-binding" ? null : { bot: { disabledBuiltinTools: [] } },
       );
       Object.assign(f.prisma.run, { findFirst: findLiveRun });
-      const readCredential = vi.fn(async ({ select }: { select?: { id: true } }) => {
-        if (select && scenario === "deny")
-          rules.push({ effect: "deny", matchKind: "tool", matchValue: "browser_act" });
+      const readCredential = vi.fn(async () => {
         return {
           id: "login-id",
           revision: "saved-revision",
@@ -3535,7 +3538,7 @@ describe("generated website logins in a Run", () => {
           },
         ]);
         await f.run();
-        expect(readCredential).toHaveBeenCalledTimes(2);
+        expect(readCredential).toHaveBeenCalledOnce();
         if (scenario === "allowed") {
           expect(act).toHaveBeenCalledOnce();
           expect(f.results).toMatchObject([{ ok: true, completed: 1 }]);
@@ -3547,26 +3550,35 @@ describe("generated website logins in a Run", () => {
               completed: 0,
               uncertain: false,
               error: expect.stringContaining(
-                scenario === "deny" ? "blocked by an action rule" : "no longer owns",
+                scenario === "deny" ? "blocked by an action rule" : "changed before filling",
               ),
             },
           ]);
         }
-        if (scenario !== "deny") expect(renew).toHaveBeenCalledWith(f.prisma, lease);
-        if (scenario === "allowed" || scenario === "expired-run")
-          expect(findLiveRun).toHaveBeenCalledWith(
-            expect.objectContaining({
-              where: expect.objectContaining({
-                id: f.runRecord.id,
-                leaseOwner: "worker-1",
-                leaseFence: f.runRecord.leaseFence,
-                leaseExpiresAt: { gt: expect.any(Date) },
+        expect(findLiveRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              id: f.runRecord.id,
+              leaseOwner: "worker-1",
+              leaseFence: f.runRecord.leaseFence,
+              leaseExpiresAt: { gt: expect.any(Date) },
+              bot: expect.objectContaining({
+                AND: [
+                  {
+                    botSecrets: {
+                      some: expect.objectContaining({ id: "login-id", revision: "saved-revision" }),
+                    },
+                  },
+                ],
+                computer: {
+                  executionLeases: { some: { ...lease, expiresAt: { gt: expect.any(Date) } } },
+                },
               }),
             }),
-          );
+          }),
+        );
       } finally {
         acquire.mockRestore();
-        renew.mockRestore();
         release.mockRestore();
         checkpoint.mockRestore();
       }
