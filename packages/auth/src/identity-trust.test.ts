@@ -55,14 +55,14 @@ function fixture({
     id?: string;
     identifier?: string;
     value?: string;
-    expiresAt: { lte?: Date; gt?: Date };
+    expiresAt?: { lte?: Date; gt?: Date };
   };
   const matchesVerification = (row: Record<string, unknown>, where: VerificationWhere) => {
     const { expiresAt, ...fields } = where;
     return (
       Object.entries(fields).every(([key, value]) => row[key] === value) &&
-      (!expiresAt.lte || new Date(row.expiresAt as Date) <= expiresAt.lte) &&
-      (!expiresAt.gt || new Date(row.expiresAt as Date) > expiresAt.gt)
+      (!expiresAt?.lte || new Date(row.expiresAt as Date) <= expiresAt.lte) &&
+      (!expiresAt?.gt || new Date(row.expiresAt as Date) > expiresAt.gt)
     );
   };
   const prisma = {
@@ -126,22 +126,11 @@ function fixture({
         const row = data.verification!.find((entry) => entry.id === id);
         return row ? { ...row } : null;
       }),
-      upsert: vi.fn(
-        async ({
-          where,
-          create,
-          update,
-        }: {
-          where: { id: string };
-          create: Record<string, unknown>;
-          update: Record<string, unknown>;
-        }) => {
-          const row = data.verification!.find((entry) => entry.id === where.id);
-          if (row) return Object.assign(row, update);
-          data.verification!.push(create);
-          return create;
-        },
-      ),
+      createMany: vi.fn(async ({ data: entry }: { data: Record<string, unknown> }) => {
+        if (data.verification!.some((row) => row.id === entry.id)) return { count: 0 };
+        data.verification!.push(entry);
+        return { count: 1 };
+      }),
       updateMany: vi.fn(
         async ({
           where,
@@ -648,6 +637,10 @@ describe("confirmation for protected reads", () => {
       resume();
     }
     expect((await pending).status).toBe(400);
+    const latest = f.data.verification!.find((entry) =>
+      String(entry.identifier).startsWith("identity-code-"),
+    );
+    expect(JSON.parse(String(latest?.value)).active.failures).toBe(0);
     const latestCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
     expect((await f.request("/confirm-identity", { code: latestCode }, token)).status).toBe(200);
   });
@@ -657,8 +650,150 @@ describe("confirmation for protected reads", () => {
     for (const account of f.data.account!) delete account.password;
     expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
     const previous = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
-    f.sendEmail.mockRejectedValueOnce(new Error("Fixture mail outage"));
-    expect((await f.request("/request-identity-code", {}, token)).status).toBe(500);
+    const wrong = previous === "000000" ? "111111" : "000000";
+    expect((await f.request("/confirm-identity", { code: wrong }, token)).status).toBe(400);
+    f.sendEmail.mockRejectedValueOnce(new Error("fixture-mail-private-diagnostic"));
+    const rejected = await f.request("/request-identity-code", {}, token);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.text()).not.toContain("fixture-mail-private-diagnostic");
+    const saved = f.data.verification!.find((entry) =>
+      String(entry.identifier).startsWith("identity-code-"),
+    );
+    expect(JSON.parse(String(saved?.value)).active.failures).toBe(1);
     expect((await f.request("/confirm-identity", { code: previous }, token)).status).toBe(200);
+  });
+  it("serializes resends and can verify a staged code before the provider acknowledges delivery", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    let accepted!: () => void;
+    let delivered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      accepted = resolve;
+    });
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    const pending = f.request("/request-identity-code", {}, token);
+    await sent;
+    try {
+      expect((await f.request("/request-identity-code", {}, token)).status).toBe(429);
+      const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+      expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+      expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+    } finally {
+      accepted();
+    }
+    expect((await pending).status).toBe(200);
+  });
+
+  it("does not strand a delivered code when activating it fails", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    f.verification.updateMany.mockRejectedValueOnce(new Error("Fixture database outage"));
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+  });
+  it("verifies the same code when delivery promotes it during confirmation", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    let acknowledge!: () => void;
+    let delivered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    const sending = f.request("/request-identity-code", {}, token);
+    await sent;
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    let read!: () => void;
+    let resume!: () => void;
+    const readSnapshot = new Promise<void>((resolve) => {
+      read = resolve;
+    });
+    const allowCommit = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const find = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const snapshot = await find(args);
+      read();
+      await allowCommit;
+      return snapshot;
+    });
+    const confirming = f.request("/confirm-identity", { code }, token);
+    await readSnapshot;
+    acknowledge();
+    try {
+      expect((await sending).status).toBe(200);
+    } finally {
+      resume();
+    }
+    expect((await confirming).status).toBe(200);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+  });
+  it("does not consume a replacement code that was issued after confirmation read its snapshot", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const oldCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    let read!: () => void;
+    let resume!: () => void;
+    const readSnapshot = new Promise<void>((resolve) => {
+      read = resolve;
+    });
+    const allowCommit = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const find = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const snapshot = await find(args);
+      read();
+      await allowCommit;
+      return snapshot;
+    });
+    const confirming = f.request("/confirm-identity", { code: oldCode }, token);
+    await readSnapshot;
+    let delivered!: () => void;
+    let acknowledge!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    const sending = f.request("/request-identity-code", {}, token);
+    await sent;
+    try {
+      resume();
+      expect((await confirming).status).toBe(200);
+    } finally {
+      acknowledge();
+    }
+    expect((await sending).status).toBe(200);
+    const nextCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code: nextCode }, token)).status).toBe(200);
   });
 });

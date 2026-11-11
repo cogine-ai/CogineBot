@@ -76,6 +76,148 @@ const invalidPassword = () =>
 const expiredCode = () =>
   new APIError("BAD_REQUEST", { message: "Request a new code", code: "OTP_EXPIRED" });
 
+type EmailCode = { hash: string; version: string; expiresAt: number; failures: number };
+type EmailCodeState = { userId: string; active?: EmailCode; pending?: EmailCode };
+
+/** Code attempts and delivery receipts only change the exact state they read. */
+async function changeEmailCode(
+  prisma: PrismaClient,
+  id: string,
+  userId: string,
+  change: (state: EmailCodeState) => EmailCodeState,
+) {
+  for (let retry = 0; retry < 3; retry++) {
+    const stored = await prisma.verification.findUnique({ where: { id } });
+    const parsed = stored ? (JSON.parse(stored.value) as EmailCodeState) : undefined;
+    const state = parsed?.userId === userId ? parsed : { userId };
+    const next = change(state);
+    if (next === state) return;
+    const expiresAt = Math.max(next.active?.expiresAt ?? 0, next.pending?.expiresAt ?? 0);
+    const data = { value: JSON.stringify(next), expiresAt: new Date(expiresAt) };
+    if (!stored && !expiresAt) return;
+    const result = !stored
+      ? await prisma.verification.createMany({
+          data: { id, identifier: id, ...data },
+          skipDuplicates: true,
+        })
+      : expiresAt
+        ? await prisma.verification.updateMany({ where: { id, value: stored.value }, data })
+        : await prisma.verification.deleteMany({ where: { id, value: stored.value } });
+    if (result.count === 1) return;
+  }
+  throw new APIError("CONFLICT", { message: "The confirmation changed. Try again." });
+}
+
+async function sendIdentityCode(
+  prisma: PrismaClient,
+  email: TransactionalEmailProvider,
+  sessionId: string,
+  user: { id: string; email: string },
+) {
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const pending = {
+    hash: hashCode(code),
+    version: randomUUID(),
+    expiresAt: Date.now() + CODE_EXPIRES_MS,
+    failures: 0,
+  };
+  const id = codeKey(sessionId);
+  await changeEmailCode(prisma, id, user.id, (state) => {
+    if (state.pending && state.pending.expiresAt > Date.now())
+      throw new APIError("TOO_MANY_REQUESTS", {
+        message: "A code is already being sent. Try again later.",
+      });
+    return { ...state, pending };
+  });
+
+  try {
+    await email.send({
+      to: user.email,
+      subject: "Confirm your identity",
+      text: `Your confirmation code is ${code}. It expires in ten minutes.`,
+    });
+  } catch {
+    await changeEmailCode(prisma, id, user.id, (state) =>
+      state.pending?.version === pending.version ? { ...state, pending: undefined } : state,
+    ).catch(() => undefined);
+    // The provider's failure may quote the email body.
+    throw new APIError("SERVICE_UNAVAILABLE", { message: "Could not send a confirmation code" });
+  }
+
+  // The staged code is already verifiable if the provider delivered it before acknowledging.
+  // A failed promotion cannot strand a delivered code or erase the previously delivered one.
+  return changeEmailCode(prisma, id, user.id, (state) =>
+    state.pending?.version === pending.version ? { userId: user.id, active: state.pending } : state,
+  ).then(
+    () => true,
+    () => false,
+  );
+}
+
+async function verifyIdentityCode(
+  prisma: PrismaClient,
+  sessionId: string,
+  userId: string,
+  code: string,
+) {
+  if (!/^[0-9]{6}$/.test(code)) throw expiredCode();
+  const candidate = hashCode(code);
+  const outcome: { state: "expired" | "verified" | "incorrect" | "exhausted"; expiry?: number } = {
+    state: "expired",
+  };
+  let attempted: { versions: string[]; matchedVersion?: string } | undefined;
+  await changeEmailCode(prisma, codeKey(sessionId), userId, (state) => {
+    const now = Date.now();
+    const codes = [state.pending, state.active].filter((entry): entry is EmailCode =>
+      Boolean(entry && entry.expiresAt > now),
+    );
+    const versions = codes.map((entry) => entry.version);
+    const matchedVersion = codes.find((entry) => sameHash(entry.hash, candidate))?.version;
+    if (!attempted) attempted = { versions, matchedVersion };
+    // Promotion can retire the old code while the exact matched candidate remains valid.
+    const expectedVersion = attempted.matchedVersion;
+    const matched = codes.find((entry) => entry.version === expectedVersion);
+    const stale = expectedVersion
+      ? !matched
+      : attempted.versions.length !== versions.length ||
+        attempted.versions.some((version, index) => version !== versions[index]);
+    if (versions.length === 0 || stale) {
+      outcome.state = "expired";
+      return state;
+    }
+    if (matched) {
+      outcome.state = "verified";
+      outcome.expiry = matched.expiresAt;
+      const seen = attempted.versions;
+      const preserveNew = (entry: EmailCode | undefined) =>
+        entry && !seen.includes(entry.version) ? entry : undefined;
+      return { userId, active: preserveNew(state.active), pending: preserveNew(state.pending) };
+    }
+    const recordFailure = (entry: EmailCode | undefined) =>
+      entry && entry.expiresAt > now && entry.failures + 1 < CODE_ATTEMPTS
+        ? { ...entry, failures: entry.failures + 1 }
+        : undefined;
+    const active = recordFailure(state.active);
+    const pending = recordFailure(state.pending);
+    outcome.state = active || pending ? "incorrect" : "exhausted";
+    return { userId, active, pending };
+  });
+  switch (outcome.state) {
+    case "verified":
+      if ((outcome.expiry ?? 0) <= Date.now()) throw expiredCode();
+      return;
+    case "expired":
+      throw expiredCode();
+    case "exhausted":
+      throw new APIError("BAD_REQUEST", {
+        message: "Request a new code",
+        code: "TOO_MANY_ATTEMPTS",
+      });
+    case "incorrect":
+      throw new APIError("BAD_REQUEST", { message: "Invalid code", code: "INVALID_OTP" });
+  }
+}
+
 /**
  * Step-up confirmation for the signed-in session. Password accounts confirm with their
  * password; accounts without one use an emailed code or a fresh SSO sign-in, like deletion.
@@ -100,22 +242,8 @@ export function identityConfirmation(
               code: "EMAIL_CODE_UNAVAILABLE",
             });
           }
-          const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-          await email.send({
-            to: user.email,
-            subject: "Confirm your identity",
-            text: `Your confirmation code is ${code}. It expires in ten minutes.`,
-          });
-          const identifier = codeKey(session.id);
-          const challenge = {
-            value: `${user.id}:${hashCode(code)}:0:${randomUUID()}`,
-            expiresAt: new Date(Date.now() + CODE_EXPIRES_MS),
-          };
-          await prisma.verification.upsert({
-            where: { id: identifier },
-            create: { id: identifier, identifier, ...challenge },
-            update: challenge,
-          });
+          const promoted = await sendIdentityCode(prisma, email, session.id, user);
+          if (!promoted) ctx.context.logger.warn("Identity code activation could not be confirmed");
           return ctx.json({ success: true });
         },
       ),
@@ -144,29 +272,7 @@ export function identityConfirmation(
               await adapter.deleteVerificationByIdentifier(attemptKey(user.id, slot));
           } else {
             const code = typeof body.code === "string" ? body.code.trim() : "";
-            if (!/^[0-9]{6}$/.test(code)) throw expiredCode();
-            const id = codeKey(session.id);
-            const stored = await prisma.verification.findUnique({ where: { id } });
-            const [userId, codeHash, attempts, version] = stored?.value.split(":") ?? [];
-            if (!stored || stored.expiresAt.getTime() <= Date.now() || userId !== user.id)
-              throw expiredCode();
-            const where = { id, value: stored.value, expiresAt: { gt: new Date() } };
-            const valid = sameHash(codeHash ?? "", hashCode(code));
-            const next = Number(attempts) + 1;
-            // Resending replaces the challenge. Every attempt is bound to its exact version.
-            const changed =
-              valid || next >= CODE_ATTEMPTS
-                ? await prisma.verification.deleteMany({ where })
-                : await prisma.verification.updateMany({
-                    where,
-                    data: { value: `${userId}:${codeHash}:${next}:${version}` },
-                  });
-            if (changed.count !== 1) throw expiredCode();
-            if (!valid)
-              throw new APIError("BAD_REQUEST", {
-                message: next >= CODE_ATTEMPTS ? "Request a new code" : "Invalid code",
-                code: next >= CODE_ATTEMPTS ? "TOO_MANY_ATTEMPTS" : "INVALID_OTP",
-              });
+            await verifyIdentityCode(prisma, session.id, user.id, code);
           }
           await adapter.deleteVerificationByIdentifier(confirmationKey(session.id));
           await adapter.createVerificationValue({
