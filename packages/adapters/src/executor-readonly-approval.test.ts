@@ -3119,11 +3119,14 @@ describe("generated command credentials in a Run", () => {
   });
 
   it.each([
-    { trigger: "routine", outsideSteering: false },
-    { trigger: "tickets", outsideSteering: false },
-    { trigger: "user", outsideSteering: true },
+    { trigger: "routine", outsideSteering: false, attemptCount: 1 },
+    { trigger: "tickets", outsideSteering: false, attemptCount: 1 },
+    { trigger: "bot_message", outsideSteering: false, attemptCount: 1 },
+    { trigger: "follow_up", outsideSteering: false, attemptCount: 1 },
+    { trigger: "user", outsideSteering: true, attemptCount: 1 },
+    { trigger: "user", outsideSteering: false, attemptCount: 2 },
   ])(
-    "shows the purpose for explicit review before generating from $trigger (outside steering: $outsideSteering)",
+    "shows the purpose before generating from $trigger (outside steering: $outsideSteering, attempts: $attemptCount)",
     async (run) => {
       const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
       const put = vi.spyOn(secretStore, "put");
@@ -3145,6 +3148,92 @@ describe("generated command credentials in a Run", () => {
         actions: [{ id: "allow" }, { id: "deny" }],
       });
       expect(put).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "rechecks a peer approval before saving (revoked: %s)",
+    async (revoked) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const originalPut = secretStore.put.bind(secretStore);
+      let collaborationAllowed = true;
+      const put = vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+        const prepared = await originalPut(...input);
+        collaborationAllowed = !revoked;
+        return prepared;
+      });
+      const create = vi.fn(async () => {});
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        trigger: "bot_message",
+        startedAt: new Date(0),
+        secretStore,
+      });
+      Object.assign(f.runRecord, { origin: "bot_peer", sourceMessageId: "peer-message" });
+      f.prisma.message.findUnique.mockResolvedValue({
+        role: "user",
+        authorUserId: null,
+        blocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "fixture-peer",
+            fromBotName: "Fixture peer",
+            text: "Generate a credential for the fixture database.",
+            hop: 1,
+            intent: "request",
+          },
+        ],
+      });
+      Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      expect(put).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+
+      const effect = f.effects[0]!;
+      Object.assign(effect, { status: "approved", requiresPeerApprovalRecheck: true });
+      const claim = vi
+        .spyOn(DbModule, "claimDelegatedApprovedEffect")
+        .mockImplementation(async () => {
+          effect.status = "executing";
+          return true;
+        });
+      const recheck = vi
+        .spyOn(DbModule, "recheckDelegatedApprovalDispatchInTransaction")
+        .mockImplementation(async () => collaborationAllowed);
+      try {
+        f.setCalls([{ args: { ...args, name: "different-db" }, executionId: "generate-2" }]);
+        await f.run();
+        expect(claim).toHaveBeenCalledOnce();
+        expect(recheck).toHaveBeenCalledExactlyOnceWith(
+          f.prisma,
+          expect.objectContaining({ runId: f.runRecord.id, effectId: effect.id }),
+        );
+        expect(put).toHaveBeenCalledOnce();
+        expect(effect).toMatchObject({
+          status: "completed",
+          request: args,
+          approvalReceipt: { state: revoked ? "failed" : "succeeded" },
+        });
+        if (revoked) {
+          expect(create).not.toHaveBeenCalled();
+          expect(f.results[1]).toMatchObject({
+            error: "The delegated action is no longer authorized.",
+          });
+        } else {
+          expect(f.results[1]).toMatchObject({ saved: true, name: args.name });
+          expect(create).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ data: expect.objectContaining({ name: args.name }) }),
+          );
+        }
+      } finally {
+        claim.mockRestore();
+        recheck.mockRestore();
+      }
     },
   );
 
@@ -3183,27 +3272,32 @@ describe("generated command credentials in a Run", () => {
     expect(JSON.stringify(f.append.mock.calls)).not.toContain(detail);
   });
 
-  it("requires approval if outside steering is claimed while the credential is being staged", async () => {
-    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
-    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
-    const originalPut = secretStore.put.bind(secretStore);
-    vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
-      const prepared = await originalPut(...input);
-      f.prisma.steeringMessage.findFirst.mockResolvedValue({ id: "fixture-outside-steering" });
-      return prepared;
-    });
-    Object.assign(f.prisma.botSecret, {
-      count: vi.fn(async () => 0),
-      create: vi.fn(async () => {}),
-    });
-    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
-    f.setCalls([{ args, executionId: "generate-1" }]);
-    await f.run();
-    expect(f.results).toMatchObject([{ error: expect.stringContaining("needs approval") }]);
-    expect(f.effects).toMatchObject([
-      { status: "completed", result: { error: expect.any(String) } },
-    ]);
-  });
+  it.each(["outside steering", "an earlier attempt"])(
+    "requires approval if %s appears while the credential is being staged",
+    async (provenance) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+      const originalPut = secretStore.put.bind(secretStore);
+      vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+        const prepared = await originalPut(...input);
+        if (provenance === "outside steering")
+          f.prisma.steeringMessage.findFirst.mockResolvedValue({ id: "fixture-outside-steering" });
+        else f.prisma.attempt.count.mockResolvedValue(2);
+        return prepared;
+      });
+      Object.assign(f.prisma.botSecret, {
+        count: vi.fn(async () => 0),
+        create: vi.fn(async () => {}),
+      });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(f.results).toMatchObject([{ error: expect.stringContaining("needs approval") }]);
+      expect(f.effects).toMatchObject([
+        { status: "completed", result: { error: expect.any(String) } },
+      ]);
+    },
+  );
 });
 
 describe("executor connector account revalidation", () => {

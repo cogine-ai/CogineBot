@@ -225,7 +225,7 @@ export function createRunTrust(
   if (input.sourcePage || input.waitingAnswer?.includesPage) recordPageInput();
   let earlierAttempt: Promise<boolean> | undefined;
   const receivedOutsideSteering = async (
-    store: Pick<Prisma.TransactionClient, "steeringMessage"> = prisma,
+    store: Pick<Prisma.TransactionClient, "steeringMessage">,
   ) =>
     Boolean(
       await store.steeringMessage.findFirst({
@@ -243,12 +243,14 @@ export function createRunTrust(
         select: { id: true },
       }),
     );
-  const isTainted = async () => {
+  const isTainted = async (tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">) => {
     if (state.tainted) return true;
-    earlierAttempt ??= prisma.attempt
-      .count({ where: { runId: run.id } })
-      .then((count) => count > 1);
-    if ((await earlierAttempt) || (await receivedOutsideSteering())) state.tainted = true;
+    const store = tx ?? prisma;
+    const checkEarlierAttempt = () =>
+      store.attempt.count({ where: { runId: run.id } }).then((count) => count > 1);
+    if (!tx) earlierAttempt ??= checkEarlierAttempt();
+    const hasEarlierAttempt = await (tx ? checkEarlierAttempt() : earlierAttempt);
+    if (hasEarlierAttempt || (await receivedOutsideSteering(store))) state.tainted = true;
     return state.tainted;
   };
   let ownerWords: Promise<string> | undefined;
@@ -376,7 +378,6 @@ export function createRunTrust(
   return {
     state,
     isTainted,
-    receivedOutsideSteering,
     recordPageInput,
     recordSteering,
     loadOwnerWords,

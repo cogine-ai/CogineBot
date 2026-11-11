@@ -5424,6 +5424,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         if (!scripted && history.some(({ id }) => id && pageHistoryIds.has(id))) {
           trust.state.tainted = true;
         }
+        // Only a trusted foreground Run can show the purpose and save without an approval card.
+        const credentialGenerationNeedsApproval = async (tx?: Prisma.TransactionClient) =>
+          !runPromotesMidTurnNarration(run.trigger) || (await trust.isTainted(tx));
         const searchResultUrls = new Set<string>();
         const verbatimMcpServers =
           !scripted &&
@@ -6305,11 +6308,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               toolRequiresApproval(tool.toolName, viaConnector, tool.readOnly),
             );
           const gated = requiresApprovalByDefault || connectorReadGated;
-          // An approval card shows the purpose when chat narration is suppressed or the
-          // Run has received steering from outside the authenticated owner's input.
           const generationNeedsApproval =
-            generation?.success === true &&
-            (!runPromotesMidTurnNarration(run.trigger) || (await trust.receivedOutsideSteering()));
+            generation?.success === true && (await credentialGenerationNeedsApproval());
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
             generationNeedsApproval ||
@@ -6949,19 +6949,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : ((await completedPageWrite()) ?? uncertainEffectResult(name));
           };
 
+          const delegatedApprovalScope = (effectId: string) => ({
+            spaceId: run.spaceId,
+            runId,
+            effectId,
+            leaseOwner: workerId,
+            leaseFence: fence,
+          });
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
             const effect = applied!.effect;
             const claimed =
               from === "approved" && effect.requiresPeerApprovalRecheck
-                ? await claimDelegatedApprovedEffect(deps.prisma, {
-                    spaceId: run.spaceId,
-                    runId,
-                    effectId: effect.id,
-                    leaseOwner: workerId,
-                    leaseFence: fence,
-                  })
+                ? await claimDelegatedApprovedEffect(deps.prisma, delegatedApprovalScope(effect.id))
                 : await (from === "approved" ? claimApprovedEffect : claimIntendedEffect)(
                     deps.prisma,
                     effect.id,
@@ -8645,6 +8646,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 args: generation.data,
                 lockRun: async (tx) => {
                   context.signal.throwIfAborted();
+                  // The peer guard takes the Space lock before the Run and Bots.
+                  if (
+                    claimedApproval &&
+                    applied.effect.requiresPeerApprovalRecheck &&
+                    !(await recheckDelegatedApprovalDispatchInTransaction(
+                      tx,
+                      delegatedApprovalScope(effectId),
+                    ))
+                  )
+                    throw new ActionRuleDispatchError(
+                      "The delegated action is no longer authorized.",
+                    );
                   if (!(await renewRunLease(deps, runId, workerId, fence, tx)))
                     throw new ActionRuleDispatchError(
                       "The run no longer owns this credential request.",
@@ -8662,7 +8675,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     (current.decision === "ask" ||
                       (approvalResolved.source === "always_allow" &&
                         current.source !== "always_allow") ||
-                      (await trust.receivedOutsideSteering(tx)))
+                      (await credentialGenerationNeedsApproval(tx)))
                   )
                     throw new ActionRuleDispatchError(
                       "Generating this credential needs approval after the Run’s input or action rules changed.",
@@ -8674,7 +8687,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       "executing",
                       result,
                       claimedApproval && run.origin === "bot_peer"
-                        ? approvedActionReceipt(result)
+                        ? approvedActionReceipt(result, "result")
                         : undefined,
                     ))
                   )
@@ -9348,13 +9361,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const verifyDispatch = async (tx?: Prisma.TransactionClient) => {
               context.signal.throwIfAborted();
               if (pendingPeerConnectorClaim) {
-                const scope = {
-                  spaceId: run.spaceId,
-                  runId,
-                  effectId: applied!.effect.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                };
+                const scope = delegatedApprovalScope(applied!.effect.id);
                 const allowed = tx
                   ? await recheckDelegatedApprovalDispatchInTransaction(tx, scope)
                   : await runAsSystem("recheck the approved peer tool before dispatch", () =>
