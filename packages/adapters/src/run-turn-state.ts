@@ -275,11 +275,10 @@ export async function persistRunTurnCheckpoint(
       pendingIndex >= 0 ? unresolved.slice(pendingIndex + 1).map((call) => call.id) : [],
     );
     saved.messages = saved.messages.map(
-      createProtectedToolTranscriptSanitizer(
-        state.bridgeToolNames,
-        () => runSecrets,
+      createProtectedToolTranscriptSanitizer(state.bridgeToolNames, () => runSecrets, {
+        pendingToolCallId: saved.pendingToolCallId,
         unstartedCalls,
-      ),
+      }),
     );
     saved.effectOccurrences = state.occurrences;
     saved.ownInstructionsBaseline = state.ownInstructionsBaseline;

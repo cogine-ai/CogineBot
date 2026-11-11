@@ -304,6 +304,32 @@ describe("run turn checkpoint state", () => {
     expect(state(stored, { tools }).pendingToolName).toBe("write_file");
   });
 
+  it.each([false, true])(
+    "retains a paused question's resume inputs (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const tools = [builtin("ask_user"), builtin("generate_secret")];
+      const current = state(undefined, { tools });
+      const question = {
+        question: "Which option?",
+        options: ["First", "Second"],
+        type: "login",
+        username: "fixture-account@example.test",
+      };
+      const input = wrapped
+        ? call("pending", USE_TOOL, { name: "ask_user", arguments: question })
+        : call("pending", "ask_user", question);
+      const captured = checkpoint({ messages: [assistant([input])] });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).not.toContain(question.username);
+      expect(stored).toContain(question.question);
+      expect(stored).not.toContain("argumentsError");
+      expect(state(stored, { tools }).pendingToolName).toBe("ask_user");
+    },
+  );
+
   it("does not carry a protected validation error onto an unrelated reused tool-call ID", async () => {
     const f = storage();
     const current = state();

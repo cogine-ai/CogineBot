@@ -18,7 +18,7 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasLoginUsername(value: unknown): boolean {
+function hasLoginUsername(value: unknown): value is Record<string, unknown> {
   return record(value) && value.type === "login" && "username" in value;
 }
 
@@ -26,7 +26,7 @@ function hasLoginUsername(value: unknown): boolean {
 export function createProtectedToolTranscriptSanitizer(
   bridgeToolNames: ReadonlySet<string> | undefined,
   secrets: () => string[],
-  unstartedCalls?: ReadonlySet<string>,
+  checkpoint?: { pendingToolCallId: string; unstartedCalls: ReadonlySet<string> },
 ) {
   const pageCalls = new Map<string, { name: string; rejected: boolean }>();
   const protectedErrors = new Map<string, string>();
@@ -50,7 +50,7 @@ export function createProtectedToolTranscriptSanitizer(
           const savedLogin =
             parsed?.success && parsed.data.type === "login" ? parsed.data : undefined;
           const error =
-            part.argumentsError === UNSTARTED_LOGIN_CALL || unstartedCalls?.has(part.id)
+            part.argumentsError === UNSTARTED_LOGIN_CALL || checkpoint?.unstartedCalls.has(part.id)
               ? UNSTARTED_LOGIN_CALL
               : savedLogin
                 ? undefined
@@ -83,14 +83,33 @@ export function createProtectedToolTranscriptSanitizer(
           // An offered connector can declare these same fields for its own use.
           const targetName = bridge ? innerName : part.name;
           const targetArgs = bridge ? innerArgs : part.arguments;
+          const loginShaped = hasLoginUsername(targetArgs);
+          const offeredBuiltin =
+            typeof targetName === "string" &&
+            BUILTIN_AGENT_TOOL_NAMES.has(targetName) &&
+            (!bridge || bridge.has(targetName));
           if (
             typeof targetName !== "string" ||
-            (hasLoginUsername(targetArgs) &&
+            (loginShaped &&
               (BUILTIN_AGENT_TOOL_NAMES.has(targetName) ||
                 (bridgeToolNames !== undefined && !bridgeToolNames.has(targetName))))
           ) {
             changed = true;
             protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
+            if (
+              offeredBuiltin &&
+              loginShaped &&
+              checkpoint?.pendingToolCallId === part.id &&
+              !part.argumentsError
+            ) {
+              // The pending call already reached its pause. Keep its route and resume inputs.
+              const remaining = { ...targetArgs };
+              delete remaining.username;
+              return {
+                ...part,
+                arguments: bridge ? { name: targetName, arguments: remaining } : remaining,
+              };
+            }
             return { ...part, arguments: {}, argumentsError: INVALID_BRIDGED_CALL };
           }
           return part;
