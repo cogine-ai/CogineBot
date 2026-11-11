@@ -127,6 +127,7 @@ describe("built-in tool bridge", () => {
     expect(names("chart")).toContain("render_plot");
     expect(names("new space")[0]).toBe("create_space");
     expect(names("saved credential names")[0]).toBe("list_secrets");
+    expect(names("generate password")[0]).toBe("generate_secret");
     expect(names("scratchpad add")[0]).toBe("scratchpad_add");
     expect(names("scratchpad")).toHaveLength(3);
     expect(findTools(deferred, { query: "zzzz" })).toEqual({

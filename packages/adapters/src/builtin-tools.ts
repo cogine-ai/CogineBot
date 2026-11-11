@@ -3,6 +3,7 @@ import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import {
   BotSecretName,
   botSecretDestinationSchema,
+  GenerateCommandSecretInput,
   SecretAskPurpose,
   SecretHttpRequest,
   TICKET_PRIORITIES,
@@ -404,6 +405,12 @@ export const builtinAgentTools: ConnectorTool[] = [
     get inputSchema() {
       return secretAskToolSurface().inputSchema;
     },
+  },
+  {
+    name: "generate_secret",
+    description:
+      'Generate and save a random password or key for this bot\'s shell commands using type "command". Use the returned environment variable to pass the value to the program that needs it. The value stays protected, and an existing credential is never replaced. Set rules only when the program restricts characters or length.',
+    inputSchema: z.toJSONSchema(GenerateCommandSecretInput, { io: "input" }),
   },
   {
     name: "list_secrets",

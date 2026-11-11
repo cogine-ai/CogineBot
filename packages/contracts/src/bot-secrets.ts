@@ -11,6 +11,38 @@ export const BotSecretName = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 // before the pattern tightened stays listable and removable instead of failing a whole list call.
 export const StoredBotSecretName = z.string().min(1).max(256);
 
+export const GENERATED_SECRET_SYMBOLS = "!@#$%^&*-_=+?";
+
+export const GeneratedSecretRules = z
+  .strictObject({
+    length: z.number().int().min(8).max(128).default(20),
+    lowercase: z.boolean().default(true),
+    uppercase: z.boolean().default(true),
+    digits: z.boolean().default(true),
+    symbols: z.boolean().default(true),
+    allowedSymbols: z
+      .string()
+      .regex(/^[!-/:-@[-`{-~]{1,32}$/, "Use only punctuation characters")
+      .optional(),
+  })
+  .refine(
+    (rules) => rules.lowercase || rules.uppercase || rules.digits || rules.symbols,
+    "Allow at least one kind of character",
+  );
+export type GeneratedSecretRules = z.infer<typeof GeneratedSecretRules>;
+
+export const GenerateCommandSecretInput = z
+  .strictObject({
+    name: BotSecretName,
+    type: z.literal("command"),
+    rules: GeneratedSecretRules.optional(),
+  })
+  .superRefine(({ name }, ctx) => {
+    const message = commandVariableNameIssue(name);
+    if (message) ctx.addIssue({ code: "custom", path: ["name"], message });
+  });
+export type GenerateCommandSecretInput = z.infer<typeof GenerateCommandSecretInput>;
+
 const SecretHeaderName = z
   .string()
   .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,120}$/)

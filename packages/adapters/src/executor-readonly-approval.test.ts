@@ -8,6 +8,7 @@ import type {
   ConnectorRoute,
   ConnectorTool,
   SandboxProvider,
+  SecretStore,
   WebProvider,
 } from "@rakazo/adapter-kit";
 import {
@@ -53,6 +54,7 @@ import * as RunMessagesModule from "./run-messages.js";
 import { readConnectionApprovalCheckpoint } from "./run-turn-state.js";
 import { routineSiteApprovalRequest } from "./schedule-tools.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
+import { EncryptedSecretStore } from "./secrets.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
 
@@ -136,6 +138,7 @@ function fixture({
   outsideSteering = false,
   webProvider,
   secretHttp,
+  secretStore = { load: async (ciphertext: string) => ciphertext },
   sandboxProvider,
   home,
   messagingIdentity = false,
@@ -172,6 +175,7 @@ function fixture({
   outsideSteering?: boolean;
   webProvider?: WebProvider;
   secretHttp?: ExecutorDeps["secretHttp"];
+  secretStore?: Pick<SecretStore, "load"> & Partial<SecretStore>;
   sandboxProvider?: Partial<SandboxProvider>;
   home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
@@ -553,7 +557,7 @@ function fixture({
     },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets,
-    secretStore: { load: async (ciphertext: string) => ciphertext },
+    secretStore,
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
     web: webProvider,
@@ -2932,6 +2936,131 @@ describe("disabled builtins", () => {
     expect(f.commit).not.toHaveBeenCalled();
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.effects).toEqual([]);
+  });
+});
+
+describe("generated command credentials in a Run", () => {
+  const args = { name: "fixture-db", type: "command" };
+
+  it("commits a value-free receipt and reuses it when the same Run action returns", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const create = vi.fn(async (_input: { data: { id: string; ciphertext: string } }) => {});
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = {
+      saved: true,
+      name: args.name,
+      auth: { type: "command" },
+      variable: "FIXTURE_DB",
+    };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([
+      { kind: "generate_secret", status: "completed", request: args, result },
+    ]);
+    expect(create).toHaveBeenCalledOnce();
+    const { ciphertext, id } = create.mock.calls[0]![0].data;
+    const value = await secretStore.load(ciphertext, id);
+    expect(value).toHaveLength(20);
+    expect(
+      JSON.stringify({ results: f.results, effects: f.effects, events: f.append.mock.calls }),
+    ).not.toContain(value);
+    await f.run();
+    expect(f.results).toEqual([result, result]);
+    expect(put).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an interrupted generation uncertain without asking the store for a new value", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    f.effects.push({
+      id: "interrupted-generation",
+      kind: "generate_secret",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      idempotencyKey: toolEffectIdempotencyKey(f.runRecord.id, "generate_secret", args, 0),
+      status: "executing",
+      request: args,
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toMatchObject([{ uncertain: true }]);
+    expect(f.effects).toMatchObject([{ status: "uncertain" }]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it.each(["generate_secret", "shell"])("refuses generation with %s disabled", async (disabled) => {
+    const f = fixture({ name: "generate_secret", builtin: true, disabledBuiltinTools: [disabled] });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("keeps an approval-bound call paused and resumes its original name", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({
+      name: "generate_secret",
+      builtin: true,
+      secretStore,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "generate_secret" }],
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
+    expect(f.effects).toMatchObject([
+      { kind: "generate_secret", status: "intended", request: args },
+    ]);
+    expect(put).not.toHaveBeenCalled();
+
+    const create = vi.fn(async () => {});
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.effects[0]!.status = "approved";
+    f.setCalls([{ args: { ...args, name: "different-db" }, executionId: "generate-2" }]);
+    await f.run();
+    expect(f.results[1]).toMatchObject({ saved: true, name: args.name });
+    expect(f.effects).toMatchObject([{ status: "completed", request: args }]);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ name: args.name }),
+      }),
+    );
+    expect(put).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks a new action denial after the encrypted value has been staged", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const rules: ActionApprovalRule[] = [];
+    const originalPut = secretStore.put.bind(secretStore);
+    vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+      const prepared = await originalPut(...input);
+      rules.push({ effect: "deny", matchKind: "tool", matchValue: "generate_secret" });
+      return prepared;
+    });
+    const f = fixture({ name: "generate_secret", builtin: true, rules, secretStore });
+    Object.assign(f.prisma.botSecret, {
+      count: vi.fn(async () => 0),
+      create: vi.fn(async () => {}),
+    });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toMatchObject([
+      { error: expect.stringContaining("blocked by an action rule") },
+    ]);
+    expect(f.effects).toMatchObject([
+      {
+        status: "completed",
+        result: { error: expect.stringContaining("blocked by an action rule") },
+      },
+    ]);
   });
 });
 
