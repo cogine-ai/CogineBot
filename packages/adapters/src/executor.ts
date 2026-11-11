@@ -4963,6 +4963,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        // Shared external messages can run with the linked user's Bot identity.
+        if (messagingChannelRun || thread.externalConversationId)
+          disabledBuiltinTools.add("generate_secret");
         const toolResultHistoryEnabled = discovered.some(
           (tool) =>
             tool.route &&
@@ -4982,7 +4985,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
-            disabledBuiltinTools: bot.disabledBuiltinTools,
+            disabledBuiltinTools: [...disabledBuiltinTools],
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity && !isBackgroundRunTrigger(run.trigger)
@@ -6182,10 +6185,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               error:
                 issue && issue.code !== "unrecognized_keys"
                   ? `Invalid credential generation — ${issue.path.join(".") || "input"}: ${issue.message}`
-                  : "Invalid credential generation. Specify only a command name and optional character rules.",
+                  : "Invalid credential generation. Specify a command name, its purpose, and optional character rules.",
             };
           }
-          if (generation) effectRequest = args;
+          if (generation?.success) {
+            if (isExactNoResponse(generation.data.purpose) || containsSecret(args, runSecrets))
+              return { error: "Give a brief purpose without any credential values." };
+            effectRequest = args;
+          }
           if (name === "web_fetch" && outboundUrl) {
             if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
               return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
@@ -8606,6 +8613,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             const effectId = applied.effect.id;
             try {
+              if (runPromotesMidTurnNarration(run.trigger))
+                await serializeProgress(() => showNarrationStatus(generation.data.purpose));
               const generated = await generateBotCommandSecret({
                 prisma: deps.prisma,
                 secretStore: deps.secretStore,
@@ -11111,6 +11120,7 @@ export function selectBuiltinToolsForRun(options: {
           "forget_memory",
           "task_catalog",
           "board_tickets",
+          "generate_secret",
         ].includes(tool.name) &&
           !tool.name.startsWith("scratchpad_") &&
           !tool.name.startsWith("ticket_"))),
@@ -11320,7 +11330,7 @@ function secretGuidance(disabled?: ReadonlySet<string>): string[] {
   }
   if (builtinOffered(disabled, "generate_secret")) {
     clauses.push(
-      "When the user needs a new password or key for a shell task, use generate_secret and pass the resulting environment variable to the program that needs it.",
+      "When the user needs a new password or key for a shell task, use generate_secret with a brief user-facing purpose and pass the resulting environment variable to the program that needs it.",
     );
   }
   const uses: string[] = [];

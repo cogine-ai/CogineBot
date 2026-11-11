@@ -2940,15 +2940,29 @@ describe("disabled builtins", () => {
 });
 
 describe("generated command credentials in a Run", () => {
-  const args = { name: "fixture-db", type: "command" };
+  const args = {
+    name: "fixture-db",
+    type: "command",
+    purpose: "I’ll generate a password for the test database.",
+  };
 
   it("commits a value-free receipt and reuses it when the same Run action returns", async () => {
     const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const originalPut = secretStore.put.bind(secretStore);
     const put = vi.spyOn(secretStore, "put");
     const create = vi.fn(async (_input: { data: { id: string; ciphertext: string } }) => {});
     const f = fixture({ name: "generate_secret", builtin: true, secretStore });
     Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
     Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    put.mockImplementationOnce(async (...input) => {
+      expect(f.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.progress",
+          payload: expect.objectContaining({ text: args.purpose, narrationStatus: true }),
+        }),
+      );
+      return originalPut(...input);
+    });
     f.setCalls([{ args, executionId: "generate-1" }]);
     await f.run();
     const result = {
@@ -3061,6 +3075,43 @@ describe("generated command credentials in a Run", () => {
         result: { error: expect.stringContaining("blocked by an action rule") },
       },
     ]);
+  });
+
+  it("refuses a purpose containing a known secret before publishing it or recording the effect", async () => {
+    const secret = "fixture-existing-credential";
+    const f = fixture({ name: "generate_secret", builtin: true, secrets: [secret] });
+    f.setCalls([{ args: { ...args, purpose: `Use ${secret}` }, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "Give a brief purpose without any credential values." }]);
+    expect(f.effects).toEqual([]);
+    expect(JSON.stringify(f.append.mock.calls)).not.toContain(secret);
+  });
+
+  it("keeps shared external conversations from saving credentials for the linked user", async () => {
+    const f = fixture({ name: "generate_secret", builtin: true, trigger: "messaging" });
+    f.prisma.thread.findUniqueOrThrow.mockImplementation(async () => ({
+      id: f.runRecord.threadId,
+      groupId: null,
+      externalConversationId: "fixture-shared-conversation",
+    }));
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("keeps a shared channel message from saving credentials under a recipient identity", async () => {
+    const f = fixture({ name: "generate_secret", builtin: true, trigger: "messaging" });
+    Object.assign(f.runRecord, { sourceMessageId: "fixture-channel-message" });
+    f.prisma.message.findUnique.mockResolvedValue({
+      blocks: [{ kind: "channel_message", channelId: "fixture-channel" }],
+      role: "user",
+      steeringMessages: [],
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
   });
 });
 

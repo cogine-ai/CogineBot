@@ -28,6 +28,15 @@ export const GeneratedSecretRules = z
   .refine(
     (rules) => rules.lowercase || rules.uppercase || rules.digits || rules.symbols,
     "Allow at least one kind of character",
+  )
+  .refine(
+    (rules) =>
+      rules.lowercase ||
+      rules.uppercase ||
+      rules.digits ||
+      !rules.symbols ||
+      new Set(rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS).size >= 2,
+    "Allow at least two different characters",
   );
 export type GeneratedSecretRules = z.infer<typeof GeneratedSecretRules>;
 
@@ -35,6 +44,14 @@ export const GenerateCommandSecretInput = z
   .strictObject({
     name: BotSecretName,
     type: z.literal("command"),
+    purpose: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .describe(
+        "Explain to the user why you need a new command credential. Do not include any secret value.",
+      ),
     rules: GeneratedSecretRules.optional(),
   })
   .superRefine(({ name }, ctx) => {

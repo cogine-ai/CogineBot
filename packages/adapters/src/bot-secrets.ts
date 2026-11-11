@@ -651,9 +651,12 @@ export async function generateBotCommandSecret(input: {
   const { prisma, secretStore, scope, args } = input;
   const { name } = args;
   const nameTaken = {
-    error: "A credential with this name already exists. Use it as it is or choose another name.",
+    error: "A credential with this name already exists. Choose another name.",
   };
-  if (await findBotSecret(prisma, scope, name)) return nameTaken;
+  // Create-only occupancy does not depend on whether the old destination is still usable.
+  const existing = () =>
+    prisma.botSecret.findFirst({ where: { ...scopeFields(scope), name }, select: { id: true } });
+  if (await existing()) return nameTaken;
   const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
   const destination = { name, origin: "", auth: { type: "command" as const } };
   const result: GeneratedCommandReceipt = {
@@ -687,7 +690,7 @@ export async function generateBotCommandSecret(input: {
   } catch (error) {
     if (error instanceof BotSecretWriteRefusal) return { error: error.message };
     if (error instanceof BotSecretConflictError) {
-      return (await findBotSecret(prisma, scope, name)) ? nameTaken : { error: error.message };
+      return (await existing()) ? nameTaken : { error: error.message };
     }
     throw error;
   }

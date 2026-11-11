@@ -213,7 +213,13 @@ describe("built-in tool bridge", () => {
       messagingChannelRun: true,
     });
     const { listed, deferred } = partitionTools(offered);
-    const absent = ["message_bot", "schedule_create", "scratchpad_add", "remember"];
+    const absent = [
+      "message_bot",
+      "schedule_create",
+      "scratchpad_add",
+      "remember",
+      "generate_secret",
+    ];
     expect(listed.some((tool) => tool.name === "message_user")).toBe(true);
     for (const name of absent) {
       expect(listed.some((tool) => tool.name === name)).toBe(false);

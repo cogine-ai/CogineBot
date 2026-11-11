@@ -8,7 +8,7 @@ export function generateSecretValue(rules: GeneratedSecretRules): string {
     rules.lowercase && "abcdefghijklmnopqrstuvwxyz",
     rules.uppercase && "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     rules.digits && "0123456789",
-    rules.symbols && (rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS),
+    rules.symbols && [...new Set(rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS)].join(""),
   ].filter((set): set is string => Boolean(set));
   const all = sets.join("");
   const characters = sets.map(pick);

@@ -171,6 +171,7 @@ async function main() {
     "packages/adapters/src/job-reconciler.postgres.test.ts",
     "packages/adapters/src/messaging-recovery.postgres.test.ts",
     "packages/adapters/src/cloud-agent.postgres.test.ts",
+    "packages/adapters/src/bot-secret-generation.postgres.test.ts",
   ];
   const selectedSuites = integration ? selectIntegrationSuites(suites, e2eSpec, shard) : [];
   const mode = integration ? "integration" : "e2e";

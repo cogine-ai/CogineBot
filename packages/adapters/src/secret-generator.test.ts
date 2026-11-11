@@ -48,7 +48,11 @@ describe("generated command credential rules", () => {
     { rules: { allowedSymbols: "!\n" } },
     { rules: { allowedSymbols: "!".repeat(33) } },
     { rules: { lowercase: false, uppercase: false, digits: false, symbols: false } },
+    { rules: { lowercase: false, uppercase: false, digits: false, allowedSymbols: "!!!" } },
     { rules: { seed: "caller-supplied" } },
+    { purpose: " " },
+    { purpose: undefined },
+    { purpose: "x".repeat(61) },
     { value: "caller-supplied" },
     { origin: "https://example.test" },
     { type: "login" },
@@ -56,7 +60,12 @@ describe("generated command credential rules", () => {
     { name: "node-options" },
   ])("rejects invalid or unsupported inputs %j", (extra) => {
     expect(
-      GenerateCommandSecretInput.safeParse({ name: "test-db", type: "command", ...extra }).success,
+      GenerateCommandSecretInput.safeParse({
+        name: "test-db",
+        type: "command",
+        purpose: "Set up the test database",
+        ...extra,
+      }).success,
     ).toBe(false);
   });
 });

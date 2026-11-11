@@ -55,7 +55,11 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
   });
 
   async function action(name: string, status = "executing") {
-    const args = GenerateCommandSecretInput.parse({ name, type: "command" });
+    const args = GenerateCommandSecretInput.parse({
+      name,
+      type: "command",
+      purpose: "Generate a fixture password",
+    });
     const task = await prisma.task.create({
       data: { ...scope, threadId, prompt: "Generate a fixture password", status: "running" },
     });
@@ -188,6 +192,33 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
     } finally {
       put.mockRestore();
       remove.mockRestore();
+    }
+  });
+
+  it("treats an existing name as occupied even when its saved destination is no longer allowed", async () => {
+    const name = "fixture-retired-api";
+    const legacy = await prisma.botSecret.create({
+      data: {
+        id: randomUUID(),
+        ...scope,
+        name,
+        origin: "http://192.0.2.10",
+        auth: { type: "bearer" },
+        ciphertext: "fixture-retained-reference",
+      },
+    });
+    const generation = await action(name);
+    const put = vi.spyOn(secretStore, "put");
+    try {
+      expect(await generation.generate()).toEqual({
+        error: expect.stringContaining("already exists"),
+      });
+      expect(put).not.toHaveBeenCalled();
+      expect(await prisma.botSecret.findUniqueOrThrow({ where: { id: legacy.id } })).toEqual(
+        legacy,
+      );
+    } finally {
+      put.mockRestore();
     }
   });
 
