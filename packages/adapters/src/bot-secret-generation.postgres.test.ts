@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { GenerateCommandSecretInput } from "@rakazo/contracts";
+import { GenerateSecretInput } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { completeExternalEffect } from "./approval-effect.js";
-import { generateBotCommandSecret, shellCommandEnvironment } from "./bot-secrets.js";
+import { generateBotSecret, resolveLoginFill, shellCommandEnvironment } from "./bot-secrets.js";
 import { withSecretPersistence } from "./secret-persistence.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 
-describe.skipIf(!enabled).sequential("generated command credential receipts (PostgreSQL)", () => {
+describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)", () => {
   const organizationId = randomUUID();
   const userId = randomUUID();
   let db: ReturnType<typeof createDb>;
@@ -18,6 +18,11 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
   let scope: { userId: string; spaceId: string; botId: string };
   let threadId: string;
   const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+  const login = {
+    type: "login",
+    origin: "https://LOGIN.example.test:443/",
+    username: "fixture@example.test",
+  };
 
   beforeAll(async () => {
     db = createDb(process.env.DATABASE_URL!);
@@ -54,11 +59,12 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
     }
   });
 
-  async function action(name: string, status = "executing") {
-    const args = GenerateCommandSecretInput.parse({
+  async function action(name: string, status = "executing", options: Record<string, unknown> = {}) {
+    const args = GenerateSecretInput.parse({
       name,
       type: "command",
       purpose: "Generate a fixture password",
+      ...options,
     });
     const task = await prisma.task.create({
       data: { ...scope, threadId, prompt: "Generate a fixture password", status: "running" },
@@ -80,7 +86,7 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
       effect,
       readEffect: () => prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
       generate: () =>
-        generateBotCommandSecret({
+        generateBotSecret({
           prisma,
           secretStore,
           scope,
@@ -161,6 +167,107 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
     }
   });
 
+  it("generates a named login that can be filled and exported as the same password", async () => {
+    const name = "fixture-site";
+    const generated = await action(name, "executing", { ...login, command: true });
+    const result = {
+      saved: true,
+      name,
+      origin: "https://login.example.test",
+      auth: { type: "login" },
+      command: {
+        name: "fixture-site-password",
+        auth: { type: "command" },
+        variable: "FIXTURE_SITE_PASSWORD",
+      },
+    };
+    expect(await generated.generate()).toMatchObject({ result });
+    expect(await generated.readEffect()).toMatchObject({ status: "completed", result });
+
+    const fill = (field: string) => resolveLoginFill({ prisma, secretStore, scope, name, field });
+    expect(await fill("  USERNAME  ")).toMatchObject({
+      origin: result.origin,
+      field: "username",
+      text: login.username,
+    });
+    const password = await fill("Password");
+    if ("error" in password) throw new Error(password.error);
+    const { env } = await shellCommandEnvironment({
+      prisma,
+      secretStore,
+      scope,
+      spaceEnvironment: {},
+      registerRedactions: vi.fn(),
+    });
+    expect(password).toMatchObject({
+      origin: result.origin,
+      field: "password",
+      text: env.FIXTURE_SITE_PASSWORD,
+      redactions: expect.arrayContaining([env.FIXTURE_SITE_PASSWORD]),
+    });
+    expect(password.text).toHaveLength(20);
+    expect(JSON.stringify(await generated.readEffect())).not.toContain(password.text);
+    expect(await password.isCurrent()).toBe(true);
+    const row = await prisma.botSecret.findFirstOrThrow({ where: { ...scope, name } });
+    expect(row.ciphertext).not.toContain(password.text);
+    await prisma.botSecret.update({
+      where: { id: row.id },
+      data: { revision: randomUUID() },
+    });
+    expect(await password.isCurrent()).toBe(false);
+  });
+
+  it("rolls back both stages and the receipt when the paired environment alias conflicts", async () => {
+    await (await action("fixture_alias_password")).generate();
+    const name = "fixture-alias";
+    const paired = await action(name, "executing", { ...login, command: true });
+    const remove = vi.spyOn(secretStore, "delete");
+    try {
+      expect(await paired.generate()).toEqual({
+        error: expect.stringContaining("already exported"),
+      });
+      expect(await paired.readEffect()).toMatchObject({ status: "executing", result: null });
+      expect(
+        await prisma.botSecret.count({
+          where: { ...scope, name: { in: [name, `${name}-password`] } },
+        }),
+      ).toBe(0);
+      expect(remove).toHaveBeenCalledTimes(2);
+      expect(
+        await prisma.botSecret.count({ where: { ...scope, name: "fixture_alias_password" } }),
+      ).toBe(1);
+    } finally {
+      remove.mockRestore();
+    }
+  });
+
+  it("cleans the first staged login when staging the command credential fails", async () => {
+    const name = "fixture-stage-error";
+    const paired = await action(name, "executing", { ...login, command: true });
+    const originalPut = secretStore.put.bind(secretStore);
+    const put = vi
+      .spyOn(secretStore, "put")
+      .mockImplementationOnce(originalPut)
+      .mockRejectedValueOnce(new Error("Fixture command staging failed"));
+    const remove = vi.spyOn(secretStore, "delete");
+    try {
+      expect(await paired.generate()).toEqual({
+        error: "The credential could not be prepared. No credential was saved.",
+      });
+      expect(put).toHaveBeenCalledTimes(2);
+      expect(remove).toHaveBeenCalledOnce();
+      expect(await paired.readEffect()).toMatchObject({ status: "executing", result: null });
+      expect(
+        await prisma.botSecret.count({
+          where: { ...scope, name: { in: [name, `${name}-password`] } },
+        }),
+      ).toBe(0);
+    } finally {
+      put.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
   it("adopts one candidate when independent Run actions compete for a name", async () => {
     const first = await action("fixture-race");
     const second = await action("fixture-race");
@@ -223,15 +330,18 @@ describe.skipIf(!enabled).sequential("generated command credential receipts (Pos
   });
 
   it("leaves no credential when its action receipt is no longer owned", async () => {
-    const interrupted = await action("fixture-interrupted", "uncertain");
+    const name = "fixture-interrupted";
+    const interrupted = await action(name, "uncertain", { ...login, command: true });
     const remove = vi.spyOn(secretStore, "delete");
     try {
       await expect(interrupted.generate()).rejects.toThrow("Fixture effect ownership changed");
       expect(await interrupted.readEffect()).toMatchObject({ status: "uncertain", result: null });
       expect(
-        await prisma.botSecret.count({ where: { ...scope, name: "fixture-interrupted" } }),
+        await prisma.botSecret.count({
+          where: { ...scope, name: { in: [name, `${name}-password`] } },
+        }),
       ).toBe(0);
-      expect(remove).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledTimes(2);
     } finally {
       remove.mockRestore();
     }

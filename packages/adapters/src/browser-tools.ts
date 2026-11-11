@@ -8,6 +8,7 @@ import type {
   ComputerRef,
 } from "@rakazo/adapter-kit";
 import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
+import { LoginFieldLabel } from "@rakazo/contracts";
 import type { LoginField } from "./bot-secrets.js";
 import {
   CONNECTOR_REDACTION_MAX_DEPTH,
@@ -64,12 +65,18 @@ export type SecretFillStep = {
   kind: "fill_secret";
   ref: string;
   secret: string;
-  field: LoginField;
+  field: string;
 };
 export type BrowserActInput = BrowserActStep | SecretFillStep;
-export type ResolveSecretFill = (
-  step: SecretFillStep,
-) => Promise<{ text: string; origin: string } | { error: string }>;
+export type ResolveSecretFill = (step: SecretFillStep) => Promise<
+  | {
+      text: string;
+      origin: string;
+      field: LoginField;
+      isCurrent: () => Promise<boolean>;
+    }
+  | { error: string }
+>;
 
 export async function browserNavigateFromTool(
   browser: BrowserProvider,
@@ -125,6 +132,7 @@ export async function browserActFromTool(
   args: Record<string, unknown>,
   options: {
     resolveSecretFill?: ResolveSecretFill;
+    authorizeSecretFill?: () => Promise<boolean>;
     redactions?: () => string[];
     resolveUploadPath?: (path: string) => string;
     uploadRoots?: string[];
@@ -138,6 +146,7 @@ export async function browserActFromTool(
   try {
     preparationSignal.throwIfAborted();
     const actions: BrowserActStep[] = [];
+    const loginRevisions: Array<() => Promise<boolean>> = [];
     const request: BrowserActRequest = { actions, signal: context.signal };
     const steps = parseBrowserActions(args.actions);
     if (
@@ -194,13 +203,34 @@ export async function browserActFromTool(
       }
       preparationSignal.throwIfAborted();
       if ("error" in resolved) return refusedInput(resolved.error);
+      loginRevisions.push(resolved.isCurrent);
       actions.push({
         kind: "fill",
         ref: step.ref,
         text: resolved.text,
         origin: resolved.origin,
-        field: step.field,
+        field: resolved.field,
       });
+    }
+    if (loginRevisions.length > 0) {
+      try {
+        if (
+          options.authorizeSecretFill &&
+          !(await withAbort(options.authorizeSecretFill(), preparationSignal))
+        )
+          return refusedInput("This run no longer owns the browser action.");
+        const current = await withAbort(
+          Promise.all(loginRevisions.map((check) => check())),
+          preparationSignal,
+        );
+        if (current.includes(false))
+          return refusedInput(
+            "A saved login changed before filling. Inspect the page before retrying.",
+          );
+      } catch {
+        preparationSignal.throwIfAborted();
+        return refusedInput("This saved login could not be verified.");
+      }
     }
     preparationSignal.throwIfAborted();
     // Preparation stays bounded, but must not consume the helper's action budget.
@@ -261,14 +291,12 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     }
     if (kind === "fill_secret") {
       const secret = String(action.secret ?? "").trim();
-      const field = action.field;
+      const field = LoginFieldLabel.safeParse(action.field);
       if (!secret) throw new BrowserToolInputError("browser_act fill_secret requires secret");
-      if (field !== "username" && field !== "password") {
-        throw new BrowserToolInputError(
-          "browser_act fill_secret field must be username or password",
-        );
+      if (!field.success) {
+        throw new BrowserToolInputError("browser_act fill_secret requires a login field label");
       }
-      return { kind, ref, secret, field };
+      return { kind, ref, secret, field: field.data };
     }
     if (kind === "fill" || kind === "type") {
       if (typeof action.text !== "string") {

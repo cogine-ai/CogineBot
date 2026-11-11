@@ -29,6 +29,10 @@ const computer: ComputerRef = {
   providerRef: "c1",
 };
 
+function savedField(field: "username" | "password", text: string, origin: string) {
+  return { field, text, origin, isCurrent: async () => true };
+}
+
 describe("browser tools", () => {
   it("validates the whole saved-login batch before any field is changed", () => {
     const session = new PageBrowserSession(
@@ -177,7 +181,7 @@ describe("browser tools", () => {
     });
     const resolve = vi.fn(async () => {
       expect(commands).toEqual(["capabilities"]);
-      return { text: "synthetic-password", origin: "https://example.test" };
+      return savedField("password", "synthetic-password", "https://example.test");
     });
     const result = await browserActFromTool(
       browser,
@@ -201,10 +205,10 @@ describe("browser tools", () => {
       );
       return controller.signal;
     });
-    let resolvePending!: (value: { text: string; origin: string }) => void;
+    let resolvePending!: (value: ReturnType<typeof savedField>) => void;
     const resolve = vi.fn(
       () =>
-        new Promise<{ text: string; origin: string }>((done) => {
+        new Promise<ReturnType<typeof savedField>>((done) => {
           resolvePending = done;
         }),
     );
@@ -237,7 +241,7 @@ describe("browser tools", () => {
       );
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledOnce());
       await vi.advanceTimersByTimeAsync(18_000);
-      resolvePending({ text: "synthetic-password", origin: "https://example.test" });
+      resolvePending(savedField("password", "synthetic-password", "https://example.test"));
       await vi.advanceTimersByTimeAsync(10_000);
       expect(await task).toMatchObject({ ok: true, completed: 1 });
       expect(commands.filter((command) => command === "act")).toHaveLength(1);
@@ -345,15 +349,22 @@ describe("browser tools", () => {
     expect(acted).toMatchObject({ ok: true, completed: 1 });
   });
 
-  it("parses fill_secret without a value and rejects unknown fields", () => {
+  it("parses fill_secret with a field label and without a value", () => {
     expect(
       parseBrowserActions([
         { kind: "fill_secret", ref: "e1", secret: "site_login", field: "password" },
       ]),
     ).toEqual([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "password" }]);
-    expect(() =>
-      parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "pin" }]),
-    ).toThrow(/username or password/);
+    expect(
+      parseBrowserActions([
+        { kind: "fill_secret", ref: "e1", secret: "site_login", field: " PIN " },
+      ]),
+    ).toEqual([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "PIN" }]);
+    for (const field of [" ", "x".repeat(65), 123, undefined]) {
+      expect(() =>
+        parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field }]),
+      ).toThrow(/field/);
+    }
     expect(() =>
       parseBrowserActions([{ kind: "fill_secret", ref: "e1", field: "password" }]),
     ).toThrow(/secret/);
@@ -381,10 +392,10 @@ describe("browser tools", () => {
       return { email: ref("Email"), password: ref("Password") };
     }
     const values = { username: "fake-user@example.test", password: "fake-password-1" };
-    const resolveSecretFill = async (step: { field: "username" | "password" }) => ({
-      text: values[step.field],
-      origin: "https://login.example.test",
-    });
+    const resolveSecretFill = async (step: { field: string }) => {
+      const field = step.field === "password" ? "password" : "username";
+      return savedField(field, values[field], "https://login.example.test");
+    };
 
     it.each(["missing", "false"])(
       "does not resolve a secret when capability proof is %s",
@@ -475,8 +486,8 @@ describe("browser tools", () => {
         const deadline = new AbortController();
         const stop = new AbortController();
         const timer = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-        let resolvePending!: (value: { text: string; origin: string }) => void;
-        const pending = new Promise<{ text: string; origin: string }>((resolve) => {
+        let resolvePending!: (value: ReturnType<typeof savedField>) => void;
+        const pending = new Promise<ReturnType<typeof savedField>>((resolve) => {
           resolvePending = resolve;
         });
         const resolve = vi.fn(() => pending);
@@ -524,12 +535,16 @@ describe("browser tools", () => {
           expect(timer).toHaveBeenCalledOnce();
           expect(timer).toHaveBeenCalledWith(22_000);
           expect(act).not.toHaveBeenCalled();
-          resolvePending({ text: "late-private-value", origin: "https://login.example.test" });
+          resolvePending(
+            savedField("password", "late-private-value", "https://login.example.test"),
+          );
           await Promise.resolve();
           await Promise.resolve();
           expect(act).not.toHaveBeenCalled();
         } finally {
-          resolvePending({ text: "late-private-value", origin: "https://login.example.test" });
+          resolvePending(
+            savedField("password", "late-private-value", "https://login.example.test"),
+          );
           await outcome;
           timer.mockRestore();
         }
@@ -556,10 +571,56 @@ describe("browser tools", () => {
       expect(JSON.stringify(acted)).not.toContain(values.password);
     });
 
+    it("does not type a hidden saved field into a visible input even when its label is Username", async () => {
+      const browser = loginPage("https://login.example.test/signin");
+      const { email } = await refs(browser, "https://login.example.test/signin");
+      const result = await browserActFromTool(
+        browser,
+        computer,
+        context,
+        { actions: [{ kind: "fill_secret", ref: email, secret: "site_login", field: "Username" }] },
+        {
+          resolveSecretFill: async () =>
+            savedField("password", values.password, "https://login.example.test"),
+        },
+      );
+      expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+      expect(JSON.stringify(result)).not.toContain(values.password);
+    });
+
+    it.each(["revision", "lease"])(
+      "does not dispatch the batch when the saved login's %s is stale",
+      async (reason) => {
+        const browser = loginPage("https://login.example.test/signin");
+        const { password } = await refs(browser, "https://login.example.test/signin");
+        const act = vi.spyOn(browser, "act");
+        const result = await browserActFromTool(
+          browser,
+          computer,
+          context,
+          {
+            actions: [
+              { kind: "fill_secret", ref: password, secret: "site_login", field: "Sign-in PIN" },
+            ],
+          },
+          {
+            resolveSecretFill: async () => ({
+              ...savedField("password", values.password, "https://login.example.test"),
+              isCurrent: async () => reason !== "revision",
+            }),
+            authorizeSecretFill: async () => reason !== "lease",
+          },
+        );
+        expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });
+        expect(act).not.toHaveBeenCalled();
+        expect(JSON.stringify(result)).not.toContain(values.password);
+      },
+    );
+
     it("never reports a login-filled field's value, even when too short to redact", async () => {
       const browser = loginPage("https://login.example.test/signin");
       const { email } = await refs(browser, "https://login.example.test/signin");
-      const shortName = async () => ({ text: "ada", origin: "https://login.example.test" });
+      const shortName = async () => savedField("username", "ada", "https://login.example.test");
       const acted = await browserActFromTool(
         browser,
         computer,
@@ -586,7 +647,10 @@ describe("browser tools", () => {
         computer,
         context,
         { actions: [{ kind: "fill_secret", ref: email, secret: "site_login", field: "username" }] },
-        { resolveSecretFill: async () => ({ text: "ada", origin: "https://login.example.test" }) },
+        {
+          resolveSecretFill: async () =>
+            savedField("username", "ada", "https://login.example.test"),
+        },
       );
       const typed = await browserActFromTool(browser, computer, context, {
         actions: [{ kind: "type", ref: emailRef(filled), text: "!" }],
@@ -713,7 +777,7 @@ describe("browser tools", () => {
         computer,
         context,
         { actions: [{ kind: "fill_secret", ref: email, secret: "site_login", field: "username" }] },
-        { resolveSecretFill: async () => ({ text: values.username, origin }) },
+        { resolveSecretFill: async () => savedField("username", values.username, origin) },
       );
       expect(acted).toMatchObject({ ok: false, completed: 0 });
       expect(JSON.stringify(acted)).toMatch(/HTTPS/);

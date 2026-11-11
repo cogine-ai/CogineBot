@@ -3300,6 +3300,138 @@ describe("generated command credentials in a Run", () => {
   );
 });
 
+describe("generated website logins in a Run", () => {
+  const login = {
+    type: "login",
+    name: "site-account",
+    purpose: "Set up the site login",
+    origin: "https://LOGIN.example.test:443/",
+    username: "fixture@example.test",
+  };
+  const canonicalOrigin = "https://login.example.test";
+  const sandboxProvider: Partial<SandboxProvider> = {
+    describe: () => ({
+      id: "fake",
+      contractVersion: "1",
+      adapterVersion: "1",
+      capabilities: {
+        graphical: true,
+        pty: true,
+        snapshots: false,
+        takeover: false,
+        persistentHome: true,
+      },
+    }),
+  };
+
+  it("generates a browser login without the shell and discloses the site before storing", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const create = vi.fn(async () => {});
+    const f = fixture({
+      name: "generate_secret",
+      builtin: true,
+      disabledBuiltinTools: ["shell"],
+      sandboxProvider,
+      secretStore,
+    });
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.setCalls([{ args: login, executionId: "generate-login" }]);
+    await f.run();
+
+    expect(f.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.progress",
+        payload: expect.objectContaining({
+          text: expect.stringContaining(canonicalOrigin),
+          narrationStatus: true,
+        }),
+      }),
+    );
+    expect(f.results).toEqual([
+      {
+        saved: true,
+        name: login.name,
+        origin: canonicalOrigin,
+        auth: { type: "login" },
+      },
+    ]);
+    expect(put).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("requires the corresponding tool before staging a login or a command pair", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    for (const disabled of ["browser_act", "shell"]) {
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        disabledBuiltinTools: [disabled],
+        sandboxProvider,
+        secretStore,
+      });
+      f.setCalls([{ args: { ...login, command: true }, executionId: "generate-login" }]);
+      await f.run();
+      expect(f.results).toEqual([
+        { error: "The tools needed to use this credential are unavailable." },
+      ]);
+      expect(f.effects).toEqual([]);
+    }
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("shows the full destination and command variable before an approval-bound save", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const create = vi.fn(async () => {});
+    const f = fixture({ name: "generate_secret", builtin: true, sandboxProvider, secretStore });
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    const args = { ...login, command: true };
+    f.setCalls([{ args, executionId: "generate-login" }]);
+    await f.run();
+
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
+    const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+    expect(block).toMatchObject({
+      kind: "ask",
+      actions: [{ id: "allow" }, { id: "deny" }],
+      detail: expect.stringContaining(
+        `${login.purpose}\n${canonicalOrigin}\nAlso save as command variable SITE_ACCOUNT_PASSWORD`,
+      ),
+    });
+    const request = { ...args, origin: canonicalOrigin };
+    expect(f.effects).toMatchObject([{ status: "intended", request }]);
+    expect(put).not.toHaveBeenCalled();
+
+    f.effects[0]!.status = "approved";
+    f.setCalls([
+      {
+        args: { ...login, origin: "https://different.example.test" },
+        executionId: "generate-approved",
+      },
+    ]);
+    await f.run();
+    const result = {
+      saved: true,
+      name: login.name,
+      origin: canonicalOrigin,
+      auth: { type: "login" },
+      command: {
+        name: "site-account-password",
+        auth: { type: "command" },
+        variable: "SITE_ACCOUNT_PASSWORD",
+      },
+    };
+    expect(f.results[1]).toEqual(result);
+    expect(f.effects).toMatchObject([{ status: "completed", request, result }]);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("executor connector account revalidation", () => {
   it.each([false, true])(
     "reports the resolved connector identity (catalog: %s)",

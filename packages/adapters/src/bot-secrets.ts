@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import type { BotSecretDestination, GenerateCommandSecretInput } from "@rakazo/contracts";
+import type { BotSecretDestination, GenerateSecretInput } from "@rakazo/contracts";
 import {
   BOT_SECRET_VALUE_MAX_LENGTH,
   BotSecretAuth,
@@ -12,6 +12,7 @@ import {
   encodeLoginSecret,
   GeneratedSecretRules,
   isPrivateNetworkHost,
+  loginCommandName,
   loginSecretFields,
   parseLoginSecretWrite,
   SecretHttpRequest,
@@ -632,62 +633,107 @@ export async function storeBotSecret(
   });
 }
 
-type GeneratedCommandReceipt = {
-  saved: true;
+type CommandCredentialReceipt = {
   name: string;
   auth: { type: "command" };
   variable: string;
 };
 
-/** Create the credential and its Run receipt together. Redaction forms stay in the executor. */
-export async function generateBotCommandSecret(input: {
+type GeneratedCredentialReceipt = { saved: true } & (
+  | CommandCredentialReceipt
+  | { name: string; origin: string; auth: { type: "login" }; command?: CommandCredentialReceipt }
+);
+
+/** Create the requested credentials and their Run receipt in the same transaction. */
+export async function generateBotSecret(input: {
   prisma: PrismaClient;
   secretStore: SecretStore;
   scope: BotSecretScope;
-  args: GenerateCommandSecretInput;
+  args: GenerateSecretInput;
   lockRun: (tx: Prisma.TransactionClient) => Promise<void>;
-  commitReceipt: (tx: Prisma.TransactionClient, result: GeneratedCommandReceipt) => Promise<void>;
-}): Promise<{ result: GeneratedCommandReceipt; redactions: string[] } | { error: string }> {
+  commitReceipt: (
+    tx: Prisma.TransactionClient,
+    result: GeneratedCredentialReceipt,
+  ) => Promise<void>;
+}): Promise<{ result: GeneratedCredentialReceipt; redactions: string[] } | { error: string }> {
   const { prisma, secretStore, scope, args } = input;
   const { name } = args;
   const nameTaken = {
     error: "A credential with this name already exists. Choose another name.",
   };
+  const pairedName = args.type === "login" && args.command ? loginCommandName(name) : undefined;
   // Create-only occupancy does not depend on whether the old destination is still usable.
   const existing = () =>
-    prisma.botSecret.findFirst({ where: { ...scopeFields(scope), name }, select: { id: true } });
-  const destination = { name, origin: "", auth: { type: "command" as const } };
-  const result: GeneratedCommandReceipt = {
-    saved: true,
+    prisma.botSecret.findFirst({
+      where: { ...scopeFields(scope), name: pairedName ? { in: [name, pairedName] } : name },
+      select: { id: true },
+    });
+  const commandDestination = (name: string) => ({
     name,
-    auth: destination.auth,
+    origin: "",
+    auth: { type: "command" as const },
+  });
+  const commandReceipt = (name: string): CommandCredentialReceipt => ({
+    name,
+    auth: { type: "command" },
     variable: commandVariableName(name),
-  };
+  });
+  const destination =
+    args.type === "login"
+      ? { name, origin: args.origin, auth: { type: "login" as const } }
+      : commandDestination(name);
+  const result: GeneratedCredentialReceipt =
+    destination.auth.type === "login"
+      ? {
+          saved: true,
+          name,
+          origin: destination.origin,
+          auth: destination.auth,
+          ...(pairedName ? { command: commandReceipt(pairedName) } : {}),
+        }
+      : { saved: true, ...commandReceipt(name) };
+  const prepare = (destination: BotSecretDestination, plaintext: string) =>
+    prepareBotSecret({
+      prisma,
+      secretStore,
+      scope,
+      destination,
+      plaintext,
+      expectedRevision: null,
+    });
 
   let commitStarted = false;
   try {
     if (await existing()) return nameTaken;
     const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
-    const prepared = await prepareBotSecret({
-      prisma,
-      secretStore,
-      scope,
-      destination,
-      plaintext: value,
-      expectedRevision: null,
-    });
-    commitStarted = true;
+    const plaintext =
+      args.type === "login"
+        ? encodeLoginSecret({
+            fields: [
+              { label: "Username", value: args.username, hidden: false },
+              { label: "Password", value, hidden: true },
+            ],
+          })
+        : value;
+    const prepared = await prepare(destination, plaintext);
+    const commit = (paired?: typeof prepared) => {
+      commitStarted = true;
+      return withTransactionRetry(() =>
+        prisma.$transaction(async (tx) => {
+          // Keep the Run-before-Bot lock order used when archiving a Bot.
+          await input.lockRun(tx);
+          await prepared.store(tx);
+          await paired?.store(tx);
+          await input.commitReceipt(tx, result);
+        }),
+      );
+    };
     await deferPreparedSecretCleanup(prisma, () =>
-      persistPreparedSecret(prisma, secretStore, prepared, () =>
-        withTransactionRetry(() =>
-          prisma.$transaction(async (tx) => {
-            // Keep the Run-before-Bot lock order used when archiving a Bot.
-            await input.lockRun(tx);
-            await prepared.store(tx);
-            await input.commitReceipt(tx, result);
-          }),
-        ),
-      ),
+      persistPreparedSecret(prisma, secretStore, prepared, async () => {
+        if (!pairedName) return commit();
+        const paired = await prepare(commandDestination(pairedName), value);
+        return persistPreparedSecret(prisma, secretStore, paired, () => commit(paired));
+      }),
     );
     return { result, redactions: commandRedactionForms(value) };
   } catch (error) {
@@ -934,12 +980,21 @@ export async function resolveLoginFill(input: {
   secretStore: SecretStore;
   scope: BotSecretScope;
   name: string;
-  field: LoginField;
-}): Promise<{ text: string; origin: string; redactions: string[] } | { error: string }> {
-  const row = await input.prisma.botSecret.findFirst({
-    where: { ...scopeFields(input.scope), name: input.name },
-  });
+  field: string;
+}): Promise<
+  | {
+      text: string;
+      origin: string;
+      field: LoginField;
+      redactions: string[];
+      isCurrent: () => Promise<boolean>;
+    }
+  | { error: string }
+> {
+  const where = { ...scopeFields(input.scope), name: input.name };
+  const row = await input.prisma.botSecret.findFirst({ where });
   if (!row) return { error: "Login is unavailable. Use request_secret to save it first." };
+  const { id, revision } = row;
   if (isCommandCredential(row.auth)) {
     return {
       error: `${UNUSABLE_CREDENTIAL}. Command variables are only available to shell commands.`,
@@ -962,19 +1017,20 @@ export async function resolveLoginFill(input: {
   if (destination.origin !== storedOrigin.origin) {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
-  const namedUnavailable = { error: "Filling named login fields is unavailable." };
-  if (isNamedBotLogin(row.auth)) return namedUnavailable;
   const plaintext = await input.secretStore.load(row.ciphertext, row.id);
   let fields: ReturnType<typeof loginSecretFields>;
   try {
-    const login = decodeLoginSecret(plaintext);
-    if ("fields" in login) return namedUnavailable;
-    fields = loginSecretFields(login);
+    fields = loginSecretFields(decodeLoginSecret(plaintext));
   } catch {
     return { error: UNUSABLE_CREDENTIAL };
   }
-  const field = fields.find(({ hidden }) => hidden === (input.field === "password"));
-  if (!field) return { error: "This login has no field for this input type." };
+  const label = input.field.trim().toLowerCase();
+  const field =
+    fields.find((entry) => entry.label.toLowerCase() === label) ??
+    (label === "username" || label === "password"
+      ? fields.find(({ hidden }) => hidden === (label === "password"))
+      : undefined);
+  if (!field) return { error: "This login has no field with that label." };
   const redactions = fields
     .filter(({ hidden, value }) => hidden || value.length >= MIN_REDACTED_VISIBLE_LOGIN_VALUE)
     .flatMap(({ value }) => {
@@ -984,6 +1040,14 @@ export async function resolveLoginFill(input: {
   return {
     text: field.value,
     origin: destination.origin,
+    field: field.hidden ? "password" : "username",
     redactions: [...new Set(redactions)],
+    isCurrent: async () =>
+      Boolean(
+        await input.prisma.botSecret.findFirst({
+          where: { ...where, id, revision },
+          select: { id: true },
+        }),
+      ),
   };
 }
