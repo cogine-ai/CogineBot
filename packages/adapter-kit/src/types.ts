@@ -599,6 +599,8 @@ export interface AgentRunRequest {
     images?: AgentInputImage[];
   }>;
   currentTurnImages?: AgentInputImage[];
+  /** Explicit image intent bound to this Run survives checkpoints and model fallback. */
+  currentRunRequiresImageInput?: boolean;
   tools: ConnectorTool[];
   model: AgentRunModel;
   /** Bind resumed model work, or an explicitly approved checkpoint, to its original route. */

@@ -1366,6 +1366,45 @@ describe("mobile API authentication", () => {
     }
   });
 
+  it("blocks an atomic image send if a mentioned routine's model has not been authorized", async () => {
+    vi.mocked(promptAiConsent).mockResolvedValue(false);
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body)).json;
+      return jsonResponse({
+        json: {
+          scope: "account-space",
+          version: "2026-09-14",
+          recipients: [
+            {
+              key: query.routineId ? "routine-model" : "thread-model",
+              name: "Example AI",
+              use: "model",
+              detail: "",
+              allowed: !query.routineId,
+            },
+          ],
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      rpc("threads/sendWithRoutines", {
+        botId: "bot-1",
+        routineIds: ["routine-1"],
+        artifactIds: ["image-1"],
+        text: "private content",
+      }),
+    ).rejects.toThrow("AI data sharing");
+    expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+      "/rpc/aiConsent/status",
+      "/rpc/aiConsent/status",
+    ]);
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).json)).toEqual([
+      { botId: "bot-1", uses: ["model", "memory"] },
+      { routineId: "routine-1", uses: ["model", "memory"] },
+    ]);
+  });
+
   it.each([true, false])("explains the mobile upgrade requirement with JSON=%s", async (json) => {
     const fetchMock = vi.fn(async () =>
       json

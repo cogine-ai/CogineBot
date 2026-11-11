@@ -152,6 +152,10 @@ export const outboxDisk: UnsentDisk = {
           !Array.isArray(entry.payload.plan.routineIds) ||
           !Array.isArray(entry.payload.plan.mentionPayload) ||
           !Array.isArray(entry.payload.attachments) ||
+          (entry.payload.imageHandling !== undefined &&
+            !["confirm", "file"].includes(entry.payload.imageHandling)) ||
+          (entry.imageInputStatus !== undefined &&
+            !["unsupported", "unknown"].includes(entry.imageInputStatus)) ||
           (entry.payload.fromPage !== undefined && entry.payload.fromPage !== true) ||
           (entry.payload.pageContext !== undefined &&
             !PageReplyContextSchema.safeParse(entry.payload.pageContext).success) ||

@@ -44,3 +44,6 @@ export function validateThreadsSendInput(input: {
   const artifactIds = input.artifactIds ?? [];
   return Boolean(text || artifactIds.length);
 }
+
+export type ImageHandling = "confirm" | "file";
+export type ImageInputStatus = "supported" | "unsupported" | "unknown";

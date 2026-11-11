@@ -6,6 +6,8 @@ import type {
   Connection,
   ConnectionCatalogItem,
   DelegatedApproval,
+  ImageHandling,
+  ImageInputStatus,
   MessageBlock,
   MessageReaction,
   Routine,
@@ -111,6 +113,7 @@ import { ComposerReplyPreview } from "../components/composer-reply-preview";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
+import { ImageInputChoice } from "../components/image-input-choice";
 import { InlineImageAttachment } from "../components/inline-image-attachment";
 import { McpApprovalCard } from "../components/McpApprovalCard";
 import type { MarkdownArtifactPreviewTarget } from "../components/markdown-artifact-preview";
@@ -693,6 +696,7 @@ function Thread({
   sessionEpoch: number;
   profileScope: MobileScope | null;
 }) {
+  const focused = useIsFocused();
   const colorScheme = useResolvedAppearance();
   const tokens = mobileTokens();
   const styles = useThemedStyles(createThreadHeaderStyles);
@@ -936,7 +940,40 @@ function Thread({
   );
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
+  const [imageChoice, setImageChoice] = useState<{
+    thread: string | undefined;
+    value: ImageHandling;
+  }>({ thread: threadKey, value: "confirm" });
+  const imageHandling = imageChoice.thread === threadKey ? imageChoice.value : "confirm";
+  const [imageAdmission, setImageAdmission] = useState<{ key: string; status: ImageInputStatus }>();
+  const hasPendingImages = activePendingAttachments.some((item) =>
+    item.mimeType.startsWith("image/"),
+  );
+
   const composerRef = useRef<ThreadComposerHandle>(null);
+  const [imageQuery, setImageQuery] = useState("");
+  const imageAdmissionKey = JSON.stringify([
+    threadKey,
+    imageQuery,
+    snap?.run,
+    focused,
+    mentionBots.find((bot) => bot.id === botId),
+  ]);
+  useEffect(() => {
+    if (!hasPendingImages || !imageQuery) return;
+    let cancelled = false;
+    void rpc<{ status: ImageInputStatus }>("threads/imageInput", JSON.parse(imageQuery)).then(
+      ({ status }) => {
+        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status });
+      },
+      () => {
+        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status: "unknown" });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPendingImages, imageQuery, imageAdmissionKey]);
   useChatOnScreen();
   const replyPage = useRef<{ page: { id: string; title: string }; scope: string } | null>(null);
   const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
@@ -2122,6 +2159,44 @@ function Thread({
         ? pageReply(plan.trimmed, targetMessages, submittedPage.page, replyTarget?.id)
         : { text: plan.trimmed };
     const pageCard = targetMessages.find((message) => message.id === fromPage.replyToMessageId);
+    if (
+      attachments.some((item) => item.mimeType.startsWith("image/")) &&
+      submitted.imageHandling !== "file"
+    ) {
+      preparingSend.current = true;
+      let preview: ImageInputStatus | undefined;
+      try {
+        preview = (
+          await rpc<{ status: ImageInputStatus }>(
+            "threads/imageInput",
+            {
+              ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget }),
+              text: plan.trimmed,
+              mentions: plan.mentionPayload,
+            },
+            { timeoutMs: 2500 },
+          )
+        ).status;
+      } catch {
+        // Offline sends retain their existing outbox path; the server still admits delivery.
+      } finally {
+        preparingSend.current = false;
+      }
+      if (
+        !isCurrentTarget(initialBotTarget, initialGroupTarget) ||
+        pageScope !== pageScopeKey() ||
+        JSON.stringify(submitted) !== JSON.stringify(composerRef.current?.snapshot())
+      )
+        return;
+      if (preview && preview !== "supported") {
+        setError(
+          preview === "unsupported"
+            ? t("This model cannot see images")
+            : t("This model's image capability is unconfirmed"),
+        );
+        return;
+      }
+    }
     let attempt: SendAttempt;
     try {
       attempt = feedback.sendAttempt({
@@ -2136,6 +2211,7 @@ function Thread({
         reroutedToGroup,
         plan,
         attachments,
+        imageHandling: submitted.imageHandling ?? "confirm",
         replyTargetId: pageCard?.id ?? replyTarget?.id,
         replyQuote: pageCard ? null : replyQuote,
         fromPage: pageCard ? true : undefined,
@@ -2146,6 +2222,7 @@ function Thread({
       return;
     }
     composerRef.current?.reset();
+    setImageChoice({ thread: originThreadKey, value: "confirm" });
     replyPage.current = null;
     setPendingAttachments((current) =>
       current.filter((attachment) => !submitted.attachmentIds.includes(attachment.id)),
@@ -2492,6 +2569,7 @@ function Thread({
         scope,
         sessionGeneration: currentSessionGeneration(),
         content: {
+          imageHandling,
           text:
             quote === null
               ? text
@@ -2530,6 +2608,7 @@ function Thread({
         !composer?.restoreEditableTextIfEmpty(content.text, () => verifiedDraftScope() !== null)
       )
         return false;
+      setImageChoice({ thread: threadKey, value: content.imageHandling ?? "confirm" });
       setPendingAttachments(
         content.attachments.map((attachment) => ({
           ...attachment,
@@ -2923,6 +3002,13 @@ function Thread({
       key={attempt.clientNonce}
       attempt={attempt}
       onRetry={() => void deliver(attempt, true)}
+      onChooseModel={() => router.push({ pathname: "/account", params: { focus: "models" } })}
+      onRetryAsFile={() => {
+        if (!attempt.imageInputStatus || attempt.state === "pending") return;
+        attempt.payload = { ...attempt.payload, imageHandling: "file" };
+        attempt.imageInputStatus = undefined;
+        void deliver(attempt, true);
+      }}
       onDelete={() => feedback.discard(attempt)}
     />
   ));
@@ -3272,7 +3358,30 @@ function Thread({
             />
           </View>
         ) : null}
+        {hasPendingImages ? (
+          <ImageInputChoice
+            value={imageHandling}
+            status={imageAdmission?.key === imageAdmissionKey ? imageAdmission.status : "unknown"}
+            onChange={(value) => setImageChoice({ thread: threadKey, value })}
+            onChooseModel={() => router.push({ pathname: "/account", params: { focus: "models" } })}
+          />
+        ) : null}
         <ThreadComposer
+          imageHandling={imageHandling}
+          onImageQuery={(text, mentions) => {
+            const plan = resolveComposerSendPlan({ text, mentions, hasAttachments: true });
+            setImageQuery(
+              JSON.stringify({
+                ...(plan.rerouteGroupId
+                  ? { groupId: plan.rerouteGroupId }
+                  : groupId
+                    ? { groupId }
+                    : { botId }),
+                text: plan.trimmed,
+                mentions: plan.mentionPayload,
+              }),
+            );
+          }}
           onEmptied={composerEmptied}
           key={threadKey}
           ref={composerRef}

@@ -1,6 +1,6 @@
 import type { MenuAction } from "@expo/ui/community/menu";
 import { MenuView } from "@expo/ui/community/menu";
-import type { AgentSkillCatalogEntry } from "@rakazo/contracts";
+import type { AgentSkillCatalogEntry, ImageHandling } from "@rakazo/contracts";
 import type { buildComposerMentionOptions, ComposerMention, SlashActionId } from "@rakazo/core";
 import {
   mentionChipKey,
@@ -11,6 +11,7 @@ import {
 import type { Ref, SetStateAction } from "react";
 import {
   useCallback,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -54,6 +55,8 @@ type ThreadComposerProps = {
   replyTargetId?: string;
   replyQuote: string | null;
   attachmentIds: string[];
+  imageHandling?: ImageHandling;
+  onImageQuery?: (text: string, mentions: ComposerMention[]) => void;
   botId?: string;
   onCall: boolean;
   working: boolean;
@@ -76,6 +79,8 @@ export function ThreadComposer({
   replyTargetId,
   replyQuote,
   attachmentIds,
+  imageHandling,
+  onImageQuery,
   botId,
   onCall,
   working,
@@ -106,6 +111,12 @@ export function ThreadComposer({
   >([]);
   const [selectedSkill, setSelectedSkill, skillValue] =
     useComposerValue<AgentSkillCatalogEntry | null>(null);
+  useEffect(() => {
+    onImageQuery?.(
+      serializeComposerPrompt(draft, selectedSkill, selectedMentions),
+      selectedMentions,
+    );
+  }, [draft, selectedSkill, selectedMentions, onImageQuery]);
   const committed = useRef({
     active: false,
     botId,
@@ -113,6 +124,7 @@ export function ThreadComposer({
     working,
     sending,
     attachmentIds,
+    imageHandling,
     replyTargetId,
     replyQuote,
   });
@@ -124,6 +136,7 @@ export function ThreadComposer({
       working,
       sending,
       attachmentIds,
+      imageHandling,
       replyTargetId,
       replyQuote,
     };
@@ -165,6 +178,7 @@ export function ThreadComposer({
       replyTargetId,
       replyQuote,
       attachmentIds,
+      imageHandling: committed.current.imageHandling,
     }),
     editableText: () => {
       const state = committed.current;

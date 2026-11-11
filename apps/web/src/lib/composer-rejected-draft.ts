@@ -1,4 +1,4 @@
-import type { ThreadMessage } from "@rakazo/contracts";
+import type { ImageHandling, ThreadMessage } from "@rakazo/contracts";
 import { newClientId } from "./client-id";
 import type { ComposerDraft } from "./composer-draft";
 import { makeComposerDraftKey, readComposerDraft, writeComposerDraft } from "./composer-draft";
@@ -24,6 +24,7 @@ let held:
   | {
       target: VerifiedComposerRecoveryTarget;
       text: string;
+      imageHandling?: ImageHandling;
       files: File[];
       stage: "prepared" | "anonymous" | "authenticated";
       authenticatedSessionId: string | null;
@@ -90,6 +91,7 @@ export function prepareRejectedComposerDraft(
     held = {
       target: { ...editor.target },
       text,
+      imageHandling: draft.imageHandling,
       // A new immutable File retains bytes/name/MIME, without IDs, old previews or upload receipts.
       files: draft.attachments.map(
         ({ file }) =>
@@ -182,6 +184,7 @@ export function restoreRejectedComposerDraft(
     return false;
   writeComposerDraft(key, {
     text: saved.text,
+    imageHandling: saved.imageHandling,
     attachments: saved.files.map((file) => ({ id: newClientId(), threadKey: key, file })),
   });
   return true;

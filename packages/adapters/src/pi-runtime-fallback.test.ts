@@ -4183,3 +4183,11 @@ describe("Pi current-call output recovery", () => {
     expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
   });
 });
+
+it("rejects a restored explicit-image Run before any text-only model request", async () => {
+  providerState.models.set(`${primary.provider}/${primary.id}`, { ...primary, input: ["text"] });
+  const input = request();
+  input.currentRunRequiresImageInput = true;
+  await expect(run(input)).rejects.toThrow("This model cannot read images.");
+  expect(providerState.stream).not.toHaveBeenCalled();
+});

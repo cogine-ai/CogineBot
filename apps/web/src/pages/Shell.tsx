@@ -339,6 +339,7 @@ import {
   RenameSpaceDialog,
 } from "./shell/dialogs";
 import { GroupTitle } from "./shell/group-title";
+import { ImageInputChoice } from "./shell/image-input-choice";
 import { InlineSectionName } from "./shell/inline-section-name";
 import { MentionIdentity, SentMentionText, useBotIdentityTextColor } from "./shell/mention-display";
 import {
@@ -3610,6 +3611,7 @@ export function ShellPage() {
         originThreadKey,
         composerSendSignature({
           text: plan.trimmed,
+          imageHandling: submitted.imageHandling,
           target:
             newChat && newChat.botIds.length > 1 && !reroutedToGroup
               ? { groupId: `new-chat:${newChat.id}:${newChat.botIds.join(",")}` }
@@ -3663,7 +3665,12 @@ export function ShellPage() {
           target = { groupId: groupTarget };
         }
         if (!isCurrentAttempt()) return false;
-        if (plan.shouldRunRoutines) {
+        const sendWithRoutines =
+          plan.shouldRunRoutines &&
+          attachments.some((item) =>
+            inferAttachmentMimeType(item.file.name, item.file.type)?.startsWith("image/"),
+          );
+        if (plan.shouldRunRoutines && !sendWithRoutines) {
           const routineResults = await Promise.allSettled(
             plan.routineIds.map(async (routineId) => {
               if (!isCurrentAttempt()) return;
@@ -3706,25 +3713,28 @@ export function ShellPage() {
             artifactIds.push(artifactId);
           }
           if (!isCurrentAttempt()) return false;
-          const sent = await rpc.threads
-            .send(
-              {
-                ...target,
-                clientNonce: attempt.clientNonce,
-                text: plan.trimmed || undefined,
-                mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-                artifactIds: artifactIds.length ? artifactIds : undefined,
-                replyToMessageId,
-                ...(isPageReply ? { fromPage: true } : {}),
-                pageContext,
-                replyQuote: replyQuote ?? undefined,
-              },
-              context,
-            )
-            .catch((error: unknown) => {
-              composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
-              throw error;
-            });
+          const input = {
+            ...target,
+            clientNonce: attempt.clientNonce,
+            text: plan.trimmed || undefined,
+            mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+            artifactIds: artifactIds.length ? artifactIds : undefined,
+            imageHandling: submitted.imageHandling ?? "confirm",
+            replyToMessageId,
+            ...(isPageReply ? { fromPage: true as const } : {}),
+            pageContext,
+            replyQuote: replyQuote ?? undefined,
+          };
+          const sent = await (sendWithRoutines
+            ? rpc.threads.sendWithRoutines(
+                { ...input, artifactIds, routineIds: plan.routineIds },
+                context,
+              )
+            : rpc.threads.send(input, context)
+          ).catch((error: unknown) => {
+            composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
+            throw error;
+          });
           if (!isCurrentAttempt()) return false;
           if (!sent?.runId || !sent?.taskId) throw new Error(t`Failed to send message`);
           if (botTarget && stillHere()) {
@@ -6016,6 +6026,13 @@ export function ShellPage() {
                 Boolean(recordingSkill) ||
                 (inNewChat && pendingChat.botIds.length === 0)
               }
+              imageAdmissionRevision={JSON.stringify([
+                active?.modelProvider,
+                active?.modelId,
+                active?.modelCredentialId,
+                activeSnapshot?.run,
+                panel,
+              ])}
               pendingAttachments={activePendingAttachments}
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
@@ -7989,6 +8006,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 });
 
 export const Composer = memo(function Composer({
+  imageAdmissionRevision = "",
   pageSession,
   draftKey,
   active,
@@ -8022,6 +8040,7 @@ export const Composer = memo(function Composer({
   onSlashOpen,
   onSlashAction,
 }: {
+  imageAdmissionRevision?: string;
   pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
@@ -8657,6 +8676,28 @@ export const Composer = memo(function Composer({
                   ))}
                 </div>
               ) : null}
+              {pendingAttachments.some((item) =>
+                inferAttachmentMimeType(item.file.name, item.file.type)?.startsWith("image/"),
+              ) ? (
+                <ImageInputChoice
+                  value={draftState.imageHandling ?? "confirm"}
+                  revision={JSON.stringify([draftKey, imageAdmissionRevision])}
+                  onChange={(imageHandling) => onDraftChange({ imageHandling })}
+                  onChooseModel={onAddKey}
+                  target={(() => {
+                    const plan = resolveComposerSendPlan({
+                      text: serializeComposerPrompt(draft, selectedSkill, selectedMentions),
+                      mentions: selectedMentions,
+                      hasAttachments: true,
+                    });
+                    return {
+                      ...(plan.rerouteGroupId ? { groupId: plan.rerouteGroupId } : artifactTarget),
+                      text: plan.trimmed,
+                      mentions: plan.mentionPayload,
+                    };
+                  })()}
+                />
+              ) : null}
             </div>
           ) : null}
           <input
@@ -8824,7 +8865,11 @@ export const Composer = memo(function Composer({
               <>
                 <Button
                   size="icon"
-                  aria-label={t`Send`}
+                  aria-label={
+                    draftState.imageHandling === "file" && pendingAttachments.length
+                      ? t`Send as file`
+                      : t`Send`
+                  }
                   disabled={sending || !canSend || disabled}
                   onClick={send}
                   className="size-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95"
@@ -8845,7 +8890,11 @@ export const Composer = memo(function Composer({
             ) : (
               <Button
                 size="icon"
-                aria-label={t`Send`}
+                aria-label={
+                  draftState.imageHandling === "file" && pendingAttachments.length
+                    ? t`Send as file`
+                    : t`Send`
+                }
                 disabled={sending || !canSend || disabled}
                 onClick={send}
                 className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95 disabled:bg-accent disabled:text-muted-foreground/40 disabled:shadow-none"

@@ -1,12 +1,15 @@
 import type { Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { canonicalPiProviderId } from "@rakazo/contracts";
 import {
   CHATGPT_PLAN_CATALOG_MODEL_ID,
   CHATGPT_PLAN_PROVIDER_ID,
 } from "./chatgpt-plan-provider.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
+import { withLiveImageInput } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
+import { CHATGPT_OAUTH_PROVIDER } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   registerOpenAiCompatibleCatalog,
@@ -70,7 +73,7 @@ export function resolveModelRefForVisionCheck(
   provider: string,
   modelId: string,
 ): { provider: string; id: string } {
-  const normalizedProvider = provider.trim();
+  const normalizedProvider = canonicalPiProviderId(provider.trim());
   const normalizedId = modelId.trim();
   if (normalizedProvider === "scripted" || normalizedId === "scripted") {
     return {
@@ -91,7 +94,7 @@ export function resolveModelRefForVisionCheck(
 export function modelAcceptsImageInput(
   provider: string,
   modelId: string,
-  acceptsImages = false,
+  acceptsImages?: boolean,
 ): boolean {
   if (provider.trim() === CHATGPT_PLAN_PROVIDER_ID) {
     return Boolean(
@@ -111,6 +114,8 @@ export function modelAcceptsImageInput(
   ) {
     model = models.getModel("openrouter", resolved.id);
   }
+  if (model && resolved.provider === CHATGPT_OAUTH_PROVIDER)
+    model = withLiveImageInput(model, acceptsImages);
   return Boolean(model?.input.includes("image"));
 }
 
@@ -120,4 +125,13 @@ export function filterImageReturningComputerTools<T extends { name: string }>(
 ): T[] {
   if (acceptsImages) return tools;
   return tools.filter((tool) => !IMAGE_RETURNING_COMPUTER_TOOLS.has(tool.name));
+}
+
+/** Attachment admission distinguishes missing capability evidence from a text-only model. */
+export function knownModelImageInput(provider: string, modelId: string): boolean | undefined {
+  const resolved = resolveModelRefForVisionCheck(provider, modelId);
+  if ([OPENAI_COMPATIBLE_PROVIDER_ID, CHATGPT_PLAN_PROVIDER_ID].includes(resolved.provider))
+    return undefined;
+  const model = catalogModels().getModel(resolved.provider, resolved.id);
+  return model ? model.input.includes("image") : undefined;
 }

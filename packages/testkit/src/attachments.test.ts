@@ -44,6 +44,344 @@ describeAttachments("chat attachments", () => {
     await stop?.();
   });
 
+  it("rejects image intent atomically and accepts file intent without changing artifact bytes", async () => {
+    const cookie = await signup(app, `image-intent-${stamp}@example.test`, "Image Sender");
+    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Image Sender",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: true,
+    });
+    const prisma = botIntroHarness!.prisma;
+    const owned = await prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      include: { thread: true },
+    });
+    const threadId = owned.thread!.id;
+    const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "invoice.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const artifactBefore = await prisma.artifact.findUniqueOrThrow({ where: { id: image.id } });
+    await prisma.bot.update({
+      where: { id: bot.id },
+      data: {
+        modelProvider: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        modelCredentialId: null,
+      },
+    });
+    expect(await rpc(app, cookie, "threads/imageInput", { botId: bot.id })).toEqual({
+      status: "unsupported",
+    });
+    const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+    const messageCount = await prisma.message.count({ where: { threadId } });
+    const runCount = await prisma.run.count({ where: { threadId } });
+    const input = {
+      botId: bot.id,
+      text: "Keep this invoice",
+      artifactIds: [image.id],
+      clientNonce: "image-intent-retry",
+    };
+    for (const extra of [{}, { imageHandling: "confirm" }]) {
+      const rejected = await raw(app, cookie, "threads/send", { ...input, ...extra });
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toMatchObject({
+        json: {
+          data: { reason: "model_image_input_unsupported", imageInputStatus: "unsupported" },
+        },
+      });
+    }
+    expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
+    expect(await prisma.message.count({ where: { threadId } })).toBe(messageCount);
+    expect(await prisma.run.count({ where: { threadId } })).toBe(runCount);
+    const sent = await rpc<{ seq: number; runId: string }>(app, cookie, "threads/send", {
+      ...input,
+      imageHandling: "file",
+    });
+    const replay = await rpc(app, cookie, "threads/send", { ...input, imageHandling: "confirm" });
+    expect(replay).toEqual(sent);
+    const message = await prisma.message.findUniqueOrThrow({
+      where: { threadId_seq: { threadId, seq: sent.seq } },
+    });
+    expect(message.blocks).toEqual(
+      expect.arrayContaining([
+        {
+          kind: "file",
+          artifactId: image.id,
+          name: "invoice.png",
+          mimeType: "image/png",
+          size: tinyPng.length,
+        },
+      ]),
+    );
+    expect(
+      await prisma.message.count({ where: { threadId, clientNonce: input.clientNonce } }),
+    ).toBe(1);
+    expect(await prisma.artifact.findUniqueOrThrow({ where: { id: image.id } })).toEqual(
+      artifactBefore,
+    );
+    expect(
+      await rpc(app, cookie, "artifacts/get", { botId: bot.id, artifactId: image.id }),
+    ).toMatchObject({ contentBase64: tinyPng.toString("base64") });
+  });
+
+  it("rolls back routines with a rejected image and commits them once with the file retry", async () => {
+    const cookie = await signup(app, `image-routine-${stamp}@example.test`, "Image Routine");
+    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Image Routine",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: true,
+    });
+    const prisma = botIntroHarness!.prisma;
+    const { thread } = await prisma.bot.update({
+      where: { id: bot.id },
+      data: {
+        modelProvider: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        modelCredentialId: null,
+      },
+      include: { thread: true },
+    });
+    const threadId = thread!.id;
+    const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
+      botId: bot.id,
+      name: "Daily report",
+      prompt: "Prepare the report",
+      crons: ["0 9 * * 1"],
+      timezone: "UTC",
+      notify: false,
+      active: false,
+    });
+    const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "report.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const input = {
+      botId: bot.id,
+      text: "Keep this report",
+      routineIds: [routine.id, routine.id],
+      artifactIds: [image.id],
+      clientNonce: "image-routine-atomic",
+    };
+    const original = await prisma.routine.findUniqueOrThrow({ where: { id: routine.id } });
+    const tasksBefore = await prisma.task.count({ where: { threadId } });
+    const rejected = await raw(app, cookie, "threads/sendWithRoutines", {
+      ...input,
+      imageHandling: "confirm",
+    });
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toMatchObject({
+      json: { data: { reason: "model_image_input_unsupported", imageInputStatus: "unsupported" } },
+    });
+    expect(await prisma.task.count({ where: { threadId } })).toBe(tasksBefore);
+    expect(await prisma.run.count({ where: { threadId, routineId: routine.id } })).toBe(0);
+    expect(
+      await prisma.message.count({ where: { threadId, clientNonce: input.clientNonce } }),
+    ).toBe(0);
+    expect(await prisma.routine.findUniqueOrThrow({ where: { id: routine.id } })).toEqual(original);
+
+    const retry = { ...input, imageHandling: "file" };
+    const [first, second] = await Promise.all([
+      rpc<{ seq: number; runId: string }>(app, cookie, "threads/sendWithRoutines", retry),
+      rpc(app, cookie, "threads/sendWithRoutines", retry),
+    ]);
+    expect(second).toEqual(first);
+    const runs = await prisma.run.findMany({ where: { threadId, routineId: routine.id } });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(first.runId);
+    const message = await prisma.message.findUniqueOrThrow({
+      where: { threadId_seq: { threadId, seq: first.seq } },
+    });
+    expect(message.blocks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "file", artifactId: image.id })]),
+    );
+    // The routine still consumes its own prompt. The attachment waits for a conversational Run.
+    expect(
+      await prisma.steeringMessage.findFirst({ where: { messageId: message.id } }),
+    ).toMatchObject({
+      runId: null,
+    });
+    expect(
+      await prisma.message.count({ where: { threadId, clientNonce: input.clientNonce } }),
+    ).toBe(1);
+  });
+
+  it("uses a model switch committed during send admission without accepting a stale image route", async () => {
+    const cookie = await signup(app, `image-switch-${stamp}@example.test`, "Image Switch");
+    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+      name: "Switcher",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: true,
+    });
+    const prisma = botIntroHarness!.prisma;
+    const owned = await prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      include: { thread: true },
+    });
+    const threadId = owned.thread!.id;
+    await prisma.bot.update({
+      where: { id: bot.id },
+      data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
+    });
+    const task = await prisma.task.create({
+      data: {
+        spaceId: owned.spaceId,
+        botId: bot.id,
+        threadId,
+        userId: owned.userId,
+        prompt: "Hold the current model",
+        status: "running",
+      },
+    });
+    const run = await prisma.run.create({
+      data: {
+        spaceId: owned.spaceId,
+        botId: bot.id,
+        threadId,
+        userId: owned.userId,
+        taskId: task.id,
+        status: "running",
+        trigger: "user",
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        leaseOwner: "image-fixture-worker",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "switch.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+    let release = () => {};
+    let entered = () => {};
+    const held = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const switching = prisma.$transaction(
+      async (tx) => {
+        await tx.run.update({
+          where: { id: run.id },
+          data: { modelId: "deepseek/deepseek-v4-pro" },
+        });
+        entered();
+        await resume;
+      },
+      { timeout: 10_000 },
+    );
+    await held;
+    const sending = raw(app, cookie, "threads/send", {
+      botId: bot.id,
+      text: "Inspect the image",
+      artifactIds: [image.id],
+      imageHandling: "confirm",
+      clientNonce: "image-model-switch",
+    });
+    let response: Response | undefined;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const rows = await prisma.$queryRaw<
+              Array<{ blocked: boolean }>
+            >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%runs%' AND query ILIKE '%FOR UPDATE%') AS blocked`;
+            return rows[0]?.blocked;
+          },
+          { interval: 10, timeout: 3000 },
+        )
+        .toBe(true);
+    } finally {
+      release();
+      await switching;
+      response = await sending;
+    }
+    expect(response!.status).toBe(409);
+    expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
+    expect(
+      await prisma.message.count({ where: { threadId, clientNonce: "image-model-switch" } }),
+    ).toBe(0);
+    expect(await prisma.steeringMessage.count({ where: { runId: run.id } })).toBe(0);
+  });
+
+  it("admits every actual group recipient before committing any message or task", async () => {
+    const cookie = await signup(app, `image-group-${stamp}@example.test`, "Image Group");
+    const create = (name: string) =>
+      rpc<{ id: string }>(app, cookie, "bots/create", {
+        name,
+        title: "",
+        description: "",
+        instructions: "",
+        notifyOnFinish: true,
+      });
+    const first = await create("Viewer");
+    const second = await create("Writer");
+    const group = await rpc<{ id: string }>(app, cookie, "groups/create", {
+      name: "Image team",
+      botIds: [first.id, second.id],
+    });
+    const prisma = botIntroHarness!.prisma;
+    await prisma.bot.update({
+      where: { id: second.id },
+      data: {
+        modelProvider: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        modelCredentialId: null,
+      },
+    });
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { groupId: group.id } });
+    const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+      groupId: group.id,
+      name: "team.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const beforeGroup = await prisma.thread.findUniqueOrThrow({ where: { id: thread.id } });
+    const both = {
+      groupId: group.id,
+      text: "Inspect the image",
+      mentions: [first.id, second.id],
+      artifactIds: [image.id],
+      imageHandling: "confirm",
+      clientNonce: "group-image-atomic",
+    };
+    expect(await rpc(app, cookie, "threads/imageInput", both)).toEqual({ status: "unsupported" });
+    expect((await raw(app, cookie, "threads/send", both)).status).toBe(409);
+    expect(await prisma.message.count({ where: { threadId: thread.id } })).toBe(0);
+    expect(await prisma.run.count({ where: { threadId: thread.id } })).toBe(0);
+    expect(await prisma.task.count({ where: { threadId: thread.id } })).toBe(0);
+    expect(await prisma.thread.findUniqueOrThrow({ where: { id: thread.id } })).toEqual(
+      beforeGroup,
+    );
+    expect(await rpc(app, cookie, "threads/imageInput", { ...both, mentions: [first.id] })).toEqual(
+      { status: "supported" },
+    );
+    const accepted = await rpc<{ runIds: string[] }>(app, cookie, "threads/send", {
+      ...both,
+      mentions: [first.id],
+    });
+    expect(accepted.runIds).toHaveLength(1);
+    const acceptedRuns = await prisma.run.findMany({
+      where: { id: { in: accepted.runIds } },
+      select: { botId: true },
+    });
+    expect(acceptedRuns).toEqual([{ botId: first.id }]);
+  });
+
   it("uploads, sends with image/file, and rejects invalid attachments", async () => {
     const cookie = await signup(app, `attachments-${stamp}@rakazo.test`, "Attachment User");
     const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {

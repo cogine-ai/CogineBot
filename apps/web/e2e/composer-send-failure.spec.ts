@@ -351,3 +351,119 @@ for (const target of ["bot", "group"] as const) {
     await captureScreenshot(page, testInfo, `composer-${target}-lost-upload-receipt`);
   });
 }
+
+for (const viewport of [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "phone", width: 390, height: 844 },
+]) {
+  test(`image intent keeps the rejected draft and sends the same artifact as a file (${viewport.name})`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await signup(
+      page,
+      `image-intent-${viewport.name}-${Date.now()}@example.test`,
+      "password12",
+      "Image Sender",
+    );
+    await completeOnboarding(page);
+    const composer = page.getByRole("combobox", { name: /Message/ });
+    const routine = viewport.name === "desktop" ? await createRoutine(page, "daily-digest") : null;
+    if (routine) {
+      await page.reload();
+      await mentionRoutine(page, composer, routine.name);
+      await expect(page.getByTestId("mention-chip")).toHaveText(routine.name);
+    }
+    const requests: Array<{
+      imageHandling: string;
+      artifactIds: string[];
+      clientNonce: string;
+      routineIds?: string[];
+    }> = [];
+    const standaloneRoutines: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/routines/testRun")) standaloneRoutines.push(request.url());
+    });
+    await page.route("**/rpc/threads/imageInput", (route) =>
+      route.fulfill({ json: { json: { status: "unsupported" } } }),
+    );
+    const sendRoute = routine ? "**/rpc/threads/sendWithRoutines" : "**/rpc/threads/send";
+    await page.route(sendRoute, (route) => {
+      const body = route.request().postDataJSON().json;
+      requests.push(body);
+      if (body.imageHandling === "file") return route.continue();
+      return route.fulfill({
+        status: 409,
+        json: {
+          json: {
+            defined: false,
+            code: "CONFLICT",
+            status: 409,
+            message: "This model cannot read images. Choose a model that supports images.",
+            data: { reason: "model_image_input_unsupported", imageInputStatus: "unsupported" },
+          },
+        },
+      });
+    });
+    await composer.fill("Keep this invoice with my draft");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "invoice.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
+    await expect(
+      page.getByTestId("attachment-preview").getByText("invoice.png", { exact: true }),
+    ).toBeVisible();
+    const removeImage = page.getByRole("button", { name: "Remove invoice.png", exact: true });
+    await expect(removeImage).toBeVisible();
+    const removeBox = await removeImage.boundingBox();
+    expect(removeBox!.width).toBeGreaterThanOrEqual(44);
+    expect(removeBox!.height).toBeGreaterThanOrEqual(44);
+    const choice = page.getByTestId("image-input-choice");
+    await expect(choice.getByRole("status")).toHaveText("This model cannot see images");
+    await expect(
+      choice.getByRole("button", { name: "Let Bot see images", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(choice.getByRole("button", { name: "Choose model", exact: true })).toBeVisible();
+    await composer.press("Enter");
+    await expect(page.getByTestId("composer-error")).toBeVisible();
+    await expect(composer).toHaveValue("Keep this invoice with my draft");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+    await captureScreenshot(page, testInfo, `image-input-rejected-${viewport.name}`);
+    await choice.getByRole("button", { name: "As file", exact: true }).click();
+    await expect(choice.getByRole("button", { name: "As file", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(choice.getByRole("status")).toHaveCount(0);
+    await page.getByRole("button", { name: "Send as file", exact: true }).click();
+    await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
+    expect(requests).toHaveLength(2);
+    expect(standaloneRoutines).toEqual([]);
+    if (routine)
+      expect(requests.map((body) => body.routineIds)).toEqual([[routine.id], [routine.id]]);
+    expect(requests[1]!.artifactIds).toEqual(requests[0]!.artifactIds);
+    expect(requests[1]!.clientNonce).not.toBe(requests[0]!.clientNonce);
+    const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId: activeBotId(page) });
+    const sent = snapshot.messages.find(
+      (message) =>
+        message.role === "user" &&
+        message.blocks.some(
+          (block) => block.kind === "file" && block.artifactId === requests[0]!.artifactIds[0],
+        ),
+    );
+    expect(sent).toBeTruthy();
+    expect(sent!.blocks.some((block) => block.kind === "image")).toBe(false);
+    await captureScreenshot(page, testInfo, `image-input-file-${viewport.name}`);
+    expect(pageErrors).toEqual([]);
+  });
+}

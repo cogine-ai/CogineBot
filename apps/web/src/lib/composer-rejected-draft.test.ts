@@ -346,3 +346,11 @@ describe("explicit rejected-session editable draft recovery", () => {
     expect(restore()).toBe(false);
   });
 });
+
+it("keeps explicit file intent when restoring a rejected session's editable image", () => {
+  writeComposerDraft(key, { text: "Keep as file", imageHandling: "file", attachments: [{ id: "a", threadKey: key, file: new File(["png"], "invoice.png", { type: "image/png" }) }] });
+  expect(prepare()).toBe(true);
+  signInAgain();
+  expect(restore()).toBe(true);
+  expect(readComposerDraft(makeComposerDraftKey(renewed)).imageHandling).toBe("file");
+});

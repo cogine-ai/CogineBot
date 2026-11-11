@@ -7425,3 +7425,27 @@ msgstr "继续使用电脑"
 #: src/pages/Shell.tsx
 msgid "At the runtime limit, pausing may stop background tasks."
 msgstr "达到运行时长上限后，暂停可能会停止后台任务。"
+
+msgid "Image use"
+msgstr "图片用途"
+
+msgid "Let Bot see images"
+msgstr "让 Bot 看图"
+
+msgid "As file"
+msgstr "作为文件"
+
+msgid "Can see images"
+msgstr "可看图"
+
+msgid "This model cannot see images"
+msgstr "这个模型不支持看图"
+
+msgid "This model's image capability is unconfirmed"
+msgstr "尚未确认这个模型能否看图"
+
+msgid "Choose model"
+msgstr "选择模型"
+
+msgid "Send as file"
+msgstr "作为文件发送"

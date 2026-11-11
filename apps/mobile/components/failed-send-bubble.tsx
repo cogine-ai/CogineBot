@@ -2,16 +2,21 @@ import { ActionSheetIOS, Alert, Image, Platform, Pressable, Text, View } from "r
 import { useI18n } from "../lib/i18n";
 import { useMobileTokens } from "../lib/native";
 import type { SendAttempt } from "../lib/thread-feedback";
+import { NativeActionButton } from "./native-action-button";
 import { NativeSymbol } from "./native-symbol";
 
 export function FailedSendBubble({
   attempt,
   onRetry,
   onDelete,
+  onChooseModel,
+  onRetryAsFile,
 }: {
   attempt: SendAttempt;
   onRetry: () => void;
   onDelete: () => void;
+  onChooseModel?: () => void;
+  onRetryAsFile?: () => void;
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
@@ -54,74 +59,99 @@ export function FailedSendBubble({
   }
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={messageLabel ? `${messageLabel}. ${caption}` : caption}
-      accessibilityHint={sending ? undefined : t("Long press to delete")}
-      accessibilityState={{ disabled: sending }}
-      disabled={sending}
-      onPress={retryable ? onRetry : undefined}
-      onLongPress={showActions}
-      style={{ alignSelf: "flex-end", maxWidth: "90%", marginTop: 12, gap: 4 }}
-    >
-      <View
-        style={{
-          borderRadius: 20,
-          borderWidth: 1,
-          borderColor: tokens.border,
-          backgroundColor: tokens.secondary,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          gap: 8,
-          opacity: 0.8,
-        }}
+    <View style={{ alignSelf: "flex-end", maxWidth: "90%", marginTop: 12, gap: 4 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={messageLabel ? `${messageLabel}. ${caption}` : caption}
+        accessibilityHint={sending ? undefined : t("Long press to delete")}
+        accessibilityState={{ disabled: sending }}
+        disabled={sending}
+        onPress={retryable ? onRetry : undefined}
+        onLongPress={showActions}
+        style={{ gap: 4 }}
       >
-        {payload.replyPreview ? (
-          <Text
-            numberOfLines={3}
-            style={{
-              color: tokens.mutedForeground,
-              fontSize: 13,
-              borderLeftWidth: 2,
-              borderLeftColor: tokens.border,
-              paddingLeft: 8,
-            }}
-          >
-            {payload.replyPreview}
-          </Text>
-        ) : null}
-        {payload.displayText ? (
-          <Text style={{ color: tokens.secondaryForeground, fontSize: 15.5, lineHeight: 23 }}>
-            {payload.displayText}
-          </Text>
-        ) : null}
-        {payload.attachments.map((attachment) => (
-          <View key={attachment.id} style={{ gap: 4 }}>
-            {attachment.previewUri ? (
-              <Image
-                source={{ uri: attachment.previewUri }}
-                style={{ width: 180, height: 120, borderRadius: 12 }}
-              />
-            ) : null}
-            <Text style={{ color: tokens.secondaryForeground, fontSize: 13 }}>
-              {attachment.name}
+        <View
+          style={{
+            borderRadius: 20,
+            borderWidth: 1,
+            borderColor: tokens.border,
+            backgroundColor: tokens.secondary,
+            paddingHorizontal: 14,
+            paddingVertical: 12,
+            gap: 8,
+            opacity: 0.8,
+          }}
+        >
+          {payload.replyPreview ? (
+            <Text
+              numberOfLines={3}
+              style={{
+                color: tokens.mutedForeground,
+                fontSize: 13,
+                borderLeftWidth: 2,
+                borderLeftColor: tokens.border,
+                paddingLeft: 8,
+              }}
+            >
+              {payload.replyPreview}
             </Text>
-          </View>
-        ))}
-      </View>
-      <View
-        style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 4 }}
-      >
-        {!sending ? (
-          <NativeSymbol
-            ios="exclamationmark.circle.fill"
-            android="alert-circle"
-            size={13}
-            color={color}
-          />
-        ) : null}
-        <Text style={{ color, fontSize: 13 }}>{caption}</Text>
-      </View>
-    </Pressable>
+          ) : null}
+          {payload.displayText ? (
+            <Text style={{ color: tokens.secondaryForeground, fontSize: 15.5, lineHeight: 23 }}>
+              {payload.displayText}
+            </Text>
+          ) : null}
+          {payload.attachments.map((attachment) => (
+            <View key={attachment.id} style={{ gap: 4 }}>
+              {attachment.previewUri ? (
+                <Image
+                  source={{ uri: attachment.previewUri }}
+                  style={{ width: 180, height: 120, borderRadius: 12 }}
+                />
+              ) : null}
+              <Text style={{ color: tokens.secondaryForeground, fontSize: 13 }}>
+                {attachment.name}
+              </Text>
+            </View>
+          ))}
+        </View>
+        <View
+          style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 4 }}
+        >
+          {!sending ? (
+            <NativeSymbol
+              ios="exclamationmark.circle.fill"
+              android="alert-circle"
+              size={13}
+              color={color}
+            />
+          ) : null}
+          <Text style={{ color, fontSize: 13 }}>{caption}</Text>
+        </View>
+      </Pressable>
+      {attempt.imageInputStatus ? (
+        <View style={{ gap: 8 }}>
+          <Text style={{ color: tokens.mutedForeground }}>
+            {attempt.imageInputStatus === "unsupported"
+              ? t("This model cannot see images")
+              : t("This model's image capability is unconfirmed")}
+          </Text>
+          {onRetryAsFile ? (
+            <NativeActionButton
+              label={t("Send as file")}
+              prominence="quiet"
+              onPress={onRetryAsFile}
+            />
+          ) : null}
+          {onChooseModel ? (
+            <NativeActionButton
+              label={t("Choose model")}
+              prominence="quiet"
+              onPress={onChooseModel}
+            />
+          ) : null}
+        </View>
+      ) : null}
+    </View>
   );
 }

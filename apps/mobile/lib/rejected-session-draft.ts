@@ -1,3 +1,4 @@
+import type { ImageHandling } from "@rakazo/contracts";
 import type { PickedAttachment } from "./pick-attachments-filter";
 
 export type RejectedDraftScope = {
@@ -12,6 +13,7 @@ export type RejectedDraftScope = {
 /** Editable content only: never a send attempt, permission, server handle or file URI. */
 export type RejectedDraftContent = {
   text: string;
+  imageHandling?: ImageHandling;
   attachments: Array<Pick<PickedAttachment, "name" | "mimeType" | "contentBase64">>;
 };
 
@@ -85,6 +87,7 @@ export function captureRejectedSessionDraft(generation: number): RejectedDraftCa
       sessionGeneration: generation,
       content: {
         text: value.content.text,
+        imageHandling: value.content.imageHandling,
         attachments: value.content.attachments.map(({ name, mimeType, contentBase64 }) => ({
           name,
           mimeType,

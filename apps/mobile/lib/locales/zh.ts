@@ -1,4 +1,13 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Image use": "图片用途",
+  "Let Bot see images": "让 Bot 看图",
+  "As file": "作为文件",
+  "Can see images": "可看图",
+  "This model cannot see images": "这个模型不支持看图",
+  "This model's image capability is unconfirmed": "尚未确认这个模型能否看图",
+  "Choose model": "选择模型",
+  "Send as file": "作为文件发送",
+
   "Computer paused at its runtime limit.": "电脑已达到运行时长上限并暂停。",
   "Background tasks may have stopped.": "后台任务可能已经停止。",
   "Continue using computer": "继续使用电脑",

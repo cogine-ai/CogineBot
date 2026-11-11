@@ -1,4 +1,4 @@
-import type { PageReplyContext } from "@rakazo/contracts";
+import type { ImageHandling, PageReplyContext } from "@rakazo/contracts";
 import { newClientId } from "./client-id";
 import type { PendingComposerAttachment } from "./composer-draft";
 
@@ -35,6 +35,7 @@ export function composerAttachmentUploadKey(attachment: PendingComposerAttachmen
 /** Owner-controlled intent; Page-derived fields stay with the attempt across reader changes. */
 export function composerSendSignature(input: {
   text: string;
+  imageHandling?: ImageHandling;
   target: { botId?: string; groupId?: string };
   mentions?: readonly unknown[];
   routineIds?: readonly string[];
@@ -44,6 +45,7 @@ export function composerSendSignature(input: {
 }): string {
   return JSON.stringify({
     text: input.text,
+    imageHandling: input.imageHandling ?? "confirm",
     target: input.target,
     mentions: input.mentions ?? [],
     routineIds: input.routineIds ?? [],
@@ -51,6 +53,26 @@ export function composerSendSignature(input: {
     replyToMessageId: input.replyToMessageId ?? null,
     replyQuote: input.replyQuote ?? null,
   });
+}
+
+function onlyImageHandlingChanged(left: string, right: string): boolean {
+  try {
+    const before = JSON.parse(left);
+    const after = JSON.parse(right);
+    if (
+      !before ||
+      !after ||
+      typeof before !== "object" ||
+      typeof after !== "object" ||
+      before.imageHandling === after.imageHandling
+    )
+      return false;
+    delete before.imageHandling;
+    delete after.imageHandling;
+    return JSON.stringify(before) === JSON.stringify(after);
+  } catch {
+    return false;
+  }
 }
 
 export function createComposerSendAttemptStore(makeNonce: () => string = newClientId) {
@@ -71,7 +93,10 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
               clientNonce: makeNonce(),
               signature,
               inFlight: false,
-              uploadedArtifactIds: new Map<string, string>(),
+              uploadedArtifactIds:
+                previous && onlyImageHandlingChanged(previous.signature, signature)
+                  ? new Map(previous.uploadedArtifactIds)
+                  : new Map<string, string>(),
               completedRoutineIds: new Set<string>(),
               pageReply,
             };

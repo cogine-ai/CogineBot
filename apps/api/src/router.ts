@@ -390,6 +390,7 @@ import {
   steersUserMessage,
   stopThreadRuns,
   threadHead,
+  threadImageInputStatus,
   threadSnapshot,
 } from "./thread-target.js";
 import {
@@ -1052,6 +1053,14 @@ export function createRouter(deps: RouterDeps) {
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
+  const imageAdmission = {
+    secrets: deps.secrets,
+    deployment: deps.env.deploymentModelConfigured
+      ? { provider: deps.env.defaultProvider, model: deps.env.defaultModel }
+      : null,
+    scripted: deps.env.agentRuntime === "scripted",
+    codexCatalog,
+  };
   const favicons = deps.favicons ?? createFaviconResolver();
   const refreshExpiredCredential =
     deps.refreshExpiredModelCredential ??
@@ -1140,6 +1149,124 @@ export function createRouter(deps: RouterDeps) {
     await deps.billing?.assertAccess(context.actor);
     return next();
   });
+
+  async function routineTestTarget(actor: Actor, routineId: string) {
+    const routine = await deps.prisma.routine.findFirst({
+      where: {
+        id: routineId,
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+      },
+    });
+    if (!routine) throw new IsolationError();
+    const bot = await repos.getBot(actor, routine.botId);
+    if (!bot.thread) throw new IsolationError();
+    return { routineId: routine.id, botId: bot.id, threadId: bot.thread.id };
+  }
+
+  async function createRoutineTestRun(
+    tx: Prisma.TransactionClient,
+    actor: Actor,
+    { routineId, botId, threadId }: Awaited<ReturnType<typeof routineTestTarget>>,
+    skillRecords: Awaited<ReturnType<typeof agentSkills.listWithContent>>,
+    nonce?: string,
+  ) {
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM routines
+      WHERE id=${routineId} AND "userId"=${actor.userId}
+        AND "spaceId"=${actor.spaceId} AND "botId"=${botId} FOR UPDATE`;
+    if (locked.length !== 1) throw new IsolationError();
+    if (nonce) {
+      const existing = await tx.run.findFirst({
+        where: { threadId, clientNonce: nonce },
+        select: { id: true, status: true },
+      });
+      if (existing) return existing;
+    }
+    const current = await tx.routine.findUnique({
+      where: { id: routineId },
+      select: {
+        prompt: true,
+        authorizedInstructions: true,
+        authorizedSites: true,
+        modelProvider: true,
+        modelId: true,
+        modelCredentialId: true,
+        thinkingLevel: true,
+      },
+    });
+    if (!current) throw new IsolationError();
+    if (current.modelProvider && current.modelId && current.modelCredentialId) {
+      const credential = await tx.$queryRaw<
+        Array<{ id: string }>
+      >`SELECT id FROM user_model_credentials
+        WHERE id=${current.modelCredentialId} AND "userId"=${actor.userId}
+          AND provider=${current.modelProvider} FOR KEY SHARE`;
+      if (credential.length !== 1) throw new IsolationError("Model connection is unavailable.");
+    }
+    const nativeTriggers = await listNativeRoutineTriggers(tx, actor, routineId);
+    const connectionIds = [...new Set(nativeTriggers.map((trigger) => trigger.connectionId))];
+    const task = await tx.task.create({
+      data: {
+        spaceId: actor.spaceId,
+        botId,
+        threadId,
+        userId: actor.userId,
+        prompt: expandSkillReferencesInPrompt(current.prompt, skillRecords),
+        routineInstructions: current.authorizedInstructions ?? null,
+        routineSites: current.authorizedSites,
+        status: "queued",
+        connectionIds,
+      },
+    });
+    const created = await tx.run.create({
+      data: {
+        spaceId: actor.spaceId,
+        botId,
+        threadId,
+        taskId: task.id,
+        userId: actor.userId,
+        status: "queued",
+        trigger: "routine",
+        routineId,
+        ...routineRunModelPin(current),
+        clientNonce: nonce,
+      },
+      select: { id: true, status: true },
+    });
+    await tx.routine.updateMany({
+      where: { id: routineId },
+      data: { latestRunId: created.id, autoCompletedRunId: null },
+    });
+    return created;
+  }
+
+  async function sendComposerMessage(
+    actor: Actor,
+    input: Parameters<typeof sendThreadMessage>[3] & { botId?: string; groupId?: string },
+    prepareRoutines?: Parameters<typeof sendThreadMessage>[0]["prepareRoutines"],
+  ) {
+    const policy = deps.env.platformModelAllowlist;
+    const restricted = policy === "owner_only" || Boolean(policy?.length);
+    if (!restricted && (await modelSetup(deps, actor)).needsModel)
+      throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
+    const target = await resolveThreadTarget(deps.prisma, actor, input);
+    if (target.kind === "bot") {
+      await assertTeachingSendAllowed(deps.prisma, actor.spaceId, target.botId);
+    }
+    return sendThreadMessage(
+      {
+        ...deps,
+        imageAdmission,
+        prepareRoutines,
+        beforeSend: restricted
+          ? () => requireTargetModelAccess(deps, actor, target, input)
+          : undefined,
+      },
+      actor,
+      target,
+      input,
+    );
+  }
 
   const boardEnabled = os
     .use(async ({ next }) => {
@@ -2841,26 +2968,43 @@ export function createRouter(deps: RouterDeps) {
           void follow.return(undefined).catch(() => {});
         }
       }),
-      send: newWork.threads.send.handler(async ({ context, input }) => {
-        const policy = deps.env.platformModelAllowlist;
-        const restricted = policy === "owner_only" || Boolean(policy?.length);
-        if (!restricted && (await modelSetup(deps, context.actor)).needsModel)
-          throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
+      imageInput: authed.threads.imageInput.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
-        if (target.kind === "bot") {
-          await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
-        }
-        return sendThreadMessage(
-          {
-            ...deps,
-            beforeSend: restricted
-              ? () => requireTargetModelAccess(deps, context.actor, target, input)
-              : undefined,
-          },
+        return threadImageInputStatus(
+          { prisma: deps.prisma, imageAdmission },
           context.actor,
           target,
           input,
         );
+      }),
+      send: newWork.threads.send.handler(({ context, input }) =>
+        sendComposerMessage(context.actor, input),
+      ),
+      sendWithRoutines: newWork.threads.sendWithRoutines.handler(({ context, input }) => {
+        const { actor } = context;
+        return sendComposerMessage(actor, input, async () => {
+          const [skillRecords, targets] = await Promise.all([
+            agentSkills.listWithContent(actor),
+            Promise.all(
+              [...new Set(input.routineIds)].sort().map((id) => routineTestTarget(actor, id)),
+            ),
+          ]);
+          return async (tx) => {
+            const runs = [];
+            for (const target of targets) {
+              runs.push(
+                await createRoutineTestRun(
+                  tx,
+                  actor,
+                  target,
+                  skillRecords,
+                  `routine-test:routine-mention:${input.clientNonce}:${target.routineId}`,
+                ),
+              );
+            }
+            return runs;
+          };
+        });
       }),
       react: authed.threads.react.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
@@ -4599,17 +4743,9 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       testRun: newWork.routines.testRun.handler(async ({ context, input }) => {
-        const routine = await deps.prisma.routine.findFirst({
-          where: {
-            id: input.routineId,
-            spaceId: context.actor.spaceId,
-            userId: context.actor.userId,
-          },
-        });
-        if (!routine) throw new IsolationError();
-        const bot = await repos.getBot(context.actor, routine.botId);
-        if (!bot.thread) throw new IsolationError();
-        const threadId = bot.thread.id;
+        const { actor } = context;
+        const target = await routineTestTarget(actor, input.routineId);
+        const { threadId } = target;
         const nonce = input.clientNonce ? `routine-test:${input.clientNonce}` : undefined;
         if (nonce) {
           const existing = await deps.prisma.run.findFirst({
@@ -4618,82 +4754,13 @@ export function createRouter(deps: RouterDeps) {
           });
           if (existing) return { runId: existing.id };
         }
-        const skillRecords = await agentSkills.listWithContent(context.actor);
+        const skillRecords = await agentSkills.listWithContent(actor);
         let run: { id: string };
         try {
-          // Task + run must commit together so a nonce collision cannot leave an orphan queued Task.
-          run = await deps.prisma.$transaction(async (tx) => {
-            if (nonce) {
-              const existing = await tx.run.findFirst({
-                where: { threadId, clientNonce: nonce },
-                select: { id: true },
-              });
-              if (existing) return existing;
-            }
-            const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM routines
-              WHERE id=${routine.id} AND "userId"=${context.actor.userId}
-                AND "spaceId"=${context.actor.spaceId} AND "botId"=${bot.id} FOR UPDATE`;
-            if (locked.length !== 1) throw new IsolationError();
-            const current = await tx.routine.findUnique({
-              where: { id: routine.id },
-              select: {
-                prompt: true,
-                authorizedInstructions: true,
-                authorizedSites: true,
-                modelProvider: true,
-                modelId: true,
-                modelCredentialId: true,
-                thinkingLevel: true,
-              },
-            });
-            if (!current) throw new IsolationError();
-            if (current.modelProvider && current.modelId && current.modelCredentialId) {
-              const credential = await tx.$queryRaw<
-                Array<{ id: string }>
-              >`SELECT id FROM user_model_credentials
-                WHERE id=${current.modelCredentialId} AND "userId"=${context.actor.userId}
-                  AND provider=${current.modelProvider} FOR KEY SHARE`;
-              if (credential.length !== 1)
-                throw new IsolationError("Model connection is unavailable.");
-            }
-            const nativeTriggers = await listNativeRoutineTriggers(tx, context.actor, routine.id);
-            const connectionIds = [
-              ...new Set(nativeTriggers.map((trigger) => trigger.connectionId)),
-            ];
-            const task = await tx.task.create({
-              data: {
-                spaceId: context.actor.spaceId,
-                botId: bot.id,
-                threadId,
-                userId: context.actor.userId,
-                prompt: expandSkillReferencesInPrompt(current.prompt, skillRecords),
-                routineInstructions: current.authorizedInstructions ?? null,
-                routineSites: current.authorizedSites,
-                status: "queued",
-                connectionIds,
-              },
-            });
-            const created = await tx.run.create({
-              data: {
-                spaceId: context.actor.spaceId,
-                botId: bot.id,
-                threadId,
-                taskId: task.id,
-                userId: context.actor.userId,
-                status: "queued",
-                trigger: "routine",
-                routineId: routine.id,
-                ...routineRunModelPin(current),
-                clientNonce: nonce,
-              },
-              select: { id: true },
-            });
-            await tx.routine.updateMany({
-              where: { id: routine.id },
-              data: { latestRunId: created.id, autoCompletedRunId: null },
-            });
-            return created;
-          });
+          // The task and run commit together; an existing nonce cannot leave an orphan task.
+          run = await deps.prisma.$transaction((tx) =>
+            createRoutineTestRun(tx, actor, target, skillRecords, nonce),
+          );
         } catch (error) {
           if (nonce) {
             const existing = await deps.prisma.run.findFirst({
@@ -4704,8 +4771,7 @@ export function createRouter(deps: RouterDeps) {
           }
           throw error;
         }
-        // Keep enqueue outside the nonce-collision catch. The queued run is durable;
-        // log enqueue failures and still return success — the reconciler repairs a missed wake.
+        // The run is durable; the reconciler repairs a missed wake.
         await deps.jobs.enqueue(runContinueJob(run.id)).catch((error) => {
           getLogger().error("routine testRun enqueue", error);
         });

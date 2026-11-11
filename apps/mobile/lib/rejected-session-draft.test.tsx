@@ -193,6 +193,7 @@ function makeState() {
     sending: false,
     preparing: false,
     working: false,
+    imageHandling: "confirm" as "confirm" | "file",
     onCall: false,
     attachments: [] as PickedAttachment[],
     replyQuote: null as string | null,
@@ -214,6 +215,8 @@ function productionEditor(state: HarnessState) {
     const botId = state.botId;
     const groupId = state.groupId;
     const threadKey = groupId ?? botId;
+    const imageHandling = state.imageHandling;
+    const setImageChoice = ({ value }) => { state.imageHandling = value; };
     const readOnly = state.readOnly;
     const showingSaved = state.showingSaved;
     const restoring = state.restoring;
@@ -250,7 +253,7 @@ function productionEditor(state: HarnessState) {
       composerRef.current.reset();
       setPendingAttachments([]);
     }
-    return <ThreadComposer ref={composerRef} agentSkills={[skill]} composerMentionTargets={[mention]}
+    return <ThreadComposer imageHandling={imageHandling} ref={composerRef} agentSkills={[skill]} composerMentionTargets={[mention]}
       composerPrompt="Message" replyTargetId={state.replyTarget ? "old-reply-id" : undefined}
       replyQuote={replyQuote} attachmentIds={pendingAttachments.map(a => a.id)}
       botId={botId} onCall={onCall} working={state.working} sending={sending}
@@ -402,6 +405,30 @@ describe("rejected-session editor isolation", () => {
     act(() => root.render(<div>Other screen</div>));
     render();
     expect(container.querySelector("input")!.value).toBe("");
+  });
+
+  it("preserves file intent for a recovered image without retaining a prior send", async () => {
+    act(() => root.render(<div>Reset</div>));
+    state.imageHandling = "file";
+    state.attachments = [{ ...picked, name: "invoice.png", mimeType: "image/png" }];
+    render();
+    expect(state.handle.current!.snapshot().imageHandling).toBe("file");
+    expect(
+      recovery.captureRejectedSessionDraft(currentSessionGeneration())?.content.imageHandling,
+    ).toBe("file");
+    await reject();
+    state.imageHandling = "confirm";
+    state.attachments = [];
+    await reauthenticate();
+    expect(state.imageHandling).toBe("file");
+    expect(state.handle.current!.snapshot().imageHandling).toBe("file");
+    expect(state.files).toHaveLength(1);
+    expect(state.files[0]).toMatchObject({
+      name: "invoice.png",
+      mimeType: "image/png",
+      contentBase64: picked.contentBase64,
+    });
+    expect(state.attempts).toEqual([]);
   });
 
   it("keeps local attachment bytes and context as editable text without old IDs, grants, URIs or automatic sends", async () => {

@@ -28,6 +28,7 @@ export function aiDataUsesForProcedure(procedure: string, input?: unknown): AiDa
   if (
     [
       "threads/send",
+      "threads/sendWithRoutines",
       "artifacts/create",
       "threads/followUp",
       "threads/react",

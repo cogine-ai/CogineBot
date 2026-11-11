@@ -1,8 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, AgentSteeringMessage } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
+import type * as ComputerWorkspaceModule from "./computer-workspace.js";
 import { createRunExecutor } from "./executor.js";
 import { serializeTurnCheckpoint } from "./turn-checkpoint.js";
 import { markMcpToolResultRoute } from "./verbatim-mcp-result.js";
@@ -18,6 +19,13 @@ vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   provisionComputer,
 }));
 
+// Workspace persistence is tested separately. Here the backing file can be written
+// without asking this model-delivery fixture to simulate workspace versioning.
+vi.mock("./computer-workspace.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ComputerWorkspaceModule>()),
+  checkpointRunComputerWorkspace: vi.fn(async () => "fixture-revision"),
+}));
+
 const TEXT_ONLY_MODEL = "deepseek/deepseek-v4-flash-0731";
 const VISION_MODEL = "openai/gpt-4o";
 
@@ -28,6 +36,7 @@ function historyMessages(
     mimeType: "image/png",
     name: "shot.png",
   },
+  currentAttachment?: MessageBlock,
 ): Array<{
   id: string;
   threadId: string;
@@ -46,7 +55,10 @@ function historyMessages(
       seq: 2,
       role: "user",
       runId: "run-1",
-      blocks: [{ kind: "text", text: "what was in the screenshot?" }],
+      blocks: [
+        { kind: "text", text: "what was in the screenshot?" },
+        ...(currentAttachment ? [currentAttachment] : []),
+      ],
       replyToMessageId: null,
       replyQuote: null,
       replyTo: null,
@@ -72,6 +84,7 @@ async function runWithModel(
   scripted = false,
   attachmentOptions: {
     block?: Extract<MessageBlock, { kind: "file" | "image" }>;
+    currentSteeringImage?: Extract<MessageBlock, { kind: "image" }>;
     computerMode?: ComputerMode;
     pinned?: boolean;
     accountTimezone?: string | null;
@@ -105,8 +118,10 @@ async function runWithModel(
     yield* [];
   });
   let request: AgentRunRequest | undefined;
+  let steering: AgentSteeringMessage[] | undefined;
   const runtimeRun = vi.fn(async function* (next: AgentRunRequest) {
     request = next;
+    if (attachmentOptions.currentSteeringImage) steering = await next.claimSteering?.([]);
     if (switchModel) {
       await next.onModelChange?.(
         switchModel.provider,
@@ -176,8 +191,11 @@ async function runWithModel(
       })),
     },
     message: {
+      findFirst: vi.fn(async () => null),
       findMany: vi.fn(async (args: { where?: { threadId?: string } }) =>
-        args.where?.threadId ? historyMessages(attachmentOptions.block) : [],
+        args.where?.threadId
+          ? historyMessages(attachmentOptions.block, attachmentOptions.currentSteeringImage)
+          : [],
       ),
       findUnique: vi.fn(async () => null),
     },
@@ -309,7 +327,24 @@ async function runWithModel(
     memory: { read: async () => ({ documents: [] }) },
     memoryProviders: { resolve: async () => null },
     artifacts: { get },
-    events: { append: vi.fn(async () => undefined), finalizeRun },
+    events: {
+      append: vi.fn(async () => undefined),
+      finalizeRun,
+      claimSteering: vi.fn(async () =>
+        attachmentOptions.currentSteeringImage
+          ? [
+              {
+                id: "steering-1",
+                messageId: "current",
+                text: "Look again",
+                origin: "user",
+                ownerInput: true,
+                blocks: [attachmentOptions.currentSteeringImage],
+              },
+            ]
+          : [],
+      ),
+    },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets: [],
   } as unknown as Parameters<typeof createRunExecutor>[0]);
@@ -318,7 +353,7 @@ async function runWithModel(
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   if (!request) throw new Error("runtime was not called");
-  return { request, get, prisma, run, writeFile, listFiles, exportWorkspace };
+  return { request, steering, get, prisma, run, writeFile, listFiles, exportWorkspace };
 }
 
 describe("recent turn images follow model vision", () => {
@@ -698,4 +733,20 @@ describe("executor account timezone context", () => {
     expect(request.userTimezone).toBe("Asia/Taipei");
     expect(request.prompt).toContain("(Asia/Taipei)");
   });
+});
+
+it("delivers a waiting image only once when a legacy Run also reads it as its current turn", async () => {
+  const { request, steering } = await runWithModel(VISION_MODEL, undefined, false, false, {
+    currentSteeringImage: {
+      kind: "image",
+      imageHandling: "confirm",
+      artifactId: "art-1",
+      mimeType: "image/png",
+      name: "shot.png",
+    },
+  });
+  expect(request.currentTurnImages).toHaveLength(1);
+  expect(steering).toHaveLength(1);
+  expect(steering?.[0]?.messageId).toBe("current");
+  expect(steering?.[0]?.images).toBeUndefined();
 });

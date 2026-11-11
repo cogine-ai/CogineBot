@@ -30,6 +30,9 @@ export function AttachmentPreview({
 }: AttachmentPreviewProps) {
   const [failedPreviewUrl, setFailedPreviewUrl] = useState<string | null>(null);
   const showImage = previewUrl && failedPreviewUrl !== previewUrl;
+  const caption = mimeType.startsWith("image/")
+    ? [name, description].filter(Boolean).join(" · ")
+    : description;
   const type = fileTypes[mimeType];
   const Icon = type?.icon ?? (mimeType.startsWith("image/") ? Image : File);
 
@@ -38,11 +41,7 @@ export function AttachmentPreview({
       data-testid="attachment-preview"
       data-kind={showImage ? "image" : "file"}
       title={description ? `${name} · ${description}` : name}
-      className={
-        description
-          ? "group/attachment relative w-20 shrink-0"
-          : "group/attachment relative size-12 shrink-0"
-      }
+      className={caption ? "relative w-28 shrink-0" : "relative size-12 shrink-0"}
     >
       <div className="flex size-12 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-[12px] border border-border bg-background text-muted-foreground">
         {showImage ? (
@@ -63,17 +62,19 @@ export function AttachmentPreview({
           </>
         )}
       </div>
-      {description ? (
-        <span className="mt-1 block break-words text-[10px] text-foreground">{description}</span>
+      {caption ? (
+        <span className="mt-1 block break-words text-xs text-foreground">{caption}</span>
       ) : null}
       <button
         type="button"
         aria-label={removeLabel}
         title={removeLabel}
         onClick={onRemove}
-        className="absolute start-10 -top-1 grid size-5 place-items-center rounded-full bg-primary text-primary-foreground opacity-0 shadow-sm transition-opacity group-hover/attachment:opacity-100 focus:opacity-100"
+        className="absolute start-7 -top-4 grid size-11 place-items-center text-primary-foreground"
       >
-        <X size={11} strokeWidth={2} />
+        <span className="grid size-5 place-items-center rounded-full bg-primary shadow-sm">
+          <X size={11} strokeWidth={2} />
+        </span>
       </button>
     </div>
   );

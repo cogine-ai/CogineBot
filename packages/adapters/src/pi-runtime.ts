@@ -39,6 +39,7 @@ import {
   abortableDelay,
   createStreamingRedactor,
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
+  MODEL_IMAGE_INPUT_ERROR,
   redactSecrets,
 } from "@rakazo/core";
 import { MAX_SELF_RECOVERIES_PER_RUN } from "@rakazo/db";
@@ -97,13 +98,14 @@ import { createPageTranscriptSanitizer } from "./page-tool-checkpoint.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
+import { liveModelSibling, withLiveImageInput } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import {
   acceptedReasoningEfforts,
   applyPiModelCompatibility,
   defaultOffReasoningEffort,
 } from "./pi-model-compat.js";
-import { codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
+import { CHATGPT_OAUTH_PROVIDER, codexComputeResidency, loadProviderOAuth } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   registerOpenAiCompatibleCatalog,
@@ -405,6 +407,11 @@ export class PiAgentRuntime implements AgentRuntime {
         const pageToolSecrets = request.pageToolSecrets ?? (() => []);
         const seenSteeringIds: string[] = [];
         const initialSteering = request.claimSteering ? await request.claimSteering([]) : [];
+        let requiresImageInput = Boolean(
+          request.currentRunRequiresImageInput ||
+            request.currentTurnImages?.length ||
+            initialSteering.some((item) => item.images?.length),
+        );
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
         const restored =
           request.turnCheckpoint !== undefined
@@ -569,8 +576,10 @@ export class PiAgentRuntime implements AgentRuntime {
           isRequestDeadlineExceeded: (message) => requestDeadlineFailures.has(message.content),
           attempted: new Set<string>(),
           nextIndex: 0,
-          stream: (target, ctx, options, requestDeadline, correction) =>
-            reliableModelStream(
+          stream: (target, ctx, options, requestDeadline, correction) => {
+            if (requiresImageInput && !target.model.input.includes("image"))
+              throw new Error(MODEL_IMAGE_INPUT_ERROR);
+            return reliableModelStream(
               target.models,
               target.model,
               ctx,
@@ -607,7 +616,8 @@ export class PiAgentRuntime implements AgentRuntime {
                   },
                 ),
               target.config.cacheCapabilities?.retentionMode,
-            ),
+            );
+          },
           onSwitch: async (target) => {
             if (target.config.modelCredentialId === undefined) {
               await request.onModelChange?.(target.config.provider, target.config.id);
@@ -676,6 +686,7 @@ export class PiAgentRuntime implements AgentRuntime {
               liveProgressReset: true,
             });
             if (steering.length === 0) return undefined;
+            if (steering.some((item) => item.images?.length)) requiresImageInput = true;
             signal.throwIfAborted();
             seenSteeringIds.push(...steering.map((item) => item.id));
             const progressResetAt = steering.findLast(
@@ -1280,6 +1291,10 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
       modelConfig.contextWindow !== undefined)
   ) {
     model = configuredOpenRouterModel(modelId, modelConfig.contextWindow);
+  }
+  if (provider === CHATGPT_OAUTH_PROVIDER) {
+    model ??= liveModelSibling(models, provider, modelId);
+    if (model) model = withLiveImageInput(model, modelConfig.acceptsImages);
   }
   if (model && (modelConfig.contextWindow !== undefined || modelConfig.maxTokens !== undefined)) {
     model = {

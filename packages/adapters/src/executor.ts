@@ -1,3 +1,4 @@
+import { runReadsThreadHistory } from "@rakazo/core";
 import type { RunLease } from "@rakazo/db";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
 import {
@@ -430,11 +431,12 @@ import {
   savePageFromTool,
 } from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
-import { codexLiveListsModel } from "./pi-codex-catalog.js";
+import { codexLiveModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import {
+  CHATGPT_OAUTH_PROVIDER,
   isRetiredModelCredentialError,
   matchesFailedOAuthSecret,
   parseModelSecret,
@@ -4879,6 +4881,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Gate on the model this run will actually call — the pair written to the run row
         // above. Deriving it a second time here dropped the deployment fallback, so a
         // vision-capable default was gated as "scripted" and lost its screenshot tools.
+        const imageMessages = await deps.prisma.message.findMany({
+          where: {
+            threadId: thread.id,
+            role: "user",
+            OR: [
+              ...(run.sourceMessageId ? [{ id: run.sourceMessageId }] : []),
+              { steeringMessages: { some: { runId, botId: run.botId } } },
+            ],
+            blocks: { array_contains: [{ kind: "image" }] },
+          },
+          select: { blocks: true },
+        });
+        const currentRunRequiresImageInput = imageMessages.some((message) =>
+          (message.blocks as MessageBlock[]).some(
+            (block) => block.kind === "image" && block.imageHandling === "confirm",
+          ),
+        );
         const modelSeesImages = modelAcceptsImageInput(
           runModelProvider,
           runModelId,
@@ -9694,6 +9713,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 .join("\n\n"),
               history: runtimeHistory,
               currentTurnImages,
+              currentRunRequiresImageInput,
               tools,
               ...(quotaAdmissionWait
                 ? {
@@ -9945,7 +9965,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         text: [reply?.text, text, filesInstruction, unavailableInstruction]
                           .filter(Boolean)
                           .join("\n\n"),
-                        images,
+                        // A pre-sourceMessageId Run may already load this same reply as its current turn.
+                        images:
+                          item.messageId === currentTurnMessage?.id && currentTurnImages?.length
+                            ? undefined
+                            : images,
                       },
                     };
                   }),
@@ -11346,7 +11370,7 @@ export function threadContextForRun<T>(
 ) {
   // Routine runs stay isolated from thread history. The creation intro does
   // too: a message that arrives during it waits and is answered afterward.
-  if (trigger === "created" || trigger === "routine") {
+  if (!runReadsThreadHistory(trigger)) {
     return {
       messages: [] as T[],
       summary: null,
@@ -11925,6 +11949,7 @@ async function resolveModelKey(
         const resolveAuth = () =>
           resolveModelAuth(plaintext, credential.provider, { persist, retire });
         let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
+        let liveCodex: Awaited<ReturnType<typeof codexLiveModel>>;
         const authError = validateModelAuthAvailability(provider, modelId, plaintext);
         if (authError) {
           // A statically excluded Codex model may still run when the backend's
@@ -11938,17 +11963,19 @@ async function resolveModelKey(
             parseModelSecret(plaintext).kind === "oauth"
           ) {
             resolved = await resolveAuth();
-            liveListed = await codexLiveListsModel(
-              deps.codexCatalog,
-              userId,
-              resolved.secret,
-              modelId,
-              { waitMs: CODEX_LIVE_RUN_WAIT_MS },
-            );
+            liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+              waitMs: CODEX_LIVE_RUN_WAIT_MS,
+            });
+            liveListed = Boolean(liveCodex);
           }
           if (!liveListed) throw new UnavailableModelForAuthError(authError);
         }
         resolved ??= await resolveAuth();
+        if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
+          liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+            waitMs: 0,
+          });
+        }
         assertCompatibleModelEnabled(credential, resolved.secret, modelId);
         const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
         const baseUrl =
@@ -11961,15 +11988,14 @@ async function resolveModelKey(
             : undefined;
         const acceptsImages =
           provider === CHATGPT_PLAN_PROVIDER_ID
-            ? Boolean(chatGPTPlanModel?.input?.includes("image"))
+            ? chatGPTPlanModel?.input?.includes("image")
             : credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
-              resolved.secret.kind === "openai_compatible" &&
-              (modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
-                // Legacy secrets have no per-model list, so keep their existing
-                // capability scoped to the model saved in the space preference.
+                resolved.secret.kind === "openai_compatible"
+              ? modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
                 (resolved.secret.visionModelIds === undefined &&
                   credential.supportsImages === true &&
-                  credential.defaultModel?.trim() === modelId.trim()));
+                  credential.defaultModel?.trim() === modelId.trim())
+              : liveCodex?.supportsImages;
         const accountId =
           resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
         const gatewayId =
