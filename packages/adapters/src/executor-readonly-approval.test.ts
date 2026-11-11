@@ -8,6 +8,7 @@ import type {
   ConnectorRoute,
   ConnectorTool,
   SandboxProvider,
+  SecretStore,
   WebProvider,
 } from "@rakazo/adapter-kit";
 import {
@@ -53,6 +54,7 @@ import * as RunMessagesModule from "./run-messages.js";
 import { readConnectionApprovalCheckpoint } from "./run-turn-state.js";
 import { routineSiteApprovalRequest } from "./schedule-tools.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
+import { EncryptedSecretStore } from "./secrets.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 import { restoreTurnCheckpoint } from "./turn-checkpoint.js";
 
@@ -136,6 +138,7 @@ function fixture({
   outsideSteering = false,
   webProvider,
   secretHttp,
+  secretStore = { load: async (ciphertext: string) => ciphertext },
   sandboxProvider,
   home,
   messagingIdentity = false,
@@ -172,6 +175,7 @@ function fixture({
   outsideSteering?: boolean;
   webProvider?: WebProvider;
   secretHttp?: ExecutorDeps["secretHttp"];
+  secretStore?: Pick<SecretStore, "load"> & Partial<SecretStore>;
   sandboxProvider?: Partial<SandboxProvider>;
   home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
@@ -553,7 +557,7 @@ function fixture({
     },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets,
-    secretStore: { load: async (ciphertext: string) => ciphertext },
+    secretStore,
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
     web: webProvider,
@@ -2933,6 +2937,367 @@ describe("disabled builtins", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.effects).toEqual([]);
   });
+});
+
+describe("generated command credentials in a Run", () => {
+  const args = {
+    name: "fixture-db",
+    type: "command",
+    purpose: "I’ll generate a password for the test database.",
+  };
+
+  it("commits a value-free receipt and reuses it when the same Run action returns", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const originalPut = secretStore.put.bind(secretStore);
+    const put = vi.spyOn(secretStore, "put");
+    const create = vi.fn(async (_input: { data: { id: string; ciphertext: string } }) => {});
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    put.mockImplementationOnce(async (...input) => {
+      expect(f.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "thread.progress",
+          payload: expect.objectContaining({ text: args.purpose, narrationStatus: true }),
+        }),
+      );
+      return originalPut(...input);
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = {
+      saved: true,
+      name: args.name,
+      auth: { type: "command" },
+      variable: "FIXTURE_DB",
+    };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([
+      { kind: "generate_secret", status: "completed", request: args, result },
+    ]);
+    expect(create).toHaveBeenCalledOnce();
+    const { ciphertext, id } = create.mock.calls[0]![0].data;
+    const value = await secretStore.load(ciphertext, id);
+    expect(value).toHaveLength(20);
+    expect(
+      JSON.stringify({ results: f.results, effects: f.effects, events: f.append.mock.calls }),
+    ).not.toContain(value);
+    await f.run();
+    expect(f.results).toEqual([result, result]);
+    expect(put).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an interrupted generation uncertain without asking the store for a new value", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    f.effects.push({
+      id: "interrupted-generation",
+      kind: "generate_secret",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      idempotencyKey: toolEffectIdempotencyKey(f.runRecord.id, "generate_secret", args, 0),
+      status: "executing",
+      request: args,
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toMatchObject([{ uncertain: true }]);
+    expect(f.effects).toMatchObject([{ status: "uncertain" }]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it.each(["generate_secret", "shell"])("refuses generation with %s disabled", async (disabled) => {
+    const f = fixture({ name: "generate_secret", builtin: true, disabledBuiltinTools: [disabled] });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("keeps an approval-bound call paused and resumes its original name", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({
+      name: "generate_secret",
+      builtin: true,
+      secretStore,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "generate_secret" }],
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
+    expect(f.pauseRunForInput.mock.calls[0]![0].blocks[0]).toMatchObject({
+      kind: "ask",
+      actions: [{ id: "allow" }, { id: "deny" }],
+    });
+    expect(f.effects).toMatchObject([
+      { kind: "generate_secret", status: "intended", request: args },
+    ]);
+    expect(put).not.toHaveBeenCalled();
+
+    const create = vi.fn(async () => {});
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.effects[0]!.status = "approved";
+    f.setCalls([{ args: { ...args, name: "different-db" }, executionId: "generate-2" }]);
+    await f.run();
+    expect(f.results[1]).toMatchObject({ saved: true, name: args.name });
+    expect(f.effects).toMatchObject([{ status: "completed", request: args }]);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ name: args.name }),
+      }),
+    );
+    expect(put).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks a new action denial after the encrypted value has been staged", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const rules: ActionApprovalRule[] = [];
+    const originalPut = secretStore.put.bind(secretStore);
+    vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+      const prepared = await originalPut(...input);
+      rules.push({ effect: "deny", matchKind: "tool", matchValue: "generate_secret" });
+      return prepared;
+    });
+    const f = fixture({ name: "generate_secret", builtin: true, rules, secretStore });
+    Object.assign(f.prisma.botSecret, {
+      count: vi.fn(async () => 0),
+      create: vi.fn(async () => {}),
+    });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toMatchObject([
+      { error: expect.stringContaining("blocked by an action rule") },
+    ]);
+    expect(f.effects).toMatchObject([
+      {
+        status: "completed",
+        result: { error: expect.stringContaining("blocked by an action rule") },
+      },
+    ]);
+  });
+
+  it("refuses a purpose containing a known secret before publishing it or recording the effect", async () => {
+    const secret = "fixture-existing-credential";
+    const f = fixture({ name: "generate_secret", builtin: true, secrets: [secret] });
+    f.setCalls([{ args: { ...args, purpose: `Use ${secret}` }, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "Give a brief purpose without any credential values." }]);
+    expect(f.effects).toEqual([]);
+    expect(JSON.stringify(f.append.mock.calls)).not.toContain(secret);
+  });
+
+  it("keeps shared external conversations from saving credentials for the linked user", async () => {
+    const f = fixture({ name: "generate_secret", builtin: true, trigger: "messaging" });
+    f.prisma.thread.findUniqueOrThrow.mockImplementation(async () => ({
+      id: f.runRecord.threadId,
+      groupId: null,
+      externalConversationId: "fixture-shared-conversation",
+    }));
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("keeps a shared channel message from saving credentials under a recipient identity", async () => {
+    const f = fixture({ name: "generate_secret", builtin: true, trigger: "messaging" });
+    Object.assign(f.runRecord, { sourceMessageId: "fixture-channel-message" });
+    f.prisma.message.findUnique.mockResolvedValue({
+      blocks: [{ kind: "channel_message", channelId: "fixture-channel" }],
+      role: "user",
+      steeringMessages: [],
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it.each([
+    { trigger: "routine", outsideSteering: false, attemptCount: 1 },
+    { trigger: "tickets", outsideSteering: false, attemptCount: 1 },
+    { trigger: "bot_message", outsideSteering: false, attemptCount: 1 },
+    { trigger: "follow_up", outsideSteering: false, attemptCount: 1 },
+    { trigger: "user", outsideSteering: true, attemptCount: 1 },
+    { trigger: "user", outsideSteering: false, attemptCount: 2 },
+  ])(
+    "shows the purpose before generating from $trigger (outside steering: $outsideSteering, attempts: $attemptCount)",
+    async (run) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const put = vi.spyOn(secretStore, "put");
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        secretStore,
+        ...run,
+        rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "generate_secret" }],
+      });
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      const card = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+      expect(card).toMatchObject({
+        kind: "ask",
+        text: "Review before saving a new credential",
+        detail: expect.stringContaining(args.purpose),
+        actions: [{ id: "allow" }, { id: "deny" }],
+      });
+      expect(put).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "rechecks a peer approval before saving (revoked: %s)",
+    async (revoked) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const originalPut = secretStore.put.bind(secretStore);
+      let collaborationAllowed = true;
+      const put = vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+        const prepared = await originalPut(...input);
+        collaborationAllowed = !revoked;
+        return prepared;
+      });
+      const create = vi.fn(async () => {});
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        trigger: "bot_message",
+        startedAt: new Date(0),
+        secretStore,
+      });
+      Object.assign(f.runRecord, { origin: "bot_peer", sourceMessageId: "peer-message" });
+      f.prisma.message.findUnique.mockResolvedValue({
+        role: "user",
+        authorUserId: null,
+        blocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "fixture-peer",
+            fromBotName: "Fixture peer",
+            text: "Generate a credential for the fixture database.",
+            hop: 1,
+            intent: "request",
+          },
+        ],
+      });
+      Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      expect(put).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+
+      const effect = f.effects[0]!;
+      Object.assign(effect, { status: "approved", requiresPeerApprovalRecheck: true });
+      const claim = vi
+        .spyOn(DbModule, "claimDelegatedApprovedEffect")
+        .mockImplementation(async () => {
+          effect.status = "executing";
+          return true;
+        });
+      const recheck = vi
+        .spyOn(DbModule, "recheckDelegatedApprovalDispatchInTransaction")
+        .mockImplementation(async () => collaborationAllowed);
+      try {
+        f.setCalls([{ args: { ...args, name: "different-db" }, executionId: "generate-2" }]);
+        await f.run();
+        expect(claim).toHaveBeenCalledOnce();
+        expect(recheck).toHaveBeenCalledExactlyOnceWith(
+          f.prisma,
+          expect.objectContaining({ runId: f.runRecord.id, effectId: effect.id }),
+        );
+        expect(put).toHaveBeenCalledOnce();
+        expect(effect).toMatchObject({
+          status: "completed",
+          request: args,
+          approvalReceipt: { state: revoked ? "failed" : "succeeded" },
+        });
+        if (revoked) {
+          expect(create).not.toHaveBeenCalled();
+          expect(f.results[1]).toMatchObject({
+            error: "The delegated action is no longer authorized.",
+          });
+        } else {
+          expect(f.results[1]).toMatchObject({ saved: true, name: args.name });
+          expect(create).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ data: expect.objectContaining({ name: args.name }) }),
+          );
+        }
+      } finally {
+        claim.mockRestore();
+        recheck.mockRestore();
+      }
+    },
+  );
+
+  it("records a known failure if it cannot show the purpose before starting", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    f.append.mockImplementation(async (event) => {
+      if (event.type === "thread.progress" && event.payload.narrationStatus)
+        throw new Error("Fixture progress write failed");
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = {
+      error: "The credential purpose could not be shown. No credential was created.",
+    };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([{ kind: "generate_secret", status: "completed", result }]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("records a known failure without exposing provider details if staging fails", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const detail = "fixture-provider-private-detail";
+    const put = vi.spyOn(secretStore, "put").mockRejectedValueOnce(new Error(detail));
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    const create = vi.fn(async () => {});
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = { error: "The credential could not be prepared. No credential was saved." };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([{ kind: "generate_secret", status: "completed", result }]);
+    expect(put).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.append.mock.calls)).not.toContain(detail);
+  });
+
+  it.each(["outside steering", "an earlier attempt"])(
+    "requires approval if %s appears while the credential is being staged",
+    async (provenance) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+      const originalPut = secretStore.put.bind(secretStore);
+      vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+        const prepared = await originalPut(...input);
+        if (provenance === "outside steering")
+          f.prisma.steeringMessage.findFirst.mockResolvedValue({ id: "fixture-outside-steering" });
+        else f.prisma.attempt.count.mockResolvedValue(2);
+        return prepared;
+      });
+      Object.assign(f.prisma.botSecret, {
+        count: vi.fn(async () => 0),
+        create: vi.fn(async () => {}),
+      });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(f.results).toMatchObject([{ error: expect.stringContaining("needs approval") }]);
+      expect(f.effects).toMatchObject([
+        { status: "completed", result: { error: expect.any(String) } },
+      ]);
+    },
+  );
 });
 
 describe("executor connector account revalidation", () => {

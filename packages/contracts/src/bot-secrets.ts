@@ -11,6 +11,73 @@ export const BotSecretName = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 // before the pattern tightened stays listable and removable instead of failing a whole list call.
 export const StoredBotSecretName = z.string().min(1).max(256);
 
+export const GENERATED_SECRET_SYMBOLS = "!@#$%^&*-_=+?";
+const MIN_GENERATED_SECRET_RANDOM_BITS = 64;
+
+const generatedSecretRulesShape = z.strictObject({
+  length: z.number().int().min(8).max(128).default(20),
+  lowercase: z.boolean().default(true),
+  uppercase: z.boolean().default(true),
+  digits: z.boolean().default(true),
+  symbols: z.boolean().default(true),
+  allowedSymbols: z
+    .string()
+    .regex(/^[!-/:-@[-`{-~]{1,32}$/, "Use only punctuation characters")
+    .optional(),
+});
+export type GeneratedSecretRules = z.infer<typeof generatedSecretRulesShape>;
+
+/** The disjoint alphabets used by both the strength check and the generator. */
+export function generatedSecretAlphabets(rules: GeneratedSecretRules): string[] {
+  return [
+    rules.lowercase && "abcdefghijklmnopqrstuvwxyz",
+    rules.uppercase && "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    rules.digits && "0123456789",
+    rules.symbols && [...new Set(rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS)].join(""),
+  ].filter((alphabet): alphabet is string => Boolean(alphabet));
+}
+
+export const GeneratedSecretRules = generatedSecretRulesShape.superRefine((rules, ctx) => {
+  const alphabets = generatedSecretAlphabets(rules);
+  if (!alphabets.length) {
+    ctx.addIssue({ code: "custom", message: "Allow at least one kind of character" });
+    return;
+  }
+  const allCharacters = alphabets.reduce((size, alphabet) => size + alphabet.length, 0);
+  // The generator takes one independent draw from each required alphabet and fills the
+  // remaining positions from their union. An independent shuffle cannot lower this bound.
+  const randomBits = alphabets.reduce(
+    (bits, alphabet) => bits + Math.log2(alphabet.length),
+    (rules.length - alphabets.length) * Math.log2(allCharacters),
+  );
+  if (randomBits < MIN_GENERATED_SECRET_RANDOM_BITS)
+    ctx.addIssue({
+      code: "custom",
+      path: ["length"],
+      message: `Choose a longer length or more characters for at least ${MIN_GENERATED_SECRET_RANDOM_BITS} bits of randomness`,
+    });
+});
+
+export const GenerateCommandSecretInput = z
+  .strictObject({
+    name: BotSecretName,
+    type: z.literal("command"),
+    purpose: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .describe(
+        "Explain to the user why you need a new command credential. Do not include any secret value.",
+      ),
+    rules: GeneratedSecretRules.optional(),
+  })
+  .superRefine(({ name }, ctx) => {
+    const message = commandVariableNameIssue(name);
+    if (message) ctx.addIssue({ code: "custom", path: ["name"], message });
+  });
+export type GenerateCommandSecretInput = z.infer<typeof GenerateCommandSecretInput>;
+
 const SecretHeaderName = z
   .string()
   .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,120}$/)

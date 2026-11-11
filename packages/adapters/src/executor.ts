@@ -82,6 +82,7 @@ import {
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
   disabledBuiltinToolSet,
+  GenerateCommandSecretInput,
   HistoryReadInputSchema,
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
@@ -267,6 +268,7 @@ import {
   findBotSecret,
   findCommandVariableConflict,
   forgetBotSecret,
+  generateBotCommandSecret,
   listBotSecrets,
   loadBotCommandEnvironment,
   normalizeSecretDestination,
@@ -4961,6 +4963,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        // Shared external messages can run with the linked user's Bot identity.
+        if (messagingChannelRun || thread.externalConversationId)
+          disabledBuiltinTools.add("generate_secret");
         const toolResultHistoryEnabled = discovered.some(
           (tool) =>
             tool.route &&
@@ -4980,7 +4985,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
-            disabledBuiltinTools: bot.disabledBuiltinTools,
+            disabledBuiltinTools: [...disabledBuiltinTools],
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity && !isBackgroundRunTrigger(run.trigger)
@@ -5419,14 +5424,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
         if (!scripted && history.some(({ id }) => id && pageHistoryIds.has(id))) {
           trust.state.tainted = true;
         }
+        // Only a trusted foreground Run can show the purpose and save without an approval card.
+        const credentialGenerationNeedsApproval = async (tx?: Prisma.TransactionClient) =>
+          !runPromotesMidTurnNarration(run.trigger) || (await trust.isTainted(tx));
         const searchResultUrls = new Set<string>();
         const verbatimMcpServers =
           !scripted &&
           (turnState.blob !== undefined || tools.some((tool) => tool.route?.connectorId === "mcp"))
             ? await loadRunVerbatimMcpServers(deps.prisma, context)
             : undefined;
-        const currentDisabledBuiltinTools = async () => {
-          const current = await deps.prisma.bot.findUnique({
+        const currentDisabledBuiltinTools = async (
+          store: Pick<Prisma.TransactionClient, "bot"> = deps.prisma,
+        ) => {
+          const current = await store.bot.findUnique({
             where: { id: bot.id },
             select: { spaceId: true, disabledBuiltinTools: true },
           });
@@ -5436,7 +5446,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         };
         const availableToolNames = async () => {
           const disabled = await currentDisabledBuiltinTools();
-          return tools.filter((tool) => !disabled.has(tool.name)).map((tool) => tool.name);
+          return tools
+            .filter((tool) => builtinOffered(disabled, tool.name))
+            .map((tool) => tool.name);
         };
         const persistTurnCheckpoint = (
           executionId?: string,
@@ -5749,7 +5761,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             disabledBuiltinTools.has(name) ||
             (BUILTIN_AGENT_TOOL_NAMES.has(name) &&
               (scripted
-                ? (await currentDisabledBuiltinTools()).has(name)
+                ? !builtinOffered(await currentDisabledBuiltinTools(), name)
                 : !(await availableToolNames()).includes(name)))
           ) {
             return { error: "This tool is disabled for this bot." };
@@ -6168,6 +6180,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               (outboundUrl && new URL(outboundUrl).hash))
           )
             return { error: "Invalid authenticated request." };
+          const generation =
+            name === "generate_secret" ? GenerateCommandSecretInput.safeParse(args) : undefined;
+          if (generation && !generation.success) {
+            const issue = generation.error.issues[0];
+            return {
+              error:
+                issue && issue.code !== "unrecognized_keys"
+                  ? `Invalid credential generation — ${issue.path.join(".") || "input"}: ${issue.message}`
+                  : "Invalid credential generation. Specify a command name, its purpose, and optional character rules.",
+            };
+          }
+          if (generation?.success) {
+            if (isExactNoResponse(generation.data.purpose) || containsSecret(args, runSecrets))
+              return { error: "Give a brief purpose without any credential values." };
+            effectRequest = args;
+          }
           if (name === "web_fetch" && outboundUrl) {
             if (outboundUrl.length > MAX_FETCH_URL_LENGTH)
               return { error: `url must be at most ${MAX_FETCH_URL_LENGTH} characters` };
@@ -6280,8 +6308,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               toolRequiresApproval(tool.toolName, viaConnector, tool.readOnly),
             );
           const gated = requiresApprovalByDefault || connectorReadGated;
+          const generationNeedsApproval =
+            generation?.success === true && (await credentialGenerationNeedsApproval());
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
+            generationNeedsApproval ||
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
@@ -6918,19 +6949,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : ((await completedPageWrite()) ?? uncertainEffectResult(name));
           };
 
+          const delegatedApprovalScope = (effectId: string) => ({
+            spaceId: run.spaceId,
+            runId,
+            effectId,
+            leaseOwner: workerId,
+            leaseFence: fence,
+          });
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
             const effect = applied!.effect;
             const claimed =
               from === "approved" && effect.requiresPeerApprovalRecheck
-                ? await claimDelegatedApprovedEffect(deps.prisma, {
-                    spaceId: run.spaceId,
-                    runId,
-                    effectId: effect.id,
-                    leaseOwner: workerId,
-                    leaseFence: fence,
-                  })
+                ? await claimDelegatedApprovedEffect(deps.prisma, delegatedApprovalScope(effect.id))
                 : await (from === "approved" ? claimApprovedEffect : claimIntendedEffect)(
                     deps.prisma,
                     effect.id,
@@ -7053,6 +7085,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               else if (requiresUnattendedApproval)
                 approvalReason = "This action needs confirmation when run in the background.";
             }
+            if (generation?.success)
+              approvalReason = [generation.data.purpose, approvalReason].filter(Boolean).join("\n");
             const block = buildApprovalAskBlock(
               applied!.effect.id,
               name,
@@ -7088,6 +7122,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
                 allowSiteAlways: !approvalResolved.matchingRules.some(
                   (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
+                ),
+                allowToolAlways: !(
+                  generation?.success &&
+                  (requiresMandatoryApproval || approvalResolved.source === "require_approval")
                 ),
               },
             );
@@ -8580,6 +8618,96 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
             return finish(await forgetBotSecret(deps.prisma, run, parsed.data));
           }
+          if (generation?.success) {
+            if (!applied) return uncertainEffectResult(name);
+            if (!claimedEffect) {
+              const early = await claimOrReturn("intended");
+              if (early !== undefined) return early;
+            }
+            const effectId = applied.effect.id;
+            if (!claimedApproval && runPromotesMidTurnNarration(run.trigger)) {
+              try {
+                await serializeProgress(() => showNarrationStatus(generation.data.purpose));
+              } catch {
+                context.signal.throwIfAborted();
+                return finish(
+                  {
+                    error: "The credential purpose could not be shown. No credential was created.",
+                  },
+                  "error",
+                );
+              }
+            }
+            try {
+              const generated = await generateBotCommandSecret({
+                prisma: deps.prisma,
+                secretStore: deps.secretStore,
+                scope: run,
+                args: generation.data,
+                lockRun: async (tx) => {
+                  context.signal.throwIfAborted();
+                  // The peer guard takes the Space lock before the Run and Bots.
+                  if (
+                    claimedApproval &&
+                    applied.effect.requiresPeerApprovalRecheck &&
+                    !(await recheckDelegatedApprovalDispatchInTransaction(
+                      tx,
+                      delegatedApprovalScope(effectId),
+                    ))
+                  )
+                    throw new ActionRuleDispatchError(
+                      "The delegated action is no longer authorized.",
+                    );
+                  if (!(await renewRunLease(deps, runId, workerId, fence, tx)))
+                    throw new ActionRuleDispatchError(
+                      "The run no longer owns this credential request.",
+                    );
+                },
+                commitReceipt: async (tx, result) => {
+                  context.signal.throwIfAborted();
+                  if (!builtinOffered(await currentDisabledBuiltinTools(tx), name))
+                    throw new ActionRuleDispatchError("This tool is disabled for this bot.");
+                  const current = resolveRules(await loadApprovalRules(tx));
+                  if (current.decision === "deny")
+                    throw new ActionRuleDispatchError(policyBlock.error);
+                  if (
+                    !claimedApproval &&
+                    (current.decision === "ask" ||
+                      (approvalResolved.source === "always_allow" &&
+                        current.source !== "always_allow") ||
+                      (await credentialGenerationNeedsApproval(tx)))
+                  )
+                    throw new ActionRuleDispatchError(
+                      "Generating this credential needs approval after the Run’s input or action rules changed.",
+                    );
+                  if (
+                    !(await completeExternalEffect(
+                      tx,
+                      effectId,
+                      "executing",
+                      result,
+                      claimedApproval && run.origin === "bot_peer"
+                        ? approvedActionReceipt(result, "result")
+                        : undefined,
+                    ))
+                  )
+                    throw new Error("Credential generation no longer owns its receipt.");
+                },
+              });
+              if ("error" in generated) return finish(generated, "error");
+              registerRunSecrets(generated.redactions);
+              return generated.result;
+            } catch (error) {
+              context.signal.throwIfAborted();
+              if (error instanceof ActionRuleDispatchError) {
+                trust.invalidateDestinationTrust();
+                return finish({ ...policyBlock, error: error.message }, "error");
+              }
+              // Credential and receipt commit together. An ambiguous response reads the receipt
+              // back, so reconnecting cannot generate a second value for the same action.
+              return settleUncertainEffect(deps.prisma, effectId, name);
+            }
+          }
           if (authenticatedRequest) {
             if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             try {
@@ -9233,13 +9361,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const verifyDispatch = async (tx?: Prisma.TransactionClient) => {
               context.signal.throwIfAborted();
               if (pendingPeerConnectorClaim) {
-                const scope = {
-                  spaceId: run.spaceId,
-                  runId,
-                  effectId: applied!.effect.id,
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                };
+                const scope = delegatedApprovalScope(applied!.effect.id);
                 const allowed = tx
                   ? await recheckDelegatedApprovalDispatchInTransaction(tx, scope)
                   : await runAsSystem("recheck the approved peer tool before dispatch", () =>
@@ -11011,7 +11133,7 @@ export function selectBuiltinToolsForRun(options: {
     Boolean(options.cloudAgentEnabled),
   ).filter(
     (tool) =>
-      !disabled.has(tool.name) &&
+      builtinOffered(disabled, tool.name) &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&
       (!isBackgroundRunTrigger(options.trigger) ||
@@ -11029,6 +11151,7 @@ export function selectBuiltinToolsForRun(options: {
           "forget_memory",
           "task_catalog",
           "board_tickets",
+          "generate_secret",
         ].includes(tool.name) &&
           !tool.name.startsWith("scratchpad_") &&
           !tool.name.startsWith("ticket_"))),
@@ -11083,7 +11206,7 @@ const GRAPHICAL_COMPUTER_INSTRUCTION =
 const FILE_TOOL_NAMES = ["list_files", "read_file", "write_file", "attach_file"] as const;
 
 function builtinOffered(disabled: ReadonlySet<string> | undefined, name: string): boolean {
-  return !disabled?.has(name);
+  return !disabled?.has(name) && (name !== "generate_secret" || !disabled?.has("shell"));
 }
 
 function englishList(items: readonly string[]): string {
@@ -11234,6 +11357,11 @@ function secretGuidance(disabled?: ReadonlySet<string>): string[] {
       : "";
     clauses.push(
       `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
+    );
+  }
+  if (builtinOffered(disabled, "generate_secret")) {
+    clauses.push(
+      "When the user needs a new password or key for a shell task, use generate_secret with a brief user-facing purpose and pass the resulting environment variable to the program that needs it.",
     );
   }
   const uses: string[] = [];

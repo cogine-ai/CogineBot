@@ -144,6 +144,7 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "ask_user",
   "attach_file",
   "end_call",
+  "generate_secret",
   "list_secrets",
   "message_user",
   "recall_memory",

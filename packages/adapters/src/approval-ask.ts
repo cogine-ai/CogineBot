@@ -140,6 +140,7 @@ export function buildApprovalAskBlock(
   options?: {
     reviewReason?: string;
     allowSiteAlways?: boolean;
+    allowToolAlways?: boolean;
     routineSiteDetail?: string;
     batch?: ConnectorBatchActionNames;
     allowBatchAlways?: boolean;
@@ -253,7 +254,9 @@ export function buildApprovalAskBlock(
       ? options?.allowBatchAlways !== false && batchRules && !containsSecret(batchRules, secrets)
         ? "Always allow these actions"
         : undefined
-      : "Always allow this tool";
+      : options?.allowToolAlways !== false
+        ? "Always allow this tool"
+        : undefined;
   const text = routineSiteApproval
     ? "Allow this Routine to use these sites each time it runs?"
     : toolName === "create_space"
@@ -283,6 +286,7 @@ export function buildApprovalAskBlock(
 }
 
 function describeApprovalAction(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "generate_secret") return "saving a new credential";
   if (toolName === "destination.write") {
     const collection = args.collection ? String(args.collection) : "records";
     const title = args.title ? ` "${String(args.title)}"` : "";

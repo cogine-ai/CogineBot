@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import type { BotSecretDestination } from "@rakazo/contracts";
+import type { BotSecretDestination, GenerateCommandSecretInput } from "@rakazo/contracts";
 import {
   BOT_SECRET_VALUE_MAX_LENGTH,
   BotSecretAuth,
@@ -10,6 +10,7 @@ import {
   commandVariableProblem,
   decodeLoginSecret,
   encodeLoginSecret,
+  GeneratedSecretRules,
   isPrivateNetworkHost,
   loginSecretFields,
   parseLoginSecretWrite,
@@ -22,7 +23,8 @@ import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
-import { persistPreparedSecret } from "./secret-persistence.js";
+import { generateSecretValue } from "./secret-generator.js";
+import { deferPreparedSecretCleanup, persistPreparedSecret } from "./secret-persistence.js";
 import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
 export type BotSecretScope = { userId: string; spaceId: string; botId: string };
@@ -459,7 +461,7 @@ export async function prepareBotSecret(input: {
       validate(current, await tx.botSecret.count({ where: scopeFields(scope) }));
       const conflict = await findCommandVariableConflict(tx, scope, destination);
       if (conflict) {
-        throw new Error(
+        throw new BotSecretWriteRefusal(
           `Invalid credential destination — name: ${conflict} is already exported as $${commandVariableName(destination.name)}`,
         );
       }
@@ -500,6 +502,8 @@ function validateBotSecretValue(
   } else credentialHeader(destination, plaintext);
 }
 
+class BotSecretWriteRefusal extends Error {}
+
 function validateBotSecretSlot(
   row: { name: string; origin: string; auth: unknown } | null,
   count: number,
@@ -507,7 +511,7 @@ function validateBotSecretSlot(
 ) {
   if (row && !sameSecretDestination(normalizeSecretDestination(row), destination))
     throw new Error("Remove the existing credential before changing its destination");
-  if (!row && count >= 100) throw new Error("Credential limit reached");
+  if (!row && count >= 100) throw new BotSecretWriteRefusal("Credential limit reached");
 }
 
 /** The transfer protocol covers legacy passwords and API keys. */
@@ -626,6 +630,75 @@ export async function storeBotSecret(
       }),
     );
   });
+}
+
+type GeneratedCommandReceipt = {
+  saved: true;
+  name: string;
+  auth: { type: "command" };
+  variable: string;
+};
+
+/** Create the credential and its Run receipt together. Redaction forms stay in the executor. */
+export async function generateBotCommandSecret(input: {
+  prisma: PrismaClient;
+  secretStore: SecretStore;
+  scope: BotSecretScope;
+  args: GenerateCommandSecretInput;
+  lockRun: (tx: Prisma.TransactionClient) => Promise<void>;
+  commitReceipt: (tx: Prisma.TransactionClient, result: GeneratedCommandReceipt) => Promise<void>;
+}): Promise<{ result: GeneratedCommandReceipt; redactions: string[] } | { error: string }> {
+  const { prisma, secretStore, scope, args } = input;
+  const { name } = args;
+  const nameTaken = {
+    error: "A credential with this name already exists. Choose another name.",
+  };
+  // Create-only occupancy does not depend on whether the old destination is still usable.
+  const existing = () =>
+    prisma.botSecret.findFirst({ where: { ...scopeFields(scope), name }, select: { id: true } });
+  const destination = { name, origin: "", auth: { type: "command" as const } };
+  const result: GeneratedCommandReceipt = {
+    saved: true,
+    name,
+    auth: destination.auth,
+    variable: commandVariableName(name),
+  };
+
+  let commitStarted = false;
+  try {
+    if (await existing()) return nameTaken;
+    const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
+    const prepared = await prepareBotSecret({
+      prisma,
+      secretStore,
+      scope,
+      destination,
+      plaintext: value,
+      expectedRevision: null,
+    });
+    commitStarted = true;
+    await deferPreparedSecretCleanup(prisma, () =>
+      persistPreparedSecret(prisma, secretStore, prepared, () =>
+        withTransactionRetry(() =>
+          prisma.$transaction(async (tx) => {
+            // Keep the Run-before-Bot lock order used when archiving a Bot.
+            await input.lockRun(tx);
+            await prepared.store(tx);
+            await input.commitReceipt(tx, result);
+          }),
+        ),
+      ),
+    );
+    return { result, redactions: commandRedactionForms(value) };
+  } catch (error) {
+    if (error instanceof BotSecretWriteRefusal) return { error: error.message };
+    if (error instanceof BotSecretConflictError) {
+      return (await existing().catch(() => null)) ? nameTaken : { error: error.message };
+    }
+    if (!commitStarted)
+      return { error: "The credential could not be prepared. No credential was saved." };
+    throw error;
+  }
 }
 
 export async function listBotSecrets(prisma: PrismaClient, scope: BotSecretScope) {

@@ -12,7 +12,7 @@ import {
 } from "@rakazo/core";
 import { sitesInText, urlSite } from "@rakazo/core/egress";
 import { isPageCardMessage } from "@rakazo/core/message-quote";
-import type { ClaimedSteeringMessage, PrismaClient } from "@rakazo/db";
+import type { ClaimedSteeringMessage, Prisma, PrismaClient } from "@rakazo/db";
 import {
   ACTION_RULE_BLOCKED,
   boundDirectApprovalDetails,
@@ -224,9 +224,11 @@ export function createRunTrust(
   };
   if (input.sourcePage || input.waitingAnswer?.includesPage) recordPageInput();
   let earlierAttempt: Promise<boolean> | undefined;
-  const receivedOutsideMessage = async () =>
+  const receivedOutsideSteering = async (
+    store: Pick<Prisma.TransactionClient, "steeringMessage">,
+  ) =>
     Boolean(
-      await prisma.steeringMessage.findFirst({
+      await store.steeringMessage.findFirst({
         where: {
           runId: run.id,
           claimedAt: { not: null },
@@ -241,12 +243,14 @@ export function createRunTrust(
         select: { id: true },
       }),
     );
-  const isTainted = async () => {
+  const isTainted = async (tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">) => {
     if (state.tainted) return true;
-    earlierAttempt ??= prisma.attempt
-      .count({ where: { runId: run.id } })
-      .then((count) => count > 1);
-    if ((await earlierAttempt) || (await receivedOutsideMessage())) state.tainted = true;
+    const store = tx ?? prisma;
+    const checkEarlierAttempt = () =>
+      store.attempt.count({ where: { runId: run.id } }).then((count) => count > 1);
+    if (!tx) earlierAttempt ??= checkEarlierAttempt();
+    const hasEarlierAttempt = await (tx ? checkEarlierAttempt() : earlierAttempt);
+    if (hasEarlierAttempt || (await receivedOutsideSteering(store))) state.tainted = true;
     return state.tainted;
   };
   let ownerWords: Promise<string> | undefined;
