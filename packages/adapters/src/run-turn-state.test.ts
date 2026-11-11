@@ -1,5 +1,6 @@
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
+import { PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { loadRunTurnCheckpoint, Prisma } from "@rakazo/db";
@@ -99,6 +100,303 @@ function storage() {
 }
 
 describe("run turn checkpoint state", () => {
+  it.each([false, true])(
+    "keeps a protected login username out of checkpoint JSON (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const current = state(undefined, { tools: [builtin("generate_secret")] });
+      const login = {
+        type: "login",
+        name: "fixture-login",
+        origin: "https://example.test",
+        purpose: "Prepare fixture-account@example.test",
+        username: "fixture-account@example.test",
+      };
+      const captured = checkpoint({
+        messages: [
+          assistant([
+            wrapped
+              ? call("pending", USE_TOOL, { name: "generate_secret", arguments: login })
+              : call("pending", "generate_secret", login),
+          ]),
+        ],
+      });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).toContain(PROTECTED_LOGIN_USERNAME);
+      expect(stored).not.toContain(login.username);
+      expect(captured.messages[0]).toEqual(
+        assistant([
+          wrapped
+            ? call("pending", USE_TOOL, { name: "generate_secret", arguments: login })
+            : call("pending", "generate_secret", login),
+        ]),
+      );
+    },
+  );
+
+  it("retires an unstarted login in a saved sequential batch without leaving its username", async () => {
+    const f = storage();
+    const current = state(undefined, {
+      tools: [builtin("generate_secret"), builtin("write_file")],
+    });
+    const later = {
+      type: "login",
+      name: "later-login",
+      origin: "https://example.test",
+      purpose: "Prepare the next login",
+      username: "later-account@example.test",
+    };
+    const captured = checkpoint({
+      executionMode: "sequential",
+      messages: [
+        assistant([call(), call("later", USE_TOOL, { name: "generate_secret", arguments: later })]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(stored).not.toContain(later.username);
+    expect(stored).toContain("This login request did not run before the pause.");
+    expect(stored).toContain("Call generate_secret again with the username.");
+  });
+
+  it.each([
+    ["direct malformed JSON", "generate_secret", {}, true],
+    ["unidentified wrapped malformed JSON", USE_TOOL, {}, true],
+    [
+      "wrapped login arguments sent to the credential request tool",
+      USE_TOOL,
+      {
+        name: "request_secret",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+    [
+      "direct login arguments sent to the credential request tool",
+      "request_secret",
+      { type: "login", username: "fixture-account@example.test" },
+      false,
+    ],
+    [
+      "wrapped login arguments sent to a file tool",
+      USE_TOOL,
+      {
+        name: "write_file",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+    [
+      "direct login arguments sent to a file tool",
+      "write_file",
+      { type: "login", username: "fixture-account@example.test" },
+      false,
+    ],
+    [
+      "wrapped missing tool name",
+      USE_TOOL,
+      { arguments: { type: "login", username: "fixture-account@example.test" } },
+      false,
+    ],
+    [
+      "wrapped unknown login tool name",
+      USE_TOOL,
+      {
+        name: "generate-secret",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+    ["direct missing type", "generate_secret", { username: "fixture-account@example.test" }, false],
+    [
+      "wrapped invalid type",
+      USE_TOOL,
+      {
+        name: "generate_secret",
+        arguments: { type: "unknown", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+  ] as const)(
+    "drops raw login validation diagnostics (%s)",
+    async (_label, toolName, args, malformed) => {
+      const f = storage();
+      const current = state(undefined, {
+        tools: [builtin("generate_secret"), builtin("write_file"), builtin("request_secret")],
+      });
+      const raw = 'Invalid arguments: {"username":"fixture-account@example.test"';
+      const invalid = call("malformed", toolName, args);
+      const captured = checkpoint({
+        messages: [
+          assistant([malformed ? { ...invalid, argumentsError: raw } : invalid]),
+          {
+            ...completed("malformed", toolName),
+            content: [{ type: "text", text: raw }],
+            details: { error: raw },
+            isError: true,
+          },
+          assistant([call()]),
+        ],
+      });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).not.toContain("fixture-account@example.test");
+      expect(stored).toContain(
+        toolName === "generate_secret" || ("name" in args && args.name === "generate_secret")
+          ? "The credential generation request had invalid arguments."
+          : "The tool call had invalid arguments.",
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "keeps an offered connector's declared login fields (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const connector = {
+        name: "mcp__accounts__lookup_login",
+        description: "Look up an account by type and username.",
+        route: { connectorId: "mcp", resourceId: "accounts", toolName: "lookup_login" },
+        inputSchema: {
+          type: "object",
+          properties: { type: { const: "login" }, username: { type: "string" } },
+          required: ["type", "username"],
+          additionalProperties: false,
+        },
+      } satisfies ConnectorTool;
+      const current = state(undefined, { tools: [builtin("generate_secret"), connector] });
+      const lookup = { type: "login", username: "fixture-connector@example.test" };
+      const request = wrapped
+        ? call("pending", USE_TOOL, { name: connector.name, arguments: lookup })
+        : call("pending", connector.name, lookup);
+      const captured = checkpoint({ messages: [assistant([request])] });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const saved = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].create.result);
+      expect(saved.messages).toEqual(captured.messages);
+    },
+  );
+
+  it("recovers past an unrecognized login-shaped call in a paused sequential batch", async () => {
+    const f = storage();
+    const tools = [builtin("generate_secret"), builtin("write_file")];
+    const current = state(undefined, { tools });
+    const captured = checkpoint({
+      executionMode: "sequential",
+      messages: [
+        assistant([
+          call(),
+          call("later", USE_TOOL, {
+            name: "generate-secret",
+            arguments: { type: "login", username: "fixture-account@example.test" },
+          }),
+        ]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(stored).not.toContain("fixture-account@example.test");
+    expect(state(stored, { tools }).pendingToolName).toBe("write_file");
+  });
+
+  it.each([false, true])(
+    "retains a paused question's resume inputs (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const tools = [builtin("ask_user"), builtin("generate_secret")];
+      const current = state(undefined, { tools });
+      const question = {
+        question: "Which option?",
+        options: ["First", "Second"],
+        type: "login",
+        username: "fixture-account@example.test",
+      };
+      const input = wrapped
+        ? call("pending", USE_TOOL, { name: "ask_user", arguments: question })
+        : call("pending", "ask_user", question);
+      const captured = checkpoint({ messages: [assistant([input])] });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).not.toContain(question.username);
+      expect(stored).toContain(question.question);
+      expect(stored).not.toContain("argumentsError");
+      expect(state(stored, { tools }).pendingToolName).toBe("ask_user");
+    },
+  );
+
+  it("does not carry a protected validation error onto an unrelated reused tool-call ID", async () => {
+    const f = storage();
+    const current = state();
+    const id = "reused";
+    const originalError = {
+      ...completed(id, "write_file"),
+      content: [{ type: "text" as const, text: "File is read-only" }],
+      isError: true,
+    };
+    const captured = checkpoint({
+      messages: [
+        assistant([call(id, "generate_secret", { username: "fixture-account@example.test" })]),
+        { ...completed(id, "generate_secret"), isError: true },
+        assistant([call(id, "write_file", { path: "notes.md" })]),
+        originalError,
+        assistant([call()]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(JSON.parse(stored).messages[3]).toEqual(originalError);
+    expect(stored).not.toContain("fixture-account@example.test");
+  });
+
+  it("does not reuse a rejected Page error for a later command generation call", async () => {
+    const f = storage();
+    const current = state(undefined, { tools: [builtin("generate_secret"), builtin("save_page")] });
+    const id = "reused";
+    const originalError = {
+      ...completed(id, USE_TOOL),
+      content: [{ type: "text" as const, text: "Name is already in use" }],
+      isError: true,
+    };
+    const captured = checkpoint({
+      messages: [
+        assistant([call(id, USE_TOOL, { name: "save_page", arguments: {} })]),
+        { ...completed(id, USE_TOOL), isError: true },
+        assistant([
+          call(id, USE_TOOL, {
+            name: "generate_secret",
+            arguments: { type: "command", name: "fixture-command", purpose: "Prepare command" },
+          }),
+        ]),
+        originalError,
+        assistant([call()]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(JSON.parse(stored).messages[3]).toEqual(originalError);
+  });
+
+  it("retains validated command generation arguments in a checkpoint", async () => {
+    const f = storage();
+    const current = state(undefined, { tools: [builtin("generate_secret")] });
+    const command = call("pending", USE_TOOL, {
+      name: "generate_secret",
+      arguments: { type: "command", name: "fixture-command", purpose: "Prepare command" },
+    });
+    const captured = checkpoint({ messages: [assistant([command])] });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const saved = JSON.parse(f.client.externalEffect.upsert.mock.calls[0]![0].create.result);
+    expect(saved.messages).toEqual(captured.messages);
+  });
   it("starts fresh with the actual baseline and shares the supplied occurrence map", () => {
     const counts = new Map([[fingerprint, 3]]);
     const current = state(undefined, { counts });

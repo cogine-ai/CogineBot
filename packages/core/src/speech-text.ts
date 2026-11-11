@@ -1,6 +1,26 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 
+const HTTPS_SITE_NOTICE = "HTTPS site ";
+const COMMAND_VARIABLE_NOTICE = "Also save as command variable ";
+const PURPOSE_NOTICE = "Purpose — ";
+const UTTERANCE_BREAK = "\u0000";
+const CREDENTIAL_NOTICE_LINE = new RegExp(
+  `^${HTTPS_SITE_NOTICE}(\`+) ([^\\s/?#@]+) \\1$|^${COMMAND_VARIABLE_NOTICE}[A-Z0-9_]+$|^${PURPOSE_NOTICE}(.*)$|\\uE000`,
+  "gm",
+);
+
+export function websiteCredentialNotice(host: string, purpose: string, variable?: string): string {
+  const delimiter = "`".repeat(
+    1 + Math.max(0, ...(host.match(/`+/g) ?? []).map((run) => run.length)),
+  );
+  const destination = `${HTTPS_SITE_NOTICE}${delimiter} ${host} ${delimiter}`;
+  const pairing = variable ? `${COMMAND_VARIABLE_NOTICE}${variable}` : undefined;
+  // The purpose is model-authored. Give it one labeled line separate from verified fields.
+  const reason = `${PURPOSE_NOTICE}${purpose.replace(/\s+/g, " ").trim()}`;
+  return [destination, pairing, reason].filter(Boolean).join("\n");
+}
+
 /** A fenced block becomes a mention of itself, with its language if known. */
 function describeCodeBlock(fence: string): string {
   const lang =
@@ -44,8 +64,25 @@ const ENDS_SENTENCE = /[.!?:;]\s*$/;
  * so it stays easy to tune against real transcripts.
  */
 export function speakable(input: string): string {
+  return simplifySpeechText(input, true);
+}
+
+function simplifySpeechText(input: string, readPurpose: boolean, credentialBoundary = ""): string {
   if (!input) return "";
-  let text = input;
+  const literal: string[] = [];
+  // Keep destinations literal and retain the label on the short spoken purpose.
+  let text = input.replace(CREDENTIAL_NOTICE_LINE, (value, _delimiter, host, purpose) => {
+    let spoken = host === undefined ? value : `${HTTPS_SITE_NOTICE}${host}`;
+    if (purpose !== undefined) {
+      if (!readPurpose) return value;
+      const reason = simplifySpeechText(purpose, false)
+        .replaceAll(UTTERANCE_BREAK, " ")
+        .replace(BOUNDARY, "$2, ");
+      spoken = reason ? `${PURPOSE_NOTICE}${reason}` : "";
+    }
+    const boundary = value === "\uE000" ? "" : credentialBoundary;
+    return `\uE000${literal.push(boundary + spoken) - 1}\uE001`;
+  });
 
   text = text.replace(/```([^\n]*)\n[\s\S]*?(?:```|$)/g, (_m, fence: string) =>
     describeCodeBlock(fence),
@@ -103,7 +140,7 @@ export function speakable(input: string): string {
   text = text.replace(/\s+([.,!?;:])/g, "$1");
   text = text.replace(/(?:\.\s*){2,}/g, ". ");
   text = text.replace(/,\s*\./g, ".");
-  text = text.trim();
+  text = text.replace(/\uE000(\d+)\uE001/g, (_match, index) => literal[Number(index)]!).trim();
 
   return /[\p{L}\p{N}]/u.test(text) ? text : "";
 }
@@ -116,13 +153,12 @@ const BOUNDARY =
  * Short fragments are glued onto their neighbour so the voice keeps context.
  */
 export function toUtterances(input: string, { minChars = 12, maxChars = 320 } = {}): string[] {
-  const text = speakable(input);
+  const text = simplifySpeechText(input, true, UTTERANCE_BREAK);
   if (!text) return [];
 
-  const MARK = "\u0000";
   const rough = text
-    .replace(BOUNDARY, `$1$2${MARK}`)
-    .split(MARK)
+    .replace(BOUNDARY, `$1$2${UTTERANCE_BREAK}`)
+    .split(UTTERANCE_BREAK)
     .map((s) => s.trim())
     .filter(Boolean);
 

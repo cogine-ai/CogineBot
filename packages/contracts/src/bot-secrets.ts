@@ -58,18 +58,18 @@ export const GeneratedSecretRules = generatedSecretRulesShape.superRefine((rules
     });
 });
 
+const GenerationPurpose = z
+  .string()
+  .trim()
+  .min(1)
+  .max(60)
+  .describe("Explain to the user why you need the new credential. Do not include secret values.");
+
 export const GenerateCommandSecretInput = z
   .strictObject({
     name: BotSecretName,
     type: z.literal("command"),
-    purpose: z
-      .string()
-      .trim()
-      .min(1)
-      .max(60)
-      .describe(
-        "Explain to the user why you need a new command credential. Do not include any secret value.",
-      ),
+    purpose: GenerationPurpose,
     rules: GeneratedSecretRules.optional(),
   })
   .superRefine(({ name }, ctx) => {
@@ -320,10 +320,43 @@ export const LoginSecretValue = z.object({
 });
 export type LoginSecretValue = z.infer<typeof LoginSecretValue>;
 
+/** The optional command credential holds the same password as the website login. */
+export function loginCommandName(name: string): string {
+  return `${name}-password`;
+}
+
+const GenerateLoginSecretInput = z
+  .strictObject({
+    name: BotSecretName,
+    type: z.literal("login"),
+    purpose: GenerationPurpose,
+    origin: botSecretOriginSchema(false).transform((value) => new URL(value).origin),
+    username: LoginSecretValue.shape.username.trim().min(1),
+    command: z.boolean().optional(),
+    rules: GeneratedSecretRules.optional(),
+  })
+  .superRefine(({ name, command }, ctx) => {
+    if (!command) return;
+    const alias = loginCommandName(name);
+    const message = BotSecretName.safeParse(alias).success
+      ? commandVariableNameIssue(alias)
+      : "Use a name of at most 55 characters to also save a command variable";
+    if (message) ctx.addIssue({ code: "custom", path: ["name"], message });
+  });
+
+export const GenerateSecretInput = z.discriminatedUnion("type", [
+  GenerateCommandSecretInput,
+  GenerateLoginSecretInput,
+]);
+export type GenerateSecretInput = z.infer<typeof GenerateSecretInput>;
+
+export const PROTECTED_LOGIN_USERNAME = "[protected username]";
+
 export const LOGIN_FIELD_LIMIT = 8;
+export const LoginFieldLabel = z.string().trim().min(1).max(64);
 const NamedLoginField = z
   .object({
-    label: z.string().trim().min(1).max(64),
+    label: LoginFieldLabel,
     value: z.string().max(4096),
     hidden: z.boolean(),
   })

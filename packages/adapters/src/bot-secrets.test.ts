@@ -727,13 +727,13 @@ describe("saved website logins", () => {
       { ...scope, operationId: "test", traceId: "test", signal: new AbortController().signal },
       { recordId: "login-1" },
     );
-    const row = { ...scope, ...login, origin, auth, ...encrypted };
+    const row = { ...scope, ...login, origin, auth, ...encrypted, id: "login-1", revision: "r1" };
     const findFirst = vi.fn(async ({ where }) =>
       Object.entries(where).every(([key, value]) => row[key as keyof typeof row] === value)
         ? row
         : null,
     );
-    return { prisma: { botSecret: { findFirst } } as unknown as PrismaClient };
+    return { prisma: { botSecret: { findFirst } } as unknown as PrismaClient, row };
   }
 
   function loginFixture(username: string, auth?: object, origin?: string) {
@@ -744,7 +744,7 @@ describe("saved website logins", () => {
     );
   }
 
-  it("keeps named values out of the legacy browser and transfer protocols", async () => {
+  it("selects named fields case-insensitively and derives target type from visibility", async () => {
     const plaintext = encodeLoginSecret({
       fields: [
         { label: "Password", value: "visible-fixture", hidden: false },
@@ -754,12 +754,48 @@ describe("saved website logins", () => {
     });
     const { prisma } = await encryptedLogin(plaintext);
     const input = { prisma, secretStore, scope, name: "site_login" };
-    for (const field of ["username", "password"] as const) {
-      expect(await resolveLoginFill({ ...input, field })).toEqual({
-        error: "Filling named login fields is unavailable.",
-      });
-    }
+    expect(await resolveLoginFill({ ...input, field: " UsErNaMe " })).toMatchObject({
+      text: "hidden-fixture",
+      field: "password",
+    });
+    expect(await resolveLoginFill({ ...input, field: "Password" })).toMatchObject({
+      text: "visible-fixture",
+      field: "username",
+    });
+    expect(await resolveLoginFill({ ...input, field: "Other secret" })).toMatchObject({
+      text: "another-hidden-fixture",
+      field: "password",
+    });
+    expect(await resolveLoginFill({ ...input, field: "unknown" })).toEqual({
+      error: "This login has no field with that label.",
+    });
     expect(() => validateTransferBotSecret(login, plaintext)).toThrow("Credential cannot be used");
+  });
+
+  it("supports username/password aliases and binds the saved revision", async () => {
+    const { prisma, row } = await encryptedLogin(
+      encodeLoginSecret({
+        fields: [
+          { label: "Account ID", value: "fixture-account", hidden: false },
+          { label: "Sign-in PIN", value: "fixture-pin", hidden: true },
+        ],
+      }),
+      { type: "login", loginFormat: "named" },
+    );
+    const input = { prisma, secretStore, scope, name: "site_login" };
+    expect(await resolveLoginFill({ ...input, field: "username" })).toMatchObject({
+      text: "fixture-account",
+      field: "username",
+    });
+    const password = await resolveLoginFill({ ...input, field: "password" });
+    if ("error" in password) throw new Error(password.error);
+    expect(password).toMatchObject({
+      text: "fixture-pin",
+      field: "password",
+      credential: { id: row.id, revision: row.revision },
+    });
+    row.revision = "r2";
+    expect(password.credential.revision).not.toBe(row.revision);
   });
 
   it("fills a historical pair saved with extra JSON fields", async () => {
@@ -778,9 +814,10 @@ describe("saved website logins", () => {
   it("resolves one field bound to the saved origin with its redactions", async () => {
     const { prisma } = await loginFixture("fake-user@example.test");
     const input = { prisma, secretStore, scope, name: "site_login" };
-    expect(await resolveLoginFill({ ...input, field: "password" })).toEqual({
+    expect(await resolveLoginFill({ ...input, field: "password" })).toMatchObject({
       text: "fake-password-1",
       origin: "https://login.example.test",
+      field: "password",
       redactions: expect.arrayContaining(["fake-password-1", "fake-user@example.test"]),
     });
     expect(await resolveLoginFill({ ...input, field: "username" })).toMatchObject({

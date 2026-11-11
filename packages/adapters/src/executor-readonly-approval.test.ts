@@ -3,6 +3,7 @@ import type {
   AgentRunRequest,
   AgentRuntime,
   AutoReviewProvider,
+  BrowserProvider,
   ConnectorCall,
   ConnectorProvider,
   ConnectorRoute,
@@ -17,11 +18,13 @@ import {
   SecretStoreUnavailableError,
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { BOT_TEMPLATES } from "@rakazo/contracts";
+import { BOT_TEMPLATES, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import {
   formatBotSecretHttpApprovalDetail,
   pageReplyTaskPrompt,
+  speechFromBlocks,
+  toUtterances,
   withPageReplyContext,
 } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
@@ -38,12 +41,14 @@ import {
 } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import { ConnectorRegistry } from "./composio-connector.js";
-import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
+import * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { ComputerScreenUnavailableError } from "./computer-screens.js";
+import * as ComputerWorkspaceModule from "./computer-workspace.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 import type { ExecutorDeps } from "./executor.js";
 import { buildApprovalContinuation, createRunExecutor } from "./executor.js";
+import { FakeBrowserProvider } from "./fake-browser.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
@@ -140,6 +145,7 @@ function fixture({
   secretHttp,
   secretStore = { load: async (ciphertext: string) => ciphertext },
   sandboxProvider,
+  browser,
   home,
   messagingIdentity = false,
   startedAt = null,
@@ -177,6 +183,7 @@ function fixture({
   secretHttp?: ExecutorDeps["secretHttp"];
   secretStore?: Pick<SecretStore, "load"> & Partial<SecretStore>;
   sandboxProvider?: Partial<SandboxProvider>;
+  browser?: BrowserProvider;
   home?: Pick<AgentHomeStore, "commit">;
   messagingIdentity?: boolean;
   startedAt?: Date | null;
@@ -520,6 +527,7 @@ function fixture({
       execute,
     },
     sandbox: sandboxProvider ?? { describe: () => ({ capabilities: { graphical: false } }) },
+    browser,
     home,
     memory: {
       read: async (request: { scope: string; path?: string }) => {
@@ -3298,6 +3306,436 @@ describe("generated command credentials in a Run", () => {
       ]);
     },
   );
+});
+
+describe("generated website logins in a Run", () => {
+  const login = {
+    type: "login",
+    name: "site-account",
+    purpose: "Set up the site login",
+    origin: "https://LOGIN.example.test:443/",
+    username: "fixture@example.test",
+  };
+  const canonicalOrigin = "https://login.example.test";
+  const sandboxProvider: Partial<SandboxProvider> = {
+    describe: () => ({
+      id: "fake",
+      contractVersion: "1",
+      adapterVersion: "1",
+      capabilities: {
+        graphical: true,
+        pty: true,
+        snapshots: false,
+        takeover: false,
+        persistentHome: true,
+      },
+    }),
+  };
+
+  function captureProtectedInputs(f: ReturnType<typeof fixture>) {
+    type Input = { id: string; userId: string; spaceId: string; kind: string; ciphertext: string };
+    const rows: Input[] = [];
+    Object.assign(f.prisma.secret, {
+      create: vi.fn(async ({ data }: { data: Input }) => {
+        rows.push(data);
+        return data;
+      }),
+      findFirst: vi.fn(
+        async ({ where }: { where: Partial<Input> }) =>
+          rows.find((row) =>
+            Object.entries(where).every(([key, value]) => row[key as keyof Input] === value),
+          ) ?? null,
+      ),
+    });
+    return rows;
+  }
+
+  it.each([false, true])(
+    "discloses the full site before storing a trusted login (paired: %s)",
+    async (command) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const put = vi.spyOn(secretStore, "put");
+      const create = vi.fn(async () => {});
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        disabledBuiltinTools: command ? [] : ["shell"],
+        sandboxProvider,
+        secretStore,
+      });
+      const pendingInputs = captureProtectedInputs(f);
+      Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+      const publish = vi
+        .spyOn(RunMessagesModule, "publishMessage")
+        .mockResolvedValue(
+          {} as NonNullable<Awaited<ReturnType<typeof RunMessagesModule.publishMessage>>>,
+        );
+      try {
+        f.setCalls([{ args: { ...login, command }, executionId: "generate-login" }]);
+        await f.run();
+
+        const notice = ["HTTPS site ` login.example.test `"];
+        if (command) notice.push("Also save as command variable SITE_ACCOUNT_PASSWORD");
+        notice.push(`Purpose — ${login.purpose}`);
+        expect(publish).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ id: f.runRecord.id }),
+          "bot",
+          [{ kind: "text", text: notice.join("\n") }],
+          undefined,
+          expect.stringMatching(/^user-progress:/),
+        );
+        expect(pendingInputs).toHaveLength(1);
+        expect(publish.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[1]!);
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+        const result = {
+          saved: true,
+          name: login.name,
+          origin: canonicalOrigin,
+          auth: { type: "login" },
+          ...(command ? { command: { variable: "SITE_ACCOUNT_PASSWORD" } } : {}),
+        };
+        expect(f.results).toMatchObject([result]);
+
+        f.setCalls([
+          { args: { ...login, origin: canonicalOrigin, command }, executionId: "generate-login" },
+        ]);
+        await f.run();
+        expect(f.results).toMatchObject([result, result]);
+        expect(publish).toHaveBeenCalledOnce();
+        expect(put).toHaveBeenCalledTimes(command ? 3 : 2);
+        expect(create).toHaveBeenCalledTimes(command ? 2 : 1);
+      } finally {
+        publish.mockRestore();
+      }
+    },
+  );
+
+  it("requires the corresponding tool before staging a login or a command pair", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    for (const disabled of ["browser_act", "shell"]) {
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        disabledBuiltinTools: [disabled],
+        sandboxProvider,
+        secretStore,
+      });
+      f.setCalls([{ args: { ...login, command: true }, executionId: "generate-login" }]);
+      await f.run();
+      expect(f.results).toEqual([
+        { error: "The tools needed to use this credential are unavailable." },
+      ]);
+      expect(f.effects).toEqual([]);
+    }
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it.each(["approved", "missing", "restored", "denied"])(
+    "settles the exact protected login approval (%s)",
+    async (scenario) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const put = vi.spyOn(secretStore, "put");
+      const create = vi.fn(async () => {});
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        sandboxProvider,
+        secretStore,
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "generate_secret" }],
+      });
+      const pendingInputs = captureProtectedInputs(f);
+      Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+      Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+      const args = {
+        ...login,
+        origin: "https://_LOGIN_.example.test:8443/",
+        purpose: "Set up the site login\n```\nA note",
+        command: true,
+      };
+      const pairedOrigin = "https://_login_.example.test:8443";
+      f.setCalls([{ args, executionId: "generate-login" }]);
+      await f.run();
+
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      const block = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+      expect(block).toMatchObject({
+        kind: "ask",
+        actions: [{ id: "allow" }, { id: "deny" }],
+        text: expect.stringContaining(
+          "HTTPS site ` _login_.example.test:8443 `\nAlso save as command variable SITE_ACCOUNT_PASSWORD\nPurpose — Set up the site login ``` A note",
+        ),
+      });
+      const speech = toUtterances(speechFromBlocks([block!])).join(" ");
+      expect(speech).toContain("HTTPS site _login_.example.test:8443");
+      expect(speech).toContain("Also save as command variable SITE_ACCOUNT_PASSWORD");
+      const request = {
+        type: "login",
+        name: args.name,
+        origin: pairedOrigin,
+        inputId: expect.any(String),
+      };
+      expect(f.effects).toMatchObject([{ status: "intended", request }]);
+      expect(JSON.stringify(f.effects)).not.toContain(args.username);
+      const continuation = buildApprovalContinuation(f.effects, JSON.stringify);
+      expect(continuation).toContain("[protected username]");
+      expect(continuation).not.toContain(pendingInputs[0]!.id);
+      expect(JSON.stringify(pendingInputs)).not.toContain(args.username);
+      expect(await secretStore.load(pendingInputs[0]!.ciphertext, pendingInputs[0]!.id)).toContain(
+        args.username,
+      );
+      expect(put).toHaveBeenCalledOnce();
+      expect(create).not.toHaveBeenCalled();
+
+      const effect = f.effects[0]!;
+      effect.status = scenario === "denied" ? "denied" : "approved";
+      if (scenario === "missing" || scenario === "denied") pendingInputs.length = 0;
+      const restoring = scenario === "restored" || scenario === "denied";
+      const pendingToolCallId = "restore-login";
+      const executionId = JSON.stringify(["pi-tool", "main", pendingToolCallId]);
+      const safeArgs = {
+        type: "login",
+        name: login.name,
+        origin: pairedOrigin,
+        purpose: "Resume protected login",
+        username: PROTECTED_LOGIN_USERNAME,
+      };
+      if (restoring) {
+        const checkpoint: TurnCheckpoint = {
+          version: 1,
+          provider: "scripted",
+          model: "scripted",
+          systemPrompt: "Synthetic approval",
+          pendingToolCallId,
+          effectOccurrences: [{ executionId, fingerprint: effect.idempotencyKey, occurrence: 0 }],
+          messages: [
+            {
+              role: "assistant",
+              api: "openai-completions",
+              provider: "scripted",
+              model: "scripted",
+              content: [
+                {
+                  type: "toolCall",
+                  id: pendingToolCallId,
+                  name: "use_tool",
+                  arguments: { name: "generate_secret", arguments: safeArgs },
+                },
+              ],
+              stopReason: "toolUse",
+              timestamp: 1,
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+            },
+          ],
+        };
+        f.effects.push({
+          id: "login-checkpoint",
+          runId: f.runRecord.id,
+          spaceId: f.runRecord.spaceId,
+          kind: "runtime_checkpoint",
+          status: "runtime_checkpoint",
+          idempotencyKey: JSON.stringify(["runtime_checkpoint", f.runRecord.id]),
+          request: {},
+          result: JSON.stringify(checkpoint),
+        });
+      }
+      f.setCalls([
+        {
+          args: restoring ? safeArgs : { ...login, origin: "https://different.example.test" },
+          executionId: restoring ? executionId : "generate-approved",
+        },
+      ]);
+      await f.run();
+      if (scenario === "missing" || scenario === "denied") {
+        expect(f.results[1]).toEqual({
+          error:
+            scenario === "denied"
+              ? DENIED_ACTION_ERROR
+              : "The protected login request could not be restored.",
+        });
+        expect(create).not.toHaveBeenCalled();
+        expect(put).toHaveBeenCalledOnce();
+        return;
+      }
+      const result = {
+        saved: true,
+        name: login.name,
+        origin: pairedOrigin,
+        auth: { type: "login" },
+        command: {
+          name: "site-account-password",
+          auth: { type: "command" },
+          variable: "SITE_ACCOUNT_PASSWORD",
+        },
+      };
+      expect(f.results[1]).toEqual(result);
+      expect(effect).toMatchObject({ status: "completed", request, result });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(put).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each(["allowed", "deny", "stale-binding"])(
+    "checks the current authority after loading a saved login (%s)",
+    async (scenario) => {
+      const browser = new FakeBrowserProvider();
+      const act = vi.spyOn(browser, "act").mockResolvedValue({
+        ok: true,
+        completed: 1,
+        url: canonicalOrigin,
+        title: "Fixture",
+      });
+      const rules: ActionApprovalRule[] = [];
+      const f = fixture({
+        name: "browser_act",
+        builtin: true,
+        browser,
+        sandboxProvider,
+        rules,
+        secretStore: {
+          load: async () => {
+            if (scenario === "deny")
+              rules.push({ effect: "deny", matchKind: "tool", matchValue: "browser_act" });
+            return JSON.stringify({
+              username: login.username,
+              password: "fixture-private-password",
+            });
+          },
+        },
+      });
+      const lease = {
+        computerId: "computer-1",
+        botId: f.runRecord.botId,
+        runId: f.runRecord.id,
+        fence: 12,
+      };
+      const acquire = vi
+        .spyOn(ComputerLifecycleModule, "acquireDedicatedScreenLeaseFence")
+        .mockResolvedValue(lease);
+      const release = vi
+        .spyOn(ComputerLifecycleModule, "releaseComputerExecutionLease")
+        .mockResolvedValue();
+      const checkpoint = vi
+        .spyOn(ComputerWorkspaceModule, "checkpointRunComputerWorkspace")
+        .mockResolvedValue(undefined);
+      const findLiveRun = vi.fn(async () =>
+        scenario === "stale-binding" ? null : { bot: { disabledBuiltinTools: [] } },
+      );
+      Object.assign(f.prisma.run, { findFirst: findLiveRun });
+      const readCredential = vi.fn(async () => {
+        return {
+          id: "login-id",
+          revision: "saved-revision",
+          origin: canonicalOrigin,
+          name: login.name,
+          auth: { type: "login" },
+          ciphertext: "fixture-ref",
+        };
+      });
+      Object.assign(f.prisma.botSecret, { findFirst: readCredential });
+      try {
+        const misroutedUsername = "misrouted-account@example.test";
+        const actions = [
+          { kind: "fill_secret", ref: "field-1", secret: login.name, field: "Password" },
+        ];
+        f.setCalls([
+          {
+            args: { actions, type: "login", username: misroutedUsername },
+            executionId: "fill-login",
+          },
+        ]);
+        await f.run();
+        expect(f.effects.find((effect) => effect.kind === "browser_act")).toMatchObject({
+          request: { actions },
+        });
+        expect(JSON.stringify({ effects: f.effects, events: f.append.mock.calls })).not.toContain(
+          misroutedUsername,
+        );
+        expect(readCredential).toHaveBeenCalledOnce();
+        if (scenario === "allowed") {
+          expect(act).toHaveBeenCalledOnce();
+          expect(f.results).toMatchObject([{ ok: true, completed: 1 }]);
+        } else {
+          expect(act).not.toHaveBeenCalled();
+          expect(f.results).toMatchObject([
+            {
+              ok: false,
+              completed: 0,
+              uncertain: false,
+              error: expect.stringContaining(
+                scenario === "deny" ? "blocked by an action rule" : "changed before filling",
+              ),
+            },
+          ]);
+        }
+        expect(findLiveRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              id: f.runRecord.id,
+              leaseOwner: "worker-1",
+              leaseFence: f.runRecord.leaseFence,
+              leaseExpiresAt: { gt: expect.any(Date) },
+              bot: expect.objectContaining({
+                AND: [
+                  {
+                    botSecrets: {
+                      some: expect.objectContaining({ id: "login-id", revision: "saved-revision" }),
+                    },
+                  },
+                ],
+                computer: {
+                  executionLeases: { some: { ...lease, expiresAt: { gt: expect.any(Date) } } },
+                },
+              }),
+            }),
+          }),
+        );
+      } finally {
+        acquire.mockRestore();
+        release.mockRestore();
+        checkpoint.mockRestore();
+      }
+    },
+  );
+
+  it("omits a misrouted username from the browser action approval", async () => {
+    const browser = new FakeBrowserProvider();
+    const act = vi.spyOn(browser, "act");
+    const f = fixture({
+      name: "browser_act",
+      builtin: true,
+      browser,
+      sandboxProvider,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "browser_act" }],
+    });
+    const actions = [
+      { kind: "fill_secret", ref: "field-1", secret: login.name, field: "Password" },
+    ];
+    const username = "misrouted-approval@example.test";
+    f.setCalls([{ args: { actions, type: "login", username }, executionId: "fill-login" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.effects.find((effect) => effect.kind === "browser_act")).toMatchObject({
+      request: { actions },
+    });
+    expect(
+      JSON.stringify({
+        effects: f.effects,
+        approval: f.pauseRunForInput.mock.calls,
+        events: f.append.mock.calls,
+      }),
+    ).not.toContain(username);
+    expect(act).not.toHaveBeenCalled();
+  });
 });
 
 describe("executor connector account revalidation", () => {

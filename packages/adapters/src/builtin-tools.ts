@@ -3,7 +3,8 @@ import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import {
   BotSecretName,
   botSecretDestinationSchema,
-  GenerateCommandSecretInput,
+  GenerateSecretInput,
+  LoginFieldLabel,
   SecretAskPurpose,
   SecretHttpRequest,
   TICKET_PRIORITIES,
@@ -231,7 +232,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   },
   {
     name: "browser_act",
-    description: `Click or fill page elements by ref from browser_snapshot (kinds: ${BROWSER_ACT_KINDS.join(", ")}). click is a real mouse click, and fill on a dropdown takes one of its options' visible labels or values. The result shows the page after the action, and a snapshot covers the whole page, so scrolling is rarely needed. upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret types the username or password of a login saved with request_secret, only on its saved HTTPS origin (in a frame, the frame's origin); you never see the value. type presses keys like a keyboard and replaces the field's text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing. Do not replay completed or uncertain actions.`,
+    description: `Click or fill page elements by ref from browser_snapshot (kinds: ${BROWSER_ACT_KINDS.join(", ")}). click is a real mouse click, and fill on a dropdown takes one of its options' visible labels or values. The result shows the page after the action, and a snapshot covers the whole page, so scrolling is rarely needed. upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret fills a saved login field by label on its saved HTTPS origin (in a frame, the frame's origin). You never see the value, and filling does not submit the form. type presses keys like a keyboard and replaces the field's text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", inspect the current state before continuing. Do not replay completed or uncertain actions.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -256,8 +257,9 @@ export const builtinAgentTools: ConnectorTool[] = [
               secret: { type: "string", description: "Saved login name for fill_secret." },
               field: {
                 type: "string",
-                enum: ["username", "password"],
-                description: "Login field for fill_secret.",
+                minLength: LoginFieldLabel.minLength ?? undefined,
+                maxLength: LoginFieldLabel.maxLength ?? undefined,
+                description: "Saved login field label.",
               },
             },
             required: ["kind", "ref"],
@@ -409,8 +411,8 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "generate_secret",
     description:
-      "Generate and save a random password or key for this bot's shell commands using type \"command\". State the purpose in the user's language. It is shown before generation. Use the returned environment variable to pass the value to the program that needs it. The value stays protected, and an existing credential is never replaced. Set rules only when the program restricts characters or length.",
-    inputSchema: z.toJSONSchema(GenerateCommandSecretInput, { io: "input" }),
+      'Generate and save a new random password for a website login or a value for this bot\'s shell commands. Use type "login" with the bare HTTPS origin and username. Fill the saved Username and Password fields with browser_act fill_secret. Only set command:true when the user also needs the same password for a command. Use type "command" for a shell-only credential. Programs read command values from their environment. State a brief purpose in the user\'s language before generation. Existing credentials are never replaced. Set rules only when the site or program restricts characters or length.',
+    inputSchema: z.toJSONSchema(GenerateSecretInput, { io: "input" }),
   },
   {
     name: "list_secrets",

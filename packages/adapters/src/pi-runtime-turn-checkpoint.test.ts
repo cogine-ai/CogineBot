@@ -31,6 +31,7 @@ import { USE_TOOL } from "./builtin-tool-bridge.js";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { modelsForRequest, PiAgentRuntime } from "./pi-runtime.js";
 import { piSessionBotRoot } from "./pi-session.js";
+import { createProtectedToolTranscriptSanitizer } from "./protected-tool-checkpoint.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import type { TurnCheckpoint } from "./turn-checkpoint.js";
 
@@ -231,7 +232,10 @@ async function capturedApproval(
   return { input, blob: blob!, events };
 }
 
-async function capturedWrappedInteraction(name: "ask_user" | "request_takeover") {
+async function capturedWrappedInteraction(
+  name: "ask_user" | "request_takeover",
+  extraArgs: JsonObject = {},
+) {
   const store = captures();
   const args: JsonObject =
     name === "ask_user"
@@ -241,7 +245,9 @@ async function capturedWrappedInteraction(name: "ask_user" | "request_takeover")
     onCheckpoint: store.onCheckpoint,
   });
   provider.stream.mockImplementationOnce(() =>
-    response([call("wrapped-interaction", USE_TOOL, { name, arguments: args })]),
+    response([
+      call("wrapped-interaction", USE_TOOL, { name, arguments: { ...args, ...extraArgs } }),
+    ]),
   );
   const events = await consume(input);
   const interaction = events.find((event) => event.type === "tool" && event.name === name);
@@ -675,6 +681,42 @@ describe("real Pi turn checkpoint producer and recovery", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(provider.stream).toHaveBeenCalledOnce();
   });
+
+  it.each(["ask_user", "request_takeover"] as const)(
+    "resumes a wrapped %s after clearing unrelated login input",
+    async (name) => {
+      const username = "fixture-account@example.test";
+      const { input, blob } = await capturedWrappedInteraction(name, { type: "login", username });
+      const saved = JSON.parse(blob) as TurnCheckpoint;
+      expect(blob).toContain(username);
+      saved.messages = saved.messages.map(
+        createProtectedToolTranscriptSanitizer(new Set([name, "scratchpad_add"]), () => [], {
+          pendingToolCallId: saved.pendingToolCallId,
+          unstartedCalls: new Set(),
+        }),
+      );
+      const sanitized = JSON.stringify(saved);
+      expect(sanitized).not.toContain(username);
+      const receipt = "Continue after the user replied";
+      provider.stream.mockImplementation((activeModel: Model<Api>, context: TranscriptContext) => {
+        expect(resultText(context, "wrapped-interaction")).toBe(receipt);
+        return response(undefined, activeModel);
+      });
+      const execute = vi.fn(async () => ({ ok: true }));
+      await consume({
+        ...input,
+        turnCheckpoint: sanitized,
+        resumeToolResult: {
+          kind: "agent_tool_result",
+          content: [{ type: "text", text: receipt }],
+          details: {},
+        },
+        executeTool: execute,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provider.stream).toHaveBeenCalledOnce();
+    },
+  );
 
   it("still executes an unapproved wrapped takeover through its original authorization path", async () => {
     const { input, blob, executionId } = await capturedWrappedInteraction("request_takeover");

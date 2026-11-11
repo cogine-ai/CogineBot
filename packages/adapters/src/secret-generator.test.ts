@@ -2,6 +2,7 @@ import {
   GENERATED_SECRET_SYMBOLS,
   GenerateCommandSecretInput,
   GeneratedSecretRules,
+  GenerateSecretInput,
 } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { generateSecretValue } from "./secret-generator.js";
@@ -83,5 +84,41 @@ describe("generated command credential rules", () => {
         ...extra,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("generated website login input", () => {
+  const login = {
+    type: "login",
+    name: "site-account",
+    purpose: "Set up the website login",
+    origin: "https://LOGIN.example.test:443/",
+    username: "  fixture@example.test  ",
+  };
+
+  it("normalizes the site and username and permits a command pairing", () => {
+    expect(GenerateSecretInput.parse({ ...login, command: true })).toEqual({
+      ...login,
+      origin: "https://login.example.test",
+      username: "fixture@example.test",
+      command: true,
+    });
+    expect(
+      GenerateSecretInput.safeParse({ ...login, name: "a".repeat(55), command: true }).success,
+    ).toBe(true);
+    expect(GenerateSecretInput.safeParse({ ...login, name: "a".repeat(64) }).success).toBe(true);
+  });
+
+  it.each([
+    { origin: "http://login.example.test" },
+    { origin: "https://login.example.test/path" },
+    { origin: "https://login.example.test?query=1" },
+    { origin: "https://username:password@login.example.test" },
+    { username: " " },
+    { name: "ld", command: true },
+    { name: "a".repeat(56), command: true },
+    { value: "caller-supplied" },
+  ])("rejects unsafe or incompatible login input %j", (overrides) => {
+    expect(GenerateSecretInput.safeParse({ ...login, ...overrides }).success).toBe(false);
   });
 });

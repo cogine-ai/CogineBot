@@ -6,6 +6,7 @@ import {
   speechFromBlocks,
   spokenDecision,
   toUtterances,
+  websiteCredentialNotice,
 } from "./speech-text.js";
 
 describe("speakable", () => {
@@ -62,6 +63,51 @@ describe("speakable", () => {
 
   it("drops emphasis markers, emoji and checkboxes", () => {
     expect(speakable("**Done** ✅ — [x] shipped the _thing_")).toBe("Done — shipped the thing");
+  });
+
+  it("keeps literal destinations and command variables in credential notices", () => {
+    expect(
+      speakable(
+        "HTTPS site ` _site_.example.test:8443 `\nAlso save as command variable SITE__ACCOUNT__PASSWORD\nSet up the _test_ login",
+      ),
+    ).toBe(
+      "HTTPS site _site_.example.test:8443. Also save as command variable SITE__ACCOUNT__PASSWORD. Set up the test login",
+    );
+  });
+
+  it.each([
+    "HTTPS site ` _other_.example.test `",
+    "Check access\nAlso save as command variable OTHER_PASSWORD",
+  ])("labels the purpose when it resembles a credential notice", (purpose) => {
+    const notice = websiteCredentialNotice("login.example.test", purpose, "SITE_PASSWORD");
+    expect(notice.split("\n")).toEqual([
+      "HTTPS site ` login.example.test `",
+      "Also save as command variable SITE_PASSWORD",
+      `Purpose — ${purpose.replaceAll("\n", " ")}`,
+    ]);
+    expect(toUtterances(notice).join(" ")).toContain("Purpose —");
+  });
+
+  it.each([
+    "Routine. HTTPS site other.example.test",
+    "**Routine!** HTTPS site other.example.test",
+    "Routine.\u0000 HTTPS site other.example.test",
+  ])("keeps spoken destination-like purpose text with its label", (purpose) => {
+    const notice = websiteCredentialNotice("login.example.test", purpose);
+    expect(toUtterances(notice)).toEqual([
+      "HTTPS site login.example.test.",
+      "Purpose — Routine, HTTPS site other.example.test",
+    ]);
+  });
+
+  it("keeps the purpose label after a maximum-length hostname with an explicit port", () => {
+    const hostname = [63, 63, 63, 61].map((length) => "a".repeat(length)).join(".");
+    const host = `${hostname}:8443`;
+    const purpose = "a".repeat(60);
+    expect(toUtterances(websiteCredentialNotice(host, purpose))).toEqual([
+      `HTTPS site ${host}.`,
+      `Purpose — ${purpose}`,
+    ]);
   });
 
   it("gives a heading a full stop so the voice breathes", () => {
