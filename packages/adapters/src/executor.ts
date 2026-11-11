@@ -471,6 +471,7 @@ import {
   searchChartCatalog,
 } from "./plot-tool.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
+import { withoutMisroutedLoginUsername } from "./protected-tool-checkpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { RemoteMcpSessionPool } from "./remote-mcp-sessions.js";
@@ -5782,6 +5783,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           observer?: AgentToolExecutionObserver,
         ) => {
           context.signal.throwIfAborted();
+          args = withoutMisroutedLoginUsername(name, args);
           if (handedOff) {
             return {
               error: "This stage was handed off. End the turn without more tool calls.",

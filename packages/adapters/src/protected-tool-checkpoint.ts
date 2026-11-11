@@ -22,6 +22,14 @@ function hasLoginUsername(value: unknown): value is Record<string, unknown> {
   return record(value) && value.type === "login" && "username" in value;
 }
 
+export function withoutMisroutedLoginUsername(name: string, args: Record<string, unknown>) {
+  if (name === "generate_secret" || !BUILTIN_AGENT_TOOL_NAMES.has(name) || !hasLoginUsername(args))
+    return args;
+  const remaining = { ...args };
+  delete remaining.username;
+  return remaining;
+}
+
 /** Filter protected inputs at transcript sinks without changing live Pi messages. */
 export function createProtectedToolTranscriptSanitizer(
   bridgeToolNames: ReadonlySet<string> | undefined,
@@ -103,8 +111,7 @@ export function createProtectedToolTranscriptSanitizer(
               !part.argumentsError
             ) {
               // The pending call already reached its pause. Keep its route and resume inputs.
-              const remaining = { ...targetArgs };
-              delete remaining.username;
+              const remaining = withoutMisroutedLoginUsername(targetName, targetArgs);
               return {
                 ...part,
                 arguments: bridge ? { name: targetName, arguments: remaining } : remaining,

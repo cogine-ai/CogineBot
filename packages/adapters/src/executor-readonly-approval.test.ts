@@ -3643,17 +3643,23 @@ describe("generated website logins in a Run", () => {
       });
       Object.assign(f.prisma.botSecret, { findFirst: readCredential });
       try {
+        const misroutedUsername = "misrouted-account@example.test";
+        const actions = [
+          { kind: "fill_secret", ref: "field-1", secret: login.name, field: "Password" },
+        ];
         f.setCalls([
           {
-            args: {
-              actions: [
-                { kind: "fill_secret", ref: "field-1", secret: login.name, field: "Password" },
-              ],
-            },
+            args: { actions, type: "login", username: misroutedUsername },
             executionId: "fill-login",
           },
         ]);
         await f.run();
+        expect(f.effects.find((effect) => effect.kind === "browser_act")).toMatchObject({
+          request: { actions },
+        });
+        expect(JSON.stringify({ effects: f.effects, events: f.append.mock.calls })).not.toContain(
+          misroutedUsername,
+        );
         expect(readCredential).toHaveBeenCalledOnce();
         if (scenario === "allowed") {
           expect(act).toHaveBeenCalledOnce();
@@ -3700,6 +3706,36 @@ describe("generated website logins in a Run", () => {
       }
     },
   );
+
+  it("omits a misrouted username from the browser action approval", async () => {
+    const browser = new FakeBrowserProvider();
+    const act = vi.spyOn(browser, "act");
+    const f = fixture({
+      name: "browser_act",
+      builtin: true,
+      browser,
+      sandboxProvider,
+      rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "browser_act" }],
+    });
+    const actions = [
+      { kind: "fill_secret", ref: "field-1", secret: login.name, field: "Password" },
+    ];
+    const username = "misrouted-approval@example.test";
+    f.setCalls([{ args: { actions, type: "login", username }, executionId: "fill-login" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.effects.find((effect) => effect.kind === "browser_act")).toMatchObject({
+      request: { actions },
+    });
+    expect(
+      JSON.stringify({
+        effects: f.effects,
+        approval: f.pauseRunForInput.mock.calls,
+        events: f.append.mock.calls,
+      }),
+    ).not.toContain(username);
+    expect(act).not.toHaveBeenCalled();
+  });
 });
 
 describe("executor connector account revalidation", () => {
