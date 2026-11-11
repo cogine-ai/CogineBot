@@ -1,12 +1,16 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolCall } from "@earendil-works/pi-ai";
-import { PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
+import { GenerateSecretInput, PROTECTED_LOGIN_USERNAME } from "@rakazo/contracts";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
 import { tryRedactConnectorPayload } from "./connector-safety.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 
 const REJECTED_PAGE_CALL = "The Page call had invalid or protected arguments. Send a new call.";
 const UNAVAILABLE_PAGE_RESULT = "The Page result is unavailable.";
+const INVALID_LOGIN_CALL =
+  "The credential generation request had invalid arguments. Send a new call.";
+const UNSTARTED_LOGIN_CALL =
+  "This login request did not run before the pause. Call generate_secret again with the username.";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -16,35 +20,49 @@ function record(value: unknown): value is Record<string, unknown> {
 export function createProtectedToolTranscriptSanitizer(
   hasBuiltinBridge: boolean,
   secrets: () => string[],
+  unstartedCalls?: ReadonlySet<string>,
 ) {
   const pageCalls = new Map<string, { name: string; rejected: boolean }>();
-  const loginCalls = new Set<string>();
+  const loginCalls = new Map<string, string>();
   return function sanitize<T extends AgentMessage>(message: T): T {
     if (message.role === "assistant") {
       let changed = false;
       const content = message.content.map((part) => {
         if (part.type !== "toolCall") return part;
         const wrappedLogin =
-          hasBuiltinBridge && part.name === USE_TOOL && part.arguments.name === "generate_secret";
+          hasBuiltinBridge &&
+          part.name === USE_TOOL &&
+          (part.arguments.name === "generate_secret" ||
+            (part.arguments.name === undefined &&
+              /\bgenerate_secret\b/.test(part.argumentsError ?? "")));
         const loginArgs = wrappedLogin ? part.arguments.arguments : part.arguments;
-        if (
-          (wrappedLogin || part.name === "generate_secret") &&
-          record(loginArgs) &&
-          loginArgs.type === "login" &&
-          typeof loginArgs.username === "string"
-        ) {
+        const isLogin = record(loginArgs) && loginArgs.type === "login";
+        if ((wrappedLogin || part.name === "generate_secret") && (part.argumentsError || isLogin)) {
           changed = true;
-          loginCalls.add(part.id);
-          const safeArgs = {
-            type: "login",
-            name: loginArgs.name,
-            origin: loginArgs.origin,
-            purpose: "Resume protected login",
-            username: PROTECTED_LOGIN_USERNAME,
-          };
+          const parsed =
+            isLogin && !part.argumentsError ? GenerateSecretInput.safeParse(loginArgs) : undefined;
+          const savedLogin =
+            parsed?.success && parsed.data.type === "login" ? parsed.data : undefined;
+          const error =
+            part.argumentsError === UNSTARTED_LOGIN_CALL || unstartedCalls?.has(part.id)
+              ? UNSTARTED_LOGIN_CALL
+              : savedLogin
+                ? undefined
+                : INVALID_LOGIN_CALL;
+          loginCalls.set(part.id, error ?? "The protected login request could not be executed.");
+          const safeArgs = savedLogin
+            ? {
+                type: "login",
+                name: savedLogin.name,
+                origin: savedLogin.origin,
+                purpose: "Resume protected login",
+                username: PROTECTED_LOGIN_USERNAME,
+              }
+            : {};
           return {
             ...part,
             arguments: wrappedLogin ? { name: "generate_secret", arguments: safeArgs } : safeArgs,
+            argumentsError: error,
           };
         }
         const wrapped =
@@ -77,10 +95,11 @@ export function createProtectedToolTranscriptSanitizer(
       return changed ? { ...message, content } : message;
     }
     if (message.role !== "toolResult") return message;
-    if (loginCalls.has(message.toolCallId) && message.isError) {
+    const loginError = loginCalls.get(message.toolCallId);
+    if (loginError && message.isError) {
       return {
         ...message,
-        content: [{ type: "text", text: "The protected login request could not be executed." }],
+        content: [{ type: "text", text: loginError }],
         details: undefined,
       };
     }

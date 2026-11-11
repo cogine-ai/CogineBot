@@ -267,8 +267,18 @@ export async function persistRunTurnCheckpoint(
   };
   if (capture) {
     const saved = JSON.parse(capture()) as TurnCheckpoint;
+    const unresolved =
+      saved.executionMode === "sequential" ? unresolvedTurnCheckpointCalls(saved.messages) : [];
+    const pendingIndex = unresolved.findIndex((call) => call.id === saved.pendingToolCallId);
+    const unstartedCalls = new Set(
+      pendingIndex >= 0 ? unresolved.slice(pendingIndex + 1).map((call) => call.id) : [],
+    );
     saved.messages = saved.messages.map(
-      createProtectedToolTranscriptSanitizer(state.hasBuiltinBridge === true, () => runSecrets),
+      createProtectedToolTranscriptSanitizer(
+        state.hasBuiltinBridge === true,
+        () => runSecrets,
+        unstartedCalls,
+      ),
     );
     saved.effectOccurrences = state.occurrences;
     saved.ownInstructionsBaseline = state.ownInstructionsBaseline;

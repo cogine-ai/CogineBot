@@ -135,6 +135,61 @@ describe("run turn checkpoint state", () => {
       );
     },
   );
+
+  it("retires an unstarted login in a saved sequential batch without leaving its username", async () => {
+    const f = storage();
+    const current = state(undefined, {
+      tools: [builtin("generate_secret"), builtin("write_file")],
+    });
+    const later = {
+      type: "login",
+      name: "later-login",
+      origin: "https://example.test",
+      purpose: "Prepare the next login",
+      username: "later-account@example.test",
+    };
+    const captured = checkpoint({
+      executionMode: "sequential",
+      messages: [
+        assistant([call(), call("later", USE_TOOL, { name: "generate_secret", arguments: later })]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(stored).not.toContain(later.username);
+    expect(stored).toContain("This login request did not run before the pause.");
+    expect(stored).toContain("Call generate_secret again with the username.");
+  });
+
+  it.each([false, true])(
+    "drops raw login validation diagnostics (wrapped: %s)",
+    async (wrapped) => {
+      const f = storage();
+      const current = state(undefined, {
+        tools: [builtin("generate_secret"), builtin("write_file")],
+      });
+      const toolName = wrapped ? USE_TOOL : "generate_secret";
+      const raw = 'Invalid JSON in generate_secret: {"username":"fixture-account@example.test"';
+      const captured = checkpoint({
+        messages: [
+          assistant([{ ...call("malformed", toolName, {}), argumentsError: raw }]),
+          {
+            ...completed("malformed", toolName),
+            content: [{ type: "text", text: raw }],
+            details: { error: raw },
+            isError: true,
+          },
+          assistant([call()]),
+        ],
+      });
+      current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+      await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+      const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+      expect(stored).not.toContain("fixture-account@example.test");
+      expect(stored).toContain("The credential generation request had invalid arguments.");
+    },
+  );
   it("starts fresh with the actual baseline and shares the supplied occurrence map", () => {
     const counts = new Map([[fingerprint, 3]]);
     const current = state(undefined, { counts });
