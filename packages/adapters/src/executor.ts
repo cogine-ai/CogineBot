@@ -1,3 +1,4 @@
+import { runReadsThreadHistory } from "@rakazo/core";
 import type { RunLease } from "@rakazo/db";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
 import {
@@ -293,7 +294,7 @@ import {
 } from "./builtin-tools.js";
 import { chatGPTPlanRotationCheckpoint } from "./chatgpt-plan-auth.js";
 import { withChatGPTPlanCredentialLock } from "./chatgpt-plan-credential-lock.js";
-import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
+import { CHATGPT_PLAN_PROVIDER_ID } from "./chatgpt-plan-provider.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
@@ -409,11 +410,11 @@ import {
   validateModelAuthAvailability,
 } from "./model-selection.js";
 import {
+  connectionModelImageInput,
   filterImageReturningComputerTools,
   IMAGE_RETURNING_COMPUTER_TOOLS,
   MODEL_CANNOT_SEE_MESSAGE,
   modelAcceptsImageInput,
-  modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import { verifyRoutineRetryNativeSource } from "./native-connectors/events/store.js";
@@ -430,11 +431,12 @@ import {
   savePageFromTool,
 } from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
-import { codexLiveListsModel } from "./pi-codex-catalog.js";
+import { codexLiveModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import {
+  CHATGPT_OAUTH_PROVIDER,
   isRetiredModelCredentialError,
   matchesFailedOAuthSecret,
   parseModelSecret,
@@ -626,6 +628,10 @@ const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
+
+function requiresConfirmedImageInput(blocks: readonly MessageBlock[]) {
+  return blocks.some((block) => block.kind === "image" && block.imageHandling === "confirm");
+}
 
 /** Avoid an expensive remote workspace export when a turn never touched the computer. */
 export function createRunWorkspaceCheckpoint(checkpoint: () => Promise<unknown>) {
@@ -3816,10 +3822,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: {
             id: runId,
             ...continueRunClaimFence(run),
-            ...(quotaWait ? { leaseFence: run.leaseFence, quotaWait: { equals: quotaWait } } : {}),
+            leaseFence: run.leaseFence,
+            ...(quotaWait ? { quotaWait: { equals: quotaWait } } : {}),
             ...(isSteeringContinuation
               ? {
-                  leaseFence: run.leaseFence,
                   updatedAt: run.updatedAt,
                   scriptedState: {
                     equals: run.scriptedState === null ? Prisma.DbNull : run.scriptedState,
@@ -4775,18 +4781,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
           return;
         }
-        // A pin stays as it was created. Unpinned runs still record the model they
-        // used; modelPinned is what keeps that record from becoming the next choice.
-        if (!run.modelPinned) {
-          await deps.prisma.run.updateMany({
-            where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-            data: {
-              modelProvider: runModelProvider,
+        // Selection belongs to this lease; the previous attempt may have used a backup.
+        // Keep the existing record on unpinned Runs and never overwrite a captured pin.
+        await deps.prisma.run.updateMany({
+          where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+          data: {
+            attemptModel: {
+              leaseFence: fence,
+              provider: runModelProvider,
               modelId: runModelId,
               modelCredentialId: resolved.modelCredentialId,
             },
-          });
-        }
+            ...(!run.modelPinned
+              ? {
+                  modelProvider: runModelProvider,
+                  modelId: runModelId,
+                  modelCredentialId: resolved.modelCredentialId,
+                }
+              : {}),
+          },
+        });
 
         if (!bot.computer) throw new Error("Bot has no computer");
         const storedComputer = bot.computer;
@@ -4879,6 +4893,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Gate on the model this run will actually call — the pair written to the run row
         // above. Deriving it a second time here dropped the deployment fallback, so a
         // vision-capable default was gated as "scripted" and lost its screenshot tools.
+        const imageMessages = await deps.prisma.message.findMany({
+          where: {
+            threadId: thread.id,
+            role: "user",
+            OR: [
+              ...(run.sourceMessageId ? [{ id: run.sourceMessageId }] : []),
+              { steeringMessages: { some: { runId, botId: run.botId } } },
+            ],
+            blocks: { array_contains: [{ kind: "image" }] },
+          },
+          select: { blocks: true },
+        });
+        const currentRunRequiresImageInput = imageMessages.some((message) =>
+          requiresConfirmedImageInput(message.blocks as MessageBlock[]),
+        );
         const modelSeesImages = modelAcceptsImageInput(
           runModelProvider,
           runModelId,
@@ -9421,10 +9450,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           turnBlocks,
           currentTurnImages,
         );
+        // The offline script infers actions from the saved waiting answer.
+        // Generated attachment filenames are data, not part of that answer.
+        const attachmentContext =
+          scripted && waitingAnswer?.sourceMessageId
+            ? []
+            : [attachedFilesPrompt, missingImagesInstruction];
         const taskPrompt = expandSkillReferencesInPrompt(
-          [ownerTaskPrompt, attachedFilesPrompt, missingImagesInstruction]
-            .filter(Boolean)
-            .join("\n\n"),
+          [ownerTaskPrompt, ...attachmentContext].filter(Boolean).join("\n\n"),
           agentSkills,
         );
         const invokedSkill = savedSkills.find((skill) =>
@@ -9694,6 +9727,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 .join("\n\n"),
               history: runtimeHistory,
               currentTurnImages,
+              currentRunRequiresImageInput,
               tools,
               ...(quotaAdmissionWait
                 ? {
@@ -9783,13 +9817,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     leaseFence: fence,
                   },
                   // A backup is an attempt choice, not a replacement for a captured pin.
-                  data: run.modelPinned
-                    ? { modelPinned: true }
-                    : {
-                        modelProvider: provider,
-                        modelId,
-                        modelCredentialId: modelCredentialId ?? null,
-                      },
+                  data: {
+                    attemptModel: {
+                      leaseFence: fence,
+                      provider,
+                      modelId,
+                      modelCredentialId: modelCredentialId ?? null,
+                    },
+                    ...(!run.modelPinned
+                      ? {
+                          modelProvider: provider,
+                          modelId,
+                          modelCredentialId: modelCredentialId ?? null,
+                        }
+                      : {}),
+                  },
                 });
                 if (updated.count !== 1) {
                   throw new Error("Run lease was lost before the backup model could be used");
@@ -9934,6 +9976,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     const text = pageInputContext(item.blocks)
                       ? modelMessageBlocksText(item.blocks)
                       : item.text;
+                    // Pi already has the answer in the prompt or resumed tool result.
+                    // Its quote and attachments still belong to this message; the scripted
+                    // checkpoint must hash the persisted message regardless of delivery.
+                    const answered = !scripted && item.messageId === waitingAnswer?.sourceMessageId;
                     return {
                       includesPageReply: reply?.includesPage === true,
                       message: {
@@ -9942,10 +9988,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ...(item.ownerInput ? { ownerInput: true as const } : {}),
                         ...(item.progressResetAt ? { progressResetAt: item.progressResetAt } : {}),
                         historyText: scripted ? scriptedSteeringText(item.blocks) : text,
-                        text: [reply?.text, text, filesInstruction, unavailableInstruction]
+                        ...(requiresConfirmedImageInput(item.blocks)
+                          ? { requiresImageInput: true as const }
+                          : {}),
+                        text: [
+                          reply?.text,
+                          answered ? "" : text,
+                          filesInstruction,
+                          unavailableInstruction,
+                        ]
                           .filter(Boolean)
                           .join("\n\n"),
-                        images,
+                        // A pre-sourceMessageId Run may already load this same reply as its current turn.
+                        images:
+                          item.messageId === currentTurnMessage?.id && currentTurnImages?.length
+                            ? undefined
+                            : images,
                       },
                     };
                   }),
@@ -11346,7 +11404,7 @@ export function threadContextForRun<T>(
 ) {
   // Routine runs stay isolated from thread history. The creation intro does
   // too: a message that arrives during it waits and is answered afterward.
-  if (trigger === "created" || trigger === "routine") {
+  if (!runReadsThreadHistory(trigger)) {
     return {
       messages: [] as T[],
       summary: null,
@@ -11925,6 +11983,7 @@ async function resolveModelKey(
         const resolveAuth = () =>
           resolveModelAuth(plaintext, credential.provider, { persist, retire });
         let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
+        let liveCodex: Awaited<ReturnType<typeof codexLiveModel>>;
         const authError = validateModelAuthAvailability(provider, modelId, plaintext);
         if (authError) {
           // A statically excluded Codex model may still run when the backend's
@@ -11938,38 +11997,26 @@ async function resolveModelKey(
             parseModelSecret(plaintext).kind === "oauth"
           ) {
             resolved = await resolveAuth();
-            liveListed = await codexLiveListsModel(
-              deps.codexCatalog,
-              userId,
-              resolved.secret,
-              modelId,
-              { waitMs: CODEX_LIVE_RUN_WAIT_MS },
-            );
+            liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+              waitMs: CODEX_LIVE_RUN_WAIT_MS,
+            });
+            liveListed = Boolean(liveCodex);
           }
           if (!liveListed) throw new UnavailableModelForAuthError(authError);
         }
         resolved ??= await resolveAuth();
+        if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
+          liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+            waitMs: 0,
+          });
+        }
         assertCompatibleModelEnabled(credential, resolved.secret, modelId);
         const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
         const baseUrl =
           resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;
-        const chatGPTPlanModel =
-          provider === CHATGPT_PLAN_PROVIDER_ID && resolved.secret.kind === "oauth"
-            ? readChatGPTPlanModels(resolved.secret.credential).find(
-                (entry) => entry.id === modelId,
-              )
-            : undefined;
         const acceptsImages =
-          provider === CHATGPT_PLAN_PROVIDER_ID
-            ? Boolean(chatGPTPlanModel?.input?.includes("image"))
-            : credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
-              resolved.secret.kind === "openai_compatible" &&
-              (modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
-                // Legacy secrets have no per-model list, so keep their existing
-                // capability scoped to the model saved in the space preference.
-                (resolved.secret.visionModelIds === undefined &&
-                  credential.supportsImages === true &&
-                  credential.defaultModel?.trim() === modelId.trim()));
+          connectionModelImageInput(provider, modelId, credential, resolved.secret) ??
+          liveCodex?.supportsImages;
         const accountId =
           resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
         const gatewayId =

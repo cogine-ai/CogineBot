@@ -1,4 +1,9 @@
-import type { AgentSkillCatalogEntry, PageReplyContext } from "@rakazo/contracts";
+import type {
+  AgentSkillCatalogEntry,
+  ImageHandling,
+  ImageInputStatus,
+  PageReplyContext,
+} from "@rakazo/contracts";
 import type { ComposerMention, resolveComposerSendPlan } from "@rakazo/core";
 import { isServerUnreachable } from "@rakazo/core";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -13,6 +18,7 @@ export type ComposerSnapshot = {
   replyTargetId?: string;
   replyQuote: string | null;
   attachmentIds: string[];
+  imageHandling?: ImageHandling;
 };
 
 export function settleComposer(submitted: ComposerSnapshot, current: ComposerSnapshot) {
@@ -31,6 +37,7 @@ export type SendPayload = {
   reroutedToGroup: boolean;
   plan: ReturnType<typeof resolveComposerSendPlan>;
   attachments: PickedAttachment[];
+  imageHandling?: ImageHandling;
   replyTargetId?: string;
   replyQuote: string | null;
   /** A reply to this chat's Page card, with no message quote. */
@@ -51,6 +58,8 @@ export type SendAttempt = {
   /** The signed-in session the attempt began in; a failure after sign-out is dropped. */
   session: number;
   error?: string;
+  imageInputStatus?: Exclude<ImageInputStatus, "supported">;
+  imageInputBotId?: string;
 };
 
 const UPLOAD_TIMEOUT_MS = 60_000;
@@ -61,7 +70,9 @@ export async function deliverSend(
   request: typeof rpc,
 ): Promise<number | undefined> {
   const { plan, groupTarget, botTarget, reroutedToGroup, attachments } = payload;
-  if (plan.shouldRunRoutines) {
+  const sendWithRoutines =
+    plan.shouldRunRoutines && attachments.some((item) => item.mimeType.startsWith("image/"));
+  if (plan.shouldRunRoutines && !sendWithRoutines) {
     await Promise.all(
       plan.routineIds.map((routineId) =>
         request("routines/testRun", {
@@ -92,17 +103,22 @@ export async function deliverSend(
     }
     artifactIds.push(id);
   }
-  const sent = await request<{ seq: number }>("threads/send", {
-    ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget! }),
-    clientNonce: attempt.clientNonce,
-    text: plan.trimmed || undefined,
-    mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-    artifactIds: artifactIds.length ? artifactIds : undefined,
-    replyToMessageId: reroutedToGroup ? undefined : payload.replyTargetId,
-    replyQuote: reroutedToGroup ? undefined : (payload.replyQuote ?? undefined),
-    fromPage: reroutedToGroup ? undefined : payload.fromPage,
-    pageContext: reroutedToGroup ? undefined : payload.pageContext,
-  });
+  const sent = await request<{ seq: number }>(
+    sendWithRoutines ? "threads/sendWithRoutines" : "threads/send",
+    {
+      ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget! }),
+      clientNonce: attempt.clientNonce,
+      text: plan.trimmed || undefined,
+      mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+      artifactIds: artifactIds.length ? artifactIds : undefined,
+      imageHandling: payload.imageHandling ?? "confirm",
+      ...(sendWithRoutines ? { routineIds: plan.routineIds } : {}),
+      replyToMessageId: reroutedToGroup ? undefined : payload.replyTargetId,
+      replyQuote: reroutedToGroup ? undefined : (payload.replyQuote ?? undefined),
+      fromPage: reroutedToGroup ? undefined : payload.fromPage,
+      pageContext: reroutedToGroup ? undefined : payload.pageContext,
+    },
+  );
   return sent.seq;
 }
 
@@ -244,6 +260,9 @@ export function sendWaitingMessages(force = false): Promise<void> {
         allowUnreachable = false;
         const attempt = unsentSends.find((a) => a.state === "queued" && inScope(a));
         if (!attempt) break;
+        // A definitive refusal applies only until this attempt is dispatched again.
+        attempt.imageInputStatus = undefined;
+        attempt.imageInputBotId = undefined;
         attempt.state = "pending";
         changed();
         let messageRejection: unknown;
@@ -251,7 +270,8 @@ export function sendWaitingMessages(force = false): Promise<void> {
           const request = ((...args: Parameters<typeof rpc>) => {
             if (!inScope(attempt)) throw new Error("Session changed");
             const response = config!.request(args[0], args[1], args[2], attempt.spaceId);
-            if (args[0] !== "threads/send") return response;
+            if (args[0] !== "threads/send" && args[0] !== "threads/sendWithRoutines")
+              return response;
             return response.catch((error: unknown) => {
               messageRejection = error;
               throw error;
@@ -281,7 +301,22 @@ export function sendWaitingMessages(force = false): Promise<void> {
               ? "refused"
               : "failed";
           attempt.error = config.errorText(error);
-          const rejection = error as { code?: unknown; data?: { reason?: unknown } } | null;
+          const rejection = error as {
+            code?: unknown;
+            data?: { reason?: unknown; imageInputStatus?: unknown; botId?: unknown };
+          } | null;
+          if (
+            error === messageRejection &&
+            status === 409 &&
+            rejection?.data?.reason === "model_image_input_unsupported"
+          ) {
+            attempt.imageInputStatus =
+              rejection.data.imageInputStatus === "unsupported" ? "unsupported" : "unknown";
+            attempt.imageInputBotId =
+              typeof rejection.data.botId === "string" ? rejection.data.botId : undefined;
+            attempt.state = "failed";
+          }
+
           let recoveredOnDisk = false;
           if (
             error === messageRejection &&

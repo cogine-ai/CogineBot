@@ -4183,3 +4183,36 @@ describe("Pi current-call output recovery", () => {
     expect(input.reserveSelfRecovery).not.toHaveBeenCalled();
   });
 });
+
+it("rejects a restored explicit-image Run before any text-only model request", async () => {
+  providerState.models.set(`${primary.provider}/${primary.id}`, { ...primary, input: ["text"] });
+  const input = request();
+  input.currentRunRequiresImageInput = true;
+  await expect(run(input)).rejects.toThrow("This model cannot read images.");
+  expect(providerState.stream).not.toHaveBeenCalled();
+});
+
+it("skips a text-only backup even when an admitted image could not be hydrated", async () => {
+  providerState.models.set(`${backupA.provider}/${backupA.id}`, { ...backupA, input: ["text"] });
+  const input = request([
+    { provider: backupA.provider, id: backupA.id, apiKey: "fake-text-key" },
+    { provider: backupB.provider, id: backupB.id, apiKey: "fake-vision-key" },
+  ]);
+  input.currentRunRequiresImageInput = true;
+  input.onModelChange = vi.fn(async () => undefined);
+  providerState.stream.mockImplementation((target: typeof primary) =>
+    target.id === primary.id
+      ? stream(target, message(target, [], "error", "HTTP 429 daily usage limit resets in 5 hours"))
+      : stream(
+          target,
+          message(target, [{ type: "text", text: "Vision-capable backup used." }], "stop"),
+        ),
+  );
+  const events = await run(input);
+  expect(providerState.stream.mock.calls.map(([target]) => target.id)).toEqual([
+    primary.id,
+    backupB.id,
+  ]);
+  expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(backupB.provider, backupB.id);
+  expect(events.at(-1)).toEqual({ type: "done", text: "Vision-capable backup used." });
+});

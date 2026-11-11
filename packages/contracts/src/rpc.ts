@@ -231,47 +231,63 @@ const structuredMentionTarget = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("connector"), id: Id }),
 ]);
 
-const threadSendInput = threadTarget
-  .safeExtend({
-    text: z.string().optional(),
-    artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
-    /** Bare bot ids (legacy) or typed mention chips from the composer. */
-    mentions: z
-      .array(z.union([Id, structuredMentionTarget]))
-      .max(64)
-      .optional(),
-    replyToMessageId: Id.optional(),
-    replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
-    /** Sent from the open page: a reply to its card that quotes nothing. */
-    fromPage: z.literal(true).optional(),
-    pageContext: PageReplyContextSchema.optional(),
-    clientNonce: z.string().min(1).max(200).optional(),
-  })
-  .superRefine((input, ctx) => {
-    const text = input.text?.trim() ?? "";
-    const artifactIds = input.artifactIds ?? [];
-    if (!text && artifactIds.length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Provide text or at least one attachment",
-        path: ["text"],
-      });
-    }
-    if (input.pageContext && input.replyToMessageId) {
-      ctx.addIssue({
-        code: "custom",
-        message: "Page context is only valid without a reply target",
-        path: ["pageContext"],
-      });
-    }
-    if (input.replyQuote && !input.replyToMessageId) {
-      ctx.addIssue({
-        code: "custom",
-        message: "replyQuote requires replyToMessageId",
-        path: ["replyQuote"],
-      });
-    }
-  });
+const threadSendFields = threadTarget.safeExtend({
+  text: z.string().optional(),
+  artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
+  imageHandling: z.enum(["confirm", "file"]).optional(),
+  /** Bare bot ids (legacy) or typed mention chips from the composer. */
+  mentions: z
+    .array(z.union([Id, structuredMentionTarget]))
+    .max(64)
+    .optional(),
+  replyToMessageId: Id.optional(),
+  replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
+  /** Sent from the open page: a reply to its card that quotes nothing. */
+  fromPage: z.literal(true).optional(),
+  pageContext: PageReplyContextSchema.optional(),
+  clientNonce: z.string().min(1).max(200).optional(),
+});
+
+const threadSendInput = threadSendFields.superRefine((input, ctx) => {
+  const text = input.text?.trim() ?? "";
+  const artifactIds = input.artifactIds ?? [];
+  if (!text && artifactIds.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Provide text or at least one attachment",
+      path: ["text"],
+    });
+  }
+  if (input.pageContext && input.replyToMessageId) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Page context is only valid without a reply target",
+      path: ["pageContext"],
+    });
+  }
+  if (input.replyQuote && !input.replyToMessageId) {
+    ctx.addIssue({
+      code: "custom",
+      message: "replyQuote requires replyToMessageId",
+      path: ["replyQuote"],
+    });
+  }
+});
+const imageInputFields = {
+  text: threadSendFields.shape.text,
+  mentions: threadSendFields.shape.mentions,
+};
+const imageInputResult = z.object({
+  status: z.enum(["supported", "unsupported", "unknown"]),
+  botId: Id.optional(),
+});
+const threadSendResult = z.object({
+  taskId: Id,
+  runId: Id,
+  seq: z.number().int(),
+  runIds: z.array(Id).optional(),
+  deliveredImageHandling: threadSendFields.shape.imageHandling,
+});
 
 const spaceName = z.string().trim().min(1).max(60);
 
@@ -544,14 +560,27 @@ export const appContract = {
     subscribe: oc
       .input(threadTarget.safeExtend({ cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),
-    send: oc.input(threadSendInput).output(
-      z.object({
-        taskId: Id,
-        runId: Id,
-        seq: z.number().int(),
-        runIds: z.array(Id).optional(),
-      }),
-    ),
+    imageInput: oc
+      .input(
+        z.union([
+          threadTarget.safeExtend({
+            ...imageInputFields,
+            pageContext: PageReplyContextSchema.optional(),
+          }),
+          z.object({ draftGroupBotIds: CreateGroupInput.shape.botIds, ...imageInputFields }),
+        ]),
+      )
+      .output(imageInputResult),
+    send: oc.input(threadSendInput).output(threadSendResult),
+    sendWithRoutines: oc
+      .input(
+        threadSendInput.safeExtend({
+          artifactIds: z.array(Id).min(1).max(ATTACHMENT_MAX_COUNT),
+          clientNonce: threadSendFields.shape.clientNonce.unwrap(),
+          routineIds: z.array(Id).min(1).max(64),
+        }),
+      )
+      .output(threadSendResult),
     react: oc
       .input(
         threadTarget.safeExtend({

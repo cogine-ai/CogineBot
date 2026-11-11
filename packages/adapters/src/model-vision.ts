@@ -1,12 +1,17 @@
 import type { Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { canonicalPiProviderId } from "@rakazo/contracts";
 import {
   CHATGPT_PLAN_CATALOG_MODEL_ID,
   CHATGPT_PLAN_PROVIDER_ID,
+  readChatGPTPlanModels,
 } from "./chatgpt-plan-provider.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
+import { withLiveImageInput } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
+import type { StoredModelSecret } from "./pi-oauth.js";
+import { CHATGPT_OAUTH_PROVIDER } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   registerOpenAiCompatibleCatalog,
@@ -31,6 +36,28 @@ export function modelIdSupportsImages(
   return Boolean(
     normalizedModelId && modelIds?.some((candidate) => candidate.trim() === normalizedModelId),
   );
+}
+
+/** Resolve capability metadata bound to this connection rather than another account. */
+export function connectionModelImageInput(
+  provider: string,
+  modelId: string,
+  credential: { supportsImages?: boolean; defaultModel?: string | null },
+  secret: StoredModelSecret,
+): boolean | undefined {
+  if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && secret.kind === "openai_compatible") {
+    if (secret.visionModelIds !== undefined)
+      return modelIdSupportsImages(secret.visionModelIds, modelId);
+    return credential.supportsImages === true && credential.defaultModel?.trim() === modelId.trim()
+      ? true
+      : undefined;
+  }
+  if (provider === CHATGPT_PLAN_PROVIDER_ID && secret.kind === "oauth") {
+    return readChatGPTPlanModels(secret.credential)
+      .find((model) => model.id === modelId)
+      ?.input?.includes("image");
+  }
+  return undefined;
 }
 
 /** Update the explicit per-model image capability without disturbing other model ids. */
@@ -70,7 +97,7 @@ export function resolveModelRefForVisionCheck(
   provider: string,
   modelId: string,
 ): { provider: string; id: string } {
-  const normalizedProvider = provider.trim();
+  const normalizedProvider = canonicalPiProviderId(provider.trim());
   const normalizedId = modelId.trim();
   if (normalizedProvider === "scripted" || normalizedId === "scripted") {
     return {
@@ -91,7 +118,7 @@ export function resolveModelRefForVisionCheck(
 export function modelAcceptsImageInput(
   provider: string,
   modelId: string,
-  acceptsImages = false,
+  acceptsImages?: boolean,
 ): boolean {
   if (provider.trim() === CHATGPT_PLAN_PROVIDER_ID) {
     return Boolean(
@@ -100,17 +127,12 @@ export function modelAcceptsImageInput(
   }
   const resolved = resolveModelRefForVisionCheck(provider, modelId);
   if (!resolved.provider || !resolved.id) return false;
-  if (acceptsImages && resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID) return true;
+  if (resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID && acceptsImages !== undefined)
+    return acceptsImages;
 
-  const models = catalogModels();
-  let model = models.getModel(resolved.provider, resolved.id);
-  if (
-    !model &&
-    resolved.provider !== "openrouter" &&
-    resolved.provider !== OPENAI_COMPATIBLE_PROVIDER_ID
-  ) {
-    model = models.getModel("openrouter", resolved.id);
-  }
+  let model = catalogModelWithOpenRouterFallback(catalogModels(), resolved.provider, resolved.id);
+  if (model && resolved.provider === CHATGPT_OAUTH_PROVIDER)
+    model = withLiveImageInput(model, acceptsImages);
   return Boolean(model?.input.includes("image"));
 }
 
@@ -120,4 +142,26 @@ export function filterImageReturningComputerTools<T extends { name: string }>(
 ): T[] {
   if (acceptsImages) return tools;
   return tools.filter((tool) => !IMAGE_RETURNING_COMPUTER_TOOLS.has(tool.name));
+}
+
+export function catalogModelWithOpenRouterFallback(models: Models, provider: string, id: string) {
+  let model = models.getModel(provider, id);
+  if (
+    !model &&
+    provider !== "openrouter" &&
+    provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
+    provider !== CHATGPT_PLAN_PROVIDER_ID
+  ) {
+    model = models.getModel("openrouter", id);
+  }
+  return model;
+}
+
+/** Attachment admission distinguishes missing capability evidence from a text-only model. */
+export function knownModelImageInput(provider: string, modelId: string): boolean | undefined {
+  const resolved = resolveModelRefForVisionCheck(provider, modelId);
+  if ([OPENAI_COMPATIBLE_PROVIDER_ID, CHATGPT_PLAN_PROVIDER_ID].includes(resolved.provider))
+    return undefined;
+  const model = catalogModelWithOpenRouterFallback(catalogModels(), resolved.provider, resolved.id);
+  return model ? model.input.includes("image") : undefined;
 }

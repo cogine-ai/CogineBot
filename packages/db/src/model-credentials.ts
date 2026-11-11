@@ -1,5 +1,5 @@
 import { usableModelId } from "@rakazo/contracts";
-import type { PrismaClient } from "./client.js";
+import type { Prisma, PrismaClient } from "./client.js";
 
 export const newestCredentialOrder = [
   { updatedAt: "desc" as const },
@@ -10,6 +10,20 @@ export const newestCredentialOrder = [
 export const newestModelCredentialOrder = newestCredentialOrder;
 
 type ModelCredentialScope = { userId: string; spaceId: string };
+
+/** Hold one Space model selection across all recipients of an image send. */
+export async function lockSpaceModelSelection(
+  tx: Prisma.TransactionClient,
+  scope: ModelCredentialScope,
+  mode: "read" | "write",
+) {
+  const key = JSON.stringify(["space-model-selection", scope.spaceId, scope.userId]);
+  if (mode === "read") {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))::text`;
+  } else {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text`;
+  }
+}
 
 export async function selectSpaceModelPreference(
   prisma: Pick<PrismaClient, "spaceModelPreference">,

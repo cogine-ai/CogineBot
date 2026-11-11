@@ -1,6 +1,13 @@
 import * as z from "zod";
 import { Id, IsoDate, RunStatus } from "./ids.js";
 
+export const runAttemptModelSchema = z.object({
+  leaseFence: z.number().int().nonnegative(),
+  provider: z.string().min(1),
+  modelId: z.string().min(1),
+  modelCredentialId: z.string().nullable(),
+});
+
 export const RUN_TRIGGERS = [
   "user",
   "routine",

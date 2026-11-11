@@ -44,3 +44,14 @@ export function validateThreadsSendInput(input: {
   const artifactIds = input.artifactIds ?? [];
   return Boolean(text || artifactIds.length);
 }
+
+export type ImageHandling = "confirm" | "file";
+export type ImageInputStatus = "supported" | "unsupported" | "unknown";
+
+export const IMAGE_INPUT_PREVIEW_DELAY_MS = 250;
+
+/** Ordinary words leave routing alone; waiting eligibility and typed mentions can change it. */
+export function imageInputRouteKey<T extends { text?: string }>(target: T): string {
+  const { text, ...routing } = target;
+  return JSON.stringify([routing, text?.includes("@") ? text : Boolean(text?.trim())]);
+}

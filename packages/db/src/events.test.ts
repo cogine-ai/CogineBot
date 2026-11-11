@@ -1,4 +1,5 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
+import type { MessageBlock } from "@rakazo/contracts";
 import { encodeLoginSecret } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
@@ -4431,7 +4432,11 @@ describe("steering connection selection metadata", () => {
       originTrigger: null as string | null,
       runId: "run-1" as string | null,
       connectionIds,
-      message: { id: `message-${id}`, seq, blocks: [{ kind: "text", text: `Question ${seq}` }] },
+      message: {
+        id: `message-${id}`,
+        seq,
+        blocks: [{ kind: "text", text: `Question ${seq}` }] as MessageBlock[],
+      },
     };
   }
   function claimFixture(
@@ -4621,6 +4626,43 @@ describe("steering connection selection metadata", () => {
     expect(tx.connection.findMany).toHaveBeenCalledWith({
       where: { id: { in: ["gmail-1", "calendar-1", "slack-1", "gmail-2"] }, ...scope },
       select: { id: true, connectorId: true, provider: true },
+    });
+  });
+
+  it("keeps the admitted image model when a later text message shares the continuation", async () => {
+    const image = steering("image", 1);
+    image.message.blocks = [
+      {
+        kind: "image",
+        imageHandling: "confirm",
+        name: "photo.png",
+        mimeType: "image/png",
+        artifactId: "image-1",
+      },
+    ];
+    const model = {
+      modelProvider: "openrouter",
+      modelId: "openai/gpt-4o",
+      modelCredentialId: "vision-credential",
+      thinkingLevel: null,
+    };
+    const text = steering("text", 2);
+    const { tx, client } = continuationFixture([Object.assign(image, model), text]);
+    await createPendingSteeringRun(client, {
+      spaceId: scope.spaceId,
+      threadId: "thread-1",
+      botId: "bot-1",
+    });
+    expect(tx.run.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ...model,
+        modelPinned: true,
+        sourceMessageId: text.message.id,
+      }),
+    });
+    expect(tx.steeringMessage.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [image.id, text.id] }, runId: null },
+      data: { runId: "continuation-run", claimedAt: null },
     });
   });
 

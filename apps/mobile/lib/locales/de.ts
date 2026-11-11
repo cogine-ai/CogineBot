@@ -1,4 +1,14 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Image use": "Bildverwendung",
+  "Let Bot see images": "Bot soll Bilder sehen",
+  "As file": "Als Datei",
+  "Can see images": "Kann Bilder sehen",
+  "This model cannot see images": "Dieses Modell unterstützt keine Bilder",
+  "This model's image capability is unconfirmed":
+    "Bildunterstützung dieses Modells ist noch nicht bestätigt",
+  "Choose model": "Modell auswählen",
+  "Send as file": "Als Datei senden",
+
   "Computer paused at its runtime limit.":
     "Der Computer wurde beim Erreichen der Laufzeitgrenze pausiert.",
   "Background tasks may have stopped.": "Hintergrundaufgaben wurden möglicherweise beendet.",

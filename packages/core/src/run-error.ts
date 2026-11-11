@@ -6,12 +6,18 @@ import { stuckWorkStatusMessages } from "./stuck-work.js";
 export const MISSING_TOOL_FINAL_RESPONSE_ERROR =
   "The tools finished, but the model did not write a final answer. Rephrase the request and try again.";
 
+export const MODEL_IMAGE_INPUT_UNKNOWN = "Image input is not configured for this model.";
+export const MODEL_IMAGE_INPUT_ERROR =
+  "This model cannot read images. Choose a model that supports images.";
+
 export const MODEL_CONTEXT_TOO_SMALL_ERROR =
   "This model's context window is too small. Choose another model.";
 export const VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR =
   "This server's tool result does not fit the model. Choose another model.";
 
 const APP_RUN_ERRORS = new Set([
+  MODEL_IMAGE_INPUT_UNKNOWN,
+  MODEL_IMAGE_INPUT_ERROR,
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
   COMPUTER_RATE_LIMITED_ERROR_MESSAGE,
   ...stuckWorkStatusMessages(),

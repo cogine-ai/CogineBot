@@ -147,7 +147,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
@@ -209,6 +209,7 @@ import {
   makeComposerDraftKey,
   moveComposerDraft,
   readComposerDraft,
+  writeComposerDraft,
 } from "../lib/composer-draft";
 import {
   cancelPreparedRejectedComposerDraft,
@@ -339,6 +340,7 @@ import {
   RenameSpaceDialog,
 } from "./shell/dialogs";
 import { GroupTitle } from "./shell/group-title";
+import { ImageInputChoice } from "./shell/image-input-choice";
 import { InlineSectionName } from "./shell/inline-section-name";
 import { MentionIdentity, SentMentionText, useBotIdentityTextColor } from "./shell/mention-display";
 import {
@@ -510,6 +512,13 @@ export function ShellPage() {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [imageSendRefusal, setImageSendRefusal] = useState<{
+    draftKey: string;
+    version: number;
+    revision: number;
+    status: "unsupported" | "unknown";
+    botId?: string;
+  }>();
   const [attachmentNotice, setAttachmentNotice] = useState<{
     scopeKey: string;
     text: string;
@@ -3174,7 +3183,7 @@ export function ShellPage() {
   }
 
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
-  const displayedRunError = !sendError ? runError : null;
+  const displayedRunError = !sendError && !composerDraft.deliveryNotice ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
   const handleRunErrorPresented = useCallback((runId: string) => {
     rememberSeenRunErrorId(runId);
@@ -3610,6 +3619,7 @@ export function ShellPage() {
         originThreadKey,
         composerSendSignature({
           text: plan.trimmed,
+          imageHandling: submitted.imageHandling,
           target:
             newChat && newChat.botIds.length > 1 && !reroutedToGroup
               ? { groupId: `new-chat:${newChat.id}:${newChat.botIds.join(",")}` }
@@ -3663,7 +3673,12 @@ export function ShellPage() {
           target = { groupId: groupTarget };
         }
         if (!isCurrentAttempt()) return false;
-        if (plan.shouldRunRoutines) {
+        const sendWithRoutines =
+          plan.shouldRunRoutines &&
+          attachments.some((item) =>
+            inferAttachmentMimeType(item.file.name, item.file.type)?.startsWith("image/"),
+          );
+        if (plan.shouldRunRoutines && !sendWithRoutines) {
           const routineResults = await Promise.allSettled(
             plan.routineIds.map(async (routineId) => {
               if (!isCurrentAttempt()) return;
@@ -3706,25 +3721,45 @@ export function ShellPage() {
             artifactIds.push(artifactId);
           }
           if (!isCurrentAttempt()) return false;
-          const sent = await rpc.threads
-            .send(
-              {
-                ...target,
-                clientNonce: attempt.clientNonce,
-                text: plan.trimmed || undefined,
-                mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
-                artifactIds: artifactIds.length ? artifactIds : undefined,
-                replyToMessageId,
-                ...(isPageReply ? { fromPage: true } : {}),
-                pageContext,
-                replyQuote: replyQuote ?? undefined,
-              },
-              context,
-            )
-            .catch((error: unknown) => {
-              composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
-              throw error;
-            });
+          const input = {
+            ...target,
+            clientNonce: attempt.clientNonce,
+            text: plan.trimmed || undefined,
+            mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
+            artifactIds: artifactIds.length ? artifactIds : undefined,
+            imageHandling: submitted.imageHandling ?? "confirm",
+            replyToMessageId,
+            ...(isPageReply ? { fromPage: true as const } : {}),
+            pageContext,
+            replyQuote: replyQuote ?? undefined,
+          };
+          const sent = await (sendWithRoutines
+            ? rpc.threads.sendWithRoutines(
+                { ...input, artifactIds, routineIds: plan.routineIds },
+                context,
+              )
+            : rpc.threads.send(input, context)
+          ).catch((error: unknown) => {
+            composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
+            const rejection = error as {
+              data?: { reason?: unknown; imageInputStatus?: unknown; botId?: unknown };
+            } | null;
+            if (
+              isCurrentAttempt() &&
+              stillHere() &&
+              rejection?.data?.reason === "model_image_input_unsupported"
+            ) {
+              const { imageInputStatus, botId } = rejection.data;
+              setImageSendRefusal((previous) => ({
+                draftKey: originThreadKey,
+                version: submitted.version,
+                revision: (previous?.revision ?? 0) + 1,
+                status: imageInputStatus === "unsupported" ? "unsupported" : "unknown",
+                botId: typeof botId === "string" ? botId : undefined,
+              }));
+            }
+            throw error;
+          });
           if (!isCurrentAttempt()) return false;
           if (!sent?.runId || !sent?.taskId) throw new Error(t`Failed to send message`);
           if (botTarget && stillHere()) {
@@ -3735,6 +3770,27 @@ export function ShellPage() {
                 terminalRunReceipts.current,
               ),
             );
+          }
+          if (sent.deliveredImageHandling && sent.deliveredImageHandling !== input.imageHandling) {
+            // The nonce was acknowledged, but the requested change was not sent.
+            // Keep the draft and retire the acknowledged attempt.
+            succeeded = true;
+            writeComposerDraft(originThreadKey, {
+              deliveryNotice: {
+                imageHandling: sent.deliveredImageHandling,
+                chatPath:
+                  newChat || reroutedToGroup
+                    ? groupTarget
+                      ? `/app/g/${groupTarget}`
+                      : botTarget
+                        ? `/app/${botTarget}`
+                        : undefined
+                    : undefined,
+              },
+            });
+            if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
+            else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
+            return false;
           }
         }
         succeeded = true;
@@ -3896,6 +3952,20 @@ export function ShellPage() {
     const id = message.botId ?? activeBotId.current;
     if (text && id) void speaker.speak(text, { botId: id, messageId: message.id });
   }, []);
+
+  function openChatSettings(target: { botId: string } | { groupId: string }) {
+    const isBot = "botId" in target;
+    const id = isBot ? target.botId : target.groupId;
+    const destKey =
+      userId && bootstrapMe?.spaceId
+        ? rightPanelStorageKey(userId, bootstrapMe.spaceId, isBot ? "bot" : "group", id)
+        : null;
+    explicitPanelTarget.current = destKey;
+    pendingPanelRestore.current = null;
+    navigate(isBot ? `/app/${id}` : `/app/g/${id}`);
+    setPanelState(isBot ? "settings" : "group-settings");
+    setRestoredPanelKey(destKey);
+  }
 
   function openNewChat() {
     setPanel(null);
@@ -6016,6 +6086,22 @@ export function ShellPage() {
                 Boolean(recordingSkill) ||
                 (inNewChat && pendingChat.botIds.length === 0)
               }
+              imageAdmissionTarget={
+                !inNewChat
+                  ? transcriptArtifactTarget
+                  : pendingChat.groupId
+                    ? { groupId: pendingChat.groupId }
+                    : pendingChat.botIds.length > 1
+                      ? { draftGroupBotIds: pendingChat.botIds }
+                      : { botId: pendingChat.botIds[0] }
+              }
+              imageAdmissionRevision={JSON.stringify([
+                active?.modelProvider,
+                active?.modelId,
+                active?.modelCredentialId,
+                activeSnapshot?.run,
+                panel,
+              ])}
               pendingAttachments={activePendingAttachments}
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
@@ -6024,6 +6110,17 @@ export function ShellPage() {
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
+              imageAdmissionMessages={activeSnapshot?.messages}
+              imageSendRefusal={
+                imageSendRefusal?.draftKey === draftScopeKey &&
+                imageSendRefusal?.version === composerDraft.version
+                  ? imageSendRefusal
+                  : undefined
+              }
+              onChooseImageModel={(targetBotId) => {
+                if (targetBotId) openChatSettings({ botId: targetBotId });
+                else openSettings("models");
+              }}
               onRunErrorPresented={handleRunErrorPresented}
               onDismissError={dismissComposerError}
               sending={sending}
@@ -6675,21 +6772,7 @@ export function ShellPage() {
               setBotMenu(null);
             }}
             onEdit={() => {
-              const destKey =
-                userId && bootstrapMe?.spaceId
-                  ? rightPanelStorageKey(
-                      userId,
-                      bootstrapMe.spaceId,
-                      contextBot ? "bot" : "group",
-                      contextChat.id,
-                    )
-                  : null;
-              explicitPanelTarget.current = destKey;
-              pendingPanelRestore.current = null;
-              navigate(contextBot ? `/app/${contextBot.id}` : `/app/g/${contextGroup!.id}`);
-              // Mark the destination key restored so we do not write settings onto the source chat.
-              setPanelState(contextBot ? "settings" : "group-settings");
-              setRestoredPanelKey(destKey);
+              openChatSettings(contextBot ? { botId: contextBot.id } : { groupId: contextChat.id });
               setBotMenu(null);
             }}
             onDuplicate={() => {
@@ -7989,6 +8072,10 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 });
 
 export const Composer = memo(function Composer({
+  imageAdmissionRevision = "",
+  imageAdmissionTarget,
+  imageAdmissionMessages,
+  imageSendRefusal,
   pageSession,
   draftKey,
   active,
@@ -8004,6 +8091,7 @@ export const Composer = memo(function Composer({
   runError,
   runErrorId,
   onAddKey,
+  onChooseImageModel,
   onRunErrorPresented,
   onDismissError,
   sending,
@@ -8022,6 +8110,10 @@ export const Composer = memo(function Composer({
   onSlashOpen,
   onSlashAction,
 }: {
+  imageAdmissionRevision?: string;
+  imageAdmissionTarget?: Parameters<typeof rpc.threads.imageInput>[0];
+  imageAdmissionMessages?: readonly ThreadMessage[];
+  imageSendRefusal?: { revision: number; status: "unsupported" | "unknown"; botId?: string };
   pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
@@ -8036,6 +8128,7 @@ export const Composer = memo(function Composer({
   runError: string | null;
   runErrorId: string | null;
   onAddKey?: () => void;
+  onChooseImageModel?: (botId?: string) => void;
   onRunErrorPresented: (runId: string) => void;
   onDismissError: () => void;
   sending: boolean;
@@ -8437,7 +8530,7 @@ export const Composer = memo(function Composer({
       <div role="status" data-testid="composer-announcement" className="sr-only">
         {replyAnnouncement}
       </div>
-      {sendError || runError ? (
+      {sendError || draftState.deliveryNotice || runError ? (
         <div
           ref={runErrorRef}
           role="alert"
@@ -8450,6 +8543,19 @@ export const Composer = memo(function Composer({
             ) : (
               <span className="min-w-0 flex-1">{sendError}</span>
             )
+          ) : draftState.deliveryNotice ? (
+            <>
+              <span className="min-w-0 flex-1">
+                {draftState.deliveryNotice.imageHandling === "confirm"
+                  ? t`Already sent as an image. Your draft is kept.`
+                  : t`Already sent as a file. Your draft is kept.`}
+              </span>
+              {draftState.deliveryNotice.chatPath ? (
+                <Link to={draftState.deliveryNotice.chatPath} className="shrink-0 underline">
+                  {t`View chat`}
+                </Link>
+              ) : null}
+            </>
           ) : runError ? (
             <RunErrorDetails key={runError} error={runError} onAddKey={onAddKey} />
           ) : null}
@@ -8458,7 +8564,9 @@ export const Composer = memo(function Composer({
             aria-label={t`Dismiss error`}
             data-testid="composer-error-dismiss"
             onClick={() => {
-              onDismissError();
+              if (!sendError && draftState.deliveryNotice)
+                onDraftChange({ deliveryNotice: undefined });
+              else onDismissError();
               window.requestAnimationFrame(() => textareaRef.current?.focus());
             }}
             className="shrink-0 text-destructive hover:text-foreground"
@@ -8657,6 +8765,43 @@ export const Composer = memo(function Composer({
                   ))}
                 </div>
               ) : null}
+              {pendingAttachments.some((item) =>
+                inferAttachmentMimeType(item.file.name, item.file.type)?.startsWith("image/"),
+              ) ? (
+                <ImageInputChoice
+                  value={draftState.imageHandling ?? "confirm"}
+                  revision={JSON.stringify([
+                    draftKey,
+                    imageAdmissionRevision,
+                    imageSendRefusal?.revision,
+                  ])}
+                  refusal={imageSendRefusal}
+                  onChange={(imageHandling) => onDraftChange({ imageHandling })}
+                  onChooseModel={onChooseImageModel}
+                  target={(() => {
+                    const plan = resolveComposerSendPlan({
+                      text: serializeComposerPrompt(draft, selectedSkill, selectedMentions),
+                      mentions: selectedMentions,
+                      hasAttachments: true,
+                    });
+                    const page = !plan.rerouteGroupId
+                      ? pageSession?.send(
+                          plan.trimmed,
+                          imageAdmissionMessages ?? [],
+                          replyTarget?.id,
+                        )
+                      : undefined;
+                    return {
+                      ...(plan.rerouteGroupId
+                        ? { groupId: plan.rerouteGroupId }
+                        : (imageAdmissionTarget ?? artifactTarget)),
+                      text: plan.trimmed,
+                      pageContext: page?.pageContext,
+                      mentions: plan.mentionPayload,
+                    };
+                  })()}
+                />
+              ) : null}
             </div>
           ) : null}
           <input
@@ -8824,7 +8969,11 @@ export const Composer = memo(function Composer({
               <>
                 <Button
                   size="icon"
-                  aria-label={t`Send`}
+                  aria-label={
+                    draftState.imageHandling === "file" && pendingAttachments.length
+                      ? t`Send as file`
+                      : t`Send`
+                  }
                   disabled={sending || !canSend || disabled}
                   onClick={send}
                   className="size-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95"
@@ -8845,7 +8994,11 @@ export const Composer = memo(function Composer({
             ) : (
               <Button
                 size="icon"
-                aria-label={t`Send`}
+                aria-label={
+                  draftState.imageHandling === "file" && pendingAttachments.length
+                    ? t`Send as file`
+                    : t`Send`
+                }
                 disabled={sending || !canSend || disabled}
                 onClick={send}
                 className="size-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm transition-transform active:scale-95 disabled:bg-accent disabled:text-muted-foreground/40 disabled:shadow-none"

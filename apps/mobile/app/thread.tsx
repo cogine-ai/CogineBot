@@ -6,6 +6,8 @@ import type {
   Connection,
   ConnectionCatalogItem,
   DelegatedApproval,
+  ImageHandling,
+  ImageInputStatus,
   MessageBlock,
   MessageReaction,
   Routine,
@@ -13,9 +15,11 @@ import type {
 import {
   canReactToThreadMessage,
   DelegatedApprovalAction,
+  IMAGE_INPUT_PREVIEW_DELAY_MS,
+  imageInputRouteKey,
   MESSAGE_REACTIONS,
 } from "@rakazo/contracts";
-import type { AnnouncementEvent, SlashActionId, ThreadItem } from "@rakazo/core";
+import type { AnnouncementEvent, ComposerMention, SlashActionId, ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
   appendNewerThreadPage,
@@ -111,6 +115,7 @@ import { ComposerReplyPreview } from "../components/composer-reply-preview";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
+import { ImageInputChoice } from "../components/image-input-choice";
 import { InlineImageAttachment } from "../components/inline-image-attachment";
 import { McpApprovalCard } from "../components/McpApprovalCard";
 import type { MarkdownArtifactPreviewTarget } from "../components/markdown-artifact-preview";
@@ -693,6 +698,7 @@ function Thread({
   sessionEpoch: number;
   profileScope: MobileScope | null;
 }) {
+  const focused = useIsFocused();
   const colorScheme = useResolvedAppearance();
   const tokens = mobileTokens();
   const styles = useThemedStyles(createThreadHeaderStyles);
@@ -936,9 +942,81 @@ function Thread({
   );
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
+  const [imageChoice, setImageChoice] = useState<{
+    thread: string | undefined;
+    value: ImageHandling;
+  }>({ thread: threadKey, value: "confirm" });
+  const imageHandling = imageChoice.thread === threadKey ? imageChoice.value : "confirm";
+  const [imageAdmission, setImageAdmission] = useState<{
+    key: string;
+    status: ImageInputStatus;
+    botId?: string;
+  }>();
+  const hasPendingImages = activePendingAttachments.some((item) =>
+    item.mimeType.startsWith("image/"),
+  );
+
   const composerRef = useRef<ThreadComposerHandle>(null);
+  const [imageQuery, setImageQuery] = useState("");
+  const imageTarget = imageQuery
+    ? (JSON.parse(imageQuery) as { text?: string; botId?: string })
+    : undefined;
+  const imageAdmissionKey = JSON.stringify([
+    threadKey,
+    imageTarget ? imageInputRouteKey(imageTarget) : null,
+    snap?.run,
+    focused,
+    mentionBots.find((bot) => bot.id === botId),
+  ]);
+  useEffect(() => {
+    if (!hasPendingImages || !imageQuery) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void rpc<{ status: ImageInputStatus; botId?: string }>(
+        "threads/imageInput",
+        JSON.parse(imageQuery),
+      ).then(
+        ({ status, botId }) => {
+          if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status, botId });
+        },
+        () => {
+          if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status: "unknown" });
+        },
+      );
+    }, IMAGE_INPUT_PREVIEW_DELAY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [hasPendingImages, imageQuery, imageAdmissionKey]);
+  const previewModelBotId =
+    (imageAdmission?.key === imageAdmissionKey ? imageAdmission.botId : undefined) ??
+    imageTarget?.botId;
   useChatOnScreen();
   const replyPage = useRef<{ page: { id: string; title: string }; scope: string } | null>(null);
+  const updateImageQuery = useCallback(
+    (text: string, mentions: ComposerMention[]) => {
+      const plan = resolveComposerSendPlan({ text, mentions, hasAttachments: true });
+      const selectedPage = replyPage.current;
+      const page =
+        !plan.rerouteGroupId && selectedPage?.scope === previewScope
+          ? pageReply(plan.trimmed, snap?.messages ?? [], selectedPage.page, replyTarget?.id)
+          : undefined;
+      setImageQuery(
+        JSON.stringify({
+          ...(plan.rerouteGroupId
+            ? { groupId: plan.rerouteGroupId }
+            : groupId
+              ? { groupId }
+              : { botId }),
+          text: plan.trimmed,
+          pageContext: page?.pageContext,
+          mentions: plan.mentionPayload,
+        }),
+      );
+    },
+    [botId, groupId, previewScope, replyTarget?.id, snap?.messages],
+  );
   const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
   const composerEmptied = useCallback(() => {
     replyPage.current = null;
@@ -2136,6 +2214,7 @@ function Thread({
         reroutedToGroup,
         plan,
         attachments,
+        imageHandling: submitted.imageHandling ?? "confirm",
         replyTargetId: pageCard?.id ?? replyTarget?.id,
         replyQuote: pageCard ? null : replyQuote,
         fromPage: pageCard ? true : undefined,
@@ -2146,6 +2225,7 @@ function Thread({
       return;
     }
     composerRef.current?.reset();
+    setImageChoice({ thread: originThreadKey, value: "confirm" });
     replyPage.current = null;
     setPendingAttachments((current) =>
       current.filter((attachment) => !submitted.attachmentIds.includes(attachment.id)),
@@ -2492,6 +2572,7 @@ function Thread({
         scope,
         sessionGeneration: currentSessionGeneration(),
         content: {
+          imageHandling,
           text:
             quote === null
               ? text
@@ -2530,6 +2611,7 @@ function Thread({
         !composer?.restoreEditableTextIfEmpty(content.text, () => verifiedDraftScope() !== null)
       )
         return false;
+      setImageChoice({ thread: threadKey, value: content.imageHandling ?? "confirm" });
       setPendingAttachments(
         content.attachments.map((attachment) => ({
           ...attachment,
@@ -2918,14 +3000,33 @@ function Thread({
       </Pressable>
     ) : null;
 
-  const failedSendBubbles = feedback.unsentSends.map((attempt) => (
-    <FailedSendBubble
-      key={attempt.clientNonce}
-      attempt={attempt}
-      onRetry={() => void deliver(attempt, true)}
-      onDelete={() => feedback.discard(attempt)}
-    />
-  ));
+  const failedSendBubbles = feedback.unsentSends.map((attempt) => {
+    const targetBot = attempt.imageInputBotId ?? attempt.payload.botTarget;
+    return (
+      <FailedSendBubble
+        key={attempt.clientNonce}
+        attempt={attempt}
+        onRetry={() => void deliver(attempt, true)}
+        onChooseModel={
+          targetBot
+            ? () => router.push({ pathname: "/bot-settings", params: { botId: targetBot } })
+            : undefined
+        }
+        onRetryAsFile={
+          readOnly
+            ? undefined
+            : () => {
+                if (!attempt.imageInputStatus || attempt.state !== "failed") return;
+                attempt.payload = { ...attempt.payload, imageHandling: "file" };
+                attempt.imageInputStatus = undefined;
+                attempt.imageInputBotId = undefined;
+                void deliver(attempt, true);
+              }
+        }
+        onDelete={() => feedback.discard(attempt)}
+      />
+    );
+  });
 
   return (
     <KeyboardAvoidingView
@@ -3272,7 +3373,22 @@ function Thread({
             />
           </View>
         ) : null}
+        {hasPendingImages ? (
+          <ImageInputChoice
+            value={imageHandling}
+            status={imageAdmission?.key === imageAdmissionKey ? imageAdmission.status : "unknown"}
+            onChange={(value) => setImageChoice({ thread: threadKey, value })}
+            onChooseModel={
+              previewModelBotId
+                ? () =>
+                    router.push({ pathname: "/bot-settings", params: { botId: previewModelBotId } })
+                : undefined
+            }
+          />
+        ) : null}
         <ThreadComposer
+          imageHandling={imageHandling}
+          onImageQuery={hasPendingImages ? updateImageQuery : undefined}
           onEmptied={composerEmptied}
           key={threadKey}
           ref={composerRef}

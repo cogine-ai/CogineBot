@@ -987,18 +987,28 @@ export async function rpc<T>(
   const uses = aiDataUsesForProcedure(proc, body);
   const consentContext =
     options.requestContext ?? (uses.length ? await captureApiRequestContext() : undefined);
-  await ensureAiDataConsent({
-    uses,
-    status: () =>
-      rpc(
-        "aiConsent/status",
-        { uses, ...aiConsentTarget(body) },
-        { requestContext: consentContext },
-      ),
-    prompt: promptAiConsent,
-    allow: (input) => rpc("aiConsent/allow", input, { requestContext: consentContext }),
-    coalesceKey: consentContext ? aiConsentCoalesceKey(consentContext) : undefined,
-  });
+  const targets = [aiConsentTarget(body)];
+  if (
+    proc === "threads/sendWithRoutines" &&
+    body &&
+    typeof body === "object" &&
+    "routineIds" in body &&
+    Array.isArray(body.routineIds)
+  ) {
+    for (const routineId of new Set(body.routineIds)) {
+      if (typeof routineId === "string") targets.push({ routineId });
+    }
+  }
+  for (const target of targets) {
+    await ensureAiDataConsent({
+      uses,
+      status: () =>
+        rpc("aiConsent/status", { uses, ...target }, { requestContext: consentContext }),
+      prompt: promptAiConsent,
+      allow: (input) => rpc("aiConsent/allow", input, { requestContext: consentContext }),
+      coalesceKey: consentContext ? aiConsentCoalesceKey(consentContext) : undefined,
+    });
+  }
   // Abort with an explicit reason so every consumer of the signal (the fetch, the bounded body
   // read, and nested recovery calls that share this signal) reports the same cause.
   const controller = new AbortController();

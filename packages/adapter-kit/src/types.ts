@@ -490,6 +490,8 @@ export interface AgentSteeringMessage {
   /** Persisted history text before attachment paths are appended. */
   historyText?: string;
   images?: AgentInputImage[];
+  /** Explicit image intent remains binding even if the attachment cannot be hydrated. */
+  requiresImageInput?: true;
 }
 
 /** Adapter-supplied cache policy metadata; absent fields mean unknown. */
@@ -599,6 +601,8 @@ export interface AgentRunRequest {
     images?: AgentInputImage[];
   }>;
   currentTurnImages?: AgentInputImage[];
+  /** Explicit image intent bound to this Run survives checkpoints and model fallback. */
+  currentRunRequiresImageInput?: boolean;
   tools: ConnectorTool[];
   model: AgentRunModel;
   /** Bind resumed model work, or an explicitly approved checkpoint, to its original route. */

@@ -642,6 +642,7 @@ async function buildApp(
     openApiNow,
     cloudAgent,
     codexCatalog,
+    scriptedRuntime: runtime.describe().capabilities.scripted,
     prisma,
     events,
     ticketChanges,

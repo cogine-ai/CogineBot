@@ -197,6 +197,56 @@ describe("scoped mobile outbox", () => {
     root = createRoot(container);
     act(() => root.render(<Probe threadKey="bot-1" />));
   });
+  it.each([false, true])(
+    "retains a refused image and reuses its artifact on file retry (routine: %s)",
+    async (withRoutine) => {
+      request.mockImplementation(async (proc, body) => {
+        if (proc === "artifacts/create") return { id: "artifact-a" };
+        if (body.imageHandling === "file") return { seq: 77 };
+        throw Object.assign(new Error("Image input not configured"), {
+          status: 409,
+          data: { reason: "model_image_input_unsupported", imageInputStatus: "unknown" },
+        });
+      });
+      const draft = payload();
+      if (withRoutine) {
+        draft.plan.shouldRunRoutines = true;
+        draft.plan.routineIds = ["routine-a"];
+      }
+      const attempt = feedback.sendAttempt({ ...draft, imageHandling: "confirm" });
+      await act(async () => {
+        await feedback.send(attempt);
+      });
+      expect(attempt.state).toBe("failed");
+      expect(attempt.imageInputStatus).toBe("unknown");
+      expect(attempt.payload.attachments[0]!.name).toBe("photo.png");
+      expect(attempt.artifactIds.get("attachment-1")).toBe("artifact-a");
+      attempt.payload = { ...attempt.payload, imageHandling: "file" };
+      attempt.imageInputStatus = undefined;
+      await act(async () => {
+        await feedback.send(attempt, true);
+      });
+      const sends = request.mock.calls
+        .filter(
+          ([method]) => method === (withRoutine ? "threads/sendWithRoutines" : "threads/send"),
+        )
+        .map(([, body]) => body);
+      expect(sends).toHaveLength(2);
+      expect(request.mock.calls.some(([method]) => method === "routines/testRun")).toBe(false);
+      if (withRoutine) {
+        for (const send of sends) expect(send.routineIds).toEqual(["routine-a"]);
+      }
+      expect(sends[1]).toMatchObject({
+        imageHandling: "file",
+        clientNonce: sends[0].clientNonce,
+        artifactIds: sends[0].artifactIds,
+      });
+      expect(request.mock.calls.filter(([method]) => method === "artifacts/create")).toHaveLength(
+        1,
+      );
+    },
+  );
+
   afterEach(() => {
     act(() => root.unmount());
     clearFailedSends();
@@ -384,6 +434,14 @@ describe("scoped mobile outbox", () => {
       if (boundary === "routine") {
         attempt.payload.plan.shouldRunRoutines = true;
         attempt.payload.plan.routineIds = ["routine-a"];
+        attempt.payload.attachments = [
+          {
+            id: "attachment-1",
+            name: "report.pdf",
+            mimeType: "application/pdf",
+            contentBase64: "fake",
+          },
+        ];
       }
       const error = Object.assign(new Error("Page unavailable"), {
         status: boundary === "otherStatus" ? 408 : 404,
@@ -537,6 +595,47 @@ describe("scoped mobile outbox", () => {
     expect(container.textContent).toBe("");
     expect(disk.clear).toHaveBeenCalled();
   });
+  it("clears an earlier image refusal when a later retry has an unknown result", async () => {
+    const attempt = feedback.sendAttempt({ ...payload(), imageHandling: "confirm" });
+    request
+      .mockResolvedValueOnce({ id: "artifact-a" })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Image input not configured"), {
+          status: 409,
+          data: {
+            reason: "model_image_input_unsupported",
+            imageInputStatus: "unknown",
+            botId: "bot-1",
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new TypeError("Network request failed"));
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    expect(attempt.imageInputStatus).toBe("unknown");
+    expect(attempt.imageInputBotId).toBe("bot-1");
+    await act(async () => {
+      await feedback.send(attempt, true);
+    });
+    expect(attempt.state).toBe("queued");
+    expect(attempt.imageInputStatus).toBeUndefined();
+    expect(attempt.imageInputBotId).toBeUndefined();
+    expect(attempt.payload.imageHandling).toBe("confirm");
+    await act(async () => {
+      await sendWaitingMessages(true);
+    });
+    const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
+    expect(sends).toHaveLength(3);
+    expect(
+      sends.every(
+        ([, input]) =>
+          input.imageHandling === "confirm" && input.clientNonce === attempt.clientNonce,
+      ),
+    ).toBe(true);
+    expect(request.mock.calls.filter(([proc]) => proc === "artifacts/create")).toHaveLength(1);
+  });
+
   it("reports real errors and reuses uploaded artifacts on manual retry", async () => {
     const attempt = feedback.sendAttempt(payload());
     request

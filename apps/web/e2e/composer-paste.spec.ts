@@ -106,10 +106,19 @@ async function expectAttachmentLayout(
   expect(attachmentBox!.y + attachmentBox!.height).toBeLessThanOrEqual(inputBox!.y);
   expect(barBox!.x + barBox!.width).toBeLessThanOrEqual(viewportWidth);
   for (const card of await cards.all()) {
-    const cardBox = await card.boundingBox();
-    expect(cardBox).not.toBeNull();
-    expect(cardBox!.width).toBe(48);
-    expect(cardBox!.height).toBe(48);
+    const tileBox = await card.getByTestId("attachment-preview-tile").boundingBox();
+    expect(tileBox).not.toBeNull();
+    expect(tileBox!.width).toBe(48);
+    expect(tileBox!.height).toBe(48);
+    if ((await card.getAttribute("data-kind")) === "image") {
+      const name = await card.getByRole("img").getAttribute("alt");
+      await expect(card.getByText(name!, { exact: true })).toBeVisible();
+    } else {
+      const cardBox = await card.boundingBox();
+      expect(cardBox).not.toBeNull();
+      expect(cardBox!.width).toBe(48);
+      expect(cardBox!.height).toBe(48);
+    }
   }
   const inputGeometry = await composer.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -280,6 +289,9 @@ test("pending attachment cards share the composer, retain drafts and keep the fo
   await expect(notice).toBeVisible();
   await expect(notice).toContainText("4");
   expect((await notice.innerText()).length).toBeLessThan(80);
+  await expect(attachments.getByTestId("image-input-choice").getByRole("status")).toHaveText(
+    "Can see images",
+  );
   await captureScreenshot(page, testInfo, "composer-attachments-four-file-limit");
 
   const removePdf = pdf.getByRole("button", { name: `Remove ${pdfName}`, exact: true });

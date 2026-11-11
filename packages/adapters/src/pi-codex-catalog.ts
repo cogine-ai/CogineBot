@@ -419,6 +419,20 @@ function codexAccountHandle(
  * `modelId` — the selection/run-time half of the models.list overlay, consulted
  * only when the static auth gate already rejected a catalog model.
  */
+export async function codexLiveModel(
+  catalog: CodexLiveCatalog | undefined,
+  userId: string,
+  secret: StoredModelSecret,
+  modelId: string,
+  opts?: CodexLiveReadOptions,
+): Promise<CodexCatalogModel | undefined> {
+  if (!catalog || secret.kind !== "oauth") return undefined;
+  const account = codexAccountHandle(secret.credential, opts?.onExpiredToken);
+  if (!account) return undefined;
+  const models = await catalog.read(userId, account, opts).catch(() => undefined);
+  return models?.find((model) => model.slug === modelId);
+}
+
 export async function codexLiveListsModel(
   catalog: CodexLiveCatalog | undefined,
   userId: string,
@@ -426,11 +440,7 @@ export async function codexLiveListsModel(
   modelId: string,
   opts?: CodexLiveReadOptions,
 ): Promise<boolean> {
-  if (!catalog || secret.kind !== "oauth") return false;
-  const account = codexAccountHandle(secret.credential, opts?.onExpiredToken);
-  if (!account) return false;
-  const models = await catalog.read(userId, account, opts).catch(() => undefined);
-  return Boolean(models?.some((model) => model.slug === modelId));
+  return Boolean(await codexLiveModel(catalog, userId, secret, modelId, opts));
 }
 
 /**

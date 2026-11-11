@@ -6,6 +6,7 @@ import {
   captureScreenshot,
   completeOnboarding,
   createNamedBot,
+  openNewGroup,
   rpc,
   signup,
 } from "./helpers";
@@ -16,6 +17,152 @@ async function openComposer(page: Page, prefix: string) {
   const composer = page.getByRole("combobox", { name: /Message/ });
   await expect(composer).toBeVisible();
   return composer;
+}
+
+for (const routeKind of ["existing chat", "new chat"] as const) {
+  test(`an image receipt after a lost response keeps the file draft: ${routeKind}`, async ({
+    page,
+  }, testInfo) => {
+    await openComposer(page, `image-receipt-${routeKind.replace(" ", "-")}`);
+    const botId = activeBotId(page);
+    const partner = await rpc<{ id: string }>(page, "bots/create", {
+      name: "Researcher",
+      title: "",
+      description: "",
+      notifyOnFinish: true,
+    });
+    await page.reload();
+    await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+    const newChat = routeKind === "new chat";
+    if (newChat) {
+      await openNewGroup(page);
+      await page.getByTestId("recipient-search").click();
+      for (const id of [botId, partner.id])
+        await page.getByTestId(`recipient-option-${id}`).click();
+    }
+    const composer = page.getByTestId("composer-bar").getByRole("combobox");
+    const requests: Array<{
+      clientNonce: string;
+      imageHandling: string;
+      artifactIds: string[];
+      groupId?: string;
+    }> = [];
+    let releaseReplay!: () => void;
+    let confirmReplay!: () => void;
+    const replayReady = new Promise<void>((resolve) => {
+      confirmReplay = resolve;
+    });
+    const replayReleased = new Promise<void>((resolve) => {
+      releaseReplay = resolve;
+    });
+    await page.route("**/rpc/threads/send", async (route) => {
+      requests.push(route.request().postDataJSON().json);
+      const ordinal = requests.length;
+      if (ordinal > 2) return route.continue();
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      const { json } = await response.json();
+      expect(json.deliveredImageHandling).toBe("confirm");
+      if (ordinal === 1) return route.abort("failed");
+      if (!newChat) {
+        confirmReplay();
+        await replayReleased;
+      }
+      await route.fulfill({ response });
+    });
+    const text = "Review this receipt";
+    await composer.fill(text);
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "receipt.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
+    const choice = page.getByTestId("image-input-choice");
+    await expect(choice.getByRole("status")).toHaveText("Can see images");
+    await composer.press("Enter");
+    const error = page.getByTestId("composer-error");
+    await expect(error).toBeVisible();
+    await choice.getByRole("button", { name: "As file", exact: true }).click();
+    await page.getByRole("button", { name: "Send as file", exact: true }).click();
+    if (!newChat) {
+      await replayReady;
+      const sidebar = page.getByTestId("bots-sidebar");
+      const partnerComposer = page.getByRole("combobox", {
+        name: "Message Researcher",
+        exact: true,
+      });
+      let originRefreshed: Promise<unknown>;
+      try {
+        await sidebar.locator(`[data-roster-bot-id="${partner.id}"]`).click();
+        await partnerComposer.fill("An unrelated draft");
+        // The mismatch handler refreshes the delivered thread after recording its receipt.
+        originRefreshed = page.waitForRequest(
+          (request) =>
+            request.url().endsWith("/rpc/threads/get") &&
+            request.postDataJSON().json.botId === botId,
+        );
+      } finally {
+        releaseReplay();
+      }
+      await originRefreshed;
+      await expect(partnerComposer).toHaveValue("An unrelated draft");
+      await expect(page.getByTestId("composer-error")).toHaveCount(0);
+      await sidebar.locator(`[data-roster-bot-id="${botId}"]`).click();
+    }
+    await expect(error).toHaveText(/Already sent as an image\. Your draft is kept\./);
+    await expect(composer).toHaveValue(text);
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+    expect(requests.map((request) => request.imageHandling)).toEqual(["confirm", "file"]);
+    expect(requests[1]!.clientNonce).toBe(requests[0]!.clientNonce);
+    expect(requests[1]!.artifactIds).toEqual(requests[0]!.artifactIds);
+    const groupId = requests[0]!.groupId;
+    const target = groupId ? { groupId } : { botId };
+    const before = await rpc<ThreadSnapshot>(page, "threads/get", target);
+    const inputs = (snapshot: ThreadSnapshot) =>
+      snapshot.messages.filter(
+        (message) =>
+          message.role === "user" &&
+          message.blocks.some((block) => block.kind === "text" && block.text === text),
+      );
+    expect(inputs(before)).toHaveLength(1);
+    expect(inputs(before)[0]!.blocks).toContainEqual(
+      expect.objectContaining({
+        kind: "image",
+        artifactId: requests[0]!.artifactIds[0],
+      }),
+    );
+    if (newChat) {
+      expect(groupId).toBeTruthy();
+      const link = error.getByRole("link", { name: "View chat" });
+      await expect(link).toHaveAttribute("href", `/app/g/${groupId}`);
+      await captureScreenshot(page, testInfo, "image-input-replay-new-chat");
+      await link.click();
+      await expect(page).toHaveURL(new RegExp(`/app/g/${groupId}$`));
+      await expect(page.getByText(text, { exact: true })).toBeVisible();
+      await openNewGroup(page);
+      await expect(composer).toHaveValue(text);
+      await expect(error).toHaveText(/Already sent as an image\. Your draft is kept\./);
+    } else {
+      await captureScreenshot(page, testInfo, "image-input-replay-confirmed");
+    }
+    await page.getByRole("button", { name: "Send as file", exact: true }).click();
+    await expect(composer).toHaveValue("");
+    await expect(error).toHaveCount(0);
+    expect(requests[2]!.clientNonce).not.toBe(requests[0]!.clientNonce);
+    const after = await rpc<ThreadSnapshot>(page, "threads/get", target);
+    expect(inputs(after)).toHaveLength(2);
+    expect(
+      inputs(after)
+        .flatMap((message) => message.blocks)
+        .filter((block) => block.kind === "file"),
+    ).toHaveLength(1);
+  });
 }
 
 test("bootstrap failure recovers the trusted Space before sending a preserved attachment", async ({
@@ -349,5 +496,121 @@ for (const target of ["bot", "group"] as const) {
     expect(versions).toHaveLength(1);
     expect(versions[0]?.version).toBe(1);
     await captureScreenshot(page, testInfo, `composer-${target}-lost-upload-receipt`);
+  });
+}
+
+for (const viewport of [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "phone", width: 390, height: 844 },
+]) {
+  test(`image intent keeps the rejected draft and sends the same artifact as a file (${viewport.name})`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await signup(
+      page,
+      `image-intent-${viewport.name}-${Date.now()}@example.test`,
+      "password12",
+      "Image Sender",
+    );
+    await completeOnboarding(page);
+    const composer = page.getByRole("combobox", { name: /Message/ });
+    const routine = viewport.name === "desktop" ? await createRoutine(page, "daily-digest") : null;
+    if (routine) {
+      await page.reload();
+      await mentionRoutine(page, composer, routine.name);
+      await expect(page.getByTestId("mention-chip")).toHaveText(routine.name);
+    }
+    const requests: Array<{
+      imageHandling: string;
+      artifactIds: string[];
+      clientNonce: string;
+      routineIds?: string[];
+    }> = [];
+    const standaloneRoutines: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/routines/testRun")) standaloneRoutines.push(request.url());
+    });
+    await page.route("**/rpc/threads/imageInput", (route) =>
+      route.fulfill({ json: { json: { status: "unsupported" } } }),
+    );
+    const sendRoute = routine ? "**/rpc/threads/sendWithRoutines" : "**/rpc/threads/send";
+    await page.route(sendRoute, (route) => {
+      const body = route.request().postDataJSON().json;
+      requests.push(body);
+      if (body.imageHandling === "file") return route.continue();
+      return route.fulfill({
+        status: 409,
+        json: {
+          json: {
+            defined: false,
+            code: "CONFLICT",
+            status: 409,
+            message: "This model cannot read images. Choose a model that supports images.",
+            data: { reason: "model_image_input_unsupported", imageInputStatus: "unsupported" },
+          },
+        },
+      });
+    });
+    await composer.fill("Keep this invoice with my draft");
+    await page
+      .getByTestId("composer-bar")
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: "invoice.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      });
+    await expect(
+      page.getByTestId("attachment-preview").getByText("invoice.png", { exact: true }),
+    ).toBeVisible();
+    const removeImage = page.getByRole("button", { name: "Remove invoice.png", exact: true });
+    await expect(removeImage).toBeVisible();
+    const removeBox = await removeImage.boundingBox();
+    expect(removeBox!.width).toBeGreaterThanOrEqual(44);
+    expect(removeBox!.height).toBeGreaterThanOrEqual(44);
+    const choice = page.getByTestId("image-input-choice");
+    await expect(choice.getByRole("status")).toHaveText("This model cannot see images");
+    await expect(
+      choice.getByRole("button", { name: "Let Bot see images", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(choice.getByRole("button", { name: "Choose model", exact: true })).toBeVisible();
+    await composer.press("Enter");
+    await expect(page.getByTestId("composer-error")).toBeVisible();
+    await expect(composer).toHaveValue("Keep this invoice with my draft");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+    await captureScreenshot(page, testInfo, `image-input-rejected-${viewport.name}`);
+    await choice.getByRole("button", { name: "As file", exact: true }).click();
+    await expect(choice.getByRole("button", { name: "As file", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(choice.getByRole("status")).toHaveCount(0);
+    await page.getByRole("button", { name: "Send as file", exact: true }).click();
+    await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(0);
+    expect(requests).toHaveLength(2);
+    expect(standaloneRoutines).toEqual([]);
+    if (routine)
+      expect(requests.map((body) => body.routineIds)).toEqual([[routine.id], [routine.id]]);
+    expect(requests[1]!.artifactIds).toEqual(requests[0]!.artifactIds);
+    expect(requests[1]!.clientNonce).toBe(requests[0]!.clientNonce);
+    const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId: activeBotId(page) });
+    const sent = snapshot.messages.find(
+      (message) =>
+        message.role === "user" &&
+        message.blocks.some(
+          (block) => block.kind === "file" && block.artifactId === requests[0]!.artifactIds[0],
+        ),
+    );
+    expect(sent).toBeTruthy();
+    expect(sent!.blocks.some((block) => block.kind === "image")).toBe(false);
+    await captureScreenshot(page, testInfo, `image-input-file-${viewport.name}`);
+    expect(pageErrors).toEqual([]);
   });
 }

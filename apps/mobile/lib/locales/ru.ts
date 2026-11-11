@@ -1,4 +1,14 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Image use": "Использование изображения",
+  "Let Bot see images": "Показать боту",
+  "As file": "Как файл",
+  "Can see images": "Может видеть изображения",
+  "This model cannot see images": "Эта модель не поддерживает изображения",
+  "This model's image capability is unconfirmed":
+    "Возможность этой модели видеть изображения не подтверждена",
+  "Choose model": "Выбрать модель",
+  "Send as file": "Отправить как файл",
+
   "Computer paused at its runtime limit.":
     "Компьютер приостановлен по достижении лимита времени работы.",
   "Background tasks may have stopped.": "Фоновые задачи могли остановиться.",

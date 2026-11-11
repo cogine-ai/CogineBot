@@ -7410,3 +7410,11 @@ msgstr "Продолжить работу с компьютером"
 #: src/pages/Shell.tsx
 msgid "At the runtime limit, pausing may stop background tasks."
 msgstr "При достижении лимита времени работы приостановка может остановить фоновые задачи."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as an image. Your draft is kept."
+msgstr "Уже отправлено как изображение. Черновик сохранён."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as a file. Your draft is kept."
+msgstr "Уже отправлено как файл. Черновик сохранён."

@@ -7354,3 +7354,11 @@ msgstr "Guardando o deteniendo el ordenador…"
 #: src/components/ComputerMaintenanceActions.tsx
 msgid "Ask your deployment administrator to restore the original computer provider settings before retrying."
 msgstr ""
+
+#: src/pages/Shell.tsx
+msgid "Already sent as an image. Your draft is kept."
+msgstr "Ya se envió como imagen. Se conserva tu borrador."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as a file. Your draft is kept."
+msgstr "Ya se envió como archivo. Se conserva tu borrador."
