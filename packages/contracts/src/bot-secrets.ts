@@ -12,33 +12,51 @@ export const BotSecretName = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 export const StoredBotSecretName = z.string().min(1).max(256);
 
 export const GENERATED_SECRET_SYMBOLS = "!@#$%^&*-_=+?";
+const MIN_GENERATED_SECRET_RANDOM_BITS = 64;
 
-export const GeneratedSecretRules = z
-  .strictObject({
-    length: z.number().int().min(8).max(128).default(20),
-    lowercase: z.boolean().default(true),
-    uppercase: z.boolean().default(true),
-    digits: z.boolean().default(true),
-    symbols: z.boolean().default(true),
-    allowedSymbols: z
-      .string()
-      .regex(/^[!-/:-@[-`{-~]{1,32}$/, "Use only punctuation characters")
-      .optional(),
-  })
-  .refine(
-    (rules) => rules.lowercase || rules.uppercase || rules.digits || rules.symbols,
-    "Allow at least one kind of character",
-  )
-  .refine(
-    (rules) =>
-      rules.lowercase ||
-      rules.uppercase ||
-      rules.digits ||
-      !rules.symbols ||
-      new Set(rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS).size >= 2,
-    "Allow at least two different characters",
+const generatedSecretRulesShape = z.strictObject({
+  length: z.number().int().min(8).max(128).default(20),
+  lowercase: z.boolean().default(true),
+  uppercase: z.boolean().default(true),
+  digits: z.boolean().default(true),
+  symbols: z.boolean().default(true),
+  allowedSymbols: z
+    .string()
+    .regex(/^[!-/:-@[-`{-~]{1,32}$/, "Use only punctuation characters")
+    .optional(),
+});
+export type GeneratedSecretRules = z.infer<typeof generatedSecretRulesShape>;
+
+/** The disjoint alphabets used by both the strength check and the generator. */
+export function generatedSecretAlphabets(rules: GeneratedSecretRules): string[] {
+  return [
+    rules.lowercase && "abcdefghijklmnopqrstuvwxyz",
+    rules.uppercase && "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    rules.digits && "0123456789",
+    rules.symbols && [...new Set(rules.allowedSymbols ?? GENERATED_SECRET_SYMBOLS)].join(""),
+  ].filter((alphabet): alphabet is string => Boolean(alphabet));
+}
+
+export const GeneratedSecretRules = generatedSecretRulesShape.superRefine((rules, ctx) => {
+  const alphabets = generatedSecretAlphabets(rules);
+  if (!alphabets.length) {
+    ctx.addIssue({ code: "custom", message: "Allow at least one kind of character" });
+    return;
+  }
+  const allCharacters = alphabets.reduce((size, alphabet) => size + alphabet.length, 0);
+  // The generator takes one independent draw from each required alphabet and fills the
+  // remaining positions from their union. An independent shuffle cannot lower this bound.
+  const randomBits = alphabets.reduce(
+    (bits, alphabet) => bits + Math.log2(alphabet.length),
+    (rules.length - alphabets.length) * Math.log2(allCharacters),
   );
-export type GeneratedSecretRules = z.infer<typeof GeneratedSecretRules>;
+  if (randomBits < MIN_GENERATED_SECRET_RANDOM_BITS)
+    ctx.addIssue({
+      code: "custom",
+      path: ["length"],
+      message: `Choose a longer length or more characters for at least ${MIN_GENERATED_SECRET_RANDOM_BITS} bits of randomness`,
+    });
+});
 
 export const GenerateCommandSecretInput = z
   .strictObject({

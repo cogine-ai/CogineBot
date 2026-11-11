@@ -7122,7 +7122,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 allowSiteAlways: !approvalResolved.matchingRules.some(
                   (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
                 ),
-                allowToolAlways: !generationNeedsApproval,
+                allowToolAlways: !(
+                  generation?.success &&
+                  (requiresMandatoryApproval || approvalResolved.source === "require_approval")
+                ),
               },
             );
             let approvalDisplayError: string | undefined;

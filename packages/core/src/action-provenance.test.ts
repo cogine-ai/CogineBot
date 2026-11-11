@@ -14,8 +14,10 @@ describe("run result provenance", () => {
     for (const name of SITE_SENDING_TOOLS) expect(isBuiltinToolName(name)).toBe(true);
   });
   it("keeps confirmations and saved conversation state separate from outside results", () => {
-    for (const name of ["remember", "request_secret"])
+    for (const name of ["remember", "request_secret", "generate_secret"]) {
+      expect(isBuiltinToolName(name)).toBe(true);
       expect(toolResultTaintsRun(name)).toBe(false);
+    }
     for (const name of [
       "web_fetch",
       "read_file",
@@ -32,7 +34,6 @@ describe("run result provenance", () => {
     for (const name of [
       "connect_app",
       "feedback",
-      "generate_secret",
       "list_fleet",
       "schedule_update",
       "update_preferences",

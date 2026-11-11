@@ -3028,6 +3028,10 @@ describe("generated command credentials in a Run", () => {
     f.setCalls([{ args, executionId: "generate-1" }]);
     await f.run();
     expect(isApprovalPausedResult(f.results[0])).toBe(true);
+    expect(f.pauseRunForInput.mock.calls[0]![0].blocks[0]).toMatchObject({
+      kind: "ask",
+      actions: [{ id: "allow" }, { id: "deny" }],
+    });
     expect(f.effects).toMatchObject([
       { kind: "generate_secret", status: "intended", request: args },
     ]);
@@ -3160,6 +3164,23 @@ describe("generated command credentials in a Run", () => {
     expect(f.results).toEqual([result]);
     expect(f.effects).toMatchObject([{ kind: "generate_secret", status: "completed", result }]);
     expect(put).not.toHaveBeenCalled();
+  });
+
+  it("records a known failure without exposing provider details if staging fails", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const detail = "fixture-provider-private-detail";
+    const put = vi.spyOn(secretStore, "put").mockRejectedValueOnce(new Error(detail));
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    const create = vi.fn(async () => {});
+    Object.assign(f.prisma.botSecret, { count: vi.fn(async () => 0), create });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = { error: "The credential could not be prepared. No credential was saved." };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([{ kind: "generate_secret", status: "completed", result }]);
+    expect(put).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.append.mock.calls)).not.toContain(detail);
   });
 
   it("requires approval if outside steering is claimed while the credential is being staged", async () => {

@@ -21,9 +21,9 @@ describe("generated command credential rules", () => {
     }
   });
 
-  it("honors the minimum, maximum and restricted alphabet", () => {
+  it("honors narrow alphabets at sufficient lengths and the maximum length", () => {
     const digits = GeneratedSecretRules.parse({
-      length: 8,
+      length: 20,
       lowercase: false,
       uppercase: false,
       symbols: false,
@@ -33,11 +33,23 @@ describe("generated command credential rules", () => {
       uppercase: false,
       allowedSymbols: "!_",
     });
-    expect(generateSecretValue(digits)).toMatch(/^[0-9]{8}$/);
+    expect(generateSecretValue(digits)).toMatch(/^[0-9]{20}$/);
     const value = generateSecretValue(restricted);
     expect(value).toMatch(/^[a-z0-9!_]{128}$/);
     expect(value).toMatch(/[!_]/);
     expect(value).toMatch(/[0-9]/);
+  });
+
+  it("uses distinct characters to enforce the exact minimum for a two-character alphabet", () => {
+    const options = {
+      lowercase: false,
+      uppercase: false,
+      digits: false,
+      allowedSymbols: "!!?",
+    };
+    expect(GeneratedSecretRules.safeParse({ ...options, length: 63 }).success).toBe(false);
+    const rules = GeneratedSecretRules.parse({ ...options, length: 64 });
+    expect(generateSecretValue(rules)).toMatch(/^[!?]{64}$/);
   });
 
   it.each([
@@ -49,6 +61,10 @@ describe("generated command credential rules", () => {
     { rules: { allowedSymbols: "!".repeat(33) } },
     { rules: { lowercase: false, uppercase: false, digits: false, symbols: false } },
     { rules: { lowercase: false, uppercase: false, digits: false, allowedSymbols: "!!!" } },
+    {
+      rules: { length: 8, lowercase: false, uppercase: false, digits: false, allowedSymbols: "!?" },
+    },
+    { rules: { length: 19, lowercase: false, uppercase: false, symbols: false } },
     { rules: { seed: "caller-supplied" } },
     { purpose: " " },
     { purpose: undefined },

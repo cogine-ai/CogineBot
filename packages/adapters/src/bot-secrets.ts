@@ -656,8 +656,6 @@ export async function generateBotCommandSecret(input: {
   // Create-only occupancy does not depend on whether the old destination is still usable.
   const existing = () =>
     prisma.botSecret.findFirst({ where: { ...scopeFields(scope), name }, select: { id: true } });
-  if (await existing()) return nameTaken;
-  const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
   const destination = { name, origin: "", auth: { type: "command" as const } };
   const result: GeneratedCommandReceipt = {
     saved: true,
@@ -666,7 +664,10 @@ export async function generateBotCommandSecret(input: {
     variable: commandVariableName(name),
   };
 
+  let commitStarted = false;
   try {
+    if (await existing()) return nameTaken;
+    const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
     const prepared = await prepareBotSecret({
       prisma,
       secretStore,
@@ -675,6 +676,7 @@ export async function generateBotCommandSecret(input: {
       plaintext: value,
       expectedRevision: null,
     });
+    commitStarted = true;
     await deferPreparedSecretCleanup(prisma, () =>
       persistPreparedSecret(prisma, secretStore, prepared, () =>
         withTransactionRetry(() =>
@@ -687,14 +689,16 @@ export async function generateBotCommandSecret(input: {
         ),
       ),
     );
+    return { result, redactions: commandRedactionForms(value) };
   } catch (error) {
     if (error instanceof BotSecretWriteRefusal) return { error: error.message };
     if (error instanceof BotSecretConflictError) {
-      return (await existing()) ? nameTaken : { error: error.message };
+      return (await existing().catch(() => null)) ? nameTaken : { error: error.message };
     }
+    if (!commitStarted)
+      return { error: "The credential could not be prepared. No credential was saved." };
     throw error;
   }
-  return { result, redactions: commandRedactionForms(value) };
 }
 
 export async function listBotSecrets(prisma: PrismaClient, scope: BotSecretScope) {
