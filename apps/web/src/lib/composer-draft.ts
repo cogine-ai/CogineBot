@@ -12,6 +12,7 @@ export type PendingComposerAttachment = {
 export type ComposerDraft = {
   text: string;
   imageHandling?: ImageHandling;
+  deliveryNotice?: { imageHandling: ImageHandling; chatPath?: string };
   selectedSkill: AgentSkillCatalogEntry | null;
   selectedMentions: ComposerMention[];
   attachments: PendingComposerAttachment[];
@@ -102,17 +103,16 @@ export function writeComposerDraft(key: string | null, change: ComposerDraftChan
   const mentionsChanged = !sameItems(next.selectedMentions, current.selectedMentions);
   const replyChanged =
     next.replyTarget !== current.replyTarget || next.replyQuote !== current.replyQuote;
-  if (
-    next.text === current.text &&
-    next.imageHandling === current.imageHandling &&
-    !skillChanged &&
-    !mentionsChanged &&
-    sameItems(next.attachments, current.attachments) &&
-    !replyChanged
-  ) {
-    return current;
-  }
-  next.version = nextVersion++;
+  const contentChanged =
+    next.text !== current.text ||
+    next.imageHandling !== current.imageHandling ||
+    skillChanged ||
+    mentionsChanged ||
+    !sameItems(next.attachments, current.attachments) ||
+    replyChanged;
+  if (!contentChanged && next.deliveryNotice === current.deliveryNotice) return current;
+  // Dismissing a receipt does not edit the content an in-flight send may consume.
+  next.version = contentChanged ? nextVersion++ : current.version;
   next.slotVersions = {
     skill: skillChanged ? next.version : current.slotVersions.skill,
     mentions: mentionsChanged ? next.version : current.slotVersions.mentions,
@@ -154,6 +154,7 @@ export function consumeSubmittedComposerDraft(
   };
   if (!patch.attachments?.length && current.imageHandling === submitted.imageHandling)
     patch.imageHandling = "confirm";
+  if (current.deliveryNotice === submitted.deliveryNotice) patch.deliveryNotice = undefined;
   if (current.slotVersions.skill === submitted.slotVersions.skill) patch.selectedSkill = null;
   if (current.slotVersions.mentions === submitted.slotVersions.mentions)
     patch.selectedMentions = [];

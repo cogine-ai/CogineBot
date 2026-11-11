@@ -122,6 +122,21 @@ describe("tab-local composer drafts", () => {
     expect(readComposerDraft(key).text).toBe("");
   });
 
+  it("consumes delivered content even if the prior receipt was dismissed during the send", () => {
+    const submitted = writeComposerDraft(key, {
+      text: "Send this as a file",
+      deliveryNotice: { imageHandling: "confirm" },
+    });
+    const listener = vi.fn();
+    const unsubscribe = subscribeComposerDraft(key, listener);
+    const dismissed = writeComposerDraft(key, { deliveryNotice: undefined });
+    expect(dismissed.version).toBe(submitted.version);
+    expect(listener).toHaveBeenCalledOnce();
+    expect(consumeSubmittedComposerDraft(key, submitted)).toBe(true);
+    expect(readComposerDraft(key).text).toBe("");
+    unsubscribe();
+  });
+
   it("keeps failed submission intact until exact-version success, then revokes its preview", () => {
     const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const saved = writeComposerDraft(key, {

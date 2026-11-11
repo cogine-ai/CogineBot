@@ -147,7 +147,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
@@ -209,6 +209,7 @@ import {
   makeComposerDraftKey,
   moveComposerDraft,
   readComposerDraft,
+  writeComposerDraft,
 } from "../lib/composer-draft";
 import {
   cancelPreparedRejectedComposerDraft,
@@ -3182,7 +3183,7 @@ export function ShellPage() {
   }
 
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
-  const displayedRunError = !sendError ? runError : null;
+  const displayedRunError = !sendError && !composerDraft.deliveryNotice ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
   const handleRunErrorPresented = useCallback((runId: string) => {
     rememberSeenRunErrorId(runId);
@@ -3774,12 +3775,19 @@ export function ShellPage() {
             // The nonce was acknowledged, but the requested change was not sent.
             // Keep the draft and retire the acknowledged attempt.
             succeeded = true;
-            if (stillHere())
-              setSendError(
-                sent.deliveredImageHandling === "confirm"
-                  ? t`Already sent as an image. Your draft is kept.`
-                  : t`Already sent as a file. Your draft is kept.`,
-              );
+            writeComposerDraft(originThreadKey, {
+              deliveryNotice: {
+                imageHandling: sent.deliveredImageHandling,
+                chatPath:
+                  newChat || reroutedToGroup
+                    ? groupTarget
+                      ? `/app/g/${groupTarget}`
+                      : botTarget
+                        ? `/app/${botTarget}`
+                        : undefined
+                    : undefined,
+              },
+            });
             if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
             else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
             return false;
@@ -8522,7 +8530,7 @@ export const Composer = memo(function Composer({
       <div role="status" data-testid="composer-announcement" className="sr-only">
         {replyAnnouncement}
       </div>
-      {sendError || runError ? (
+      {sendError || draftState.deliveryNotice || runError ? (
         <div
           ref={runErrorRef}
           role="alert"
@@ -8535,6 +8543,19 @@ export const Composer = memo(function Composer({
             ) : (
               <span className="min-w-0 flex-1">{sendError}</span>
             )
+          ) : draftState.deliveryNotice ? (
+            <>
+              <span className="min-w-0 flex-1">
+                {draftState.deliveryNotice.imageHandling === "confirm"
+                  ? t`Already sent as an image. Your draft is kept.`
+                  : t`Already sent as a file. Your draft is kept.`}
+              </span>
+              {draftState.deliveryNotice.chatPath ? (
+                <Link to={draftState.deliveryNotice.chatPath} className="shrink-0 underline">
+                  {t`View chat`}
+                </Link>
+              ) : null}
+            </>
           ) : runError ? (
             <RunErrorDetails key={runError} error={runError} onAddKey={onAddKey} />
           ) : null}
@@ -8543,7 +8564,9 @@ export const Composer = memo(function Composer({
             aria-label={t`Dismiss error`}
             data-testid="composer-error-dismiss"
             onClick={() => {
-              onDismissError();
+              if (!sendError && draftState.deliveryNotice)
+                onDraftChange({ deliveryNotice: undefined });
+              else onDismissError();
               window.requestAnimationFrame(() => textareaRef.current?.focus());
             }}
             className="shrink-0 text-destructive hover:text-foreground"
