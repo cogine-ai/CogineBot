@@ -663,6 +663,18 @@ export default function BotSettingsScreen() {
                 />
               ) : null}
             </View>
+            {me?.spaceId && bot && bot.id === botId ? (
+              <NativeActionButton
+                label={t("Credentials")}
+                prominence="plain"
+                onPress={() =>
+                  router.push({
+                    pathname: "/space-credentials",
+                    params: { spaceId: me.spaceId, botId },
+                  })
+                }
+              />
+            ) : null}
             {modelMetaError ? (
               <Text style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13 }}>
                 {modelMetaError}

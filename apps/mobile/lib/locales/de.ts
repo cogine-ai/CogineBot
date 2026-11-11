@@ -1,4 +1,6 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "{bot} will no longer be able to use this credential.":
+    "{bot} kann diese Zugangsdaten künftig nicht mehr verwenden.",
   "Add credential": "Zugangsdaten hinzufügen",
   "Basic auth": "Basic-Authentifizierung",
   "Could not confirm your identity": "Identität konnte nicht bestätigt werden",

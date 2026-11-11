@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const botSecrets = vi.hoisted(() => ({
   list: vi.fn(),
   listForEdit: vi.fn(),
+  listForSpace: vi.fn(),
+  loginFieldsForEdit: vi.fn(),
   put: vi.fn(),
   putForEdit: vi.fn(),
   remove: vi.fn(),
@@ -28,6 +30,7 @@ vi.mock("@rakazo/ui-web", () => ({
     size: _size,
     ...props
   }: ComponentProps<"button"> & { variant?: string; size?: string }) => <button {...props} />,
+  Checkbox: () => <span />,
   Input: (props: ComponentProps<"input">) => <input {...props} />,
   NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
   NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
@@ -96,6 +99,8 @@ async function click(testId: string) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   botSecrets.list.mockReset();
+  botSecrets.listForSpace.mockReset();
+  botSecrets.loginFieldsForEdit.mockReset();
   botSecrets.listForEdit.mockReset().mockResolvedValue(rows);
   botSecrets.put.mockReset();
   botSecrets.putForEdit.mockReset();
@@ -462,5 +467,64 @@ describe("BotCredentialsSection command variables", () => {
       value: FAKE_VALUE,
       expectedRevision: "rev-command",
     });
+  });
+});
+
+describe("Space credential editor", () => {
+  const login = { ...rows[3]!, namedLogin: true };
+
+  const groups = (revision = login.revision) => [
+    {
+      botId: "bot-1",
+      botName: "Example Bot",
+      credentials: [{ ...login, revision }],
+    },
+  ];
+
+  async function renderSpace() {
+    await act(async () => root.render(<BotCredentialsSection defaultBotId="bot-1" />));
+  }
+
+  it("keeps Add disabled while a login replacement is loading", async () => {
+    botSecrets.listForSpace.mockResolvedValue(groups());
+    let complete!: (fields: { label: string; hidden: boolean }[]) => void;
+    botSecrets.loginFieldsForEdit.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    await renderSpace();
+    await click("credential-replace-portal");
+    expect(byTestId<HTMLButtonElement>("credential-add").disabled).toBe(true);
+    await click("credential-add");
+    await act(async () => complete([{ label: "Password", hidden: true }]));
+    expect(container.querySelector('[data-testid="credential-add-form"]')).toBeNull();
+    expect(byTestId("credential-replace-save")).toBeDefined();
+  });
+
+  it("dismisses an old remove confirmation if a refresh reads a new revision", async () => {
+    botSecrets.listForSpace.mockResolvedValue(groups());
+    await renderSpace();
+    const retry = () =>
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "Retry");
+    botSecrets.putForEdit.mockResolvedValue({
+      ...login,
+      name: "new-token",
+      auth: { type: "command" },
+      revision: "new-token-revision",
+    });
+    await click("credential-add");
+    await type("credential-name", "new-token");
+    await type("credential-auth-type", "command");
+    await type("credential-value", FAKE_VALUE);
+    botSecrets.listForSpace.mockRejectedValueOnce(new Error("temporary fixture outage"));
+    await click("credential-add-save");
+    await click("credential-remove-portal");
+    expect(byTestId("credential-remove-confirm-portal")).toBeDefined();
+    botSecrets.listForSpace.mockResolvedValue(groups("newer-portal-revision"));
+    await act(async () => retry()?.click());
+    expect(container.querySelector('[data-testid="credential-remove-confirm-portal"]')).toBeNull();
+    expect(botSecrets.removeForEdit).not.toHaveBeenCalled();
   });
 });

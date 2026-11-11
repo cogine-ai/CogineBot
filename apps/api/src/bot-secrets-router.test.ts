@@ -684,6 +684,11 @@ describe("Space credential management", () => {
     const actual = await call("reveal", input, context);
     expect(actual.body.json).toEqual({ value: FAKE_VALUE });
 
+    auth.hasRecentIdentityConfirmation.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const expiredDuringRead = await call("reveal", input, context);
+    expect(expiredDuringRead.status).toBe(403);
+    expect(expiredDuringRead.text).not.toContain(FAKE_VALUE);
+
     secrets.load.mockImplementationOnce(async () => {
       rows[0]!.revision = "updated-during-read";
       return FAKE_VALUE;

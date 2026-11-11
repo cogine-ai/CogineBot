@@ -10,7 +10,7 @@ import {
   BotSecretName,
   commandVariableName,
   commandVariableProblem,
-  encodeLoginSecret,
+  encodeEditedLoginSecret,
   isIdentityConfirmationRequired,
   LOGIN_FIELD_LIMIT,
   LOGIN_VALUE_TOO_LONG,
@@ -56,16 +56,22 @@ const receipt = (row: Row): BotCredentialRevisionInput => ({
 });
 
 export default function SpaceCredentials() {
-  const { spaceId } = useLocalSearchParams<{ spaceId?: string }>();
+  const { spaceId, botId } = useLocalSearchParams<{ spaceId?: string; botId?: string }>();
   const target = typeof spaceId === "string" ? spaceId : undefined;
   const key = useSpaceSettingsKey(target);
-  return <Credentials key={key} spaceId={target} />;
+  return (
+    <Credentials
+      key={key}
+      spaceId={target}
+      defaultBotId={typeof botId === "string" ? botId : undefined}
+    />
+  );
 }
 
-function Credentials({ spaceId }: { spaceId?: string }) {
+function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId?: string }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
-  const { rpc, isCurrent, captureApiRequestContext, signal } = useSpaceSettings(spaceId);
+  const { rpc, isCurrent, captureApiRequestContext } = useSpaceSettings(spaceId);
   const [groups, setGroups] = useState<SpaceBotCredentials[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -279,10 +285,20 @@ function Credentials({ spaceId }: { spaceId?: string }) {
                   if (action === "show") void show(row);
                   if (action === "edit") void edit(row);
                   if (action === "remove")
-                    Alert.alert(t("Remove {name}?", { name: row.name }), row.botName, [
-                      { text: t("Cancel"), style: "cancel" },
-                      { text: t("Remove"), style: "destructive", onPress: () => void remove(row) },
-                    ]);
+                    Alert.alert(
+                      t("Remove {name}?", { name: row.name }),
+                      t("{bot} will no longer be able to use this credential.", {
+                        bot: row.botName,
+                      }),
+                      [
+                        { text: t("Cancel"), style: "cancel" },
+                        {
+                          text: t("Remove"),
+                          style: "destructive",
+                          onPress: () => void remove(row),
+                        },
+                      ],
+                    );
                 }}
               >
                 <SettingsRow
@@ -305,6 +321,7 @@ function Credentials({ spaceId }: { spaceId?: string }) {
       {sheet?.kind === "edit" && groups ? (
         <CredentialEditor
           bots={groups}
+          defaultBotId={defaultBotId}
           row={sheet.row}
           fieldLayout={sheet.fields}
           onClose={close}
@@ -315,7 +332,7 @@ function Credentials({ spaceId }: { spaceId?: string }) {
         <IdentitySheet
           onClose={close}
           onConfirm={() => void show(sheet.row, true)}
-          settings={{ captureApiRequestContext, isCurrent, signal }}
+          settings={{ captureApiRequestContext, isCurrent }}
         />
       ) : null}
       {sheet?.kind === "show" ? (
@@ -378,6 +395,7 @@ function Field({
   setValue,
   hidden = false,
   oneTimeCode = false,
+  autoFill,
   maxLength,
 }: {
   label: string;
@@ -385,6 +403,7 @@ function Field({
   setValue: (value: string) => void;
   hidden?: boolean;
   oneTimeCode?: boolean;
+  autoFill?: "username" | "email" | "new-password" | "current-password";
   maxLength: number;
 }) {
   const tokens = useMobileTokens();
@@ -399,7 +418,18 @@ function Field({
         autoCapitalize="none"
         autoCorrect={false}
         secureTextEntry={hidden}
-        autoComplete={oneTimeCode ? "one-time-code" : "off"}
+        autoComplete={oneTimeCode ? "one-time-code" : (autoFill ?? "off")}
+        textContentType={
+          oneTimeCode
+            ? "oneTimeCode"
+            : autoFill === "new-password"
+              ? "newPassword"
+              : autoFill === "current-password"
+                ? "password"
+                : autoFill === "email"
+                  ? "emailAddress"
+                  : (autoFill ?? "none")
+        }
         inputMode={oneTimeCode ? "numeric" : "text"}
         style={[styles.input, { color: tokens.foreground, borderColor: tokens.border }]}
       />
@@ -409,12 +439,14 @@ function Field({
 
 function CredentialEditor({
   bots,
+  defaultBotId,
   row,
   fieldLayout,
   onClose,
   onSave,
 }: {
   bots: SpaceBotCredentials[];
+  defaultBotId?: string;
   row?: Row;
   fieldLayout?: BotLoginFieldMetadata;
   onClose: () => void;
@@ -422,7 +454,11 @@ function CredentialEditor({
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
-  const [botId, setBotId] = useState(row?.botId ?? (bots.length === 1 ? bots[0]!.botId : ""));
+  const [botId, setBotId] = useState(
+    row?.botId ??
+      bots.find((entry) => entry.botId === defaultBotId)?.botId ??
+      (bots.length === 1 ? bots[0]!.botId : ""),
+  );
   const [name, setName] = useState("");
   const [origin, setOrigin] = useState("");
   const [type, setType] = useState<Auth["type"]>(row?.auth?.type ?? "bearer");
@@ -469,7 +505,10 @@ function CredentialEditor({
       origin: type === "command" ? "" : (row?.origin ?? origin.trim()),
       auth,
     };
-    const plaintext = type === "login" && login.success ? encodeLoginSecret(login.data) : value;
+    const plaintext =
+      type === "login" && login.success
+        ? encodeEditedLoginSecret(login.data, !!row && !row.namedLogin)
+        : value;
     clear();
     setBusy(true);
     setError("");
@@ -565,6 +604,15 @@ function CredentialEditor({
                   setValue={(value) => change({ value })}
                   maxLength={4096}
                   hidden={field.hidden}
+                  autoFill={
+                    field.hidden && /^password$/i.test(field.label)
+                      ? "new-password"
+                      : !field.hidden && /^(username|user name)$/i.test(field.label)
+                        ? "username"
+                        : !field.hidden && /^(email|e-mail|email address)$/i.test(field.label)
+                          ? "email"
+                          : undefined
+                  }
                 />
                 <View style={styles.row}>
                   <Text style={{ flex: 1, color: tokens.foreground }}>{t("Hide value")}</Text>
@@ -620,24 +668,24 @@ function IdentitySheet({
   onClose,
   onConfirm,
 }: {
-  settings: Pick<
-    ReturnType<typeof useSpaceSettings>,
-    "captureApiRequestContext" | "isCurrent" | "signal"
-  >;
+  settings: Pick<ReturnType<typeof useSpaceSettings>, "captureApiRequestContext" | "isCurrent">;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
-  const { captureApiRequestContext, isCurrent, signal } = settings;
+  const { captureApiRequestContext, isCurrent } = settings;
   const [security, setSecurity] = useState<AccountSecurity | null>(null);
   const [proof, setProof] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const active = useRef(false);
+  const lifetime = useRef<AbortController | null>(null);
   useEffect(() => {
     active.current = true;
+    const controller = new AbortController();
+    lifetime.current = controller;
     void captureApiRequestContext()
       .then(fetchAccountSecurity)
       .then((value) => {
@@ -648,6 +696,7 @@ function IdentitySheet({
       });
     return () => {
       active.current = false;
+      controller.abort();
     };
   }, [captureApiRequestContext, isCurrent, t]);
 
@@ -668,13 +717,13 @@ function IdentitySheet({
       const context = await captureApiRequestContext();
       if (!active.current || !isCurrent()) return;
       if (kind === "email") {
-        await requestIdentityCode(context, signal());
+        await requestIdentityCode(context, lifetime.current?.signal);
         if (active.current && isCurrent()) setSent(true);
       } else {
         await confirmIdentity(
           passwordEnabled ? { password: value } : { code: value },
           context,
-          signal(),
+          lifetime.current?.signal,
         );
         if (active.current && isCurrent()) onConfirm();
       }
@@ -694,6 +743,7 @@ function IdentitySheet({
             value={proof}
             setValue={setProof}
             hidden={passwordEnabled}
+            autoFill={passwordEnabled ? "current-password" : undefined}
             oneTimeCode={!passwordEnabled}
             maxLength={passwordEnabled ? 128 : 6}
           />

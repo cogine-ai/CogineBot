@@ -451,6 +451,24 @@ export function encodeLoginSecret(value: StoredLoginSecretValue): string {
   );
 }
 
+/** A value-only edit preserves legacy compatibility when the two-field layout is unchanged. */
+export function encodeEditedLoginSecret(
+  login: NamedLoginSecretValue,
+  keepLegacyPair: boolean,
+): string {
+  const [username, password] = login.fields;
+  if (
+    keepLegacyPair &&
+    login.fields.length === 2 &&
+    username?.label === DEFAULT_LOGIN_FIELD_LABELS[0] &&
+    !username.hidden &&
+    password?.label === DEFAULT_LOGIN_FIELD_LABELS[1] &&
+    password.hidden
+  )
+    return encodeLoginSecret({ username: username.value, password: password.value });
+  return encodeLoginSecret(login);
+}
+
 export function parseLoginSecretWrite(plaintext: string): StoredLoginSecretValue {
   const value: unknown = JSON.parse(plaintext);
   // A write that supplies named fields may not fall back to the legacy pair.

@@ -824,6 +824,9 @@ export async function fetchMobileJson<T>(
   invalidJsonFallback?: T,
 ): Promise<{ response: Response; body: T }> {
   const controller = new AbortController();
+  const cancel = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) cancel();
+  else init.signal?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(new Error("Request timed out")), RPC_TIMEOUT_MS);
   try {
     const response = await withAbort(
@@ -847,6 +850,7 @@ export async function fetchMobileJson<T>(
     }
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener("abort", cancel);
   }
 }
 

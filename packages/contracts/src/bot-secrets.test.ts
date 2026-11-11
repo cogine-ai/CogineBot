@@ -6,6 +6,7 @@ import {
   commandVariableName,
   commandVariableProblem,
   decodeLoginSecret,
+  encodeEditedLoginSecret,
   encodeLoginSecret,
   isCloudMetadataHost,
   isPrivateNetworkHost,
@@ -380,5 +381,21 @@ describe("command variables", () => {
       BotSecretDestinationInput.safeParse({ name: "api", origin: "", auth: { type: "bearer" } })
         .success,
     ).toBe(false);
+  });
+});
+
+it("preserves an unchanged legacy login layout during value replacement", () => {
+  const fields = [
+    { label: "Username", value: "fixture-account", hidden: false },
+    { label: "Password", value: "fixture-value", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({
+    username: "fixture-account",
+    password: "fixture-value",
+  });
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, false))).toEqual({ fields });
+  const changed = [fields[0]!, { ...fields[1]!, label: "Access phrase" }];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields: changed }, true))).toEqual({
+    fields: changed,
   });
 });

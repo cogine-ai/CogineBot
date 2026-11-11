@@ -48,6 +48,20 @@ function fixture({
   };
   const messages: TransactionalEmail[] = [];
   const members = new Set<string>();
+  type VerificationWhere = {
+    id?: string;
+    identifier?: string;
+    value?: string;
+    expiresAt: { lte?: Date; gt?: Date };
+  };
+  const matchesVerification = (row: Record<string, unknown>, where: VerificationWhere) => {
+    const { expiresAt, ...fields } = where;
+    return (
+      Object.entries(fields).every(([key, value]) => row[key] === value) &&
+      (!expiresAt.lte || new Date(row.expiresAt as Date) <= expiresAt.lte) &&
+      (!expiresAt.gt || new Date(row.expiresAt as Date) > expiresAt.gt)
+    );
+  };
   const prisma = {
     authData: data,
     $executeRaw: vi.fn(async () => 0),
@@ -105,20 +119,47 @@ function fixture({
       ),
     },
     verification: {
-      deleteMany: vi.fn(
-        async ({ where }: { where: { identifier: string; expiresAt: { lte: Date } } }) => {
-          const before = data.verification!.length;
-          for (let i = before - 1; i >= 0; i--) {
-            const entry = data.verification![i]!;
-            if (
-              entry.identifier === where.identifier &&
-              new Date(entry.expiresAt as Date) <= where.expiresAt.lte
-            )
-              data.verification!.splice(i, 1);
-          }
-          return { count: before - data.verification!.length };
+      findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
+        const row = data.verification!.find((entry) => entry.id === id);
+        return row ? { ...row } : null;
+      }),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          const row = data.verification!.find((entry) => entry.id === where.id);
+          if (row) return Object.assign(row, update);
+          data.verification!.push(create);
+          return create;
         },
       ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data: patch,
+        }: {
+          where: VerificationWhere;
+          data: Record<string, unknown>;
+        }) => {
+          const row = data.verification!.find((entry) => matchesVerification(entry, where));
+          if (!row) return { count: 0 };
+          Object.assign(row, patch);
+          return { count: 1 };
+        },
+      ),
+      deleteMany: vi.fn(async ({ where }: { where: VerificationWhere }) => {
+        const before = data.verification!.length;
+        for (let i = before - 1; i >= 0; i--) {
+          if (matchesVerification(data.verification![i]!, where)) data.verification!.splice(i, 1);
+        }
+        return { count: before - data.verification!.length };
+      }),
     },
     member: { findMany: vi.fn(async () => []) },
     messagingIdentity: { deleteMany: vi.fn(async () => ({ count: 0 })) },
@@ -182,7 +223,18 @@ function fixture({
     const url = new URL(messages.at(-1)!.text.match(/http:\/\/\S+/)![0]);
     return request(`${url.pathname.replace("/api/auth", "")}${url.search}`);
   };
-  return { auth, request, signup, signin, verify, data, policy, messages, members };
+  return {
+    auth,
+    request,
+    signup,
+    signin,
+    verify,
+    data,
+    policy,
+    messages,
+    members,
+    verification: prisma.verification,
+  };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -561,5 +613,40 @@ describe("confirmation for protected reads", () => {
     expect((await f.request("/confirm-identity", { code: wrongCode }, token)).status).toBe(400);
     expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
     expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+  });
+  it("keeps the new emailed challenge when a previous attempt returns after resending", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const originalCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    const wrongCode = originalCode === "000000" ? "111111" : "000000";
+
+    let resume!: () => void;
+    let loaded!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const read = new Promise<void>((resolve) => {
+      loaded = resolve;
+    });
+    const original = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const previous = await original(args);
+      loaded();
+      await blocked;
+      return previous;
+    });
+
+    const pending = f.request("/confirm-identity", { code: wrongCode }, token);
+    await read;
+    try {
+      expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    } finally {
+      resume();
+    }
+    expect((await pending).status).toBe(400);
+    const latestCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code: latestCode }, token)).status).toBe(200);
   });
 });

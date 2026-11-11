@@ -9,6 +9,7 @@ import {
   BotSecretName,
   commandVariableName,
   commandVariableProblem,
+  encodeEditedLoginSecret,
   encodeLoginSecret,
   isIdentityConfirmationRequired,
   LOGIN_FIELD_LIMIT,
@@ -17,6 +18,7 @@ import {
 } from "@rakazo/contracts";
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -43,6 +45,10 @@ function credentialKey(credential: CredentialRow) {
 
 function byDestination(left: CredentialRow, right: CredentialRow) {
   return (left.origin || left.name).localeCompare(right.origin || right.name);
+}
+
+function credentialRevisionKey(credential: CredentialRow) {
+  return JSON.stringify([credential.botId, credential.name, credential.revision]);
 }
 
 const fieldLabelClass = "mt-3 block text-[13px] text-muted-foreground";
@@ -203,7 +209,9 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   }
 
   async function beginReplace(row: CredentialRow) {
+    if (busy || !scopeCurrent()) return;
     clearProtectedFields();
+    setReplacing(null);
     setConfirmingRemove(null);
     setAdding(false);
     setError(null);
@@ -224,8 +232,23 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
         if (scopeCurrent()) setBusy(false);
       }
     }
-    if (scopeCurrent()) setReplacing(credentialKey(row));
+    if (scopeCurrent()) setReplacing(credentialRevisionKey(row));
   }
+
+  useEffect(() => {
+    if (replacing && secrets && !secrets.some((row) => credentialRevisionKey(row) === replacing)) {
+      setReplacing(null);
+      setValue("");
+      setLoginUsername("");
+      setFields([]);
+    }
+    if (
+      confirmingRemove &&
+      secrets &&
+      !secrets.some((row) => credentialRevisionKey(row) === confirmingRemove)
+    )
+      setConfirmingRemove(null);
+  }, [confirmingRemove, replacing, secrets]);
 
   function authLabel(auth: ReadableCredentialAuth) {
     if (auth.type === "header") {
@@ -253,6 +276,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
     targetBotId: string,
     destination: { name: string; origin?: string; auth: ReadableCredentialAuth },
     expectedRevision: string | null,
+    keepLegacyPair = false,
   ) {
     if (!scopeCurrent()) return false;
     const username = loginUsername.trim();
@@ -265,7 +289,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
     try {
       plaintext =
         spaceView && destination.auth.type === "login"
-          ? encodeLoginSecret({ fields: loginFields })
+          ? encodeEditedLoginSecret({ fields: loginFields }, keepLegacyPair)
           : credentialPlaintext(destination.auth.type, username, secretValue);
     } catch {
       setError(t`Enter a username and password`);
@@ -331,6 +355,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
       secret.botId,
       credentialDestination(secret.name, secret.origin, secret.auth),
       secret.revision,
+      !secret.namedLogin,
     );
     if (saved) setReplacing(null);
   }
@@ -396,11 +421,14 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
                 onChange={(event) => change({ value: event.target.value })}
               />
               <div className="flex items-center justify-between gap-2">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
+                <label
+                  htmlFor={`${ids}-hide-field-${index}`}
+                  className="flex items-center gap-2 text-sm"
+                >
+                  <Checkbox
+                    id={`${ids}-hide-field-${index}`}
                     checked={field.hidden}
-                    onChange={(event) => change({ hidden: event.target.checked })}
+                    onCheckedChange={(hidden) => change({ hidden })}
                   />
                   <Trans>Hide value</Trans>
                 </label>
@@ -545,6 +573,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
           {secrets.map((secret) => {
             const secretName = secret.name;
             const key = credentialKey(secret);
+            const revisionKey = credentialRevisionKey(secret);
             const updated = new Date(secret.updatedAt).toLocaleDateString();
             // A readable auth on a name outside the current pattern cannot be replaced:
             // only the loose remove input accepts it, so show the unreadable row instead.
@@ -591,7 +620,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
                     <Trans>This form can't edit named fields.</Trans>
                   </div>
                 ) : null}
-                {canReplace !== null && replacing === key ? (
+                {canReplace !== null && replacing === revisionKey ? (
                   <form
                     className="mt-1"
                     onSubmit={(event) => {
@@ -622,7 +651,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
                       </Button>
                     </div>
                   </form>
-                ) : editable && confirmingRemove === key ? (
+                ) : editable && confirmingRemove === revisionKey ? (
                   <div className="mt-2">
                     <p className="text-[13px] text-foreground">
                       <Trans>Remove {secretName}? This bot will no longer be able to use it.</Trans>
@@ -685,7 +714,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
                       onClick={() => {
                         clearProtectedFields();
                         setReplacing(null);
-                        setConfirmingRemove(key);
+                        setConfirmingRemove(revisionKey);
                       }}
                     >
                       <Trans>Remove</Trans>
@@ -861,6 +890,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
           variant="outline"
           className="mt-3"
           data-testid="credential-add"
+          disabled={busy}
           onClick={() => {
             clearProtectedFields();
             setReplacing(null);

@@ -1,4 +1,4 @@
-import { createHash, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { TransactionalEmailProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import type { BetterAuthPlugin } from "better-auth";
@@ -100,11 +100,15 @@ export function identityConfirmation(
             });
           }
           const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-          await adapter.deleteVerificationByIdentifier(codeKey(session.id));
-          await adapter.createVerificationValue({
-            identifier: codeKey(session.id),
-            value: `${user.id}:${hashCode(code)}:0`,
+          const identifier = codeKey(session.id);
+          const challenge = {
+            value: `${user.id}:${hashCode(code)}:0:${randomUUID()}`,
             expiresAt: new Date(Date.now() + CODE_EXPIRES_MS),
+          };
+          await prisma.verification.upsert({
+            where: { id: identifier },
+            create: { id: identifier, identifier, ...challenge },
+            update: challenge,
           });
           await email.send({
             to: user.email,
@@ -140,26 +144,28 @@ export function identityConfirmation(
           } else {
             const code = typeof body.code === "string" ? body.code.trim() : "";
             if (!/^[0-9]{6}$/.test(code)) throw expiredCode();
-            // Consuming first makes each stored code single use, even under concurrent guesses.
-            const stored = await adapter.consumeVerificationValue(codeKey(session.id));
-            const [userId, codeHash, attempts] = stored?.value.split(":") ?? [];
+            const id = codeKey(session.id);
+            const stored = await prisma.verification.findUnique({ where: { id } });
+            const [userId, codeHash, attempts, version] = stored?.value.split(":") ?? [];
             if (!stored || stored.expiresAt.getTime() <= Date.now() || userId !== user.id)
               throw expiredCode();
-            if (!sameHash(codeHash ?? "", hashCode(code))) {
-              const next = Number(attempts) + 1;
-              if (next >= CODE_ATTEMPTS) {
-                throw new APIError("BAD_REQUEST", {
-                  message: "Request a new code",
-                  code: "TOO_MANY_ATTEMPTS",
-                });
-              }
-              await adapter.createVerificationValue({
-                identifier: codeKey(session.id),
-                value: `${userId}:${codeHash}:${next}`,
-                expiresAt: stored.expiresAt,
+            const where = { id, value: stored.value, expiresAt: { gt: new Date() } };
+            const valid = sameHash(codeHash ?? "", hashCode(code));
+            const next = Number(attempts) + 1;
+            // Resending replaces the challenge. Every attempt is bound to its exact version.
+            const changed =
+              valid || next >= CODE_ATTEMPTS
+                ? await prisma.verification.deleteMany({ where })
+                : await prisma.verification.updateMany({
+                    where,
+                    data: { value: `${userId}:${codeHash}:${next}:${version}` },
+                  });
+            if (changed.count !== 1) throw expiredCode();
+            if (!valid)
+              throw new APIError("BAD_REQUEST", {
+                message: next >= CODE_ATTEMPTS ? "Request a new code" : "Invalid code",
+                code: next >= CODE_ATTEMPTS ? "TOO_MANY_ATTEMPTS" : "INVALID_OTP",
               });
-              throw new APIError("BAD_REQUEST", { message: "Invalid code", code: "INVALID_OTP" });
-            }
           }
           await adapter.deleteVerificationByIdentifier(confirmationKey(session.id));
           await adapter.createVerificationValue({

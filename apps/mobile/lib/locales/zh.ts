@@ -1,4 +1,5 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "{bot} will no longer be able to use this credential.": "{bot} 将无法再使用此凭据。",
   "Add credential": "添加凭据",
   "Basic auth": "基本认证",
   "Could not confirm your identity": "无法确认你的身份",

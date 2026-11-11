@@ -1,4 +1,6 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "{bot} will no longer be able to use this credential.":
+    "{bot} больше не сможет использовать эти учётные данные.",
   "Add credential": "Добавить учётные данные",
   "Basic auth": "Базовая аутентификация",
   "Could not confirm your identity": "Не удалось подтвердить личность",
