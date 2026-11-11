@@ -46,12 +46,11 @@ export function connectionModelImageInput(
   secret: StoredModelSecret,
 ): boolean | undefined {
   if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && secret.kind === "openai_compatible") {
-    return (
-      modelIdSupportsImages(secret.visionModelIds, modelId) ||
-      (secret.visionModelIds === undefined &&
-        credential.supportsImages === true &&
-        credential.defaultModel?.trim() === modelId.trim())
-    );
+    if (secret.visionModelIds !== undefined)
+      return modelIdSupportsImages(secret.visionModelIds, modelId);
+    return credential.supportsImages === true && credential.defaultModel?.trim() === modelId.trim()
+      ? true
+      : undefined;
   }
   if (provider === CHATGPT_PLAN_PROVIDER_ID && secret.kind === "oauth") {
     return readChatGPTPlanModels(secret.credential)
@@ -128,7 +127,8 @@ export function modelAcceptsImageInput(
   }
   const resolved = resolveModelRefForVisionCheck(provider, modelId);
   if (!resolved.provider || !resolved.id) return false;
-  if (acceptsImages && resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID) return true;
+  if (resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID && acceptsImages !== undefined)
+    return acceptsImages;
 
   let model = catalogModelWithOpenRouterFallback(catalogModels(), resolved.provider, resolved.id);
   if (model && resolved.provider === CHATGPT_OAUTH_PROVIDER)

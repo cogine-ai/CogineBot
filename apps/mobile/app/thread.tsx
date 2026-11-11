@@ -981,6 +981,9 @@ function Thread({
       cancelled = true;
     };
   }, [hasPendingImages, imageQuery, imageAdmissionKey]);
+  const previewModelBotId =
+    (imageAdmission?.key === imageAdmissionKey ? imageAdmission.botId : undefined) ??
+    (imageQuery ? (JSON.parse(imageQuery) as { botId?: string }).botId : undefined);
   useChatOnScreen();
   const replyPage = useRef<{ page: { id: string; title: string }; scope: string } | null>(null);
   const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
@@ -2966,25 +2969,29 @@ function Thread({
       </Pressable>
     ) : null;
 
-  const failedSendBubbles = feedback.unsentSends.map((attempt) => (
-    <FailedSendBubble
-      key={attempt.clientNonce}
-      attempt={attempt}
-      onRetry={() => void deliver(attempt, true)}
-      onChooseModel={() => {
-        const targetBot = attempt.imageInputBotId ?? attempt.payload.botTarget;
-        if (targetBot) router.push({ pathname: "/bot-settings", params: { botId: targetBot } });
-      }}
-      onRetryAsFile={() => {
-        if (!attempt.imageInputStatus || attempt.state === "pending") return;
-        attempt.payload = { ...attempt.payload, imageHandling: "file" };
-        attempt.imageInputStatus = undefined;
-        attempt.imageInputBotId = undefined;
-        void deliver(attempt, true);
-      }}
-      onDelete={() => feedback.discard(attempt)}
-    />
-  ));
+  const failedSendBubbles = feedback.unsentSends.map((attempt) => {
+    const targetBot = attempt.imageInputBotId ?? attempt.payload.botTarget;
+    return (
+      <FailedSendBubble
+        key={attempt.clientNonce}
+        attempt={attempt}
+        onRetry={() => void deliver(attempt, true)}
+        onChooseModel={
+          targetBot
+            ? () => router.push({ pathname: "/bot-settings", params: { botId: targetBot } })
+            : undefined
+        }
+        onRetryAsFile={() => {
+          if (!attempt.imageInputStatus || attempt.state === "pending") return;
+          attempt.payload = { ...attempt.payload, imageHandling: "file" };
+          attempt.imageInputStatus = undefined;
+          attempt.imageInputBotId = undefined;
+          void deliver(attempt, true);
+        }}
+        onDelete={() => feedback.discard(attempt)}
+      />
+    );
+  });
 
   return (
     <KeyboardAvoidingView
@@ -3336,14 +3343,12 @@ function Thread({
             value={imageHandling}
             status={imageAdmission?.key === imageAdmissionKey ? imageAdmission.status : "unknown"}
             onChange={(value) => setImageChoice({ thread: threadKey, value })}
-            onChooseModel={() => {
-              const target = imageQuery ? (JSON.parse(imageQuery) as { botId?: string }) : {};
-              const targetBot =
-                (imageAdmission?.key === imageAdmissionKey ? imageAdmission.botId : undefined) ??
-                target.botId;
-              if (targetBot)
-                router.push({ pathname: "/bot-settings", params: { botId: targetBot } });
-            }}
+            onChooseModel={
+              previewModelBotId
+                ? () =>
+                    router.push({ pathname: "/bot-settings", params: { botId: previewModelBotId } })
+                : undefined
+            }
           />
         ) : null}
         <ThreadComposer

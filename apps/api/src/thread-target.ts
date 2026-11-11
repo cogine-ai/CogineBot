@@ -703,6 +703,7 @@ async function imageRecipientAdmission(
   botId: string,
   runs: ImageAdmissionRun[],
   configuration?: ImageAdmissionConfiguration,
+  lockConnection = false,
 ) {
   const answered: ImageAdmissionRun[] = [];
   for (const run of runs.filter((run) => run.status === "waiting_input")) {
@@ -733,7 +734,14 @@ async function imageRecipientAdmission(
   let status: ImageInputStatus = "supported";
   let modelPin: Awaited<ReturnType<typeof resolveThreadImageInput>>["modelPin"];
   for (const run of recipients) {
-    const result = await resolveThreadImageInput(tx, actor, botId, run, configuration);
+    const result = await resolveThreadImageInput(
+      tx,
+      actor,
+      botId,
+      run,
+      configuration,
+      lockConnection,
+    );
     if (result.status === "unsupported") return result;
     if (result.status === "unknown") status = result.status;
     modelPin = result.modelPin;
@@ -1017,6 +1025,7 @@ export async function sendThreadMessage(
               target.botId,
               imageRuns,
               deps.imageAdmission,
+              true,
             )
           : undefined;
         if (admission) assertImageInputStatus(admission.status, target.botId);
@@ -1243,6 +1252,7 @@ export async function sendThreadMessage(
             botId,
             imageRuns.filter((run) => run.botId === botId),
             deps.imageAdmission,
+            true,
           );
           assertImageInputStatus(admission.status, botId);
           if (admission.modelPin) modelPins.set(botId, admission.modelPin);

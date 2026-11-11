@@ -511,6 +511,13 @@ export function ShellPage() {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [imageSendRefusal, setImageSendRefusal] = useState<{
+    draftKey: string;
+    version: number;
+    revision: number;
+    status: "unsupported" | "unknown";
+    botId?: string;
+  }>();
   const [attachmentNotice, setAttachmentNotice] = useState<{
     scopeKey: string;
     text: string;
@@ -3733,6 +3740,23 @@ export function ShellPage() {
             : rpc.threads.send(input, context)
           ).catch((error: unknown) => {
             composerSendAttempts.rejectPageContext(originThreadKey, attempt, error);
+            const rejection = error as {
+              data?: { reason?: unknown; imageInputStatus?: unknown; botId?: unknown };
+            } | null;
+            if (
+              isCurrentAttempt() &&
+              stillHere() &&
+              rejection?.data?.reason === "model_image_input_unsupported"
+            ) {
+              const { imageInputStatus, botId } = rejection.data;
+              setImageSendRefusal((previous) => ({
+                draftKey: originThreadKey,
+                version: submitted.version,
+                revision: (previous?.revision ?? 0) + 1,
+                status: imageInputStatus === "unsupported" ? "unsupported" : "unknown",
+                botId: typeof botId === "string" ? botId : undefined,
+              }));
+            }
             throw error;
           });
           if (!isCurrentAttempt()) return false;
@@ -6065,6 +6089,12 @@ export function ShellPage() {
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
               imageAdmissionMessages={activeSnapshot?.messages}
+              imageSendRefusal={
+                imageSendRefusal?.draftKey === draftScopeKey &&
+                imageSendRefusal?.version === composerDraft.version
+                  ? imageSendRefusal
+                  : undefined
+              }
               onChooseImageModel={(targetBotId) => {
                 if (targetBotId) openChatSettings({ botId: targetBotId });
                 else openSettings("models");
@@ -8023,6 +8053,7 @@ export const Composer = memo(function Composer({
   imageAdmissionRevision = "",
   imageAdmissionTarget,
   imageAdmissionMessages,
+  imageSendRefusal,
   pageSession,
   draftKey,
   active,
@@ -8060,6 +8091,7 @@ export const Composer = memo(function Composer({
   imageAdmissionRevision?: string;
   imageAdmissionTarget?: Parameters<typeof rpc.threads.imageInput>[0];
   imageAdmissionMessages?: readonly ThreadMessage[];
+  imageSendRefusal?: { revision: number; status: "unsupported" | "unknown"; botId?: string };
   pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
@@ -8701,7 +8733,12 @@ export const Composer = memo(function Composer({
               ) ? (
                 <ImageInputChoice
                   value={draftState.imageHandling ?? "confirm"}
-                  revision={JSON.stringify([draftKey, imageAdmissionRevision])}
+                  revision={JSON.stringify([
+                    draftKey,
+                    imageAdmissionRevision,
+                    imageSendRefusal?.revision,
+                  ])}
+                  refusal={imageSendRefusal}
                   onChange={(imageHandling) => onDraftChange({ imageHandling })}
                   onChooseModel={onChooseImageModel}
                   target={(() => {

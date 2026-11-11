@@ -99,3 +99,33 @@ it("opens settings for the actual blocked group recipient", async () => {
   act(() => button.click());
   expect(onChooseModel).toHaveBeenCalledWith("bot-b");
 });
+
+it("shows the blocked bot while refreshing a stale positive preview", async () => {
+  const target = { groupId: "group-a" };
+  const onChooseModel = vi.fn();
+  vi.mocked(rpc.threads.imageInput).mockResolvedValueOnce({ status: "supported" });
+  await act(async () =>
+    root.render(<ImageInputChoice {...props} target={target} onChooseModel={onChooseModel} />),
+  );
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Can see images");
+  vi.mocked(rpc.threads.imageInput).mockImplementationOnce(() => new Promise(() => {}));
+  await act(async () =>
+    root.render(
+      <ImageInputChoice
+        {...props}
+        revision="refused"
+        target={target}
+        refusal={{ status: "unsupported", botId: "bot-b" }}
+        onChooseModel={onChooseModel}
+      />,
+    ),
+  );
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(
+    "This model cannot see images",
+  );
+  const button = [...container.querySelectorAll("button")].find(
+    (item) => item.textContent === "Choose model",
+  )!;
+  act(() => button.click());
+  expect(onChooseModel).toHaveBeenCalledWith("bot-b");
+});

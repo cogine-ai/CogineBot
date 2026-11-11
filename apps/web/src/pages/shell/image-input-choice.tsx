@@ -9,12 +9,14 @@ export function ImageInputChoice({
   onChange,
   target,
   revision,
+  refusal,
   onChooseModel,
 }: {
   value: ImageHandling;
   onChange: (value: ImageHandling) => void;
   target: Parameters<typeof rpc.threads.imageInput>[0];
   revision: string;
+  refusal?: { status: ImageInputStatus; botId?: string };
   onChooseModel?: (botId?: string) => void;
 }) {
   const { t } = useLingui();
@@ -43,7 +45,8 @@ export function ImageInputChoice({
       window.removeEventListener("focus", refresh);
     };
   }, [key, query]);
-  const status = result?.key === key ? result.status : "unknown";
+  const display = result?.key === key ? result : refusal;
+  const status = display?.status ?? "unknown";
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="image-input-choice">
       <fieldset className="flex gap-1" aria-label={t`Image use`}>
@@ -81,10 +84,7 @@ export function ImageInputChoice({
               variant="ghost"
               className="min-h-11"
               onClick={() =>
-                onChooseModel(
-                  (result?.key === key ? result.botId : undefined) ??
-                    ("botId" in target ? target.botId : undefined),
-                )
+                onChooseModel(display?.botId ?? ("botId" in target ? target.botId : undefined))
               }
             >{t`Choose model`}</Button>
           ) : null}

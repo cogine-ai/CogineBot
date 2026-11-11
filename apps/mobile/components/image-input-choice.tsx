@@ -14,7 +14,7 @@ export function ImageInputChoice({
   value: ImageHandling;
   status: ImageInputStatus;
   onChange: (value: ImageHandling) => void;
-  onChooseModel: () => void;
+  onChooseModel?: () => void;
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
@@ -41,7 +41,7 @@ export function ImageInputChoice({
                 ? t("This model cannot see images")
                 : t("This model's image capability is unconfirmed")}
           </Text>
-          {status !== "supported" ? (
+          {status !== "supported" && onChooseModel ? (
             <NativeActionButton
               label={t("Choose model")}
               prominence="quiet"

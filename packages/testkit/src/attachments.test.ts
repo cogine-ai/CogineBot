@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { EncryptedSecretStore } from "@rakazo/adapters";
 import type { ThreadSnapshot } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { lockBotModelSetting } from "../../../apps/api/src/bot-update.js";
@@ -22,6 +23,7 @@ describeAttachments("chat attachments", () => {
   let app: App;
   let stop: () => Promise<void>;
   const stamp = Date.now();
+  const secretStore = new EncryptedSecretStore("offline-attachment-fixture");
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-attachments-"));
   const tinyPng = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -35,6 +37,7 @@ describeAttachments("chat attachments", () => {
       dataDir,
       sandboxProvider: "fake",
       agentRuntime: "scripted",
+      secretStore,
     });
     app = handles.app;
     stop = handles.stop;
@@ -216,7 +219,7 @@ describeAttachments("chat attachments", () => {
     ).toBe(1);
   });
 
-  it.each(["run", "bot", "finalizer"] as const)(
+  it.each(["run", "bot", "connection", "finalizer"] as const)(
     "serializes image admission with a concurrent %s write",
     async (scope) => {
       const cookie = await signup(
@@ -241,6 +244,51 @@ describeAttachments("chat attachments", () => {
         where: { id: bot.id },
         data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
       });
+      const setupConnection = async () => {
+        const createSecret = async (vision: boolean) => {
+          const plaintext = JSON.stringify({
+            kind: "openai_compatible",
+            baseUrl: "https://model.example.test/v1",
+            enabledModelIds: ["fixture-vision-model"],
+            visionModelIds: vision ? ["fixture-vision-model"] : [],
+          });
+          const encrypted = await secretStore.put(plaintext, {
+            userId: owned.userId,
+            spaceId: owned.spaceId,
+            operationId: "image-fixture",
+            traceId: "image-fixture",
+            signal: new AbortController().signal,
+          });
+          return prisma.secret.create({
+            data: {
+              id: encrypted.id,
+              userId: owned.userId,
+              kind: "model",
+              ciphertext: encrypted.ciphertext,
+            },
+          });
+        };
+        const [vision, text] = await Promise.all([createSecret(true), createSecret(false)]);
+        const credential = await prisma.userModelCredential.create({
+          data: {
+            userId: owned.userId,
+            provider: "openai-compatible",
+            label: "Image fixture",
+            secretId: vision.id,
+            supportsImages: true,
+          },
+        });
+        await prisma.bot.update({
+          where: { id: bot.id },
+          data: {
+            modelProvider: "openai-compatible",
+            modelId: "fixture-vision-model",
+            modelCredentialId: credential.id,
+          },
+        });
+        return { credentialId: credential.id, textSecretId: text.id };
+      };
+      const connection = scope === "connection" ? await setupConnection() : undefined;
       const createActiveRun = async () => {
         const task = await prisma.task.create({
           data: {
@@ -288,7 +336,16 @@ describeAttachments("chat attachments", () => {
         async (tx) => {
           const data = { modelId: "deepseek/deepseek-v4-pro" };
           if (run) await tx.run.update({ where: { id: run.id }, data });
-          else if (scope === "bot") {
+          else if (connection) {
+            await tx.userModelCredential.update({
+              where: { id: connection.credentialId },
+              data: {
+                secretId: connection.textSecretId,
+                supportsImages: false,
+                connectionRevision: { increment: 1 },
+              },
+            });
+          } else if (scope === "bot") {
             await lockBotModelSetting(tx, bot.id);
             await tx.bot.update({ where: { id: bot.id }, data });
           } else {
@@ -317,7 +374,7 @@ describeAttachments("chat attachments", () => {
             async () => {
               const rows = await prisma.$queryRaw<
                 Array<{ blocked: boolean }>
-              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : scope === "bot" ? "%pg_advisory_xact_lock%" : "%threads%FOR NO KEY UPDATE%"}) AS blocked`;
+              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : scope === "bot" ? "%pg_advisory_xact_lock%" : connection ? "%user_model_credentials%FOR SHARE%" : "%threads%FOR NO KEY UPDATE%"}) AS blocked`;
               return rows[0]?.blocked;
             },
             { interval: 10, timeout: 3000 },

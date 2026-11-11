@@ -44,6 +44,7 @@ export async function resolveThreadImageInput(
   botId: string,
   run?: ImageAdmissionRun,
   configuration?: ImageAdmissionConfiguration,
+  lockConnection = false,
 ) {
   const bot = await prisma.bot.findFirst({
     where: { id: botId, userId: actor.userId, spaceId: actor.spaceId },
@@ -102,7 +103,20 @@ export async function resolveThreadImageInput(
     return { status };
   }
   let supportsImages = knownModelImageInput(provider, id);
-  const credential = selected.credential;
+  let credential = selected.credential;
+  if (lockConnection && credential) {
+    const [current] = await prisma.$queryRaw<Array<{ secretId: string; supportsImages: boolean }>>`
+      SELECT "secretId", "supportsImages" FROM user_model_credentials
+      WHERE id = ${credential.id} AND "userId" = ${actor.userId} AND provider = ${credential.provider}
+      FOR SHARE
+    `;
+    if (!current) return { status: "unknown" as const };
+    credential = {
+      ...credential,
+      secretId: current.secretId,
+      supportsImages: current.supportsImages,
+    };
+  }
   if (provider === "openai-compatible" && !credential && modelAcceptsImageInput(provider, id))
     supportsImages = true;
   if (
@@ -116,8 +130,7 @@ export async function resolveThreadImageInput(
     if (row) {
       const secret = parseModelSecret(await configuration.secrets.load(row.ciphertext, row.id));
       if (provider === "openai-compatible" || provider === CHATGPT_PLAN_PROVIDER_ID) {
-        const configured = connectionModelImageInput(provider, id, credential, secret);
-        supportsImages = provider === "openai-compatible" ? configured || undefined : configured;
+        supportsImages = connectionModelImageInput(provider, id, credential, secret);
       } else if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
         const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
           waitMs: 0,

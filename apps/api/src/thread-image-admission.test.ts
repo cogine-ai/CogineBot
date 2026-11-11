@@ -7,11 +7,15 @@ import { sendThreadMessage, threadImageInputStatus } from "./thread-target.js";
 
 // Exercise the shared production send entrypoint with an owned stored image.
 // No model transport or credential material is needed to reject known text-only input.
-function fixture(group = false) {
+function fixture(group = false, storedVision = false) {
   const model = { modelProvider: "openrouter", modelId: "deepseek/deepseek-v4-pro" };
   const tx = {
     secret: { findFirst: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "synthetic" }) },
-    $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
+    $queryRaw: vi.fn(async (query: TemplateStringsArray) =>
+      query.join(" ").includes("user_model_credentials")
+        ? [{ secretId: "secret-1", supportsImages: storedVision }]
+        : [{ id: "group-1" }],
+    ),
     chatGroup: {
       findFirst: vi.fn().mockResolvedValue({
         members: [
@@ -162,11 +166,10 @@ describe("current image send admission", () => {
       },
     };
     if (images) await expect(send(configuration)).resolves.toMatchObject({ runId: "run-1" });
-    // A custom endpoint is never known to be text-only; image input is just not turned on.
     else
       await expect(send(configuration)).rejects.toMatchObject({
         code: "CONFLICT",
-        message: "Image input is not configured for this model.",
+        data: { imageInputStatus: "unsupported" },
       });
   });
 
@@ -365,7 +368,7 @@ describe("current image send admission", () => {
   });
 
   it("matches a legacy image default with surrounding whitespace like the executor", async () => {
-    const { tx, send } = fixture();
+    const { tx, send } = fixture(false, true);
     const stored = " custom-model ";
     tx.bot.findFirst.mockResolvedValue({
       id: "bot-1",
@@ -707,7 +710,7 @@ describe("connection-bound image capability", () => {
         },
         { secrets: { load }, deployment: null },
       ),
-    ).toBe("unknown");
+    ).toBe("unsupported");
     expect(load.mock.calls.map(([ciphertext]) => ciphertext)).toEqual(["vision-key", "text-key"]);
   });
 
