@@ -265,7 +265,7 @@ const NamedLoginField = z
 type NamedLoginField = z.infer<typeof NamedLoginField>;
 
 export const NamedLoginSecretValue = z
-  .object({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
+  .strictObject({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
   .refine(
     ({ fields }) => new Set(fields.map(({ label }) => label.toLowerCase())).size === fields.length,
     "Give each field a different label",
@@ -284,12 +284,19 @@ export function encodeLoginSecret(value: StoredLoginSecretValue): string {
   );
 }
 
-export function decodeLoginSecret(plaintext: string): StoredLoginSecretValue {
+export function parseLoginSecretWrite(plaintext: string): StoredLoginSecretValue {
   const value: unknown = JSON.parse(plaintext);
-  // Do not let an invalid named payload fall back to a pair and discard fields.
+  // A write that supplies named fields may not fall back to the legacy pair.
   return value !== null && typeof value === "object" && Object.hasOwn(value, "fields")
     ? NamedLoginSecretValue.parse(value)
     : LoginSecretValue.parse(value);
+}
+
+export function decodeLoginSecret(plaintext: string): StoredLoginSecretValue {
+  const value: unknown = JSON.parse(plaintext);
+  // Older servers validated the pair but encrypted the original JSON, including extra keys.
+  const legacy = LoginSecretValue.safeParse(value);
+  return legacy.success ? legacy.data : NamedLoginSecretValue.parse(value);
 }
 
 export function loginSecretFields(value: StoredLoginSecretValue): readonly NamedLoginField[] {
@@ -354,8 +361,12 @@ export const BotSecretMetadata = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   revision: BotSecretRevision.optional(),
+  namedLogin: z.literal(true).optional(),
 });
 export type BotSecretMetadata = z.infer<typeof BotSecretMetadata>;
+export const EditableBotSecretMetadata = BotSecretMetadata.extend({
+  revision: BotSecretRevision,
+});
 
 export const SecretHttpRequest = z
   .object({

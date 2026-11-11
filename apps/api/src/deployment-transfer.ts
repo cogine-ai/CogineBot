@@ -20,6 +20,7 @@ import {
   DEPLOYMENT_TRANSFER_PROTOCOL,
   deploymentTransferDigest,
   deploymentTransferFingerprint,
+  isNamedBotLogin,
   normalizeSecretDestination,
   persistPreparedSecret,
   reconcileSecretWrite,
@@ -572,7 +573,7 @@ export function createDeploymentTransferService(deps: Deps) {
     for (const row of rows) {
       try {
         const destination = normalizeSecretDestination(row);
-        if (destination.auth.type === "command") throw new Error();
+        if (destination.auth.type === "command" || isNamedBotLogin(row.auth)) throw new Error();
         selected.push({ row, destination, itemKey: randomUUID() });
       } catch {
         leftOut.push({ name: row.name.slice(0, 256), reason: "unsupported_kind" });
@@ -671,6 +672,7 @@ export function createDeploymentTransferService(deps: Deps) {
         if (
           !item ||
           !secret ||
+          isNamedBotLogin(secret.auth) ||
           !sameSecretDestination(
             normalizeSecretDestination(secret),
             normalizeSecretDestination(candidate(item)),
@@ -908,10 +910,11 @@ export function createDeploymentTransferService(deps: Deps) {
     if (item.action !== "keep") {
       if (
         current &&
-        !sameSecretDestination(
-          normalizeSecretDestination(current),
-          normalizeSecretDestination(item.source),
-        )
+        (isNamedBotLogin(current.auth) ||
+          !sameSecretDestination(
+            normalizeSecretDestination(current),
+            normalizeSecretDestination(item.source),
+          ))
       )
         throw new TargetAdmissionConflict("destination_conflict");
       const reason = overwriteReason(current, proposal(row).payload.protectedSourceResources);
@@ -954,10 +957,11 @@ export function createDeploymentTransferService(deps: Deps) {
         try {
           if (
             old &&
-            !sameSecretDestination(
-              normalizeSecretDestination(old),
-              normalizeSecretDestination(source),
-            )
+            (isNamedBotLogin(old.auth) ||
+              !sameSecretDestination(
+                normalizeSecretDestination(old),
+                normalizeSecretDestination(source),
+              ))
           )
             reason = "destination_conflict";
         } catch {
@@ -1943,6 +1947,7 @@ export function createDeploymentTransferService(deps: Deps) {
     );
     if (
       !secret ||
+      isNamedBotLogin(secret.auth) ||
       !sameSecretDestination(
         normalizeSecretDestination(secret),
         normalizeSecretDestination(planned.source),

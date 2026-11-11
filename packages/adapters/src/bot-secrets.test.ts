@@ -744,7 +744,7 @@ describe("saved website logins", () => {
     );
   }
 
-  it("selects old browser fill aliases by field visibility, even when labels disagree", async () => {
+  it("keeps named values out of the legacy browser and transfer protocols", async () => {
     const plaintext = encodeLoginSecret({
       fields: [
         { label: "Password", value: "visible-fixture", hidden: false },
@@ -754,14 +754,25 @@ describe("saved website logins", () => {
     });
     const { prisma } = await encryptedLogin(plaintext);
     const input = { prisma, secretStore, scope, name: "site_login" };
-    expect(await resolveLoginFill({ ...input, field: "username" })).toMatchObject({
-      text: "visible-fixture",
-      redactions: expect.arrayContaining(["hidden-fixture", "another-hidden-fixture"]),
-    });
-    expect(await resolveLoginFill({ ...input, field: "password" })).toMatchObject({
-      text: "hidden-fixture",
-    });
-    expect(validateTransferBotSecret(login, plaintext).plaintext).toBe(plaintext);
+    for (const field of ["username", "password"] as const) {
+      expect(await resolveLoginFill({ ...input, field })).toEqual({
+        error: "Filling named login fields is unavailable.",
+      });
+    }
+    expect(() => validateTransferBotSecret(login, plaintext)).toThrow("Credential cannot be used");
+  });
+
+  it("fills a historical pair saved with extra JSON fields", async () => {
+    const { prisma } = await encryptedLogin(
+      JSON.stringify({
+        username: "historical-fixture",
+        password: "historical-password",
+        fields: { ignored: true },
+      }),
+    );
+    expect(
+      await resolveLoginFill({ prisma, secretStore, scope, name: "site_login", field: "password" }),
+    ).toMatchObject({ text: "historical-password" });
   });
 
   it("resolves one field bound to the saved origin with its redactions", async () => {

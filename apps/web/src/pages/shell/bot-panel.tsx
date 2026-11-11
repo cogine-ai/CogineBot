@@ -1043,7 +1043,7 @@ export function BotSettings({
             />
           </label>
         ))}
-        {advancedOpened ? <BotCredentialsSection botId={bot.id} /> : null}
+        {advancedOpened ? <BotCredentialsSection key={bot.id} botId={bot.id} /> : null}
       </details>
       {error ? (
         <p role="alert" className="mt-2 text-[13px] text-destructive">

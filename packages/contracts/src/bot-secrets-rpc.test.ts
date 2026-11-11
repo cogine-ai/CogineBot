@@ -64,6 +64,7 @@ describe("botSecrets rpc contract", () => {
       "auth",
       "createdAt",
       "name",
+      "namedLogin",
       "origin",
       "revision",
       "updatedAt",
@@ -77,9 +78,11 @@ describe("botSecrets rpc contract", () => {
       value: "fake-value-1",
       ciphertext: "enc:1",
       revision: "version-1",
+      namedLogin: true,
     });
     expect(parsed).not.toHaveProperty("value");
     expect(parsed).not.toHaveProperty("ciphertext");
     expect(parsed.revision).toBe("version-1");
+    expect(parsed.namedLogin).toBe(true);
   });
 });

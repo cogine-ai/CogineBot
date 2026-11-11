@@ -10,6 +10,7 @@ import {
   isCloudMetadataHost,
   isPrivateNetworkHost,
   loginSecretFields,
+  parseLoginSecretWrite,
   SecretHttpRequest,
 } from "./bot-secrets.js";
 import { AGENT_SECRET_NAME_PATTERN } from "./domain.js";
@@ -171,6 +172,13 @@ describe("login credentials", () => {
     ]);
   });
 
+  it("retains a historical pair with a field the old validator ignored", () => {
+    const pair = { username: "historical-account", password: "historical-fixture" };
+    const stored = JSON.stringify({ ...pair, fields: { oldClientMetadata: true } });
+    expect(decodeLoginSecret(stored)).toEqual(pair);
+    expect(() => parseLoginSecretWrite(stored)).toThrow();
+  });
+
   it("preserves field order and hidden values while normalizing labels and visible values", () => {
     const fields = [
       { label: " Account ID ", value: "  fixture  ", hidden: false },
@@ -203,8 +211,9 @@ describe("login credentials", () => {
     ].map((fields) => ({ fields })),
   )("rejects invalid named fields even beside a valid legacy pair", ({ fields }) => {
     expect(() =>
-      decodeLoginSecret(JSON.stringify({ fields, username: "legacy", password: "legacy" })),
+      parseLoginSecretWrite(JSON.stringify({ fields, username: "legacy", password: "legacy" })),
     ).toThrow();
+    expect(() => parseLoginSecretWrite(JSON.stringify({ fields }))).toThrow();
   });
 
   it.each([

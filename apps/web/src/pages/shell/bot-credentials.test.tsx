@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const botSecrets = vi.hoisted(() => ({
   list: vi.fn(),
+  listForEdit: vi.fn(),
   put: vi.fn(),
   remove: vi.fn(),
 }));
@@ -92,7 +93,8 @@ async function click(testId: string) {
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  botSecrets.list.mockReset().mockResolvedValue(rows);
+  botSecrets.list.mockReset();
+  botSecrets.listForEdit.mockReset().mockResolvedValue(rows);
   botSecrets.put.mockReset();
   botSecrets.remove.mockReset().mockResolvedValue({ ok: true });
   container = document.createElement("div");
@@ -109,7 +111,7 @@ afterEach(async () => {
 describe("BotCredentialsSection", () => {
   it("lists credential metadata and no values", async () => {
     await render();
-    expect(botSecrets.list).toHaveBeenCalledWith({ botId: "bot-1" });
+    expect(botSecrets.listForEdit).toHaveBeenCalledWith({ botId: "bot-1" });
     const text = container.textContent ?? "";
     expect(container.querySelectorAll('[data-testid="bot-credential-row"]')).toHaveLength(4);
     for (const expected of [
@@ -126,10 +128,24 @@ describe("BotCredentialsSection", () => {
   });
 
   it("shows an empty state", async () => {
-    botSecrets.list.mockResolvedValue([]);
+    botSecrets.listForEdit.mockResolvedValue([]);
     await render();
     expect(byTestId("bot-credentials-empty").textContent).toContain("No credentials saved");
   });
+
+  it.each([true, false])(
+    "keeps an older server read-only even with an empty list: %s",
+    async (empty) => {
+      botSecrets.listForEdit.mockRejectedValue({ code: "NOT_FOUND" });
+      botSecrets.list.mockResolvedValue(empty ? [] : rows);
+      await render();
+      expect(botSecrets.list).toHaveBeenCalledWith({ botId: "bot-1" });
+      expect(container.textContent).toContain("Credential changes are unavailable on this server.");
+      expect(container.querySelector('[data-testid="credential-add"]')).toBeNull();
+      expect(container.querySelector('[data-testid="credential-remove-api"]')).toBeNull();
+      expect(container.querySelector('[data-testid="credential-replace-api"]')).toBeNull();
+    },
+  );
 
   it("adds a header credential and clears the value, then refetches", async () => {
     const savedHeader = rows[1];
@@ -168,7 +184,7 @@ describe("BotCredentialsSection", () => {
       value: FAKE_VALUE,
       expectedRevision: null,
     });
-    expect(botSecrets.list).toHaveBeenCalledTimes(2);
+    expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
     expect(container.innerHTML).not.toContain(FAKE_VALUE);
   });
 
@@ -235,13 +251,14 @@ describe("BotCredentialsSection", () => {
   });
 
   it("shows an unreadable saved row with remove but no replace", async () => {
-    botSecrets.list.mockResolvedValue([
+    botSecrets.listForEdit.mockResolvedValue([
       {
         name: "Legacy Name",
         origin: "https://legacy.example.com",
         auth: null,
         createdAt: stamp,
         updatedAt: stamp,
+        revision: "legacy-revision",
       },
     ]);
     await render();
@@ -251,18 +268,23 @@ describe("BotCredentialsSection", () => {
     await click("credential-remove-Legacy Name");
     expect(container.textContent).toContain("Remove Legacy Name?");
     await click("credential-remove-confirm-Legacy Name");
-    expect(botSecrets.remove).toHaveBeenCalledWith({ botId: "bot-1", name: "Legacy Name" });
-    expect(botSecrets.list).toHaveBeenCalledTimes(2);
+    expect(botSecrets.remove).toHaveBeenCalledWith({
+      botId: "bot-1",
+      name: "Legacy Name",
+      expectedRevision: "legacy-revision",
+    });
+    expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
   });
 
   it("hides replace and shows the unreadable row when a readable auth has an invalid name", async () => {
-    botSecrets.list.mockResolvedValue([
+    botSecrets.listForEdit.mockResolvedValue([
       {
         name: "Legacy Name",
         origin: "https://legacy.example.com",
         auth: { type: "bearer" },
         createdAt: stamp,
         updatedAt: stamp,
+        revision: "legacy-revision",
       },
     ]);
     await render();
@@ -272,13 +294,19 @@ describe("BotCredentialsSection", () => {
     await click("credential-remove-Legacy Name");
     expect(container.textContent).toContain("Remove Legacy Name?");
     await click("credential-remove-confirm-Legacy Name");
-    expect(botSecrets.remove).toHaveBeenCalledWith({ botId: "bot-1", name: "Legacy Name" });
-    expect(botSecrets.list).toHaveBeenCalledTimes(2);
+    expect(botSecrets.remove).toHaveBeenCalledWith({
+      botId: "bot-1",
+      name: "Legacy Name",
+      expectedRevision: "legacy-revision",
+    });
+    expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the add form open when save succeeds but list reload fails", async () => {
     botSecrets.put.mockResolvedValue(rows[0]);
-    botSecrets.list.mockResolvedValueOnce(rows).mockRejectedValueOnce(new Error("list failed"));
+    botSecrets.listForEdit
+      .mockResolvedValueOnce(rows)
+      .mockRejectedValueOnce(new Error("list failed"));
     await render();
     await click("credential-add");
     await type("credential-name", "api2");
@@ -320,7 +348,26 @@ describe("BotCredentialsSection", () => {
       name: "api",
       expectedRevision: "rev-api",
     });
-    expect(botSecrets.list).toHaveBeenCalledTimes(2);
+    expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks the revision after a conflict and requires a fresh remove confirmation", async () => {
+    const refreshed = rows.map((row) => (row.name === "api" ? { ...row, revision: "newer" } : row));
+    botSecrets.listForEdit.mockResolvedValueOnce(rows).mockResolvedValueOnce(refreshed);
+    botSecrets.remove.mockRejectedValueOnce({ code: "CONFLICT", message: "Credential changed." });
+    await render();
+    await click("credential-remove-api");
+    await click("credential-remove-confirm-api");
+    expect(botSecrets.remove).toHaveBeenCalledTimes(1);
+    expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="credential-remove-confirm-api"]')).toBeNull();
+    await click("credential-remove-api");
+    await click("credential-remove-confirm-api");
+    expect(botSecrets.remove).toHaveBeenLastCalledWith({
+      botId: "bot-1",
+      name: "api",
+      expectedRevision: "newer",
+    });
   });
 });
 
@@ -376,7 +423,7 @@ describe("BotCredentialsSection command variables", () => {
   });
 
   it("lists a command variable with its variable name and replaces its value", async () => {
-    botSecrets.list.mockResolvedValue([commandRow]);
+    botSecrets.listForEdit.mockResolvedValue([commandRow]);
     botSecrets.put.mockResolvedValue(commandRow);
     await render();
     const row = byTestId("bot-credential-row");

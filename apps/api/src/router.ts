@@ -84,6 +84,7 @@ import {
   hostCredentialSource,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
+  isNamedBotLogin,
   isSandboxGoneError,
   isSandboxUnsafeStop,
   isScratchpadStatus,
@@ -886,7 +887,7 @@ function botSecretMetadataDto(row: {
   createdAt: Date;
   updatedAt: Date;
   revision: string;
-}): BotSecretMetadata {
+}): BotSecretMetadata & { revision: string } {
   // Unreadable or no-longer-storable destinations become auth:null so the owner UI stays remove-only.
   const parsed = BotSecretAuth.safeParse(row.auth);
   let auth: BotSecretMetadata["auth"] = null;
@@ -905,6 +906,7 @@ function botSecretMetadataDto(row: {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     revision: row.revision,
+    ...(isNamedBotLogin(row.auth) && { namedLogin: true as const }),
   };
 }
 
@@ -1059,6 +1061,11 @@ export function createRouter(deps: RouterDeps) {
     stillAuthorized?: () => Promise<boolean>;
   }>();
   const repos = createRepos(deps.prisma);
+  async function listOwnedBotCredentials(actor: Actor, botId: string) {
+    const bot = await repos.getBot(actor, botId);
+    const rows = await listBotSecretMetadata(deps.prisma, botSecretScope(actor, bot.id));
+    return rows.map(botSecretMetadataDto);
+  }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
@@ -7515,14 +7522,12 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     botSecrets: {
-      list: authed.botSecrets.list.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        const rows = await listBotSecretMetadata(
-          deps.prisma,
-          botSecretScope(context.actor, bot.id),
-        );
-        return rows.map(botSecretMetadataDto);
-      }),
+      list: authed.botSecrets.list.handler(({ context, input }) =>
+        listOwnedBotCredentials(context.actor, input.botId),
+      ),
+      listForEdit: authed.botSecrets.listForEdit.handler(({ context, input }) =>
+        listOwnedBotCredentials(context.actor, input.botId),
+      ),
       put: authed.botSecrets.put.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         const scope = botSecretScope(context.actor, bot.id);

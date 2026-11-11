@@ -86,6 +86,50 @@ test("bot credentials list, add, replace and remove without leaking values", asy
   await captureScreenshot(page, testInfo, "bot-credentials-removed");
 });
 
+test("a named login can be removed but cannot be edited by the legacy form", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(
+    page,
+    `login-compatibility-${stamp}@example.test`,
+    "password12",
+    "Credential fixture",
+  );
+  await completeOnboarding(page);
+  const botName = `Login compatibility ${stamp}`;
+  const botId = await createNamedBot(page, botName);
+  const name = "example_login";
+  const saved = await rpc<{ revision: string }>(page, "botSecrets/put", {
+    botId,
+    destination: { name, origin: "https://login.example.test", auth: { type: "login" } },
+    value: JSON.stringify({
+      fields: [
+        { label: "Account ID", value: "fixture-account", hidden: false },
+        { label: "Access phrase", value: SENTINEL, hidden: true },
+      ],
+    }),
+    expectedRevision: null,
+  });
+  await page.locator("main").getByRole("button", { name: botName, exact: true }).click();
+  const settings = page.getByTestId("bot-settings");
+  await settings.getByTestId("bot-settings-advanced").evaluate((element) => {
+    (element as HTMLDetailsElement).open = true;
+  });
+  const credentials = settings.getByTestId("bot-credentials");
+  await expect(credentials).toContainText("This form can't edit named fields.");
+  await expect(credentials.getByTestId(`credential-replace-${name}`)).toHaveCount(0);
+  await expect(credentials.getByTestId(`credential-remove-${name}`)).toBeVisible();
+  await expectNoLeakedInputValue(page, SENTINEL);
+  expect(await rpc(page, "botSecrets/list", { botId })).toEqual([
+    expect.objectContaining({ name, revision: saved.revision, namedLogin: true }),
+  ]);
+  await captureScreenshot(page, testInfo, "bot-credentials-named-login-protected");
+  await credentials.getByTestId(`credential-remove-${name}`).click();
+  await credentials.getByTestId(`credential-remove-confirm-${name}`).click();
+  await expect(credentials.getByTestId("bot-credentials-empty")).toBeVisible();
+});
+
 /** Fail if any live input value still carries a protected value. */
 async function expectNoLeakedInputValue(page: Page, value: string) {
   const leaked = await page.evaluate((needle) => {

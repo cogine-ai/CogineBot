@@ -7362,3 +7362,11 @@ msgstr "इमेज के रूप में पहले ही भेजा
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "फ़ाइल के रूप में पहले ही भेजा जा चुका है। आपका ड्राफ़्ट सुरक्षित है।"
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "इस सर्वर पर क्रेडेंशियल में बदलाव उपलब्ध नहीं है।"
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "इस फ़ॉर्म में नाम वाले फ़ील्ड बदले नहीं जा सकते।"

@@ -32,7 +32,12 @@ import {
   BotPackageReceiptSchema,
   BotPackageRecentReceiptSchema,
 } from "./bot-package.js";
-import { BotSecretMetadata, BotSecretPutInput, BotSecretRemoveInput } from "./bot-secrets.js";
+import {
+  BotSecretMetadata,
+  BotSecretPutInput,
+  BotSecretRemoveInput,
+  EditableBotSecretMetadata,
+} from "./bot-secrets.js";
 import {
   DeploymentTransferApproveInput,
   DeploymentTransferCancelInput,
@@ -1307,6 +1312,7 @@ export const appContract = {
   },
   botSecrets: {
     list: oc.input(z.object({ botId: Id })).output(z.array(BotSecretMetadata)),
+    listForEdit: oc.input(z.object({ botId: Id })).output(z.array(EditableBotSecretMetadata)),
     put: oc.input(BotSecretPutInput).output(BotSecretMetadata),
     remove: oc.input(BotSecretRemoveInput).output(z.object({ ok: z.literal(true) })),
   },

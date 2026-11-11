@@ -7362,3 +7362,11 @@ msgstr "Déjà envoyé en tant qu’image. Votre brouillon est conservé."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "Déjà envoyé en tant que fichier. Votre brouillon est conservé."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "Ce serveur ne permet pas de modifier les identifiants."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "Ce formulaire ne permet pas de modifier les champs nommés."

@@ -7362,3 +7362,11 @@ msgstr "Zaten görsel olarak gönderildi. Taslağınız korundu."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "Zaten dosya olarak gönderildi. Taslağınız korundu."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "Bu sunucuda kimlik bilgileri değiştirilemiyor."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "Bu form adlandırılmış alanları düzenleyemez."

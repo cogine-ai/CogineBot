@@ -119,7 +119,7 @@ function botSecretDeps(seed: Row[] = []) {
     dataDir: "/tmp/rakazo-router-test",
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps));
-  async function call(path: "list" | "put" | "remove", input: unknown) {
+  async function call(path: "list" | "listForEdit" | "put" | "remove", input: unknown) {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/botSecrets/${path}`, {
         method: "POST",
@@ -167,9 +167,15 @@ describe("botSecrets router", () => {
     expect((await call("put", { ...login, value })).status).toBe(409);
     const created = await call("put", { ...login, value, expectedRevision: null });
     expect(created.status).toBe(200);
+    expect(created.body.json).toMatchObject({ namedLogin: true });
     expect(created.text).not.toContain(FAKE_VALUE);
     expect(created.text).not.toContain("Access phrase");
     const first = { ...rows[0] };
+    const listed = await call("listForEdit", { botId: login.botId });
+    expect(listed.body.json).toEqual([
+      expect.objectContaining({ namedLogin: true, revision: first.revision }),
+    ]);
+    expect(listed.text).not.toContain("Access phrase");
     const legacyValue = encodeLoginSecret({ username: "old-form", password: "old-form-fixture" });
     for (const expectedRevision of [undefined, first.revision]) {
       const rejected = await call("put", { ...login, value: legacyValue, expectedRevision });
@@ -177,7 +183,9 @@ describe("botSecrets router", () => {
       expect(rejected.text).toContain("This login uses named fields");
     }
     expect(secrets.put).toHaveBeenCalledOnce();
+    expect(secrets.load).not.toHaveBeenCalled();
     expect(rows[0]).toEqual(first);
+    expect((await call("remove", { botId: login.botId, name: "portal" })).status).toBe(409);
     expect(
       (await call("remove", { botId: login.botId, name: "portal", expectedRevision: "stale" }))
         .status,
@@ -208,6 +216,28 @@ describe("botSecrets router", () => {
     expect((await call("put", { ...input, expectedRevision: preparedAt })).status).toBe(409);
     expect(prisma.botSecret.updateMany).not.toHaveBeenCalled();
     expect(rows[0]).toMatchObject({ revision: "another-write", ciphertext: "enc:another-write" });
+  });
+
+  it("reports a conflict if a competing save retired the old login reference", async () => {
+    const { call, rows, secrets } = botSecretDeps();
+    const input = {
+      botId: "bot-1",
+      destination: {
+        name: "portal",
+        origin: "https://login.example.test",
+        auth: { type: "login" },
+      },
+      value: encodeLoginSecret({ username: "fixture", password: "legacy-fixture" }),
+    };
+    expect((await call("put", input)).status).toBe(200);
+    secrets.load.mockImplementationOnce(async () => {
+      Object.assign(rows[0]!, { revision: "newer", ciphertext: "enc:newer" });
+      throw new Error("Synthetic provider reference retired");
+    });
+    const refused = await call("put", { ...input, expectedRevision: rows[0]?.revision });
+    expect(refused.status).toBe(409);
+    expect(refused.text).not.toContain("Synthetic provider");
+    expect(secrets.put).toHaveBeenCalledOnce();
   });
 
   it("prepares a slow credential before opening the five-second transaction", async () => {
@@ -441,12 +471,21 @@ describe("botSecrets router", () => {
   });
 
   it("removes a non-regex stored name for the owned bot and rejects another user's bot", async () => {
-    const owned = botSecretDeps();
+    const owned = botSecretDeps([
+      { id: "row-1", userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "Legacy Name" },
+    ]);
     const removed = await owned.call("remove", { botId: "bot-1", name: "Legacy Name" });
     expect(removed.status).toBe(200);
     expect(removed.body.json).toEqual({ ok: true });
     expect(owned.prisma.botSecret.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "Legacy Name" },
+      where: {
+        id: "row-1",
+        revision: "revision-1",
+        userId: "user-1",
+        spaceId: "space-1",
+        botId: "bot-1",
+        name: "Legacy Name",
+      },
     });
 
     const foreign = botSecretDeps();
@@ -456,12 +495,21 @@ describe("botSecrets router", () => {
   });
 
   it("removes a credential by name within the owner's bot scope", async () => {
-    const { prisma, call } = botSecretDeps();
+    const { prisma, call } = botSecretDeps([
+      { id: "row-1", userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "router" },
+    ]);
     const result = await call("remove", { botId: "bot-1", name: "router" });
     expect(result.status).toBe(200);
     expect(result.body.json).toEqual({ ok: true });
     expect(prisma.botSecret.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "router" },
+      where: {
+        id: "row-1",
+        revision: "revision-1",
+        userId: "user-1",
+        spaceId: "space-1",
+        botId: "bot-1",
+        name: "router",
+      },
     });
   });
   it("stores a command variable with no origin and lists it with its type", async () => {
