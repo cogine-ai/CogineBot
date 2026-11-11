@@ -15,9 +15,11 @@ import type {
 import {
   canReactToThreadMessage,
   DelegatedApprovalAction,
+  IMAGE_INPUT_PREVIEW_DELAY_MS,
+  imageInputRouteKey,
   MESSAGE_REACTIONS,
 } from "@rakazo/contracts";
-import type { AnnouncementEvent, SlashActionId, ThreadItem } from "@rakazo/core";
+import type { AnnouncementEvent, ComposerMention, SlashActionId, ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
   appendNewerThreadPage,
@@ -956,9 +958,12 @@ function Thread({
 
   const composerRef = useRef<ThreadComposerHandle>(null);
   const [imageQuery, setImageQuery] = useState("");
+  const imageTarget = imageQuery
+    ? (JSON.parse(imageQuery) as { text?: string; botId?: string })
+    : undefined;
   const imageAdmissionKey = JSON.stringify([
     threadKey,
-    imageQuery,
+    imageTarget ? imageInputRouteKey(imageTarget) : null,
     snap?.run,
     focused,
     mentionBots.find((bot) => bot.id === botId),
@@ -966,26 +971,52 @@ function Thread({
   useEffect(() => {
     if (!hasPendingImages || !imageQuery) return;
     let cancelled = false;
-    void rpc<{ status: ImageInputStatus; botId?: string }>(
-      "threads/imageInput",
-      JSON.parse(imageQuery),
-    ).then(
-      ({ status, botId }) => {
-        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status, botId });
-      },
-      () => {
-        if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status: "unknown" });
-      },
-    );
+    const timer = setTimeout(() => {
+      void rpc<{ status: ImageInputStatus; botId?: string }>(
+        "threads/imageInput",
+        JSON.parse(imageQuery),
+      ).then(
+        ({ status, botId }) => {
+          if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status, botId });
+        },
+        () => {
+          if (!cancelled) setImageAdmission({ key: imageAdmissionKey, status: "unknown" });
+        },
+      );
+    }, IMAGE_INPUT_PREVIEW_DELAY_MS);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [hasPendingImages, imageQuery, imageAdmissionKey]);
   const previewModelBotId =
     (imageAdmission?.key === imageAdmissionKey ? imageAdmission.botId : undefined) ??
-    (imageQuery ? (JSON.parse(imageQuery) as { botId?: string }).botId : undefined);
+    imageTarget?.botId;
   useChatOnScreen();
   const replyPage = useRef<{ page: { id: string; title: string }; scope: string } | null>(null);
+  const updateImageQuery = useCallback(
+    (text: string, mentions: ComposerMention[]) => {
+      const plan = resolveComposerSendPlan({ text, mentions, hasAttachments: true });
+      const selectedPage = replyPage.current;
+      const page =
+        !plan.rerouteGroupId && selectedPage?.scope === previewScope
+          ? pageReply(plan.trimmed, snap?.messages ?? [], selectedPage.page, replyTarget?.id)
+          : undefined;
+      setImageQuery(
+        JSON.stringify({
+          ...(plan.rerouteGroupId
+            ? { groupId: plan.rerouteGroupId }
+            : groupId
+              ? { groupId }
+              : { botId }),
+          text: plan.trimmed,
+          pageContext: page?.pageContext,
+          mentions: plan.mentionPayload,
+        }),
+      );
+    },
+    [botId, groupId, previewScope, replyTarget?.id, snap?.messages],
+  );
   const pageCards = useMemo(() => newestPageCards(snap?.messages ?? []), [snap?.messages]);
   const composerEmptied = useCallback(() => {
     replyPage.current = null;
@@ -2981,13 +3012,17 @@ function Thread({
             ? () => router.push({ pathname: "/bot-settings", params: { botId: targetBot } })
             : undefined
         }
-        onRetryAsFile={() => {
-          if (!attempt.imageInputStatus || attempt.state === "pending") return;
-          attempt.payload = { ...attempt.payload, imageHandling: "file" };
-          attempt.imageInputStatus = undefined;
-          attempt.imageInputBotId = undefined;
-          void deliver(attempt, true);
-        }}
+        onRetryAsFile={
+          readOnly
+            ? undefined
+            : () => {
+                if (!attempt.imageInputStatus || attempt.state === "pending") return;
+                attempt.payload = { ...attempt.payload, imageHandling: "file" };
+                attempt.imageInputStatus = undefined;
+                attempt.imageInputBotId = undefined;
+                void deliver(attempt, true);
+              }
+        }
         onDelete={() => feedback.discard(attempt)}
       />
     );
@@ -3353,26 +3388,7 @@ function Thread({
         ) : null}
         <ThreadComposer
           imageHandling={imageHandling}
-          onImageQuery={(text, mentions) => {
-            const plan = resolveComposerSendPlan({ text, mentions, hasAttachments: true });
-            const selectedPage = replyPage.current;
-            const page =
-              !plan.rerouteGroupId && selectedPage?.scope === previewScope
-                ? pageReply(plan.trimmed, snap?.messages ?? [], selectedPage.page, replyTarget?.id)
-                : undefined;
-            setImageQuery(
-              JSON.stringify({
-                ...(plan.rerouteGroupId
-                  ? { groupId: plan.rerouteGroupId }
-                  : groupId
-                    ? { groupId }
-                    : { botId }),
-                text: plan.trimmed,
-                pageContext: page?.pageContext,
-                mentions: plan.mentionPayload,
-              }),
-            );
-          }}
+          onImageQuery={hasPendingImages ? updateImageQuery : undefined}
           onEmptied={composerEmptied}
           key={threadKey}
           ref={composerRef}

@@ -250,6 +250,7 @@ import {
   lockBotCreationIntro,
   lockOwnedGroup,
   lockPluginInstall,
+  lockSpaceModelSelection,
   newestModelCredentialOrder,
   newestVoiceCredentialOrder,
   PluginInstallInactiveError,
@@ -772,6 +773,8 @@ export interface RouterDeps {
   chatgptPlanFetch?: typeof fetch;
   /** Live Codex catalog seam; defaults to the shared per-process cache. */
   codexCatalog?: CodexLiveCatalog;
+  /** Capability of the composed runtime, including an explicit override. */
+  scriptedRuntime?: boolean;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
   favicons?: FaviconResolver;
   /**
@@ -1058,7 +1061,7 @@ export function createRouter(deps: RouterDeps) {
     deployment: deps.env.deploymentModelConfigured
       ? { provider: deps.env.defaultProvider, model: deps.env.defaultModel }
       : null,
-    scripted: deps.env.agentRuntime === "scripted",
+    scripted: deps.scriptedRuntime ?? deps.env.agentRuntime === "scripted",
     codexCatalog,
   };
   const favicons = deps.favicons ?? createFaviconResolver();
@@ -2073,6 +2076,7 @@ export function createRouter(deps: RouterDeps) {
           await withSerializableRetry(() =>
             deps.prisma.$transaction(
               async (tx) => {
+                await lockSpaceModelSelection(tx, context.actor, "write");
                 const checked = await validateModelBinding(
                   tx,
                   deps.secrets,
@@ -8803,6 +8807,7 @@ async function persistModelCredential(
       deps.prisma.$transaction(
         async (tx) => {
           throwIfAborted(input.signal);
+          await lockSpaceModelSelection(tx, actor, "write");
           if (input.provider === CHATGPT_PLAN_PROVIDER_ID)
             await lockChatGPTPlanConnection(tx, actor.userId);
           const existing = input.credentialId

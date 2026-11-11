@@ -24,6 +24,7 @@ vi.mock("@rakazo/ui-web", () => ({
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.append(container);
@@ -34,7 +35,13 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+async function settlePreview() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(250);
+  });
+}
 const props: ComponentProps<typeof ImageInputChoice> = {
   value: "confirm",
   onChange: vi.fn(),
@@ -51,6 +58,7 @@ it.each([
   vi.mocked(rpc.threads.imageInput).mockResolvedValue({ status });
   const onChange = vi.fn();
   await act(async () => root.render(<ImageInputChoice {...props} onChange={onChange} />));
+  await settlePreview();
   expect(container.querySelector('[role="status"]')?.textContent).toBe(message);
   const file = [...container.querySelectorAll("button")].find(
     (button) => button.textContent === "As file",
@@ -70,12 +78,14 @@ it("ignores a late capability answer after the actual recipient changes", async 
       }),
   );
   await act(async () => root.render(<ImageInputChoice {...props} />));
+  await settlePreview();
   vi.mocked(rpc.threads.imageInput).mockResolvedValue({ status: "unsupported" });
   await act(async () =>
     root.render(
       <ImageInputChoice {...props} target={{ botId: "bot-b", text: "Inspect invoice" }} />,
     ),
   );
+  await settlePreview();
   await act(async () => release({ status: "supported" }));
   expect(container.querySelector('[role="status"]')?.textContent).toBe(
     "This model cannot see images",
@@ -93,6 +103,7 @@ it("opens settings for the actual blocked group recipient", async () => {
       <ImageInputChoice {...props} target={{ groupId: "group-a" }} onChooseModel={onChooseModel} />,
     ),
   );
+  await settlePreview();
   const button = [...container.querySelectorAll("button")].find(
     (item) => item.textContent === "Choose model",
   )!;
@@ -107,6 +118,7 @@ it("shows the blocked bot while refreshing a stale positive preview", async () =
   await act(async () =>
     root.render(<ImageInputChoice {...props} target={target} onChooseModel={onChooseModel} />),
   );
+  await settlePreview();
   expect(container.querySelector('[role="status"]')?.textContent).toBe("Can see images");
   vi.mocked(rpc.threads.imageInput).mockRejectedValueOnce(new Error("Preview unavailable"));
   await act(async () =>
@@ -123,9 +135,26 @@ it("shows the blocked bot while refreshing a stale positive preview", async () =
   expect(container.querySelector('[role="status"]')?.textContent).toBe(
     "This model cannot see images",
   );
+  await settlePreview();
   const button = [...container.querySelectorAll("button")].find(
     (item) => item.textContent === "Choose model",
   )!;
   act(() => button.click());
   expect(onChooseModel).toHaveBeenCalledWith("bot-b");
+});
+
+it("debounces typing and keeps a resolved status for the same route", async () => {
+  const preview = vi.mocked(rpc.threads.imageInput).mockResolvedValue({ status: "supported" });
+  await act(async () => root.render(<ImageInputChoice {...props} />));
+  await settlePreview();
+  expect(preview).toHaveBeenCalledTimes(1);
+  for (const text of ["New description", "New description with details"]) {
+    await act(async () =>
+      root.render(<ImageInputChoice {...props} target={{ botId: "bot-a", text }} />),
+    );
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Can see images");
+  }
+  expect(preview).toHaveBeenCalledTimes(1);
+  await settlePreview();
+  expect(preview).toHaveBeenCalledTimes(2);
 });

@@ -73,10 +73,6 @@ export async function commitBotUpdate(
       async (tx) => {
         if (changesModel) await lockBotModelSetting(tx, options.botId);
         await options.validate?.(tx);
-        // When writing both rows, match Run finalization's Thread → Bot order.
-        if (changesModel && options.emitBotUpdated) {
-          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${options.threadId} FOR NO KEY UPDATE`;
-        }
         const updated = await update(tx);
         const event = options.emitBotUpdated
           ? await appendEvent(tx, {

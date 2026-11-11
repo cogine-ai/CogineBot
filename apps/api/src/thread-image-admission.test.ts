@@ -1,3 +1,4 @@
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -168,6 +169,80 @@ describe("current image send admission", () => {
         data: { imageInputStatus: "unsupported" },
       });
   });
+
+  it.each([false, true])(
+    "classifies an unavailable model secret (provider outage: %s)",
+    async (outage) => {
+      const { tx, send } = fixture();
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
+        modelProvider: "openai-compatible",
+        modelCredentialId: "credential-1",
+        modelId: "custom-model",
+      });
+      tx.userModelCredential.findFirst.mockResolvedValue({
+        id: "credential-1",
+        provider: "openai-compatible",
+        secretId: "secret-1",
+        preferences: [],
+        supportsImages: false,
+      });
+      const load = vi
+        .fn()
+        .mockRejectedValue(
+          outage ? new SecretStoreUnavailableError() : new Error("Unreadable fixture"),
+        );
+      await expect(send({ deployment: null, secrets: { load } })).rejects.toMatchObject(
+        outage
+          ? { code: "SERVICE_UNAVAILABLE" }
+          : { code: "CONFLICT", data: { imageInputStatus: "unknown" } },
+      );
+      expect(tx.message.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[null], [{ id: "model-a", name: "Model A", input: "image" }]])(
+    "reports unknown for a corrupt saved ChatGPT Plan catalog (%j)",
+    async (model) => {
+      const { tx, send } = fixture();
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
+        modelProvider: "chatgpt-plan",
+        modelCredentialId: "credential-1",
+        modelId: "model-a",
+      });
+      tx.userModelCredential.findFirst.mockResolvedValue({
+        id: "credential-1",
+        provider: "chatgpt-plan",
+        secretId: "secret-1",
+        preferences: [],
+        supportsImages: false,
+      });
+      const load = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          kind: "oauth",
+          credential: {
+            type: "oauth",
+            access: "fixture-access",
+            refresh: "fixture-refresh",
+            expires: 12345,
+            clientId: "fixture-client",
+            issuer: "https://auth.openai.com",
+            subject: "fixture-account",
+            hostId: "urn:uuid:13416834-2fa9-4a82-9b89-327b824534f6",
+            scopes: ["chatgpt.tokens.use.direct"],
+            idToken: "fixture-token",
+            chatgptPlanModels: [model],
+          },
+        }),
+      );
+      await expect(send({ deployment: null, secrets: { load } })).rejects.toMatchObject({
+        code: "CONFLICT",
+        data: { imageInputStatus: "unknown" },
+      });
+      expect(tx.message.create).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([true, false])(
     "uses the Codex account catalog for a live-only model's image input (%s)",
@@ -357,6 +432,13 @@ describe("current image send admission", () => {
         modelProvider: "openrouter",
         modelId: "deepseek/deepseek-v4-pro",
         modelPinned: false,
+        leaseFence: 2,
+        attemptModel: {
+          leaseFence: 2,
+          provider: "openrouter",
+          modelId: "deepseek/deepseek-v4-pro",
+          modelCredentialId: null,
+        },
       },
     ] as never);
     await expect(send()).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
@@ -407,6 +489,13 @@ describe("current image send admission", () => {
         modelCredentialId: "credential-1",
         modelId: stored,
         modelPinned: false,
+        leaseFence: 2,
+        attemptModel: {
+          leaseFence: 2,
+          provider: "openai-compatible",
+          modelId: stored,
+          modelCredentialId: "credential-1",
+        },
       },
     ] as never);
     const configuration = {
@@ -604,6 +693,58 @@ describe("current image send admission", () => {
     },
   );
 
+  it("does not admit against the previous lease's vision model during an unpinned start", async () => {
+    const { tx, send } = fixture();
+    tx.run.findMany.mockResolvedValue([
+      {
+        id: "resuming",
+        status: "running",
+        trigger: "user",
+        modelPinned: false,
+        leaseFence: 3,
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        attemptModel: {
+          leaseFence: 2,
+          provider: "openrouter",
+          modelId: "openai/gpt-4o",
+          modelCredentialId: null,
+        },
+      },
+    ] as never);
+    await expect(send()).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { imageInputStatus: "unknown" },
+    });
+    expect(tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it("preserves image steering during offline scripted startup with no configured model", async () => {
+    const { tx } = fixture();
+    tx.bot.findFirst.mockResolvedValue({ id: "bot-1", modelProvider: null, modelId: null });
+    tx.deploymentSettings.findUnique.mockResolvedValue({
+      defaultModelProvider: null,
+      defaultModelId: null,
+    } as never);
+    expect(
+      await threadModelImageInput(
+        tx as unknown as PrismaClient,
+        { userId: "user-1", spaceId: "space-1" } as Actor,
+        "bot-1",
+        {
+          id: "active",
+          status: "running",
+          trigger: "user",
+          modelProvider: null,
+          modelId: null,
+          thinkingLevel: null,
+          leaseFence: 1,
+        },
+        { scripted: true, deployment: null, secrets: { load: vi.fn() } },
+      ),
+    ).toBe("supported");
+  });
+
   it("follows the Space main connection when the bot has none", async () => {
     const { tx, send } = fixture();
     tx.bot.findFirst.mockResolvedValue({ id: "bot-1", modelProvider: null, modelId: null });
@@ -703,6 +844,13 @@ describe("connection-bound image capability", () => {
           modelId: "shared-id",
           modelCredentialId: "text-key",
           thinkingLevel: null,
+          leaseFence: 2,
+          attemptModel: {
+            leaseFence: 2,
+            provider: "openai-compatible",
+            modelId: "shared-id",
+            modelCredentialId: "text-key",
+          },
         },
         { secrets: { load }, deployment: null },
       ),

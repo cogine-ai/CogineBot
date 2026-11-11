@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { EncryptedSecretStore } from "@rakazo/adapters";
 import type { ThreadSnapshot } from "@rakazo/contracts";
+import { lockSpaceModelSelection, selectSpaceModelPreference } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { lockBotModelSetting } from "../../../apps/api/src/bot-update.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
@@ -219,7 +220,7 @@ describeAttachments("chat attachments", () => {
     ).toBe(1);
   });
 
-  it.each(["run", "bot", "connection", "default model", "finalizer"] as const)(
+  it.each(["run", "bot", "connection", "default model", "new default", "finalizer"] as const)(
     "serializes image admission with a concurrent %s write",
     async (scope) => {
       const cookie = await signup(
@@ -239,7 +240,7 @@ describeAttachments("chat attachments", () => {
         where: { id: bot.id },
         include: { thread: true },
       });
-      const threadId = owned.thread!.id;
+      let threadId = owned.thread!.id;
       await prisma.bot.update({
         where: { id: bot.id },
         data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
@@ -271,11 +272,10 @@ describeAttachments("chat attachments", () => {
             },
           });
         };
+        const usesDefault = scope === "default model" || scope === "new default";
         const [vision, text] = await Promise.all([
           createSecret(true),
-          scope === "default model"
-            ? createSecret(true, ["fixture-text-model"])
-            : createSecret(false),
+          usesDefault ? createSecret(true, ["fixture-text-model"]) : createSecret(false),
         ]);
         const credential = await prisma.userModelCredential.create({
           data: {
@@ -286,7 +286,7 @@ describeAttachments("chat attachments", () => {
             supportsImages: true,
           },
         });
-        if (scope === "default model") {
+        if (usesDefault) {
           await prisma.bot.update({
             where: { id: bot.id },
             data: { modelProvider: null, modelId: null, modelCredentialId: null },
@@ -310,10 +310,50 @@ describeAttachments("chat attachments", () => {
             },
           });
         }
-        return { credentialId: credential.id, textSecretId: text.id };
+        const otherCredential =
+          scope === "new default"
+            ? await prisma.userModelCredential.create({
+                data: {
+                  userId: owned.userId,
+                  provider: "openai-compatible",
+                  label: "Text fixture",
+                  secretId: text.id,
+                },
+              })
+            : undefined;
+        return {
+          credentialId: credential.id,
+          revision: credential.connectionRevision,
+          textSecretId: text.id,
+          otherCredential,
+        };
       };
       const connection =
-        scope === "connection" || scope === "default model" ? await setupConnection() : undefined;
+        scope === "connection" || scope === "default model" || scope === "new default"
+          ? await setupConnection()
+          : undefined;
+      const groupRecipient =
+        scope === "new default"
+          ? await rpc<{ id: string }>(app, cookie, "bots/create", {
+              name: "Second image recipient",
+              title: "",
+              description: "",
+              notifyOnFinish: true,
+            })
+          : undefined;
+      const group = groupRecipient
+        ? await rpc<{ id: string }>(app, cookie, "groups/create", {
+            name: "Image switch team",
+            botIds: [bot.id, groupRecipient.id],
+          })
+        : undefined;
+      if (group && groupRecipient) {
+        await prisma.bot.update({
+          where: { id: groupRecipient.id },
+          data: { modelProvider: "openrouter", modelId: "openai/gpt-4o" },
+        });
+        threadId = (await prisma.thread.findUniqueOrThrow({ where: { groupId: group.id } })).id;
+      }
       const createActiveRun = async () => {
         const task = await prisma.task.create({
           data: {
@@ -336,6 +376,13 @@ describeAttachments("chat attachments", () => {
             trigger: "user",
             modelProvider: "openrouter",
             modelId: "openai/gpt-4o",
+            leaseFence: 1,
+            attemptModel: {
+              leaseFence: 1,
+              provider: "openrouter",
+              modelId: "openai/gpt-4o",
+              modelCredentialId: null,
+            },
             leaseOwner: "image-fixture-worker",
             leaseExpiresAt: new Date(Date.now() + 60_000),
           },
@@ -343,12 +390,24 @@ describeAttachments("chat attachments", () => {
       };
       const run = scope === "run" ? await createActiveRun() : undefined;
       const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
-        botId: bot.id,
+        ...(group ? { groupId: group.id } : { botId: bot.id }),
         name: "switch.png",
         mimeType: "image/png",
         contentBase64: tinyPng.toString("base64"),
       });
       const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+      const expectBlocked = (query: string) =>
+        expect
+          .poll(
+            async () => {
+              const rows = await prisma.$queryRaw<
+                Array<{ blocked: boolean }>
+              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${query}) AS blocked`;
+              return rows[0]?.blocked;
+            },
+            { interval: 10, timeout: 3000 },
+          )
+          .toBe(true);
       let release = () => {};
       let entered = () => {};
       const held = new Promise<void>((resolve) => {
@@ -360,8 +419,28 @@ describeAttachments("chat attachments", () => {
       const switching = prisma.$transaction(
         async (tx) => {
           const data = { modelId: "deepseek/deepseek-v4-pro" };
-          if (run) await tx.run.update({ where: { id: run.id }, data });
-          else if (connection) {
+          if (run) {
+            await tx.run.update({
+              where: { id: run.id },
+              data: {
+                ...data,
+                attemptModel: {
+                  leaseFence: run.leaseFence,
+                  provider: "openrouter",
+                  modelId: data.modelId,
+                  modelCredentialId: null,
+                },
+              },
+            });
+          } else if (connection?.otherCredential) {
+            await lockSpaceModelSelection(tx, owned, "write");
+            await selectSpaceModelPreference(
+              tx,
+              owned,
+              connection.otherCredential.id,
+              "fixture-text-model",
+            );
+          } else if (connection) {
             await tx.userModelCredential.update({
               where: { id: connection.credentialId },
               data: {
@@ -397,7 +476,9 @@ describeAttachments("chat attachments", () => {
       );
       await held;
       const sending = raw(app, cookie, "threads/send", {
-        botId: bot.id,
+        ...(group && groupRecipient
+          ? { groupId: group.id, mentions: [bot.id, groupRecipient.id] }
+          : { botId: bot.id }),
         text: "Inspect the image",
         artifactIds: [image.id],
         imageHandling: "confirm",
@@ -405,17 +486,17 @@ describeAttachments("chat attachments", () => {
       });
       let response: Response | undefined;
       try {
-        await expect
-          .poll(
-            async () => {
-              const rows = await prisma.$queryRaw<
-                Array<{ blocked: boolean }>
-              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : scope === "bot" ? "%pg_advisory_xact_lock%" : connection ? "%user_model_credentials%FOR SHARE%" : "%threads%FOR NO KEY UPDATE%"}) AS blocked`;
-              return rows[0]?.blocked;
-            },
-            { interval: 10, timeout: 3000 },
-          )
-          .toBe(true);
+        await expectBlocked(
+          run
+            ? "%runs%FOR UPDATE%"
+            : scope === "bot"
+              ? "%pg_advisory_xact_lock(%"
+              : scope === "new default"
+                ? "%pg_advisory_xact_lock_shared(%"
+                : connection
+                  ? "%user_model_credentials%FOR SHARE%"
+                  : "%threads%FOR NO KEY UPDATE%",
+        );
       } finally {
         release();
         await switching;
@@ -433,6 +514,40 @@ describeAttachments("chat attachments", () => {
       expect(
         await prisma.message.count({ where: { threadId, clientNonce: "image-model-switch" } }),
       ).toBe(0);
+      if (group && connection) {
+        expect(await prisma.task.count({ where: { threadId } })).toBe(0);
+        expect(await prisma.run.count({ where: { threadId } })).toBe(0);
+        let releaseReader = () => {};
+        let readerLocked = () => {};
+        const readerEntered = new Promise<void>((resolve) => {
+          readerLocked = resolve;
+        });
+        const resumeReader = new Promise<void>((resolve) => {
+          releaseReader = resolve;
+        });
+        const reader = prisma.$transaction(
+          async (tx) => {
+            await lockSpaceModelSelection(tx, owned, "read");
+            readerLocked();
+            await resumeReader;
+          },
+          { timeout: 10_000 },
+        );
+        await readerEntered;
+        const setDefault = raw(app, cookie, "models/setDefault", {
+          provider: "openai-compatible",
+          modelId: "fixture-vision-model",
+          modelCredentialId: connection.credentialId,
+          expectedRevision: connection.revision,
+        });
+        try {
+          await expectBlocked("%pg_advisory_xact_lock(%");
+        } finally {
+          releaseReader();
+          await reader;
+        }
+        expect((await setDefault).status).toBe(200);
+      }
       if (run) expect(await prisma.steeringMessage.count({ where: { runId: run.id } })).toBe(0);
     },
   );

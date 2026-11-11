@@ -552,6 +552,7 @@ export class PiAgentRuntime implements AgentRuntime {
         let activeStreamTarget = host.activeModel;
         const fallbackState: FallbackStreamState = {
           request: contextRequest,
+          requiresImageInput: () => requiresImageInput,
           getActive: () => activeStreamTarget,
           signal,
           reserveSelfRecovery,
@@ -3240,6 +3241,7 @@ type PendingOutputRecovery = {
 };
 
 interface FallbackStreamState {
+  requiresImageInput?(): boolean;
   request: AgentRunRequest;
   getActive(): RuntimeModelTarget;
   signal: AbortSignal;
@@ -3761,6 +3763,7 @@ function fallbackAwareModelStream(
           quotaBackup: true,
         };
         if (
+          (state.requiresImageInput?.() && !candidate.model.input.includes("image")) ||
           !fallbackSupportsContext(
             candidate,
             requestContext(true),

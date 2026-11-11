@@ -30,20 +30,28 @@ export function AttachmentPreview({
 }: AttachmentPreviewProps) {
   const [failedPreviewUrl, setFailedPreviewUrl] = useState<string | null>(null);
   const showImage = previewUrl && failedPreviewUrl !== previewUrl;
-  const caption = mimeType.startsWith("image/")
-    ? [name, description].filter(Boolean).join(" · ")
-    : description;
+  const imageAttachment = mimeType.startsWith("image/");
+  const caption = imageAttachment ? [name, description].filter(Boolean).join(" · ") : description;
   const type = fileTypes[mimeType];
-  const Icon = type?.icon ?? (mimeType.startsWith("image/") ? Image : File);
+  const Icon = type?.icon ?? (imageAttachment ? Image : File);
 
   return (
     <div
       data-testid="attachment-preview"
       data-kind={showImage ? "image" : "file"}
       title={description ? `${name} · ${description}` : name}
-      className={caption ? "relative w-28 shrink-0" : "relative size-12 shrink-0"}
+      className={
+        imageAttachment
+          ? "relative w-28 shrink-0"
+          : description
+            ? "group/attachment relative w-20 shrink-0"
+            : "group/attachment relative size-12 shrink-0"
+      }
     >
-      <div className="flex size-12 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-[12px] border border-border bg-background text-muted-foreground">
+      <div
+        data-testid="attachment-preview-tile"
+        className="flex size-12 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-[12px] border border-border bg-background text-muted-foreground"
+      >
         {showImage ? (
           <img
             src={previewUrl}
@@ -63,14 +71,26 @@ export function AttachmentPreview({
         )}
       </div>
       {caption ? (
-        <span className="mt-1 block break-words text-xs text-foreground">{caption}</span>
+        <span
+          className={
+            imageAttachment
+              ? "mt-1 block break-words text-xs text-foreground"
+              : "mt-1 block break-words text-[10px] text-foreground"
+          }
+        >
+          {caption}
+        </span>
       ) : null}
       <button
         type="button"
         aria-label={removeLabel}
         title={removeLabel}
         onClick={onRemove}
-        className="absolute start-7 -top-4 grid size-11 place-items-center text-primary-foreground"
+        className={
+          imageAttachment
+            ? "absolute start-7 -top-4 grid size-11 place-items-center text-primary-foreground"
+            : "absolute start-10 -top-1 grid size-5 place-items-center text-primary-foreground opacity-0 transition-opacity group-hover/attachment:opacity-100 focus:opacity-100 [@media(hover:none)]:start-7 [@media(hover:none)]:-top-4 [@media(hover:none)]:size-11 [@media(hover:none)]:opacity-100"
+        }
       >
         <span className="grid size-5 place-items-center rounded-full bg-primary shadow-sm">
           <X size={11} strokeWidth={2} />

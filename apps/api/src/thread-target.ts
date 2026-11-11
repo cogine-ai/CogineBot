@@ -54,6 +54,7 @@ import {
   loadThreadAttention,
   lockOwnedGroup,
   lockRoutineRetryThread,
+  lockSpaceModelSelection,
   Prisma,
   retireWaitingQuestionInTransaction,
   revokePendingRoutineRetries,
@@ -685,11 +686,13 @@ function mapRun(run: {
 /** Serialize admission with a model switch on an already-selected recipient Run. */
 async function lockImageRecipients(
   tx: Prisma.TransactionClient,
+  actor: Actor,
   threadId: string,
   botIds: string[],
 ) {
   // Do not hold a Bot row while waiting for a finalizer that updates it after locking the thread.
   for (const botId of [...botIds].sort()) await lockBotModelSetting(tx, botId);
+  await lockSpaceModelSelection(tx, actor, "read");
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR NO KEY UPDATE`;
   await tx.$queryRaw`SELECT id FROM runs WHERE "threadId" = ${threadId} AND status IN (${Prisma.join([...ACTIVE_RUN_STATUSES])}) FOR UPDATE`;
 }
@@ -750,7 +753,14 @@ async function imageRecipientAdmission(
 }
 
 /** A waiting reply must deliver its images, and history-free Runs need its files too. */
-function answerSteersRun(run: ImageAdmissionRun, blocks: readonly MessageBlock[]) {
+function answerSteersRun(
+  run: ImageAdmissionRun,
+  blocks: readonly MessageBlock[],
+  scripted: boolean | undefined,
+) {
+  // The scripted runtime resumes directly from the stored answer and cannot
+  // consume the same attachment as live input. A steering row would replay it.
+  if (scripted) return false;
   return (
     blocks.some((block) => block.kind === "image") ||
     (!runReadsThreadHistory(run.trigger) && blocks.some((block) => block.kind === "file"))
@@ -1014,7 +1024,8 @@ export async function sendThreadMessage(
         const needsImageAdmission =
           input.imageHandling !== "file" &&
           attachmentBlocks.some((block) => block.kind === "image");
-        if (needsImageAdmission) await lockImageRecipients(tx, target.threadId, [target.botId]);
+        if (needsImageAdmission)
+          await lockImageRecipients(tx, actor, target.threadId, [target.botId]);
         const imageRuns = needsImageAdmission ? await loadActiveRuns() : undefined;
         const admission = imageRuns
           ? await imageRecipientAdmission(
@@ -1074,7 +1085,9 @@ export async function sendThreadMessage(
           }
         }
         if (answered.length) {
-          for (const run of answered.filter((item) => answerSteersRun(item, blocks)))
+          for (const run of answered.filter((item) =>
+            answerSteersRun(item, blocks, deps.imageAdmission?.scripted),
+          ))
             await tx.steeringMessage.create({
               data: {
                 messageId: message.id,
@@ -1236,7 +1249,7 @@ export async function sendThreadMessage(
         });
       const needsImageAdmission =
         input.imageHandling !== "file" && attachmentBlocks.some((block) => block.kind === "image");
-      if (needsImageAdmission) await lockImageRecipients(tx, target.threadId, targetBotIds);
+      if (needsImageAdmission) await lockImageRecipients(tx, actor, target.threadId, targetBotIds);
       const imageRuns = needsImageAdmission ? await loadActiveRuns() : undefined;
       const modelPins = new Map<
         string,
@@ -1314,7 +1327,9 @@ export async function sendThreadMessage(
       for (const botId of targetBotIds) {
         const answered = answeredByBotId.get(botId);
         if (answered) {
-          for (const run of answered.filter((item) => answerSteersRun(item, blocks)))
+          for (const run of answered.filter((item) =>
+            answerSteersRun(item, blocks, deps.imageAdmission?.scripted),
+          ))
             await tx.steeringMessage.create({
               data: {
                 messageId: message.id,

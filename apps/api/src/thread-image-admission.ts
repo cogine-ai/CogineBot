@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { CodexLiveCatalog, ModelChoice } from "@rakazo/adapters";
 import {
   CHATGPT_OAUTH_PROVIDER,
@@ -9,6 +10,7 @@ import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
   knownModelImageInput,
+  loadStoredModelSecret,
   modelAcceptsImageInput,
   parseModelSecret,
   runModelChoice,
@@ -53,31 +55,36 @@ export async function resolveThreadImageInput(
   });
   if (!bot) throw new ORPCError("NOT_FOUND");
   const quota = runQuotaWaitStateSchema.safeParse(run?.quotaWait).data?.target;
-  const activeAttempt =
-    run?.status === "running" && run.modelPinned
-      ? runAttemptModelSchema.safeParse(run.attemptModel).data
-      : undefined;
-  const selectedRun = run?.status === "running" && run.modelProvider && run.modelId;
-  const override =
-    activeAttempt && activeAttempt.leaseFence === run?.leaseFence
+  const attempt =
+    run?.status === "running" ? runAttemptModelSchema.safeParse(run.attemptModel).data : undefined;
+  const activeAttempt = attempt?.leaseFence === run?.leaseFence ? attempt : undefined;
+  // An unpinned Run in setup can still carry the last lease's model columns.
+  if (
+    run?.status === "running" &&
+    !run.modelPinned &&
+    !activeAttempt &&
+    !quota &&
+    !configuration?.scripted
+  ) {
+    return { status: "unknown" as const };
+  }
+  const override = activeAttempt
+    ? {
+        modelProvider: activeAttempt.provider,
+        modelId: activeAttempt.modelId,
+        modelCredentialId: activeAttempt.modelCredentialId,
+        thinkingLevel: null,
+      }
+    : quota
       ? {
-          modelProvider: activeAttempt.provider,
-          modelId: activeAttempt.modelId,
-          modelCredentialId: activeAttempt.modelCredentialId,
+          modelProvider: quota.provider,
+          modelId: quota.modelId,
+          modelCredentialId: quota.modelCredentialId,
           thinkingLevel: null,
         }
-      : quota
-        ? {
-            modelProvider: quota.provider,
-            modelId: quota.modelId,
-            modelCredentialId: quota.modelCredentialId,
-            thinkingLevel: null,
-          }
-        : selectedRun
-          ? run
-          : run
-            ? runModelChoice(run, bot)
-            : bot;
+      : run
+        ? runModelChoice(run, bot)
+        : bot;
   const readSelection = async () => {
     const overrideCredential =
       override.modelProvider && override.modelId
@@ -119,7 +126,8 @@ export async function resolveThreadImageInput(
     const status: ImageInputStatus = configuration?.scripted ? "supported" : "unknown";
     return { status };
   }
-  let supportsImages = knownModelImageInput(provider, id);
+  let supportsImages =
+    configuration?.scripted && provider === "scripted" ? true : knownModelImageInput(provider, id);
   const credential = selected.credential;
   if (provider === "openai-compatible" && !credential && modelAcceptsImageInput(provider, id))
     supportsImages = true;
@@ -128,25 +136,40 @@ export async function resolveThreadImageInput(
     credential &&
     configuration
   ) {
-    const row = await prisma.secret.findFirst({
-      where: { id: credential.secretId, userId: actor.userId, spaceId: null },
-    });
-    if (row) {
-      const secret = parseModelSecret(await configuration.secrets.load(row.ciphertext, row.id));
+    let stored: Awaited<ReturnType<typeof loadStoredModelSecret>>;
+    try {
+      stored = await loadStoredModelSecret(
+        prisma,
+        configuration.secrets,
+        actor.userId,
+        credential.secretId,
+      );
+    } catch (error) {
+      if (error instanceof SecretStoreUnavailableError)
+        throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
+      throw error;
+    }
+    if (stored.status !== "loaded") return { status: "unknown" as const };
+    let secret: ReturnType<typeof parseModelSecret>;
+    try {
+      secret = parseModelSecret(stored.plaintext);
       if (
         provider === "openai-compatible" &&
         (secret.kind !== "openai_compatible" ||
           !enabledOpenAiCompatibleModelIds(secret, credential.defaultModel).includes(id.trim()))
       )
         return { status: "unknown" as const };
-      if (provider === "openai-compatible" || provider === CHATGPT_PLAN_PROVIDER_ID) {
+      if (provider !== CHATGPT_OAUTH_PROVIDER) {
         supportsImages = connectionModelImageInput(provider, id, credential, secret);
-      } else if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
-        const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
-          waitMs: 0,
-        });
-        if (live?.supportsImages !== undefined) supportsImages = live.supportsImages;
       }
+    } catch {
+      return { status: "unknown" as const };
+    }
+    if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
+      const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
+        waitMs: 0,
+      });
+      if (live?.supportsImages !== undefined) supportsImages = live.supportsImages;
     }
   }
   const status: ImageInputStatus =

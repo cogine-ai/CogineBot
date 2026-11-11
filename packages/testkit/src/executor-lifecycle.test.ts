@@ -786,6 +786,70 @@ describeIntegration("run executor lifecycle", () => {
     }
   });
 
+  it.each(["ordinary", "continuation"] as const)(
+    "does not replay an image answer to an %s scripted Run",
+    async (kind) => {
+      const question = "ask me which city to use";
+      const original =
+        kind === "ordinary"
+          ? await seedRun("image-answer", question)
+          : await seedSteeringContinuation("steering-image-answer", question);
+      const seeded = "seeded" in original ? original.seeded : original;
+      const runId = "continuationRunId" in original ? original.continuationRunId : seeded.run.id;
+      const held = holdContinuationJobs(seeded.bot.id);
+      try {
+        await handles.executor.continueRun(runId, "image-question-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: runId } }),
+        ).resolves.toMatchObject({ status: "waiting_input" });
+        const image = await rpc<{ id: string }>(seeded.cookie, "artifacts/create", {
+          botId: seeded.bot.id,
+          name: "fail this run.png",
+          mimeType: "image/png",
+          contentBase64:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        });
+        const clientNonce = `scripted-image-answer-${kind}-${stamp}`;
+        const response = await rpc<{ runIds: string[] }>(seeded.cookie, "threads/send", {
+          botId: seeded.bot.id,
+          text: "Write a file called notes/answer.txt that says done",
+          artifactIds: [image.id],
+          imageHandling: "confirm",
+          clientNonce,
+        });
+        expect(response.runIds).toEqual([runId]);
+        const message = await handles.prisma.message.findUniqueOrThrow({
+          where: { threadId_clientNonce: { threadId: seeded.thread.id, clientNonce } },
+        });
+        expect(message.blocks).toContainEqual(
+          expect.objectContaining({
+            kind: "image",
+            artifactId: image.id,
+            imageHandling: "confirm",
+          }),
+        );
+        await handles.executor.continueRun(runId, "image-answer-worker");
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({
+            where: { id: runId },
+            select: { status: true, error: true },
+          }),
+        ).resolves.toEqual({ status: "completed", error: null });
+        const written = await rpc<{ content: string }>(seeded.cookie, "computer/readFile", {
+          botId: seeded.bot.id,
+          path: "notes/answer.txt",
+        });
+        expect(written.content).toBe("done\n");
+        expect(held.published).toEqual([runId]);
+        expect(
+          await handles.prisma.steeringMessage.count({ where: { botId: seeded.bot.id } }),
+        ).toBe(0);
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, held.restore);
+      }
+    },
+  );
+
   it("retains a legacy paused continuation instead of guessing its missing progress after an answer", async () => {
     const { seeded, continuationRunId } = await seedSteeringContinuation("scripted-legacy-pause", [
       "ask me which city to use",

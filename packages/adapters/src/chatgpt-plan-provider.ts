@@ -49,8 +49,11 @@ export function readChatGPTPlanModels(credential: unknown): ChatGPTPlanModelDesc
         : {}),
       ...(positiveLimit(entry.maxTokens) ? { maxTokens: positiveLimit(entry.maxTokens) } : {}),
       ...(typeof entry.reasoning === "boolean" ? { reasoning: entry.reasoning } : {}),
-      input:
-        Array.isArray(entry.input) && entry.input.includes("image") ? ["text", "image"] : ["text"],
+      ...(Array.isArray(entry.input) &&
+      entry.input.length > 0 &&
+      entry.input.every((value) => value === "text" || value === "image")
+        ? { input: entry.input.includes("image") ? ["text", "image"] : ["text"] }
+        : {}),
     };
   });
 }

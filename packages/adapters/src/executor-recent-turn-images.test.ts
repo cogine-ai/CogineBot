@@ -85,6 +85,7 @@ async function runWithModel(
   attachmentOptions: {
     block?: Extract<MessageBlock, { kind: "file" | "image" }>;
     currentSteeringImage?: Extract<MessageBlock, { kind: "image" }>;
+    answeredSteering?: boolean;
     computerMode?: ComputerMode;
     pinned?: boolean;
     accountTimezone?: string | null;
@@ -103,8 +104,8 @@ async function runWithModel(
     spaceId: "space-1",
     userId: "user-1",
     status: "queued",
-    trigger: "user",
-    leaseFence: 0,
+    trigger: attachmentOptions.answeredSteering ? "routine" : "user",
+    leaseFence: attachmentOptions.answeredSteering ? 1 : 0,
     scriptedState: null,
     modelPinned: attachmentOptions.pinned ?? false,
     modelProvider: attachmentOptions.pinned ? "openrouter" : null,
@@ -190,8 +191,40 @@ async function runWithModel(
         nextMessageSeq: 3,
       })),
     },
+    event: {
+      findMany: vi.fn(async () =>
+        attachmentOptions.answeredSteering
+          ? [
+              {
+                payload: {
+                  answerSourceMessageId: "current",
+                  blocks: [{ kind: "ask", status: "answered", text: "Which file?" }],
+                },
+              },
+            ]
+          : [],
+      ),
+    },
     message: {
-      findFirst: vi.fn(async () => null),
+      findFirst: vi.fn(async () =>
+        attachmentOptions.answeredSteering
+          ? {
+              id: "current",
+              threadId: run.threadId,
+              role: "user",
+              authorUserId: run.userId,
+              blocks: [{ kind: "text", text: "Look again" }],
+              replyToMessageId: "quoted",
+              replyQuote: "the red folder",
+              replyTo: {
+                id: "quoted",
+                threadId: run.threadId,
+                role: "user",
+                blocks: [{ kind: "text", text: "Check the red folder first" }],
+              },
+            }
+          : null,
+      ),
       findMany: vi.fn(async (args: { where?: { threadId?: string } }) =>
         args.where?.threadId
           ? historyMessages(attachmentOptions.block, attachmentOptions.currentSteeringImage)
@@ -653,6 +686,12 @@ describe("recent turn images follow model vision", () => {
         leaseFence: expect.any(Number),
       },
       data: {
+        attemptModel: {
+          leaseFence: expect.any(Number),
+          provider: backup.provider,
+          modelId: backup.modelId,
+          modelCredentialId: "backup-credential",
+        },
         modelProvider: backup.provider,
         modelId: backup.modelId,
         modelCredentialId: "backup-credential",
@@ -756,4 +795,28 @@ it("delivers a waiting image only once when a legacy Run also reads it as its cu
   expect(steering).toHaveLength(1);
   expect(steering?.[0]).toMatchObject({ messageId: "current", requiresImageInput: true });
   expect(steering?.[0]?.images).toBeUndefined();
+});
+
+it("delivers the attachment without replaying the ordinary waiting answer", async () => {
+  const { request, steering } = await runWithModel(VISION_MODEL, undefined, false, false, {
+    answeredSteering: true,
+    currentSteeringImage: {
+      kind: "image",
+      imageHandling: "confirm",
+      artifactId: "art-1",
+      mimeType: "image/png",
+      name: "shot.png",
+    },
+  });
+  expect(request.prompt).toContain("Look again");
+  expect(steering).toHaveLength(1);
+  expect(steering?.[0]).toMatchObject({
+    messageId: "current",
+    requiresImageInput: true,
+    historyText: "Look again",
+  });
+  expect(steering?.[0]?.text).not.toContain("Look again");
+  expect(steering?.[0]?.text).toContain("the red folder");
+  expect(steering?.[0]?.text).toContain("shot.png");
+  expect(steering?.[0]?.images).toHaveLength(1);
 });

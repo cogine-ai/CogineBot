@@ -3822,10 +3822,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: {
             id: runId,
             ...continueRunClaimFence(run),
-            ...(quotaWait ? { leaseFence: run.leaseFence, quotaWait: { equals: quotaWait } } : {}),
+            leaseFence: run.leaseFence,
+            ...(quotaWait ? { quotaWait: { equals: quotaWait } } : {}),
             ...(isSteeringContinuation
               ? {
-                  leaseFence: run.leaseFence,
                   updatedAt: run.updatedAt,
                   scriptedState: {
                     equals: run.scriptedState === null ? Prisma.DbNull : run.scriptedState,
@@ -4781,18 +4781,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
           return;
         }
-        // A pin stays as it was created. Unpinned runs still record the model they
-        // used; modelPinned is what keeps that record from becoming the next choice.
-        if (!run.modelPinned) {
-          await deps.prisma.run.updateMany({
-            where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-            data: {
-              modelProvider: runModelProvider,
+        // Selection belongs to this lease; the previous attempt may have used a backup.
+        // Keep the existing record on unpinned Runs and never overwrite a captured pin.
+        await deps.prisma.run.updateMany({
+          where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+          data: {
+            attemptModel: {
+              leaseFence: fence,
+              provider: runModelProvider,
               modelId: runModelId,
               modelCredentialId: resolved.modelCredentialId,
             },
-          });
-        }
+            ...(!run.modelPinned
+              ? {
+                  modelProvider: runModelProvider,
+                  modelId: runModelId,
+                  modelCredentialId: resolved.modelCredentialId,
+                }
+              : {}),
+          },
+        });
 
         if (!bot.computer) throw new Error("Bot has no computer");
         const storedComputer = bot.computer;
@@ -9442,10 +9450,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           turnBlocks,
           currentTurnImages,
         );
+        // The offline script infers actions from the saved waiting answer.
+        // Generated attachment filenames are data, not part of that answer.
+        const attachmentContext =
+          scripted && waitingAnswer?.sourceMessageId
+            ? []
+            : [attachedFilesPrompt, missingImagesInstruction];
         const taskPrompt = expandSkillReferencesInPrompt(
-          [ownerTaskPrompt, attachedFilesPrompt, missingImagesInstruction]
-            .filter(Boolean)
-            .join("\n\n"),
+          [ownerTaskPrompt, ...attachmentContext].filter(Boolean).join("\n\n"),
           agentSkills,
         );
         const invokedSkill = savedSkills.find((skill) =>
@@ -9805,20 +9817,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     leaseFence: fence,
                   },
                   // A backup is an attempt choice, not a replacement for a captured pin.
-                  data: run.modelPinned
-                    ? {
-                        attemptModel: {
-                          leaseFence: fence,
-                          provider,
+                  data: {
+                    attemptModel: {
+                      leaseFence: fence,
+                      provider,
+                      modelId,
+                      modelCredentialId: modelCredentialId ?? null,
+                    },
+                    ...(!run.modelPinned
+                      ? {
+                          modelProvider: provider,
                           modelId,
                           modelCredentialId: modelCredentialId ?? null,
-                        },
-                      }
-                    : {
-                        modelProvider: provider,
-                        modelId,
-                        modelCredentialId: modelCredentialId ?? null,
-                      },
+                        }
+                      : {}),
+                  },
                 });
                 if (updated.count !== 1) {
                   throw new Error("Run lease was lost before the backup model could be used");
@@ -9963,6 +9976,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     const text = pageInputContext(item.blocks)
                       ? modelMessageBlocksText(item.blocks)
                       : item.text;
+                    // Pi already has the answer in the prompt or resumed tool result.
+                    // Its quote and attachments still belong to this message; the scripted
+                    // checkpoint must hash the persisted message regardless of delivery.
+                    const answered = !scripted && item.messageId === waitingAnswer?.sourceMessageId;
                     return {
                       includesPageReply: reply?.includesPage === true,
                       message: {
@@ -9974,7 +9991,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ...(requiresConfirmedImageInput(item.blocks)
                           ? { requiresImageInput: true as const }
                           : {}),
-                        text: [reply?.text, text, filesInstruction, unavailableInstruction]
+                        text: [
+                          reply?.text,
+                          answered ? "" : text,
+                          filesInstruction,
+                          unavailableInstruction,
+                        ]
                           .filter(Boolean)
                           .join("\n\n"),
                         // A pre-sourceMessageId Run may already load this same reply as its current turn.

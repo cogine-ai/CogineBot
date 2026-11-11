@@ -1,5 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
 import type { ImageHandling, ImageInputStatus } from "@rakazo/contracts";
+import { IMAGE_INPUT_PREVIEW_DELAY_MS, imageInputRouteKey } from "@rakazo/contracts";
 import { Button } from "@rakazo/ui-web";
 import { useEffect, useState } from "react";
 import { rpc } from "../../lib/rpc";
@@ -21,8 +22,12 @@ export function ImageInputChoice({
 }) {
   const { t } = useLingui();
   const query = JSON.stringify(target);
-  const key = JSON.stringify([revision, query]);
-  const [result, setResult] = useState<{ key: string; status: ImageInputStatus; botId?: string }>();
+  const routeKey = JSON.stringify([revision, imageInputRouteKey(target)]);
+  const [result, setResult] = useState<{
+    routeKey: string;
+    status: ImageInputStatus;
+    botId?: string;
+  }>();
   useEffect(() => {
     let generation = 0;
     const request = JSON.parse(query) as typeof target;
@@ -31,21 +36,26 @@ export function ImageInputChoice({
       const latest = ++generation;
       void rpc.threads.imageInput(request).then(
         ({ status, botId }) => {
-          if (latest === generation) setResult({ key, status, botId });
+          if (latest === generation) setResult({ routeKey, status, botId });
         },
         () => {
-          if (latest === generation && !refusal) setResult({ key, status: "unknown" });
+          if (latest === generation && !refusal) setResult({ routeKey, status: "unknown" });
         },
       );
     };
-    refresh();
-    window.addEventListener("focus", refresh);
-    return () => {
-      generation++;
-      window.removeEventListener("focus", refresh);
+    const timer = window.setTimeout(refresh, IMAGE_INPUT_PREVIEW_DELAY_MS);
+    const refreshOnFocus = () => {
+      window.clearTimeout(timer);
+      refresh();
     };
-  }, [key, query, refusal]);
-  const display = result?.key === key ? result : refusal;
+    window.addEventListener("focus", refreshOnFocus);
+    return () => {
+      window.clearTimeout(timer);
+      generation++;
+      window.removeEventListener("focus", refreshOnFocus);
+    };
+  }, [routeKey, query, refusal]);
+  const display = result?.routeKey === routeKey ? result : refusal;
   const status = display?.status ?? "unknown";
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="image-input-choice">
