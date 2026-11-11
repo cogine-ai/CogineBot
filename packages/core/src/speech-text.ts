@@ -1,6 +1,22 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 
+const HTTPS_SITE_NOTICE = "HTTPS site ";
+const COMMAND_VARIABLE_NOTICE = "Also save as command variable ";
+const CREDENTIAL_NOTICE_LINE = new RegExp(
+  `^${HTTPS_SITE_NOTICE}(\`+) ([^\\s/?#@]+) \\1$|^${COMMAND_VARIABLE_NOTICE}[A-Z0-9_]+$|\\uE000`,
+  "gm",
+);
+
+export function websiteCredentialNotice(host: string, purpose: string, variable?: string): string {
+  const delimiter = "`".repeat(
+    1 + Math.max(0, ...(host.match(/`+/g) ?? []).map((run) => run.length)),
+  );
+  const destination = `${HTTPS_SITE_NOTICE}${delimiter} ${host} ${delimiter}`;
+  const pairing = variable ? `${COMMAND_VARIABLE_NOTICE}${variable}` : undefined;
+  return [destination, pairing, purpose].filter(Boolean).join("\n");
+}
+
 /** A fenced block becomes a mention of itself, with its language if known. */
 function describeCodeBlock(fence: string): string {
   const lang =
@@ -45,7 +61,13 @@ const ENDS_SENTENCE = /[.!?:;]\s*$/;
  */
 export function speakable(input: string): string {
   if (!input) return "";
-  let text = input;
+  const literal: string[] = [];
+  // Keep the exact site and variable in credential notices while simplifying Markdown.
+  let text = input.replace(
+    CREDENTIAL_NOTICE_LINE,
+    (value, _delimiter, host) =>
+      `\uE000${literal.push(host === undefined ? value : `${HTTPS_SITE_NOTICE}${host}`) - 1}\uE001`,
+  );
 
   text = text.replace(/```([^\n]*)\n[\s\S]*?(?:```|$)/g, (_m, fence: string) =>
     describeCodeBlock(fence),
@@ -83,11 +105,8 @@ export function speakable(input: string): string {
   text = text.replace(/^\s*>\s?/gm, "");
   text = text.replace(/^\s*(?:[-*_]\s*){3,}$/gm, "");
 
-  text = text.replace(/\*\*(.*?)\*\*/g, "$1");
-  text = text.replace(/\*(?=\S)(.*?)(?<=\S)\*/g, "$1");
-  // Keep literal underscores inside hosts and identifiers when removing emphasis.
-  text = text.replace(/(?<![\p{L}\p{N}_])__(.*?)__(?![\p{L}\p{N}_])/gu, "$1");
-  text = text.replace(/(?<![\p{L}\p{N}_])_(?=\S)(.*?)(?<=\S)_(?![\p{L}\p{N}_])/gu, "$1");
+  text = text.replace(/(\*\*|__)(.*?)\1/g, "$2");
+  text = text.replace(/(\*|_)(?=\S)(.*?)(?<=\S)\1/g, "$2");
   text = text.replace(/~~(.*?)~~/g, "$1");
 
   text = text.replace(/\[[ xX]\]\s*/g, "");
@@ -106,7 +125,7 @@ export function speakable(input: string): string {
   text = text.replace(/\s+([.,!?;:])/g, "$1");
   text = text.replace(/(?:\.\s*){2,}/g, ". ");
   text = text.replace(/,\s*\./g, ".");
-  text = text.trim();
+  text = text.replace(/\uE000(\d+)\uE001/g, (_match, index) => literal[Number(index)]!).trim();
 
   return /[\p{L}\p{N}]/u.test(text) ? text : "";
 }

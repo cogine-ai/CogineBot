@@ -3356,7 +3356,7 @@ describe("generated website logins in a Run", () => {
         f.setCalls([{ args: { ...login, command }, executionId: "generate-login" }]);
         await f.run();
 
-        const notice = ["HTTPS site login.example.test"];
+        const notice = ["HTTPS site ` login.example.test `"];
         if (command) notice.push("Also save as command variable SITE_ACCOUNT_PASSWORD");
         notice.push(login.purpose);
         expect(publish).toHaveBeenCalledWith(
@@ -3428,11 +3428,11 @@ describe("generated website logins in a Run", () => {
     Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
     const args = {
       ...login,
-      origin: "https://LOGIN_SITE_EXAMPLE.test:8443/",
+      origin: "https://_LOGIN_.example.test:8443/",
       purpose: "Set up the site login\n```\nA note",
       command: true,
     };
-    const pairedOrigin = "https://login_site_example.test:8443";
+    const pairedOrigin = "https://_login_.example.test:8443";
     f.setCalls([{ args, executionId: "generate-login" }]);
     await f.run();
 
@@ -3442,11 +3442,11 @@ describe("generated website logins in a Run", () => {
       kind: "ask",
       actions: [{ id: "allow" }, { id: "deny" }],
       text: expect.stringContaining(
-        `HTTPS site login_site_example.test:8443\nAlso save as command variable SITE_ACCOUNT_PASSWORD\n${args.purpose}`,
+        `HTTPS site \` _login_.example.test:8443 \`\nAlso save as command variable SITE_ACCOUNT_PASSWORD\n${args.purpose}`,
       ),
     });
     const speech = toUtterances(speechFromBlocks([block!])).join(" ");
-    expect(speech).toContain("HTTPS site login_site_example.test:8443");
+    expect(speech).toContain("HTTPS site _login_.example.test:8443");
     expect(speech).toContain("Also save as command variable SITE_ACCOUNT_PASSWORD");
     const request = { ...args, origin: pairedOrigin };
     expect(f.effects).toMatchObject([{ status: "intended", request }]);

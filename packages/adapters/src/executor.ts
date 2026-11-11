@@ -149,6 +149,7 @@ import {
   truncatedPlainText,
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
+  websiteCredentialNotice,
 } from "@rakazo/core";
 import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
@@ -6218,15 +6219,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const request = generation.data;
             generationNotice =
               request.type === "login"
-                ? [
-                    `HTTPS site ${new URL(request.origin).host}`,
-                    request.command
-                      ? `Also save as command variable ${commandVariableName(loginCommandName(request.name))}`
-                      : undefined,
+                ? websiteCredentialNotice(
+                    new URL(request.origin).host,
                     request.purpose,
-                  ]
-                    .filter(Boolean)
-                    .join("\n")
+                    request.command
+                      ? commandVariableName(loginCommandName(request.name))
+                      : undefined,
+                  )
                 : request.purpose;
             // Use the normalized website inputs for both the effect key and its request.
             if (request.type === "login") args = request;

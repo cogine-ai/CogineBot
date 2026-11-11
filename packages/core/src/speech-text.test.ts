@@ -64,12 +64,14 @@ describe("speakable", () => {
     expect(speakable("**Done** ✅ — [x] shipped the _thing_")).toBe("Done — shipped the thing");
   });
 
-  it("keeps literal underscores in spoken sites and command variables", () => {
+  it("keeps literal destinations and command variables in credential notices", () => {
     expect(
       speakable(
-        "__HTTPS site__ login_site_example.test:8443 and _variable_ SITE__ACCOUNT__PASSWORD",
+        "HTTPS site ` _site_.example.test:8443 `\nAlso save as command variable SITE__ACCOUNT__PASSWORD\nSet up the _test_ login",
       ),
-    ).toBe("HTTPS site login_site_example.test:8443 and variable SITE__ACCOUNT__PASSWORD");
+    ).toBe(
+      "HTTPS site _site_.example.test:8443. Also save as command variable SITE__ACCOUNT__PASSWORD. Set up the test login",
+    );
   });
 
   it("gives a heading a full stop so the voice breathes", () => {
