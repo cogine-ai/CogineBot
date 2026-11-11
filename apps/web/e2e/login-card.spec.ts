@@ -61,6 +61,16 @@ for (const remember of [true, false]) {
 
     const username = `fake-user-${stamp}@example.test`;
     const password = `fake-password-${stamp}`;
+    if (remember) {
+      const escaped = '"'.repeat(4096);
+      await usernameField.fill(escaped);
+      await passwordField.fill(escaped);
+      await expect(save).toBeDisabled();
+      await expect(
+        card.getByText("These login values are too long together. Shorten one or more fields."),
+      ).toBeVisible();
+      await usernameField.clear();
+    }
     // Both fields are required before the login can be saved.
     await passwordField.fill(password);
     await expect(save).toBeDisabled();
@@ -81,6 +91,7 @@ for (const remember of [true, false]) {
     await page.unroute("**/rpc/threads/answer");
 
     await usernameField.fill(username);
+    await expect(card.getByText("Could not submit this answer", { exact: true })).toHaveCount(0);
     await passwordField.fill(password);
     let receiptChecked = false;
     if (!remember) {

@@ -3309,11 +3309,13 @@ describe("generated command credentials in a Run", () => {
   );
 });
 
-it.each([true, false])(
-  "reconciles a claimed website login after worker interruption (temporary: %s)",
-  async (temporary) => {
+it.each(["temporary", "saved", "invalid", "shadowed", "different-site"])(
+  "reconciles a claimed website login after worker interruption (%s)",
+  async (scenario) => {
+    const temporary = scenario !== "saved";
     const f = fixture({ name: "request_secret", builtin: true });
     const origin = "https://login.example.test";
+    const otherOrigin = "https://other.example.test";
     const credential = { name: "interrupted-login", origin, auth: { type: "login" } };
     const args = { label: "Fixture sign-in", purpose: "password", credential };
     const effect = {
@@ -3322,7 +3324,12 @@ it.each([true, false])(
       spaceId: f.runRecord.spaceId,
       kind: "request_secret",
       idempotencyKey: approvalEffectKey(f.runRecord.id, "request_secret", args),
-      status: "executing",
+      status:
+        scenario === "different-site"
+          ? "completed"
+          : scenario === "shadowed"
+            ? "approved"
+            : "executing",
       request: args,
       result: temporary
         ? { loginProvided: credential, remember: false }
@@ -3335,30 +3342,51 @@ it.each([true, false])(
       Object.assign(f.prisma.secret, {
         findFirst: vi.fn(async () => ({
           id: "temp-row",
-          ciphertext: encodeRunLogin({
-            origin,
-            botId: f.runRecord.botId,
-            effectId: effect.id,
-            login: encodeLoginSecret({ username: "fixture-account", password: "fixture-password" }),
-          }),
+          ciphertext:
+            scenario === "invalid"
+              ? "malformed-fixture"
+              : encodeRunLogin({
+                  origin,
+                  botId: f.runRecord.botId,
+                  effectId: effect.id,
+                  login: encodeLoginSecret({
+                    username: "fixture-account",
+                    password: "fixture-password",
+                  }),
+                }),
         })),
       });
-    } else {
+    }
+    if (scenario === "saved" || scenario === "shadowed" || scenario === "different-site") {
       Object.assign(f.prisma.botSecret, {
         findFirst: vi.fn(async () => ({
           ...credential,
+          origin: scenario === "saved" ? origin : otherOrigin,
           revision: "fixture-revision",
         })),
       });
     }
-    f.setCalls([{ args, executionId: "resume-login" }]);
+    const requested =
+      scenario === "different-site"
+        ? { ...args, credential: { ...credential, origin: otherOrigin } }
+        : args;
+    f.setCalls([{ args: requested, executionId: "resume-login" }]);
     await f.run();
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.results).toMatchObject([
-      temporary ? { provided: true, saved: false, ...credential } : { saved: true, ...credential },
+      scenario === "invalid"
+        ? { error: "The supplied login is no longer available." }
+        : scenario === "different-site"
+          ? { error: expect.stringContaining("bound to another site") }
+          : temporary
+            ? { provided: true, saved: false, ...credential }
+            : { saved: true, ...credential },
     ]);
     expect(f.effects).toContainEqual(
-      expect.objectContaining({ id: effect.id, status: "completed" }),
+      expect.objectContaining({
+        id: effect.id,
+        status: "completed",
+      }),
     );
     expect(JSON.stringify(f.results)).not.toContain("fixture-password");
   },

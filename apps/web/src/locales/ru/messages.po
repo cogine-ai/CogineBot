@@ -7426,3 +7426,39 @@ msgstr "На этом сервере нельзя изменить учётны�
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "В этой форме нельзя редактировать именованные поля."
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "Не удалось подтвердить получение. Проверьте статус, прежде чем вводить данные снова."
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "Только для этой задачи"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "Скрыто"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "Скрыть {0}"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "Данные предоставлены"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "Предоставить данные"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "Сохранить для этого бота"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "Видно"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "Общая длина данных для входа слишком велика. Сократите значения в одном или нескольких полях."

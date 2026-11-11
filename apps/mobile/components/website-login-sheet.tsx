@@ -1,5 +1,5 @@
 import type { WebsiteLoginAnswer } from "@rakazo/contracts";
-import { loginCardFields, NamedLoginSecretValue } from "@rakazo/contracts";
+import { LOGIN_VALUE_TOO_LONG, loginCardFields, NamedLoginSecretValue } from "@rakazo/contracts";
 import { WebsiteLoginAnswerUnconfirmed } from "@rakazo/core";
 import { useState } from "react";
 import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -34,6 +34,8 @@ export function WebsiteLoginSheet({
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
   const login = NamedLoginSecretValue.safeParse({ fields });
+  const tooLong =
+    !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
 
   async function provide() {
     if (submitting || !login.success) return;
@@ -96,10 +98,12 @@ export function WebsiteLoginSheet({
           <Text style={{ color: tokens.foreground, fontSize: 18 }}>{purpose}</Text>
           <Text style={{ color: tokens.mutedForeground, fontSize: 15 }}>{origin}</Text>
           {fields.map((field, index) => {
-            const change = (update: Partial<WebsiteLoginAnswer["fields"][number]>) =>
+            const change = (update: Partial<WebsiteLoginAnswer["fields"][number]>) => {
+              setFailed(false);
               setFields((current) =>
                 current.map((entry, at) => (at === index ? { ...entry, ...update } : entry)),
               );
+            };
             const label = field.label.toLowerCase();
             const autoFill =
               field.hidden && label === "password"
@@ -143,7 +147,10 @@ export function WebsiteLoginSheet({
               accessibilityLabel={t("Save for this Bot")}
               disabled={submitting}
               value={remember}
-              onValueChange={setRemember}
+              onValueChange={(value) => {
+                setFailed(false);
+                setRemember(value);
+              }}
             />
           </View>
           {!remember ? (
@@ -152,6 +159,11 @@ export function WebsiteLoginSheet({
           {failed ? (
             <Text accessibilityRole="alert" style={{ color: tokens.destructive }}>
               {t("Could not send answer")}
+            </Text>
+          ) : null}
+          {tooLong ? (
+            <Text accessibilityRole="alert" style={{ color: tokens.destructive }}>
+              {t("These login values are too long together. Shorten one or more fields.")}
             </Text>
           ) : null}
         </ScrollView>

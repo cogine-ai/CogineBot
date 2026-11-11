@@ -1360,4 +1360,15 @@ export const DE_MESSAGES: Record<string, string> = {
   "Reload this connection before saving.": "Lade diese Verbindung vor dem Speichern neu.",
   "Maximum output tokens must be smaller than the context limit.":
     "Das Ausgabelimit muss kleiner als das Kontextlimit sein.",
+  "Check again": "Erneut prüfen",
+  "Could not confirm receipt. Check before entering the information again.":
+    "Der Empfang konnte nicht bestätigt werden. Prüfe den Status, bevor du die Angaben erneut eingibst.",
+  "For this task only": "Nur für diese Aufgabe",
+  Hidden: "Ausgeblendet",
+  "Information provided": "Angaben übermittelt",
+  "Provide information": "Angaben eingeben",
+  "Save for this Bot": "Für diesen Bot speichern",
+  Visible: "Sichtbar",
+  "These login values are too long together. Shorten one or more fields.":
+    "Diese Anmeldedaten sind zusammen zu lang. Kürze einen oder mehrere Werte.",
 };

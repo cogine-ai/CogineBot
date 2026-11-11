@@ -126,6 +126,8 @@ export async function browserSnapshotFromTool(
 }
 
 export const LOGIN_FIELDS_FILLED_NOTE = "Login fields filled. No form-submit action was sent.";
+const LOGIN_FILL_UNKNOWN_NOTE =
+  "The login fill outcome is uncertain. Check the page before trying again.";
 
 export async function browserActFromTool(
   browser: BrowserProvider,
@@ -138,6 +140,7 @@ export async function browserActFromTool(
       credentials: readonly LoginCredentialRevision[],
     ) => Promise<{ error: string; code?: string } | undefined>;
     redactions?: () => string[];
+    onLoginFillOutcome?: (status: string) => void;
     resolveUploadPath?: (path: string) => string;
     uploadRoots?: string[];
   } = {},
@@ -261,6 +264,19 @@ export async function browserActFromTool(
               }),
           }
         : browserResult;
+    if (loginCredentials.length > 0) {
+      const status =
+        result.uncertain || filled === undefined
+          ? LOGIN_FILL_UNKNOWN_NOTE
+          : filled === 0
+            ? "No login fields were filled."
+            : filled < loginCredentials.length
+              ? "Some login fields were filled. Check the page before continuing."
+              : "note" in outcome && outcome.note === LOGIN_FIELDS_FILLED_NOTE
+                ? LOGIN_FIELDS_FILLED_NOTE
+                : "Login fields filled.";
+      options.onLoginFillOutcome?.(status);
+    }
     return redactBrowserResult(formatBrowserResult(outcome), options.redactions?.() ?? []);
   } catch (error) {
     context.signal.throwIfAborted();
@@ -268,6 +284,7 @@ export async function browserActFromTool(
       return { ...refusedInput("Page browser action timed out before dispatch."), timedOut: true };
     }
     if (error instanceof BrowserToolInputError) return refusedInput(error.message);
+    if (dispatchStarted) options.onLoginFillOutcome?.(LOGIN_FILL_UNKNOWN_NOTE);
     return redactBrowserResult(
       {
         ok: false,

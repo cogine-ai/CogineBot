@@ -7370,3 +7370,39 @@ msgstr "이 서버에서는 자격 증명을 변경할 수 없습니다."
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "이 양식에서는 이름이 지정된 필드를 편집할 수 없습니다."
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "수신을 확인하지 못했습니다. 정보를 다시 입력하기 전에 상태를 확인하세요."
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "이 작업에만 사용"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "숨김"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "{0} 숨기기"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "정보가 제공됨"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "정보 제공"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "이 봇에 저장"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "표시"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "로그인 값의 전체 길이가 너무 깁니다. 하나 이상의 필드 값을 줄이세요."

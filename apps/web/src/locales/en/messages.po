@@ -7441,3 +7441,39 @@ msgstr "Credential changes are unavailable on this server."
 #: src/pages/shell/bot-credentials.tsx
 msgid "This form can't edit named fields."
 msgstr "This form can't edit named fields."
+
+#: src/components/AskCard.tsx
+msgid "Could not confirm receipt. Check before entering the information again."
+msgstr "Could not confirm receipt. Check before entering the information again."
+
+#: src/components/AskCard.tsx
+msgid "For this task only"
+msgstr "For this task only"
+
+#: src/components/AskCard.tsx
+msgid "Hidden"
+msgstr "Hidden"
+
+#: src/components/AskCard.tsx
+msgid "Hide {0}"
+msgstr "Hide {0}"
+
+#: src/components/AskCard.tsx
+msgid "Information provided"
+msgstr "Information provided"
+
+#: src/components/AskCard.tsx
+msgid "Provide information"
+msgstr "Provide information"
+
+#: src/components/AskCard.tsx
+msgid "Save for this Bot"
+msgstr "Save for this Bot"
+
+#: src/components/AskCard.tsx
+msgid "Visible"
+msgstr "Visible"
+
+#: src/components/AskCard.tsx
+msgid "These login values are too long together. Shorten one or more fields."
+msgstr "These login values are too long together. Shorten one or more fields."

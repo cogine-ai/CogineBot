@@ -2,7 +2,12 @@ import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { ThreadMessage, WebsiteLoginAnswer } from "@rakazo/contracts";
-import { commandVariableName, loginCardFields, NamedLoginSecretValue } from "@rakazo/contracts";
+import {
+  commandVariableName,
+  LOGIN_VALUE_TOO_LONG,
+  loginCardFields,
+  NamedLoginSecretValue,
+} from "@rakazo/contracts";
 import {
   isApprovalAskBlock,
   isSecretAskBlock,
@@ -74,6 +79,8 @@ function WebsiteLoginForm({
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
   const login = NamedLoginSecretValue.safeParse({ fields });
+  const tooLong =
+    !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
 
   async function provide() {
     if (submitting || !login.success) return;
@@ -99,10 +106,12 @@ function WebsiteLoginForm({
       }}
     >
       {fields.map((field, index) => {
-        const change = (update: Partial<WebsiteLoginAnswer["fields"][number]>) =>
+        const change = (update: Partial<WebsiteLoginAnswer["fields"][number]>) => {
+          setFailed(false);
           setFields((current) =>
             current.map((entry, at) => (at === index ? { ...entry, ...update } : entry)),
           );
+        };
         const label = field.label.toLowerCase();
         return (
           <div key={field.label} className="flex flex-col gap-1.5">
@@ -145,7 +154,10 @@ function WebsiteLoginForm({
           aria-label={t`Save for this Bot`}
           checked={remember}
           disabled={submitting}
-          onCheckedChange={setRemember}
+          onCheckedChange={(checked) => {
+            setFailed(false);
+            setRemember(checked);
+          }}
         />
         <Trans>Save for this Bot</Trans>
       </div>
@@ -165,6 +177,11 @@ function WebsiteLoginForm({
       {failed ? (
         <p role="alert" className="text-sm text-destructive">
           <Trans>Could not submit this answer</Trans>
+        </p>
+      ) : null}
+      {tooLong ? (
+        <p role="alert" className="text-sm text-destructive">
+          <Trans>These login values are too long together. Shorten one or more fields.</Trans>
         </p>
       ) : null}
     </form>

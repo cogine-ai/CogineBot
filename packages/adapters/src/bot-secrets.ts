@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, GenerateSecretInput } from "@rakazo/contracts";
 import {
   BOT_SECRET_VALUE_MAX_LENGTH,
@@ -993,6 +994,13 @@ export function encodeRunLogin(input: z.infer<typeof RunLoginValue>): string {
 
 const runLoginEffectStatuses = ["approved", "executing", "completed"];
 
+class RunLoginUnavailableError extends Error {
+  constructor() {
+    super("The task login is no longer available.");
+    this.name = "RunLoginUnavailableError";
+  }
+}
+
 function runLoginSecretWhere(scope: BotSecretScope, runId: string, name: string) {
   return { userId: scope.userId, spaceId: scope.spaceId, kind: runLoginKind(runId, name) };
 }
@@ -1005,6 +1013,21 @@ function runLoginEffectWhere(scope: BotSecretScope, runId: string, effectId: str
     kind: "request_secret",
     status: { in: runLoginEffectStatuses },
   };
+}
+
+async function readRunLoginValue(
+  secretStore: Pick<SecretStore, "load">,
+  row: { id: string; ciphertext: string },
+  botId: string,
+) {
+  try {
+    const value = RunLoginValue.parse(JSON.parse(await secretStore.load(row.ciphertext, row.id)));
+    if (value.botId === botId)
+      return { ...value, fields: loginSecretFields(decodeLoginSecret(value.login)) };
+  } catch (error) {
+    if (error instanceof SecretStoreUnavailableError) throw error;
+  }
+  throw new RunLoginUnavailableError();
 }
 
 async function readRunLogin(
@@ -1023,16 +1046,8 @@ async function readRunLogin(
     },
     select: { id: true },
   });
-  if (!run) throw new Error("The task login is no longer available.");
-  let value: z.infer<typeof RunLoginValue>;
-  let fields: ReturnType<typeof loginSecretFields>;
-  try {
-    value = RunLoginValue.parse(JSON.parse(await secretStore.load(row.ciphertext, row.id)));
-    fields = loginSecretFields(decodeLoginSecret(value.login));
-  } catch {
-    throw new Error("The task login is no longer available.");
-  }
-  if (value.botId !== scope.botId) throw new Error("The task login is no longer available.");
+  if (!run) throw new RunLoginUnavailableError();
+  const value = await readRunLoginValue(secretStore, row, scope.botId);
   const effect = await prisma.externalEffect.findFirst({
     where: runLoginEffectWhere(scope, runId, value.effectId),
     select: { request: true },
@@ -1046,14 +1061,15 @@ async function readRunLogin(
     destination.name !== name ||
     destination.origin !== value.origin
   )
-    throw new Error("The task login is no longer available.");
+    throw new RunLoginUnavailableError();
   return {
     origin: value.origin,
-    fields,
+    fields: value.fields,
     credential: { id: row.id, name, effectId: value.effectId } as const,
   };
 }
 
+/** An invalid existing task login must not fall back to a saved login with the same name. */
 export async function findRunLogin(
   prisma: PrismaClient,
   secretStore: Pick<SecretStore, "load">,
@@ -1065,7 +1081,34 @@ export async function findRunLogin(
     where: runLoginSecretWhere(scope, runId, name),
     select: { id: true, ciphertext: true },
   });
-  return row ? readRunLogin(prisma, secretStore, scope, runId, name, row) : undefined;
+  if (!row) return undefined;
+  try {
+    return await readRunLogin(prisma, secretStore, scope, runId, name, row);
+  } catch (error) {
+    if (error instanceof RunLoginUnavailableError) return null;
+    throw error;
+  }
+}
+
+export function runLoginToolView(
+  destination: BotSecretDestination,
+  login: Awaited<ReturnType<typeof findRunLogin>>,
+  receipt?: { effectId: string; destination: BotSecretDestination },
+) {
+  if (
+    !login ||
+    login.origin !== destination.origin ||
+    (receipt &&
+      (login.credential.effectId !== receipt.effectId ||
+        !sameSecretDestination(receipt.destination, destination)))
+  )
+    return undefined;
+  return {
+    provided: true,
+    saved: false,
+    ...destination,
+    fields: login.fields.map(({ label, hidden }) => ({ label, hidden })),
+  };
 }
 
 function loginFillRedactions(fields: ReturnType<typeof loginSecretFields>): string[] {
@@ -1093,7 +1136,8 @@ export async function loadRunLoginRedactions(
   for (const row of rows) {
     const name = BotSecretName.safeParse(row.kind.slice(prefix.length));
     if (!name.success) continue;
-    const login = await readRunLogin(prisma, secretStore, scope, runId, name.data, row);
+    // A stale approval can forbid future fills while the page still echoes a previous value.
+    const login = await readRunLoginValue(secretStore, row, scope.botId);
     for (const form of loginFillRedactions(login.fields)) forms.add(form);
   }
   return [...forms];
@@ -1186,9 +1230,15 @@ export async function resolveLoginFill(input: {
   const temporary = input.runId
     ? await findRunLogin(input.prisma, input.secretStore, input.scope, input.runId, input.name)
     : undefined;
-  const row = temporary
-    ? { name: input.name, origin: temporary.origin, auth: { type: "login" } }
-    : await input.prisma.botSecret.findFirst({ where });
+  if (temporary === null) return { error: "The task login is no longer available." };
+  if (temporary)
+    return loginFillFromFields(
+      temporary.fields,
+      temporary.origin,
+      temporary.credential,
+      input.field,
+    );
+  const row = await input.prisma.botSecret.findFirst({ where });
   if (!row) return { error: "Login is unavailable. Use request_secret to request it." };
   if (isCommandCredential(row.auth)) {
     return {
@@ -1213,33 +1263,39 @@ export async function resolveLoginFill(input: {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
   let fields: ReturnType<typeof loginSecretFields>;
-  let credential: LoginCredentialRevision;
   try {
-    if (temporary) {
-      fields = temporary.fields;
-      credential = temporary.credential;
-    } else if ("ciphertext" in row) {
-      fields = loginSecretFields(
-        decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id)),
-      );
-      credential = { id: row.id, revision: row.revision };
-    } else {
-      return { error: UNUSABLE_CREDENTIAL };
-    }
+    fields = loginSecretFields(
+      decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id)),
+    );
   } catch {
     return { error: UNUSABLE_CREDENTIAL };
   }
-  const label = input.field.trim().toLowerCase();
+  return loginFillFromFields(
+    fields,
+    destination.origin,
+    { id: row.id, revision: row.revision },
+    input.field,
+  );
+}
+
+function loginFillFromFields(
+  fields: ReturnType<typeof loginSecretFields>,
+  origin: string,
+  credential: LoginCredentialRevision,
+  requestedField: string,
+) {
+  const label = requestedField.trim().toLowerCase();
   const field =
     fields.find((entry) => entry.label.toLowerCase() === label) ??
     (label === "username" || label === "password"
       ? fields.find(({ hidden }) => hidden === (label === "password"))
       : undefined);
   if (!field) return { error: "This login has no field with that label." };
+  const fieldType: LoginField = field.hidden ? "password" : "username";
   return {
     text: field.value,
-    origin: destination.origin,
-    field: field.hidden ? "password" : "username",
+    origin,
+    field: fieldType,
     redactions: loginFillRedactions(fields),
     credential,
   };

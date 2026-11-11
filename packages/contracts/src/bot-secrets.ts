@@ -373,6 +373,7 @@ const NamedLoginField = z
   .transform((field) => (field.hidden ? field : { ...field, value: field.value.trim() }))
   .refine((field) => field.value.length > 0, "Enter a value");
 type NamedLoginField = z.infer<typeof NamedLoginField>;
+export const LOGIN_VALUE_TOO_LONG = "This login is too long";
 
 export const NamedLoginSecretValue = z
   .strictObject({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
@@ -382,7 +383,7 @@ export const NamedLoginSecretValue = z
   )
   .refine(
     (login) => JSON.stringify(login).length <= BOT_SECRET_VALUE_MAX_LENGTH,
-    "This login is too long",
+    LOGIN_VALUE_TOO_LONG,
   );
 export type NamedLoginSecretValue = z.infer<typeof NamedLoginSecretValue>;
 

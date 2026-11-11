@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ComputerRef } from "@rakazo/adapter-kit";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { encodeLoginSecret, GenerateSecretInput } from "@rakazo/contracts";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
@@ -603,13 +604,54 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
         for (const field of fields) expect(row.ciphertext).not.toContain(field.value);
         const own = await findRunLogin(prisma, secretStore, scope, f.run.id, name);
         expect(own).toMatchObject({ origin: credential.origin, fields });
+        expect(
+          await findRunLogin(
+            prisma,
+            secretStore,
+            { ...scope, botId: "another-bot" },
+            f.run.id,
+            name,
+          ),
+        ).toBeNull();
         await expect(
-          findRunLogin(prisma, secretStore, { ...scope, botId: "another-bot" }, f.run.id, name),
-        ).rejects.toThrow("no longer available");
+          findRunLogin(
+            prisma,
+            {
+              load: async () => {
+                throw new SecretStoreUnavailableError();
+              },
+            },
+            scope,
+            f.run.id,
+            name,
+          ),
+        ).rejects.toBeInstanceOf(SecretStoreUnavailableError);
         expect(await findRunLogin(prisma, secretStore, scope, "another-run", name)).toBeUndefined();
         expect(await loadRunLoginRedactions(prisma, secretStore, scope, f.run.id)).toEqual(
           expect.arrayContaining(fields.map(({ value }) => value)),
         );
+        await expect(
+          loadRunLoginRedactions(
+            prisma,
+            {
+              load: async () => "malformed-fixture",
+            },
+            scope,
+            f.run.id,
+          ),
+        ).rejects.toThrow("The task login is no longer available.");
+        await prisma.externalEffect.update({
+          where: { id: effect.id },
+          data: { status: "uncertain" },
+        });
+        expect(await findRunLogin(prisma, secretStore, scope, f.run.id, name)).toBeNull();
+        expect(await loadRunLoginRedactions(prisma, secretStore, scope, f.run.id)).toEqual(
+          expect.arrayContaining(fields.map(({ value }) => value)),
+        );
+        await prisma.externalEffect.update({
+          where: { id: effect.id },
+          data: { status: "approved" },
+        });
         await storeBotSecret({
           prisma,
           secretStore,
@@ -675,6 +717,7 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
           field: label,
         }));
         const act = vi.spyOn(browser, "act");
+        const fillOutcome = vi.fn();
         const result = await browserActFromTool(
           browser,
           ref,
@@ -696,6 +739,7 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
               return current ? undefined : { error: "Credential or lease changed" };
             },
             redactions: () => fields.map(({ value }) => value),
+            onLoginFillOutcome: fillOutcome,
           },
         );
         expect(result).toMatchObject({
@@ -705,6 +749,7 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
           note: LOGIN_FIELDS_FILLED_NOTE,
         });
         expect(act).toHaveBeenCalledOnce();
+        expect(fillOutcome).toHaveBeenCalledWith(LOGIN_FIELDS_FILLED_NOTE);
         expect(act.mock.calls[0]![1].actions).toMatchObject([
           { kind: "fill", field: "username", text: fields[0]!.value, origin: credential.origin },
           { kind: "fill", field: "password", text: fields[1]!.value, origin: credential.origin },
