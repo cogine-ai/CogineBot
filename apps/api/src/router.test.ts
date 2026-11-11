@@ -2913,17 +2913,20 @@ describe("model credential persistence", () => {
     }));
     const response = await call(handler, "models/finishOAuth", { loginId: "login-plan" });
     expect(response.status).toBe(200);
-    expect(tx.$queryRaw).toHaveBeenCalledOnce();
-    expect(tx.$queryRaw.mock.calls[0]![0]).toMatchObject({
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw.mock.calls[0]![1]).toBe(
+      JSON.stringify(["space-model-selection", actor.spaceId, actor.userId]),
+    );
+    expect(tx.$queryRaw.mock.calls[1]![0]).toMatchObject({
       values: [actor.userId],
       strings: expect.arrayContaining([
         expect.stringContaining("coginebot-chatgpt-plan-connection"),
       ]),
     });
-    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
       tx.userModelCredential.findFirst.mock.invocationCallOrder[0]!,
     );
-    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
       tx.userModelCredential.create.mock.invocationCallOrder[0]!,
     );
   });
@@ -3635,6 +3638,7 @@ describe("codex live catalog", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       userModelCredential: explicitCredentialFixture([oauthCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -3748,6 +3752,7 @@ describe("codex live catalog", () => {
       };
       const upsert = vi.fn(async () => ({ id: "pref-spark" }));
       const tx = {
+        $queryRaw: vi.fn(async () => []),
         userModelCredential: explicitCredentialFixture([oauthCredential]),
         spaceModelPreference: {
           findMany: vi.fn().mockResolvedValue([]),
@@ -3895,6 +3900,7 @@ describe("model set default auth", () => {
     });
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
@@ -3997,6 +4003,7 @@ describe("model set default auth", () => {
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
@@ -4089,6 +4096,7 @@ describe("model set default auth", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([

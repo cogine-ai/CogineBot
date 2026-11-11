@@ -119,6 +119,7 @@ function fixture(change?: "newer" | "revision" | "ciphertext") {
     upsert: vi.fn(async () => ({})),
   };
   const tx = {
+    $queryRaw: vi.fn(async () => []),
     userModelCredential,
     secret,
     spaceModelPreference,
