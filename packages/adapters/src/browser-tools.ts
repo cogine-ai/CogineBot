@@ -132,7 +132,7 @@ export async function browserActFromTool(
   args: Record<string, unknown>,
   options: {
     resolveSecretFill?: ResolveSecretFill;
-    authorizeSecretFill?: () => Promise<boolean>;
+    recheckSecretFill?: () => Promise<{ error: string; code?: string } | undefined>;
     redactions?: () => string[];
     resolveUploadPath?: (path: string) => string;
     uploadRoots?: string[];
@@ -146,7 +146,7 @@ export async function browserActFromTool(
   try {
     preparationSignal.throwIfAborted();
     const actions: BrowserActStep[] = [];
-    const loginRevisions: Array<() => Promise<boolean>> = [];
+    const loginRevisionChecks: Array<() => Promise<boolean>> = [];
     const request: BrowserActRequest = { actions, signal: context.signal };
     const steps = parseBrowserActions(args.actions);
     if (
@@ -203,7 +203,7 @@ export async function browserActFromTool(
       }
       preparationSignal.throwIfAborted();
       if ("error" in resolved) return refusedInput(resolved.error);
-      loginRevisions.push(resolved.isCurrent);
+      loginRevisionChecks.push(resolved.isCurrent);
       actions.push({
         kind: "fill",
         ref: step.ref,
@@ -212,21 +212,20 @@ export async function browserActFromTool(
         field: resolved.field,
       });
     }
-    if (loginRevisions.length > 0) {
+    if (loginRevisionChecks.length > 0) {
       try {
-        if (
-          options.authorizeSecretFill &&
-          !(await withAbort(options.authorizeSecretFill(), preparationSignal))
-        )
-          return refusedInput("This run no longer owns the browser action.");
         const current = await withAbort(
-          Promise.all(loginRevisions.map((check) => check())),
+          Promise.all(loginRevisionChecks.map((check) => check())),
           preparationSignal,
         );
         if (current.includes(false))
           return refusedInput(
             "A saved login changed before filling. Inspect the page before retrying.",
           );
+        const refusal = options.recheckSecretFill
+          ? await withAbort(options.recheckSecretFill(), preparationSignal)
+          : undefined;
+        if (refusal) return { ...refusedInput(refusal.error), ...refusal };
       } catch {
         preparationSignal.throwIfAborted();
         return refusedInput("This saved login could not be verified.");

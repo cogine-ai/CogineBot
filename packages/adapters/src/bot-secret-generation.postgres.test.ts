@@ -167,7 +167,7 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
     }
   });
 
-  it("generates a named login that can be filled and exported as the same password", async () => {
+  it("generates an editable login that can be filled by label and exported as the same password", async () => {
     const name = "fixture-site";
     const generated = await action(name, "executing", { ...login, command: true });
     const result = {
@@ -210,6 +210,11 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
     expect(await password.isCurrent()).toBe(true);
     const row = await prisma.botSecret.findFirstOrThrow({ where: { ...scope, name } });
     expect(row.ciphertext).not.toContain(password.text);
+    expect(row.auth).toEqual({ type: "login" });
+    expect(JSON.parse(await secretStore.load(row.ciphertext, row.id))).toEqual({
+      username: login.username,
+      password: password.text,
+    });
     await prisma.botSecret.update({
       where: { id: row.id },
       data: { revision: randomUUID() },

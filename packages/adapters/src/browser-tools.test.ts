@@ -608,7 +608,10 @@ describe("browser tools", () => {
               ...savedField("password", values.password, "https://login.example.test"),
               isCurrent: async () => reason !== "revision",
             }),
-            authorizeSecretFill: async () => reason !== "lease",
+            recheckSecretFill: async () =>
+              reason === "lease"
+                ? { error: "This run no longer owns the browser action." }
+                : undefined,
           },
         );
         expect(result).toMatchObject({ ok: false, completed: 0, uncertain: false });

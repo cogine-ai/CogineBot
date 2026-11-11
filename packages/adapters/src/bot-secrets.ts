@@ -706,14 +706,11 @@ export async function generateBotSecret(input: {
   try {
     if (await existing()) return nameTaken;
     const value = generateSecretValue(args.rules ?? GeneratedSecretRules.parse({}));
+    // The standard pair remains editable and transferable through the existing credential UI.
+    // The browser maps it to the same Username and Password labels as a named login.
     const plaintext =
       args.type === "login"
-        ? encodeLoginSecret({
-            fields: [
-              { label: "Username", value: args.username, hidden: false },
-              { label: "Password", value, hidden: true },
-            ],
-          })
+        ? encodeLoginSecret({ username: args.username, password: value })
         : value;
     const prepared = await prepare(destination, plaintext);
     const commit = (paired?: typeof prepared) => {

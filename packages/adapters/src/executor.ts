@@ -589,7 +589,6 @@ import {
   isUserProgressClientNonce,
   midTurnProgressBudgetAllows,
   midTurnProgressBudgetUsed,
-  NARRATION_STATUS_MAX_LENGTH,
   narrationStatusLine,
   redactReplyAfterProgress,
   USER_PROGRESS_CLIENT_NONCE_PREFIX,
@@ -4462,6 +4461,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ),
           task.connectionIds ?? [],
         );
+        const ownsLiveRunLease = async () =>
+          leaseValid &&
+          !leaseCompleted &&
+          Boolean(
+            await deps.prisma.run.findFirst({
+              where: {
+                id: runId,
+                status: "running",
+                leaseOwner: workerId,
+                leaseFence: fence,
+                leaseExpiresAt: { gt: new Date() },
+              },
+              select: { id: true },
+            }),
+          );
         const mcpBinding = remoteMcpSessions.bind(
           {
             operationId: runId,
@@ -4483,20 +4497,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             connectedProviders: connectedComposio.map((row) => row.provider),
           },
           async () => {
-            const held =
-              leaseValid &&
-              !leaseCompleted &&
-              (await deps.prisma.run.findFirst({
-                where: {
-                  id: runId,
-                  status: "running",
-                  leaseOwner: workerId,
-                  leaseFence: fence,
-                  leaseExpiresAt: { gt: new Date() },
-                },
-                select: { id: true },
-              }));
-            if (!held) throw new Error("Run lease expired before remote MCP dispatch");
+            if (!(await ownsLiveRunLease()))
+              throw new Error("Run lease expired before remote MCP dispatch");
           },
           async (call) => {
             const fresh = await refreshRunConnectorContext(deps.prisma, context, run.taskId);
@@ -6343,10 +6345,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           const gated = requiresApprovalByDefault || connectorReadGated;
           const generationNeedsApproval =
-            generation?.success === true &&
-            ((generation.data.type === "login" &&
-              (generationNotice?.length ?? 0) > NARRATION_STATUS_MAX_LENGTH) ||
-              (await credentialGenerationNeedsApproval()));
+            generation?.success === true && (await credentialGenerationNeedsApproval());
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
             generationNeedsApproval ||
@@ -7124,6 +7123,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             if (generationNotice)
               approvalReason = [generationNotice, approvalReason].filter(Boolean).join("\n");
+            const loginApproval = generation?.success && generation.data.type === "login";
             const block = buildApprovalAskBlock(
               applied!.effect.id,
               name,
@@ -7162,10 +7162,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
                 allowToolAlways: !(
                   generation?.success &&
-                  (requiresMandatoryApproval || approvalResolved.source === "require_approval")
+                  (loginApproval ||
+                    requiresMandatoryApproval ||
+                    approvalResolved.source === "require_approval")
                 ),
               },
             );
+            if (loginApproval) block.reviewMode = "screen";
             let approvalDisplayError: string | undefined;
             if (authenticatedRequest && (!credentialBinding || !block.detail)) {
               approvalDisplayError = credentialBinding
@@ -8030,9 +8033,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       registerRunSecrets(resolved.redactions);
                       return resolved;
                     },
-                    authorizeSecretFill: async () =>
-                      builtinOffered(await currentDisabledBuiltinTools(), "browser_act") &&
-                      (await renewRunLease(deps, runId, workerId, fence)),
+                    recheckSecretFill: async () => {
+                      if (!builtinOffered(await currentDisabledBuiltinTools(), "browser_act"))
+                        return { error: "This tool is disabled for this bot." };
+                      const current = resolveRules(await loadApprovalRules());
+                      if (current.decision === "deny") return policyBlock;
+                      if (
+                        !claimedApproval &&
+                        (current.decision === "ask" ||
+                          (approvalResolved.source === "always_allow" &&
+                            current.source !== "always_allow"))
+                      )
+                        return { error: "This browser action needs approval before filling." };
+                      if (
+                        !(await renewComputerExecutionLease(deps.prisma, computerLease)) ||
+                        !(await ownsLiveRunLease())
+                      )
+                        return { error: "This run no longer owns the browser action." };
+                    },
                   });
               unchangedVisualStreak = unchangedVisualStreakAfterPageBrowser(
                 unchangedVisualStreak,
@@ -8667,9 +8685,31 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const effectId = applied.effect.id;
             if (!claimedApproval && runPromotesMidTurnNarration(run.trigger)) {
               try {
-                await serializeProgress(() =>
-                  showNarrationStatus(generationNotice ?? generation.data.purpose),
-                );
+                await serializeProgress(async () => {
+                  if (generation.data.type === "command") {
+                    await showNarrationStatus(generation.data.purpose);
+                    return;
+                  }
+                  // The complete website and command destination do not fit the short status.
+                  const text = redactSecrets(
+                    generationNotice ?? generation.data.purpose,
+                    runSecrets,
+                  );
+                  const nonce = `${USER_PROGRESS_CLIENT_NONCE_PREFIX}${runId}:credential:${effectId}`;
+                  context.signal.throwIfAborted();
+                  if (
+                    !(await publishMessage(
+                      deps,
+                      run,
+                      "bot",
+                      [{ kind: "text", text }],
+                      undefined,
+                      nonce,
+                    ))
+                  )
+                    throw new Error("Credential purpose was not published");
+                  recordPublishedProgress(text, nonce);
+                });
               } catch {
                 context.signal.throwIfAborted();
                 return finish(
@@ -11267,7 +11307,7 @@ function builtinOffered(disabled: ReadonlySet<string> | undefined, name: string)
 function credentialGenerationAvailable(
   disabled: ReadonlySet<string> | undefined,
   pageBrowserAllowed: boolean,
-  request?: GenerateSecretInput,
+  request?: { type: GenerateSecretInput["type"]; command?: boolean },
 ): boolean {
   if (!builtinOffered(disabled, "generate_secret")) return false;
   const command = builtinOffered(disabled, "shell");
@@ -11426,16 +11466,12 @@ function secretGuidance(pageBrowserAllowed: boolean, disabled?: ReadonlySet<stri
       `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
     );
   }
-  if (builtinOffered(disabled, "generate_secret") && builtinOffered(disabled, "shell")) {
+  if (credentialGenerationAvailable(disabled, pageBrowserAllowed, { type: "command" })) {
     clauses.push(
       "When the user needs a new password or key for a shell task, use generate_secret with a brief user-facing purpose and pass the resulting environment variable to the program that needs it.",
     );
   }
-  if (
-    builtinOffered(disabled, "generate_secret") &&
-    pageBrowserAllowed &&
-    builtinOffered(disabled, "browser_act")
-  ) {
+  if (credentialGenerationAvailable(disabled, pageBrowserAllowed, { type: "login" })) {
     clauses.push(
       "For a new website password, use generate_secret with type login, a bare HTTPS origin, the username, and a brief purpose. Fill it by field label with browser_act fill_secret. Filling does not submit the form.",
     );
