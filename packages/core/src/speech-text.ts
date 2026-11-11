@@ -14,7 +14,9 @@ export function websiteCredentialNotice(host: string, purpose: string, variable?
   );
   const destination = `${HTTPS_SITE_NOTICE}${delimiter} ${host} ${delimiter}`;
   const pairing = variable ? `${COMMAND_VARIABLE_NOTICE}${variable}` : undefined;
-  return [destination, pairing, purpose].filter(Boolean).join("\n");
+  // The purpose is model-authored. Give it one labeled line separate from verified fields.
+  const reason = `Purpose — ${purpose.replace(/\s+/g, " ").trim()}`;
+  return [destination, pairing, reason].filter(Boolean).join("\n");
 }
 
 /** A fenced block becomes a mention of itself, with its language if known. */

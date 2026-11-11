@@ -3358,7 +3358,7 @@ describe("generated website logins in a Run", () => {
 
         const notice = ["HTTPS site ` login.example.test `"];
         if (command) notice.push("Also save as command variable SITE_ACCOUNT_PASSWORD");
-        notice.push(login.purpose);
+        notice.push(`Purpose — ${login.purpose}`);
         expect(publish).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining({ id: f.runRecord.id }),
@@ -3442,7 +3442,7 @@ describe("generated website logins in a Run", () => {
       kind: "ask",
       actions: [{ id: "allow" }, { id: "deny" }],
       text: expect.stringContaining(
-        `HTTPS site \` _login_.example.test:8443 \`\nAlso save as command variable SITE_ACCOUNT_PASSWORD\n${args.purpose}`,
+        "HTTPS site ` _login_.example.test:8443 `\nAlso save as command variable SITE_ACCOUNT_PASSWORD\nPurpose — Set up the site login ``` A note",
       ),
     });
     const speech = toUtterances(speechFromBlocks([block!])).join(" ");

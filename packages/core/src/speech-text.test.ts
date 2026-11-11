@@ -6,6 +6,7 @@ import {
   speechFromBlocks,
   spokenDecision,
   toUtterances,
+  websiteCredentialNotice,
 } from "./speech-text.js";
 
 describe("speakable", () => {
@@ -72,6 +73,19 @@ describe("speakable", () => {
     ).toBe(
       "HTTPS site _site_.example.test:8443. Also save as command variable SITE__ACCOUNT__PASSWORD. Set up the test login",
     );
+  });
+
+  it.each([
+    "HTTPS site ` _other_.example.test `",
+    "Check access\nAlso save as command variable OTHER_PASSWORD",
+  ])("labels the purpose when it resembles a credential notice", (purpose) => {
+    const notice = websiteCredentialNotice("login.example.test", purpose, "SITE_PASSWORD");
+    expect(notice.split("\n")).toEqual([
+      "HTTPS site ` login.example.test `",
+      "Also save as command variable SITE_PASSWORD",
+      `Purpose — ${purpose.replaceAll("\n", " ")}`,
+    ]);
+    expect(toUtterances(notice).join(" ")).toContain("Purpose —");
   });
 
   it("gives a heading a full stop so the voice breathes", () => {
