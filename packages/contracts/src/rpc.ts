@@ -286,6 +286,7 @@ const threadSendResult = z.object({
   runId: Id,
   seq: z.number().int(),
   runIds: z.array(Id).optional(),
+  deliveredImageHandling: threadSendFields.shape.imageHandling,
 });
 
 const spaceName = z.string().trim().min(1).max(60);

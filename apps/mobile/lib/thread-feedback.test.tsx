@@ -595,6 +595,47 @@ describe("scoped mobile outbox", () => {
     expect(container.textContent).toBe("");
     expect(disk.clear).toHaveBeenCalled();
   });
+  it("clears an earlier image refusal when a later retry has an unknown result", async () => {
+    const attempt = feedback.sendAttempt({ ...payload(), imageHandling: "confirm" });
+    request
+      .mockResolvedValueOnce({ id: "artifact-a" })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Image input not configured"), {
+          status: 409,
+          data: {
+            reason: "model_image_input_unsupported",
+            imageInputStatus: "unknown",
+            botId: "bot-1",
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new TypeError("Network request failed"));
+    await act(async () => {
+      await feedback.send(attempt);
+    });
+    expect(attempt.imageInputStatus).toBe("unknown");
+    expect(attempt.imageInputBotId).toBe("bot-1");
+    await act(async () => {
+      await feedback.send(attempt, true);
+    });
+    expect(attempt.state).toBe("queued");
+    expect(attempt.imageInputStatus).toBeUndefined();
+    expect(attempt.imageInputBotId).toBeUndefined();
+    expect(attempt.payload.imageHandling).toBe("confirm");
+    await act(async () => {
+      await sendWaitingMessages(true);
+    });
+    const sends = request.mock.calls.filter(([proc]) => proc === "threads/send");
+    expect(sends).toHaveLength(3);
+    expect(
+      sends.every(
+        ([, input]) =>
+          input.imageHandling === "confirm" && input.clientNonce === attempt.clientNonce,
+      ),
+    ).toBe(true);
+    expect(request.mock.calls.filter(([proc]) => proc === "artifacts/create")).toHaveLength(1);
+  });
+
   it("reports real errors and reuses uploaded artifacts on manual retry", async () => {
     const attempt = feedback.sendAttempt(payload());
     request

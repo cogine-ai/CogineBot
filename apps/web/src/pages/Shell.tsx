@@ -3770,6 +3770,20 @@ export function ShellPage() {
               ),
             );
           }
+          if (sent.deliveredImageHandling && sent.deliveredImageHandling !== input.imageHandling) {
+            // The nonce was acknowledged, but the requested change was not sent.
+            // Keep the draft and retire the acknowledged attempt.
+            succeeded = true;
+            if (stillHere())
+              setSendError(
+                sent.deliveredImageHandling === "confirm"
+                  ? t`Already sent as an image. Your draft is kept.`
+                  : t`Already sent as a file. Your draft is kept.`,
+              );
+            if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
+            else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
+            return false;
+          }
         }
         succeeded = true;
         consumeSubmittedComposerDraft(originThreadKey, submitted);

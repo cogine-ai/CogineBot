@@ -17,6 +17,7 @@ import type {
 } from "@rakazo/contracts";
 import {
   GROUP_MEMBER_MIN,
+  isAttachmentImageMimeType,
   MessageBlock as MessageBlockSchema,
   PageTitleSchema,
   runQuotaWaitStateSchema,
@@ -247,14 +248,25 @@ function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
   return Array.isArray(runIds) ? runIds.filter((id): id is string => typeof id === "string") : [];
 }
 
-function sendResult(message: { seq: number }, runs: Array<{ id: string; taskId: string }>) {
+function sendResult(
+  message: { seq: number; blocks?: Prisma.JsonValue },
+  runs: Array<{ id: string; taskId: string }>,
+) {
   const first = runs[0];
   if (!first) throw new IsolationError("Send did not create a run");
+  const blocks = Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : [];
+  // A replay describes the message already committed under this nonce.
+  const deliveredImageHandling = blocks.some((block) => block.kind === "image")
+    ? ("confirm" as const)
+    : blocks.some((block) => block.kind === "file" && isAttachmentImageMimeType(block.mimeType))
+      ? ("file" as const)
+      : undefined;
   return {
     taskId: first.taskId,
     runId: first.id,
     seq: message.seq,
     runIds: runs.map((run) => run.id),
+    ...(deliveredImageHandling ? { deliveredImageHandling } : {}),
   };
 }
 

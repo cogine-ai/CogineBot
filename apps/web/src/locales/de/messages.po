@@ -7410,3 +7410,11 @@ msgstr "Computer weiterverwenden"
 #: src/pages/Shell.tsx
 msgid "At the runtime limit, pausing may stop background tasks."
 msgstr "Beim Erreichen der Laufzeitgrenze kann das Pausieren Hintergrundaufgaben beenden."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as an image. Your draft is kept."
+msgstr "Bereits als Bild gesendet. Dein Entwurf bleibt erhalten."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as a file. Your draft is kept."
+msgstr "Bereits als Datei gesendet. Dein Entwurf bleibt erhalten."

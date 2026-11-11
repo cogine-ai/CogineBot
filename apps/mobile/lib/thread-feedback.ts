@@ -260,6 +260,9 @@ export function sendWaitingMessages(force = false): Promise<void> {
         allowUnreachable = false;
         const attempt = unsentSends.find((a) => a.state === "queued" && inScope(a));
         if (!attempt) break;
+        // A definitive refusal applies only until this attempt is dispatched again.
+        attempt.imageInputStatus = undefined;
+        attempt.imageInputBotId = undefined;
         attempt.state = "pending";
         changed();
         let messageRejection: unknown;

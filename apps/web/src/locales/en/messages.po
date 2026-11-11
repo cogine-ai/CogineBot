@@ -7425,3 +7425,11 @@ msgstr "Continue using computer"
 #: src/pages/Shell.tsx
 msgid "At the runtime limit, pausing may stop background tasks."
 msgstr "At the runtime limit, pausing may stop background tasks."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as an image. Your draft is kept."
+msgstr "Already sent as an image. Your draft is kept."
+
+#: src/pages/Shell.tsx
+msgid "Already sent as a file. Your draft is kept."
+msgstr "Already sent as a file. Your draft is kept."

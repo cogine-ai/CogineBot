@@ -7449,3 +7449,11 @@ msgstr "选择模型"
 
 msgid "Send as file"
 msgstr "作为文件发送"
+
+#: src/pages/Shell.tsx
+msgid "Already sent as an image. Your draft is kept."
+msgstr "已作为图片发送。草稿已保留。"
+
+#: src/pages/Shell.tsx
+msgid "Already sent as a file. Your draft is kept."
+msgstr "已作为文件发送。草稿已保留。"

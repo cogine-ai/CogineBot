@@ -104,10 +104,16 @@ describeAttachments("chat attachments", () => {
     expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
     expect(await prisma.message.count({ where: { threadId } })).toBe(messageCount);
     expect(await prisma.run.count({ where: { threadId } })).toBe(runCount);
-    const sent = await rpc<{ seq: number; runId: string }>(app, cookie, "threads/send", {
-      ...input,
-      imageHandling: "file",
-    });
+    const sent = await rpc<{ seq: number; runId: string; deliveredImageHandling?: string }>(
+      app,
+      cookie,
+      "threads/send",
+      {
+        ...input,
+        imageHandling: "file",
+      },
+    );
+    expect(sent.deliveredImageHandling).toBe("file");
     const replay = await rpc(app, cookie, "threads/send", { ...input, imageHandling: "confirm" });
     expect(replay).toEqual(sent);
     const message = await prisma.message.findUniqueOrThrow({

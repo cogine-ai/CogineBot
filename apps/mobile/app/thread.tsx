@@ -3016,7 +3016,7 @@ function Thread({
           readOnly
             ? undefined
             : () => {
-                if (!attempt.imageInputStatus || attempt.state === "pending") return;
+                if (!attempt.imageInputStatus || attempt.state !== "failed") return;
                 attempt.payload = { ...attempt.payload, imageHandling: "file" };
                 attempt.imageInputStatus = undefined;
                 attempt.imageInputBotId = undefined;

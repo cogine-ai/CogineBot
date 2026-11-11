@@ -18,6 +18,72 @@ async function openComposer(page: Page, prefix: string) {
   return composer;
 }
 
+test("an image receipt after a lost response keeps the file draft", async ({ page }, testInfo) => {
+  const composer = await openComposer(page, "image-receipt-replay");
+  const botId = activeBotId(page);
+  const requests: Array<{ clientNonce: string; imageHandling: string; artifactIds: string[] }> = [];
+  await page.route("**/rpc/threads/send", async (route) => {
+    requests.push(route.request().postDataJSON().json);
+    if (requests.length > 1) return route.continue();
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const { json } = await response.json();
+    expect(json.deliveredImageHandling).toBe("confirm");
+    await route.abort("failed");
+  });
+  const text = "Review this receipt";
+  await composer.fill(text);
+  await page
+    .getByTestId("composer-bar")
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "receipt.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    });
+  const choice = page.getByTestId("image-input-choice");
+  await expect(choice.getByRole("status")).toHaveText("Can see images");
+  await composer.press("Enter");
+  const error = page.getByTestId("composer-error");
+  await expect(error).toBeVisible();
+  await choice.getByRole("button", { name: "As file", exact: true }).click();
+  await page.getByRole("button", { name: "Send as file", exact: true }).click();
+  await expect(error).toHaveText(/Already sent as an image\. Your draft is kept\./);
+  await expect(composer).toHaveValue(text);
+  await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
+  expect(requests.map((request) => request.imageHandling)).toEqual(["confirm", "file"]);
+  expect(requests[1]!.clientNonce).toBe(requests[0]!.clientNonce);
+  expect(requests[1]!.artifactIds).toEqual(requests[0]!.artifactIds);
+  const before = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  const inputs = (snapshot: ThreadSnapshot) =>
+    snapshot.messages.filter(
+      (message) =>
+        message.role === "user" &&
+        message.blocks.some((block) => block.kind === "text" && block.text === text),
+    );
+  expect(inputs(before)).toHaveLength(1);
+  expect(inputs(before)[0]!.blocks).toContainEqual(
+    expect.objectContaining({
+      kind: "image",
+      artifactId: requests[0]!.artifactIds[0],
+    }),
+  );
+  await captureScreenshot(page, testInfo, "image-input-replay-confirmed");
+  await page.getByRole("button", { name: "Send as file", exact: true }).click();
+  await expect(composer).toHaveValue("");
+  expect(requests[2]!.clientNonce).not.toBe(requests[0]!.clientNonce);
+  const after = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(inputs(after)).toHaveLength(2);
+  expect(
+    inputs(after)
+      .flatMap((message) => message.blocks)
+      .filter((block) => block.kind === "file"),
+  ).toHaveLength(1);
+});
+
 test("bootstrap failure recovers the trusted Space before sending a preserved attachment", async ({
   page,
 }, testInfo) => {

@@ -129,7 +129,7 @@ export function FailedSendBubble({
           <Text style={{ color, fontSize: 13 }}>{caption}</Text>
         </View>
       </Pressable>
-      {attempt.imageInputStatus ? (
+      {attempt.state === "failed" && attempt.imageInputStatus ? (
         <View style={{ gap: 8 }}>
           <Text style={{ color: tokens.mutedForeground }}>
             {attempt.imageInputStatus === "unsupported"
