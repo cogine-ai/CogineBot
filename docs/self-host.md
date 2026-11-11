@@ -604,6 +604,14 @@ The Electron desktop app is a client of the same API. Docker and E2B still apply
 - **E2B** runs bot computers away from the CogineBot host and is a good choice for public or multi-user
   production deployments. CogineBot checkpoints the portable workspace and browser-profile directory to
   `DATA_DIR`; the E2B disk is a runtime cache, not the durable source of truth.
+  To build the stock desktop contents at 2 vCPU and 4096 MiB, run
+  `pnpm sandbox:e2b-template` from a source checkout with the deployment's `E2B_API_KEY` set.
+  This publishes `coginebot-computer` in that key's E2B team. Newly created or explicitly rebuilt
+  computers use the template, with a 1280×800 desktop and pause on timeout with automatic resume
+  disabled. Existing computers keep their current resources when resumed. If the named template is
+  missing, creation falls back to the stock `desktop` template and records a warning; its
+  resources are set by E2B. Check the build and new sandbox resources in the provider account
+  before relying on the smaller allocation.
 - **Daytona** provides the same remote-computer contract through Daytona sandboxes. Configure
   `DAYTONA_API_KEY` and optionally `DAYTONA_API_URL` / `DAYTONA_TARGET` / `DAYTONA_SNAPSHOT`.
 - **CreateOS** provides the same remote-computer contract through CreateOS desktop sandboxes.

@@ -35,6 +35,7 @@ import {
   PORTABLE_TRANSFER_BATCH_BYTES,
   shouldSkipPortableWorkspaceFile,
 } from "./computer-workspace.js";
+import { createE2BComputer } from "./e2b-template.js";
 import type { LinuxDesktopHost } from "./linux-desktop.js";
 import { LinuxDesktop, PREPARE_LINUX_DESKTOP } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
@@ -171,6 +172,16 @@ export function e2bCreateOptions(botId: string, apiKey: string) {
   };
 }
 
+const e2bSdk: E2BSandboxSdk = {
+  create: createE2BComputer,
+  connect: (id, options) => RetainedE2BSandbox.connect(id, options),
+  connectWithStartReceipt: RetainedE2BSandbox.connectWithStartReceipt,
+  pause: (id, options) => RetainedE2BSandbox.pause(id, options),
+  kill: (id, options) => RetainedE2BSandbox.kill(id, options),
+  getInfo: (id, options) => RetainedE2BSandbox.getInfo(id, options),
+  attachRunning: RetainedE2BSandbox.attachRunning,
+};
+
 // How the E2B SDK words a sandbox that no longer exists. It does not always say "not found":
 // an expired sandbox surfaces as a TimeoutError about the *sandbox* timeout (502 / Unavailable
 // from envd), which used to read as a live sandbox and left every later call throwing forever.
@@ -232,7 +243,7 @@ export class E2BSandboxProvider implements SandboxProvider {
 
   constructor(
     private readonly apiKey: string,
-    private readonly sdk: E2BSandboxSdk = RetainedE2BSandbox as unknown as E2BSandboxSdk,
+    private readonly sdk: E2BSandboxSdk = e2bSdk,
   ) {}
 
   describe() {

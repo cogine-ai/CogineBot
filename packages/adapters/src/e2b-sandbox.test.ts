@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import {
   CommandExitError,
   FileNotFoundError,
+  NotFoundError,
   Sandbox,
   SandboxNotFoundError,
   TimeoutError,
@@ -22,6 +23,114 @@ const context = {
 };
 
 describe("E2B computer backend", () => {
+  it("creates a new computer with the deployment template and existing lifecycle options", async () => {
+    const create = vi.spyOn(Sandbox, "create").mockResolvedValue({
+      sandboxId: "new-computer",
+    } as Sandbox);
+    try {
+      await expect(
+        new E2BSandboxProvider("test-key").provision(
+          { botId: "bot", homePath: "/unused" },
+          context,
+        ),
+      ).resolves.toMatchObject({ providerRef: "new-computer", fresh: true });
+      expect(create).toHaveBeenCalledExactlyOnceWith(
+        "coginebot-computer",
+        expect.objectContaining({
+          apiKey: "test-key",
+          resolution: [1280, 800],
+          lifecycle: { onTimeout: "pause", autoResume: false },
+        }),
+      );
+    } finally {
+      create.mockRestore();
+    }
+  });
+
+  it.each([
+    Object.assign(new Error("Template is missing"), { statusCode: 404 }),
+    new Error("404: Template is missing"),
+  ])("uses the stock desktop when the deployment template is missing (%s)", async (failure) => {
+    const create = vi
+      .spyOn(Sandbox, "create")
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({ sandboxId: "stock-computer" } as Sandbox);
+    try {
+      await expect(
+        new E2BSandboxProvider("test-key").provision(
+          { botId: "bot", homePath: "/unused" },
+          context,
+        ),
+      ).resolves.toMatchObject({ providerRef: "stock-computer", fresh: true });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls.map(([template]) => template)).toEqual([
+        "coginebot-computer",
+        "desktop",
+      ]);
+      expect(create.mock.calls[1]?.[1]).toBe(create.mock.calls[0]?.[1]);
+    } finally {
+      create.mockRestore();
+    }
+  });
+
+  it.each([401, 403, 429, 500, 503, undefined])(
+    "preserves creation failures without starting a second computer (status=%s)",
+    async (statusCode) => {
+      const failure = Object.assign(new Error("Synthetic create failure"), { statusCode });
+      const create = vi.spyOn(Sandbox, "create").mockRejectedValue(failure);
+      try {
+        await expect(
+          new E2BSandboxProvider("test-key").provision(
+            { botId: "bot", homePath: "/unused" },
+            context,
+          ),
+        ).rejects.toBe(failure);
+        expect(create).toHaveBeenCalledOnce();
+      } finally {
+        create.mockRestore();
+      }
+    },
+  );
+
+  it("preserves failure from the stock fallback", async () => {
+    const failure = new Error("Synthetic stock template failure");
+    const create = vi
+      .spyOn(Sandbox, "create")
+      .mockRejectedValueOnce(Object.assign(new Error("Template is missing"), { statusCode: 404 }))
+      .mockRejectedValueOnce(failure);
+    try {
+      await expect(
+        new E2BSandboxProvider("test-key").provision(
+          { botId: "bot", homePath: "/unused" },
+          context,
+        ),
+      ).rejects.toBe(failure);
+      expect(create).toHaveBeenCalledTimes(2);
+    } finally {
+      create.mockRestore();
+    }
+  });
+
+  it.each([
+    new NotFoundError("404: Process is missing"),
+    new FileNotFoundError("404: Desktop file is missing"),
+    new SandboxNotFoundError("404: Started sandbox is gone"),
+  ])("preserves a missing runtime resource after allocation (%s)", async (failure) => {
+    Object.assign(failure, { statusCode: 404 });
+    const create = vi.spyOn(Sandbox, "create").mockRejectedValue(failure);
+    try {
+      await expect(
+        new E2BSandboxProvider("test-key").provision(
+          { botId: "bot", homePath: "/unused" },
+          context,
+        ),
+      ).rejects.toBe(failure);
+      expect(create).toHaveBeenCalledOnce();
+    } finally {
+      create.mockRestore();
+    }
+  });
+
   it("does not connect or wake a paused computer from the screen path", async () => {
     const attachRunning = vi.fn().mockResolvedValue(undefined);
     const connect = vi.fn();
