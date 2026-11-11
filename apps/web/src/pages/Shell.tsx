@@ -6026,6 +6026,15 @@ export function ShellPage() {
                 Boolean(recordingSkill) ||
                 (inNewChat && pendingChat.botIds.length === 0)
               }
+              imageAdmissionTarget={
+                !inNewChat
+                  ? transcriptArtifactTarget
+                  : pendingChat.groupId
+                    ? { groupId: pendingChat.groupId }
+                    : pendingChat.botIds.length > 1
+                      ? { draftGroupBotIds: pendingChat.botIds }
+                      : { botId: pendingChat.botIds[0] }
+              }
               imageAdmissionRevision={JSON.stringify([
                 active?.modelProvider,
                 active?.modelId,
@@ -6041,6 +6050,11 @@ export function ShellPage() {
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
+              onChooseImageModel={() => {
+                if (active) setPanel("settings");
+                else if (activeGroup) setPanel("group-settings");
+                else openSettings("models");
+              }}
               onRunErrorPresented={handleRunErrorPresented}
               onDismissError={dismissComposerError}
               sending={sending}
@@ -8007,6 +8021,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 
 export const Composer = memo(function Composer({
   imageAdmissionRevision = "",
+  imageAdmissionTarget,
   pageSession,
   draftKey,
   active,
@@ -8022,6 +8037,7 @@ export const Composer = memo(function Composer({
   runError,
   runErrorId,
   onAddKey,
+  onChooseImageModel,
   onRunErrorPresented,
   onDismissError,
   sending,
@@ -8041,6 +8057,7 @@ export const Composer = memo(function Composer({
   onSlashAction,
 }: {
   imageAdmissionRevision?: string;
+  imageAdmissionTarget?: Parameters<typeof rpc.threads.imageInput>[0];
   pageSession?: PageSession;
   draftKey: string | null;
   active: boolean;
@@ -8055,6 +8072,7 @@ export const Composer = memo(function Composer({
   runError: string | null;
   runErrorId: string | null;
   onAddKey?: () => void;
+  onChooseImageModel?: () => void;
   onRunErrorPresented: (runId: string) => void;
   onDismissError: () => void;
   sending: boolean;
@@ -8683,7 +8701,7 @@ export const Composer = memo(function Composer({
                   value={draftState.imageHandling ?? "confirm"}
                   revision={JSON.stringify([draftKey, imageAdmissionRevision])}
                   onChange={(imageHandling) => onDraftChange({ imageHandling })}
-                  onChooseModel={onAddKey}
+                  onChooseModel={onChooseImageModel}
                   target={(() => {
                     const plan = resolveComposerSendPlan({
                       text: serializeComposerPrompt(draft, selectedSkill, selectedMentions),
@@ -8691,7 +8709,9 @@ export const Composer = memo(function Composer({
                       hasAttachments: true,
                     });
                     return {
-                      ...(plan.rerouteGroupId ? { groupId: plan.rerouteGroupId } : artifactTarget),
+                      ...(plan.rerouteGroupId
+                        ? { groupId: plan.rerouteGroupId }
+                        : (imageAdmissionTarget ?? artifactTarget)),
                       text: plan.trimmed,
                       mentions: plan.mentionPayload,
                     };

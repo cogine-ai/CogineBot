@@ -26,6 +26,7 @@ import {
   callIdFromClientNonce,
   isActive,
   isConversationalRun,
+  isMessagingChannelRun,
   messageBypassesQuotaWait,
   messageBypassesTakeoverWait,
   pageReplyTaskPrompt,
@@ -69,7 +70,7 @@ import {
 import { resolveBusyBotName, toComputerStatus } from "./computer-status.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 import type { ImageAdmissionConfiguration, ImageAdmissionRun } from "./thread-image-admission.js";
-import { assertImageInputStatus, threadModelImageInput } from "./thread-image-admission.js";
+import { assertImageInputStatus, resolveThreadImageInput } from "./thread-image-admission.js";
 import { loadMessagePage } from "./thread-message-pages.js";
 
 export type ThreadTarget =
@@ -681,13 +682,21 @@ function mapRun(run: {
 }
 
 /** Serialize admission with a model switch on an already-selected recipient Run. */
-async function lockImageRecipients(tx: Prisma.TransactionClient, threadId: string) {
+async function lockImageRecipients(
+  tx: Prisma.TransactionClient,
+  threadId: string,
+  botIds: string[],
+) {
+  if (botIds.length) {
+    // Match Bot settings' Bot → Thread order so admission sees a complete model update.
+    await tx.$queryRaw`SELECT id FROM bots WHERE id IN (${Prisma.join(botIds)}) ORDER BY id FOR SHARE`;
+  }
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR NO KEY UPDATE`;
   await tx.$queryRaw`SELECT id FROM runs WHERE "threadId" = ${threadId} AND status IN (${Prisma.join([...ACTIVE_RUN_STATUSES])}) FOR UPDATE`;
 }
 
 /** Use exactly the waiting answers, steering recipient, or next turn selected by send. */
-async function imageRecipientStatus(
+async function imageRecipientAdmission(
   tx: Prisma.TransactionClient,
   actor: Actor,
   threadId: string,
@@ -695,7 +704,7 @@ async function imageRecipientStatus(
   botId: string,
   runs: ImageAdmissionRun[],
   configuration?: ImageAdmissionConfiguration,
-): Promise<ImageInputStatus> {
+) {
   const answered: ImageAdmissionRun[] = [];
   for (const run of runs.filter((run) => run.status === "waiting_input")) {
     if (
@@ -711,16 +720,24 @@ async function imageRecipientStatus(
   }
   const held = runs.filter(holdsThreadMessage);
   const active = held.find(steersUserMessage) ?? held[0];
-  const recipients = answered.length
-    ? answered
-    : [active && steersUserMessage(active) ? active : undefined];
+  const receivesPrivateInput =
+    active &&
+    (steersUserMessage(active) ||
+      (active.status === "waiting_limit" && isConversationalRun(active.trigger))) &&
+    !isMessagingChannelRun(
+      active.trigger,
+      active.sourceMessage?.blocks as MessageBlock[] | undefined,
+    );
+  const recipients = answered.length ? answered : [receivesPrivateInput ? active : undefined];
   let status: ImageInputStatus = "supported";
+  let modelPin: Awaited<ReturnType<typeof resolveThreadImageInput>>["modelPin"];
   for (const run of recipients) {
-    const result = await threadModelImageInput(tx, actor, botId, run, configuration);
-    if (result === "unsupported") return result;
-    if (result === "unknown") status = result;
+    const result = await resolveThreadImageInput(tx, actor, botId, run, configuration);
+    if (result.status === "unsupported") return result;
+    if (result.status === "unknown") status = result.status;
+    modelPin = result.modelPin;
   }
-  return status;
+  return { status, modelPin };
 }
 
 /** A waiting reply must deliver its images, and history-free Runs need its files too. */
@@ -759,13 +776,16 @@ const imageAdmissionRunSelect = {
   modelCredentialId: true,
   thinkingLevel: true,
   modelPinned: true,
+  leaseFence: true,
+  attemptModel: true,
   quotaWait: true,
+  sourceMessage: { select: { blocks: true } },
 } as const;
 
 export async function threadImageInputStatus(
   deps: { prisma: PrismaClient; imageAdmission?: ImageAdmissionConfiguration },
   actor: Actor,
-  target: ThreadTarget,
+  target: ThreadTarget | { kind: "draftGroup"; members: Array<{ botId: string; name: string }> },
   input: { text?: string; mentions?: MentionTargetInput[] },
 ): Promise<{ status: ImageInputStatus }> {
   const botIds =
@@ -776,27 +796,33 @@ export async function threadImageInputStatus(
           members: target.members.map((member) => ({ id: member.botId, name: member.name })),
           explicitMentions: splitMentionTargets(input.mentions).botMentionIds,
         });
-  const runs = await deps.prisma.run.findMany({
-    where: {
-      threadId: target.threadId,
-      botId: { in: botIds },
-      status: { in: [...ACTIVE_RUN_STATUSES] },
-    },
-    select: imageAdmissionRunSelect,
-  });
+  const runs =
+    target.kind === "draftGroup"
+      ? []
+      : await deps.prisma.run.findMany({
+          where: {
+            threadId: target.threadId,
+            botId: { in: botIds },
+            status: { in: [...ACTIVE_RUN_STATUSES] },
+          },
+          select: imageAdmissionRunSelect,
+        });
   let status: ImageInputStatus = "supported";
   for (const botId of botIds) {
-    const result = await imageRecipientStatus(
-      deps.prisma,
-      actor,
-      target.threadId,
-      input.text,
-      botId,
-      runs.filter((run) => run.botId === botId),
-      deps.imageAdmission,
-    );
-    if (result === "unsupported") return { status: result };
-    if (result === "unknown") status = result;
+    const result =
+      target.kind === "draftGroup"
+        ? await resolveThreadImageInput(deps.prisma, actor, botId, undefined, deps.imageAdmission)
+        : await imageRecipientAdmission(
+            deps.prisma,
+            actor,
+            target.threadId,
+            input.text,
+            botId,
+            runs.filter((run) => run.botId === botId),
+            deps.imageAdmission,
+          );
+    if (result.status === "unsupported") return { status: result.status };
+    if (result.status === "unknown") status = result.status;
   }
   return { status };
 }
@@ -847,10 +873,6 @@ export async function sendThreadMessage(
 
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
-      let routineRuns: Array<{ id: string; status: string }> = [];
-      const startRoutines = async () => {
-        if (createRoutineRuns) routineRuns = await createRoutineRuns(tx);
-      };
       let pageContext: PageTextContext | undefined;
       if (input.pageContext) {
         const page = await tx.page.findFirst({
@@ -875,6 +897,7 @@ export async function sendThreadMessage(
       const composedText = pageContext
         ? withPageReplyContext(ownerText, pageContext).trim()
         : input.text;
+      const waitingAnswer = composedText ?? "";
       let answeredPageContext = pageContext;
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
@@ -941,6 +964,8 @@ export async function sendThreadMessage(
           }
         : {};
 
+      // Routine writers acquire the routine before any thread lock.
+      const routineRuns = (await createRoutineRuns?.(tx)) ?? [];
       if (target.kind === "bot") {
         const mentionTargets = splitMentionTargets(input.mentions);
         const { blocks: attachmentBlocks, artifacts } = await resolveSendAttachments(
@@ -966,24 +991,21 @@ export async function sendThreadMessage(
         const needsImageAdmission =
           input.imageHandling !== "file" &&
           attachmentBlocks.some((block) => block.kind === "image");
-        if (needsImageAdmission) await lockImageRecipients(tx, target.threadId);
-        else if (createRoutineRuns) {
-          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR NO KEY UPDATE`;
-        }
-        await startRoutines();
+        if (needsImageAdmission) await lockImageRecipients(tx, target.threadId, [target.botId]);
         const imageRuns = needsImageAdmission ? await loadActiveRuns() : undefined;
-        if (needsImageAdmission)
-          assertImageInputStatus(
-            await imageRecipientStatus(
+        const admission = imageRuns
+          ? await imageRecipientAdmission(
               tx,
               actor,
               target.threadId,
-              ownerText,
+              waitingAnswer,
               target.botId,
-              imageRuns!,
+              imageRuns,
               deps.imageAdmission,
-            ),
-          );
+            )
+          : undefined;
+        if (admission) assertImageInputStatus(admission.status);
+        const modelPin = admission?.modelPin;
         const blocks = buildUserMessageBlocks(
           composedText,
           sendAttachmentBlocks(attachmentBlocks, artifacts, input.imageHandling),
@@ -1007,7 +1029,7 @@ export async function sendThreadMessage(
               threadId: target.threadId,
               runId: run.id,
               answeredByUserId: actor.userId,
-              answer: composedText ?? "",
+              answer: waitingAnswer,
               ...answerContext,
               answerSourceMessageId: message.id,
               beforeMessageSeq: message.seq,
@@ -1068,7 +1090,8 @@ export async function sendThreadMessage(
               messageId: message.id,
               botId: target.botId,
               userId: actor.userId,
-              runId: steersUserMessage(active) ? active.id : null,
+              runId: !modelPin && steersUserMessage(active) ? active.id : null,
+              ...modelPin,
               ...(mentionTargets.connectorMentionIds.length
                 ? { connectionIds: mentionTargets.connectorMentionIds }
                 : {}),
@@ -1128,6 +1151,7 @@ export async function sendThreadMessage(
             trigger: "user",
             clientNonce: sendRunClientNonce(input.clientNonce, message.id),
             sourceMessageId: message.id,
+            ...(modelPin ? { ...modelPin, modelPinned: true } : {}),
           },
         });
         await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
@@ -1188,25 +1212,26 @@ export async function sendThreadMessage(
         });
       const needsImageAdmission =
         input.imageHandling !== "file" && attachmentBlocks.some((block) => block.kind === "image");
-      if (needsImageAdmission) await lockImageRecipients(tx, target.threadId);
-      else if (createRoutineRuns) {
-        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR NO KEY UPDATE`;
-      }
-      await startRoutines();
+      if (needsImageAdmission) await lockImageRecipients(tx, target.threadId, targetBotIds);
       const imageRuns = needsImageAdmission ? await loadActiveRuns() : undefined;
-      if (needsImageAdmission) {
-        for (const botId of targetBotIds)
-          assertImageInputStatus(
-            await imageRecipientStatus(
-              tx,
-              actor,
-              target.threadId,
-              ownerText,
-              botId,
-              imageRuns!.filter((run) => run.botId === botId),
-              deps.imageAdmission,
-            ),
+      const modelPins = new Map<
+        string,
+        NonNullable<Awaited<ReturnType<typeof resolveThreadImageInput>>["modelPin"]>
+      >();
+      if (imageRuns) {
+        for (const botId of targetBotIds) {
+          const admission = await imageRecipientAdmission(
+            tx,
+            actor,
+            target.threadId,
+            waitingAnswer,
+            botId,
+            imageRuns.filter((run) => run.botId === botId),
+            deps.imageAdmission,
           );
+          assertImageInputStatus(admission.status);
+          if (admission.modelPin) modelPins.set(botId, admission.modelPin);
+        }
       }
       const blocks = buildUserMessageBlocks(
         composedText,
@@ -1232,7 +1257,7 @@ export async function sendThreadMessage(
             threadId: target.threadId,
             runId: run.id,
             answeredByUserId: actor.userId,
-            answer: composedText ?? "",
+            answer: waitingAnswer,
             ...answerContext,
             answerSourceMessageId: message.id,
             beforeMessageSeq: message.seq,
@@ -1276,6 +1301,7 @@ export async function sendThreadMessage(
           runs.push(...answered);
           continue;
         }
+        const modelPin = modelPins.get(botId);
         const active = activeByBotId.get(botId);
         if (active) {
           await tx.steeringMessage.create({
@@ -1283,7 +1309,8 @@ export async function sendThreadMessage(
               messageId: message.id,
               botId,
               userId: actor.userId,
-              runId: steersUserMessage(active) ? active.id : null,
+              runId: !modelPin && steersUserMessage(active) ? active.id : null,
+              ...modelPin,
               ...(mentionTargets.connectorMentionIds.length
                 ? { connectionIds: mentionTargets.connectorMentionIds }
                 : {}),
@@ -1326,6 +1353,7 @@ export async function sendThreadMessage(
             trigger: "user",
             clientNonce: sendRunClientNonce(input.clientNonce, message.id, botId),
             sourceMessageId: message.id,
+            ...(modelPin ? { ...modelPin, modelPinned: true } : {}),
           },
         });
         runs.push(run);

@@ -490,6 +490,8 @@ export interface AgentSteeringMessage {
   /** Persisted history text before attachment paths are appended. */
   historyText?: string;
   images?: AgentInputImage[];
+  /** Explicit image intent remains binding even if the attachment cannot be hydrated. */
+  requiresImageInput?: true;
 }
 
 /** Adapter-supplied cache policy metadata; absent fields mean unknown. */

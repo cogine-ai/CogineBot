@@ -225,14 +225,33 @@ describe("composer send payload identity", () => {
 
 it("reuses immutable uploads but gives a changed image intent its own nonce", () => {
   const attempts = store();
-  const base = { text: "Read invoice", target: { botId: "bot-a" }, attachments: [{ id: "file-a", threadKey: "thread-a", file: new File(["png"], "invoice.png", { type: "image/png" }) }] };
-  const first = attempts.acquire("thread-a", composerSendSignature({ ...base, imageHandling: "confirm" }))!;
+  const base = {
+    text: "Read invoice",
+    target: { botId: "bot-a" },
+    attachments: [
+      {
+        id: "file-a",
+        threadKey: "thread-a",
+        file: new File(["png"], "invoice.png", { type: "image/png" }),
+      },
+    ],
+  };
+  const first = attempts.acquire(
+    "thread-a",
+    composerSendSignature({ ...base, imageHandling: "confirm" }),
+  )!;
   first.uploadedArtifactIds.set("file-a", "original-artifact");
   attempts.finish("thread-a", first, false);
-  const changed = attempts.acquire("thread-a", composerSendSignature({ ...base, imageHandling: "file" }))!;
-  expect(changed.clientNonce).not.toBe(first.clientNonce);
+  const changed = attempts.acquire(
+    "thread-a",
+    composerSendSignature({ ...base, imageHandling: "file" }),
+  )!;
+  expect(changed.clientNonce).toBe(first.clientNonce);
   expect(changed.uploadedArtifactIds.get("file-a")).toBe("original-artifact");
   attempts.finish("thread-a", changed, false);
-  const anotherTarget = attempts.acquire("thread-a", composerSendSignature({ ...base, target: { botId: "bot-b" }, imageHandling: "file" }))!;
+  const anotherTarget = attempts.acquire(
+    "thread-a",
+    composerSendSignature({ ...base, target: { botId: "bot-b" }, imageHandling: "file" }),
+  )!;
   expect(anotherTarget.uploadedArtifactIds.size).toBe(0);
 });

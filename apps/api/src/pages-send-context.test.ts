@@ -49,14 +49,12 @@ function fixture(
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "group-a" }]),
     bot: {
-      findFirst: vi
-        .fn()
-        .mockResolvedValue({
-          modelProvider: "openrouter",
-          modelId: "openai/gpt-4o",
-          modelCredentialId: null,
-          thinkingLevel: null,
-        }),
+      findFirst: vi.fn().mockResolvedValue({
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        modelCredentialId: null,
+        thinkingLevel: null,
+      }),
     },
     spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
     deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },

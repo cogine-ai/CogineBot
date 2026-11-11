@@ -294,7 +294,7 @@ import {
 } from "./builtin-tools.js";
 import { chatGPTPlanRotationCheckpoint } from "./chatgpt-plan-auth.js";
 import { withChatGPTPlanCredentialLock } from "./chatgpt-plan-credential-lock.js";
-import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
+import { CHATGPT_PLAN_PROVIDER_ID } from "./chatgpt-plan-provider.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
@@ -410,11 +410,11 @@ import {
   validateModelAuthAvailability,
 } from "./model-selection.js";
 import {
+  connectionModelImageInput,
   filterImageReturningComputerTools,
   IMAGE_RETURNING_COMPUTER_TOOLS,
   MODEL_CANNOT_SEE_MESSAGE,
   modelAcceptsImageInput,
-  modelIdSupportsImages,
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import { verifyRoutineRetryNativeSource } from "./native-connectors/events/store.js";
@@ -628,6 +628,10 @@ const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
+
+function requiresConfirmedImageInput(blocks: readonly MessageBlock[]) {
+  return blocks.some((block) => block.kind === "image" && block.imageHandling === "confirm");
+}
 
 /** Avoid an expensive remote workspace export when a turn never touched the computer. */
 export function createRunWorkspaceCheckpoint(checkpoint: () => Promise<unknown>) {
@@ -4894,9 +4898,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           select: { blocks: true },
         });
         const currentRunRequiresImageInput = imageMessages.some((message) =>
-          (message.blocks as MessageBlock[]).some(
-            (block) => block.kind === "image" && block.imageHandling === "confirm",
-          ),
+          requiresConfirmedImageInput(message.blocks as MessageBlock[]),
         );
         const modelSeesImages = modelAcceptsImageInput(
           runModelProvider,
@@ -9804,7 +9806,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   // A backup is an attempt choice, not a replacement for a captured pin.
                   data: run.modelPinned
-                    ? { modelPinned: true }
+                    ? {
+                        attemptModel: {
+                          leaseFence: fence,
+                          provider,
+                          modelId,
+                          modelCredentialId: modelCredentialId ?? null,
+                        },
+                      }
                     : {
                         modelProvider: provider,
                         modelId,
@@ -9962,6 +9971,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ...(item.ownerInput ? { ownerInput: true as const } : {}),
                         ...(item.progressResetAt ? { progressResetAt: item.progressResetAt } : {}),
                         historyText: scripted ? scriptedSteeringText(item.blocks) : text,
+                        ...(requiresConfirmedImageInput(item.blocks)
+                          ? { requiresImageInput: true as const }
+                          : {}),
                         text: [reply?.text, text, filesInstruction, unavailableInstruction]
                           .filter(Boolean)
                           .join("\n\n"),
@@ -11980,22 +11992,9 @@ async function resolveModelKey(
         const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
         const baseUrl =
           resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;
-        const chatGPTPlanModel =
-          provider === CHATGPT_PLAN_PROVIDER_ID && resolved.secret.kind === "oauth"
-            ? readChatGPTPlanModels(resolved.secret.credential).find(
-                (entry) => entry.id === modelId,
-              )
-            : undefined;
         const acceptsImages =
-          provider === CHATGPT_PLAN_PROVIDER_ID
-            ? chatGPTPlanModel?.input?.includes("image")
-            : credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
-                resolved.secret.kind === "openai_compatible"
-              ? modelIdSupportsImages(resolved.secret.visionModelIds, modelId) ||
-                (resolved.secret.visionModelIds === undefined &&
-                  credential.supportsImages === true &&
-                  credential.defaultModel?.trim() === modelId.trim())
-              : liveCodex?.supportsImages;
+          connectionModelImageInput(provider, modelId, credential, resolved.secret) ??
+          liveCodex?.supportsImages;
         const accountId =
           resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
         const gatewayId =

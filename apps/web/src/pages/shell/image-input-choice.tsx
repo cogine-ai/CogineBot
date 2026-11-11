@@ -22,23 +22,24 @@ export function ImageInputChoice({
   const key = JSON.stringify([revision, query]);
   const [result, setResult] = useState<{ key: string; status: ImageInputStatus }>();
   useEffect(() => {
-    let cancelled = false;
+    let generation = 0;
     const request = JSON.parse(query) as typeof target;
     const refresh = () => {
-      if (!request.botId && !request.groupId) return;
+      if (!("draftGroupBotIds" in request) && !request.botId && !request.groupId) return;
+      const latest = ++generation;
       void rpc.threads.imageInput(request).then(
         ({ status }) => {
-          if (!cancelled) setResult({ key, status });
+          if (latest === generation) setResult({ key, status });
         },
         () => {
-          if (!cancelled) setResult({ key, status: "unknown" });
+          if (latest === generation) setResult({ key, status: "unknown" });
         },
       );
     };
     refresh();
     window.addEventListener("focus", refresh);
     return () => {
-      cancelled = true;
+      generation++;
       window.removeEventListener("focus", refresh);
     };
   }, [key, query]);

@@ -2159,44 +2159,6 @@ function Thread({
         ? pageReply(plan.trimmed, targetMessages, submittedPage.page, replyTarget?.id)
         : { text: plan.trimmed };
     const pageCard = targetMessages.find((message) => message.id === fromPage.replyToMessageId);
-    if (
-      attachments.some((item) => item.mimeType.startsWith("image/")) &&
-      submitted.imageHandling !== "file"
-    ) {
-      preparingSend.current = true;
-      let preview: ImageInputStatus | undefined;
-      try {
-        preview = (
-          await rpc<{ status: ImageInputStatus }>(
-            "threads/imageInput",
-            {
-              ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget }),
-              text: plan.trimmed,
-              mentions: plan.mentionPayload,
-            },
-            { timeoutMs: 2500 },
-          )
-        ).status;
-      } catch {
-        // Offline sends retain their existing outbox path; the server still admits delivery.
-      } finally {
-        preparingSend.current = false;
-      }
-      if (
-        !isCurrentTarget(initialBotTarget, initialGroupTarget) ||
-        pageScope !== pageScopeKey() ||
-        JSON.stringify(submitted) !== JSON.stringify(composerRef.current?.snapshot())
-      )
-        return;
-      if (preview && preview !== "supported") {
-        setError(
-          preview === "unsupported"
-            ? t("This model cannot see images")
-            : t("This model's image capability is unconfirmed"),
-        );
-        return;
-      }
-    }
     let attempt: SendAttempt;
     try {
       attempt = feedback.sendAttempt({
@@ -3002,7 +2964,15 @@ function Thread({
       key={attempt.clientNonce}
       attempt={attempt}
       onRetry={() => void deliver(attempt, true)}
-      onChooseModel={() => router.push({ pathname: "/account", params: { focus: "models" } })}
+      onChooseModel={() => {
+        if (attempt.payload.groupTarget)
+          router.push({
+            pathname: "/group-settings",
+            params: { groupId: attempt.payload.groupTarget },
+          });
+        else if (attempt.payload.botTarget)
+          router.push({ pathname: "/bot-settings", params: { botId: attempt.payload.botTarget } });
+      }}
       onRetryAsFile={() => {
         if (!attempt.imageInputStatus || attempt.state === "pending") return;
         attempt.payload = { ...attempt.payload, imageHandling: "file" };
@@ -3363,7 +3333,13 @@ function Thread({
             value={imageHandling}
             status={imageAdmission?.key === imageAdmissionKey ? imageAdmission.status : "unknown"}
             onChange={(value) => setImageChoice({ thread: threadKey, value })}
-            onChooseModel={() => router.push({ pathname: "/account", params: { focus: "models" } })}
+            onChooseModel={() => {
+              const target = imageQuery ? JSON.parse(imageQuery) : {};
+              if (target.groupId)
+                router.push({ pathname: "/group-settings", params: { groupId: target.groupId } });
+              else if (target.botId)
+                router.push({ pathname: "/bot-settings", params: { botId: target.botId } });
+            }}
           />
         ) : null}
         <ThreadComposer

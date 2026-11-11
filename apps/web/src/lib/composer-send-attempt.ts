@@ -86,20 +86,21 @@ export function createComposerSendAttemptStore(makeNonce: () => string = newClie
       const previous = attempts.get(key);
       // Synchronous lock: React has not necessarily rendered `sending` after the first click.
       if (previous?.inFlight) return null;
-      const attempt =
-        previous?.signature === signature
-          ? previous
-          : {
-              clientNonce: makeNonce(),
-              signature,
-              inFlight: false,
-              uploadedArtifactIds:
-                previous && onlyImageHandlingChanged(previous.signature, signature)
-                  ? new Map(previous.uploadedArtifactIds)
-                  : new Map<string, string>(),
-              completedRoutineIds: new Set<string>(),
-              pageReply,
-            };
+      const sameIntent =
+        previous &&
+        (previous.signature === signature ||
+          onlyImageHandlingChanged(previous.signature, signature));
+      const attempt = sameIntent
+        ? previous
+        : {
+            clientNonce: makeNonce(),
+            signature,
+            inFlight: false,
+            uploadedArtifactIds: new Map<string, string>(),
+            completedRoutineIds: new Set<string>(),
+            pageReply,
+          };
+      attempt.signature = signature;
       attempt.inFlight = true;
       attempts.set(key, attempt);
       return attempt;

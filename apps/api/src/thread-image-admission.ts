@@ -5,17 +5,16 @@ import {
   CHATGPT_OAUTH_PROVIDER,
   CHATGPT_PLAN_PROVIDER_ID,
   codexLiveModel,
+  connectionModelImageInput,
   findConnectedModelCredential,
   knownModelImageInput,
   modelAcceptsImageInput,
-  modelIdSupportsImages,
   parseModelSecret,
-  readChatGPTPlanModels,
   runModelChoice,
   selectConfiguredModel,
 } from "@rakazo/adapters";
 import type { Actor, ImageInputStatus } from "@rakazo/contracts";
-import { runQuotaWaitStateSchema } from "@rakazo/contracts";
+import { runAttemptModelSchema, runQuotaWaitStateSchema } from "@rakazo/contracts";
 import { MODEL_IMAGE_INPUT_ERROR, MODEL_IMAGE_INPUT_UNKNOWN } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import { findDefaultModelCredential, runAsSystem } from "@rakazo/db";
@@ -25,7 +24,10 @@ export type ImageAdmissionRun = ModelChoice & {
   status: string;
   trigger: string;
   modelPinned?: boolean;
+  leaseFence?: number;
+  attemptModel?: unknown;
   quotaWait?: unknown;
+  sourceMessage?: { blocks: unknown } | null;
 };
 
 export type ImageAdmissionConfiguration = {
@@ -36,35 +38,44 @@ export type ImageAdmissionConfiguration = {
 };
 
 /** Read the same model/connection as execution without refreshing credentials or probing a model. */
-export async function threadModelImageInput(
+export async function resolveThreadImageInput(
   prisma: Prisma.TransactionClient,
   actor: Actor,
   botId: string,
   run?: ImageAdmissionRun,
   configuration?: ImageAdmissionConfiguration,
-): Promise<ImageInputStatus> {
+) {
   const bot = await prisma.bot.findFirst({
     where: { id: botId, userId: actor.userId, spaceId: actor.spaceId },
     select: { modelProvider: true, modelId: true, modelCredentialId: true, thinkingLevel: true },
   });
   if (!bot) throw new ORPCError("NOT_FOUND");
-  const quota =
-    run?.status === "waiting_limit"
-      ? runQuotaWaitStateSchema.safeParse(run.quotaWait).data?.target
+  const quota = runQuotaWaitStateSchema.safeParse(run?.quotaWait).data?.target;
+  const activeAttempt =
+    run?.status === "running" && run.modelPinned
+      ? runAttemptModelSchema.safeParse(run.attemptModel).data
       : undefined;
   const selectedRun = run?.status === "running" && run.modelProvider && run.modelId;
-  const override = quota
-    ? {
-        modelProvider: quota.provider,
-        modelId: quota.modelId,
-        modelCredentialId: quota.modelCredentialId,
-        thinkingLevel: null,
-      }
-    : selectedRun
-      ? run
-      : run
-        ? runModelChoice(run, bot)
-        : bot;
+  const override =
+    activeAttempt && activeAttempt.leaseFence === run?.leaseFence
+      ? {
+          modelProvider: activeAttempt.provider,
+          modelId: activeAttempt.modelId,
+          modelCredentialId: activeAttempt.modelCredentialId,
+          thinkingLevel: null,
+        }
+      : quota
+        ? {
+            modelProvider: quota.provider,
+            modelId: quota.modelId,
+            modelCredentialId: quota.modelCredentialId,
+            thinkingLevel: null,
+          }
+        : selectedRun
+          ? run
+          : run
+            ? runModelChoice(run, bot)
+            : bot;
   const overrideCredential =
     override.modelProvider && override.modelId
       ? await findConnectedModelCredential(
@@ -86,7 +97,10 @@ export async function threadModelImageInput(
   });
   const provider = selected.provider;
   const id = selected.id;
-  if (!provider || !id) return configuration?.scripted ? "supported" : "unknown";
+  if (!provider || !id) {
+    const status: ImageInputStatus = configuration?.scripted ? "supported" : "unknown";
+    return { status };
+  }
   let supportsImages = knownModelImageInput(provider, id);
   const credential = selected.credential;
   if (provider === "openai-compatible" && !credential && modelAcceptsImageInput(provider, id))
@@ -101,20 +115,8 @@ export async function threadModelImageInput(
     });
     if (row) {
       const secret = parseModelSecret(await configuration.secrets.load(row.ciphertext, row.id));
-      if (provider === "openai-compatible" && secret.kind === "openai_compatible") {
-        const legacy = await prisma.userModelCredential.findFirst({
-          where: { id: credential.id, userId: actor.userId },
-          select: { supportsImages: true },
-        });
-        supportsImages =
-          modelIdSupportsImages(secret.visionModelIds, id) ||
-          (secret.visionModelIds === undefined &&
-            credential.defaultModel?.trim() === id.trim() &&
-            legacy?.supportsImages === true) ||
-          undefined;
-      } else if (provider === CHATGPT_PLAN_PROVIDER_ID && secret.kind === "oauth") {
-        const model = readChatGPTPlanModels(secret.credential).find((model) => model.id === id);
-        supportsImages = model ? model.input?.includes("image") === true : undefined;
+      if (provider === "openai-compatible" || provider === CHATGPT_PLAN_PROVIDER_ID) {
+        supportsImages = connectionModelImageInput(provider, id, credential, secret);
       } else if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
         const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
           waitMs: 0,
@@ -123,7 +125,26 @@ export async function threadModelImageInput(
       }
     }
   }
-  return supportsImages === undefined ? "unknown" : supportsImages ? "supported" : "unsupported";
+  const status: ImageInputStatus =
+    supportsImages === undefined ? "unknown" : supportsImages ? "supported" : "unsupported";
+  return {
+    status,
+    modelPin:
+      !run && credential
+        ? {
+            modelProvider: provider,
+            modelId: id,
+            modelCredentialId: credential.id,
+            thinkingLevel: selected.thinkingLevel,
+          }
+        : undefined,
+  };
+}
+
+export async function threadModelImageInput(
+  ...args: Parameters<typeof resolveThreadImageInput>
+): Promise<ImageInputStatus> {
+  return (await resolveThreadImageInput(...args)).status;
 }
 
 export function assertImageInputStatus(status: ImageInputStatus): void {

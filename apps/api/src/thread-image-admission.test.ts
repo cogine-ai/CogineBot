@@ -1,8 +1,8 @@
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import type { ThreadTarget } from "./thread-target.js";
 import { threadModelImageInput } from "./thread-image-admission.js";
+import type { ThreadTarget } from "./thread-target.js";
 import { sendThreadMessage } from "./thread-target.js";
 
 // Exercise the shared production send entrypoint with an owned stored image.
@@ -40,7 +40,8 @@ function fixture(group = false) {
       findFirst: vi.fn().mockResolvedValue({
         id: "credential-1",
         provider: "openrouter",
-        secretId: "secret-1", preferences: [],
+        secretId: "secret-1",
+        preferences: [],
         supportsImages: false,
       }),
     },
@@ -50,6 +51,7 @@ function fixture(group = false) {
         defaultModelId: model.modelId,
       }),
     },
+    page: { findFirst: vi.fn().mockResolvedValue({ id: "page-1", title: "Design" }) },
     message: {
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn().mockResolvedValue(null),
@@ -80,6 +82,7 @@ function fixture(group = false) {
   const send = (
     imageAdmission?: Parameters<typeof sendThreadMessage>[0]["imageAdmission"],
     imageHandling: "confirm" | "file" | null = "confirm",
+    input: Partial<Parameters<typeof sendThreadMessage>[3]> = {},
   ) =>
     sendThreadMessage(
       { prisma, events: { notify } as never, jobs: { enqueue } as never, imageAdmission },
@@ -98,6 +101,7 @@ function fixture(group = false) {
         clientNonce: "image-send-1",
         imageHandling: imageHandling ?? undefined,
         mentions: group ? ["bot-1", "bot-2"] : undefined,
+        ...input,
       } as Parameters<typeof sendThreadMessage>[3],
     );
   return { tx, send, notify, enqueue, releaseTakeover };
@@ -140,7 +144,8 @@ describe("current image send admission", () => {
     tx.userModelCredential.findFirst.mockResolvedValue({
       id: "credential-1",
       provider: "openai-compatible",
-      secretId: "secret-1", preferences: [],
+      secretId: "secret-1",
+      preferences: [],
       supportsImages: false,
     });
     const configuration = {
@@ -171,13 +176,15 @@ describe("current image send admission", () => {
       const { tx, send } = fixture();
       tx.bot.findFirst.mockResolvedValue({
         id: "bot-1",
-        modelProvider: "openai-codex", modelCredentialId: "credential-1",
+        modelProvider: "openai-codex",
+        modelCredentialId: "credential-1",
         modelId: "gpt-6.1-terra",
       });
       tx.userModelCredential.findFirst.mockResolvedValue({
         id: "credential-1",
         provider: "openai-codex",
-        secretId: "secret-1", preferences: [],
+        secretId: "secret-1",
+        preferences: [],
         defaultModel: "gpt-6.1-terra",
       });
       const configuration = {
@@ -224,13 +231,15 @@ describe("current image send admission", () => {
     const { tx, send } = fixture();
     tx.bot.findFirst.mockResolvedValue({
       id: "bot-1",
-      modelProvider: "openai-codex", modelCredentialId: "credential-1",
+      modelProvider: "openai-codex",
+      modelCredentialId: "credential-1",
       modelId: "gpt-6.1-sol",
     });
     tx.userModelCredential.findFirst.mockResolvedValue({
       id: "credential-1",
       provider: "openai-codex",
-      secretId: "secret-1", preferences: [],
+      secretId: "secret-1",
+      preferences: [],
       defaultModel: "gpt-6.1-sol",
     });
     const read = vi.fn(async () => [
@@ -275,7 +284,8 @@ describe("current image send admission", () => {
     tx.userModelCredential.findFirst.mockResolvedValue({
       id: "credential-1",
       provider: "openai-compatible",
-      secretId: "secret-1", preferences: [],
+      secretId: "secret-1",
+      preferences: [],
       supportsImages: false,
     });
     const configuration = {
@@ -383,7 +393,7 @@ describe("current image send admission", () => {
     tx.userModelCredential.findFirst.mockResolvedValue({
       id: "credential-1",
       provider: "openai-compatible",
-      secretId: "secret-1", preferences: [],
+      secretId: "secret-1",
       supportsImages: true,
       preferences: [{ modelId: stored, isDefault: true, thinkingLevel: null }],
     });
@@ -416,33 +426,42 @@ describe("current image send admission", () => {
     expect(tx.message.create).toHaveBeenCalled();
   });
 
-  it("uses a pinned waiting run rather than a vision bot setting", async () => {
-    const { tx, send } = fixture();
-    tx.message.findMany = vi
-      .fn()
-      .mockResolvedValue([
-        { id: "ask-1", blocks: [{ kind: "ask", text: "Question", status: "pending" }] },
-      ]);
-    tx.message.findFirst.mockResolvedValue({ id: "ask-1", role: "bot", blocks: [] } as never);
-    tx.bot.findFirst.mockResolvedValue({
-      id: "bot-1",
-      modelProvider: "openrouter",
-      modelId: "openai/gpt-4o",
-    });
-    tx.run.findMany.mockResolvedValue([
-      {
-        id: "waiting",
-        taskId: "task-waiting",
-        status: "waiting_input",
-        trigger: "routine",
+  it.each([false, true])(
+    "checks the actual waiting recipient (Page image only: %s)",
+    async (pageOnly) => {
+      const { tx, send } = fixture();
+      tx.message.findMany = vi
+        .fn()
+        .mockResolvedValue([
+          { id: "ask-1", blocks: [{ kind: "ask", text: "Question", status: "pending" }] },
+        ]);
+      tx.message.findFirst.mockResolvedValue({ id: "ask-1", role: "bot", blocks: [] } as never);
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
         modelProvider: "openrouter",
-        modelId: "deepseek/deepseek-v4-pro",
-        modelPinned: true,
-      },
-    ] as never);
-    await expect(send()).rejects.toMatchObject({ code: "CONFLICT" });
-    expect(tx.message.create).not.toHaveBeenCalled();
-  });
+        modelId: "openai/gpt-4o",
+      });
+      tx.run.findMany.mockResolvedValue([
+        {
+          id: "waiting",
+          taskId: "task-waiting",
+          status: "waiting_input",
+          trigger: "routine",
+          modelProvider: "openrouter",
+          modelId: "deepseek/deepseek-v4-pro",
+          modelPinned: true,
+        },
+      ] as never);
+      await expect(
+        send(
+          undefined,
+          "confirm",
+          pageOnly ? { text: undefined, pageContext: { pageId: "page-1" } } : {},
+        ),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(tx.message.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not use an obsolete waiting pin when the actual send starts a new turn", async () => {
     const { tx, send } = fixture();
@@ -479,6 +498,94 @@ describe("current image send admission", () => {
       message: "Image input is not configured for this model.",
     });
   });
+  it("checks a held conversational Run's saved quota target", async () => {
+    const { tx, send } = fixture();
+    tx.bot.findFirst.mockResolvedValue({
+      id: "bot-1",
+      modelProvider: "openrouter",
+      modelId: "openai/gpt-4o",
+    });
+    tx.run.findMany.mockResolvedValue([
+      {
+        id: "paused",
+        taskId: "task-paused",
+        status: "waiting_limit",
+        trigger: "user",
+        quotaWait: {
+          revision: 1,
+          beganAt: "2026-11-11T02:00:00.000Z",
+          until: "2026-11-11T03:00:00.000Z",
+          dispatchedFence: null,
+          target: {
+            provider: "openrouter",
+            modelId: "deepseek/deepseek-v4-pro",
+            modelCredentialId: null,
+            connectionRevision: null,
+            costOwner: "deployment",
+            endpointDigest: "a".repeat(64),
+          },
+        },
+      },
+    ] as never);
+    await expect(send()).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { imageInputStatus: "unsupported" },
+    });
+    expect(tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it("checks the private continuation instead of the busy external channel model", async () => {
+    const { tx, send } = fixture();
+    tx.run.findMany.mockResolvedValue([
+      {
+        id: "channel",
+        taskId: "task-channel",
+        status: "running",
+        trigger: "messaging",
+        sourceMessage: { blocks: [{ kind: "channel_message", channelId: "channel-1" }] },
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+      },
+    ] as never);
+    await expect(send()).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { imageInputStatus: "unsupported" },
+    });
+    expect(tx.message.create).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "uses only the backup on the current lease (matching: %s)",
+    async (matching) => {
+      const { tx } = fixture();
+      expect(
+        await threadModelImageInput(
+          tx as unknown as PrismaClient,
+          {
+            spaceId: "space-1",
+            userId: "user-1",
+          } as Actor,
+          "bot-1",
+          {
+            id: "pinned",
+            status: "running",
+            trigger: "user",
+            modelPinned: true,
+            leaseFence: 2,
+            modelProvider: "openrouter",
+            modelId: "openai/gpt-4o",
+            attemptModel: {
+              leaseFence: matching ? 2 : 1,
+              provider: "openrouter",
+              modelId: "deepseek/deepseek-v4-pro",
+              modelCredentialId: null,
+            },
+          },
+        ),
+      ).toBe(matching ? "unsupported" : "supported");
+    },
+  );
+
   it("follows the Space main connection when the bot has none", async () => {
     const { tx, send } = fixture();
     tx.bot.findFirst.mockResolvedValue({ id: "bot-1", modelProvider: null, modelId: null });
@@ -495,6 +602,21 @@ describe("current image send admission", () => {
     });
     await expect(send()).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
     expect(tx.message.create).not.toHaveBeenCalled();
+    tx.spaceModelPreference.findFirst.mockResolvedValue({
+      modelId: "openai/gpt-4o",
+      isDefault: true,
+      thinkingLevel: null,
+      credential: { id: "vision-credential", provider: "openrouter", secretId: "secret-2" },
+    });
+    await expect(send()).resolves.toMatchObject({ runId: "run-1" });
+    expect(tx.run.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modelPinned: true,
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        modelCredentialId: "vision-credential",
+      }),
+    });
   });
 
   it("rejects a known text-only effective model before persisting or waking work", async () => {
@@ -516,30 +638,98 @@ describe("connection-bound image capability", () => {
   it("never borrows another connection's capability for the same model id", async () => {
     const { tx } = fixture();
     const prisma = tx as unknown as PrismaClient;
-    tx.bot.findFirst.mockResolvedValue({ modelProvider: "openai-compatible", modelId: "shared-id", modelCredentialId: "vision-key", thinkingLevel: null });
-    tx.userModelCredential.findFirst.mockImplementation(async ({ where }: { where: { id: string } }) => ({
-      id: where.id, provider: "openai-compatible", secretId: where.id, preferences: [], supportsImages: false,
+    tx.bot.findFirst.mockResolvedValue({
+      modelProvider: "openai-compatible",
+      modelId: "shared-id",
+      modelCredentialId: "vision-key",
+      thinkingLevel: null,
+    });
+    tx.userModelCredential.findFirst.mockImplementation(
+      async ({ where }: { where: { id: string } }) => ({
+        id: where.id,
+        provider: "openai-compatible",
+        secretId: where.id,
+        preferences: [],
+        supportsImages: false,
+      }),
+    );
+    tx.secret.findFirst.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      ciphertext: where.id,
     }));
-    tx.secret.findFirst.mockImplementation(async ({ where }: { where: { id: string } }) => ({ id: where.id, ciphertext: where.id }));
-    const load = vi.fn(async (ciphertext: string) => JSON.stringify({ kind: "openai_compatible", baseUrl: "https://model.example.test/v1", enabledModelIds: ["shared-id"], visionModelIds: ciphertext === "vision-key" ? ["shared-id"] : [] }));
+    const load = vi.fn(async (ciphertext: string) =>
+      JSON.stringify({
+        kind: "openai_compatible",
+        baseUrl: "https://model.example.test/v1",
+        enabledModelIds: ["shared-id"],
+        visionModelIds: ciphertext === "vision-key" ? ["shared-id"] : [],
+      }),
+    );
     const actor = { userId: "user-1", spaceId: "space-1" } as Actor;
-    expect(await threadModelImageInput(prisma, actor, "bot-1", undefined, { secrets: { load }, deployment: null })).toBe("supported");
-    expect(await threadModelImageInput(prisma, actor, "bot-1", {
-      id: "fallback-run", status: "running", trigger: "user", modelProvider: "openai-compatible", modelId: "shared-id", modelCredentialId: "text-key", thinkingLevel: null,
-    }, { secrets: { load }, deployment: null })).toBe("unknown");
+    expect(
+      await threadModelImageInput(prisma, actor, "bot-1", undefined, {
+        secrets: { load },
+        deployment: null,
+      }),
+    ).toBe("supported");
+    expect(
+      await threadModelImageInput(
+        prisma,
+        actor,
+        "bot-1",
+        {
+          id: "fallback-run",
+          status: "running",
+          trigger: "user",
+          modelProvider: "openai-compatible",
+          modelId: "shared-id",
+          modelCredentialId: "text-key",
+          thinkingLevel: null,
+        },
+        { secrets: { load }, deployment: null },
+      ),
+    ).toBe("unknown");
     expect(load.mock.calls.map(([ciphertext]) => ciphertext)).toEqual(["vision-key", "text-key"]);
   });
 
   it("checks all eligible waiting recipients rather than only the first", async () => {
     const { tx, send } = fixture();
-    tx.bot.findFirst.mockResolvedValue({ modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null, thinkingLevel: null });
-    tx.message.findMany.mockResolvedValue([{ id: "ask-1", blocks: [{ kind: "ask", text: "Question", status: "pending" }] }]);
+    tx.bot.findFirst.mockResolvedValue({
+      modelProvider: "openrouter",
+      modelId: "openai/gpt-4o",
+      modelCredentialId: null,
+      thinkingLevel: null,
+    });
+    tx.message.findMany.mockResolvedValue([
+      { id: "ask-1", blocks: [{ kind: "ask", text: "Question", status: "pending" }] },
+    ]);
     tx.message.findFirst.mockResolvedValue({ id: "ask-1", role: "bot", blocks: [] } as never);
     tx.run.findMany.mockResolvedValue([
-      { id: "first", taskId: "task-1", status: "waiting_input", trigger: "user", modelProvider: "openrouter", modelId: "openai/gpt-4o", thinkingLevel: null, modelPinned: true },
-      { id: "second", taskId: "task-2", status: "waiting_input", trigger: "routine", modelProvider: "openrouter", modelId: "deepseek/deepseek-v4-pro", thinkingLevel: null, modelPinned: true },
+      {
+        id: "first",
+        taskId: "task-1",
+        status: "waiting_input",
+        trigger: "user",
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        thinkingLevel: null,
+        modelPinned: true,
+      },
+      {
+        id: "second",
+        taskId: "task-2",
+        status: "waiting_input",
+        trigger: "routine",
+        modelProvider: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingLevel: null,
+        modelPinned: true,
+      },
     ] as never);
-    await expect(send()).rejects.toMatchObject({ code: "CONFLICT", data: { imageInputStatus: "unsupported" } });
+    await expect(send()).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { imageInputStatus: "unsupported" },
+    });
     expect(tx.message.create).not.toHaveBeenCalled();
   });
 });

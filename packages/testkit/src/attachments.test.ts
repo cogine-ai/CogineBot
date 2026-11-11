@@ -214,109 +214,118 @@ describeAttachments("chat attachments", () => {
     ).toBe(1);
   });
 
-  it("uses a model switch committed during send admission without accepting a stale image route", async () => {
-    const cookie = await signup(app, `image-switch-${stamp}@example.test`, "Image Switch");
-    const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
-      name: "Switcher",
-      title: "",
-      description: "",
-      instructions: "",
-      notifyOnFinish: true,
-    });
-    const prisma = botIntroHarness!.prisma;
-    const owned = await prisma.bot.findUniqueOrThrow({
-      where: { id: bot.id },
-      include: { thread: true },
-    });
-    const threadId = owned.thread!.id;
-    await prisma.bot.update({
-      where: { id: bot.id },
-      data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
-    });
-    const task = await prisma.task.create({
-      data: {
-        spaceId: owned.spaceId,
-        botId: bot.id,
-        threadId,
-        userId: owned.userId,
-        prompt: "Hold the current model",
-        status: "running",
-      },
-    });
-    const run = await prisma.run.create({
-      data: {
-        spaceId: owned.spaceId,
-        botId: bot.id,
-        threadId,
-        userId: owned.userId,
-        taskId: task.id,
-        status: "running",
-        trigger: "user",
-        modelProvider: "openrouter",
-        modelId: "openai/gpt-4o",
-        leaseOwner: "image-fixture-worker",
-        leaseExpiresAt: new Date(Date.now() + 60_000),
-      },
-    });
-    const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
-      botId: bot.id,
-      name: "switch.png",
-      mimeType: "image/png",
-      contentBase64: tinyPng.toString("base64"),
-    });
-    const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
-    let release = () => {};
-    let entered = () => {};
-    const held = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const resume = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const switching = prisma.$transaction(
-      async (tx) => {
-        await tx.run.update({
-          where: { id: run.id },
-          data: { modelId: "deepseek/deepseek-v4-pro" },
-        });
-        entered();
-        await resume;
-      },
-      { timeout: 10_000 },
-    );
-    await held;
-    const sending = raw(app, cookie, "threads/send", {
-      botId: bot.id,
-      text: "Inspect the image",
-      artifactIds: [image.id],
-      imageHandling: "confirm",
-      clientNonce: "image-model-switch",
-    });
-    let response: Response | undefined;
-    try {
-      await expect
-        .poll(
-          async () => {
-            const rows = await prisma.$queryRaw<
-              Array<{ blocked: boolean }>
-            >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%runs%' AND query ILIKE '%FOR UPDATE%') AS blocked`;
-            return rows[0]?.blocked;
+  it.each(["run", "bot"] as const)(
+    "waits for the %s model update before admitting a send",
+    async (scope) => {
+      const cookie = await signup(
+        app,
+        `image-switch-${scope}-${stamp}@example.test`,
+        "Image Switch",
+      );
+      const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+        name: "Switcher",
+        title: "",
+        description: "",
+        instructions: "",
+        notifyOnFinish: true,
+      });
+      const prisma = botIntroHarness!.prisma;
+      const owned = await prisma.bot.findUniqueOrThrow({
+        where: { id: bot.id },
+        include: { thread: true },
+      });
+      const threadId = owned.thread!.id;
+      await prisma.bot.update({
+        where: { id: bot.id },
+        data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
+      });
+      const createActiveRun = async () => {
+        const task = await prisma.task.create({
+          data: {
+            spaceId: owned.spaceId,
+            botId: bot.id,
+            threadId,
+            userId: owned.userId,
+            prompt: "Hold the current model",
+            status: "running",
           },
-          { interval: 10, timeout: 3000 },
-        )
-        .toBe(true);
-    } finally {
-      release();
-      await switching;
-      response = await sending;
-    }
-    expect(response!.status).toBe(409);
-    expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
-    expect(
-      await prisma.message.count({ where: { threadId, clientNonce: "image-model-switch" } }),
-    ).toBe(0);
-    expect(await prisma.steeringMessage.count({ where: { runId: run.id } })).toBe(0);
-  });
+        });
+        return prisma.run.create({
+          data: {
+            spaceId: owned.spaceId,
+            botId: bot.id,
+            threadId,
+            userId: owned.userId,
+            taskId: task.id,
+            status: "running",
+            trigger: "user",
+            modelProvider: "openrouter",
+            modelId: "openai/gpt-4o",
+            leaseOwner: "image-fixture-worker",
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+          },
+        });
+      };
+      const run = scope === "run" ? await createActiveRun() : undefined;
+      const image = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+        botId: bot.id,
+        name: "switch.png",
+        mimeType: "image/png",
+        contentBase64: tinyPng.toString("base64"),
+      });
+      const before = await prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
+      let release = () => {};
+      let entered = () => {};
+      const held = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const switching = prisma.$transaction(
+        async (tx) => {
+          const data = { modelId: "deepseek/deepseek-v4-pro" };
+          if (run) await tx.run.update({ where: { id: run.id }, data });
+          else await tx.bot.update({ where: { id: bot.id }, data });
+          entered();
+          await resume;
+        },
+        { timeout: 10_000 },
+      );
+      await held;
+      const sending = raw(app, cookie, "threads/send", {
+        botId: bot.id,
+        text: "Inspect the image",
+        artifactIds: [image.id],
+        imageHandling: "confirm",
+        clientNonce: "image-model-switch",
+      });
+      let response: Response | undefined;
+      try {
+        await expect
+          .poll(
+            async () => {
+              const rows = await prisma.$queryRaw<
+                Array<{ blocked: boolean }>
+              >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${run ? "%runs%FOR UPDATE%" : "%bots%FOR SHARE%"}) AS blocked`;
+              return rows[0]?.blocked;
+            },
+            { interval: 10, timeout: 3000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await switching;
+        response = await sending;
+      }
+      expect(response!.status).toBe(409);
+      expect(await prisma.thread.findUniqueOrThrow({ where: { id: threadId } })).toEqual(before);
+      expect(
+        await prisma.message.count({ where: { threadId, clientNonce: "image-model-switch" } }),
+      ).toBe(0);
+      if (run) expect(await prisma.steeringMessage.count({ where: { runId: run.id } })).toBe(0);
+    },
+  );
 
   it("admits every actual group recipient before committing any message or task", async () => {
     const cookie = await signup(app, `image-group-${stamp}@example.test`, "Image Group");
@@ -360,6 +369,18 @@ describeAttachments("chat attachments", () => {
       clientNonce: "group-image-atomic",
     };
     expect(await rpc(app, cookie, "threads/imageInput", both)).toEqual({ status: "unsupported" });
+    const draftGroup = {
+      draftGroupBotIds: [first.id, second.id],
+      text: both.text,
+      mentions: both.mentions,
+    };
+    expect(await rpc(app, cookie, "threads/imageInput", draftGroup)).toEqual({
+      status: "unsupported",
+    });
+    expect(
+      await rpc(app, cookie, "threads/imageInput", { ...draftGroup, mentions: [first.id] }),
+    ).toEqual({ status: "supported" });
+
     expect((await raw(app, cookie, "threads/send", both)).status).toBe(409);
     expect(await prisma.message.count({ where: { threadId: thread.id } })).toBe(0);
     expect(await prisma.run.count({ where: { threadId: thread.id } })).toBe(0);

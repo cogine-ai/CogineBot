@@ -623,7 +623,14 @@ describe("recent turn images follow model vision", () => {
         leaseOwner: "worker-1",
         leaseFence: expect.any(Number),
       },
-      data: { modelPinned: true },
+      data: {
+        attemptModel: {
+          leaseFence: expect.any(Number),
+          provider: backup.provider,
+          modelId: backup.modelId,
+          modelCredentialId: "backup-credential",
+        },
+      },
     });
   });
 
@@ -747,6 +754,6 @@ it("delivers a waiting image only once when a legacy Run also reads it as its cu
   });
   expect(request.currentTurnImages).toHaveLength(1);
   expect(steering).toHaveLength(1);
-  expect(steering?.[0]?.messageId).toBe("current");
+  expect(steering?.[0]).toMatchObject({ messageId: "current", requiresImageInput: true });
   expect(steering?.[0]?.images).toBeUndefined();
 });

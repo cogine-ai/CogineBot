@@ -273,6 +273,10 @@ const threadSendInput = threadSendFields.superRefine((input, ctx) => {
     });
   }
 });
+const imageInputFields = {
+  text: threadSendFields.shape.text,
+  mentions: threadSendFields.shape.mentions,
+};
 const threadSendResult = z.object({
   taskId: Id,
   runId: Id,
@@ -553,10 +557,10 @@ export const appContract = {
       .output(eventIterator(ProductEventSchema)),
     imageInput: oc
       .input(
-        threadTarget.safeExtend({
-          text: z.string().optional(),
-          mentions: threadSendFields.shape.mentions,
-        }),
+        z.union([
+          threadTarget.safeExtend(imageInputFields),
+          z.object({ draftGroupBotIds: CreateGroupInput.shape.botIds, ...imageInputFields }),
+        ]),
       )
       .output(z.object({ status: z.enum(["supported", "unsupported", "unknown"]) })),
     send: oc.input(threadSendInput).output(threadSendResult),

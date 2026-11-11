@@ -452,7 +452,7 @@ for (const viewport of [
     if (routine)
       expect(requests.map((body) => body.routineIds)).toEqual([[routine.id], [routine.id]]);
     expect(requests[1]!.artifactIds).toEqual(requests[0]!.artifactIds);
-    expect(requests[1]!.clientNonce).not.toBe(requests[0]!.clientNonce);
+    expect(requests[1]!.clientNonce).toBe(requests[0]!.clientNonce);
     const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId: activeBotId(page) });
     const sent = snapshot.messages.find(
       (message) =>

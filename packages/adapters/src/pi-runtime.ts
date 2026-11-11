@@ -88,7 +88,10 @@ import {
   redactInterruptedOutput,
   TransientModelError,
 } from "./model-output-recovery.js";
-import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
+import {
+  catalogModelWithOpenRouterFallback,
+  IMAGE_RETURNING_COMPUTER_TOOLS,
+} from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
   openAiToolParametersNeedNormalization,
@@ -410,7 +413,7 @@ export class PiAgentRuntime implements AgentRuntime {
         let requiresImageInput = Boolean(
           request.currentRunRequiresImageInput ||
             request.currentTurnImages?.length ||
-            initialSteering.some((item) => item.images?.length),
+            initialSteering.some((item) => item.requiresImageInput || item.images?.length),
         );
         seenSteeringIds.push(...initialSteering.map((item) => item.id));
         const restored =
@@ -686,7 +689,8 @@ export class PiAgentRuntime implements AgentRuntime {
               liveProgressReset: true,
             });
             if (steering.length === 0) return undefined;
-            if (steering.some((item) => item.images?.length)) requiresImageInput = true;
+            if (steering.some((item) => item.requiresImageInput || item.images?.length))
+              requiresImageInput = true;
             signal.throwIfAborted();
             seenSteeringIds.push(...steering.map((item) => item.id));
             const progressResetAt = steering.findLast(
@@ -1274,15 +1278,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   const modelId = usableModelId(requestedId) ?? "";
   const credentials = credentialStoreForRequest({ model: modelConfig }, provider);
   const models = modelsForRequest({ model: modelConfig }, provider, credentials);
-  let model = models.getModel(provider, modelId);
-  if (
-    !model &&
-    provider !== "openrouter" &&
-    provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
-    provider !== CHATGPT_PLAN_PROVIDER_ID
-  ) {
-    model = models.getModel("openrouter", modelId);
-  }
+  let model = catalogModelWithOpenRouterFallback(models, provider, modelId);
   if (
     !model &&
     provider === "openrouter" &&

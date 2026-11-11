@@ -2969,10 +2969,22 @@ export function createRouter(deps: RouterDeps) {
         }
       }),
       imageInput: authed.threads.imageInput.handler(async ({ context, input }) => {
-        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        const { actor } = context;
+        const target =
+          "draftGroupBotIds" in input
+            ? {
+                kind: "draftGroup" as const,
+                members: await Promise.all(
+                  input.draftGroupBotIds.map(async (id) => {
+                    const bot = await repos.getBot(actor, id);
+                    return { botId: bot.id, name: bot.name };
+                  }),
+                ),
+              }
+            : await resolveThreadTarget(deps.prisma, actor, input);
         return threadImageInputStatus(
           { prisma: deps.prisma, imageAdmission },
-          context.actor,
+          actor,
           target,
           input,
         );
