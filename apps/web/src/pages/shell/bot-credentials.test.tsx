@@ -527,4 +527,37 @@ describe("Space credential editor", () => {
     expect(container.querySelector('[data-testid="credential-remove-confirm-portal"]')).toBeNull();
     expect(botSecrets.removeForEdit).not.toHaveBeenCalled();
   });
+  it("does not restore a removed credential when an older Retry returns late", async () => {
+    botSecrets.listForSpace.mockResolvedValue(groups());
+    await renderSpace();
+    botSecrets.putForEdit.mockResolvedValue({
+      ...login,
+      name: "new-token",
+      auth: { type: "command" },
+      revision: "new-token-revision",
+    });
+    await click("credential-add");
+    await type("credential-name", "new-token");
+    await type("credential-auth-type", "command");
+    await type("credential-value", FAKE_VALUE);
+    botSecrets.listForSpace.mockRejectedValueOnce(new Error("temporary fixture outage"));
+    await click("credential-add-save");
+
+    let complete!: (result: ReturnType<typeof groups>) => void;
+    botSecrets.listForSpace.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const retry = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Retry",
+    );
+    await act(async () => retry?.click());
+    await click("credential-remove-portal");
+    botSecrets.listForSpace.mockResolvedValue([{ ...groups()[0], credentials: [] }]);
+    await click("credential-remove-confirm-portal");
+    await act(async () => complete(groups()));
+    expect(container.querySelector('[data-testid="credential-remove-portal"]')).toBeNull();
+  });
 });

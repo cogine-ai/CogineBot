@@ -220,7 +220,8 @@ test("Space credentials preserve Bot identity and reveal only after confirmation
   const shown = page.getByRole("dialog", { name: destination.origin });
   await expect(shown).toContainText(SENTINEL);
   await expect(shown).not.toContainText(REPLACEMENT);
-  await shown.getByRole("button", { name: "Done" }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(shown).toHaveCount(0);
   await expect(page.getByText(SENTINEL, { exact: true })).toHaveCount(0);
 
   await secondRow.getByRole("button", { name: "Replace value" }).click();
@@ -231,6 +232,11 @@ test("Space credentials preserve Bot identity and reveal only after confirmation
   );
   await secondRow.getByLabel("Account ID", { exact: true }).fill("updated-fixture-account");
   await secondRow.getByLabel("Access phrase", { exact: true }).fill("new-synthetic-access-phrase");
+  const lastLabel = secondRow.getByLabel("Field label").last();
+  await lastLabel.fill("Account ID");
+  await expect(secondRow.getByRole("alert")).toHaveText("Give each field a different label");
+  await expect(secondRow.getByRole("button", { name: "Save new value" })).toBeDisabled();
+  await lastLabel.fill("Access phrase");
   await secondRow.getByRole("button", { name: "Save new value" }).click();
   await expect(secondRow.getByLabel("Access phrase", { exact: true })).toHaveCount(0);
   await secondRow.getByRole("button", { name: "Show value" }).click();

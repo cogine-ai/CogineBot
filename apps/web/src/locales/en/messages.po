@@ -7507,3 +7507,6 @@ msgstr "Remove field"
 
 msgid "Show value"
 msgstr "Show value"
+
+msgid "Give each field a different label"
+msgstr "Give each field a different label"

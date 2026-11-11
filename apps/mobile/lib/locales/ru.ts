@@ -1,4 +1,5 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Give each field a different label": "Задайте уникальное название для каждого поля",
   "{bot} will no longer be able to use this credential.":
     "{bot} больше не сможет использовать эти учётные данные.",
   "Add credential": "Добавить учётные данные",

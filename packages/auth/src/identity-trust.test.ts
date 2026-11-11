@@ -47,6 +47,9 @@ function fixture({
     ownerUserId: null,
   };
   const messages: TransactionalEmail[] = [];
+  const sendEmail = vi.fn(async (message: TransactionalEmail) => {
+    messages.push(message);
+  });
   const members = new Set<string>();
   type VerificationWhere = {
     id?: string;
@@ -188,9 +191,7 @@ function fixture({
             adapterVersion: "1",
             capabilities: { transactional: true },
           }),
-          send: async (message) => {
-            messages.push(message);
-          },
+          send: sendEmail,
         }
       : undefined,
   });
@@ -234,6 +235,7 @@ function fixture({
     messages,
     members,
     verification: prisma.verification,
+    sendEmail,
   };
 }
 
@@ -648,5 +650,15 @@ describe("confirmation for protected reads", () => {
     expect((await pending).status).toBe(400);
     const latestCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
     expect((await f.request("/confirm-identity", { code: latestCode }, token)).status).toBe(200);
+  });
+  it("keeps the previously delivered code when the email provider rejects a resend", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const previous = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    f.sendEmail.mockRejectedValueOnce(new Error("Fixture mail outage"));
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(500);
+    expect((await f.request("/confirm-identity", { code: previous }, token)).status).toBe(200);
   });
 });

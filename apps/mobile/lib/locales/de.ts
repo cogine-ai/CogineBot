@@ -1,4 +1,5 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Give each field a different label": "Gib jedem Feld eine andere Bezeichnung",
   "{bot} will no longer be able to use this credential.":
     "{bot} kann diese Zugangsdaten künftig nicht mehr verwenden.",
   "Add credential": "Zugangsdaten hinzufügen",

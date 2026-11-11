@@ -12,6 +12,7 @@ import {
   commandVariableProblem,
   encodeEditedLoginSecret,
   isIdentityConfirmationRequired,
+  LOGIN_FIELD_LABEL_DUPLICATE,
   LOGIN_FIELD_LIMIT,
   LOGIN_VALUE_TOO_LONG,
   loginFieldAutocomplete,
@@ -397,6 +398,7 @@ function Field({
   hidden = false,
   oneTimeCode = false,
   autoFill,
+  editable = true,
   maxLength,
 }: {
   label: string;
@@ -405,6 +407,7 @@ function Field({
   hidden?: boolean;
   oneTimeCode?: boolean;
   autoFill?: "username" | "email" | "new-password" | "current-password";
+  editable?: boolean;
   maxLength: number;
 }) {
   const tokens = useMobileTokens();
@@ -416,6 +419,7 @@ function Field({
         value={value}
         onChangeText={setValue}
         maxLength={maxLength}
+        editable={editable}
         autoCapitalize="none"
         autoCorrect={false}
         secureTextEntry={hidden}
@@ -476,8 +480,12 @@ function CredentialEditor({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const login = NamedLoginSecretValue.safeParse({ fields });
-  const tooLong =
-    !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
+  const loginIssues = login.success ? [] : login.error.issues.map((issue) => issue.message);
+  const fieldError = loginIssues.includes(LOGIN_FIELD_LABEL_DUPLICATE)
+    ? t("Give each field a different label")
+    : loginIssues.includes(LOGIN_VALUE_TOO_LONG)
+      ? t("These login values are too long together. Shorten one or more fields.")
+      : null;
   const reserved = type === "command" && commandVariableProblem(commandVariableName(name.trim()));
   const ready =
     !busy &&
@@ -506,7 +514,6 @@ function CredentialEditor({
       origin: type === "command" ? "" : (row?.origin ?? origin.trim()),
       auth,
     };
-    clear();
     setBusy(true);
     setError("");
     try {
@@ -520,6 +527,7 @@ function CredentialEditor({
         value: plaintext,
         expectedRevision: row?.revision ?? null,
       });
+      clear();
     } catch {
       setError(t("Could not save the credential"));
     } finally {
@@ -552,7 +560,13 @@ function CredentialEditor({
               }
             }}
           />
-          <Field label={t("Name")} value={name} setValue={setName} maxLength={64} />
+          <Field
+            editable={!busy}
+            label={t("Name")}
+            value={name}
+            setValue={setName}
+            maxLength={64}
+          />
           <MenuPicker
             label={t("Type")}
             choices={[
@@ -572,10 +586,17 @@ function CredentialEditor({
             }}
           />
           {type !== "command" ? (
-            <Field label={t("Site")} value={origin} setValue={setOrigin} maxLength={2048} />
+            <Field
+              editable={!busy}
+              label={t("Site")}
+              value={origin}
+              setValue={setOrigin}
+              maxLength={2048}
+            />
           ) : null}
           {type === "header" || type === "basic" ? (
             <Field
+              editable={!busy}
               label={type === "header" ? t("Header name") : t("Username")}
               value={parameter}
               setValue={setParameter}
@@ -594,12 +615,14 @@ function CredentialEditor({
             return (
               <View key={index} style={styles.fieldGroup}>
                 <Field
+                  editable={!busy}
                   label={t("Field label")}
                   value={field.label}
                   setValue={(label) => change({ label })}
                   maxLength={64}
                 />
                 <Field
+                  editable={!busy}
                   label={field.label || t("Value")}
                   value={field.value}
                   setValue={(value) => change({ value })}
@@ -615,12 +638,14 @@ function CredentialEditor({
                   <Text style={{ flex: 1, color: tokens.foreground }}>{t("Hide value")}</Text>
                   <NativeSwitch
                     accessibilityLabel={t("Hide {label}", { label: field.label })}
+                    disabled={busy}
                     value={field.hidden}
                     onValueChange={(hidden) => change({ hidden })}
                   />
                   {fields.length > 1 ? (
                     <NativeActionButton
                       label={t("Remove field")}
+                      disabled={busy}
                       prominence="plain"
                       onPress={() => setFields((old) => old.filter((_, i) => i !== index))}
                     />
@@ -629,21 +654,29 @@ function CredentialEditor({
               </View>
             );
           })}
-          {tooLong ? (
+          {fieldError ? (
             <Text accessibilityRole="alert" style={{ color: tokens.destructive }}>
-              {t("These login values are too long together. Shorten one or more fields.")}
+              {fieldError}
             </Text>
           ) : null}
           {fields.length < LOGIN_FIELD_LIMIT ? (
             <NativeActionButton
               label={t("Add field")}
+              disabled={busy}
               prominence="plain"
               onPress={() => setFields((old) => [...old, { label: "", value: "", hidden: true }])}
             />
           ) : null}
         </>
       ) : (
-        <Field label={t("Value")} value={value} setValue={setValue} maxLength={16_384} hidden />
+        <Field
+          editable={!busy}
+          label={t("Value")}
+          value={value}
+          setValue={setValue}
+          maxLength={16_384}
+          hidden
+        />
       )}
       {error ? (
         <Text accessibilityRole="alert" style={{ color: tokens.destructive }}>
@@ -697,8 +730,8 @@ function IdentitySheet({
     };
   }, [captureApiRequestContext, isCurrent, t]);
 
-  const passwordEnabled = security?.passwordChangeEnabled && security.hasPassword;
-  const emailEnabled = security?.passwordChangeEnabled && security.emailDeletion;
+  const passwordEnabled = security?.passwordChangeEnabled !== false && security?.hasPassword;
+  const emailEnabled = security?.passwordChangeEnabled !== false && security?.emailDeletion;
   async function action(kind: "confirm" | "email" | "sso") {
     if (busy || !isCurrent()) return;
     const value = proof;

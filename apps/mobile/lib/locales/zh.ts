@@ -1,4 +1,5 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Give each field a different label": "请为每个字段使用不同的标签",
   "{bot} will no longer be able to use this credential.": "{bot} 将无法再使用此凭据。",
   "Add credential": "添加凭据",
   "Basic auth": "基本认证",

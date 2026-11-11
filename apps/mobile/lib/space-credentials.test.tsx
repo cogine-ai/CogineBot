@@ -6,6 +6,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Screen from "../app/(settings)/space-credentials";
+import { fetchAccountSecurity } from "./api";
 
 const host = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -49,7 +50,24 @@ vi.mock("react-native", () => ({
   ScrollView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: unknown) => styles },
   Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-  TextInput: () => <input />,
+  TextInput: ({
+    accessibilityLabel,
+    value,
+    onChangeText,
+    editable,
+  }: {
+    accessibilityLabel: string;
+    value: string;
+    onChangeText: (value: string) => void;
+    editable?: boolean;
+  }) => (
+    <input
+      aria-label={accessibilityLabel}
+      value={value}
+      disabled={editable === false}
+      onChange={(event) => onChangeText(event.target.value)}
+    />
+  ),
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("react-native-safe-area-context", () => ({
@@ -84,6 +102,9 @@ vi.mock("../components/menu-picker", () => ({
       {children}
       <button type="button" onClick={() => onChange("show")}>
         Show value
+      </button>
+      <button type="button" onClick={() => onChange("edit")}>
+        Replace value
       </button>
     </div>
   ),
@@ -158,4 +179,51 @@ it("drops a reveal that returns after the app went to the background", async () 
   });
   expect(container.querySelector('[role="dialog"]')).toBeNull();
   expect(container.textContent).not.toContain("late-synthetic-value");
+});
+
+it("keeps a mobile replacement draft when saving fails and clears it on dismissal", async () => {
+  await act(async () => root.render(<Screen />));
+  const replace = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Replace value",
+  );
+  await act(async () => replace?.click());
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="Value"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "replacement-fixture-value",
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  host.rpc.mockRejectedValueOnce(new Error("Fixture store outage"));
+  const save = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Save",
+  );
+  await act(async () => save?.click());
+  expect(container.textContent).toContain("Could not save the credential");
+  expect(input.value).toBe("replacement-fixture-value");
+  await act(async () => {
+    for (const listener of host.listeners) listener("background");
+  });
+  expect(container.querySelector('input[aria-label="Value"]')).toBeNull();
+});
+
+it("offers a password confirmation when the optional account flag is omitted", async () => {
+  await act(async () => root.render(<Screen />));
+  host.rpc.mockRejectedValueOnce({ code: "IDENTITY_CONFIRMATION_REQUIRED" });
+  host.captureApiRequestContext.mockResolvedValue({
+    apiBase: "https://api.example.test",
+    headers: {},
+  });
+  vi.mocked(fetchAccountSecurity).mockResolvedValue({
+    hasPassword: true,
+    emailDeletion: false,
+    freshOidcAuth: false,
+    ssoLinked: false,
+    sso: null,
+  });
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("[data-credential] button")?.click(),
+  );
+  expect(container.querySelector('input[aria-label="Password"]')).not.toBeNull();
 });

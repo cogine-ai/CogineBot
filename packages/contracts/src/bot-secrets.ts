@@ -356,13 +356,14 @@ export const LOGIN_FIELD_LIMIT = 8;
 export const LoginFieldLabel = z.string().trim().min(1).max(64);
 export const DEFAULT_LOGIN_FIELD_LABELS = ["Username", "Password"] as const;
 export const WEBSITE_LOGIN_CARD_HEADER = "x-coginebot-website-login-card";
+export const LOGIN_FIELD_LABEL_DUPLICATE = "Give each field a different label";
 export const LoginFieldLabels = z
   .array(LoginFieldLabel)
   .min(1)
   .max(LOGIN_FIELD_LIMIT)
   .refine(
     (labels) => new Set(labels.map((label) => label.toLowerCase())).size === labels.length,
-    "Give each field a different label",
+    LOGIN_FIELD_LABEL_DUPLICATE,
   );
 const NamedLoginField = z
   .object({
@@ -379,7 +380,7 @@ export const NamedLoginSecretValue = z
   .strictObject({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
   .refine(
     ({ fields }) => new Set(fields.map(({ label }) => label.toLowerCase())).size === fields.length,
-    "Give each field a different label",
+    LOGIN_FIELD_LABEL_DUPLICATE,
   )
   .refine(
     (login) => JSON.stringify(login).length <= BOT_SECRET_VALUE_MAX_LENGTH,

@@ -101,6 +101,11 @@ export function identityConfirmation(
             });
           }
           const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+          await email.send({
+            to: user.email,
+            subject: "Confirm your identity",
+            text: `Your confirmation code is ${code}. It expires in ten minutes.`,
+          });
           const identifier = codeKey(session.id);
           const challenge = {
             value: `${user.id}:${hashCode(code)}:0:${randomUUID()}`,
@@ -110,11 +115,6 @@ export function identityConfirmation(
             where: { id: identifier },
             create: { id: identifier, identifier, ...challenge },
             update: challenge,
-          });
-          await email.send({
-            to: user.email,
-            subject: "Confirm your identity",
-            text: `Your confirmation code is ${code}. It expires in ten minutes.`,
           });
           return ctx.json({ success: true });
         },

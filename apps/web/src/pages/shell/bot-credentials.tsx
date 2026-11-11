@@ -12,6 +12,7 @@ import {
   encodeEditedLoginSecret,
   encodeLoginSecret,
   isIdentityConfirmationRequired,
+  LOGIN_FIELD_LABEL_DUPLICATE,
   LOGIN_FIELD_LIMIT,
   LOGIN_VALUE_TOO_LONG,
   NamedLoginSecretValue as LoginFieldsSchema,
@@ -90,6 +91,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
     credential: RevealedBotCredential;
   } | null>(null);
   const revealAttempt = useRef(0);
+  const listRequest = useRef(0);
   const revealTimer = useRef<number | undefined>(undefined);
   const [editable, setEditable] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -134,29 +136,32 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   }
 
   useEffect(() => {
-    let active = true;
+    const request = ++listRequest.current;
+    const current = () => scopeCurrent() && request === listRequest.current;
     void load()
       .then((latest) => {
-        if (active && scopeCurrent()) receive(latest);
+        if (current()) receive(latest);
       })
       .catch(() => {
-        if (active && scopeCurrent()) setLoadFailed(true);
+        if (current()) setLoadFailed(true);
       });
     return () => {
-      active = false;
+      listRequest.current++;
       revealAttempt.current++;
       window.clearTimeout(revealTimer.current);
     };
   }, [load, scopeCurrent]);
 
   async function refresh() {
+    const request = ++listRequest.current;
+    const current = () => scopeCurrent() && request === listRequest.current;
     try {
       const latest = await load();
-      if (!scopeCurrent()) return false;
+      if (!current()) return false;
       receive(latest);
       return true;
     } catch {
-      if (scopeCurrent()) setLoadFailed(true);
+      if (current()) setLoadFailed(true);
       return false;
     }
   }
@@ -174,7 +179,11 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
       if (document.hidden) hide();
     };
     document.addEventListener("visibilitychange", hideWhenHidden);
-    return () => document.removeEventListener("visibilitychange", hideWhenHidden);
+    window.addEventListener("blur", hide);
+    return () => {
+      document.removeEventListener("visibilitychange", hideWhenHidden);
+      window.removeEventListener("blur", hide);
+    };
   }, [hide, spaceView]);
 
   function clearProtectedFields() {
@@ -192,7 +201,11 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
     setConfirmingRemove(null);
     setError(null);
     const attempt = revealAttempt.current;
-    const current = () => scopeCurrent() && revealAttempt.current === attempt;
+    const current = () =>
+      scopeCurrent() &&
+      revealAttempt.current === attempt &&
+      !document.hidden &&
+      document.hasFocus();
     try {
       const credential = await client.botSecrets.reveal({
         botId: row.botId,
@@ -296,6 +309,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
       setError(t`Enter a username and password`);
       return false;
     }
+    listRequest.current++;
     setBusy(true);
     try {
       const saved = await client.botSecrets.putForEdit({
@@ -364,6 +378,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   async function confirmRemove(secret: CredentialRow) {
     if (busy || !editable || !secret.revision || !scopeCurrent()) return;
     setError(null);
+    listRequest.current++;
     setBusy(true);
     try {
       await client.botSecrets.removeForEdit({
@@ -393,8 +408,12 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   }
 
   const login = LoginFieldsSchema.safeParse({ fields });
-  const tooLong =
-    !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
+  const loginIssues = login.success ? [] : login.error.issues.map((issue) => issue.message);
+  const fieldError = loginIssues.includes(LOGIN_FIELD_LABEL_DUPLICATE)
+    ? t`Give each field a different label`
+    : loginIssues.includes(LOGIN_VALUE_TOO_LONG)
+      ? t`These login values are too long together. Shorten one or more fields.`
+      : null;
 
   const loginFields = (type: CredentialAuthType, testIdPrefix: string) =>
     spaceView && type === "login" ? (
@@ -453,9 +472,9 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
             </fieldset>
           );
         })}
-        {tooLong ? (
+        {fieldError ? (
           <p role="alert" className="text-sm text-destructive">
-            <Trans>These login values are too long together. Shorten one or more fields.</Trans>
+            {fieldError}
           </p>
         ) : null}
         {fields.length < LOGIN_FIELD_LIMIT ? (
@@ -551,7 +570,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
             <Trans>Could not load credentials.</Trans>
           </p>
           {spaceView ? (
-            <Button size="sm" variant="outline" onClick={() => void refresh()}>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}>
               <Trans>Retry</Trans>
             </Button>
           ) : null}

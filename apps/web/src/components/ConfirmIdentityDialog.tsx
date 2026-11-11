@@ -56,7 +56,7 @@ export function ConfirmIdentityDialog({
         if (!active) return;
         setSecurity(value);
         if (
-          !(value.passwordChangeEnabled && (value.hasPassword || value.emailDeletion)) &&
+          !(value.passwordChangeEnabled !== false && (value.hasPassword || value.emailDeletion)) &&
           !(value.sso && value.ssoLinked)
         )
           setError(t`Could not continue`);
@@ -84,8 +84,8 @@ export function ConfirmIdentityDialog({
       if (attempt.current === started) setPending(false);
     }
   }
-  const passwordEnabled = security?.passwordChangeEnabled && security.hasPassword;
-  const emailEnabled = security?.passwordChangeEnabled && security.emailDeletion;
+  const passwordEnabled = security?.passwordChangeEnabled !== false && security?.hasPassword;
+  const emailEnabled = security?.passwordChangeEnabled !== false && security?.emailDeletion;
   const proof = passwordEnabled ? password : sent ? code.trim() : "";
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onDone(false)}>

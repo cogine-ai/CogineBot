@@ -7436,3 +7436,6 @@ msgstr "Remover campo"
 
 msgid "Show value"
 msgstr "Mostrar valor"
+
+msgid "Give each field a different label"
+msgstr "Dê um rótulo diferente a cada campo"

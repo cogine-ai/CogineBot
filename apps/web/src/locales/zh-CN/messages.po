@@ -7531,3 +7531,6 @@ msgstr "移除字段"
 
 msgid "Show value"
 msgstr "显示值"
+
+msgid "Give each field a different label"
+msgstr "请为每个字段使用不同的标签"
