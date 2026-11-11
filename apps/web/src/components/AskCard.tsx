@@ -15,7 +15,7 @@ import {
   WebsiteLoginAnswerUnconfirmed,
 } from "@rakazo/core";
 import { Button, Input, Switch } from "@rakazo/ui-web";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { errorText } from "../lib/user-error";
 
 export type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
@@ -78,6 +78,7 @@ function WebsiteLoginForm({
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
+  const limitErrorId = useId();
   const login = NamedLoginSecretValue.safeParse({ fields });
   const tooLong =
     !login.success && login.error.issues.some((issue) => issue.message === LOGIN_VALUE_TOO_LONG);
@@ -130,6 +131,8 @@ function WebsiteLoginForm({
             </div>
             <Input
               aria-label={field.label}
+              aria-invalid={tooLong || undefined}
+              aria-describedby={tooLong ? limitErrorId : undefined}
               type={field.hidden ? "password" : "text"}
               autoComplete={
                 field.hidden && label === "password"
@@ -180,7 +183,7 @@ function WebsiteLoginForm({
         </p>
       ) : null}
       {tooLong ? (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" id={limitErrorId} className="text-sm text-destructive">
           <Trans>These login values are too long together. Shorten one or more fields.</Trans>
         </p>
       ) : null}

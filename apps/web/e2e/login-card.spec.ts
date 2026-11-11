@@ -66,10 +66,14 @@ for (const remember of [true, false]) {
       await usernameField.fill(escaped);
       await passwordField.fill(escaped);
       await expect(save).toBeDisabled();
-      await expect(
-        card.getByText("These login values are too long together. Shorten one or more fields."),
-      ).toBeVisible();
+      const limitError = "These login values are too long together. Shorten one or more fields.";
+      await expect(card.getByText(limitError)).toBeVisible();
+      for (const field of [usernameField, passwordField]) {
+        await expect(field).toHaveAttribute("aria-invalid", "true");
+        await expect(field).toHaveAccessibleDescription(limitError);
+      }
       await usernameField.clear();
+      await expect(passwordField).not.toHaveAttribute("aria-invalid", "true");
     }
     // Both fields are required before the login can be saved.
     await passwordField.fill(password);

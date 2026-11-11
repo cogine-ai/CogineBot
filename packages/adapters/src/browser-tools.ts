@@ -249,32 +249,30 @@ export async function browserActFromTool(
       verified >= 0 &&
       verified <= attemptedFills
         ? verified
-        : result.ok || attemptedFills === 0
-          ? attemptedFills
-          : undefined;
+        : undefined;
     const { loginFieldsFilled: _providerCount, ...browserResult } = result;
-    const outcome =
-      loginCredentials.length > 0 && filled !== undefined
-        ? {
-            ...browserResult,
-            loginFieldsFilled: filled,
-            ...(filled === steps.length &&
-              result.ok && {
-                note: LOGIN_FIELDS_FILLED_NOTE,
-              }),
-          }
-        : browserResult;
+    let outcome = browserResult;
     if (loginCredentials.length > 0) {
-      const status =
-        result.uncertain || filled === undefined
+      const refusedBeforeDispatch =
+        result.ok === false && result.completed === 0 && result.uncertain === false;
+      const status = refusedBeforeDispatch
+        ? "No login fields were filled."
+        : result.uncertain || filled === undefined
           ? LOGIN_FILL_UNKNOWN_NOTE
           : filled === 0
             ? "No login fields were filled."
             : filled < loginCredentials.length
               ? "Some login fields were filled. Check the page before continuing."
-              : "note" in outcome && outcome.note === LOGIN_FIELDS_FILLED_NOTE
+              : filled === steps.length && result.ok
                 ? LOGIN_FIELDS_FILLED_NOTE
                 : "Login fields filled.";
+      outcome = {
+        ...browserResult,
+        ...(filled !== undefined && { loginFieldsFilled: filled }),
+        ...((status === LOGIN_FIELDS_FILLED_NOTE || status === LOGIN_FILL_UNKNOWN_NOTE) && {
+          note: status,
+        }),
+      };
       options.onLoginFillOutcome?.(status);
     }
     return redactBrowserResult(formatBrowserResult(outcome), options.redactions?.() ?? []);

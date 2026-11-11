@@ -85,12 +85,15 @@ export class PageBrowserSession {
 
   act(actions: BrowserActStep[], signal?: AbortSignal): BrowserActResult {
     signal?.throwIfAborted();
+    const protectedBatch =
+      Array.isArray(actions) && actions.some((action) => action?.kind === "fill" && action.origin);
     try {
       this.validateActions(actions);
     } catch (error) {
       return {
         ok: false,
         completed: 0,
+        ...(protectedBatch && { loginFieldsFilled: 0 }),
         uncertain: false,
         url: this.url,
         title: this.title,
@@ -98,50 +101,55 @@ export class PageBrowserSession {
       };
     }
     let completed = 0;
+    let loginFieldsFilled = 0;
+    const observed = (outcome: {
+      ok: boolean;
+      error?: string;
+      uncertain?: boolean;
+      fallback?: "computer_act";
+    }): BrowserActResult => ({
+      ...this.snapshot(),
+      ...outcome,
+      completed,
+      ...(protectedBatch && { loginFieldsFilled }),
+    });
     for (const action of actions) {
       signal?.throwIfAborted();
       const el = this.refs.get(action.ref);
       if (!el?.isConnected || el.ownerDocument !== this.dom.window.document) {
-        const snap = this.snapshot();
-        return {
+        return observed({
           ok: false,
-          completed,
-          url: snap.url,
-          title: snap.title,
-          tree: snap.tree,
-          elements: snap.elements,
           error: `Stale element ref "${action.ref}": the page has changed since that snapshot. Use a ref from the page below.`,
           uncertain: false,
-        };
+        });
       }
       try {
         this.applyAction(el, action);
       } catch (error) {
-        const snap = this.snapshot();
-        return {
+        return observed({
           ok: false,
-          completed,
-          url: snap.url,
-          title: snap.title,
-          tree: snap.tree,
-          elements: snap.elements,
           error: error instanceof Error ? error.message : String(error),
           ...(error instanceof FillRefused || error instanceof SettledStep
             ? { uncertain: false }
             : { fallback: "computer_act" as const }),
-        };
+        });
       }
       completed += 1;
+      if (action.kind === "fill" && action.origin) {
+        if (
+          !(el instanceof this.dom.window.HTMLInputElement) ||
+          !el.isConnected ||
+          el.value !== action.text
+        )
+          return observed({
+            ok: false,
+            uncertain: false,
+            error: "The page did not keep the saved login.",
+          });
+        loginFieldsFilled += 1;
+      }
     }
-    const snap = this.snapshot();
-    return {
-      ok: true,
-      completed,
-      url: snap.url,
-      title: snap.title,
-      tree: snap.tree,
-      elements: snap.elements,
-    };
+    return observed({ ok: true });
   }
 
   private validateActions(actions: BrowserActStep[]): void {
