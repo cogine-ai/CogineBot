@@ -6305,8 +6305,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               toolRequiresApproval(tool.toolName, viaConnector, tool.readOnly),
             );
           const gated = requiresApprovalByDefault || connectorReadGated;
+          // An approval card shows the purpose when chat narration is suppressed or the
+          // Run has received steering from outside the authenticated owner's input.
+          const generationNeedsApproval =
+            generation?.success === true &&
+            (!runPromotesMidTurnNarration(run.trigger) || (await trust.receivedOutsideSteering()));
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
+            generationNeedsApproval ||
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             toolRequiresExplicitApproval(name);
@@ -7078,6 +7084,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               else if (requiresUnattendedApproval)
                 approvalReason = "This action needs confirmation when run in the background.";
             }
+            if (generation?.success)
+              approvalReason = [generation.data.purpose, approvalReason].filter(Boolean).join("\n");
             const block = buildApprovalAskBlock(
               applied!.effect.id,
               name,
@@ -7114,6 +7122,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 allowSiteAlways: !approvalResolved.matchingRules.some(
                   (rule) => rule.matchKind === "site" && rule.effect === "require_approval",
                 ),
+                allowToolAlways: !generationNeedsApproval,
               },
             );
             let approvalDisplayError: string | undefined;
@@ -8612,9 +8621,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (early !== undefined) return early;
             }
             const effectId = applied.effect.id;
-            try {
-              if (runPromotesMidTurnNarration(run.trigger))
+            if (!claimedApproval && runPromotesMidTurnNarration(run.trigger)) {
+              try {
                 await serializeProgress(() => showNarrationStatus(generation.data.purpose));
+              } catch {
+                context.signal.throwIfAborted();
+                return finish(
+                  {
+                    error: "The credential purpose could not be shown. No credential was created.",
+                  },
+                  "error",
+                );
+              }
+            }
+            try {
               const generated = await generateBotCommandSecret({
                 prisma: deps.prisma,
                 secretStore: deps.secretStore,
@@ -8638,10 +8658,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     !claimedApproval &&
                     (current.decision === "ask" ||
                       (approvalResolved.source === "always_allow" &&
-                        current.source !== "always_allow"))
+                        current.source !== "always_allow") ||
+                      (await trust.receivedOutsideSteering(tx)))
                   )
                     throw new ActionRuleDispatchError(
-                      "Generating this credential needs a new approval because its action rules changed.",
+                      "Generating this credential needs approval after the Run’s input or action rules changed.",
                     );
                   if (
                     !(await completeExternalEffect(

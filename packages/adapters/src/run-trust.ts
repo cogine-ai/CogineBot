@@ -12,7 +12,7 @@ import {
 } from "@rakazo/core";
 import { sitesInText, urlSite } from "@rakazo/core/egress";
 import { isPageCardMessage } from "@rakazo/core/message-quote";
-import type { ClaimedSteeringMessage, PrismaClient } from "@rakazo/db";
+import type { ClaimedSteeringMessage, Prisma, PrismaClient } from "@rakazo/db";
 import {
   ACTION_RULE_BLOCKED,
   boundDirectApprovalDetails,
@@ -224,9 +224,11 @@ export function createRunTrust(
   };
   if (input.sourcePage || input.waitingAnswer?.includesPage) recordPageInput();
   let earlierAttempt: Promise<boolean> | undefined;
-  const receivedOutsideMessage = async () =>
+  const receivedOutsideSteering = async (
+    store: Pick<Prisma.TransactionClient, "steeringMessage"> = prisma,
+  ) =>
     Boolean(
-      await prisma.steeringMessage.findFirst({
+      await store.steeringMessage.findFirst({
         where: {
           runId: run.id,
           claimedAt: { not: null },
@@ -246,7 +248,7 @@ export function createRunTrust(
     earlierAttempt ??= prisma.attempt
       .count({ where: { runId: run.id } })
       .then((count) => count > 1);
-    if ((await earlierAttempt) || (await receivedOutsideMessage())) state.tainted = true;
+    if ((await earlierAttempt) || (await receivedOutsideSteering())) state.tainted = true;
     return state.tainted;
   };
   let ownerWords: Promise<string> | undefined;
@@ -374,6 +376,7 @@ export function createRunTrust(
   return {
     state,
     isTainted,
+    receivedOutsideSteering,
     recordPageInput,
     recordSteering,
     loadOwnerWords,

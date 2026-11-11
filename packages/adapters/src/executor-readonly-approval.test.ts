@@ -3113,6 +3113,76 @@ describe("generated command credentials in a Run", () => {
     expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
     expect(f.effects).toEqual([]);
   });
+
+  it.each([
+    { trigger: "routine", outsideSteering: false },
+    { trigger: "tickets", outsideSteering: false },
+    { trigger: "user", outsideSteering: true },
+  ])(
+    "shows the purpose for explicit review before generating from $trigger (outside steering: $outsideSteering)",
+    async (run) => {
+      const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+      const put = vi.spyOn(secretStore, "put");
+      const f = fixture({
+        name: "generate_secret",
+        builtin: true,
+        secretStore,
+        ...run,
+        rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "generate_secret" }],
+      });
+      f.setCalls([{ args, executionId: "generate-1" }]);
+      await f.run();
+      expect(isApprovalPausedResult(f.results[0])).toBe(true);
+      const card = f.pauseRunForInput.mock.calls[0]![0].blocks[0];
+      expect(card).toMatchObject({
+        kind: "ask",
+        text: "Review before saving a new credential",
+        detail: expect.stringContaining(args.purpose),
+        actions: [{ id: "allow" }, { id: "deny" }],
+      });
+      expect(put).not.toHaveBeenCalled();
+    },
+  );
+
+  it("records a known failure if it cannot show the purpose before starting", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const put = vi.spyOn(secretStore, "put");
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    f.append.mockImplementation(async (event) => {
+      if (event.type === "thread.progress" && event.payload.narrationStatus)
+        throw new Error("Fixture progress write failed");
+    });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    const result = {
+      error: "The credential purpose could not be shown. No credential was created.",
+    };
+    expect(f.results).toEqual([result]);
+    expect(f.effects).toMatchObject([{ kind: "generate_secret", status: "completed", result }]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("requires approval if outside steering is claimed while the credential is being staged", async () => {
+    const secretStore = new EncryptedSecretStore("test-only-generated-credential-key");
+    const f = fixture({ name: "generate_secret", builtin: true, secretStore });
+    const originalPut = secretStore.put.bind(secretStore);
+    vi.spyOn(secretStore, "put").mockImplementationOnce(async (...input) => {
+      const prepared = await originalPut(...input);
+      f.prisma.steeringMessage.findFirst.mockResolvedValue({ id: "fixture-outside-steering" });
+      return prepared;
+    });
+    Object.assign(f.prisma.botSecret, {
+      count: vi.fn(async () => 0),
+      create: vi.fn(async () => {}),
+    });
+    Object.assign(f.prisma, { $queryRaw: vi.fn(async () => [{ id: f.runRecord.botId }]) });
+    f.setCalls([{ args, executionId: "generate-1" }]);
+    await f.run();
+    expect(f.results).toMatchObject([{ error: expect.stringContaining("needs approval") }]);
+    expect(f.effects).toMatchObject([
+      { status: "completed", result: { error: expect.any(String) } },
+    ]);
+  });
 });
 
 describe("executor connector account revalidation", () => {
