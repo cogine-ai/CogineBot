@@ -219,12 +219,12 @@ describeAttachments("chat attachments", () => {
     ).toBe(1);
   });
 
-  it.each(["run", "bot", "connection", "finalizer"] as const)(
+  it.each(["run", "bot", "connection", "default model", "finalizer"] as const)(
     "serializes image admission with a concurrent %s write",
     async (scope) => {
       const cookie = await signup(
         app,
-        `image-switch-${scope}-${stamp}@example.test`,
+        `image-switch-${scope.replace(" ", "-")}-${stamp}@example.test`,
         "Image Switch",
       );
       const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
@@ -245,11 +245,14 @@ describeAttachments("chat attachments", () => {
         data: { modelProvider: "openrouter", modelId: "openai/gpt-4o", modelCredentialId: null },
       });
       const setupConnection = async () => {
-        const createSecret = async (vision: boolean) => {
+        const createSecret = async (
+          vision: boolean,
+          enabledModelIds = ["fixture-vision-model"],
+        ) => {
           const plaintext = JSON.stringify({
             kind: "openai_compatible",
             baseUrl: "https://model.example.test/v1",
-            enabledModelIds: ["fixture-vision-model"],
+            enabledModelIds,
             visionModelIds: vision ? ["fixture-vision-model"] : [],
           });
           const encrypted = await secretStore.put(plaintext, {
@@ -268,7 +271,12 @@ describeAttachments("chat attachments", () => {
             },
           });
         };
-        const [vision, text] = await Promise.all([createSecret(true), createSecret(false)]);
+        const [vision, text] = await Promise.all([
+          createSecret(true),
+          scope === "default model"
+            ? createSecret(true, ["fixture-text-model"])
+            : createSecret(false),
+        ]);
         const credential = await prisma.userModelCredential.create({
           data: {
             userId: owned.userId,
@@ -278,17 +286,34 @@ describeAttachments("chat attachments", () => {
             supportsImages: true,
           },
         });
-        await prisma.bot.update({
-          where: { id: bot.id },
-          data: {
-            modelProvider: "openai-compatible",
-            modelId: "fixture-vision-model",
-            modelCredentialId: credential.id,
-          },
-        });
+        if (scope === "default model") {
+          await prisma.bot.update({
+            where: { id: bot.id },
+            data: { modelProvider: null, modelId: null, modelCredentialId: null },
+          });
+          await prisma.spaceModelPreference.create({
+            data: {
+              userId: owned.userId,
+              spaceId: owned.spaceId,
+              credentialId: credential.id,
+              modelId: "fixture-vision-model",
+              isDefault: true,
+            },
+          });
+        } else {
+          await prisma.bot.update({
+            where: { id: bot.id },
+            data: {
+              modelProvider: "openai-compatible",
+              modelId: "fixture-vision-model",
+              modelCredentialId: credential.id,
+            },
+          });
+        }
         return { credentialId: credential.id, textSecretId: text.id };
       };
-      const connection = scope === "connection" ? await setupConnection() : undefined;
+      const connection =
+        scope === "connection" || scope === "default model" ? await setupConnection() : undefined;
       const createActiveRun = async () => {
         const task = await prisma.task.create({
           data: {
@@ -345,6 +370,17 @@ describeAttachments("chat attachments", () => {
                 connectionRevision: { increment: 1 },
               },
             });
+            if (scope === "default model") {
+              await tx.spaceModelPreference.updateMany({
+                where: {
+                  userId: owned.userId,
+                  spaceId: owned.spaceId,
+                  credentialId: connection.credentialId,
+                  isDefault: true,
+                },
+                data: { modelId: "fixture-text-model" },
+              });
+            }
           } else if (scope === "bot") {
             await lockBotModelSetting(tx, bot.id);
             await tx.bot.update({ where: { id: bot.id }, data });

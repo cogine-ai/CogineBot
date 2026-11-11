@@ -6,6 +6,7 @@ import {
   CHATGPT_PLAN_PROVIDER_ID,
   codexLiveModel,
   connectionModelImageInput,
+  enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
   knownModelImageInput,
   modelAcceptsImageInput,
@@ -77,25 +78,41 @@ export async function resolveThreadImageInput(
           : run
             ? runModelChoice(run, bot)
             : bot;
-  const overrideCredential =
-    override.modelProvider && override.modelId
-      ? await findConnectedModelCredential(
-          prisma,
-          actor,
-          override.modelProvider,
-          override.modelId,
-          override.modelCredentialId ?? null,
-        )
-      : null;
-  const selected = selectConfiguredModel({
-    override,
-    overrideCredential,
-    defaultCredential: await findDefaultModelCredential(prisma, actor),
-    settings: await runAsSystem("read deployment defaults for image admission", () =>
-      prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
-    ),
-    deployment: configuration?.deployment ?? null,
-  });
+  const readSelection = async () => {
+    const overrideCredential =
+      override.modelProvider && override.modelId
+        ? await findConnectedModelCredential(
+            prisma,
+            actor,
+            override.modelProvider,
+            override.modelId,
+            override.modelCredentialId ?? null,
+          )
+        : null;
+    return selectConfiguredModel({
+      override,
+      overrideCredential,
+      defaultCredential: await findDefaultModelCredential(prisma, actor),
+      settings: await runAsSystem("read deployment defaults for image admission", () =>
+        prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+      ),
+      deployment: configuration?.deployment ?? null,
+    });
+  };
+  let selected = await readSelection();
+  if (lockConnection && selected.credential) {
+    const { id, provider } = selected.credential;
+    const locked = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM user_model_credentials
+      WHERE id = ${id} AND "userId" = ${actor.userId} AND provider = ${provider}
+      FOR SHARE
+    `;
+    if (locked.length !== 1) return { status: "unknown" as const };
+    // A connection edit also updates the Space preference in the same commit.
+    // Resolve it again after the lock so the capability and selected model agree.
+    selected = await readSelection();
+    if (selected.credential?.id !== id) return { status: "unknown" as const };
+  }
   const provider = selected.provider;
   const id = selected.id;
   if (!provider || !id) {
@@ -103,20 +120,7 @@ export async function resolveThreadImageInput(
     return { status };
   }
   let supportsImages = knownModelImageInput(provider, id);
-  let credential = selected.credential;
-  if (lockConnection && credential) {
-    const [current] = await prisma.$queryRaw<Array<{ secretId: string; supportsImages: boolean }>>`
-      SELECT "secretId", "supportsImages" FROM user_model_credentials
-      WHERE id = ${credential.id} AND "userId" = ${actor.userId} AND provider = ${credential.provider}
-      FOR SHARE
-    `;
-    if (!current) return { status: "unknown" as const };
-    credential = {
-      ...credential,
-      secretId: current.secretId,
-      supportsImages: current.supportsImages,
-    };
-  }
+  const credential = selected.credential;
   if (provider === "openai-compatible" && !credential && modelAcceptsImageInput(provider, id))
     supportsImages = true;
   if (
@@ -129,6 +133,12 @@ export async function resolveThreadImageInput(
     });
     if (row) {
       const secret = parseModelSecret(await configuration.secrets.load(row.ciphertext, row.id));
+      if (
+        provider === "openai-compatible" &&
+        (secret.kind !== "openai_compatible" ||
+          !enabledOpenAiCompatibleModelIds(secret, credential.defaultModel).includes(id.trim()))
+      )
+        return { status: "unknown" as const };
       if (provider === "openai-compatible" || provider === CHATGPT_PLAN_PROVIDER_ID) {
         supportsImages = connectionModelImageInput(provider, id, credential, secret);
       } else if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {

@@ -108,7 +108,7 @@ it("shows the blocked bot while refreshing a stale positive preview", async () =
     root.render(<ImageInputChoice {...props} target={target} onChooseModel={onChooseModel} />),
   );
   expect(container.querySelector('[role="status"]')?.textContent).toBe("Can see images");
-  vi.mocked(rpc.threads.imageInput).mockImplementationOnce(() => new Promise(() => {}));
+  vi.mocked(rpc.threads.imageInput).mockRejectedValueOnce(new Error("Preview unavailable"));
   await act(async () =>
     root.render(
       <ImageInputChoice

@@ -34,7 +34,7 @@ export function ImageInputChoice({
           if (latest === generation) setResult({ key, status, botId });
         },
         () => {
-          if (latest === generation) setResult({ key, status: "unknown" });
+          if (latest === generation && !refusal) setResult({ key, status: "unknown" });
         },
       );
     };
@@ -44,7 +44,7 @@ export function ImageInputChoice({
       generation++;
       window.removeEventListener("focus", refresh);
     };
-  }, [key, query]);
+  }, [key, query, refusal]);
   const display = result?.key === key ? result : refusal;
   const status = display?.status ?? "unknown";
   return (
