@@ -34,7 +34,9 @@ import {
 } from "./bot-package.js";
 import {
   BotSecretMetadata,
+  BotSecretPutForEditInput,
   BotSecretPutInput,
+  BotSecretRemoveForEditInput,
   BotSecretRemoveInput,
   EditableBotSecretMetadata,
 } from "./bot-secrets.js";
@@ -1314,7 +1316,9 @@ export const appContract = {
     list: oc.input(z.object({ botId: Id })).output(z.array(BotSecretMetadata)),
     listForEdit: oc.input(z.object({ botId: Id })).output(z.array(EditableBotSecretMetadata)),
     put: oc.input(BotSecretPutInput).output(BotSecretMetadata),
+    putForEdit: oc.input(BotSecretPutForEditInput).output(EditableBotSecretMetadata),
     remove: oc.input(BotSecretRemoveInput).output(z.object({ ok: z.literal(true) })),
+    removeForEdit: oc.input(BotSecretRemoveForEditInput).output(z.object({ ok: z.literal(true) })),
   },
 };
 

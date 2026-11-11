@@ -11,7 +11,9 @@ const botSecrets = vi.hoisted(() => ({
   list: vi.fn(),
   listForEdit: vi.fn(),
   put: vi.fn(),
+  putForEdit: vi.fn(),
   remove: vi.fn(),
+  removeForEdit: vi.fn(),
 }));
 
 vi.mock("../../lib/rpc", () => ({ rpc: { botSecrets } }));
@@ -96,7 +98,9 @@ beforeEach(() => {
   botSecrets.list.mockReset();
   botSecrets.listForEdit.mockReset().mockResolvedValue(rows);
   botSecrets.put.mockReset();
-  botSecrets.remove.mockReset().mockResolvedValue({ ok: true });
+  botSecrets.putForEdit.mockReset();
+  botSecrets.remove.mockReset();
+  botSecrets.removeForEdit.mockReset().mockResolvedValue({ ok: true });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -147,11 +151,29 @@ describe("BotCredentialsSection", () => {
     },
   );
 
+  it("does not fall back to unchecked writes when the server changes after the list loaded", async () => {
+    botSecrets.listForEdit.mockResolvedValueOnce(rows).mockRejectedValueOnce({ code: "NOT_FOUND" });
+    botSecrets.list.mockResolvedValue(rows);
+    botSecrets.putForEdit.mockRejectedValueOnce({ code: "NOT_FOUND" });
+    await render();
+    await click("credential-add");
+    await type("credential-name", "api2");
+    await type("credential-origin", "https://api.example.com");
+    await type("credential-value", FAKE_VALUE);
+    await click("credential-add-save");
+    expect(botSecrets.putForEdit).toHaveBeenCalledOnce();
+    expect(botSecrets.put).not.toHaveBeenCalled();
+    expect(botSecrets.remove).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Credential changes are unavailable on this server.");
+    expect(container.querySelector('[data-testid="credential-add-form"]')).toBeNull();
+    expect(container.innerHTML).not.toContain(FAKE_VALUE);
+  });
+
   it("adds a header credential and clears the value, then refetches", async () => {
     const savedHeader = rows[1];
     if (!savedHeader) throw new Error("missing header fixture");
     let resolvePut: (row: typeof savedHeader) => void = () => undefined;
-    botSecrets.put.mockReturnValue(
+    botSecrets.putForEdit.mockReturnValue(
       new Promise((resolve) => {
         resolvePut = resolve;
       }),
@@ -174,7 +196,7 @@ describe("BotCredentialsSection", () => {
     });
     await flush();
 
-    expect(botSecrets.put).toHaveBeenCalledWith({
+    expect(botSecrets.putForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       destination: {
         name: "custom",
@@ -189,7 +211,7 @@ describe("BotCredentialsSection", () => {
   });
 
   it("clears the value and shows the server error when saving fails", async () => {
-    botSecrets.put.mockRejectedValue(
+    botSecrets.putForEdit.mockRejectedValue(
       new Error("Invalid credential destination — origin: Expected an HTTPS origin"),
     );
     await render();
@@ -199,7 +221,7 @@ describe("BotCredentialsSection", () => {
     await type("credential-value", FAKE_VALUE);
     await click("credential-add-save");
 
-    expect(botSecrets.put).toHaveBeenCalledTimes(1);
+    expect(botSecrets.putForEdit).toHaveBeenCalledTimes(1);
     expect(byTestId<HTMLInputElement>("credential-value").value).toBe("");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Invalid credential destination",
@@ -208,7 +230,7 @@ describe("BotCredentialsSection", () => {
   });
 
   it("encodes a website login with encodeLoginSecret", async () => {
-    botSecrets.put.mockResolvedValue(rows[3]);
+    botSecrets.putForEdit.mockResolvedValue(rows[3]);
     await render();
     await click("credential-add");
     await type("credential-name", "portal2");
@@ -218,7 +240,7 @@ describe("BotCredentialsSection", () => {
     await type("credential-value", FAKE_VALUE);
     await click("credential-add-save");
 
-    expect(botSecrets.put).toHaveBeenCalledWith({
+    expect(botSecrets.putForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       destination: {
         name: "portal2",
@@ -231,13 +253,13 @@ describe("BotCredentialsSection", () => {
   });
 
   it("replaces a value on the same destination", async () => {
-    botSecrets.put.mockResolvedValue(rows[2]);
+    botSecrets.putForEdit.mockResolvedValue(rows[2]);
     await render();
     await click("credential-replace-router");
     await type("credential-replace-value", FAKE_VALUE);
     await click("credential-replace-save");
 
-    expect(botSecrets.put).toHaveBeenCalledWith({
+    expect(botSecrets.putForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       destination: {
         name: "router",
@@ -268,7 +290,7 @@ describe("BotCredentialsSection", () => {
     await click("credential-remove-Legacy Name");
     expect(container.textContent).toContain("Remove Legacy Name?");
     await click("credential-remove-confirm-Legacy Name");
-    expect(botSecrets.remove).toHaveBeenCalledWith({
+    expect(botSecrets.removeForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       name: "Legacy Name",
       expectedRevision: "legacy-revision",
@@ -294,7 +316,7 @@ describe("BotCredentialsSection", () => {
     await click("credential-remove-Legacy Name");
     expect(container.textContent).toContain("Remove Legacy Name?");
     await click("credential-remove-confirm-Legacy Name");
-    expect(botSecrets.remove).toHaveBeenCalledWith({
+    expect(botSecrets.removeForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       name: "Legacy Name",
       expectedRevision: "legacy-revision",
@@ -303,7 +325,7 @@ describe("BotCredentialsSection", () => {
   });
 
   it("keeps the add form open when save succeeds but list reload fails", async () => {
-    botSecrets.put.mockResolvedValue(rows[0]);
+    botSecrets.putForEdit.mockResolvedValue(rows[0]);
     botSecrets.listForEdit
       .mockResolvedValueOnce(rows)
       .mockRejectedValueOnce(new Error("list failed"));
@@ -314,7 +336,7 @@ describe("BotCredentialsSection", () => {
     await type("credential-value", FAKE_VALUE);
     await click("credential-add-save");
 
-    expect(botSecrets.put).toHaveBeenCalledTimes(1);
+    expect(botSecrets.putForEdit).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="credential-add-form"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not load credentials.",
@@ -340,10 +362,10 @@ describe("BotCredentialsSection", () => {
   it("removes only after an explicit confirm", async () => {
     await render();
     await click("credential-remove-api");
-    expect(botSecrets.remove).not.toHaveBeenCalled();
+    expect(botSecrets.removeForEdit).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Remove api?");
     await click("credential-remove-confirm-api");
-    expect(botSecrets.remove).toHaveBeenCalledWith({
+    expect(botSecrets.removeForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       name: "api",
       expectedRevision: "rev-api",
@@ -354,16 +376,19 @@ describe("BotCredentialsSection", () => {
   it("rechecks the revision after a conflict and requires a fresh remove confirmation", async () => {
     const refreshed = rows.map((row) => (row.name === "api" ? { ...row, revision: "newer" } : row));
     botSecrets.listForEdit.mockResolvedValueOnce(rows).mockResolvedValueOnce(refreshed);
-    botSecrets.remove.mockRejectedValueOnce({ code: "CONFLICT", message: "Credential changed." });
+    botSecrets.removeForEdit.mockRejectedValueOnce({
+      code: "CONFLICT",
+      message: "Credential changed.",
+    });
     await render();
     await click("credential-remove-api");
     await click("credential-remove-confirm-api");
-    expect(botSecrets.remove).toHaveBeenCalledTimes(1);
+    expect(botSecrets.removeForEdit).toHaveBeenCalledTimes(1);
     expect(botSecrets.listForEdit).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-testid="credential-remove-confirm-api"]')).toBeNull();
     await click("credential-remove-api");
     await click("credential-remove-confirm-api");
-    expect(botSecrets.remove).toHaveBeenLastCalledWith({
+    expect(botSecrets.removeForEdit).toHaveBeenLastCalledWith({
       botId: "bot-1",
       name: "api",
       expectedRevision: "newer",
@@ -382,7 +407,7 @@ describe("BotCredentialsSection command variables", () => {
   };
 
   it("adds a command variable with no origin and shows its derived name", async () => {
-    botSecrets.put.mockResolvedValue(commandRow);
+    botSecrets.putForEdit.mockResolvedValue(commandRow);
     await render();
     await click("credential-add");
     await type("credential-origin", "https://leftover.example.com");
@@ -394,13 +419,13 @@ describe("BotCredentialsSection command variables", () => {
     expect(byTestId<HTMLButtonElement>("credential-add-save").disabled).toBe(false);
     await click("credential-add-save");
 
-    expect(botSecrets.put).toHaveBeenCalledWith({
+    expect(botSecrets.putForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       destination: { name: "netbird-setup-key", auth: { type: "command" } },
       value: FAKE_VALUE,
       expectedRevision: null,
     });
-    expect(botSecrets.put.mock.calls[0]![0].destination).not.toHaveProperty("origin");
+    expect(botSecrets.putForEdit.mock.calls[0]![0].destination).not.toHaveProperty("origin");
     expect(container.innerHTML).not.toContain(FAKE_VALUE);
   });
 
@@ -419,19 +444,19 @@ describe("BotCredentialsSection command variables", () => {
       byTestId<HTMLFormElement>("credential-add-form").requestSubmit();
     });
     await flush();
-    expect(botSecrets.put).not.toHaveBeenCalled();
+    expect(botSecrets.putForEdit).not.toHaveBeenCalled();
   });
 
   it("lists a command variable with its variable name and replaces its value", async () => {
     botSecrets.listForEdit.mockResolvedValue([commandRow]);
-    botSecrets.put.mockResolvedValue(commandRow);
+    botSecrets.putForEdit.mockResolvedValue(commandRow);
     await render();
     const row = byTestId("bot-credential-row");
     expect(row.textContent).toContain("Command variable · $NETBIRD_SETUP_KEY");
     await click("credential-replace-netbird-setup-key");
     await type("credential-replace-value", FAKE_VALUE);
     await click("credential-replace-save");
-    expect(botSecrets.put).toHaveBeenCalledWith({
+    expect(botSecrets.putForEdit).toHaveBeenCalledWith({
       botId: "bot-1",
       destination: { name: "netbird-setup-key", auth: { type: "command" } },
       value: FAKE_VALUE,

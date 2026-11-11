@@ -119,7 +119,10 @@ function botSecretDeps(seed: Row[] = []) {
     dataDir: "/tmp/rakazo-router-test",
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps));
-  async function call(path: "list" | "listForEdit" | "put" | "remove", input: unknown) {
+  async function call(
+    path: "list" | "listForEdit" | "put" | "putForEdit" | "remove" | "removeForEdit",
+    input: unknown,
+  ) {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/botSecrets/${path}`, {
         method: "POST",
@@ -165,7 +168,7 @@ describe("botSecrets router", () => {
       ],
     });
     expect((await call("put", { ...login, value })).status).toBe(409);
-    const created = await call("put", { ...login, value, expectedRevision: null });
+    const created = await call("putForEdit", { ...login, value, expectedRevision: null });
     expect(created.status).toBe(200);
     expect(created.body.json).toMatchObject({ namedLogin: true });
     expect(created.text).not.toContain(FAKE_VALUE);
@@ -173,9 +176,16 @@ describe("botSecrets router", () => {
     const first = { ...rows[0] };
     const listed = await call("listForEdit", { botId: login.botId });
     expect(listed.body.json).toEqual([
-      expect.objectContaining({ namedLogin: true, revision: first.revision }),
+      expect.objectContaining({
+        namedLogin: true,
+        revision: first.revision,
+        auth: { type: "login" },
+      }),
     ]);
     expect(listed.text).not.toContain("Access phrase");
+    expect((await call("list", { botId: login.botId })).body.json).toEqual([
+      expect.objectContaining({ namedLogin: true, auth: null }),
+    ]);
     const legacyValue = encodeLoginSecret({ username: "old-form", password: "old-form-fixture" });
     for (const expectedRevision of [undefined, first.revision]) {
       const rejected = await call("put", { ...login, value: legacyValue, expectedRevision });
@@ -187,13 +197,18 @@ describe("botSecrets router", () => {
     expect(rows[0]).toEqual(first);
     expect((await call("remove", { botId: login.botId, name: "portal" })).status).toBe(409);
     expect(
-      (await call("remove", { botId: login.botId, name: "portal", expectedRevision: "stale" }))
-        .status,
+      (
+        await call("removeForEdit", {
+          botId: login.botId,
+          name: "portal",
+          expectedRevision: "stale",
+        })
+      ).status,
     ).toBe(409);
     expect(rows[0]).toEqual(first);
     expect(
       (
-        await call("remove", {
+        await call("removeForEdit", {
           botId: login.botId,
           name: "portal",
           expectedRevision: first.revision,

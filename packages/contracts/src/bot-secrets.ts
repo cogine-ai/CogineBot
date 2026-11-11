@@ -347,6 +347,15 @@ export const BotSecretRemoveInput = z.object({
   name: StoredBotSecretName,
   expectedRevision: BotSecretRevision.optional(),
 });
+export type BotSecretRemoveInput = z.infer<typeof BotSecretRemoveInput>;
+
+// Older servers accept the old routes but ignore their unknown revision field.
+export const BotSecretPutForEditInput = BotSecretPutInput.extend({
+  expectedRevision: BotSecretRevision.nullable(),
+});
+export const BotSecretRemoveForEditInput = BotSecretRemoveInput.extend({
+  expectedRevision: BotSecretRevision,
+});
 
 /**
  * What the owner can see about a saved credential. It never carries the protected value.

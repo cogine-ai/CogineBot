@@ -64,7 +64,11 @@ describeIntegration("reusable credential lifecycle", () => {
         auth: { type: "login" },
       },
     };
-    const legacy = encodeLoginSecret({ username: "fixture", password: "legacy-fixture" });
+    const legacy = JSON.stringify({
+      username: "fixture",
+      password: "legacy-fixture",
+      fields: { ignoredMetadata: true },
+    });
     const created = await rpc<BotSecretMetadata>(cookie, "botSecrets/put", {
       ...put,
       value: legacy,
@@ -73,9 +77,11 @@ describeIntegration("reusable credential lifecycle", () => {
     const secretStore = new EncryptedSecretStore(resolveEncryptionKey());
     expect(created.revision).toBe(previous.revision);
     expect(await secretStore.load(previous.ciphertext, previous.id)).toBe(legacy);
-    const rejectedCreate = await rpcResponse(cookie, "botSecrets/put", {
+    await expect(secretStore.load(previous.ciphertext, "different-record")).rejects.toThrow();
+    const legacyPair = encodeLoginSecret({ username: "fixture", password: "legacy-fixture" });
+    const rejectedCreate = await rpcResponse(cookie, "botSecrets/putForEdit", {
       ...put,
-      value: legacy,
+      value: legacyPair,
       expectedRevision: null,
     });
     expect(rejectedCreate.status).toBe(409);
@@ -91,7 +97,7 @@ describeIntegration("reusable credential lifecycle", () => {
     );
     const responses = await Promise.all(
       named.map((value) =>
-        rpcResponse(cookie, "botSecrets/put", {
+        rpcResponse(cookie, "botSecrets/putForEdit", {
           ...put,
           value,
           expectedRevision: previous.revision,
@@ -106,7 +112,9 @@ describeIntegration("reusable credential lifecycle", () => {
     expect(decodeLoginSecret(await secretStore.load(latest.ciphertext, latest.id))).toEqual(
       decodeLoginSecret(winningValue),
     );
-    const list = await rpc<BotSecretMetadata[]>(cookie, "botSecrets/list", { botId: bot.id });
+    const list = await rpc<BotSecretMetadata[]>(cookie, "botSecrets/listForEdit", {
+      botId: bot.id,
+    });
     expect(list).toEqual([expect.objectContaining({ name: "portal", revision: latest.revision })]);
     expect(JSON.stringify(list)).not.toContain("Access phrase");
     expect((await rpcResponse(cookie, "botSecrets/put", { ...put, value: legacy })).status).toBe(
@@ -114,7 +122,7 @@ describeIntegration("reusable credential lifecycle", () => {
     );
     expect(
       (
-        await rpcResponse(cookie, "botSecrets/remove", {
+        await rpcResponse(cookie, "botSecrets/removeForEdit", {
           botId: bot.id,
           name: "portal",
           expectedRevision: previous.revision,
@@ -122,7 +130,7 @@ describeIntegration("reusable credential lifecycle", () => {
       ).status,
     ).toBe(409);
     expect(await handles.prisma.botSecret.findFirstOrThrow({ where: scope })).toEqual(latest);
-    await rpc(cookie, "botSecrets/remove", {
+    await rpc(cookie, "botSecrets/removeForEdit", {
       botId: bot.id,
       name: "portal",
       expectedRevision: latest.revision,

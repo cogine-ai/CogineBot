@@ -162,6 +162,8 @@ import type {
   BoardEvent,
   Bot,
   BotSecretMetadata,
+  BotSecretPutInput,
+  BotSecretRemoveInput,
   ComputerReleaseReason,
   ComputerStatus,
   ExportManifest,
@@ -1065,6 +1067,36 @@ export function createRouter(deps: RouterDeps) {
     const bot = await repos.getBot(actor, botId);
     const rows = await listBotSecretMetadata(deps.prisma, botSecretScope(actor, bot.id));
     return rows.map(botSecretMetadataDto);
+  }
+  async function putOwnedBotCredential(actor: Actor, input: BotSecretPutInput) {
+    const bot = await repos.getBot(actor, input.botId);
+    let row: Awaited<ReturnType<typeof getBotSecretMetadata>>;
+    try {
+      row = await storeBotSecret({
+        prisma: deps.prisma,
+        secretStore: deps.secrets,
+        scope: botSecretScope(actor, bot.id),
+        destination: input.destination,
+        plaintext: input.value,
+        expectedRevision: input.expectedRevision,
+      });
+    } catch (error) {
+      throw mapBotSecretStoreError(error);
+    }
+    if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
+    return botSecretMetadataDto(row);
+  }
+  async function removeOwnedBotCredential(actor: Actor, input: BotSecretRemoveInput) {
+    const bot = await repos.getBot(actor, input.botId);
+    try {
+      await forgetBotSecret(deps.prisma, botSecretScope(actor, bot.id), input.name, {
+        expectedRevision: input.expectedRevision,
+        requireBotOwner: true,
+      });
+    } catch (error) {
+      throw mapBotSecretStoreError(error);
+    }
+    return { ok: true as const };
   }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
@@ -7522,43 +7554,26 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     botSecrets: {
-      list: authed.botSecrets.list.handler(({ context, input }) =>
-        listOwnedBotCredentials(context.actor, input.botId),
-      ),
+      list: authed.botSecrets.list.handler(async ({ context, input }) => {
+        const rows = await listOwnedBotCredentials(context.actor, input.botId);
+        // Legacy editors treat null auth as unavailable and never request a replacement.
+        return rows.map((row) => (row.namedLogin ? { ...row, auth: null } : row));
+      }),
       listForEdit: authed.botSecrets.listForEdit.handler(({ context, input }) =>
         listOwnedBotCredentials(context.actor, input.botId),
       ),
-      put: authed.botSecrets.put.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        const scope = botSecretScope(context.actor, bot.id);
-        let row: Awaited<ReturnType<typeof getBotSecretMetadata>>;
-        try {
-          row = await storeBotSecret({
-            prisma: deps.prisma,
-            secretStore: deps.secrets,
-            scope,
-            destination: input.destination,
-            plaintext: input.value,
-            expectedRevision: input.expectedRevision,
-          });
-        } catch (error) {
-          throw mapBotSecretStoreError(error);
-        }
-        if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
-        return botSecretMetadataDto(row);
-      }),
-      remove: authed.botSecrets.remove.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        try {
-          await forgetBotSecret(deps.prisma, botSecretScope(context.actor, bot.id), input.name, {
-            expectedRevision: input.expectedRevision,
-            requireBotOwner: true,
-          });
-        } catch (error) {
-          throw mapBotSecretStoreError(error);
-        }
-        return { ok: true as const };
-      }),
+      put: authed.botSecrets.put.handler(({ context, input }) =>
+        putOwnedBotCredential(context.actor, input),
+      ),
+      putForEdit: authed.botSecrets.putForEdit.handler(({ context, input }) =>
+        putOwnedBotCredential(context.actor, input),
+      ),
+      remove: authed.botSecrets.remove.handler(({ context, input }) =>
+        removeOwnedBotCredential(context.actor, input),
+      ),
+      removeForEdit: authed.botSecrets.removeForEdit.handler(({ context, input }) =>
+        removeOwnedBotCredential(context.actor, input),
+      ),
     },
     approvalRules: {
       list: authed.approvalRules.list.handler(async ({ context }) => {

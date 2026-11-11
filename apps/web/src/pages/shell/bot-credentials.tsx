@@ -114,7 +114,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   async function save(
     destination: { name: string; origin?: string; auth: ReadableCredentialAuth },
-    expectedRevision: string | null | undefined,
+    expectedRevision: string | null,
   ) {
     const username = loginUsername.trim();
     const secretValue = value;
@@ -129,7 +129,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     }
     setBusy(true);
     try {
-      await rpc.botSecrets.put({ botId, destination, value: plaintext, expectedRevision });
+      await rpc.botSecrets.putForEdit({ botId, destination, value: plaintext, expectedRevision });
       if (!(await refresh())) {
         setError(t`Could not load credentials.`);
         return false;
@@ -137,7 +137,8 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
       return true;
     } catch (err) {
       setError(errorText(err, t`Could not save the credential`));
-      if (errorCode(err) === "CONFLICT") {
+      const code = errorCode(err);
+      if (code === "CONFLICT" || code === "NOT_FOUND") {
         setReplacing(null);
         if (!(await refresh())) setEditable(false);
       }
@@ -173,7 +174,11 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     setError(null);
     setBusy(true);
     try {
-      await rpc.botSecrets.remove({ botId, name: secret.name, expectedRevision: secret.revision });
+      await rpc.botSecrets.removeForEdit({
+        botId,
+        name: secret.name,
+        expectedRevision: secret.revision,
+      });
       setConfirmingRemove(null);
       if (!(await refresh())) {
         setSecrets((prev) => prev?.filter((row) => row.name !== secret.name) ?? null);
@@ -181,7 +186,8 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
       }
     } catch (err) {
       setError(errorText(err, t`Could not remove the credential`));
-      if (errorCode(err) === "CONFLICT") {
+      const code = errorCode(err);
+      if (code === "CONFLICT" || code === "NOT_FOUND") {
         setConfirmingRemove(null);
         if (!(await refresh())) setEditable(false);
       }
