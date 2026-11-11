@@ -81,6 +81,7 @@ export {
   parkRunQuotaWait,
   reparkRunQuotaWaitForComputer,
 } from "./run-quota-wait.js";
+export * from "./run-secrets.js";
 export { MAX_SELF_RECOVERIES_PER_RUN, reserveRunSelfRecovery } from "./run-self-recovery.js";
 export * from "./run-timing.js";
 export * from "./run-turn-checkpoint.js";

@@ -1927,11 +1927,14 @@ describe("computer execution leases", () => {
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
-        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
+        updateManyAndReturn: vi
+          .fn()
+          .mockResolvedValue([{ id: "run-1", spaceId: "workspace-1", userId: "user-1" }]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
       externalEffect: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       computerExecutionLease: {
         updateMany: vi.fn().mockImplementation(async ({ data }) => {
           lease.expiresAt = data.expiresAt;
@@ -1991,7 +1994,7 @@ describe("computer execution leases", () => {
         leaseOwner: null,
         leaseExpiresAt: null,
       },
-      select: { id: true, spaceId: true },
+      select: { id: true, spaceId: true, userId: true },
     });
     expect(client.externalEffect.deleteMany).toHaveBeenCalledWith({
       where: {

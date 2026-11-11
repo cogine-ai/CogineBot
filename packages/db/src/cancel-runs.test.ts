@@ -9,8 +9,13 @@ describe("terminal cancellation winners", () => {
       { id: "finished-run", taskId: "finished-task" },
     ];
     const tx = {
-      run: { updateManyAndReturn: vi.fn(async () => [{ id: runs[0]!.id, spaceId: "space" }]) },
+      run: {
+        updateManyAndReturn: vi.fn(async () => [
+          { id: runs[0]!.id, userId: "user", spaceId: "space" },
+        ]),
+      },
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 1 })) },
       attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
       task: { updateMany: vi.fn(async () => ({ count: 1 })) },
     };
@@ -19,7 +24,7 @@ describe("terminal cancellation winners", () => {
     expect(tx.run.updateManyAndReturn).toHaveBeenCalledWith({
       where: { id: { in: runs.map((run) => run.id) }, status: { in: [...ACTIVE_RUN_STATUSES] } },
       data: { status: "cancelled", completedAt: at, leaseOwner: null, leaseExpiresAt: null },
-      select: { id: true, spaceId: true },
+      select: { id: true, userId: true, spaceId: true },
     });
     expect(tx.externalEffect.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -48,6 +53,7 @@ describe("terminal cancellation winners", () => {
     const tx = {
       run: { updateManyAndReturn: vi.fn(async () => []) },
       externalEffect: { deleteMany: vi.fn() },
+      secret: { deleteMany: vi.fn() },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
     };
@@ -55,6 +61,7 @@ describe("terminal cancellation winners", () => {
       cancelRunsInTransaction(tx as never, [{ id: "finished", taskId: "task" }], new Date()),
     ).resolves.toEqual([]);
     expect(tx.externalEffect.deleteMany).not.toHaveBeenCalled();
+    expect(tx.secret.deleteMany).not.toHaveBeenCalled();
     expect(tx.attempt.updateMany).not.toHaveBeenCalled();
     expect(tx.task.updateMany).not.toHaveBeenCalled();
   });

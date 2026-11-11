@@ -17,6 +17,7 @@ function tx(options?: {
   const events: Array<Record<string, unknown>> = [];
   const client = {
     externalEffect: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+    secret: { deleteMany: vi.fn(async () => ({ count: 1 })) },
     $queryRaw: vi.fn(async () => []),
     run: {
       updateMany: vi.fn(async () => ({ count: options?.cancelled ?? 1 })),
@@ -28,6 +29,8 @@ function tx(options?: {
         return { status: "cancelled", startedAt: null };
       }),
       findUniqueOrThrow: vi.fn(async () => ({
+        id: "run-1",
+        userId: "user-1",
         spaceId: "space-1",
         threadId: "thread-1",
         botId: "bot-1",

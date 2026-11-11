@@ -1,8 +1,8 @@
-import { ACTIVE_RUN_STATUSES, runSecretKind } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { appendEventInTransaction } from "./events.js";
-import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
+import { clearEndedRunState } from "./run-secrets.js";
 
 export interface FailScriptedRunInput {
   runId: string;
@@ -60,14 +60,11 @@ export async function failScriptedRunPreservingSteering(
         },
       });
       if (failed.count !== 1) return null;
-      await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
       const run = await tx.run.findUniqueOrThrow({
         where: { id: input.runId },
-        select: { userId: true },
+        select: { id: true, userId: true, spaceId: true },
       });
-      await tx.secret.deleteMany({
-        where: { spaceId: input.spaceId, userId: run.userId, kind: runSecretKind(input.runId) },
-      });
+      await clearEndedRunState(tx, [run]);
       const attempt = await tx.attempt.updateMany({
         where: {
           // Admission has won a new fence before creating an attempt. The terminal

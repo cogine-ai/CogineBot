@@ -16,6 +16,17 @@ describe("botSecrets rpc contract", () => {
     expect(appContract.botSecrets.put["~orpc"].inputSchema).toBe(BotSecretPutInput);
   });
 
+  it("requires a precondition on the revision-checked mutation routes", () => {
+    const put = appContract.botSecrets.putForEdit["~orpc"].inputSchema!;
+    const remove = appContract.botSecrets.removeForEdit["~orpc"].inputSchema!;
+    expect(put.safeParse(lanPut).success).toBe(false);
+    expect(put.safeParse({ ...lanPut, expectedRevision: null }).success).toBe(true);
+    expect(remove.safeParse({ botId: "bot-1", name: "router" }).success).toBe(false);
+    expect(
+      remove.safeParse({ botId: "bot-1", name: "router", expectedRevision: "rev" }).success,
+    ).toBe(true);
+  });
+
   it("accepts a LAN http destination structurally and leaves origin rules to the server", () => {
     expect(BotSecretPutInput.safeParse(lanPut).success).toBe(true);
     // The default destination schema (no private-HTTP opt-in) rejects the same origin.
@@ -64,7 +75,9 @@ describe("botSecrets rpc contract", () => {
       "auth",
       "createdAt",
       "name",
+      "namedLogin",
       "origin",
+      "revision",
       "updatedAt",
     ]);
     const parsed = BotSecretMetadata.parse({
@@ -75,8 +88,12 @@ describe("botSecrets rpc contract", () => {
       updatedAt: "2026-09-01T00:00:00.000Z",
       value: "fake-value-1",
       ciphertext: "enc:1",
+      revision: "version-1",
+      namedLogin: true,
     });
     expect(parsed).not.toHaveProperty("value");
     expect(parsed).not.toHaveProperty("ciphertext");
+    expect(parsed.revision).toBe("version-1");
+    expect(parsed.namedLogin).toBe(true);
   });
 });

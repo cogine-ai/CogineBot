@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { MessageBlock, RunQuotaTarget } from "@rakazo/contracts";
 import { RUN_QUOTA_WAIT_MAX_MS, runQuotaWaitStateSchema } from "@rakazo/contracts";
+import { runSecretKind } from "@rakazo/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
@@ -23,6 +24,7 @@ import {
 } from "./routine-retry.js";
 import { loadRunProgressReset, reserveRunProgressResetInTransaction } from "./run-progress.js";
 import { claimRunQuotaResume, parkRunQuotaWait } from "./run-quota-wait.js";
+import { runLoginKind } from "./run-secrets.js";
 import { reserveRunSelfRecovery } from "./run-self-recovery.js";
 import {
   clearRunTurnCheckpoints,
@@ -38,6 +40,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
   const spaceId = "turn-checkpoint-space";
   const otherSpaceId = "turn-checkpoint-other-space";
   const userId = "turn-checkpoint-user";
+  const otherUserId = "turn-checkpoint-other-user";
   const botId = "turn-checkpoint-bot";
   let prisma: PrismaClient;
   let close: () => Promise<void>;
@@ -51,6 +54,9 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     };
     await prisma.user.create({
       data: { id: userId, name: "Checkpoint fixture", email: "checkpoint@example.test" },
+    });
+    await prisma.user.create({
+      data: { id: otherUserId, name: "Other fixture", email: "other-checkpoint@example.test" },
     });
     await prisma.organization.create({
       data: {
@@ -94,7 +100,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     if (!prisma) return;
     try {
       await prisma.organization.deleteMany({ where: { id: organizationId } });
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await prisma.user.deleteMany({ where: { id: { in: [userId, otherUserId] } } });
     } finally {
       await close();
     }
@@ -1442,6 +1448,9 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
 
   it("rejects a late save when cancellation has already won the Run lock", async () => {
     const f = await seed();
+    const secret = await prisma.secret.create({
+      data: { userId, spaceId, kind: runLoginKind(f.run.id, "portal"), ciphertext: "fixture-stop" },
+    });
     await saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "old turn");
     let entered!: () => void;
     const terminalWritten = new Promise<void>((resolve) => {
@@ -1464,6 +1473,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
           throw new Error("Cancellation bypassed its terminal barrier");
         }),
       ]);
+      expect(await prisma.secret.findUnique({ where: { id: secret.id } })).not.toBeNull();
       const late = saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "must not return");
       const rejected = expect(late).rejects.toThrow("lease expired");
       release();
@@ -1474,6 +1484,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       await cancel.catch(() => undefined);
     }
     expect(await loadRunTurnCheckpoint(prisma, f.run)).toBeUndefined();
+    expect(await prisma.secret.findUnique({ where: { id: secret.id } })).toBeNull();
   });
 
   it("does not cancel or clear a run that completed after the caller's snapshot", async () => {
@@ -1492,31 +1503,77 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     );
   });
 
-  it("clears only the finalized turn and rolls checkpoint deletion back on finalization failure", async () => {
-    const f = await seed();
-    const peer = await seed();
-    await saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "finishing turn");
-    await saveRunTurnCheckpoint(prisma, peer.run, "worker", 7, "peer turn");
-    await expect(
-      finalizeRun(prisma, { ...finishInput(f), attemptId: "missing-attempt" }),
-    ).rejects.toThrow("Active run attempt");
-    expect(await loadRunTurnCheckpoint(prisma, f.run)).toBe("finishing turn");
-    expect((await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe(
-      "running",
-    );
-    await expect(finalizeRun(prisma, { ...finishInput(f), leaseFence: 6 })).resolves.toBe(false);
-    expect(await loadRunTurnCheckpoint(prisma, f.run)).toBe("finishing turn");
-    await expect(finalizeRun(prisma, finishInput(f))).resolves.toEqual({ continuationRunId: null });
-    expect(await loadRunTurnCheckpoint(prisma, f.run)).toBeUndefined();
-    expect(await loadRunTurnCheckpoint(prisma, peer.run)).toBe("peer turn");
-    const events = await prisma.event.findMany({ where: { runId: f.run.id } });
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe("run.completed");
-    expect(JSON.stringify(events)).not.toContain("finishing turn");
-  });
+  it.each(["completed", "failed"] as const)(
+    "clears only the %s turn and its protected values",
+    async (outcome) => {
+      const f = await seed();
+      const peer = await seed();
+      const loginKind = runLoginKind(f.run.id, "portal");
+      const records = await prisma.secret.createManyAndReturn({
+        data: [
+          { userId, spaceId, kind: loginKind, ciphertext: "fixture-target-login" },
+          { userId, spaceId, kind: runSecretKind(f.run.id), ciphertext: "fixture-target-answer" },
+          {
+            userId,
+            spaceId,
+            kind: runLoginKind(peer.run.id, "portal"),
+            ciphertext: "fixture-peer-login",
+          },
+          {
+            userId,
+            spaceId,
+            kind: runLoginKind(`${f.run.id}-other`, "portal"),
+            ciphertext: "fixture-neighbor-login",
+          },
+          { userId, spaceId: otherSpaceId, kind: loginKind, ciphertext: "fixture-other-space" },
+          { userId: otherUserId, spaceId, kind: loginKind, ciphertext: "fixture-other-user" },
+        ],
+      });
+      const rows = () =>
+        prisma.secret
+          .findMany({
+            where: { id: { in: records.map(({ id }) => id) } },
+            select: { ciphertext: true },
+          })
+          .then((entries) => entries.map(({ ciphertext }) => ciphertext).sort());
+      await saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "finishing turn");
+      await saveRunTurnCheckpoint(prisma, peer.run, "worker", 7, "peer turn");
+      await expect(
+        finalizeRun(prisma, { ...finishInput(f), attemptId: "missing-attempt" }),
+      ).rejects.toThrow("Active run attempt");
+      expect(await rows()).toHaveLength(6);
+      expect(await loadRunTurnCheckpoint(prisma, f.run)).toBe("finishing turn");
+      expect((await prisma.run.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe(
+        "running",
+      );
+      await expect(finalizeRun(prisma, { ...finishInput(f), leaseFence: 6 })).resolves.toBe(false);
+      expect(await rows()).toHaveLength(6);
+      expect(await loadRunTurnCheckpoint(prisma, f.run)).toBe("finishing turn");
+      const finish =
+        outcome === "failed"
+          ? { ...finishInput(f), outcome, error: "Synthetic run failure" }
+          : finishInput(f);
+      await expect(finalizeRun(prisma, finish)).resolves.toEqual({ continuationRunId: null });
+      expect(await rows()).toEqual([
+        "fixture-neighbor-login",
+        "fixture-other-space",
+        "fixture-other-user",
+        "fixture-peer-login",
+      ]);
+      expect(await loadRunTurnCheckpoint(prisma, f.run)).toBeUndefined();
+      expect(await loadRunTurnCheckpoint(prisma, peer.run)).toBe("peer turn");
+      const events = await prisma.event.findMany({ where: { runId: f.run.id } });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.type).toBe(`run.${outcome}`);
+      expect(JSON.stringify(events)).not.toContain("finishing turn");
+    },
+  );
 
   it("only clears an aged wait after its exact episode wins", async () => {
     const f = await seed();
+    const secret = await prisma.secret.create({
+      data: { userId, spaceId, kind: runLoginKind(f.run.id, "portal"), ciphertext: "fixture-wait" },
+    });
     await saveRunTurnCheckpoint(prisma, f.run, "worker", 7, "waiting turn");
     const waiting = await prisma.run.update({
       where: { id: f.run.id },
@@ -1533,9 +1590,11 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       prisma.$transaction((tx) => expireStuckRun(tx, { ...input, updatedAt: new Date(0) })),
     ).resolves.toBeNull();
     expect(await loadRunTurnCheckpoint(prisma, f.run)).toBe("waiting turn");
+    expect(await prisma.secret.findUnique({ where: { id: secret.id } })).not.toBeNull();
     await expect(prisma.$transaction((tx) => expireStuckRun(tx, input))).resolves.toMatchObject({
       continuationRunId: null,
     });
     expect(await loadRunTurnCheckpoint(prisma, f.run)).toBeUndefined();
+    expect(await prisma.secret.findUnique({ where: { id: secret.id } })).toBeNull();
   });
 });

@@ -92,9 +92,10 @@ describe("finalizeRun", () => {
     const createEvent = vi.fn(async () => ({ threadId: "thread-1", seq: 0 }));
     const tx = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
-        findUnique: vi.fn(async () => ({ status: "running" })),
+        findUnique: vi.fn(async () => ({ status: "running", userId: "user-1" })),
         findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
         findFirst: vi.fn(async () => null),
         updateMany: vi.fn(async () => ({ count: 1 })),
@@ -141,9 +142,10 @@ describe("finalizeRun", () => {
   it("resumes a held messaging inbound as a messaging run", async () => {
     const tx = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
-        findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
+        findUnique: vi.fn(async () => ({ status: "running", startedAt: null, userId: "user-1" })),
         findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
         findFirst: vi.fn(async () => null),
         updateMany: vi.fn(async () => ({ count: 1 })),
@@ -212,9 +214,10 @@ describe("finalizeRun", () => {
     async (_, secondId, pinned) => {
       const tx = {
         externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+        secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
         $queryRaw: vi.fn(async () => []),
         run: {
-          findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
+          findUnique: vi.fn(async () => ({ status: "running", startedAt: null, userId: "user-1" })),
           findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
           findFirst: vi.fn(async () => null),
           updateMany: vi.fn(async () => ({ count: 1 })),
@@ -312,9 +315,10 @@ describe("finalizeRun", () => {
     };
     const tx = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       run: {
-        findUnique: vi.fn(async () => ({ status: "running", startedAt: null })),
+        findUnique: vi.fn(async () => ({ status: "running", startedAt: null, userId: "user-1" })),
         findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
         findFirst: vi.fn(async () => null),
         updateMany: vi.fn(async () => ({ count: 1 })),
@@ -4009,6 +4013,7 @@ describe("clearThread", () => {
     const tx = {
       $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -4018,7 +4023,9 @@ describe("clearThread", () => {
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-1", taskId: "task-1" }]),
         updateMany: vi.fn(),
-        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]),
+        updateManyAndReturn: vi
+          .fn()
+          .mockResolvedValue([{ id: "run-1", spaceId: "workspace-1", userId: "user-1" }]),
       },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
@@ -4083,6 +4090,7 @@ describe("clearThread", () => {
     const tx = {
       $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       thread: {
         update: vi
           .fn()
@@ -4096,8 +4104,8 @@ describe("clearThread", () => {
           { id: "group-run-2", taskId: "task-2" },
         ]),
         updateManyAndReturn: vi.fn().mockResolvedValue([
-          { id: "group-run-1", spaceId: "workspace-1" },
-          { id: "group-run-2", spaceId: "workspace-1" },
+          { id: "group-run-1", spaceId: "workspace-1", userId: "user-1" },
+          { id: "group-run-2", spaceId: "workspace-1", userId: "user-1" },
         ]),
       },
       attempt: { updateMany: vi.fn() },

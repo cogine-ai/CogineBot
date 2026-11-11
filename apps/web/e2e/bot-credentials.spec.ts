@@ -60,7 +60,7 @@ test("bot credentials list, add, replace and remove without leaking values", asy
 
   // Replace: keeps the destination, writes a new value, leaves the old one gone.
   const replaced = page.waitForResponse(
-    (response) => response.url().includes("/rpc/botSecrets/put") && response.ok(),
+    (response) => response.url().includes("/rpc/botSecrets/putForEdit") && response.ok(),
   );
   await credentials.getByTestId(`credential-replace-${CREDENTIAL_NAME}`).click();
   await credentials.getByTestId("credential-replace-value").fill(REPLACEMENT);
@@ -76,7 +76,7 @@ test("bot credentials list, add, replace and remove without leaking values", asy
   await credentials.getByTestId(`credential-remove-${CREDENTIAL_NAME}`).click();
   await expect(credentials).toContainText(`Remove ${CREDENTIAL_NAME}?`);
   const removed = page.waitForResponse(
-    (response) => response.url().includes("/rpc/botSecrets/remove") && response.ok(),
+    (response) => response.url().includes("/rpc/botSecrets/removeForEdit") && response.ok(),
   );
   await credentials.getByTestId(`credential-remove-confirm-${CREDENTIAL_NAME}`).click();
   await removed;
@@ -84,6 +84,53 @@ test("bot credentials list, add, replace and remove without leaking values", asy
   await expect(credentials.getByTestId("bot-credentials-empty")).toBeVisible();
   expect(await rpc<unknown[]>(page, "botSecrets/list", { botId })).toHaveLength(0);
   await captureScreenshot(page, testInfo, "bot-credentials-removed");
+});
+
+test("a named login can be removed but cannot be edited by the legacy form", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(
+    page,
+    `login-compatibility-${stamp}@example.test`,
+    "password12",
+    "Credential fixture",
+  );
+  await completeOnboarding(page);
+  const botName = `Login compatibility ${stamp}`;
+  const botId = await createNamedBot(page, botName);
+  const name = "example_login";
+  const saved = await rpc<{ revision: string }>(page, "botSecrets/putForEdit", {
+    botId,
+    destination: { name, origin: "https://login.example.test", auth: { type: "login" } },
+    value: JSON.stringify({
+      fields: [
+        { label: "Account ID", value: "fixture-account", hidden: false },
+        { label: "Access phrase", value: SENTINEL, hidden: true },
+      ],
+    }),
+    expectedRevision: null,
+  });
+  await page.locator("main").getByRole("button", { name: botName, exact: true }).click();
+  const settings = page.getByTestId("bot-settings");
+  await settings.getByTestId("bot-settings-advanced").evaluate((element) => {
+    (element as HTMLDetailsElement).open = true;
+  });
+  const credentials = settings.getByTestId("bot-credentials");
+  await expect(credentials).toContainText("This form can't edit named fields.");
+  await expect(credentials.getByTestId(`credential-replace-${name}`)).toHaveCount(0);
+  await expect(credentials.getByTestId(`credential-remove-${name}`)).toBeVisible();
+  await expectNoLeakedInputValue(page, SENTINEL);
+  expect(await rpc(page, "botSecrets/listForEdit", { botId })).toEqual([
+    expect.objectContaining({ name, revision: saved.revision, namedLogin: true }),
+  ]);
+  const row = credentials.getByTestId("bot-credential-row");
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport({ ratio: 1 });
+  await captureScreenshot(page, testInfo, "bot-credentials-named-login-protected");
+  await credentials.getByTestId(`credential-remove-${name}`).click();
+  await credentials.getByTestId(`credential-remove-confirm-${name}`).click();
+  await expect(credentials.getByTestId("bot-credentials-empty")).toBeVisible();
 });
 
 /** Fail if any live input value still carries a protected value. */

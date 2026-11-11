@@ -7418,3 +7418,11 @@ msgstr "Bereits als Bild gesendet. Dein Entwurf bleibt erhalten."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "Bereits als Datei gesendet. Dein Entwurf bleibt erhalten."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "Anmeldedaten können auf diesem Server nicht geändert werden."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "Dieses Formular kann benannte Felder nicht bearbeiten."

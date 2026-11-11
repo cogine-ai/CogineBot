@@ -1383,7 +1383,9 @@ describe("team chat bridge", () => {
       const enqueue = vi.fn();
       const updateMany = vi.fn(async () => ({ count: 1 }));
       const runUpdateMany = vi.fn(async () =>
-        cancelWins ? [{ id: "run-1", spaceId: "space-1", taskId: "task-1" }] : [],
+        cancelWins
+          ? [{ id: "run-1", spaceId: "space-1", userId: "owner-1", taskId: "task-1" }]
+          : [],
       );
       const taskUpdateMany = vi.fn(async () => ({ count: 1 }));
       const checkpointDelete = vi.fn(async () => ({ count: 1 }));
@@ -1391,6 +1393,7 @@ describe("team chat bridge", () => {
         run: { updateManyAndReturn: runUpdateMany },
         task: { updateMany: taskUpdateMany },
         externalEffect: { deleteMany: checkpointDelete },
+        secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       };
       const sendUserMessage = vi.fn(async () => {
         await sendGate;

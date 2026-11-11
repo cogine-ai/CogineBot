@@ -1,5 +1,6 @@
 import { RPCHandler } from "@orpc/server/fetch";
 import type { Actor } from "@rakazo/contracts";
+import { encodeLoginSecret } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
@@ -34,7 +35,9 @@ function botSecretDeps(seed: Row[] = []) {
     { id: "bot-1", userId: "user-1", spaceId: "space-1", archivedAt: null },
     { id: "bot-other", userId: "user-2", spaceId: "space-1", archivedAt: null },
   ];
-  const rows: Row[] = seed.map((row) => ({ ...row }));
+  let nextRevision = 0;
+  const revision = () => `revision-${++nextRevision}`;
+  const rows: Row[] = seed.map((row) => ({ revision: revision(), ...row }));
   const botSecret = {
     findMany: vi.fn(async (args: { where: Row; select?: Record<string, boolean> }) =>
       rows
@@ -50,13 +53,14 @@ function botSecretDeps(seed: Row[] = []) {
       async (args: { where: Row }) => rows.filter((row) => matches(row, args.where)).length,
     ),
     create: vi.fn(async (args: { data: Row }) => {
-      rows.push({ ...args.data, createdAt: now, updatedAt: now });
+      rows.push({ ...args.data, createdAt: now, updatedAt: now, revision: revision() });
       return {};
     }),
-    update: vi.fn(async (args: { where: { id: string }; data: Row }) => {
-      const row = rows.find((entry) => entry.id === args.where.id);
-      Object.assign(row ?? {}, args.data, { updatedAt: now });
-      return {};
+    updateMany: vi.fn(async (args: { where: Row; data: Row }) => {
+      const row = rows.find((entry) => matches(entry, args.where));
+      if (!row) return { count: 0 };
+      Object.assign(row, args.data, { updatedAt: now, revision: revision() });
+      return { count: 1 };
     }),
     deleteMany: vi.fn(async (args: { where: Row }) => {
       const before = rows.length;
@@ -74,17 +78,33 @@ function botSecretDeps(seed: Row[] = []) {
       }),
     },
     botSecret,
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(
+      async (
+        _sql: TemplateStringsArray,
+        botId: string,
+        spaceId: string,
+        owner: boolean,
+        userId: string,
+      ) =>
+        bots.filter(
+          (bot) =>
+            bot.id === botId &&
+            bot.spaceId === spaceId &&
+            bot.archivedAt === null &&
+            (!owner || bot.userId === userId),
+        ),
+    ),
     $transaction: vi.fn(),
   };
   prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => unknown) => fn(prisma));
+  const plaintexts = new Map<string, string>();
   const secrets = {
-    put: vi.fn(async (_plaintext: string, _context: unknown, options: { recordId: string }) => ({
-      id: options.recordId,
-      ref: `enc:${options.recordId}`,
-      ciphertext: `enc:${options.recordId}`,
-    })),
-    load: vi.fn(),
+    put: vi.fn(async (plaintext: string, _context: unknown, options: { recordId: string }) => {
+      const ciphertext = `enc:${options.recordId}:${plaintexts.size}`;
+      plaintexts.set(ciphertext, plaintext);
+      return { id: options.recordId, ref: ciphertext, ciphertext };
+    }),
+    load: vi.fn(async (ciphertext: string) => plaintexts.get(ciphertext)),
   };
   const deps = {
     prisma: prisma as unknown as PrismaClient,
@@ -99,7 +119,10 @@ function botSecretDeps(seed: Row[] = []) {
     dataDir: "/tmp/rakazo-router-test",
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps));
-  async function call(path: "list" | "put" | "remove", input: unknown) {
+  async function call(
+    path: "list" | "listForEdit" | "put" | "putForEdit" | "remove" | "removeForEdit",
+    input: unknown,
+  ) {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/botSecrets/${path}`, {
         method: "POST",
@@ -128,6 +151,110 @@ afterEach(() => {
 });
 
 describe("botSecrets router", () => {
+  it("requires a revision to save named fields and keeps older forms from replacing them", async () => {
+    const { call, rows, secrets } = botSecretDeps();
+    const login = {
+      botId: "bot-1",
+      destination: {
+        name: "portal",
+        origin: "https://login.example.test",
+        auth: { type: "login" },
+      },
+    };
+    const value = encodeLoginSecret({
+      fields: [
+        { label: "Account ID", value: "account-fixture", hidden: false },
+        { label: "Access phrase", value: FAKE_VALUE, hidden: true },
+      ],
+    });
+    expect((await call("put", { ...login, value })).status).toBe(409);
+    const created = await call("putForEdit", { ...login, value, expectedRevision: null });
+    expect(created.status).toBe(200);
+    expect(created.body.json).toMatchObject({ namedLogin: true });
+    expect(created.text).not.toContain(FAKE_VALUE);
+    expect(created.text).not.toContain("Access phrase");
+    const first = { ...rows[0] };
+    const listed = await call("listForEdit", { botId: login.botId });
+    expect(listed.body.json).toEqual([
+      expect.objectContaining({
+        namedLogin: true,
+        revision: first.revision,
+        auth: { type: "login" },
+      }),
+    ]);
+    expect(listed.text).not.toContain("Access phrase");
+    expect((await call("list", { botId: login.botId })).body.json).toEqual([
+      expect.objectContaining({ namedLogin: true, auth: null }),
+    ]);
+    const legacyValue = encodeLoginSecret({ username: "old-form", password: "old-form-fixture" });
+    for (const expectedRevision of [undefined, first.revision]) {
+      const rejected = await call("put", { ...login, value: legacyValue, expectedRevision });
+      expect(rejected.status).toBe(409);
+      expect(rejected.text).toContain("This login uses named fields");
+    }
+    expect(secrets.put).toHaveBeenCalledOnce();
+    expect(secrets.load).not.toHaveBeenCalled();
+    expect(rows[0]).toEqual(first);
+    expect((await call("remove", { botId: login.botId, name: "portal" })).status).toBe(409);
+    expect(
+      (
+        await call("removeForEdit", {
+          botId: login.botId,
+          name: "portal",
+          expectedRevision: "stale",
+        })
+      ).status,
+    ).toBe(409);
+    expect(rows[0]).toEqual(first);
+    expect(
+      (
+        await call("removeForEdit", {
+          botId: login.botId,
+          name: "portal",
+          expectedRevision: first.revision,
+        })
+      ).status,
+    ).toBe(200);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a revision that changed while the encrypted replacement was prepared", async () => {
+    const { call, rows, secrets, prisma } = botSecretDeps();
+    const input = putInput("https://api.example.test");
+    expect((await call("put", input)).status).toBe(200);
+    const preparedAt = rows[0]?.revision;
+    const put = secrets.put.getMockImplementation()!;
+    secrets.put.mockImplementationOnce(async (...args) => {
+      Object.assign(rows[0]!, { revision: "another-write", ciphertext: "enc:another-write" });
+      return put(...args);
+    });
+    expect((await call("put", { ...input, expectedRevision: preparedAt })).status).toBe(409);
+    expect(prisma.botSecret.updateMany).not.toHaveBeenCalled();
+    expect(rows[0]).toMatchObject({ revision: "another-write", ciphertext: "enc:another-write" });
+  });
+
+  it("reports a conflict if a competing save retired the old login reference", async () => {
+    const { call, rows, secrets } = botSecretDeps();
+    const input = {
+      botId: "bot-1",
+      destination: {
+        name: "portal",
+        origin: "https://login.example.test",
+        auth: { type: "login" },
+      },
+      value: encodeLoginSecret({ username: "fixture", password: "legacy-fixture" }),
+    };
+    expect((await call("put", input)).status).toBe(200);
+    secrets.load.mockImplementationOnce(async () => {
+      Object.assign(rows[0]!, { revision: "newer", ciphertext: "enc:newer" });
+      throw new Error("Synthetic provider reference retired");
+    });
+    const refused = await call("put", { ...input, expectedRevision: rows[0]?.revision });
+    expect(refused.status).toBe(409);
+    expect(refused.text).not.toContain("Synthetic provider");
+    expect(secrets.put).toHaveBeenCalledOnce();
+  });
+
   it("prepares a slow credential before opening the five-second transaction", async () => {
     const { prisma, secrets, call } = botSecretDeps();
     let clock = 0;
@@ -177,7 +304,7 @@ describe("botSecrets router", () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(prisma.botSecret.findMany).not.toHaveBeenCalled();
     expect(prisma.botSecret.create).not.toHaveBeenCalled();
-    expect(prisma.botSecret.update).not.toHaveBeenCalled();
+    expect(prisma.botSecret.updateMany).not.toHaveBeenCalled();
     expect(prisma.botSecret.deleteMany).not.toHaveBeenCalled();
   });
 
@@ -205,6 +332,7 @@ describe("botSecrets router", () => {
       "createdAt",
       "name",
       "origin",
+      "revision",
       "updatedAt",
     ]);
     expect(result.body.json).toEqual([
@@ -214,6 +342,7 @@ describe("botSecrets router", () => {
         auth: { type: "basic", username: "octocat" },
         createdAt: "2026-08-01T00:00:00.000Z",
         updatedAt: "2026-08-01T00:00:00.000Z",
+        revision: "revision-1",
       },
     ]);
     expect(result.text).not.toContain("enc:");
@@ -231,6 +360,7 @@ describe("botSecrets router", () => {
       auth: { type: "bearer" },
       createdAt: "2026-09-01T00:00:00.000Z",
       updatedAt: "2026-09-01T00:00:00.000Z",
+      revision: "revision-1",
     });
     expect(saved.text).not.toContain(FAKE_VALUE);
     expect(allowed.secrets.put).toHaveBeenCalledWith(
@@ -283,7 +413,7 @@ describe("botSecrets router", () => {
         value,
       });
       expect(result.status).toBe(400);
-      expect(result.text).toContain("A website login needs a username and password");
+      expect(result.text).toContain("Enter valid website login fields");
       expect(result.text).not.toContain(FAKE_VALUE);
       expect(secrets.put).not.toHaveBeenCalled();
     }
@@ -350,17 +480,27 @@ describe("botSecrets router", () => {
         auth: null,
         createdAt: "2026-08-01T00:00:00.000Z",
         updatedAt: "2026-08-01T00:00:00.000Z",
+        revision: "revision-1",
       },
     ]);
   });
 
   it("removes a non-regex stored name for the owned bot and rejects another user's bot", async () => {
-    const owned = botSecretDeps();
+    const owned = botSecretDeps([
+      { id: "row-1", userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "Legacy Name" },
+    ]);
     const removed = await owned.call("remove", { botId: "bot-1", name: "Legacy Name" });
     expect(removed.status).toBe(200);
     expect(removed.body.json).toEqual({ ok: true });
     expect(owned.prisma.botSecret.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "Legacy Name" },
+      where: {
+        id: "row-1",
+        revision: "revision-1",
+        userId: "user-1",
+        spaceId: "space-1",
+        botId: "bot-1",
+        name: "Legacy Name",
+      },
     });
 
     const foreign = botSecretDeps();
@@ -370,12 +510,21 @@ describe("botSecrets router", () => {
   });
 
   it("removes a credential by name within the owner's bot scope", async () => {
-    const { prisma, call } = botSecretDeps();
+    const { prisma, call } = botSecretDeps([
+      { id: "row-1", userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "router" },
+    ]);
     const result = await call("remove", { botId: "bot-1", name: "router" });
     expect(result.status).toBe(200);
     expect(result.body.json).toEqual({ ok: true });
     expect(prisma.botSecret.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", spaceId: "space-1", botId: "bot-1", name: "router" },
+      where: {
+        id: "row-1",
+        revision: "revision-1",
+        userId: "user-1",
+        spaceId: "space-1",
+        botId: "bot-1",
+        name: "router",
+      },
     });
   });
   it("stores a command variable with no origin and lists it with its type", async () => {

@@ -44,6 +44,7 @@ import {
   applyTeachingDesktopInput,
   archiveBot,
   assertSafeRemoteUrl,
+  BotSecretConflictError,
   buildMcpCredentialBlob,
   buildModelConnectPlaintext,
   CHATGPT_OAUTH_PROVIDER,
@@ -83,6 +84,7 @@ import {
   hostCredentialSource,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
+  isNamedBotLogin,
   isSandboxGoneError,
   isSandboxUnsafeStop,
   isScratchpadStatus,
@@ -160,6 +162,8 @@ import type {
   BoardEvent,
   Bot,
   BotSecretMetadata,
+  BotSecretPutInput,
+  BotSecretRemoveInput,
   ComputerReleaseReason,
   ComputerStatus,
   ExportManifest,
@@ -856,6 +860,9 @@ const BOT_SECRET_INPUT_ERRORS = [
 /** Map credential validation failures to a bad request without echoing the submitted value. */
 function mapBotSecretStoreError(error: unknown): unknown {
   if (error instanceof ORPCError) return error;
+  if (error instanceof BotSecretConflictError) {
+    return new ORPCError("CONFLICT", { message: error.message });
+  }
   if (
     error instanceof Error &&
     BOT_SECRET_INPUT_ERRORS.some((prefix) => error.message.startsWith(prefix))
@@ -865,7 +872,7 @@ function mapBotSecretStoreError(error: unknown): unknown {
   // Login decoding failures: a JSON parse message can quote the submitted value, so never forward it.
   if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError")) {
     return new ORPCError("BAD_REQUEST", {
-      message: "A website login needs a username and password",
+      message: "Enter valid website login fields",
     });
   }
   return error;
@@ -881,7 +888,8 @@ function botSecretMetadataDto(row: {
   auth: unknown;
   createdAt: Date;
   updatedAt: Date;
-}): BotSecretMetadata {
+  revision: string;
+}): BotSecretMetadata & { revision: string } {
   // Unreadable or no-longer-storable destinations become auth:null so the owner UI stays remove-only.
   const parsed = BotSecretAuth.safeParse(row.auth);
   let auth: BotSecretMetadata["auth"] = null;
@@ -899,6 +907,8 @@ function botSecretMetadataDto(row: {
     auth,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    revision: row.revision,
+    ...(isNamedBotLogin(row.auth) && { namedLogin: true as const }),
   };
 }
 
@@ -1053,6 +1063,41 @@ export function createRouter(deps: RouterDeps) {
     stillAuthorized?: () => Promise<boolean>;
   }>();
   const repos = createRepos(deps.prisma);
+  async function listOwnedBotCredentials(actor: Actor, botId: string) {
+    const bot = await repos.getBot(actor, botId);
+    const rows = await listBotSecretMetadata(deps.prisma, botSecretScope(actor, bot.id));
+    return rows.map(botSecretMetadataDto);
+  }
+  async function putOwnedBotCredential(actor: Actor, input: BotSecretPutInput) {
+    const bot = await repos.getBot(actor, input.botId);
+    let row: Awaited<ReturnType<typeof getBotSecretMetadata>>;
+    try {
+      row = await storeBotSecret({
+        prisma: deps.prisma,
+        secretStore: deps.secrets,
+        scope: botSecretScope(actor, bot.id),
+        destination: input.destination,
+        plaintext: input.value,
+        expectedRevision: input.expectedRevision,
+      });
+    } catch (error) {
+      throw mapBotSecretStoreError(error);
+    }
+    if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
+    return botSecretMetadataDto(row);
+  }
+  async function removeOwnedBotCredential(actor: Actor, input: BotSecretRemoveInput) {
+    const bot = await repos.getBot(actor, input.botId);
+    try {
+      await forgetBotSecret(deps.prisma, botSecretScope(actor, bot.id), input.name, {
+        expectedRevision: input.expectedRevision,
+        requireBotOwner: true,
+      });
+    } catch (error) {
+      throw mapBotSecretStoreError(error);
+    }
+    return { ok: true as const };
+  }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
@@ -7510,36 +7555,25 @@ export function createRouter(deps: RouterDeps) {
     },
     botSecrets: {
       list: authed.botSecrets.list.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        const rows = await listBotSecretMetadata(
-          deps.prisma,
-          botSecretScope(context.actor, bot.id),
-        );
-        return rows.map(botSecretMetadataDto);
+        const rows = await listOwnedBotCredentials(context.actor, input.botId);
+        // Legacy editors treat null auth as unavailable and never request a replacement.
+        return rows.map((row) => (row.namedLogin ? { ...row, auth: null } : row));
       }),
-      put: authed.botSecrets.put.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        const scope = botSecretScope(context.actor, bot.id);
-        let row: Awaited<ReturnType<typeof getBotSecretMetadata>>;
-        try {
-          row = await storeBotSecret({
-            prisma: deps.prisma,
-            secretStore: deps.secrets,
-            scope,
-            destination: input.destination,
-            plaintext: input.value,
-          });
-        } catch (error) {
-          throw mapBotSecretStoreError(error);
-        }
-        if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
-        return botSecretMetadataDto(row);
-      }),
-      remove: authed.botSecrets.remove.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
-        await forgetBotSecret(deps.prisma, botSecretScope(context.actor, bot.id), input.name);
-        return { ok: true as const };
-      }),
+      listForEdit: authed.botSecrets.listForEdit.handler(({ context, input }) =>
+        listOwnedBotCredentials(context.actor, input.botId),
+      ),
+      put: authed.botSecrets.put.handler(({ context, input }) =>
+        putOwnedBotCredential(context.actor, input),
+      ),
+      putForEdit: authed.botSecrets.putForEdit.handler(({ context, input }) =>
+        putOwnedBotCredential(context.actor, input),
+      ),
+      remove: authed.botSecrets.remove.handler(({ context, input }) =>
+        removeOwnedBotCredential(context.actor, input),
+      ),
+      removeForEdit: authed.botSecrets.removeForEdit.handler(({ context, input }) =>
+        removeOwnedBotCredential(context.actor, input),
+      ),
     },
     approvalRules: {
       list: authed.approvalRules.list.handler(async ({ context }) => {

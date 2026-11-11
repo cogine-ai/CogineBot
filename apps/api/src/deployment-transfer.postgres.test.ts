@@ -470,6 +470,34 @@ postgres(
       );
       expect(JSON.stringify(result)).not.toMatch(/private-login|excluded-/);
     });
+    it("excludes named logins and protects a named target against a legacy overwrite", async () => {
+      const [s, t] = await Promise.all([account(source), account(target)]);
+      const named = JSON.stringify({
+        fields: [{ label: "Named field", value: "synthetic-protected-value", hidden: true }],
+      });
+      const auth = { type: "login", loginFormat: "named" };
+      await credential(source, s, "named_source", named, auth);
+      const previous = await credential(target, t, "collision", named, auth);
+      sourceLoads.mockClear();
+      targetPuts.mockClear();
+      const p = await pair({
+        sourceOwner: s,
+        targetOwner: t,
+        names: ["collision"],
+        login: true,
+        overwrite: ["collision"],
+      });
+      expect(p.sending.leftOut).toContainEqual({
+        name: "named_source",
+        reason: "unsupported_kind",
+      });
+      expect((await commit(p)).items).toEqual([
+        expect.objectContaining({ name: "collision", status: "kept" }),
+      ]);
+      expect(await targetRows(p)).toEqual([previous]);
+      expect(sourceLoads).not.toHaveBeenCalled();
+      expect(targetPuts).not.toHaveBeenCalled();
+    });
     it("keeps a target conflict by default and copies an independent new item", async () => {
       const t = await account(target);
       const old = await credential(target, t, "keep", "old-target");

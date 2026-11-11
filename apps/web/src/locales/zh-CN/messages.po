@@ -7457,3 +7457,11 @@ msgstr "已作为图片发送。草稿已保留。"
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "已作为文件发送。草稿已保留。"
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "此服务器暂不支持修改凭据。"
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "此表单无法编辑命名字段。"

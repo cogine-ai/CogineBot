@@ -32,7 +32,6 @@ import {
   readBotSecretHttpEffect,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
-  runSecretKind,
   SITE_SENDING_TOOLS,
   STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
@@ -71,11 +70,9 @@ import {
   type VerifyRoutineRetryNativeSource,
 } from "./routine-retry.js";
 import { reserveRunProgressResetInTransaction } from "./run-progress.js";
+import { clearEndedRunState } from "./run-secrets.js";
 import { isRunResponse, readRunTimingFields } from "./run-timing.js";
-import {
-  clearRunTurnCheckpoints,
-  loadRunTurnCheckpointSecretEffectId,
-} from "./run-turn-checkpoint.js";
+import { loadRunTurnCheckpointSecretEffectId } from "./run-turn-checkpoint.js";
 import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
@@ -1372,10 +1369,7 @@ export async function retireWaitingQuestionInTransaction(
     },
   });
   if (retired.count !== 1) return false;
-  await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
-  await tx.secret.deleteMany({
-    where: { userId: run.userId, spaceId: input.spaceId, kind: runSecretKind(input.runId) },
-  });
+  await clearEndedRunState(tx, [{ id: input.runId, userId: run.userId, spaceId: input.spaceId }]);
   await tx.attempt.updateMany({
     where: { runId: input.runId, status: "waiting_input" },
     data: { status: "cancelled", finishedAt: now },
@@ -2121,7 +2115,7 @@ export async function beginRoutineRetryExecution(
         },
       });
       if (cancelled.count !== 1) return { started: false };
-      await clearRunTurnCheckpoints(tx, [{ id: child.id, spaceId: child.spaceId }]);
+      await clearEndedRunState(tx, [child]);
       await tx.task.update({
         where: {
           id: child.taskId,
@@ -2209,13 +2203,14 @@ async function finalizeRunOnce(
 } | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
-    let writableRun: { startedAt: Date | null } | undefined;
+    let writableRun: Awaited<ReturnType<typeof assertRunCanWriteHistory>>;
     try {
       writableRun = await assertRunCanWriteHistory(tx, input.runId);
     } catch (error) {
       if (error instanceof RunHistoryWriteError) return null;
       throw error;
     }
+    if (!writableRun) return null;
     const now = new Date();
     const terminal = await tx.run.updateMany({
       where: {
@@ -2237,7 +2232,9 @@ async function finalizeRunOnce(
       },
     });
     if (terminal.count !== 1) return null;
-    await clearRunTurnCheckpoints(tx, [{ id: input.runId, spaceId: input.spaceId }]);
+    await clearEndedRunState(tx, [
+      { id: input.runId, userId: writableRun.userId, spaceId: input.spaceId },
+    ]);
 
     const attempt = await tx.attempt.updateMany({
       where: {

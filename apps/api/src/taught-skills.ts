@@ -42,7 +42,7 @@ import {
   teachRecordingTtlMs,
 } from "@rakazo/core";
 import {
-  clearRunTurnCheckpoints,
+  clearEndedRunState,
   type createRepos,
   expireComputerExecutionLeases,
   IsolationError,
@@ -121,9 +121,9 @@ async function cancelActiveRuns(
     const runs = await tx.run.updateManyAndReturn({
       where: { botId, spaceId: actor.spaceId, status: { in: [...ACTIVE_RUN_STATUSES] } },
       data: { status: "cancelled", completedAt: new Date() },
-      select: { id: true, spaceId: true },
+      select: { id: true, userId: true, spaceId: true },
     });
-    await clearRunTurnCheckpoints(tx, runs);
+    await clearEndedRunState(tx, runs);
     return runs;
   });
   await expireComputerExecutionLeases(deps.prisma, { botId });

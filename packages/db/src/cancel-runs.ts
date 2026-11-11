@@ -1,10 +1,10 @@
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import type { Prisma } from "./client.js";
-import { clearRunTurnCheckpoints } from "./run-turn-checkpoint.js";
+import { clearEndedRunState } from "./run-secrets.js";
 
 /** Return only cancelled winners; a run that finished after the caller's read keeps its outcome. */
 export async function cancelRunsInTransaction<Run extends { id: string; taskId: string }>(
-  tx: Pick<Prisma.TransactionClient, "run" | "attempt" | "task" | "externalEffect">,
+  tx: Pick<Prisma.TransactionClient, "run" | "attempt" | "task" | "externalEffect" | "secret">,
   runs: ReadonlyArray<Run>,
   cancelledAt: Date,
 ): Promise<Run[]> {
@@ -17,13 +17,13 @@ export async function cancelRunsInTransaction<Run extends { id: string; taskId: 
       leaseOwner: null,
       leaseExpiresAt: null,
     },
-    select: { id: true, spaceId: true },
+    select: { id: true, spaceId: true, userId: true },
   });
   const winnerIds = new Set(winners.map((run) => run.id));
   const cancelled = runs.filter((run) => winnerIds.has(run.id));
   if (cancelled.length === 0) return [];
   const runIds = cancelled.map((run) => run.id);
-  await clearRunTurnCheckpoints(tx, winners);
+  await clearEndedRunState(tx, winners);
   await tx.attempt.updateMany({
     where: { runId: { in: runIds }, status: "running" },
     data: { status: "cancelled", finishedAt: cancelledAt },

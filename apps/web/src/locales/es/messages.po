@@ -7362,3 +7362,11 @@ msgstr "Ya se envió como imagen. Se conserva tu borrador."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "Ya se envió como archivo. Se conserva tu borrador."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "Este servidor no permite modificar las credenciales."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "Este formulario no permite editar campos con nombre."

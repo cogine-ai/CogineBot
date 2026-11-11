@@ -269,7 +269,7 @@ describe("archiveGroup", () => {
       computerRows.filter((row) => matches(row, where)),
     );
     runUpdateMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
-      where.id.in.map((id) => ({ id, spaceId: actor.spaceId })),
+      where.id.in.map((id) => ({ id, spaceId: actor.spaceId, userId: actor.userId })),
     );
     attemptUpdateMany = vi.fn();
     taskUpdateMany = vi.fn();
@@ -339,6 +339,7 @@ describe("archiveGroup", () => {
       chatGroup: { findFirst, update: groupUpdate },
       run: { findMany: findManyRuns, updateManyAndReturn: runUpdateMany },
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       attempt: { updateMany: attemptUpdateMany },
       task: { updateMany: taskUpdateMany },
       computerExecutionLease: { findMany: leaseFindMany, updateMany: leaseUpdateMany },
@@ -721,10 +722,13 @@ describe("removeGroup", () => {
       },
       run: {
         findMany: vi.fn(async () => [run]),
-        updateManyAndReturn: vi.fn(async () => [{ id: run.id, spaceId: actor.spaceId }]),
+        updateManyAndReturn: vi.fn(async () => [
+          { id: run.id, spaceId: actor.spaceId, userId: actor.userId },
+        ]),
       },
       attempt: { updateMany: vi.fn() },
       externalEffect: { deleteMany: vi.fn() },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       task: { updateMany: vi.fn() },
       computerExecutionLease: { findMany: vi.fn(async () => [lease]) },
       computer: { findMany: vi.fn(async () => [computer]) },

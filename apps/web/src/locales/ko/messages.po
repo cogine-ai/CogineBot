@@ -7362,3 +7362,11 @@ msgstr "이미 이미지로 전송되었습니다. 초안은 보관됩니다."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "이미 파일로 전송되었습니다. 초안은 보관됩니다."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "이 서버에서는 자격 증명을 변경할 수 없습니다."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "이 양식에서는 이름이 지정된 필드를 편집할 수 없습니다."

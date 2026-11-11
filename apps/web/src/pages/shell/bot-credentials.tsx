@@ -9,7 +9,7 @@ import {
 import { Button, Input, NativeSelect, NativeSelectOption } from "@rakazo/ui-web";
 import { useEffect, useId, useState } from "react";
 import { rpc } from "../../lib/rpc";
-import { errorText } from "../../lib/user-error";
+import { errorCode, errorText } from "../../lib/user-error";
 
 type ReadableCredentialAuth = NonNullable<BotSecretMetadata["auth"]>;
 type CredentialAuthType = ReadableCredentialAuth["type"];
@@ -26,10 +26,20 @@ function credentialDestination(name: string, origin: string, auth: ReadableCrede
   return auth.type === "command" ? { name, auth } : { name, origin, auth };
 }
 
+async function readCredentials(botId: string) {
+  try {
+    return { rows: await rpc.botSecrets.listForEdit({ botId }), editable: true };
+  } catch (error) {
+    if (errorCode(error) !== "NOT_FOUND") throw error;
+    return { rows: await rpc.botSecrets.list({ botId }), editable: false };
+  }
+}
+
 export function BotCredentialsSection({ botId }: { botId: string }) {
   const { t } = useLingui();
   const ids = useId();
   const [secrets, setSecrets] = useState<BotSecretMetadata[] | null>(null);
+  const [editable, setEditable] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,11 +57,11 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   useEffect(() => {
     let active = true;
-    rpc.botSecrets
-      .list({ botId })
-      .then((rows) => {
+    readCredentials(botId)
+      .then(({ rows, editable }) => {
         if (!active) return;
         setSecrets(rows);
+        setEditable(editable);
         setLoadFailed(false);
       })
       .catch(() => {
@@ -64,7 +74,9 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   async function refresh() {
     try {
-      setSecrets(await rpc.botSecrets.list({ botId }));
+      const latest = await readCredentials(botId);
+      setSecrets(latest.rows);
+      setEditable(latest.editable);
       setLoadFailed(false);
       return true;
     } catch {
@@ -100,11 +112,10 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     return { type: "bearer" };
   }
 
-  async function save(destination: {
-    name: string;
-    origin?: string;
-    auth: ReadableCredentialAuth;
-  }) {
+  async function save(
+    destination: { name: string; origin?: string; auth: ReadableCredentialAuth },
+    expectedRevision: string | null,
+  ) {
     const username = loginUsername.trim();
     const secretValue = value;
     clearProtectedFields();
@@ -118,7 +129,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     }
     setBusy(true);
     try {
-      await rpc.botSecrets.put({ botId, destination, value: plaintext });
+      await rpc.botSecrets.putForEdit({ botId, destination, value: plaintext, expectedRevision });
       if (!(await refresh())) {
         setError(t`Could not load credentials.`);
         return false;
@@ -126,6 +137,11 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
       return true;
     } catch (err) {
       setError(errorText(err, t`Could not save the credential`));
+      const code = errorCode(err);
+      if (code === "CONFLICT" || code === "NOT_FOUND") {
+        setReplacing(null);
+        if (!(await refresh())) setEditable(false);
+      }
       return false;
     } finally {
       setBusy(false);
@@ -134,7 +150,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   async function submitAdd() {
     if (busy || !canAdd) return;
-    const saved = await save(credentialDestination(name.trim(), origin.trim(), newAuth()));
+    const saved = await save(credentialDestination(name.trim(), origin.trim(), newAuth()), null);
     if (!saved) return;
     setAdding(false);
     setName("");
@@ -145,24 +161,36 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   }
 
   async function submitReplace(secret: BotSecretMetadata) {
-    if (busy || !secret.auth) return;
-    const saved = await save(credentialDestination(secret.name, secret.origin, secret.auth));
+    if (busy || !editable || !secret.auth || !secret.revision || secret.namedLogin) return;
+    const saved = await save(
+      credentialDestination(secret.name, secret.origin, secret.auth),
+      secret.revision,
+    );
     if (saved) setReplacing(null);
   }
 
-  async function confirmRemove(secretName: string) {
-    if (busy) return;
+  async function confirmRemove(secret: BotSecretMetadata) {
+    if (busy || !editable || !secret.revision) return;
     setError(null);
     setBusy(true);
     try {
-      await rpc.botSecrets.remove({ botId, name: secretName });
+      await rpc.botSecrets.removeForEdit({
+        botId,
+        name: secret.name,
+        expectedRevision: secret.revision,
+      });
       setConfirmingRemove(null);
       if (!(await refresh())) {
-        setSecrets((prev) => prev?.filter((row) => row.name !== secretName) ?? null);
+        setSecrets((prev) => prev?.filter((row) => row.name !== secret.name) ?? null);
         setError(t`Could not load credentials.`);
       }
     } catch (err) {
       setError(errorText(err, t`Could not remove the credential`));
+      const code = errorCode(err);
+      if (code === "CONFLICT" || code === "NOT_FOUND") {
+        setConfirmingRemove(null);
+        if (!(await refresh())) setEditable(false);
+      }
     } finally {
       setBusy(false);
     }
@@ -214,6 +242,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
       : null;
 
   const canAdd =
+    editable &&
     !busy &&
     nameValid &&
     (authType === "command" ? !commandVariableError : origin.trim().length > 0) &&
@@ -234,6 +263,11 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
           <Trans>Could not load credentials.</Trans>
         </p>
       ) : null}
+      {secrets && !editable && !loadFailed ? (
+        <p className="mt-3 text-[13px] text-muted-foreground">
+          <Trans>Credential changes are unavailable on this server.</Trans>
+        </p>
+      ) : null}
       {secrets && secrets.length === 0 ? (
         <p data-testid="bot-credentials-empty" className="mt-3 text-[13px] text-muted-foreground">
           <Trans>No credentials saved for this bot.</Trans>
@@ -250,6 +284,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
               secret.auth !== null && BotSecretName.safeParse(secret.name).success
                 ? secret.auth
                 : null;
+            const canReplace = editable && !secret.namedLogin ? readableAuth : null;
             return (
               <li
                 key={secret.name}
@@ -278,7 +313,12 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                     · {t`Updated ${updated}`}
                   </div>
                 )}
-                {readableAuth !== null && replacing === secret.name ? (
+                {secret.namedLogin ? (
+                  <div className="text-[12px] text-muted-foreground">
+                    <Trans>This form can't edit named fields.</Trans>
+                  </div>
+                ) : null}
+                {canReplace !== null && replacing === secret.name ? (
                   <form
                     className="mt-1"
                     onSubmit={(event) => {
@@ -286,13 +326,13 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       void submitReplace(secret);
                     }}
                   >
-                    {loginFields(readableAuth.type, "credential-replace")}
+                    {loginFields(canReplace.type, "credential-replace")}
                     <div className="mt-3 flex gap-2">
                       <Button
                         type="submit"
                         size="sm"
                         data-testid="credential-replace-save"
-                        disabled={busy || !valueReady(readableAuth.type)}
+                        disabled={busy || !valueReady(canReplace.type)}
                       >
                         <Trans>Save new value</Trans>
                       </Button>
@@ -309,7 +349,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       </Button>
                     </div>
                   </form>
-                ) : confirmingRemove === secret.name ? (
+                ) : editable && confirmingRemove === secret.name ? (
                   <div className="mt-2">
                     <p className="text-[13px] text-foreground">
                       <Trans>Remove {secretName}? This bot will no longer be able to use it.</Trans>
@@ -322,7 +362,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                         className="text-destructive hover:text-destructive"
                         data-testid={`credential-remove-confirm-${secret.name}`}
                         disabled={busy}
-                        onClick={() => void confirmRemove(secret.name)}
+                        onClick={() => void confirmRemove(secret)}
                       >
                         <Trans>Remove</Trans>
                       </Button>
@@ -336,9 +376,9 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       </Button>
                     </div>
                   </div>
-                ) : (
+                ) : editable ? (
                   <div className="mt-1.5 flex gap-1">
-                    {readableAuth !== null ? (
+                    {canReplace !== null ? (
                       <Button
                         type="button"
                         size="sm"
@@ -372,7 +412,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       <Trans>Remove</Trans>
                     </Button>
                   </div>
-                )}
+                ) : null}
               </li>
             );
           })}
@@ -383,7 +423,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
           {error}
         </p>
       ) : null}
-      {adding ? (
+      {editable && adding ? (
         <form
           data-testid="credential-add-form"
           className="mt-3"
@@ -504,7 +544,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
             </Button>
           </div>
         </form>
-      ) : (
+      ) : editable ? (
         <Button
           type="button"
           size="sm"
@@ -520,7 +560,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
         >
           <Trans>Add credential</Trans>
         </Button>
-      )}
+      ) : null}
     </section>
   );
 }

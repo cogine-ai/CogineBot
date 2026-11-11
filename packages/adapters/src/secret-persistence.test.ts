@@ -41,6 +41,7 @@ type Row = {
   organizationId?: string;
   sessionId?: string;
   itemKey?: string;
+  archivedAt?: Date | null;
 };
 type Args = { where?: Record<string, unknown>; data?: Row; create?: Row; update?: Row };
 type Hook = (input: {
@@ -152,8 +153,23 @@ function database() {
       },
     };
   }
-  client.$queryRaw = async (query: { sql: string; values: unknown[] }) => {
-    if (!query.sql) return [];
+  client.$queryRaw = async (
+    query: { sql: string; values: unknown[] } | TemplateStringsArray,
+    ...args: unknown[]
+  ) => {
+    if (!("sql" in query)) {
+      if (!query.join("").includes("SELECT id FROM bots")) return [];
+      const [id, spaceId, ownerRequired, userId] = args;
+      return tables
+        .get("bot")!
+        .filter(
+          (row) =>
+            row.id === id &&
+            row.spaceId === spaceId &&
+            row.archivedAt === null &&
+            (!ownerRequired || row.userId === userId),
+        );
+    }
     if (query.sql.includes("native-hook:credential-reference"))
       return [
         {
@@ -949,6 +965,16 @@ describe("prepared run-secret writes", () => {
       );
       const db = database();
       const prisma = withSecretPersistence(db.prisma, store);
+      await prisma.bot.create({
+        data: {
+          id: "bot",
+          userId: "user",
+          spaceId: "space",
+          name: "Fixture",
+          color: "ink",
+          archivedAt: null,
+        },
+      });
       const credential = credentialAsk
         ? {
             name: "example_api",

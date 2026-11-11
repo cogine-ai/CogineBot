@@ -7433,3 +7433,11 @@ msgstr "Already sent as an image. Your draft is kept."
 #: src/pages/Shell.tsx
 msgid "Already sent as a file. Your draft is kept."
 msgstr "Already sent as a file. Your draft is kept."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "Credential changes are unavailable on this server."
+msgstr "Credential changes are unavailable on this server."
+
+#: src/pages/shell/bot-credentials.tsx
+msgid "This form can't edit named fields."
+msgstr "This form can't edit named fields."

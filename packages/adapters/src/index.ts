@@ -20,6 +20,7 @@ export {
   BotSecretConflictError,
   forgetBotSecret,
   getBotSecretMetadata,
+  isNamedBotLogin,
   listBotSecretMetadata,
   normalizeSecretDestination,
   sameSecretDestination,
