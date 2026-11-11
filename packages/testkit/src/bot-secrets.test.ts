@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
-import { ScriptedAgentRuntime } from "@rakazo/adapters";
+import { EncryptedSecretStore, ScriptedAgentRuntime } from "@rakazo/adapters";
+import type { BotSecretMetadata } from "@rakazo/contracts";
+import { decodeLoginSecret, encodeLoginSecret } from "@rakazo/contracts";
+import { resolveEncryptionKey } from "@rakazo/core";
 import { answerRunInput } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
@@ -48,6 +51,83 @@ describeIntegration("reusable credential lifecycle", () => {
   afterAll(async () => {
     await handles?.stop();
     rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("keeps the record-bound login intact until one revision-checked replacement wins", async () => {
+    const { cookie, me, bot } = await seedRun("login-revision", "Credential fixture");
+    const scope = { userId: me.userId, spaceId: me.spaceId, botId: bot.id, name: "portal" };
+    const put = {
+      botId: bot.id,
+      destination: {
+        name: "portal",
+        origin: "https://login.example.test",
+        auth: { type: "login" },
+      },
+    };
+    const legacy = encodeLoginSecret({ username: "fixture", password: "legacy-fixture" });
+    const created = await rpc<BotSecretMetadata>(cookie, "botSecrets/put", {
+      ...put,
+      value: legacy,
+    });
+    const previous = await handles.prisma.botSecret.findFirstOrThrow({ where: scope });
+    const secretStore = new EncryptedSecretStore(resolveEncryptionKey());
+    expect(created.revision).toBe(previous.revision);
+    expect(await secretStore.load(previous.ciphertext, previous.id)).toBe(legacy);
+    const rejectedCreate = await rpcResponse(cookie, "botSecrets/put", {
+      ...put,
+      value: legacy,
+      expectedRevision: null,
+    });
+    expect(rejectedCreate.status).toBe(409);
+    expect(await handles.prisma.botSecret.findFirstOrThrow({ where: scope })).toEqual(previous);
+
+    const named = ["first", "second"].map((value) =>
+      encodeLoginSecret({
+        fields: [
+          { label: "Account ID", value: "fixture", hidden: false },
+          { label: "Access phrase", value: `${value}-synthetic-phrase`, hidden: true },
+        ],
+      }),
+    );
+    const responses = await Promise.all(
+      named.map((value) =>
+        rpcResponse(cookie, "botSecrets/put", {
+          ...put,
+          value,
+          expectedRevision: previous.revision,
+        }),
+      ),
+    );
+    expect(responses.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const latest = await handles.prisma.botSecret.findFirstOrThrow({ where: scope });
+    expect(latest.id).toBe(previous.id);
+    expect(latest.revision).not.toBe(previous.revision);
+    const winningValue = named[responses.findIndex(({ status }) => status === 200)]!;
+    expect(decodeLoginSecret(await secretStore.load(latest.ciphertext, latest.id))).toEqual(
+      decodeLoginSecret(winningValue),
+    );
+    const list = await rpc<BotSecretMetadata[]>(cookie, "botSecrets/list", { botId: bot.id });
+    expect(list).toEqual([expect.objectContaining({ name: "portal", revision: latest.revision })]);
+    expect(JSON.stringify(list)).not.toContain("Access phrase");
+    expect((await rpcResponse(cookie, "botSecrets/put", { ...put, value: legacy })).status).toBe(
+      409,
+    );
+    expect(
+      (
+        await rpcResponse(cookie, "botSecrets/remove", {
+          botId: bot.id,
+          name: "portal",
+          expectedRevision: previous.revision,
+        })
+      ).status,
+    ).toBe(409);
+    expect(await handles.prisma.botSecret.findFirstOrThrow({ where: scope })).toEqual(latest);
+    await rpc(cookie, "botSecrets/remove", {
+      botId: bot.id,
+      name: "portal",
+      expectedRevision: latest.revision,
+    });
+    expect(await handles.prisma.botSecret.count({ where: scope })).toBe(0);
   });
 
   it.each([false, true])(
@@ -416,8 +496,8 @@ describeIntegration("reusable credential lifecycle", () => {
     return `better-auth.session_token=${match![1]}`;
   }
 
-  async function rpc<T>(cookie: string, procedure: string, body: unknown = {}): Promise<T> {
-    const response = await handles.app.request(`/rpc/${procedure}`, {
+  function rpcResponse(cookie: string, procedure: string, body: unknown) {
+    return handles.app.request(`/rpc/${procedure}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -426,6 +506,10 @@ describeIntegration("reusable credential lifecycle", () => {
       },
       body: JSON.stringify({ json: body }),
     });
+  }
+
+  async function rpc<T>(cookie: string, procedure: string, body: unknown = {}): Promise<T> {
+    const response = await rpcResponse(cookie, procedure, body);
     const payload = (await response.json()) as { json?: T; error?: { message?: string } };
     if (!response.ok || payload.error) {
       throw new Error(payload.error?.message ?? `${procedure} failed (${response.status})`);

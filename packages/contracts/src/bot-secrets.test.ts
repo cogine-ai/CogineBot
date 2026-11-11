@@ -9,6 +9,7 @@ import {
   encodeLoginSecret,
   isCloudMetadataHost,
   isPrivateNetworkHost,
+  loginSecretFields,
   SecretHttpRequest,
 } from "./bot-secrets.js";
 import { AGENT_SECRET_NAME_PATTERN } from "./domain.js";
@@ -160,6 +161,50 @@ describe("login credentials", () => {
     ).toBe(true);
     const value = { username: "fake-user", password: "fake:password\nwith newline" };
     expect(decodeLoginSecret(encodeLoginSecret(value))).toEqual(value);
+  });
+
+  it("reads an existing pair as named fields without altering the legacy values", () => {
+    const legacy = { username: "  existing account  ", password: "  synthetic password  " };
+    expect(loginSecretFields(decodeLoginSecret(encodeLoginSecret(legacy)))).toEqual([
+      { label: "Username", value: legacy.username, hidden: false },
+      { label: "Password", value: legacy.password, hidden: true },
+    ]);
+  });
+
+  it("preserves field order and hidden values while normalizing labels and visible values", () => {
+    const fields = [
+      { label: " Account ID ", value: "  fixture  ", hidden: false },
+      { label: "Secret", value: "  synthetic password  ", hidden: true },
+    ];
+    expect(decodeLoginSecret(encodeLoginSecret({ fields }))).toEqual({
+      fields: [{ label: "Account ID", value: "fixture", hidden: false }, fields[1]],
+    });
+  });
+
+  it.each(
+    [
+      [],
+      Array.from({ length: 9 }, (_, i) => ({
+        label: `Field ${i}`,
+        value: "fixture",
+        hidden: true,
+      })),
+      [
+        { label: "A", value: "fixture", hidden: true },
+        { label: " a ", value: "other", hidden: false },
+      ],
+      [{ label: "A", value: " ".repeat(8), hidden: false }],
+      [{ label: "A", value: "x".repeat(4097), hidden: true }],
+      Array.from({ length: 4 }, (_, i) => ({
+        label: `Field ${i}`,
+        value: "x".repeat(4096),
+        hidden: true,
+      })),
+    ].map((fields) => ({ fields })),
+  )("rejects invalid named fields even beside a valid legacy pair", ({ fields }) => {
+    expect(() =>
+      decodeLoginSecret(JSON.stringify({ fields, username: "legacy", password: "legacy" })),
+    ).toThrow();
   });
 
   it.each([

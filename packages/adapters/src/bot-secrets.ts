@@ -10,6 +10,7 @@ import {
   decodeLoginSecret,
   encodeLoginSecret,
   isPrivateNetworkHost,
+  loginSecretFields,
   SecretHttpRequest,
 } from "@rakazo/contracts";
 import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
@@ -378,20 +379,41 @@ export async function prepareBotSecret(input: {
   scope: BotSecretScope;
   destination: BotSecretDestination;
   plaintext: string;
+  expectedRevision?: string | null;
+  requireBotOwner?: boolean;
 }) {
   const { prisma, secretStore, scope, plaintext } = input;
   const destination = normalizeSecretDestination(input.destination);
-  validateBotSecretValue(destination, plaintext);
+  const login = validateBotSecretValue(destination, plaintext);
+  if (login && "fields" in login && input.expectedRevision === undefined) throw credentialChanged();
   const existing = await prisma.botSecret.findFirst({
     where: { ...scopeFields(scope), name: destination.name },
   });
   function validate(row: typeof existing, count: number) {
     validateBotSecretSlot(row, count, destination);
   }
+  if (
+    input.expectedRevision !== undefined &&
+    input.expectedRevision !== (existing?.revision ?? null)
+  )
+    throw credentialChanged();
   validate(existing, await prisma.botSecret.count({ where: scopeFields(scope) }));
+  if (existing && login && !("fields" in login)) {
+    const stored = await secretStore.load(existing.ciphertext, existing.id);
+    let currentLogin: ReturnType<typeof decodeLoginSecret>;
+    try {
+      currentLogin = decodeLoginSecret(stored);
+    } catch {
+      throw new BotSecretConflictError("This login cannot be edited in the current form.");
+    }
+    if ("fields" in currentLogin)
+      throw new BotSecretConflictError(
+        "This login uses named fields. Use a form that supports them.",
+      );
+  }
   const id = existing?.id ?? randomBytes(12).toString("hex");
   const stored = await secretStore.put(
-    plaintext,
+    login && "fields" in login ? encodeLoginSecret(login) : plaintext,
     {
       operationId: id,
       traceId: id,
@@ -405,10 +427,13 @@ export async function prepareBotSecret(input: {
     id,
     ciphertext: stored.ciphertext,
     async store(tx: Prisma.TransactionClient) {
-      await tx.$queryRaw`SELECT id FROM bots WHERE id = ${scope.botId} FOR UPDATE`;
+      if (!(await lockBotSecretScope(tx, scope, input.requireBotOwner ?? false)))
+        throw credentialChanged();
       const current = await tx.botSecret.findFirst({
         where: { ...scopeFields(scope), name: destination.name },
       });
+      if (current?.id !== existing?.id || current?.revision !== existing?.revision)
+        throw credentialChanged();
       validate(current, await tx.botSecret.count({ where: scopeFields(scope) }));
       const conflict = await findCommandVariableConflict(tx, scope, destination);
       if (conflict) {
@@ -416,14 +441,17 @@ export async function prepareBotSecret(input: {
           `Invalid credential destination — name: ${conflict} is already exported as $${commandVariableName(destination.name)}`,
         );
       }
-      if (current?.id !== existing?.id)
-        throw Object.assign(new Error("Credential changed while saving; retry"), { code: "P2034" });
-      if (current)
-        await tx.botSecret.update({ where: { id }, data: { ciphertext: stored.ciphertext } });
-      else
+      if (current) {
+        const updated = await tx.botSecret.updateMany({
+          where: { id, ...scopeFields(scope), revision: current.revision },
+          data: { ciphertext: stored.ciphertext },
+        });
+        if (updated.count !== 1) throw credentialChanged();
+      } else {
         await tx.botSecret.create({
           data: { id, ...scopeFields(scope), ...destination, ciphertext: stored.ciphertext },
         });
+      }
     },
   };
 }
@@ -451,7 +479,7 @@ function validateBotSecretSlot(
   if (!row && count >= 100) throw new Error("Credential limit reached");
 }
 
-/** Transfer only typed credentials; login extras and both protected fields stay out of metadata. */
+/** Transfer only typed credentials; values and login fields stay out of metadata. */
 export function validateTransferBotSecret(destination: unknown, plaintext: string) {
   const normalized = normalizeSecretDestination(destination);
   if (normalized.auth.type === "command")
@@ -469,10 +497,28 @@ export type ExpectedBotSecret =
   | { kind: "present"; id: string; revision: string };
 
 export class BotSecretConflictError extends Error {
-  constructor() {
-    super("The saved credential changed. Review the transfer again.");
+  constructor(message = "The saved credential changed. Review the transfer again.") {
+    super(message);
     this.name = "BotSecretConflictError";
   }
+}
+
+function credentialChanged() {
+  return new BotSecretConflictError(
+    "The saved credential changed. Reload credentials and try again.",
+  );
+}
+
+async function lockBotSecretScope(
+  tx: Prisma.TransactionClient,
+  scope: BotSecretScope,
+  requireBotOwner: boolean,
+) {
+  const bots = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM bots WHERE id=${scope.botId} AND "spaceId"=${scope.spaceId}
+      AND "archivedAt" IS NULL AND (NOT ${requireBotOwner} OR "userId"=${scope.userId})
+    FOR UPDATE`;
+  return bots.length === 1;
 }
 
 /** Adopt a provider-prepared value inside the caller's authorization/receipt transaction. No I/O. */
@@ -489,10 +535,7 @@ export async function adoptPreparedBotSecret(
   const { scope, recordId, ciphertext, expected } = input;
   if (!recordId || !ciphertext || ciphertext.length > 4_000_000) throw new BotSecretConflictError();
   const destination = normalizeSecretDestination(input.destination);
-  const bots = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT id FROM bots WHERE id=${scope.botId} AND "userId"=${scope.userId}
-      AND "spaceId"=${scope.spaceId} AND "archivedAt" IS NULL FOR UPDATE`;
-  if (bots.length !== 1) throw new BotSecretConflictError();
+  if (!(await lockBotSecretScope(tx, scope, true))) throw new BotSecretConflictError();
   const current = await tx.botSecret.findFirst({
     where: { ...scopeFields(scope), name: destination.name },
   });
@@ -533,9 +576,11 @@ export async function adoptPreparedBotSecret(
   });
 }
 
-export async function storeBotSecret(input: Parameters<typeof prepareBotSecret>[0]) {
+export async function storeBotSecret(
+  input: Omit<Parameters<typeof prepareBotSecret>[0], "requireBotOwner">,
+) {
   return withTransactionRetry(async () => {
-    const prepared = await prepareBotSecret(input);
+    const prepared = await prepareBotSecret({ ...input, requireBotOwner: true });
     return persistPreparedSecret(input.prisma, input.secretStore, prepared, () =>
       input.prisma.$transaction(async (tx) => {
         await prepared.store(tx);
@@ -555,8 +600,8 @@ export async function listBotSecrets(prisma: PrismaClient, scope: BotSecretScope
   return rows.map(botSecretToolView);
 }
 
-// Owner-facing view: destination and timestamps only, never the row id or ciphertext.
-const ownerMetadata = { ...metadata, createdAt: true, updatedAt: true } as const;
+// Owner metadata includes the mutation precondition but no row id or encrypted value.
+const ownerMetadata = { ...metadata, createdAt: true, updatedAt: true, revision: true } as const;
 
 export function listBotSecretMetadata(prisma: PrismaClient, scope: BotSecretScope) {
   return prisma.botSecret.findMany({
@@ -578,10 +623,24 @@ export function getBotSecretMetadata(
   });
 }
 
-export async function forgetBotSecret(prisma: PrismaClient, scope: BotSecretScope, name: string) {
+export async function forgetBotSecret(
+  prisma: PrismaClient,
+  scope: BotSecretScope,
+  name: string,
+  options?: { expectedRevision?: string; requireBotOwner?: boolean },
+) {
+  const expectedRevision = options?.expectedRevision;
   await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM bots WHERE id = ${scope.botId} FOR UPDATE`;
-    await tx.botSecret.deleteMany({ where: { ...scopeFields(scope), name } });
+    if (!(await lockBotSecretScope(tx, scope, options?.requireBotOwner ?? false)))
+      throw credentialChanged();
+    const removed = await tx.botSecret.deleteMany({
+      where: {
+        ...scopeFields(scope),
+        name,
+        ...(expectedRevision !== undefined && { revision: expectedRevision }),
+      },
+    });
+    if (expectedRevision !== undefined && removed.count !== 1) throw credentialChanged();
   });
   return { removed: true };
 }
@@ -745,7 +804,7 @@ export async function requestWithBotSecret(input: {
 }
 
 export type LoginField = "username" | "password";
-const MIN_REDACTED_USERNAME = 6;
+const MIN_REDACTED_VISIBLE_LOGIN_VALUE = 6;
 
 /**
  * Resolve one field of a saved website login for a page fill. The caller must pass `origin` to
@@ -784,19 +843,28 @@ export async function resolveLoginFill(input: {
   if (destination.origin !== storedOrigin.origin) {
     return { error: "Website logins can only be filled on an HTTPS origin." };
   }
-  const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
+  const plaintext = await input.secretStore.load(row.ciphertext, row.id);
+  let fields: ReturnType<typeof loginSecretFields>;
+  try {
+    fields = loginSecretFields(decodeLoginSecret(plaintext));
+  } catch {
+    return { error: UNUSABLE_CREDENTIAL };
+  }
+  // Old browser actions support only these two field categories. The stored visibility
+  // takes precedence over the label, so a hidden field cannot be chosen for a text input.
+  const hidden = input.field === "password";
+  const eligible = fields.filter((field) => field.hidden === hidden);
+  const field = eligible.find((field) => field.label.toLowerCase() === input.field) ?? eligible[0];
+  if (!field) return { error: "This login has no field for this input type." };
+  const redactions = fields
+    .filter(({ hidden, value }) => hidden || value.length >= MIN_REDACTED_VISIBLE_LOGIN_VALUE)
+    .flatMap(({ value }) => {
+      const encoded = percentEncoded(value);
+      return encoded === undefined ? [value] : [value, encoded];
+    });
   return {
-    text: login[input.field],
+    text: field.value,
     origin: destination.origin,
-    // Redaction is substring replacement, so a short username would mangle unrelated text.
-    redactions: [
-      ...new Set(
-        [login.password, encodeURIComponent(login.password)].concat(
-          login.username.length >= MIN_REDACTED_USERNAME
-            ? [login.username, encodeURIComponent(login.username)]
-            : [],
-        ),
-      ),
-    ],
+    redactions: [...new Set(redactions)],
   };
 }

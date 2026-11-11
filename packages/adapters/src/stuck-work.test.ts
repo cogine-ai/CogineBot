@@ -673,6 +673,8 @@ function expireClient(run: ReturnType<typeof candidate>, options?: { cancelled?:
         .mockResolvedValueOnce({ status: run.status, updatedAt: run.updatedAt, startedAt: null })
         .mockResolvedValue({ status: "cancelled", startedAt: null }),
       findUniqueOrThrow: vi.fn(async () => ({
+        id: run.id,
+        userId: run.userId,
         spaceId: run.spaceId,
         threadId: run.threadId,
         botId: run.botId,
@@ -683,6 +685,7 @@ function expireClient(run: ReturnType<typeof candidate>, options?: { cancelled?:
     },
     attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
     externalEffect: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+    secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     task: {
       updateMany: vi.fn(async () => ({ count: 1 })),
       create: vi.fn(async () => ({ id: "task-next" })),

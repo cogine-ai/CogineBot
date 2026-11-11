@@ -65,6 +65,7 @@ describe("botSecrets rpc contract", () => {
       "createdAt",
       "name",
       "origin",
+      "revision",
       "updatedAt",
     ]);
     const parsed = BotSecretMetadata.parse({
@@ -75,8 +76,10 @@ describe("botSecrets rpc contract", () => {
       updatedAt: "2026-09-01T00:00:00.000Z",
       value: "fake-value-1",
       ciphertext: "enc:1",
+      revision: "version-1",
     });
     expect(parsed).not.toHaveProperty("value");
     expect(parsed).not.toHaveProperty("ciphertext");
+    expect(parsed.revision).toBe("version-1");
   });
 });

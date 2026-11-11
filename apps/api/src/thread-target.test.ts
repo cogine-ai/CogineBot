@@ -61,11 +61,14 @@ describe("queued run supersession", () => {
   it("only cancels queued runs started by user messages or reactions", async () => {
     const tx = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       run: {
         findMany: vi.fn().mockResolvedValue([{ id: "run-old", taskId: "task-old" }]),
         updateManyAndReturn: vi
           .fn()
-          .mockResolvedValue([{ id: "run-old", taskId: "task-old", spaceId: "workspace-1" }]),
+          .mockResolvedValue([
+            { id: "run-old", taskId: "task-old", spaceId: "workspace-1", userId: "user-1" },
+          ]),
       },
       task: { updateMany: vi.fn() },
     };
@@ -1568,7 +1571,11 @@ describe("sendThreadMessage", () => {
       },
     });
     expect(tx.secret.deleteMany).toHaveBeenCalledExactlyOnceWith({
-      where: { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+      where: {
+        OR: expect.arrayContaining([
+          { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+        ]),
+      },
     });
     expect(tx.task.updateMany).toHaveBeenCalledWith({
       where: { id: "task-2", runs: { none: { status: { in: expect.any(Array) } } } },
@@ -1814,7 +1821,11 @@ describe("sendThreadMessage", () => {
       },
     });
     expect(tx.secret.deleteMany).toHaveBeenCalledExactlyOnceWith({
-      where: { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+      where: {
+        OR: expect.arrayContaining([
+          { userId: "user-1", spaceId: "workspace-1", kind: "run-secret:run-waiting-2" },
+        ]),
+      },
     });
     expect(tx.task.updateMany).toHaveBeenCalledWith({
       where: { id: "task-2", runs: { none: { status: { in: expect.any(Array) } } } },
@@ -3864,6 +3875,7 @@ describe("stopThreadRuns", () => {
     let nextEventSeq = 0;
     const transaction = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(),
       thread: {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
@@ -3871,8 +3883,8 @@ describe("stopThreadRuns", () => {
       run: {
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi.fn().mockResolvedValue([
-          { id: "run-a", botId: "bot-a", spaceId: "workspace-1" },
-          { id: "run-b", botId: "bot-b", spaceId: "workspace-1" },
+          { id: "run-a", botId: "bot-a", spaceId: "workspace-1", userId: "user-1" },
+          { id: "run-b", botId: "bot-b", spaceId: "workspace-1", userId: "user-1" },
         ]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
@@ -4005,6 +4017,7 @@ describe("stopThreadRuns", () => {
     });
     const transaction = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(),
       thread: {
         update: vi.fn().mockResolvedValue({ nextEventSeq: 5 }),
@@ -4013,7 +4026,9 @@ describe("stopThreadRuns", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi
           .fn()
-          .mockResolvedValue([{ id: "run-a", botId: "bot-a", spaceId: "workspace-1" }]),
+          .mockResolvedValue([
+            { id: "run-a", botId: "bot-a", spaceId: "workspace-1", userId: "user-1" },
+          ]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
       steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -4116,6 +4131,7 @@ describe("stopThreadRuns", () => {
     const created: Array<Record<string, unknown>> = [];
     const transaction = {
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(),
       thread: {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
@@ -4123,8 +4139,8 @@ describe("stopThreadRuns", () => {
       run: {
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         updateManyAndReturn: vi.fn().mockResolvedValue([
-          { id: "run-a", botId: "bot-a", spaceId: "workspace-1" },
-          { id: "run-b", botId: "bot-b", spaceId: "workspace-1" },
+          { id: "run-a", botId: "bot-a", spaceId: "workspace-1", userId: "user-1" },
+          { id: "run-b", botId: "bot-b", spaceId: "workspace-1", userId: "user-1" },
         ]),
         // appendEventInTransaction re-reads the run after the flip.
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),

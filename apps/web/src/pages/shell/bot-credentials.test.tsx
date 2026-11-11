@@ -47,7 +47,7 @@ const rows = [
     auth: { type: "basic", username: "admin" },
   },
   { name: "portal", origin: "https://portal.example.com", auth: { type: "login" } },
-].map((row) => ({ ...row, createdAt: stamp, updatedAt: stamp }));
+].map((row) => ({ ...row, createdAt: stamp, updatedAt: stamp, revision: `rev-${row.name}` }));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -166,6 +166,7 @@ describe("BotCredentialsSection", () => {
         auth: { type: "header", name: "X-Api-Key" },
       },
       value: FAKE_VALUE,
+      expectedRevision: null,
     });
     expect(botSecrets.list).toHaveBeenCalledTimes(2);
     expect(container.innerHTML).not.toContain(FAKE_VALUE);
@@ -209,6 +210,7 @@ describe("BotCredentialsSection", () => {
         auth: { type: "login" },
       },
       value: encodeLoginSecret({ username: "jamie", password: FAKE_VALUE }),
+      expectedRevision: null,
     });
   });
 
@@ -227,6 +229,7 @@ describe("BotCredentialsSection", () => {
         auth: { type: "basic", username: "admin" },
       },
       value: FAKE_VALUE,
+      expectedRevision: "rev-router",
     });
     expect(container.innerHTML).not.toContain(FAKE_VALUE);
   });
@@ -312,7 +315,11 @@ describe("BotCredentialsSection", () => {
     expect(botSecrets.remove).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Remove api?");
     await click("credential-remove-confirm-api");
-    expect(botSecrets.remove).toHaveBeenCalledWith({ botId: "bot-1", name: "api" });
+    expect(botSecrets.remove).toHaveBeenCalledWith({
+      botId: "bot-1",
+      name: "api",
+      expectedRevision: "rev-api",
+    });
     expect(botSecrets.list).toHaveBeenCalledTimes(2);
   });
 });
@@ -324,6 +331,7 @@ describe("BotCredentialsSection command variables", () => {
     auth: { type: "command" },
     createdAt: stamp,
     updatedAt: stamp,
+    revision: "rev-command",
   };
 
   it("adds a command variable with no origin and shows its derived name", async () => {
@@ -343,6 +351,7 @@ describe("BotCredentialsSection command variables", () => {
       botId: "bot-1",
       destination: { name: "netbird-setup-key", auth: { type: "command" } },
       value: FAKE_VALUE,
+      expectedRevision: null,
     });
     expect(botSecrets.put.mock.calls[0]![0].destination).not.toHaveProperty("origin");
     expect(container.innerHTML).not.toContain(FAKE_VALUE);
@@ -379,6 +388,7 @@ describe("BotCredentialsSection command variables", () => {
       botId: "bot-1",
       destination: { name: "netbird-setup-key", auth: { type: "command" } },
       value: FAKE_VALUE,
+      expectedRevision: "rev-command",
     });
   });
 });

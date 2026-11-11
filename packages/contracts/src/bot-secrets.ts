@@ -244,18 +244,61 @@ export function botSecretDestinationSchema(options?: { allowPrivateHttpOrigin?: 
 export const BotSecretDestination = botSecretDestinationSchema();
 export type BotSecretDestination = z.infer<typeof BotSecretDestination>;
 
+export const BOT_SECRET_VALUE_MAX_LENGTH = 16_384;
+
+// Keep writing the pair from older forms until those forms can edit named fields.
 export const LoginSecretValue = z.object({
   username: z.string().min(1).max(512),
   password: z.string().min(1).max(4096),
 });
 export type LoginSecretValue = z.infer<typeof LoginSecretValue>;
 
-export function encodeLoginSecret(value: LoginSecretValue): string {
-  return JSON.stringify(LoginSecretValue.parse(value));
+export const LOGIN_FIELD_LIMIT = 8;
+const NamedLoginField = z
+  .object({
+    label: z.string().trim().min(1).max(64),
+    value: z.string().max(4096),
+    hidden: z.boolean(),
+  })
+  .transform((field) => (field.hidden ? field : { ...field, value: field.value.trim() }))
+  .refine((field) => field.value.length > 0, "Enter a value");
+type NamedLoginField = z.infer<typeof NamedLoginField>;
+
+export const NamedLoginSecretValue = z
+  .object({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
+  .refine(
+    ({ fields }) => new Set(fields.map(({ label }) => label.toLowerCase())).size === fields.length,
+    "Give each field a different label",
+  )
+  .refine(
+    (login) => JSON.stringify(login).length <= BOT_SECRET_VALUE_MAX_LENGTH,
+    "This login is too long",
+  );
+export type NamedLoginSecretValue = z.infer<typeof NamedLoginSecretValue>;
+
+type StoredLoginSecretValue = LoginSecretValue | NamedLoginSecretValue;
+
+export function encodeLoginSecret(value: StoredLoginSecretValue): string {
+  return JSON.stringify(
+    "fields" in value ? NamedLoginSecretValue.parse(value) : LoginSecretValue.parse(value),
+  );
 }
 
-export function decodeLoginSecret(plaintext: string): LoginSecretValue {
-  return LoginSecretValue.parse(JSON.parse(plaintext));
+export function decodeLoginSecret(plaintext: string): StoredLoginSecretValue {
+  const value: unknown = JSON.parse(plaintext);
+  // Do not let an invalid named payload fall back to a pair and discard fields.
+  return value !== null && typeof value === "object" && Object.hasOwn(value, "fields")
+    ? NamedLoginSecretValue.parse(value)
+    : LoginSecretValue.parse(value);
+}
+
+export function loginSecretFields(value: StoredLoginSecretValue): readonly NamedLoginField[] {
+  return "fields" in value
+    ? value.fields
+    : [
+        { label: "Username", value: value.username, hidden: false },
+        { label: "Password", value: value.password, hidden: true },
+      ];
 }
 
 /** Written atomically with the protected value, distinct from action approval. */
@@ -263,8 +306,6 @@ export function botSecretSubmissionSchema(options?: { allowPrivateHttpOrigin?: b
   return z.object({ credentialSaved: botSecretDestinationSchema(options) });
 }
 export const BotSecretSubmission = botSecretSubmissionSchema();
-
-export const BOT_SECRET_VALUE_MAX_LENGTH = 16_384;
 
 /**
  * Owner-facing destination input. Structural only: the origin rules depend on the server's
@@ -283,12 +324,22 @@ export const BotSecretDestinationInput = z
     }
   });
 
+const BotSecretRevision = z.string().min(1).max(128);
+
 export const BotSecretPutInput = z.object({
   botId: Id,
   destination: BotSecretDestinationInput,
   value: z.string().min(1).max(BOT_SECRET_VALUE_MAX_LENGTH),
+  // A null revision explicitly creates a new credential. Older clients omit the precondition.
+  expectedRevision: BotSecretRevision.nullable().optional(),
 });
 export type BotSecretPutInput = z.infer<typeof BotSecretPutInput>;
+
+export const BotSecretRemoveInput = z.object({
+  botId: Id,
+  name: StoredBotSecretName,
+  expectedRevision: BotSecretRevision.optional(),
+});
 
 /**
  * What the owner can see about a saved credential. It never carries the protected value.
@@ -302,6 +353,7 @@ export const BotSecretMetadata = z.object({
   auth: BotSecretAuth.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  revision: BotSecretRevision.optional(),
 });
 export type BotSecretMetadata = z.infer<typeof BotSecretMetadata>;
 

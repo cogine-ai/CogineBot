@@ -100,11 +100,10 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     return { type: "bearer" };
   }
 
-  async function save(destination: {
-    name: string;
-    origin?: string;
-    auth: ReadableCredentialAuth;
-  }) {
+  async function save(
+    destination: { name: string; origin?: string; auth: ReadableCredentialAuth },
+    expectedRevision: string | null | undefined,
+  ) {
     const username = loginUsername.trim();
     const secretValue = value;
     clearProtectedFields();
@@ -118,7 +117,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     }
     setBusy(true);
     try {
-      await rpc.botSecrets.put({ botId, destination, value: plaintext });
+      await rpc.botSecrets.put({ botId, destination, value: plaintext, expectedRevision });
       if (!(await refresh())) {
         setError(t`Could not load credentials.`);
         return false;
@@ -134,7 +133,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   async function submitAdd() {
     if (busy || !canAdd) return;
-    const saved = await save(credentialDestination(name.trim(), origin.trim(), newAuth()));
+    const saved = await save(credentialDestination(name.trim(), origin.trim(), newAuth()), null);
     if (!saved) return;
     setAdding(false);
     setName("");
@@ -146,19 +145,22 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
 
   async function submitReplace(secret: BotSecretMetadata) {
     if (busy || !secret.auth) return;
-    const saved = await save(credentialDestination(secret.name, secret.origin, secret.auth));
+    const saved = await save(
+      credentialDestination(secret.name, secret.origin, secret.auth),
+      secret.revision,
+    );
     if (saved) setReplacing(null);
   }
 
-  async function confirmRemove(secretName: string) {
+  async function confirmRemove(secret: BotSecretMetadata) {
     if (busy) return;
     setError(null);
     setBusy(true);
     try {
-      await rpc.botSecrets.remove({ botId, name: secretName });
+      await rpc.botSecrets.remove({ botId, name: secret.name, expectedRevision: secret.revision });
       setConfirmingRemove(null);
       if (!(await refresh())) {
-        setSecrets((prev) => prev?.filter((row) => row.name !== secretName) ?? null);
+        setSecrets((prev) => prev?.filter((row) => row.name !== secret.name) ?? null);
         setError(t`Could not load credentials.`);
       }
     } catch (err) {
@@ -322,7 +324,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                         className="text-destructive hover:text-destructive"
                         data-testid={`credential-remove-confirm-${secret.name}`}
                         disabled={busy}
-                        onClick={() => void confirmRemove(secret.name)}
+                        onClick={() => void confirmRemove(secret)}
                       >
                         <Trans>Remove</Trans>
                       </Button>

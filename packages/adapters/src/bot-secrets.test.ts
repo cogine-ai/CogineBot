@@ -8,6 +8,7 @@ import {
   requestWithBotSecret,
   resolveLoginFill,
   resolveRequestSecretDestination,
+  validateTransferBotSecret,
 } from "./bot-secrets.js";
 import { ActionRuleDispatchError } from "./connector-dispatch.js";
 import { EncryptedSecretStore } from "./secrets.js";
@@ -716,8 +717,11 @@ describe("saved website logins", () => {
     origin: "https://login.example.test",
     auth: { type: "login" },
   };
-  async function loginFixture(username: string, auth: object = login.auth, origin = login.origin) {
-    const plaintext = encodeLoginSecret({ username, password: "fake-password-1" });
+  async function encryptedLogin(
+    plaintext: string,
+    auth: object = login.auth,
+    origin = login.origin,
+  ) {
     const encrypted = await secretStore.put(
       plaintext,
       { ...scope, operationId: "test", traceId: "test", signal: new AbortController().signal },
@@ -731,6 +735,34 @@ describe("saved website logins", () => {
     );
     return { prisma: { botSecret: { findFirst } } as unknown as PrismaClient };
   }
+
+  function loginFixture(username: string, auth?: object, origin?: string) {
+    return encryptedLogin(
+      encodeLoginSecret({ username, password: "fake-password-1" }),
+      auth,
+      origin,
+    );
+  }
+
+  it("selects old browser fill aliases by field visibility, even when labels disagree", async () => {
+    const plaintext = encodeLoginSecret({
+      fields: [
+        { label: "Password", value: "visible-fixture", hidden: false },
+        { label: "Username", value: "hidden-fixture", hidden: true },
+        { label: "Other secret", value: "another-hidden-fixture", hidden: true },
+      ],
+    });
+    const { prisma } = await encryptedLogin(plaintext);
+    const input = { prisma, secretStore, scope, name: "site_login" };
+    expect(await resolveLoginFill({ ...input, field: "username" })).toMatchObject({
+      text: "visible-fixture",
+      redactions: expect.arrayContaining(["hidden-fixture", "another-hidden-fixture"]),
+    });
+    expect(await resolveLoginFill({ ...input, field: "password" })).toMatchObject({
+      text: "hidden-fixture",
+    });
+    expect(validateTransferBotSecret(login, plaintext).plaintext).toBe(plaintext);
+  });
 
   it("resolves one field bound to the saved origin with its redactions", async () => {
     const { prisma } = await loginFixture("fake-user@example.test");

@@ -8,7 +8,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import { AutomatedSenderPoliciesSchema, type MessageBlock } from "@rakazo/contracts";
 import { BOT_MESSAGE_MAX_HOPS, projectExternalPageMessages } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { clearRunTurnCheckpoints } from "@rakazo/db";
+import { clearEndedRunState } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { TeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -1084,10 +1084,10 @@ export class TeamChatBridge {
               leaseOwner: null,
               leaseExpiresAt: null,
             },
-            select: { id: true, spaceId: true, taskId: true },
+            select: { id: true, userId: true, spaceId: true, taskId: true },
           });
           if (cancelled.length === 0) return;
-          await clearRunTurnCheckpoints(tx, cancelled);
+          await clearEndedRunState(tx, cancelled);
           await tx.task.updateMany({
             where: { id: { in: cancelled.map((run) => run.taskId) } },
             data: { status: "cancelled" },

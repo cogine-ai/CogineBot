@@ -44,6 +44,7 @@ import {
   applyTeachingDesktopInput,
   archiveBot,
   assertSafeRemoteUrl,
+  BotSecretConflictError,
   buildMcpCredentialBlob,
   buildModelConnectPlaintext,
   CHATGPT_OAUTH_PROVIDER,
@@ -856,6 +857,9 @@ const BOT_SECRET_INPUT_ERRORS = [
 /** Map credential validation failures to a bad request without echoing the submitted value. */
 function mapBotSecretStoreError(error: unknown): unknown {
   if (error instanceof ORPCError) return error;
+  if (error instanceof BotSecretConflictError) {
+    return new ORPCError("CONFLICT", { message: error.message });
+  }
   if (
     error instanceof Error &&
     BOT_SECRET_INPUT_ERRORS.some((prefix) => error.message.startsWith(prefix))
@@ -865,7 +869,7 @@ function mapBotSecretStoreError(error: unknown): unknown {
   // Login decoding failures: a JSON parse message can quote the submitted value, so never forward it.
   if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError")) {
     return new ORPCError("BAD_REQUEST", {
-      message: "A website login needs a username and password",
+      message: "Enter valid website login fields",
     });
   }
   return error;
@@ -881,6 +885,7 @@ function botSecretMetadataDto(row: {
   auth: unknown;
   createdAt: Date;
   updatedAt: Date;
+  revision: string;
 }): BotSecretMetadata {
   // Unreadable or no-longer-storable destinations become auth:null so the owner UI stays remove-only.
   const parsed = BotSecretAuth.safeParse(row.auth);
@@ -899,6 +904,7 @@ function botSecretMetadataDto(row: {
     auth,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    revision: row.revision,
   };
 }
 
@@ -7528,6 +7534,7 @@ export function createRouter(deps: RouterDeps) {
             scope,
             destination: input.destination,
             plaintext: input.value,
+            expectedRevision: input.expectedRevision,
           });
         } catch (error) {
           throw mapBotSecretStoreError(error);
@@ -7537,7 +7544,14 @@ export function createRouter(deps: RouterDeps) {
       }),
       remove: authed.botSecrets.remove.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
-        await forgetBotSecret(deps.prisma, botSecretScope(context.actor, bot.id), input.name);
+        try {
+          await forgetBotSecret(deps.prisma, botSecretScope(context.actor, bot.id), input.name, {
+            expectedRevision: input.expectedRevision,
+            requireBotOwner: true,
+          });
+        } catch (error) {
+          throw mapBotSecretStoreError(error);
+        }
         return { ok: true as const };
       }),
     },

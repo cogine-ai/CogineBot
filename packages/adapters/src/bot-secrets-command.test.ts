@@ -30,6 +30,7 @@ type Row = {
   origin: string;
   auth: unknown;
   ciphertext: string;
+  revision: string;
 };
 type Where = Record<string, unknown>;
 
@@ -43,6 +44,7 @@ function matches(row: Row, where: Where) {
 
 function fakeDatabase() {
   let rows: Row[] = [];
+  let revision = 0;
   const botSecret = {
     findFirst: vi.fn(
       async ({ where }: { where: Where }) => rows.find((r) => matches(r, where)) ?? null,
@@ -57,10 +59,13 @@ function fakeDatabase() {
       async ({ where }: { where: Where }) => rows.filter((r) => matches(r, where)).length,
     ),
     create: vi.fn(async ({ data }: { data: Row }) => {
-      rows.push({ ...data });
+      rows.push({ ...data, revision: String(++revision) });
     }),
-    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
-      Object.assign(rows.find((row) => row.id === where.id)!, data);
+    updateMany: vi.fn(async ({ where, data }: { where: Where; data: Partial<Row> }) => {
+      const row = rows.find((entry) => matches(entry, where));
+      if (!row) return { count: 0 };
+      Object.assign(row, data, { revision: String(++revision) });
+      return { count: 1 };
     }),
     deleteMany: vi.fn(async ({ where }: { where: Where }) => {
       const before = rows.length;
@@ -72,7 +77,7 @@ function fakeDatabase() {
     botSecret,
     secret: { count: vi.fn(async () => 0) },
     integrationProviderConfig: { count: vi.fn(async () => 0) },
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(async (_sql: TemplateStringsArray, id: string) => [{ id }]),
   };
   client.$transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(client);
   return {

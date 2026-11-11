@@ -492,7 +492,9 @@ describe("destroyBot", () => {
     const deleteMemberships = vi.fn().mockResolvedValue({ count: 1 });
     const cancel = vi.fn().mockResolvedValue(undefined);
     const releaseScreen = vi.fn().mockResolvedValue(undefined);
-    const cancelRuns = vi.fn().mockResolvedValue([{ id: "group-run", spaceId: "workspace-1" }]);
+    const cancelRuns = vi
+      .fn()
+      .mockResolvedValue([{ id: "group-run", spaceId: "workspace-1", userId: "user-1" }]);
     const cancelAttempts = vi.fn().mockResolvedValue({ count: 1 });
     const cancelTasks = vi.fn().mockResolvedValue({ count: 1 });
     const clearCheckpoints = vi.fn().mockResolvedValue({ count: 1 });
@@ -552,6 +554,7 @@ describe("destroyBot", () => {
           attempt: { updateMany: cancelAttempts },
           task: { updateMany: cancelTasks },
           externalEffect: { deleteMany: clearCheckpoints },
+          secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
           chatGroupMember: { deleteMany: deleteMemberships },
           artifact: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -616,7 +619,7 @@ describe("destroyBot", () => {
         leaseOwner: null,
         leaseExpiresAt: null,
       },
-      select: { id: true, spaceId: true },
+      select: { id: true, spaceId: true, userId: true },
     });
     expect(clearCheckpoints).toHaveBeenCalledWith({
       where: {
@@ -1837,7 +1840,9 @@ describe("archiveBot", () => {
   it("stops work and routines while preserving the bot", async () => {
     const updateBot = vi.fn().mockResolvedValue({});
     const disableRoutines = vi.fn().mockResolvedValue({ count: 2 });
-    const cancelRuns = vi.fn().mockResolvedValue([{ id: "run-1", spaceId: "workspace-1" }]);
+    const cancelRuns = vi
+      .fn()
+      .mockResolvedValue([{ id: "run-1", spaceId: "workspace-1", userId: "user-1" }]);
     const clearCheckpoints = vi.fn().mockResolvedValue({ count: 1 });
     const cancelAttempts = vi.fn().mockResolvedValue({ count: 1 });
     const cancelTasks = vi.fn().mockResolvedValue({ count: 1 });
@@ -1855,6 +1860,7 @@ describe("archiveBot", () => {
         task: { updateMany: cancelTasks },
         attempt: { updateMany: cancelAttempts },
         externalEffect: { deleteMany: clearCheckpoints },
+        secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
         routine: { findMany: vi.fn().mockResolvedValue([]), updateMany: disableRoutines },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -1910,7 +1916,7 @@ describe("archiveBot", () => {
         leaseOwner: null,
         leaseExpiresAt: null,
       },
-      select: { id: true, spaceId: true },
+      select: { id: true, spaceId: true, userId: true },
     });
     expect(clearCheckpoints).toHaveBeenCalledWith({
       where: {
