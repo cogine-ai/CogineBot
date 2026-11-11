@@ -4,6 +4,7 @@ import { withoutLegacyPageCardFallbacks } from "./message-visibility.js";
 const HTTPS_SITE_NOTICE = "HTTPS site ";
 const COMMAND_VARIABLE_NOTICE = "Also save as command variable ";
 const PURPOSE_NOTICE = "Purpose — ";
+const UTTERANCE_BREAK = "\u0000";
 const CREDENTIAL_NOTICE_LINE = new RegExp(
   `^${HTTPS_SITE_NOTICE}(\`+) ([^\\s/?#@]+) \\1$|^${COMMAND_VARIABLE_NOTICE}[A-Z0-9_]+$|^${PURPOSE_NOTICE}(.*)$|\\uE000`,
   "gm",
@@ -66,7 +67,7 @@ export function speakable(input: string): string {
   return simplifySpeechText(input, true);
 }
 
-function simplifySpeechText(input: string, readPurpose: boolean): string {
+function simplifySpeechText(input: string, readPurpose: boolean, credentialBoundary = ""): string {
   if (!input) return "";
   const literal: string[] = [];
   // Keep destinations literal and retain the label on the short spoken purpose.
@@ -75,11 +76,12 @@ function simplifySpeechText(input: string, readPurpose: boolean): string {
     if (purpose !== undefined) {
       if (!readPurpose) return value;
       const reason = simplifySpeechText(purpose, false)
-        .replaceAll("\u0000", " ")
+        .replaceAll(UTTERANCE_BREAK, " ")
         .replace(BOUNDARY, "$2, ");
       spoken = reason ? `${PURPOSE_NOTICE}${reason}` : "";
     }
-    return `\uE000${literal.push(spoken) - 1}\uE001`;
+    const boundary = value === "\uE000" ? "" : credentialBoundary;
+    return `\uE000${literal.push(boundary + spoken) - 1}\uE001`;
   });
 
   text = text.replace(/```([^\n]*)\n[\s\S]*?(?:```|$)/g, (_m, fence: string) =>
@@ -151,13 +153,12 @@ const BOUNDARY =
  * Short fragments are glued onto their neighbour so the voice keeps context.
  */
 export function toUtterances(input: string, { minChars = 12, maxChars = 320 } = {}): string[] {
-  const text = speakable(input);
+  const text = simplifySpeechText(input, true, UTTERANCE_BREAK);
   if (!text) return [];
 
-  const MARK = "\u0000";
   const rough = text
-    .replace(BOUNDARY, `$1$2${MARK}`)
-    .split(MARK)
+    .replace(BOUNDARY, `$1$2${UTTERANCE_BREAK}`)
+    .split(UTTERANCE_BREAK)
     .map((s) => s.trim())
     .filter(Boolean);
 

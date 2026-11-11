@@ -17,6 +17,10 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasLoginUsername(value: unknown): boolean {
+  return record(value) && value.type === "login" && "username" in value;
+}
+
 /** Filter protected inputs at transcript sinks without changing live Pi messages. */
 export function createProtectedToolTranscriptSanitizer(
   bridgeToolNames: ReadonlySet<string> | undefined,
@@ -31,6 +35,7 @@ export function createProtectedToolTranscriptSanitizer(
       const content = message.content.map((part) => {
         if (part.type !== "toolCall") return part;
         protectedErrors.delete(part.id);
+        pageCalls.delete(part.id);
         const bridge = part.name === USE_TOOL ? bridgeToolNames : undefined;
         const innerName = part.arguments.name;
         const innerArgs = part.arguments.arguments;
@@ -73,14 +78,12 @@ export function createProtectedToolTranscriptSanitizer(
           (innerName === SAVE_PAGE_TOOL ||
             (innerName === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
         if (!wrapped && part.name !== SAVE_PAGE_TOOL) {
-          pageCalls.delete(part.id);
           if (
-            bridge &&
-            (typeof innerName !== "string" ||
-              (!bridge.has(innerName) &&
-                record(innerArgs) &&
-                innerArgs.type === "login" &&
-                "username" in innerArgs))
+            (bridge &&
+              (typeof innerName !== "string" ||
+                ((innerName === "request_secret" || !bridge.has(innerName)) &&
+                  hasLoginUsername(innerArgs)))) ||
+            (part.name === "request_secret" && hasLoginUsername(part.arguments))
           ) {
             changed = true;
             protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
@@ -119,6 +122,7 @@ export function createProtectedToolTranscriptSanitizer(
       };
     }
     const call = pageCalls.get(message.toolCallId);
+    pageCalls.delete(message.toolCallId);
     if (message.toolName !== SAVE_PAGE_TOOL && call?.name !== message.toolName) return message;
     if (call?.rejected && message.isError) {
       // The SDK can include the complete invalid input in its error result.

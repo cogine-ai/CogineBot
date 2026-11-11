@@ -100,6 +100,16 @@ describe("speakable", () => {
     ]);
   });
 
+  it("keeps the purpose label after a maximum-length hostname with an explicit port", () => {
+    const hostname = [63, 63, 63, 61].map((length) => "a".repeat(length)).join(".");
+    const host = `${hostname}:8443`;
+    const purpose = "a".repeat(60);
+    expect(toUtterances(websiteCredentialNotice(host, purpose))).toEqual([
+      `HTTPS site ${host}.`,
+      `Purpose — ${purpose}`,
+    ]);
+  });
+
   it("gives a heading a full stop so the voice breathes", () => {
     expect(speakable("## Results\nAll green")).toBe("Results. All green");
   });

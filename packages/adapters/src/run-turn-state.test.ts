@@ -166,6 +166,21 @@ describe("run turn checkpoint state", () => {
     ["direct malformed JSON", "generate_secret", {}, true],
     ["unidentified wrapped malformed JSON", USE_TOOL, {}, true],
     [
+      "wrapped login arguments sent to the credential request tool",
+      USE_TOOL,
+      {
+        name: "request_secret",
+        arguments: { type: "login", username: "fixture-account@example.test" },
+      },
+      false,
+    ],
+    [
+      "direct login arguments sent to the credential request tool",
+      "request_secret",
+      { type: "login", username: "fixture-account@example.test" },
+      false,
+    ],
+    [
       "wrapped missing tool name",
       USE_TOOL,
       { arguments: { type: "login", username: "fixture-account@example.test" } },
@@ -195,7 +210,7 @@ describe("run turn checkpoint state", () => {
     async (_label, toolName, args, malformed) => {
       const f = storage();
       const current = state(undefined, {
-        tools: [builtin("generate_secret"), builtin("write_file")],
+        tools: [builtin("generate_secret"), builtin("write_file"), builtin("request_secret")],
       });
       const raw = 'Invalid arguments: {"username":"fixture-account@example.test"';
       const invalid = call("malformed", toolName, args);
@@ -216,9 +231,9 @@ describe("run turn checkpoint state", () => {
       const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
       expect(stored).not.toContain("fixture-account@example.test");
       expect(stored).toContain(
-        toolName === USE_TOOL && (!("name" in args) || args.name === "generate-secret")
-          ? "The tool call had invalid arguments."
-          : "The credential generation request had invalid arguments.",
+        toolName === "generate_secret" || ("name" in args && args.name === "generate_secret")
+          ? "The credential generation request had invalid arguments."
+          : "The tool call had invalid arguments.",
       );
     },
   );
@@ -269,6 +284,35 @@ describe("run turn checkpoint state", () => {
     const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
     expect(JSON.parse(stored).messages[3]).toEqual(originalError);
     expect(stored).not.toContain("fixture-account@example.test");
+  });
+
+  it("does not reuse a rejected Page error for a later command generation call", async () => {
+    const f = storage();
+    const current = state(undefined, { tools: [builtin("generate_secret"), builtin("save_page")] });
+    const id = "reused";
+    const originalError = {
+      ...completed(id, USE_TOOL),
+      content: [{ type: "text" as const, text: "Name is already in use" }],
+      isError: true,
+    };
+    const captured = checkpoint({
+      messages: [
+        assistant([call(id, USE_TOOL, { name: "save_page", arguments: {} })]),
+        { ...completed(id, USE_TOOL), isError: true },
+        assistant([
+          call(id, USE_TOOL, {
+            name: "generate_secret",
+            arguments: { type: "command", name: "fixture-command", purpose: "Prepare command" },
+          }),
+        ]),
+        originalError,
+        assistant([call()]),
+      ],
+    });
+    current.pendingCaptures.set(execution("pending"), () => JSON.stringify(captured));
+    await persistRunTurnCheckpoint(f.prisma, run, "worker", 7, current, execution("pending"));
+    const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
+    expect(JSON.parse(stored).messages[3]).toEqual(originalError);
   });
 
   it("retains validated command generation arguments in a checkpoint", async () => {
