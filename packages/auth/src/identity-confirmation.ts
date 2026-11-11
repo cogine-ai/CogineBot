@@ -9,37 +9,39 @@ import { oidcProofKey } from "./account-security.js";
 export const IDENTITY_CONFIRMATION_MS = 5 * 60_000;
 const CODE_EXPIRES_MS = 10 * 60_000;
 const CODE_ATTEMPTS = 3;
+const CODE_SEND_COOLDOWN_MS = 60_000;
 const PASSWORD_FAILURES = 5;
 const PASSWORD_LOCKOUT_MS = 15 * 60_000;
 
 const confirmationKey = (sessionId: string) => `identity-confirmed-${sessionId}`;
 const codeKey = (sessionId: string) => `identity-code-${sessionId}`;
+const deliveryKey = (userId: string) => `identity-email-window-${userId}`;
 const attemptKey = (userId: string, slot: number) => `identity-attempt-${userId}-${slot}`;
 
 type Verification = { value: string; expiresAt: Date };
 
-/**
- * Claims one of the account's password attempts before the password is checked. Each attempt is
- * its own row created first-writer-wins, so parallel guesses across API processes cannot share one.
- */
-async function reservePasswordAttempt(
-  adapter: {
-    reserveVerificationValue(data: Verification & { identifier: string }): Promise<boolean>;
-  },
+/** Reserve a first-writer-wins verification window across API processes. */
+async function reserveIdentityWindow(
   prisma: PrismaClient,
+  identifier: string,
   userId: string,
-): Promise<boolean> {
+  duration: number,
+) {
+  const now = Date.now();
+  await prisma.verification.deleteMany({
+    where: { identifier, expiresAt: { lte: new Date(now) } },
+  });
+  const result = await prisma.verification.createMany({
+    data: { id: identifier, identifier, value: userId, expiresAt: new Date(now + duration) },
+    skipDuplicates: true,
+  });
+  return result.count === 1;
+}
+
+async function reservePasswordAttempt(prisma: PrismaClient, userId: string): Promise<boolean> {
   for (let slot = 0; slot < PASSWORD_FAILURES; slot += 1) {
-    const identifier = attemptKey(userId, slot);
-    await prisma.verification.deleteMany({
-      where: { identifier, expiresAt: { lte: new Date() } },
-    });
-    const reserved = await adapter.reserveVerificationValue({
-      identifier,
-      value: userId,
-      expiresAt: new Date(Date.now() + PASSWORD_LOCKOUT_MS),
-    });
-    if (reserved) return true;
+    if (await reserveIdentityWindow(prisma, attemptKey(userId, slot), userId, PASSWORD_LOCKOUT_MS))
+      return true;
   }
   return false;
 }
@@ -242,6 +244,18 @@ export function identityConfirmation(
               code: "EMAIL_CODE_UNAVAILABLE",
             });
           }
+          if (
+            !(await reserveIdentityWindow(
+              prisma,
+              deliveryKey(user.id),
+              user.id,
+              CODE_SEND_COOLDOWN_MS,
+            ))
+          )
+            throw new APIError("TOO_MANY_REQUESTS", {
+              message: "Wait before requesting another code.",
+              code: "TOO_MANY_REQUESTS",
+            });
           const promoted = await sendIdentityCode(prisma, email, session.id, user);
           if (!promoted) ctx.context.logger.warn("Identity code activation could not be confirmed");
           return ctx.json({ success: true });
@@ -259,7 +273,7 @@ export function identityConfirmation(
           if (hash) {
             if (typeof body.password !== "string" || !body.password || body.password.length > 128)
               throw invalidPassword();
-            if (!(await reservePasswordAttempt(adapter, prisma, user.id))) {
+            if (!(await reservePasswordAttempt(prisma, user.id))) {
               throw new APIError("TOO_MANY_REQUESTS", {
                 message: "Too many attempts. Try again later.",
                 code: "TOO_MANY_REQUESTS",

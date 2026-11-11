@@ -43,6 +43,7 @@ import { useI18n } from "../../lib/i18n";
 import { useMobileTokens } from "../../lib/native";
 import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
 import { continueWithSso } from "../../lib/sso";
+import { errorText } from "../../lib/user-error";
 
 type Row = SpaceBotCredentials["credentials"][number] & { botId: string; botName: string };
 type Auth = NonNullable<Row["auth"]>;
@@ -757,8 +758,9 @@ function IdentitySheet({
         );
         if (active.current && isCurrent()) onConfirm();
       }
-    } catch {
-      if (active.current && isCurrent()) setError(t("Could not confirm your identity"));
+    } catch (cause) {
+      if (active.current && isCurrent())
+        setError(errorText(cause, t("Could not confirm your identity")));
     } finally {
       if (active.current && isCurrent()) setBusy(false);
     }

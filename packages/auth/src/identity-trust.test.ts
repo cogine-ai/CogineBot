@@ -548,6 +548,14 @@ describe("session credentials", () => {
 });
 
 describe("confirmation for protected reads", () => {
+  function endDeliveryCooldown(f: ReturnType<typeof fixture>) {
+    const held = f.data.verification!.find((row) =>
+      String(row.identifier).startsWith("identity-email-window-"),
+    );
+    expect(held).toBeDefined();
+    held!.expiresAt = new Date(0);
+  }
+
   it("requires an authenticated session and binds password confirmation to one session and user", async () => {
     const f = fixture({ delivery: false });
     const signup = await f.signup();
@@ -631,6 +639,7 @@ describe("confirmation for protected reads", () => {
 
     const pending = f.request("/confirm-identity", { code: wrongCode }, token);
     await read;
+    endDeliveryCooldown(f);
     try {
       expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
     } finally {
@@ -652,6 +661,7 @@ describe("confirmation for protected reads", () => {
     const previous = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
     const wrong = previous === "000000" ? "111111" : "000000";
     expect((await f.request("/confirm-identity", { code: wrong }, token)).status).toBe(400);
+    endDeliveryCooldown(f);
     f.sendEmail.mockRejectedValueOnce(new Error("fixture-mail-private-diagnostic"));
     const rejected = await f.request("/request-identity-code", {}, token);
     expect(rejected.status).toBe(503);
@@ -682,6 +692,7 @@ describe("confirmation for protected reads", () => {
     const pending = f.request("/request-identity-code", {}, token);
     await sent;
     try {
+      endDeliveryCooldown(f);
       expect((await f.request("/request-identity-code", {}, token)).status).toBe(429);
       const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
       expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
@@ -719,6 +730,7 @@ describe("confirmation for protected reads", () => {
       delivered();
       await waiting;
     });
+    endDeliveryCooldown(f);
     const sending = f.request("/request-identity-code", {}, token);
     await sent;
     const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
@@ -784,6 +796,7 @@ describe("confirmation for protected reads", () => {
       delivered();
       await waiting;
     });
+    endDeliveryCooldown(f);
     const sending = f.request("/request-identity-code", {}, token);
     await sent;
     try {
@@ -795,5 +808,20 @@ describe("confirmation for protected reads", () => {
     expect((await sending).status).toBe(200);
     const nextCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
     expect((await f.request("/confirm-identity", { code: nextCode }, token)).status).toBe(200);
+  });
+  it("rate limits sequential delivery across sessions of the same account", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    const second = (await (await f.signin()).json()) as { token: string };
+    expect(second.token).not.toBe(token);
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const sent = f.messages.length;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(429);
+    expect((await f.request("/request-identity-code", {}, second.token)).status).toBe(429);
+    expect(f.messages).toHaveLength(sent);
+    endDeliveryCooldown(f);
+    expect((await f.request("/request-identity-code", {}, second.token)).status).toBe(200);
+    expect(f.messages).toHaveLength(sent + 1);
   });
 });
