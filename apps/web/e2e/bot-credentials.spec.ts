@@ -190,6 +190,13 @@ test("Space credentials preserve Bot identity and reveal only after confirmation
   const viewport = page.viewportSize()!;
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(rows).toHaveCount(2);
+  const narrowSettings = (await settings.boundingBox())!;
+  const narrowClose = (await settings
+    .getByRole("button", { name: "Close user settings" })
+    .boundingBox())!;
+  expect(narrowClose.x + narrowClose.width).toBeLessThanOrEqual(
+    narrowSettings.x + narrowSettings.width,
+  );
   await captureScreenshot(page, testInfo, "space-credentials-narrow");
   await page.setViewportSize(viewport);
 
