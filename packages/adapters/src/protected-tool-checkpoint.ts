@@ -73,7 +73,7 @@ export function createProtectedToolTranscriptSanitizer(
             (part.arguments.name === undefined && /\bsave_page\b/.test(part.argumentsError ?? "")));
         if (!wrapped && part.name !== SAVE_PAGE_TOOL) {
           pageCalls.delete(part.id);
-          if (bridge && part.argumentsError && typeof part.arguments.name !== "string") {
+          if (bridge && typeof part.arguments.name !== "string") {
             changed = true;
             protectedErrors.set(part.id, INVALID_BRIDGED_CALL);
             return { ...part, arguments: {}, argumentsError: INVALID_BRIDGED_CALL };

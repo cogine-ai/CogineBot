@@ -165,6 +165,12 @@ describe("run turn checkpoint state", () => {
   it.each([
     ["direct malformed JSON", "generate_secret", {}, true],
     ["unidentified wrapped malformed JSON", USE_TOOL, {}, true],
+    [
+      "wrapped missing tool name",
+      USE_TOOL,
+      { arguments: { type: "login", username: "fixture-account@example.test" } },
+      false,
+    ],
     ["direct missing type", "generate_secret", { username: "fixture-account@example.test" }, false],
     [
       "wrapped invalid type",
@@ -201,7 +207,7 @@ describe("run turn checkpoint state", () => {
       const stored = f.client.externalEffect.upsert.mock.calls[0]![0].create.result;
       expect(stored).not.toContain("fixture-account@example.test");
       expect(stored).toContain(
-        toolName === USE_TOOL && malformed
+        toolName === USE_TOOL && !("name" in args)
           ? "The tool call had invalid arguments."
           : "The credential generation request had invalid arguments.",
       );
