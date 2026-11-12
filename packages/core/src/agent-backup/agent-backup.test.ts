@@ -60,12 +60,17 @@ it("reads Hermes ZIP notes without exposing config, credentials, and chat histor
   const backup = zipSync({
     "config.yaml": strToU8("fixture key"),
     "auth.json": strToU8("fixture auth"),
+    "skills/.bundled_manifest": strToU8("review:fixture-origin"),
     "memories/MEMORY.md": strToU8("One\n§\nTwo\n"),
     "sessions/history.md": strToU8("fixture history"),
+    "skills/review/SKILL.md": strToU8("\uFEFFOriginal text\r\n"),
   });
   expect(JSON.parse(readBotImportBytes(backup))).toMatchObject({
     source: "hermes",
-    files: [{ path: "memories/MEMORY.md", content: "One\n§\nTwo\n" }],
+    files: [
+      { path: "memories/MEMORY.md", content: "One\n§\nTwo\n" },
+      { path: "skills/review/SKILL.md", content: "\uFEFFOriginal text\r\n" },
+    ],
   });
 });
 

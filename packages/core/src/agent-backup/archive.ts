@@ -72,7 +72,7 @@ export function openAgentImportArchive(data: Uint8Array): {
     byVirtual.set(path, entry);
   }
   let read = 0;
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   // Counted once per selected file.
   const texts = new Map<string, string>();
   return {
@@ -137,8 +137,7 @@ function mayBeRead(path: string): boolean {
     name === "SKILL.md" ||
     READ_MARKDOWN.has(name) ||
     ((folder === "memory" || folder === "memories") && name.endsWith(".md")) ||
-    name === "manifest.json" ||
-    name === ".bundled_manifest"
+    name === "manifest.json"
   );
 }
 

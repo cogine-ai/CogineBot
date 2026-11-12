@@ -495,6 +495,22 @@ it("does not approve an empty import from excluded backup notes", () => {
   );
 });
 
+it("keeps standalone Hermes Skills pending without classifying edits by bundled names", () => {
+  const edited = `\uFEFF${skill.replace("Original body.", "User edits.")}`;
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "HERMES.md", content: "Synthetic instructions" },
+      { path: "skills/category/sample/SKILL.md", content: edited },
+    ],
+  });
+  const preview = parseBotPackageSource(source, {
+    includeMemory: false,
+  });
+  expect(preview.document.skills[0]).toMatchObject({ name: "sample", content: edited });
+});
+
 it("rejects unsupported paths sent directly to the preview endpoint", () => {
   const source = JSON.stringify({
     format: "agent-backup/v1",

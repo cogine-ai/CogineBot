@@ -21,7 +21,6 @@ export const openClawRuntimeFiles = new Set([
   "BOOTSTRAP.md",
   "BOOT.md",
 ]);
-export const hermesBundledManifest = "skills/.bundled_manifest";
 export const isBackupSkill = (path: string) =>
   /^(?:\.agents\/)?skills\/(?:[^/]+\/){1,4}SKILL\.md$/.test(path);
 export function isBackupMemory(source: AgentBackupSource, path: string) {
@@ -35,8 +34,7 @@ export function isBackupTextFile(source: AgentBackupSource, path: string) {
     backupInstructions[source].some((file) => file === path) ||
     isBackupMemory(source, path) ||
     isBackupSkill(path) ||
-    (source === "openclaw" && (path === "IDENTITY.md" || openClawRuntimeFiles.has(path))) ||
-    (source === "hermes" && path === hermesBundledManifest)
+    (source === "openclaw" && (path === "IDENTITY.md" || openClawRuntimeFiles.has(path)))
   );
 }
 

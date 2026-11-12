@@ -35,7 +35,6 @@ import {
 import {
   backupInstructions,
   botImportJsonObject,
-  hermesBundledManifest,
   isBackupMemory,
   isBackupSkill,
   isBackupTextFile,
@@ -549,12 +548,6 @@ function backupPackage(
     }
     instructions.push(next);
   }
-  const bundled = new Set(
-    (byPath.get(hermesBundledManifest) ?? "")
-      .split(/\r?\n/)
-      .map((line) => line.split(":")[0]?.trim().toLowerCase())
-      .filter(Boolean),
-  );
   const incomplete = new Set(backup.incompleteSkills);
   const skillNames = new Set<string>();
   const skills: BotPackageDocument["skills"] = [];
@@ -565,13 +558,7 @@ function backupPackage(
   )) {
     if (isBackupSkill(path)) {
       const parsed = parseSkillMd(content);
-      const folder = path.split("/").at(-2)?.toLowerCase();
-      if (
-        (folder && bundled.has(folder)) ||
-        (!("error" in parsed) && bundled.has(parsed.name.toLowerCase()))
-      ) {
-        addNote("skill", path, "This built-in Skill is not imported.");
-      } else if ("error" in parsed) {
+      if ("error" in parsed) {
         addNote("skill", path, "This Skill is missing valid metadata.");
       } else if (
         incomplete.has(path) ||
