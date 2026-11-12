@@ -1071,17 +1071,19 @@ export function ShellPage() {
   useEffect(() => {
     if (!slackEntrySpaceId || !creationSpaceId || !initialBotsLoaded) return;
     setSlackEntrySpaceId(null);
-    if (!spaces.some(({ id }) => id === slackEntrySpaceId)) {
-      setSidebarError(t`This Space is unavailable`);
-      setMobileSidebarOpen(true);
-    } else if (slackEntrySpaceId === creationSpaceId) {
-      setMessagingSettingsOpen(true);
-    } else if (selectSpace(slackEntrySpaceId)) {
-      window.location.replace("/app?slackInstallation=settings");
-    } else {
-      setSidebarError(t`This Space is unavailable`);
-      setMobileSidebarOpen(true);
+    if (spaces.some(({ id }) => id === slackEntrySpaceId)) {
+      if (slackEntrySpaceId === creationSpaceId) {
+        setMessagingSettingsOpen(true);
+        return;
+      }
+      if (selectSpace(slackEntrySpaceId)) {
+        window.location.replace("/app?slackInstallation=settings");
+        return;
+      }
     }
+    setSidebarError(t`This Space is unavailable`);
+    if (window.matchMedia("(min-width: 768px)").matches) setBotsSidebarCollapsed(false);
+    else setMobileSidebarOpen(true);
   }, [slackEntrySpaceId, creationSpaceId, initialBotsLoaded, spaces, t]);
   const creationScope = useBotCreation({
     ownerKey: creationSpaceId ? settingsOwnerKey : null,
