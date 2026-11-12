@@ -129,6 +129,7 @@ function makeDisconnectDeps(
 ) {
   const rows = overrides.existing ?? [];
   const findMany = vi.fn().mockResolvedValue(rows);
+  const lockCredentials = vi.fn().mockResolvedValue(rows.map(({ id }) => ({ id })));
   const preferenceDeleteMany = vi.fn().mockResolvedValue({ count: rows.length });
   const credentialDeleteMany = vi.fn().mockResolvedValue({ count: rows.length });
   const modelCount = vi.fn().mockResolvedValue(overrides.modelReferences ?? 0);
@@ -143,6 +144,7 @@ function makeDisconnectDeps(
     spaceVoicePreference: { deleteMany: preferenceDeleteMany },
     userModelCredential: { count: modelCount },
     secret: { deleteMany: secretDeleteMany },
+    $queryRaw: lockCredentials,
     $transaction: vi.fn(),
   };
   prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) =>
@@ -155,6 +157,7 @@ function makeDisconnectDeps(
   return {
     deps,
     findMany,
+    lockCredentials,
     preferenceDeleteMany,
     credentialDeleteMany,
     secretDeleteMany,
@@ -170,8 +173,14 @@ describe("disconnectVoiceCredential", () => {
       userId: actor.userId,
       provider: "scripted",
     };
-    const { deps, findMany, preferenceDeleteMany, credentialDeleteMany, secretDeleteMany } =
-      makeDisconnectDeps({ existing: [existing] });
+    const {
+      deps,
+      findMany,
+      lockCredentials,
+      preferenceDeleteMany,
+      credentialDeleteMany,
+      secretDeleteMany,
+    } = makeDisconnectDeps({ existing: [existing] });
 
     await expect(disconnectVoiceCredential(deps, actor, { provider: "scripted" })).resolves.toEqual(
       {
@@ -179,6 +188,12 @@ describe("disconnectVoiceCredential", () => {
       },
     );
 
+    expect(lockCredentials).toHaveBeenCalledExactlyOnceWith(
+      expect.arrayContaining([expect.stringContaining("ORDER BY id FOR UPDATE")]),
+      actor.userId,
+      "scripted",
+    );
+    expect(lockCredentials).toHaveBeenCalledBefore(preferenceDeleteMany);
     expect(findMany).toHaveBeenCalledWith({
       where: { userId: actor.userId, provider: "scripted" },
     });
