@@ -118,17 +118,6 @@ async function isLegacyMessagingReplay(
   return channel?.channelId === channelId;
 }
 
-function inboundCommandKey(event: MessagingInboundMessage): string {
-  const key = JSON.stringify([
-    event.provider,
-    event.workspaceId,
-    event.threadId,
-    event.from,
-    event.handle,
-  ]);
-  return `inbound-command:${createHash("sha256").update(key).digest("hex")}`;
-}
-
 function inboundReceiptKey(event: MessagingInboundMessage, memberId?: string): string {
   const key = JSON.stringify([
     event.provider,
@@ -154,9 +143,13 @@ async function bindInboundTarget(
   if (count === 1) return true;
   const prior = await prisma.messagingOutbound.findUnique({
     where: { idempotencyKey: key },
-    select: { threadId: true, identityId: true },
+    select: { status: true, threadId: true, identityId: true },
   });
-  return prior?.threadId === target.threadId && prior.identityId === target.identityId;
+  return (
+    prior?.status === "inbound" &&
+    prior.threadId === target.threadId &&
+    prior.identityId === target.identityId
+  );
 }
 
 async function activeIdentity(
@@ -267,6 +260,38 @@ async function markInboundCommand(tx: Prisma.TransactionClient, key: string, pro
   return count === 1;
 }
 
+async function alreadyReceivedDirect(
+  prisma: PrismaClient,
+  event: MessagingInboundMessage,
+  identityId: string,
+  threadId: string,
+): Promise<boolean> {
+  const clientNonce = `messaging:${event.provider}:${event.handle}`;
+  const current = await prisma.message.findUnique({
+    where: { threadId_clientNonce: { threadId, clientNonce } },
+    select: { blocks: true },
+  });
+  if (
+    current &&
+    !(current.blocks as MessageBlock[]).some((block) => block.kind === "channel_message")
+  )
+    return true;
+
+  const prior = await prisma.messagingOutbound.findMany({
+    where: { identityId, status: "inbound_binding", provider: event.provider },
+    select: { threadId: true },
+  });
+  const threadIds = prior.flatMap((binding) => (binding.threadId ? [binding.threadId] : []));
+  if (!threadIds.length) return false;
+  const deliveries = await prisma.message.findMany({
+    where: { clientNonce, threadId: { in: threadIds } },
+    select: { blocks: true },
+  });
+  return deliveries.some(
+    ({ blocks }) => !(blocks as MessageBlock[]).some((block) => block.kind === "channel_message"),
+  );
+}
+
 async function handleDirectEvent(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
@@ -275,55 +300,41 @@ async function handleDirectEvent(
   const deliveryKey = inboundReceiptKey(event);
   const prior = await deps.prisma.messagingOutbound.findUnique({
     where: { idempotencyKey: deliveryKey },
-    select: { identityId: true },
+    select: { identityId: true, status: true, threadId: true },
   });
+  if (prior?.status === "inbound_command") return;
   const command = prior ? null : parseMessagingCommand(event.content);
   const code = prior ? null : normalizeMessagingLinkCode(event.content);
-  const commandKey = command || code ? inboundCommandKey(event) : null;
-  if (
-    commandKey &&
-    (await deps.prisma.messagingOutbound.findUnique({
-      where: { idempotencyKey: commandKey },
-      select: { id: true },
-    }))
-  )
-    return;
-
   const where = { provider_address: { provider: event.provider, address: event.from } } as const;
   const existing = await deps.prisma.messagingIdentity.findUnique({ where });
   if (prior && prior.identityId !== existing?.id) return;
-  if (existing) {
-    if (!(await activeIdentity(deps.prisma, existing))) return;
-    // Any reply — even a content-free reaction — ends the consecutive-
-    // outbound streak, but only real text wakes the bot. The conversation
-    // id is refreshed from the webhook so outbound always has a thread.
-    await deps.prisma.messagingIdentity.update({
-      where: { id: existing.id },
-      data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
-    });
-    if (!hasContent) return;
-    // Owner commands are only parsed in the verified 1:1 conversation.
-    if (command && commandKey && (await applyOwnerCommand(deps, existing, command, commandKey)))
-      return;
-    // A linked sender pasting a fresh code re-points this address at another
-    // of their bots (only their own codes apply).
-    if (code && commandKey && (await tryRedeemLinkCode(deps, event, code, commandKey))) return;
-  } else {
-    // Unlinked senders: a valid link code binds this address to its issuer's
-    // account and bot; otherwise the line is silent unless the deployment
-    // explicitly runs as an open Poke-style signup line.
-    if (code && commandKey && (await tryRedeemLinkCode(deps, event, code, commandKey))) return;
-    if (!deps.openSignup) return;
-    // Never provision a full account for a reaction or empty payload.
-    if (!hasContent) return;
-  }
-
   let ids: ProvisionedMessagingIdentity;
   if (existing) {
+    if (!(await activeIdentity(deps.prisma, existing))) return;
     const thread = await deps.prisma.thread.findFirst({
       where: { botId: existing.botId, spaceId: existing.spaceId, userId: existing.userId },
     });
-    if (!thread) throw new Error(`messaging identity ${existing.id} has no thread`);
+    if (!thread || (prior && prior.threadId !== thread.id)) return;
+    if (await alreadyReceivedDirect(deps.prisma, event, existing.id, thread.id)) return;
+    // A fresh reply ends the consecutive-outbound streak, including when
+    // there is no text to wake a Run.
+    if (!prior) {
+      await deps.prisma.messagingIdentity.update({
+        where: { id: existing.id },
+        data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
+      });
+    }
+    if (!hasContent) return;
+    if (command && (await applyOwnerCommand(deps, existing, command, deliveryKey))) return;
+    if (
+      code &&
+      (await tryRedeemLinkCode(deps, event, code, deliveryKey, {
+        identityId: existing.id,
+        botId: existing.botId,
+        threadId: thread.id,
+      }))
+    )
+      return;
     ids = {
       provider: existing.provider,
       address: existing.address,
@@ -334,6 +345,8 @@ async function handleDirectEvent(
       created: false,
     };
   } else {
+    if (code && (await tryRedeemLinkCode(deps, event, code, deliveryKey))) return;
+    if (!deps.openSignup || !hasContent) return;
     ids = await deps.provision(
       {
         provider: event.provider,
@@ -345,7 +358,6 @@ async function handleDirectEvent(
     );
   }
 
-  if (await isLegacyMessagingReplay(deps.prisma, event, ids.threadId)) return;
   const owner = existing ?? (await deps.prisma.messagingIdentity.findUnique({ where }));
   if (
     owner &&
@@ -540,12 +552,14 @@ export async function teamChatSenderCanWakeMessageRoutines(
  * happens (no oracle, no reply spam).
  */
 class InactiveMessagingIdentity extends Error {}
+class InboundAlreadyClaimed extends Error {}
 
 async function tryRedeemLinkCode(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
   code: string,
   commandKey: string,
+  previous?: { identityId: string; botId: string; threadId: string },
 ): Promise<boolean> {
   const redeemed = await redeemMessagingLinkCode(
     deps.prisma,
@@ -557,7 +571,24 @@ async function tryRedeemLinkCode(
     },
     async (tx, link) => {
       if (!(await activeIdentity(tx, link))) throw new InactiveMessagingIdentity();
-      await markInboundCommand(tx, commandKey, event.provider);
+      if (!(await markInboundCommand(tx, commandKey, event.provider)))
+        throw new InboundAlreadyClaimed();
+      if (previous && link.botId !== previous.botId) {
+        await tx.messagingOutbound.createMany({
+          data: [
+            {
+              idempotencyKey: `inbound-binding:${previous.identityId}:${previous.threadId}`,
+              kind: "inbound_binding",
+              status: "inbound_binding",
+              body: "",
+              provider: event.provider,
+              identityId: previous.identityId,
+              threadId: previous.threadId,
+            },
+          ],
+          skipDuplicates: true,
+        });
+      }
       const bot = await tx.bot.findUnique({ where: { id: link.botId }, select: { name: true } });
       await writeConfirmation(
         tx,
@@ -567,7 +598,8 @@ async function tryRedeemLinkCode(
       );
     },
   ).catch((error: unknown) => {
-    if (error instanceof InactiveMessagingIdentity) return null;
+    if (error instanceof InactiveMessagingIdentity || error instanceof InboundAlreadyClaimed)
+      return null;
     throw error;
   });
   if (!redeemed) {
@@ -601,7 +633,12 @@ async function applyOwnerCommand(
         where: { id: membership.id, status: "approved" },
         data: { status: "left" },
       });
-      if (!count) return false;
+      if (!count) {
+        await tx.messagingOutbound.deleteMany({
+          where: { idempotencyKey: commandKey, status: "inbound_command" },
+        });
+        return false;
+      }
       await writeConfirmation(
         tx,
         identity,
@@ -645,7 +682,12 @@ async function applyOwnerCommand(
         data: { status: approved ? "approved" : "declined" },
       });
       // Swept out or answered elsewhere since the read: not ours to write.
-      if (count === 0) return false;
+      if (count === 0) {
+        await tx.messagingOutbound.deleteMany({
+          where: { idempotencyKey: commandKey, status: "inbound_command" },
+        });
+        return false;
+      }
       await writeConfirmation(
         tx,
         identity,
@@ -685,7 +727,12 @@ async function applyOwnerCommand(
       },
     });
     // The observed request was answered, revoked, or reopened.
-    if (count === 0) return false;
+    if (count === 0) {
+      await tx.messagingOutbound.deleteMany({
+        where: { idempotencyKey: commandKey, status: "inbound_command" },
+      });
+      return false;
+    }
     await writeConfirmation(
       tx,
       identity,

@@ -730,9 +730,29 @@ async function finishInFlight(
   }, MESSAGING_CLAIM_TTL_MS / 4);
   keepClaim.unref();
   try {
-    const result = await inFlight.catch(() => null);
-    if (result?.handle) {
-      await deps.prisma.$transaction((tx) => recordAcceptance(tx, where, provider, result.handle));
+    const result = await inFlight.catch((error: unknown) => error);
+    if (result instanceof MessagingSendError && result.disposition !== "unknown") {
+      const continueLane = await recordRejectedSend(
+        deps,
+        row,
+        claimStartedAt,
+        result,
+        provider,
+        where,
+      );
+      await publishMessagingDelivery(deps.prisma, deps.events, [row.sourceMessageId]);
+      if (continueLane) await deps.jobs.enqueue(messagingDeliverJob());
+      return;
+    }
+    const handle =
+      result &&
+      typeof result === "object" &&
+      "handle" in result &&
+      typeof result.handle === "string"
+        ? result.handle
+        : null;
+    if (handle) {
+      await deps.prisma.$transaction((tx) => recordAcceptance(tx, where, provider, handle));
       if (row.identityId) await countDirectSend(deps, row.identityId);
     } else {
       await deps.prisma.messagingOutbound.updateMany({
@@ -796,6 +816,7 @@ async function recordRejectedSend(
   claimStartedAt: Date,
   failure: MessagingSendError,
   provider: string | null,
+  where: Prisma.MessagingOutboundWhereInput = claimFilter(row, claimStartedAt),
 ): Promise<boolean> {
   const attempts = (row.attempts ?? 0) + 1;
   const exhausted =
@@ -806,7 +827,7 @@ async function recordRejectedSend(
         Date.now() + Math.max(messagingOutboundRetryDelayMs(attempts), failure.retryAfterMs ?? 0),
       );
   const update = {
-    where: claimFilter(row, claimStartedAt),
+    where,
     data: {
       provider,
       attempts,

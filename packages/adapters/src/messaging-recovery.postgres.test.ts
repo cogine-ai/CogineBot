@@ -397,55 +397,78 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
     ).toEqual({ state: "unknown" });
   });
 
-  it("holds the next part during a timed-out provider call and records a late acceptance once", async () => {
-    const saved = (await terminalRun("completed", "messaging", "Saved reply")).message!;
-    await prisma.messagingOutbound.createMany({
-      data: ["first", "second"].map((body, index) => ({
-        sourceMessageId: saved.id,
-        body,
-        kind: "group",
-        provider: "sendblue",
-        threadId: "sendblue:fixture-in-flight",
-        idempotencyKey: `fixture:${saved.id}:${index}`,
-        partIndex: index,
-        createdAt: new Date(0),
-      })),
-    });
-    let acceptLate!: (result: { handle: string }) => void;
-    const late = new Promise<{ handle: string }>((resolve) => {
-      acceptLate = resolve;
-    });
-    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => {
-      if (body === "first")
-        throw new MessagingSendError("unknown", "outcome_unknown", undefined, undefined, late);
-      return { handle: "fixture-second" };
-    });
-    const deps = outboundDeps(send);
-    const drain = () => deliverMessagingOutbound(deps, {}, deliveryContext());
-    await drain();
-    await drain();
-    expect(send.mock.calls.map(([request]) => request.body)).toEqual(["first"]);
-    expect(
-      await prisma.messagingOutbound.findFirstOrThrow({
-        where: { sourceMessageId: saved.id, partIndex: 0 },
-      }),
-    ).toMatchObject({ deliveryState: "unknown", claimStartedAt: expect.any(Date) });
-
-    acceptLate({ handle: "fixture-late-first" });
-    await vi.waitFor(async () => {
+  it.each(["accepted", "rate_limited"] as const)(
+    "holds the next part during a timed-out provider call and records a late %s outcome",
+    async (outcome) => {
+      const saved = (await terminalRun("completed", "messaging", "Saved reply")).message!;
+      await prisma.messagingOutbound.createMany({
+        data: ["first", "second"].map((body, index) => ({
+          sourceMessageId: saved.id,
+          body,
+          kind: "group",
+          provider: "sendblue",
+          threadId: "sendblue:fixture-in-flight",
+          idempotencyKey: `fixture:${saved.id}:${index}`,
+          partIndex: index,
+          createdAt: new Date(0),
+        })),
+      });
+      let acceptLate!: (result: { handle: string }) => void;
+      let rejectLate!: (reason: Error) => void;
+      const late = new Promise<{ handle: string }>((resolve, reject) => {
+        acceptLate = resolve;
+        rejectLate = reject;
+      });
+      let firstAttempt = true;
+      const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => {
+        if (body === "first" && firstAttempt) {
+          firstAttempt = false;
+          throw new MessagingSendError("unknown", "outcome_unknown", undefined, undefined, late);
+        }
+        return { handle: body === "first" ? "fixture-retried-first" : "fixture-second" };
+      });
+      const deps = outboundDeps(send);
+      const drain = () => deliverMessagingOutbound(deps, {}, deliveryContext());
+      await drain();
+      await drain();
+      expect(send.mock.calls.map(([request]) => request.body)).toEqual(["first"]);
       expect(
         await prisma.messagingOutbound.findFirstOrThrow({
           where: { sourceMessageId: saved.id, partIndex: 0 },
         }),
-      ).toMatchObject({
-        providerHandle: "fixture-late-first",
-        deliveryState: "accepted",
-        claimStartedAt: null,
-      });
-    });
-    await drain();
-    expect(send.mock.calls.map(([request]) => request.body)).toEqual(["first", "second"]);
-  });
+      ).toMatchObject({ deliveryState: "unknown", claimStartedAt: expect.any(Date) });
+
+      const where = { sourceMessageId: saved.id, partIndex: 0 };
+      if (outcome === "rate_limited") {
+        rejectLate(new MessagingSendError("retryable", "rate_limited", 60_000));
+        await vi.waitFor(async () => {
+          expect(await prisma.messagingOutbound.findFirstOrThrow({ where })).toMatchObject({
+            deliveryState: null,
+            status: "pending",
+            attempts: 1,
+            claimStartedAt: null,
+            nextAttemptAt: expect.any(Date),
+          });
+        });
+        await drain();
+        expect(send).toHaveBeenCalledOnce();
+        await prisma.messagingOutbound.updateMany({ where, data: { nextAttemptAt: new Date(0) } });
+      } else {
+        acceptLate({ handle: "fixture-late-first" });
+        await vi.waitFor(async () => {
+          expect(await prisma.messagingOutbound.findFirstOrThrow({ where })).toMatchObject({
+            providerHandle: "fixture-late-first",
+            deliveryState: "accepted",
+            claimStartedAt: null,
+          });
+        });
+      }
+      await drain();
+      expect(send.mock.calls.map(([request]) => request.body)).toEqual(
+        outcome === "rate_limited" ? ["first", "first", "second"] : ["first", "second"],
+      );
+    },
+  );
 
   it("retains successful text and sends one notice in the original conversation on file rejection", async () => {
     const saved = await terminalRun("completed", "messaging", "Text survived");

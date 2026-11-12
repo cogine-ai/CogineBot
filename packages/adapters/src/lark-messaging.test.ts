@@ -334,6 +334,7 @@ describe("Lark messaging conformance", () => {
         },
       }),
     );
+    expect(request.mock.calls.some(([options]) => options.timeout === 10_000)).toBe(true);
   });
 
   it("rejects an empty postable before sending a message", async () => {

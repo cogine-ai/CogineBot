@@ -31,6 +31,21 @@ interface LarkMessageEvent {
   };
 }
 
+function boundedHttp(http: Pick<LarkSdk.HttpInstance, "request">): LarkSdk.HttpInstance {
+  const request: LarkSdk.HttpInstance["request"] = (options) =>
+    http.request({ ...options, timeout: 10_000 });
+  return {
+    request,
+    get: (url, options) => request({ ...options, url, method: "GET" }),
+    delete: (url, options) => request({ ...options, url, method: "DELETE" }),
+    head: (url, options) => request({ ...options, url, method: "HEAD" }),
+    options: (url, options) => request({ ...options, url, method: "OPTIONS" }),
+    post: (url, data, options) => request({ ...options, url, data, method: "POST" }),
+    put: (url, data, options) => request({ ...options, url, data, method: "PUT" }),
+    patch: (url, data, options) => request({ ...options, url, data, method: "PATCH" }),
+  };
+}
+
 /** Webhook-only direct messaging; the SDK owns HTTP, domains and tenant tokens. */
 export class LarkAdapter extends LarkAdapterBase implements Adapter {
   readonly name = "lark";
@@ -51,7 +66,11 @@ export class LarkAdapter extends LarkAdapterBase implements Adapter {
       appSecret: config.appSecret,
       domain: config.domain,
       loggerLevel: sdk.LoggerLevel.error,
-      ...(config.httpInstance ? { httpInstance: config.httpInstance } : {}),
+      // The SDK's default response interceptor unwraps the Axios envelope.
+      httpInstance: boundedHttp(
+        config.httpInstance ??
+          (sdk.defaultHttpInstance as unknown as Pick<LarkSdk.HttpInstance, "request">),
+      ),
     });
   }
   get userName() {

@@ -135,7 +135,7 @@ function createDeps(
       ),
     },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
-    message: { findUnique: vi.fn(async () => null) },
+    message: { findUnique: vi.fn(async () => null), findMany: vi.fn(async () => []) },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
       upsert: vi.fn(async () => channel),
@@ -213,6 +213,15 @@ function createDeps(
       ),
     },
     messagingOutbound: {
+      findMany: vi.fn(
+        async ({ where }: { where: { identityId: string; status: string; provider: string } }) =>
+          outboundRows.filter(
+            (row) =>
+              row.identityId === where.identityId &&
+              row.status === where.status &&
+              row.provider === where.provider,
+          ),
+      ),
       findUnique: vi.fn(
         async ({ where }: { where: { idempotencyKey: string } }) =>
           outboundRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
@@ -273,7 +282,9 @@ function createDeps(
     notify,
     enqueue,
     get outboundRows() {
-      return outboundRows.filter((row) => row.kind !== "inbound_command" && row.kind !== "inbound");
+      return outboundRows.filter(
+        (row) => !["inbound_command", "inbound", "inbound_binding"].includes(String(row.kind)),
+      );
     },
     members,
     txMock,
@@ -348,6 +359,26 @@ describe("createMessagingInboundHandler DM routing", () => {
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
   });
 
+  it("suppresses a duplicate approval after the first command consumed the pending target", async () => {
+    const deps = createDeps();
+    vi.mocked(deps.prisma.messagingChannelMember.findFirst).mockImplementationOnce(async () => {
+      const lookup = vi.mocked(deps.prisma.messagingOutbound.findUnique).mock.calls[0]![0]!;
+      await deps.prisma.messagingOutbound.createMany({
+        data: [
+          {
+            idempotencyKey: lookup.where.idempotencyKey!,
+            kind: "inbound_command",
+            status: "inbound_command",
+            body: "",
+          },
+        ],
+      });
+      return null;
+    });
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "YES" });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("keeps a provider redelivery of a pre-upgrade Slack message in the original Run", async () => {
     const deps = createDeps({
       identity: {
@@ -374,6 +405,47 @@ describe("createMessagingInboundHandler DM routing", () => {
       },
       select: { blocks: true },
     });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("checks legacy delivery on the earlier linked thread before routing a replay", async () => {
+    const deps = createDeps({
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: dmEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+      linkCode: {
+        id: "link-fixture",
+        code: "ABCD2345",
+        userId: "user-1",
+        spaceId: "ws-2",
+        botId: "bot-2",
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+    const handle = createMessagingInboundHandler(deps);
+    const slack = { ...dmEvent, provider: "slack", threadId: "slack:fixture" };
+    await handle({ ...slack, handle: "relink", content: "ABCD2345" });
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "link:link-fixture" }),
+    ]);
+    vi.mocked(deps.prisma.thread.findFirst).mockResolvedValueOnce({ id: "thread-2" } as never);
+    vi.mocked(deps.prisma.message.findMany).mockResolvedValueOnce([
+      { blocks: [{ kind: "text", text: "YES" }] },
+    ] as never);
+    await handle({ ...slack, handle: "old-approval-like-text", content: "YES" });
+    expect(deps.prisma.message.findMany).toHaveBeenCalledWith({
+      where: {
+        clientNonce: "messaging:slack:old-approval-like-text",
+        threadId: { in: ["thread-1"] },
+      },
+      select: { blocks: true },
+    });
+    expect(deps.prisma.messagingChannelMember.findFirst).not.toHaveBeenCalled();
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
   });
 

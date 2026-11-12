@@ -189,7 +189,10 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       .post(message)
       .then((sent) => ({
         handle: "id" in sent && typeof sent.id === "string" ? sent.id : "",
-      }));
+      }))
+      .catch((error: unknown) => {
+        throw classifySendError(platform, error);
+      });
     try {
       return await raceWithSignal(submitted, signal);
     } catch (error) {
@@ -198,7 +201,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
         // so the outbox can keep the conversation ordered and save a late handle.
         throw new MessagingSendError("unknown", "outcome_unknown", undefined, error, submitted);
       }
-      throw classifySendError(platform, error);
+      throw error;
     }
   }
 
@@ -350,8 +353,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     const transport = platform.transport?.(message.raw) ?? null;
     // Use authenticated file APIs. Some adapters expose only a webhook URL
     // wrapped in fetchData, which is still a link for the conversation.
-    const canDownload = provider === "telegram" || provider === "whatsapp" || provider === "slack";
-    const attachments = canDownload ? inboundAttachments(message, provider) : [];
+    const attachments = inboundAttachments(message, provider);
     const base: MessagingInboundMessage = {
       type: "message",
       provider,
@@ -367,7 +369,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       content: plainTextWithLinks(message, provider === "lark"),
       mediaUrl:
         message.attachments.find(
-          (attachment) => (!canDownload || !attachment.fetchData) && attachment.url,
+          (attachment) => attachment.url && !canFetchAttachment(attachment, provider),
         )?.url ?? null,
       ...(attachments.length ? { attachments } : {}),
     };
@@ -402,17 +404,28 @@ function attachmentMessage(
 
 function inboundAttachments(message: Message, provider: string): MessagingInboundAttachment[] {
   return message.attachments.flatMap((attachment) => {
-    const fetchData = attachment.fetchData;
-    if (!fetchData || (provider === "slack" && !slackFileUrl(attachment.url))) return [];
+    if (!canFetchAttachment(attachment, provider)) return [];
+    const { data, fetchData } = attachment;
+    const size = Buffer.isBuffer(data) ? data.byteLength : (data?.size ?? attachment.size);
     return [
       {
         name: attachment.name || attachment.type,
         mimeType: attachment.mimeType ?? "",
-        ...(attachment.size !== undefined ? { size: attachment.size } : {}),
-        fetch: async () => new Uint8Array(await fetchData()),
+        ...(size !== undefined ? { size } : {}),
+        fetch: async () => {
+          if (Buffer.isBuffer(data)) return new Uint8Array(data);
+          return new Uint8Array(data ? await data.arrayBuffer() : await fetchData!());
+        },
       },
     ];
   });
+}
+
+function canFetchAttachment(attachment: Message["attachments"][number], provider: string): boolean {
+  if (attachment.data) return true;
+  if (!attachment.fetchData) return false;
+  if (provider === "slack") return slackFileUrl(attachment.url);
+  return provider === "telegram" || provider === "whatsapp";
 }
 
 function slackFileUrl(url: string | undefined): boolean {
