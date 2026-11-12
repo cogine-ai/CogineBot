@@ -43,13 +43,19 @@ function providers(env: MessagingEnvironmentValues): string[] {
 describe("messagingPlatformsFromEnv", () => {
   it("checks workspace authorization when a queued SDK request reaches the transport", async () => {
     const fence = vi.fn(async (): Promise<void> => undefined);
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    let entered!: () => void;
+    let release!: () => void;
+    const transportEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const holdTransport = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     type Transport = NonNullable<NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"]>;
     const transport = vi.fn<Transport>(async (config) => {
       if (config.url?.endsWith("/auth.test")) {
-        entered.resolve();
-        await release.promise;
+        entered();
+        await holdTransport;
       }
       return {
         config,
@@ -69,12 +75,12 @@ describe("messagingPlatformsFromEnv", () => {
     );
     const slack = platform!.adapter as SlackAdapter;
     const lookup = slack.client.auth.test();
-    await entered.promise;
+    await transportEntered;
     const stopped = expect(
       slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
     ).rejects.toThrow("Workspace paused");
     fence.mockRejectedValueOnce(new Error("Workspace paused"));
-    release.resolve();
+    release();
     await Promise.all([lookup, stopped]);
     expect(transport).toHaveBeenCalledOnce();
     await expect(
