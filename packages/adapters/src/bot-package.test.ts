@@ -413,3 +413,64 @@ describe("bounded portable Bot JSON", () => {
     expect(BotPackageDocumentSchema.safeParse(document()).success).toBe(true);
   });
 });
+
+it("previews supported agent backup text as an ordinary new Bot package", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [
+      { path: "IDENTITY.md", content: "- Name: Field Notes\n- Theme: Research" },
+      { path: "SOUL.md", content: "Write short notes." },
+      { path: "AGENTS.md", content: "Use a checklist." },
+      { path: "MEMORY.md", content: "Keep this note." },
+      { path: "TOOLS.md", content: "Unsupported runtime file." },
+      {
+        path: "skills/review/SKILL.md",
+        content: "---\nname: review\ndescription: Review notes\n---\nReview.",
+      },
+      {
+        path: "skills/attached/SKILL.md",
+        content: "---\nname: attached\ndescription: Attached review\n---\nReview.",
+      },
+    ],
+    incompleteSkills: ["skills/attached/SKILL.md"],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: false });
+  expect(preview).toMatchObject({
+    sourceFormat: "openclaw",
+    availableMemoryCount: 1,
+    document: {
+      profile: {
+        name: "Field Notes",
+        description: "Research",
+        instructions: "Write short notes.\n\nUse a checklist.",
+      },
+      skills: [{ name: "review" }],
+      memory: [],
+      routines: [],
+      connections: [],
+    },
+  });
+  expect(preview.leftOut.map(({ name }) => name)).toEqual([
+    "TOOLS.md",
+    "skills/attached/SKILL.md",
+    "memory",
+  ]);
+  expect(parseBotPackageSource(source, { includeMemory: true }).document.memory).toEqual([
+    { path: "MEMORY.md", content: "Keep this note." },
+  ]);
+});
+
+it("rejects unsupported paths sent directly to the preview endpoint", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "HERMES.md", content: "Fixture" },
+      { path: "auth.json", content: "sensitive field" },
+    ],
+  });
+  expect(() => parseBotPackageSource(source, { includeMemory: false })).toThrow(
+    "unsupported files",
+  );
+});

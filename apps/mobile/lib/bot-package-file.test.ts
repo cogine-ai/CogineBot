@@ -153,7 +153,14 @@ it.each(["file:///picked/package.json", "content://documents/package"])(
     expect(io.pick).toHaveBeenCalledExactlyOnceWith({
       multiple: false,
       copyToCacheDirectory: false,
-      type: ["application/json", "text/plain"],
+      type: [
+        "application/json",
+        "text/plain",
+        "application/zip",
+        "application/gzip",
+        "application/x-gzip",
+        "application/octet-stream",
+      ],
     });
     expect(text).toBe(new TextDecoder().decode(io.bytes));
     expect(io.close).toHaveBeenCalledOnce();

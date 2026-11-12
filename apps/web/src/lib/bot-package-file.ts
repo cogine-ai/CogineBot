@@ -1,5 +1,6 @@
 import type { BotPackageExport } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
+import { readBotImportBytes } from "@rakazo/core/agent-backup";
 import { downloadArtifactBytes } from "./artifact-open";
 
 /** Packages have a separate byte budget from chat attachments. */
@@ -10,7 +11,7 @@ export async function readBotPackageFile(file: File, isCurrent: () => boolean): 
   if (!isCurrent()) throw new Error("This package editor is no longer current.");
   if (bytes.byteLength > BOT_PACKAGE_MAX_BYTES)
     throw new Error("Bot packages must be at most 4 MiB.");
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return readBotImportBytes(new Uint8Array(bytes));
 }
 
 export function downloadBotPackage(result: BotPackageExport, isCurrent: () => boolean): void {
