@@ -121,6 +121,28 @@ describe("ChatSdkMessagingSurface inbound", () => {
     ]);
   });
 
+  it("keeps Slack messages with equal timestamps in separate conversations", async () => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    for (const [threadId, text] of [
+      ["slack:Dfirst:1", "First"],
+      ["slack:Dsecond:1", "Second"],
+    ]) {
+      expect(
+        (
+          await surface.handleWebhook(
+            "slack",
+            webhookRequest({
+              threadId,
+              id: "1700000000.000100",
+              text,
+            }),
+          )
+        )?.status,
+      ).toBe(200);
+    }
+    expect(events).toMatchObject([{ content: "First" }, { content: "Second" }]);
+  });
+
   it("never surfaces the bot's own messages", async () => {
     const { surface, events } = createSurface();
     const response = await surface.handleWebhook(

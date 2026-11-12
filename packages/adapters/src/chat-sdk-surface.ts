@@ -84,10 +84,18 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
   constructor(platforms: MessagingPlatform[], options: { userName?: string } = {}) {
     if (platforms.length === 0) throw new Error("ChatSdkMessagingSurface needs >=1 platform");
     for (const platform of platforms) this.byProvider.set(platform.provider, platform);
+    const state = createMemoryState();
+    if (this.byProvider.has("slack")) {
+      const setIfNotExists = state.setIfNotExists.bind(state);
+      // Slack's event envelope and the persisted routing keys include their
+      // proper scope. The SDK's message cache key only contains the timestamp.
+      state.setIfNotExists = (key, value, ttl) =>
+        key.startsWith("dedupe:slack:") ? Promise.resolve(true) : setIfNotExists(key, value, ttl);
+    }
     this.chat = new Chat({
       userName: options.userName ?? "rakazo",
       adapters: Object.fromEntries(platforms.map((p) => [p.provider, p.adapter])),
-      state: createMemoryState(),
+      state,
       // The SDK default ("drop") takes a per-conversation lock and discards
       // any message that arrives while it is held — and the LockError is
       // swallowed into waitUntil, so the webhook still ACKs 200 and the

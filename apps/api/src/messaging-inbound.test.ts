@@ -5,7 +5,11 @@ import {
   teamChatSenderCanWakeMessageRoutines,
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
-import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
+import {
+  formatUntrustedDeliveryPayload,
+  inboundDeliveryClientNonce,
+  messagingWakeIdempotencyKey,
+} from "./webhook-inbound.js";
 
 const signupPolicy = { signupsEnabled: undefined, signupAllowlist: undefined };
 
@@ -229,6 +233,24 @@ function createDeps(
       findUnique: vi.fn(
         async ({ where }: { where: { idempotencyKey: string } }) =>
           outboundRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { idempotencyKey: string; status: { in: string[] } };
+          data: Record<string, unknown>;
+        }) => {
+          const row = outboundRows.find(
+            (item) =>
+              item.idempotencyKey === where.idempotencyKey &&
+              where.status.in.includes(String(item.status)),
+          );
+          if (!row) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
       ),
       createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
         let count = 0;
@@ -1061,6 +1083,85 @@ describe("createMessagingInboundHandler owner commands", () => {
 });
 
 describe("createMessagingInboundHandler channel routing", () => {
+  it("keeps the routine route selected even if a replay sees no active routine", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+      routines: [{ id: "routine-1", name: "Record update", prompt: "Record the update" }],
+    });
+    const handle = createMessagingInboundHandler(deps);
+    const event = { ...groupEvent, participants: [] };
+    await handle(event);
+    vi.mocked(deps.prisma.routine.findMany).mockResolvedValueOnce([]);
+    await handle(event);
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ trigger: "webhook" }),
+    );
+  });
+
+  it("does not suppress a Slack event for another channel sharing a legacy timestamp", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: groupEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+    });
+    const event = {
+      ...groupEvent,
+      provider: "slack",
+      threadId: "slack:fixture-channel",
+      participants: [],
+    };
+    const legacyNonce = inboundDeliveryClientNonce(
+      "messaging",
+      "bot-1",
+      messagingWakeIdempotencyKey(event.provider, event.handle),
+    );
+    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+      where.threadId_clientNonce?.clientNonce === legacyNonce
+        ? ({
+            blocks: [
+              {
+                kind: "text",
+                text: formatUntrustedDeliveryPayload("[Messaging Event: slack]", {
+                  provider: "slack",
+                  kind: "channel",
+                  handle: event.handle,
+                  from: event.from,
+                  channelName: "Other Channel",
+                  content: event.content,
+                }),
+              },
+            ],
+          } as never)
+        : null,
+    );
+    await createMessagingInboundHandler(deps)(event);
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ trigger: "messaging" }),
+    );
+  });
+
   it("does not start a normal group Run after a routine already consumed the event", async () => {
     const deps = createDeps({
       members: [

@@ -31,9 +31,25 @@ interface LarkMessageEvent {
   };
 }
 
+const rateLimitCodes = new Set([230020, 11232, 11233, 99991400]);
+
+function withLarkErrorCode(error: Error, providerCode: number) {
+  return Object.assign(error, {
+    providerCode,
+    ...(rateLimitCodes.has(providerCode) && { code: "RATE_LIMITED" }),
+  });
+}
+
 function boundedHttp(http: Pick<LarkSdk.HttpInstance, "request">): LarkSdk.HttpInstance {
   const request: LarkSdk.HttpInstance["request"] = (options) =>
-    http.request({ ...options, timeout: 10_000 });
+    http.request({ ...options, timeout: 10_000 }).catch((error: unknown) => {
+      if (error instanceof Error && "response" in error) {
+        const response = error.response as { data?: { code?: unknown } } | undefined;
+        const code = response?.data?.code;
+        if (typeof code === "number") throw withLarkErrorCode(error, code);
+      }
+      throw error;
+    });
   return {
     request,
     get: (url, options) => request({ ...options, url, method: "GET" }),
@@ -273,10 +289,7 @@ export class LarkAdapter extends LarkAdapterBase implements Adapter {
 function checked<T extends { code?: number; msg?: string }>(result: T): T {
   if (result.code) {
     const failure = new Error(`Lark API error ${result.code}: ${result.msg ?? "Request failed"}`);
-    const code = [230020, 11232, 11233, 99991400].includes(result.code)
-      ? "RATE_LIMITED"
-      : "LARK_API_ERROR";
-    throw Object.assign(failure, { code, providerCode: result.code });
+    throw withLarkErrorCode(failure, result.code);
   }
   return result;
 }

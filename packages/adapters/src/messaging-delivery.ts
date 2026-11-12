@@ -641,7 +641,13 @@ async function deliverRow(
         try {
           await markUnknown(deps, row, claimStartedAt, provider, true);
         } finally {
-          void finishInFlight(deps, row, claimStartedAt, provider, failure.inFlight);
+          void finishInFlight(
+            deps,
+            { ...row, threadId },
+            claimStartedAt,
+            provider,
+            failure.inFlight,
+          );
         }
         return false;
       }

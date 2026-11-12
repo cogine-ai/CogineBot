@@ -384,6 +384,29 @@ describe("Lark messaging conformance", () => {
     ).rejects.toMatchObject({ disposition, reason });
   });
 
+  it("uses Lark retry headers from a structured HTTP rejection", async () => {
+    const { surface } = createSurface();
+    await surface.handleWebhook("lark", webhook(message()));
+    request.mockRejectedValueOnce(
+      Object.assign(new Error("Fixture API limit"), {
+        response: {
+          status: 400,
+          data: { code: 230020 },
+          headers: new Headers({ "Retry-After": "7" }),
+        },
+      }),
+    );
+    await expect(
+      surface.sendToThread(
+        {
+          threadId: encodeThreadId({ chatId: "oc-test" }),
+          body: "Reply",
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ disposition: "retryable", retryAfterMs: 7000 });
+  });
+
   it("renders post content and links", async () => {
     const { surface, events } = createSurface();
     const payload = message();
