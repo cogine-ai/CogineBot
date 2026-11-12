@@ -111,20 +111,26 @@ it("does not silently pick one of multiple archived workspaces", () => {
   expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
 });
 
-it("does not replace an internal workspace with a second external workspace", () => {
-  const backup = tar({
-    "backup/manifest.json": JSON.stringify({
-      schemaVersion: 1,
-      assets: [
-        { kind: "state", archivePath: "state" },
-        { kind: "workspace", archivePath: "external" },
-      ],
-    }),
-    "backup/state/workspace/SOUL.md": "Original Bot",
-    "backup/external/SOUL.md": "Other Bot",
-  });
-  expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
-});
+it.each(["workspace", "custom-main"])(
+  "does not replace internal %s with an external workspace",
+  (folder) => {
+    const backup = tar({
+      "backup/manifest.json": JSON.stringify({
+        schemaVersion: 1,
+        assets: [
+          { kind: "state", archivePath: "state" },
+          { kind: "workspace", archivePath: "external" },
+        ],
+        ...(folder === "custom-main"
+          ? { paths: { workspaceDirs: ["/state/custom-main", "/external"] } }
+          : {}),
+      }),
+      [`backup/state/${folder}/SOUL.md`]: "Original Bot",
+      "backup/external/SOUL.md": "Other Bot",
+    });
+    expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+  },
+);
 
 it("lists linked Skill dependencies without reading their target or runtime file content", () => {
   const path = "skills/review/SKILL.md";

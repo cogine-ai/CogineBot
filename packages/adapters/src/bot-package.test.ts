@@ -462,21 +462,36 @@ it("previews supported agent backup text as an ordinary new Bot package", () => 
 });
 
 it("preserves both colliding Skills and leaves oversized multibyte memory out", () => {
+  const unusual = skill.replace("Exact instructions", "'Use \"#tag\" when ready.'");
   const source = JSON.stringify({
     format: "agent-backup/v1",
     source: "openclaw",
     files: [
       { path: "skills/one/SKILL.md", content: skill },
-      { path: "skills/two/SKILL.md", content: skill.replace("sample", "Sample") },
+      { path: "skills/two/SKILL.md", content: unusual.replace("sample", "Sample") },
       { path: "MEMORY.md", content: "记".repeat(90_000) },
     ],
   });
   const preview = parseBotPackageSource(source, { includeMemory: true });
   expect(preview.document.skills.map(({ name }) => name)).toEqual(["sample", "Sample-2"]);
-  expect(preview.document.skills[1]?.content).toContain("Original body.");
+  expect(preview.document.skills[1]?.content).toBe(
+    unusual.replace("name: sample", "name: 'Sample-2'"),
+  );
   expect(preview.document.memory).toEqual([]);
   expect(preview.leftOut).toContainEqual(
     expect.objectContaining({ kind: "memory", name: "MEMORY.md" }),
+  );
+});
+
+it("does not approve an empty import from excluded backup notes", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [],
+    excludedMemoryCount: 1,
+  });
+  expect(() => parseBotPackageSource(source, { includeMemory: false })).toThrow(
+    "No supported Bot content",
   );
 });
 

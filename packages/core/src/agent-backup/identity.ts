@@ -26,8 +26,15 @@ export function parseOpenClawIdentity(content: string): {
     const colon = cleaned.indexOf(":");
     if (colon <= 0) continue;
     const label = cleaned.slice(0, colon).replace(/[*_`]/g, "").trim().toLowerCase();
+    if (
+      label !== "name" &&
+      !DESCRIPTION_LABELS.some((field) => field === label) &&
+      !Object.hasOwn(UNUSED_LABELS, label)
+    )
+      continue;
+    if (fields.has(label)) continue;
     const value = identityValue(cleaned.slice(colon + 1));
-    if (value && !fields.has(label)) fields.set(label, value);
+    if (value) fields.set(label, value);
   }
   const description = DESCRIPTION_LABELS.map((label) => fields.get(label)).find(Boolean);
   return {
@@ -42,10 +49,16 @@ export function parseOpenClawIdentity(content: string): {
 function identityValue(raw: string): string {
   let value = raw.trim();
   if (value.length > 2_000) return "";
-  for (;;) {
-    const paired = /^(\*{1,2}|_{1,2}|`+)([\s\S]+)\1$/.exec(value);
-    if (!paired) break;
-    value = paired[2]!.trim();
+  while (value.length > 2) {
+    const marker = value[0];
+    if (marker !== "*" && marker !== "_" && marker !== "`") break;
+    let start = 1;
+    while (value[start] === marker) start++;
+    let end = value.length;
+    while (end > start && value[end - 1] === marker) end--;
+    const width = Math.min(start, value.length - end, marker === "`" ? start : 2);
+    if (!width) break;
+    value = value.slice(width, -width).trim();
   }
   let hint = value;
   if (hint.startsWith("(") && hint.endsWith(")")) hint = hint.slice(1, -1).trim();

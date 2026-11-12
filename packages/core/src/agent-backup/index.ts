@@ -148,14 +148,57 @@ export { parseOpenClawIdentity } from "./identity.js";
 export { isHermesDefault, isOpenClawDefault } from "./stock.js";
 export { AgentImportArchiveError };
 
+/** Rewrite only the name in a colliding Skill, retaining the original Markdown. */
+export function renameBackupSkill(content: string, name: string): string {
+  const match = /^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---)(?=\r?\n|$)/.exec(content);
+  if (!match) return content;
+  const head = match[1]!;
+  const body = match[2]!;
+  const line = [...body.matchAll(/^name[ \t]*:[ \t]*(.*?)[ \t]*(\r?)$/gm)].at(-1);
+  if (!line) return content;
+  const start = line.index + line[0].indexOf(":") + 1;
+  let end = line.index + line[0].length - line[2]!.length;
+  let replacement = ` '${name}'`;
+  if (/^[|>]/.test(line[1]!)) {
+    const rest = body.slice(line.index + line[0].length);
+    const continuation = /^(?:\r?\n(?:[ \t]+.*|[ \t]*)(?=\r?\n|$))*/.exec(rest)?.[0] ?? "";
+    end = line.index + line[0].length + continuation.length;
+    replacement += line[2] ?? "";
+  }
+  return `${head}${body.slice(0, start)}${replacement}${body.slice(end)}${content.slice(head.length + body.length)}`;
+}
+
 export function isAgentBackupUpload(source: string): boolean {
   return source.startsWith(`{"format":"${AGENT_BACKUP_FORMAT}","`);
 }
 
+export function botImportJsonObject(raw: string): Record<string, unknown> | undefined {
+  const candidates = [raw];
+  for (const match of raw.matchAll(/```(?:json)?([\s\S]*?)```/gi)) {
+    candidates.push((match[1] ?? "").trimStart());
+    if (candidates.length >= 10) break;
+  }
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) candidates.push(raw.slice(start, end + 1));
+  for (const candidate of candidates) {
+    let value: unknown;
+    try {
+      value = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value))
+      return value as Record<string, unknown>;
+  }
+}
+
 export function agentBackupPreviewSource(source: string, includeMemory: boolean): string {
-  if (includeMemory || !isAgentBackupUpload(source)) return source;
-  const parsed = AgentBackupDocumentSchema.safeParse(JSON.parse(source));
-  if (!parsed.success) return source;
+  if (includeMemory) return source;
+  const value = botImportJsonObject(source.trim());
+  if (value?.format !== AGENT_BACKUP_FORMAT) return source;
+  const parsed = AgentBackupDocumentSchema.safeParse(value);
+  if (!parsed.success) throw new AgentImportArchiveError("unreadable");
   const backup = parsed.data;
   const files = backup.files.filter(({ path }) => !isBackupMemory(backup.source, path));
   if (files.length === backup.files.length) return source;

@@ -34,6 +34,7 @@ import {
 } from "@rakazo/core";
 import {
   backupInstructions,
+  botImportJsonObject,
   hermesBundledManifest,
   isBackupMemory,
   isBackupSkill,
@@ -42,6 +43,7 @@ import {
   isOpenClawDefault,
   openClawRuntimeFiles,
   parseOpenClawIdentity,
+  renameBackupSkill,
 } from "@rakazo/core/agent-backup";
 import { redactSecretText } from "@rakazo/logging/redaction";
 
@@ -114,25 +116,10 @@ function sourceObject(source: string): RecordValue {
     throw new BotPackageError(
       "A public share link does not contain the setup. Paste a JSON export.",
     );
-  const candidates = [raw];
-  for (const match of raw.matchAll(/```(?:json)?([\s\S]*?)```/gi)) {
-    candidates.push((match[1] ?? "").trimStart());
-    if (candidates.length >= 10) break;
-  }
-  const open = raw.indexOf("{");
-  const close = raw.lastIndexOf("}");
-  if (open >= 0 && close > open) candidates.push(raw.slice(open, close + 1));
-  for (const candidate of candidates) {
-    let value: unknown;
-    try {
-      value = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    if (record(value)) {
-      guardStructure(value);
-      return value;
-    }
+  const value = botImportJsonObject(raw);
+  if (value) {
+    guardStructure(value);
+    return value;
   }
   throw new BotPackageError("Paste a supported JSON package or bot export.");
 }
@@ -599,12 +586,16 @@ function backupPackage(
           const suffix = `-${number}`;
           name = `${parsed.name.slice(0, 80 - suffix.length)}${suffix}`;
         }
+        const renamed = name === parsed.name ? content : renameBackupSkill(content, name);
+        const validated = name === parsed.name ? parsed : parseSkillMd(renamed);
         const candidate = BotPackageSkillSchema.safeParse({
           name,
           description: parsed.description,
-          content: name === parsed.name ? content : buildSkillMd({ ...parsed, name }),
+          content: renamed,
         });
-        if (!candidate.success || skills.length >= BOT_PACKAGE_MAX_SKILLS) {
+        if ("error" in validated || validated.name !== name) {
+          addNote("skill", path, "The Skill name could not be updated.");
+        } else if (!candidate.success || skills.length >= BOT_PACKAGE_MAX_SKILLS) {
           addNote("skill", path, "This Skill exceeds the Bot limits.");
         } else {
           skillNames.add(name.toLowerCase());
@@ -645,7 +636,12 @@ function backupPackage(
     memory.length + (options.includeMemory ? 0 : backup.excludedMemoryCount);
   if (!options.includeMemory && availableMemoryCount)
     addNote("memory", "memory", `Memory notes not selected: ${availableMemoryCount}.`);
-  if (!instructions.length && !skills.length && !availableMemoryCount && !identity?.name)
+  if (
+    !instructions.length &&
+    !skills.length &&
+    !(options.includeMemory && memory.length) &&
+    !identity?.name
+  )
     throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({
     format: BOT_PACKAGE_FORMAT,

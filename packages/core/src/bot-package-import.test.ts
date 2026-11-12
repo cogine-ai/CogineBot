@@ -89,13 +89,18 @@ describe("bot package import review", () => {
     },
   );
 
-  it("sends backup memory only after the user selects it", async () => {
+  it.each([false, true])("sends backup memory only after selection, fenced=%s", async (fenced) => {
     const f = fixture();
-    const source = JSON.stringify({
-      format: "agent-backup/v1",
-      source: "hermes",
-      files: [{ path: "memories/MEMORY.md", content: "private note" }],
-    });
+    const document = JSON.stringify(
+      {
+        source: "hermes",
+        format: "agent-backup/v1",
+        files: [{ path: "memories/MEMORY.md", content: "private note" }],
+      },
+      null,
+      2,
+    );
+    const source = fenced ? `\n\x60\x60\x60json\n${document}\n\x60\x60\x60\n` : document;
     await review(f, source);
     expect(JSON.parse(f.deps.preview.mock.calls[0]![0].source)).toMatchObject({
       files: [],

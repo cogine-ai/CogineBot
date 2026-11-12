@@ -537,6 +537,7 @@ function openClawRoots(
     const parsed = JSON.parse(new TextDecoder().decode(manifest.data)) as {
       schemaVersion?: number;
       archiveRoot?: string;
+      paths?: { workspaceDirs?: unknown };
       assets?: { kind?: string; archivePath?: string }[];
     };
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
@@ -569,6 +570,9 @@ function openClawRoots(
       .map((asset) => inArchive(asset.archivePath!))
       .filter((path) => path && !path.startsWith(`${home}/`));
     const [workspace] = workspaces;
+    const declaredWorkspaceDirs = parsed.paths?.workspaceDirs;
+    if (Array.isArray(declaredWorkspaceDirs) && new Set(declaredWorkspaceDirs).size > 1)
+      throw unreadable();
     const hasInternalWorkspace = paths.some((path) => {
       if (!path.startsWith(`${home}/`)) return false;
       return /^workspace(?:-[^/]+)?\//.test(path.slice(home.length + 1));
