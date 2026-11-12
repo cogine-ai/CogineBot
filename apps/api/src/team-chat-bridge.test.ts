@@ -201,6 +201,7 @@ describe("team chat bridge", () => {
       kind: "mention",
       conversationKey: "channel:C-1:100.1",
       conversationId: "C-1",
+      replyThreadId: "100.1",
       senderId: "U-1",
       senderName: "Ada",
       content: "Run the release routine",
