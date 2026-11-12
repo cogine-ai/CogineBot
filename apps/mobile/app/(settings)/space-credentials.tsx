@@ -82,6 +82,7 @@ function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId
   const attempt = useRef(0);
   const listRequest = useRef(0);
   const focused = useRef(false);
+  const foreground = useRef(AppState.currentState == null || AppState.currentState === "active");
 
   const close = useCallback(() => {
     attempt.current++;
@@ -118,10 +119,15 @@ function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") close();
+      foreground.current = state === "active";
+      if (foreground.current) return;
+      attempt.current++;
+      setBusy(false);
+      // Retain the email confirmation flow while the user retrieves the code.
+      setSheet((current) => (current?.kind === "confirm" ? current : null));
     });
     return () => subscription.remove();
-  }, [close]);
+  }, []);
 
   useEffect(() => {
     if (sheet?.kind !== "show") return;
@@ -130,11 +136,11 @@ function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId
   }, [close, sheet]);
 
   function current(operation: number) {
-    return focused.current && isCurrent() && attempt.current === operation;
+    return foreground.current && focused.current && isCurrent() && attempt.current === operation;
   }
 
   async function show(row: Row, confirmed = false) {
-    if (!isCurrent() || !focused.current) return;
+    if (!isCurrent() || !focused.current || !foreground.current) return;
     close();
     const operation = attempt.current;
     setBusy(true);
@@ -334,7 +340,10 @@ function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId
       {sheet?.kind === "confirm" ? (
         <IdentitySheet
           onClose={close}
-          onConfirm={() => void show(sheet.row, true)}
+          onConfirm={() => {
+            if (foreground.current) void show(sheet.row, true);
+            else close();
+          }}
           settings={{ captureApiRequestContext, isCurrent }}
         />
       ) : null}
@@ -529,8 +538,8 @@ function CredentialEditor({
         expectedRevision: row?.revision ?? null,
       });
       clear();
-    } catch {
-      setError(t("Could not save the credential"));
+    } catch (cause) {
+      setError(errorText(cause, t("Could not save the credential")));
     } finally {
       setBusy(false);
     }
@@ -712,6 +721,7 @@ function IdentitySheet({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const active = useRef(false);
+  const proofAttempt = useRef(0);
   const lifetime = useRef<AbortController | null>(null);
   useEffect(() => {
     active.current = true;
@@ -731,11 +741,22 @@ function IdentitySheet({
     };
   }, [captureApiRequestContext, isCurrent, t]);
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") {
+        proofAttempt.current++;
+        setProof("");
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
   const passwordEnabled = security?.passwordChangeEnabled !== false && security?.hasPassword;
   const emailEnabled = security?.passwordChangeEnabled !== false && security?.emailDeletion;
   async function action(kind: "confirm" | "email" | "sso") {
     if (busy || !isCurrent()) return;
     const value = proof;
+    const submitted = proofAttempt.current;
     setProof("");
     setError("");
     setBusy(true);
@@ -756,7 +777,10 @@ function IdentitySheet({
           context,
           lifetime.current?.signal,
         );
-        if (active.current && isCurrent()) onConfirm();
+        if (active.current && isCurrent()) {
+          if (proofAttempt.current === submitted) onConfirm();
+          else onClose();
+        }
       }
     } catch (cause) {
       if (active.current && isCurrent())

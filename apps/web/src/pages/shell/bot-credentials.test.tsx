@@ -12,12 +12,19 @@ const botSecrets = vi.hoisted(() => ({
   listForEdit: vi.fn(),
   listForSpace: vi.fn(),
   loginFieldsForEdit: vi.fn(),
+  reveal: vi.fn(),
   put: vi.fn(),
   putForEdit: vi.fn(),
   remove: vi.fn(),
   removeForEdit: vi.fn(),
 }));
 
+const account = vi.hoisted(() => ({
+  fetchAccountSecurity: vi.fn(),
+  requestIdentityCode: vi.fn(),
+  confirmIdentity: vi.fn(),
+}));
+vi.mock("../../lib/account-security", () => account);
 vi.mock("../../lib/rpc", () => ({ rpc: { botSecrets } }));
 vi.mock("@lingui/react/macro", () => {
   const t = (parts: TemplateStringsArray, ...values: unknown[]) =>
@@ -31,6 +38,14 @@ vi.mock("@rakazo/ui-web", () => ({
     ...props
   }: ComponentProps<"button"> & { variant?: string; size?: string }) => <button {...props} />,
   Checkbox: () => <span />,
+  Dialog: ({ children, open }: { children: ReactNode; open: boolean }) =>
+    open ? <div role="dialog">{children}</div> : null,
+  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+  Label: ({ htmlFor, children }: ComponentProps<"label">) => (
+    <label htmlFor={htmlFor}>{children}</label>
+  ),
   Input: (props: ComponentProps<"input">) => <input {...props} />,
   NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
   NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
@@ -101,6 +116,10 @@ beforeEach(() => {
   botSecrets.list.mockReset();
   botSecrets.listForSpace.mockReset();
   botSecrets.loginFieldsForEdit.mockReset();
+  botSecrets.reveal.mockReset();
+  account.fetchAccountSecurity.mockReset();
+  account.requestIdentityCode.mockReset();
+  account.confirmIdentity.mockReset();
   botSecrets.listForEdit.mockReset().mockResolvedValue(rows);
   botSecrets.put.mockReset();
   botSecrets.putForEdit.mockReset();
@@ -559,5 +578,120 @@ describe("Space credential editor", () => {
     await click("credential-remove-confirm-portal");
     await act(async () => complete(groups()));
     expect(container.querySelector('[data-testid="credential-remove-portal"]')).toBeNull();
+  });
+  it("keeps the emailed code flow open across window blur and discards the value on blur", async () => {
+    botSecrets.listForSpace.mockResolvedValue(groups());
+    botSecrets.reveal
+      .mockRejectedValueOnce({ code: "IDENTITY_CONFIRMATION_REQUIRED" })
+      .mockResolvedValue({ value: FAKE_VALUE });
+    account.fetchAccountSecurity.mockResolvedValue({
+      hasPassword: false,
+      emailDeletion: true,
+      freshOidcAuth: false,
+      ssoLinked: false,
+      sso: null,
+    });
+    account.requestIdentityCode.mockResolvedValue(undefined);
+    account.confirmIdentity.mockResolvedValue(undefined);
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const visibility = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const press = async (label: string) => {
+      const button = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === label,
+      );
+      expect(button).toBeDefined();
+      await act(async () => button!.click());
+    };
+    try {
+      await renderSpace();
+      await press("Show value");
+      await press("Email me a code");
+      expect(account.requestIdentityCode).toHaveBeenCalledOnce();
+      await act(async () => {
+        window.dispatchEvent(new Event("blur"));
+      });
+      const input = container.querySelector<HTMLInputElement>(
+        'input[autocomplete="one-time-code"]',
+      );
+      expect(input).not.toBeNull();
+      const enter = (value: string) =>
+        act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+            input,
+            value,
+          );
+          input!.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      await enter("123");
+      await act(async () => {
+        visibility.mockReturnValue(true);
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(input!.value).toBe("");
+      visibility.mockReturnValue(false);
+      await enter("123456");
+      await press("Continue");
+      expect(account.confirmIdentity).toHaveBeenCalledWith({ code: "123456" });
+      expect(container.textContent).toContain(FAKE_VALUE);
+      await act(async () => {
+        window.dispatchEvent(new Event("blur"));
+      });
+      expect(container.textContent).not.toContain(FAKE_VALUE);
+    } finally {
+      visibility.mockRestore();
+      focus.mockRestore();
+    }
+  });
+
+  it("does not reveal a saved value after a submitted confirmation lost focus", async () => {
+    botSecrets.listForSpace.mockResolvedValue(groups());
+    botSecrets.reveal
+      .mockRejectedValueOnce({ code: "IDENTITY_CONFIRMATION_REQUIRED" })
+      .mockResolvedValue({ value: FAKE_VALUE });
+    account.fetchAccountSecurity.mockResolvedValue({
+      hasPassword: true,
+      emailDeletion: false,
+      freshOidcAuth: false,
+      ssoLinked: false,
+      sso: null,
+    });
+    let confirm!: () => void;
+    account.confirmIdentity.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          confirm = resolve;
+        }),
+    );
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const press = async (label: string) => {
+      const button = [...container.querySelectorAll("button")].find(
+        (entry) => entry.textContent === label,
+      );
+      expect(button).toBeDefined();
+      await act(async () => button!.click());
+    };
+    try {
+      await renderSpace();
+      await press("Show value");
+      const input = container.querySelector<HTMLInputElement>(
+        'input[autocomplete="current-password"]',
+      )!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          input,
+          "fixture-password",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await press("Continue");
+      await act(async () => {
+        window.dispatchEvent(new Event("blur"));
+      });
+      await act(async () => confirm());
+      expect(botSecrets.reveal).toHaveBeenCalledOnce();
+      expect(container.textContent).not.toContain(FAKE_VALUE);
+    } finally {
+      focus.mockRestore();
+    }
   });
 });

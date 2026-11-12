@@ -41,11 +41,11 @@ export function ConfirmIdentityDialog({
   const [error, setError] = useState<string | null>(null);
   // Each opening is its own attempt; a request still running from a dismissed one is ignored.
   const attempt = useRef(0);
+  const proofAttempt = useRef(0);
   useLayoutEffect(() => {
-    attempt.current += 1;
+    const started = ++attempt.current;
     setPending(false);
     if (!open) return;
-    let active = true;
     setSecurity(null);
     setPassword("");
     setCode("");
@@ -53,7 +53,7 @@ export function ConfirmIdentityDialog({
     setError(null);
     void fetchAccountSecurity()
       .then((value) => {
-        if (!active) return;
+        if (attempt.current !== started) return;
         setSecurity(value);
         if (
           !(value.passwordChangeEnabled !== false && (value.hasPassword || value.emailDeletion)) &&
@@ -62,10 +62,21 @@ export function ConfirmIdentityDialog({
           setError(t`Could not continue`);
       })
       .catch(() => {
-        if (active) setError(t`Could not continue`);
+        if (attempt.current === started) setError(t`Could not continue`);
       });
+    const clearProof = () => {
+      proofAttempt.current++;
+      setPassword("");
+      setCode("");
+    };
+    const clearWhenHidden = () => {
+      if (document.hidden) clearProof();
+    };
+    window.addEventListener("blur", clearProof);
+    document.addEventListener("visibilitychange", clearWhenHidden);
     return () => {
-      active = false;
+      window.removeEventListener("blur", clearProof);
+      document.removeEventListener("visibilitychange", clearWhenHidden);
       attempt.current += 1;
     };
   }, [open]);
@@ -101,11 +112,12 @@ export function ConfirmIdentityDialog({
             event.preventDefault();
             if (!proof || pending) return;
             const input = passwordEnabled ? { password } : { code: proof };
+            const submitted = proofAttempt.current;
             setPassword("");
             setCode("");
             void action(
               () => confirmIdentity(input),
-              () => onDone(true),
+              () => onDone(proofAttempt.current === submitted),
             );
           }}
         >

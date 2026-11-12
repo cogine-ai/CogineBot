@@ -166,25 +166,30 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
     }
   }
 
-  const hide = useCallback(() => {
+  const clearReveal = useCallback(() => {
     revealAttempt.current++;
     window.clearTimeout(revealTimer.current);
-    setChallenge(null);
     setShown(null);
   }, []);
 
+  const hide = useCallback(() => {
+    clearReveal();
+    setChallenge(null);
+  }, [clearReveal]);
+
   useEffect(() => {
     if (!spaceView) return;
+    // Reading an email code often blurs the window. Keep the confirmation flow open.
     const hideWhenHidden = () => {
-      if (document.hidden) hide();
+      if (document.hidden) clearReveal();
     };
     document.addEventListener("visibilitychange", hideWhenHidden);
-    window.addEventListener("blur", hide);
+    window.addEventListener("blur", clearReveal);
     return () => {
       document.removeEventListener("visibilitychange", hideWhenHidden);
-      window.removeEventListener("blur", hide);
+      window.removeEventListener("blur", clearReveal);
     };
-  }, [hide, spaceView]);
+  }, [clearReveal, spaceView]);
 
   function clearProtectedFields() {
     setValue("");
@@ -194,7 +199,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   }
 
   async function reveal(row: CredentialRow, afterConfirmation = false) {
-    if (!row.revision || busy || !scopeCurrent()) return;
+    if (!row.revision || busy || !scopeCurrent() || document.hidden || !document.hasFocus()) return;
     clearProtectedFields();
     setAdding(false);
     setReplacing(null);
@@ -936,7 +941,7 @@ export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
         <ConfirmIdentityDialog
           open
           onDone={(confirmed) => {
-            if (confirmed) void reveal(challenge, true);
+            if (confirmed && !document.hidden && document.hasFocus()) void reveal(challenge, true);
             else hide();
           }}
         />

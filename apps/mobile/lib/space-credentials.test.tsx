@@ -6,7 +6,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Screen from "../app/(settings)/space-credentials";
-import { fetchAccountSecurity } from "./api";
+import { confirmIdentity, fetchAccountSecurity, requestIdentityCode } from "./api";
 
 const host = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -34,7 +34,7 @@ vi.mock("./sso", () => ({ continueWithSso: vi.fn() }));
 vi.mock("./native", () => ({ useMobileTokens: () => ({}) }));
 vi.mock("./i18n", () => {
   const t = (text: string) => text;
-  return { useI18n: () => ({ t }) };
+  return { t, useI18n: () => ({ t }) };
 });
 vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
@@ -200,7 +200,7 @@ it("keeps a mobile replacement draft when saving fails and clears it on dismissa
     (button) => button.textContent === "Save",
   );
   await act(async () => save?.click());
-  expect(container.textContent).toContain("Could not save the credential");
+  expect(container.textContent).toContain("Fixture store outage");
   expect(input.value).toBe("replacement-fixture-value");
   await act(async () => {
     for (const listener of host.listeners) listener("background");
@@ -226,4 +226,101 @@ it("offers a password confirmation when the optional account flag is omitted", a
     container.querySelector<HTMLButtonElement>("[data-credential] button")?.click(),
   );
   expect(container.querySelector('input[aria-label="Password"]')).not.toBeNull();
+});
+
+it("keeps email confirmation when the user backgrounds the app to retrieve the code", async () => {
+  await act(async () => root.render(<Screen />));
+  host.rpc.mockRejectedValueOnce({ code: "IDENTITY_CONFIRMATION_REQUIRED" });
+  host.captureApiRequestContext.mockResolvedValue({
+    apiBase: "https://api.example.test",
+    headers: {},
+  });
+  vi.mocked(fetchAccountSecurity).mockResolvedValue({
+    hasPassword: false,
+    emailDeletion: true,
+    freshOidcAuth: false,
+    ssoLinked: false,
+    sso: null,
+  });
+  vi.mocked(requestIdentityCode).mockResolvedValue(undefined);
+  vi.mocked(confirmIdentity).mockResolvedValue(undefined);
+  const press = async (label: string) => {
+    const button = [...container.querySelectorAll("button")].find(
+      (entry) => entry.textContent === label,
+    );
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+  };
+  await press("Show value");
+  await press("Email me a code");
+  await act(async () => {
+    for (const listener of host.listeners) listener("background");
+    for (const listener of host.listeners) listener("active");
+  });
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="Code"]');
+  expect(input).not.toBeNull();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "123456",
+    );
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await press("Continue");
+  expect(confirmIdentity).toHaveBeenCalledWith(
+    { code: "123456" },
+    expect.anything(),
+    expect.anything(),
+  );
+  expect(container.textContent).toContain("synthetic-value");
+});
+
+it("does not automatically reveal after a submitted proof crossed the background", async () => {
+  await act(async () => root.render(<Screen />));
+  host.rpc.mockRejectedValueOnce({ code: "IDENTITY_CONFIRMATION_REQUIRED" });
+  host.captureApiRequestContext.mockResolvedValue({
+    apiBase: "https://api.example.test",
+    headers: {},
+  });
+  vi.mocked(fetchAccountSecurity).mockResolvedValue({
+    hasPassword: true,
+    emailDeletion: false,
+    freshOidcAuth: false,
+    ssoLinked: false,
+    sso: null,
+  });
+  let finish!: () => void;
+  vi.mocked(confirmIdentity).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const press = async (label: string) => {
+    const button = [...container.querySelectorAll("button")].find(
+      (entry) => entry.textContent === label,
+    );
+    expect(button).toBeDefined();
+    await act(async () => button!.click());
+  };
+  await press("Show value");
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="Password"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "fixture-password",
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await press("Continue");
+  await act(async () => {
+    for (const listener of host.listeners) listener("background");
+    for (const listener of host.listeners) listener("active");
+    finish();
+  });
+  expect(
+    host.rpc.mock.calls.filter(([procedure]) => procedure === "botSecrets/reveal"),
+  ).toHaveLength(1);
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.textContent).not.toContain("synthetic-value");
 });
