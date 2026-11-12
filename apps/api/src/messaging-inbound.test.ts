@@ -135,7 +135,11 @@ function createDeps(
       ),
     },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
-    message: { findUnique: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+    message: {
+      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async () => null),
+    },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
       upsert: vi.fn(async () => channel),
@@ -445,6 +449,23 @@ describe("createMessagingInboundHandler DM routing", () => {
       },
       select: { blocks: true },
     });
+    expect(deps.prisma.messagingChannelMember.findFirst).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not interpret an existing routine delivery as a new approval", async () => {
+    const deps = createDeps({ invitedMember: { id: "pending", status: "invited" } });
+    const routineNonce = inboundDeliveryClientNonce(
+      "messaging",
+      "bot-1",
+      messagingWakeIdempotencyKey(dmEvent.provider, dmEvent.handle),
+    );
+    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+      where.threadId_clientNonce?.clientNonce === routineNonce
+        ? ({ id: "prior-routine" } as never)
+        : null,
+    );
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "YES" });
     expect(deps.prisma.messagingChannelMember.findFirst).not.toHaveBeenCalled();
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
   });
@@ -975,6 +996,42 @@ describe("createMessagingInboundHandler owner commands", () => {
 });
 
 describe("createMessagingInboundHandler channel routing", () => {
+  it("does not redeliver an older group event to the new Bot of an approved identity", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+    });
+    await deps.prisma.messagingOutbound.createMany({
+      data: [
+        {
+          idempotencyKey: "fixture-binding",
+          kind: "inbound_binding",
+          status: "inbound_binding",
+          identityId: "mi-1",
+          provider: "sendblue",
+          threadId: "old-thread",
+          body: "",
+        },
+      ],
+    });
+    vi.mocked(deps.prisma.message.findMany).mockResolvedValueOnce([
+      { blocks: [{ kind: "channel_message", channelId: "ch-1" }] },
+    ] as never);
+    await createMessagingInboundHandler(deps)({ ...groupEvent, participants: [] });
+    expect(deps.prisma.message.findMany).toHaveBeenCalledWith({
+      where: { clientNonce: "messaging:sendblue:handle-1", threadId: { in: ["old-thread"] } },
+      select: { blocks: true },
+    });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("discovers the channel, invites linked members, and posts one intro for unlinked ones", async () => {
     const deps = createDeps();
     const handle = createMessagingInboundHandler(deps);

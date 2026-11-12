@@ -33,6 +33,7 @@ import {
 import {
   deliverWebhookEvent,
   formatUntrustedDeliveryPayload,
+  inboundDeliveryClientNonce,
   inboundEventName,
   messagingWakeIdempotencyKey,
 } from "./webhook-inbound.js";
@@ -93,29 +94,6 @@ function inboundNonce(event: MessagingInboundMessage): string {
   if (event.provider !== "slack") return `messaging:${event.provider}:${event.handle}`;
   const scoped = JSON.stringify([event.workspaceId, event.threadId, event.handle]);
   return `messaging:${event.provider}:${createHash("sha256").update(scoped).digest("hex")}`;
-}
-
-async function isLegacyMessagingReplay(
-  prisma: PrismaClient,
-  event: MessagingInboundMessage,
-  threadId: string,
-  channelId?: string,
-): Promise<boolean> {
-  if (event.provider !== "slack") return false;
-  const legacy = await prisma.message.findUnique({
-    where: {
-      threadId_clientNonce: {
-        threadId,
-        clientNonce: `messaging:${event.provider}:${event.handle}`,
-      },
-    },
-    select: { blocks: true },
-  });
-  if (!legacy) return false;
-  const channel = (legacy.blocks as MessageBlock[]).find(
-    (block) => block.kind === "channel_message",
-  );
-  return channel?.channelId === channelId;
 }
 
 function inboundReceiptKey(event: MessagingInboundMessage, memberId?: string): string {
@@ -260,26 +238,40 @@ async function markInboundCommand(tx: Prisma.TransactionClient, key: string, pro
   return count === 1;
 }
 
-async function alreadyReceivedDirect(
+async function alreadyReceived(
   prisma: PrismaClient,
   event: MessagingInboundMessage,
-  identityId: string,
+  identity: Pick<IdentityRow, "id" | "botId">,
   threadId: string,
+  channelId?: string,
 ): Promise<boolean> {
+  const routineKey = messagingWakeIdempotencyKey(event.provider, event.handle);
+  const routineNonce = (botId: string) =>
+    inboundDeliveryClientNonce("messaging", botId, routineKey);
   const clientNonce = `messaging:${event.provider}:${event.handle}`;
+  const sameConversation = (message: { blocks: Prisma.JsonValue }) => {
+    const channel = (message.blocks as MessageBlock[]).find(
+      (block) => block.kind === "channel_message",
+    );
+    return channel?.channelId === channelId;
+  };
   const current = await prisma.message.findUnique({
     where: { threadId_clientNonce: { threadId, clientNonce } },
     select: { blocks: true },
   });
+  if (current && sameConversation(current)) return true;
   if (
-    current &&
-    !(current.blocks as MessageBlock[]).some((block) => block.kind === "channel_message")
+    !channelId &&
+    (await prisma.message.findUnique({
+      where: { threadId_clientNonce: { threadId, clientNonce: routineNonce(identity.botId) } },
+      select: { id: true },
+    }))
   )
     return true;
 
   const prior = await prisma.messagingOutbound.findMany({
-    where: { identityId, status: "inbound_binding", provider: event.provider },
-    select: { threadId: true },
+    where: { identityId: identity.id, status: "inbound_binding", provider: event.provider },
+    select: { threadId: true, idempotencyKey: true },
   });
   const threadIds = prior.flatMap((binding) => (binding.threadId ? [binding.threadId] : []));
   if (!threadIds.length) return false;
@@ -287,9 +279,20 @@ async function alreadyReceivedDirect(
     where: { clientNonce, threadId: { in: threadIds } },
     select: { blocks: true },
   });
-  return deliveries.some(
-    ({ blocks }) => !(blocks as MessageBlock[]).some((block) => block.kind === "channel_message"),
-  );
+  if (deliveries.some(sameConversation)) return true;
+  if (channelId) return false;
+  const priorRoutine = await prisma.message.findFirst({
+    where: {
+      OR: prior.flatMap((binding) => {
+        const botId = binding.idempotencyKey.split(":").at(-1);
+        return binding.threadId && botId
+          ? [{ threadId: binding.threadId, clientNonce: routineNonce(botId) }]
+          : [];
+      }),
+    },
+    select: { id: true },
+  });
+  return Boolean(priorRoutine);
 }
 
 async function handleDirectEvent(
@@ -315,7 +318,7 @@ async function handleDirectEvent(
       where: { botId: existing.botId, spaceId: existing.spaceId, userId: existing.userId },
     });
     if (!thread || (prior && prior.threadId !== thread.id)) return;
-    if (await alreadyReceivedDirect(deps.prisma, event, existing.id, thread.id)) return;
+    if (await alreadyReceived(deps.prisma, event, existing, thread.id)) return;
     // A fresh reply ends the consecutive-outbound streak, including when
     // there is no text to wake a Run.
     if (!prior) {
@@ -577,7 +580,7 @@ async function tryRedeemLinkCode(
         await tx.messagingOutbound.createMany({
           data: [
             {
-              idempotencyKey: `inbound-binding:${previous.identityId}:${previous.threadId}`,
+              idempotencyKey: `inbound-binding:${previous.identityId}:${previous.threadId}:${previous.botId}`,
               kind: "inbound_binding",
               status: "inbound_binding",
               body: "",
@@ -924,7 +927,7 @@ async function handleChannelEvent(
       botId: identity.botId,
       threadId: thread.id,
     };
-    if (await isLegacyMessagingReplay(deps.prisma, event, thread.id, channel.id)) continue;
+    if (await alreadyReceived(deps.prisma, event, identity, thread.id, channel.id)) continue;
     if (
       !(await bindInboundTarget(deps.prisma, inboundReceiptKey(event, member.id), {
         identityId: identity.id,
