@@ -55,7 +55,9 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       },
       handleWebhook: async (channel: string, request: Request) => {
         expect(channel).toBe("slack");
-        const envelope = (await request.json()) as { event: { ts: string; text: string } };
+        const envelope = (await request.json()) as {
+          event: { ts: string; text: string; channel: string };
+        };
         await sink({
           type: "message",
           provider: "slack",
@@ -63,7 +65,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
           handle: envelope.event.ts,
           from: "UOWNER",
           fromLabel: "Fixture Installer",
-          threadId: "slack:DFIXTURE:123",
+          threadId: `slack:${envelope.event.channel}:123`,
           isDirect: true,
           content: envelope.event.text,
           mediaUrl: null,
@@ -124,20 +126,26 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       );
       const installed = (await installs.activeByWorkspace(workspaceId))!;
       const at = installed.acceptAfter.getTime() + 1;
-      const providerTime = (at / 1000).toFixed(3);
-      const body = JSON.stringify({
-        type: "event_callback",
-        api_app_id: "AFIXTURE",
-        team_id: workspaceId,
-        event_time: Math.floor(at / 1000),
-        event: { type: "message", event_ts: providerTime, ts: providerTime, text: "Hello fixture" },
-      });
-      const timestamp = Math.floor(Date.now() / 1000);
-      const signature = createHmac("sha256", signingSecret)
-        .update(`v0:${timestamp}:${body}`)
-        .digest("hex");
-      const request = () =>
-        new Request("https://app.example.test/api/v1/messaging/install/slack/events", {
+      const request = (channel = "DFIXTURE", eventAt = at) => {
+        const providerTime = (eventAt / 1000).toFixed(3);
+        const body = JSON.stringify({
+          type: "event_callback",
+          api_app_id: "AFIXTURE",
+          team_id: workspaceId,
+          event_time: Math.floor(eventAt / 1000),
+          event: {
+            type: "message",
+            event_ts: providerTime,
+            ts: providerTime,
+            text: "Hello fixture",
+            channel,
+          },
+        });
+        const timestamp = Math.floor(Date.now() / 1000);
+        const signature = createHmac("sha256", signingSecret)
+          .update(`v0:${timestamp}:${body}`)
+          .digest("hex");
+        return new Request("https://app.example.test/api/v1/messaging/install/slack/events", {
           method: "POST",
           body,
           headers: {
@@ -145,6 +153,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
             "x-slack-signature": `v0=${signature}`,
           },
         });
+      };
       expect((await runtime.webhook(request())).status).toBe(200);
       expect((await runtime.webhook(request())).status).toBe(200);
       const rows = await db.prisma.externalMessage.findMany({
@@ -190,7 +199,13 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         send: vi.fn(),
         installedSlack: { acceptAfter: installed.acceptAfter, isAvailable: async () => true },
       });
-      const reserve = bridge as unknown as { reserveDelivery(id: string): Promise<boolean> };
+      const reserve = bridge as unknown as {
+        reserveDelivery(id: string): Promise<Date | undefined>;
+      };
+      await db.prisma.externalMessage.update({
+        where: { id: inbound.id },
+        data: { runId: null },
+      });
       const older = await db.prisma.externalMessage.create({
         data: {
           externalConversationId: inbound.externalConversationId,
@@ -199,6 +214,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
           senderName: "Fixture",
           content: "Older",
           status: "running",
+          runId: run.id,
           createdAt: new Date(at + 1),
           nextAttemptAt: new Date(Date.now() + 60_000),
         },
@@ -214,19 +230,61 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
           createdAt: new Date(at + 2),
         },
       });
-      await expect(reserve.reserveDelivery(older.id)).resolves.toBe(false);
-      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(false);
+      await expect(reserve.reserveDelivery(older.id)).resolves.toBeUndefined();
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
+      await db.prisma.externalMessage.createMany({
+        data: Array.from({ length: 21 }, (_, index) => ({
+          externalConversationId: inbound.externalConversationId,
+          providerEventId: `fixture-blocked-${index}`,
+          senderId: "UOWNER",
+          senderName: "Fixture",
+          content: "Waiting",
+          status: "delivering",
+          createdAt: new Date(at + 3 + index),
+        })),
+      });
+      expect((await runtime.webhook(request("DOTHER", at + 30))).status).toBe(200);
+      const other = await db.prisma.externalMessage.findFirstOrThrow({
+        where: {
+          externalConversation: { workspaceId },
+          NOT: { externalConversationId: inbound.externalConversationId },
+        },
+        include: { run: true },
+      });
+      await createThreadMessage(db.prisma, {
+        runId: other.run!.id,
+        threadId: other.run!.threadId,
+        botId: bot.id,
+        role: "bot",
+        blocks: [{ kind: "text", text: "Independent reply" }],
+      });
+      await db.prisma.run.update({
+        where: { id: other.run!.id },
+        data: { status: "completed", completedAt: new Date() },
+      });
+      await (runtime as unknown as { maintain(): Promise<void> }).maintain();
+      expect(sendToThread).toHaveBeenCalledTimes(2);
+      expect(sendToThread).toHaveBeenLastCalledWith(
+        expect.objectContaining({ threadId: "slack:DOTHER:123", body: "Independent reply" }),
+        expect.anything(),
+      );
+      expect(await db.prisma.externalMessage.findUnique({ where: { id: older.id } })).toMatchObject(
+        {
+          status: "running",
+          nextAttemptAt: older.nextAttemptAt,
+        },
+      );
       await db.prisma.externalMessage.update({
         where: { id: older.id },
         data: { nextAttemptAt: new Date(0) },
       });
-      await expect(reserve.reserveDelivery(older.id)).resolves.toBe(true);
-      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(false);
+      await expect(reserve.reserveDelivery(older.id)).resolves.toBeInstanceOf(Date);
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
       await db.prisma.externalMessage.update({
         where: { id: older.id },
         data: { status: "delivered" },
       });
-      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(true);
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeInstanceOf(Date);
     } finally {
       await runtime.stop();
       await db.prisma.messagingInstallSession.deleteMany({ where: { userId } });

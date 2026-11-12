@@ -113,4 +113,4 @@ If Slack credential cleanup has reached its automatic retry limit, restore
 access to the configured store and run
 `pnpm --filter @rakazo/api secrets:infisical --retry-slack-cleanup --dry-run`.
 Run it without `--dry-run` to rearm eligible rows. Unverified writes remain
-recorded for reconciliation.
+recorded and block storage switching until reconciliation can confirm their outcome.

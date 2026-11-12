@@ -74,6 +74,7 @@ function harness() {
   const store = {
     activeByWorkspace: vi.fn(async () => active),
     activeById: vi.fn(async () => active),
+    isCurrent: vi.fn(async () => Boolean(active)),
     credential: vi.fn(async () => "fixture-credential"),
     revoke: vi.fn(async () => undefined),
   };

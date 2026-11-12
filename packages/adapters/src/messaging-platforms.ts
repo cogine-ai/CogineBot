@@ -112,7 +112,10 @@ export function messagingPlatformsFromEnv(
     pollInboundMessages?: boolean;
     onSlackAuthFailure?: (error: unknown) => Promise<void>;
     beforeSlackRequest?: () => Promise<void>;
-    slackTransport?: NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"];
+    slackTransport?: Pick<
+      NonNullable<SlackAdapterConfig["webClientOptions"]>,
+      "adapter" | "maxRequestConcurrency"
+    >;
     sendblueTransport?: Pick<SendblueClientOptions, "baseURL" | "fetch">;
     larkTransport?: HttpInstance;
   } = {},
@@ -177,7 +180,7 @@ export function messagingPlatformsFromEnv(
         retryConfig: { retries: 0 },
         rejectRateLimitedCalls: true,
         timeout: MESSAGING_SEND_TIMEOUT_MS,
-        ...(options.slackTransport && { adapter: options.slackTransport }),
+        ...options.slackTransport,
         ...(options.beforeSlackRequest && {
           requestInterceptor: async (request) => {
             await options.beforeSlackRequest!();

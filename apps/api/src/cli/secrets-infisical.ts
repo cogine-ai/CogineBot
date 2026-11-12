@@ -9,7 +9,7 @@ import {
 } from "@rakazo/adapters";
 import { resolveEncryptionKey } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import { createDb, runAsSystem } from "@rakazo/db";
+import { createDb, runAsSystem, verifyRuntimeDatabase } from "@rakazo/db";
 import { cleanupOrphanedTransfers } from "../deployment-transfer-cleanup.js";
 import {
   createSecretMigrationRepository,
@@ -49,6 +49,7 @@ process.once("SIGINT", () => controller.abort());
 process.once("SIGTERM", () => controller.abort());
 const repository = createSecretMigrationRepository(prisma);
 try {
+  await verifyRuntimeDatabase(prisma);
   await encrypted.start();
   await infisical.start();
   if (command.retrySlackCleanup) {

@@ -41,33 +41,46 @@ function providers(env: MessagingEnvironmentValues): string[] {
 }
 
 describe("messagingPlatformsFromEnv", () => {
-  it("stops the SDK request at its transport fence before sending bytes", async () => {
-    const fence = vi.fn(async (): Promise<void> => {
-      throw new Error("Workspace paused");
-    });
+  it("checks workspace authorization when a queued SDK request reaches the transport", async () => {
+    const fence = vi.fn(async (): Promise<void> => undefined);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     type Transport = NonNullable<NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"]>;
-    const transport = vi.fn<Transport>(async (config) => ({
-      config,
-      status: 200,
-      statusText: "OK",
-      headers: {},
-      request: { path: "/api/chat.postMessage" },
-      data: { ok: true, ts: "123.4" },
-    }));
+    const transport = vi.fn<Transport>(async (config) => {
+      if (config.url?.endsWith("/auth.test")) {
+        entered.resolve();
+        await release.promise;
+      }
+      return {
+        config,
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        request: { path: "/api/chat.postMessage" },
+        data: { ok: true, ts: "123.4" },
+      };
+    });
     const [platform] = messagingPlatformsFromEnv(
       { slackBotToken: "fixture", slackSigningSecret: "fixture-signing" },
-      { beforeSlackRequest: fence, slackTransport: transport },
+      {
+        beforeSlackRequest: fence,
+        slackTransport: { adapter: transport, maxRequestConcurrency: 1 },
+      },
     );
     const slack = platform!.adapter as SlackAdapter;
-    await expect(
+    const lookup = slack.client.auth.test();
+    await entered.promise;
+    const stopped = expect(
       slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
     ).rejects.toThrow("Workspace paused");
-    expect(transport).not.toHaveBeenCalled();
-    fence.mockResolvedValueOnce(undefined);
+    fence.mockRejectedValueOnce(new Error("Workspace paused"));
+    release.resolve();
+    await Promise.all([lookup, stopped]);
+    expect(transport).toHaveBeenCalledOnce();
     await expect(
       slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
     ).resolves.toMatchObject({ ts: "123.4" });
-    expect(transport).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   it("mounts nothing without credentials and everything with full credentials", () => {

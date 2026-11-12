@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   ChatSdkMessagingSurface,
@@ -28,16 +27,6 @@ export const SLACK_INSTALL_SCOPES = [
 
 export class SlackInstallProvider {
   readonly provider = "slack";
-  private readonly sendFence = new AsyncLocalStorage<() => Promise<boolean>>();
-
-  withSendFence<T>(current: () => Promise<boolean>, send: () => Promise<T>) {
-    return this.sendFence.run(current, send);
-  }
-
-  private async assertSendFence() {
-    const current = this.sendFence.getStore();
-    if (current && !(await current())) throw new MessagingSendError("permanent", "rejected");
-  }
   constructor(
     private readonly config: {
       clientId: string;
@@ -159,14 +148,23 @@ export class SlackInstallProvider {
     }
   }
 
-  surface(credential: string, onSlackAuthFailure?: (error: unknown) => Promise<void>) {
+  surface(
+    credential: string,
+    current: () => Promise<boolean>,
+    onSlackAuthFailure?: (error: unknown) => Promise<void>,
+  ) {
     return new ChatSdkMessagingSurface(
       messagingPlatformsFromEnv(
         {
           slackBotToken: credential,
           slackSigningSecret: this.config.signingSecret,
         },
-        { onSlackAuthFailure, beforeSlackRequest: () => this.assertSendFence() },
+        {
+          onSlackAuthFailure,
+          beforeSlackRequest: async () => {
+            if (!(await current())) throw new MessagingSendError("permanent", "rejected");
+          },
+        },
       ),
     );
   }

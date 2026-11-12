@@ -754,8 +754,10 @@ export class TeamChatBridge {
     for (const message of received)
       await this.queue(message).catch((error) => this.retry(message, error));
 
+    const heads = acceptAfter ? await this.dueSlackReplies(target.id, acceptAfter, now) : undefined;
     const running = await this.deps.prisma.externalMessage.findMany({
       where: {
+        ...(heads && { id: { in: heads } }),
         status: { in: ["running", "delivering"] },
         ...currentWindow,
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
@@ -765,17 +767,46 @@ export class TeamChatBridge {
         },
       },
       include: { run: true, externalConversation: true },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       take: BATCH_SIZE,
     });
     for (const message of running) {
-      if (message.run?.status === "completed") {
+      if (acceptAfter && message.status === "delivering") {
+        await this.recoverDelivery(message.id, now).catch((error) => this.retry(message, error));
+      } else if (message.run?.status === "completed") {
         await this.deliverCompletion(message).catch((error) => this.retry(message, error));
       } else if (message.run?.status === "failed" || message.run?.status === "cancelled") {
         await this.deliverFailure(message).catch((error) => this.retry(message, error));
       }
     }
     if (!this.deps.installedSlack?.acceptAfter) await this.deliverDelegatedReplies(target);
+  }
+
+  private async dueSlackReplies(botId: string, acceptAfter: Date, now: Date) {
+    // Apply the batch limit to due lane heads so one rate-limited conversation
+    // cannot fill it with replies that are waiting behind its head.
+    const rows = await this.deps.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT e.id
+      FROM public.external_messages e
+      JOIN public.external_conversations c ON c.id = e."externalConversationId"
+      LEFT JOIN public.runs r ON r.id = e."runId"
+      WHERE c.provider = ${this.deps.providerId} AND c."botId" = ${botId}
+        AND e."createdAt" > ${acceptAfter}
+        AND (e.status = 'delivering' OR
+             (e.status = 'running' AND r.status IN ('completed', 'failed', 'cancelled')))
+        AND (e."nextAttemptAt" IS NULL OR e."nextAttemptAt" <= ${now})
+        AND NOT EXISTS (
+          SELECT 1 FROM public.external_messages earlier
+          WHERE earlier."externalConversationId" = e."externalConversationId"
+            AND earlier."createdAt" > ${acceptAfter}
+            AND (earlier.status = 'delivering' OR
+                 (earlier.status = 'running' AND earlier."runId" IS NOT NULL))
+            AND (earlier."createdAt", earlier.id) < (e."createdAt", e.id)
+        )
+      ORDER BY e."createdAt", e.id
+      LIMIT ${BATCH_SIZE}
+    `;
+    return rows.map(({ id }) => id);
   }
 
   private async deliverDelegatedReplies(target: TargetBot): Promise<void> {
@@ -1257,6 +1288,8 @@ export class TeamChatBridge {
 
   private async deliverCompletion(message: {
     id: string;
+    status: string;
+    attempts: number;
     runId: string | null;
     kind: string;
     replyThreadId: string | null;
@@ -1269,9 +1302,7 @@ export class TeamChatBridge {
       await this.markDelivered(message.id, "silent");
       return;
     }
-    const reserved = await this.reserveDelivery(message.id);
-    if (!reserved) return;
-    await this.sendOnce(message.id, {
+    await this.sendReserved(message, {
       conversationId: message.externalConversation.conversationId,
       replyThreadId: message.replyThreadId,
       content,
@@ -1281,6 +1312,8 @@ export class TeamChatBridge {
 
   private async deliverFailure(message: {
     id: string;
+    status: string;
+    attempts: number;
     kind: string;
     replyThreadId: string | null;
     externalConversation: { conversationId: string };
@@ -1289,14 +1322,21 @@ export class TeamChatBridge {
       await this.markDelivered(message.id, "silent-failure");
       return;
     }
-    const reserved = await this.reserveDelivery(message.id);
-    if (!reserved) return;
-    await this.sendOnce(message.id, {
+    await this.sendReserved(message, {
       conversationId: message.externalConversation.conversationId,
       replyThreadId: message.replyThreadId,
       content: `${this.target?.name ?? "The agent"} could not complete that request. Open CogineBot for details.`,
       idempotencyKey: `external-message:${message.id}:failure`,
     });
+  }
+
+  private async sendReserved(
+    message: { id: string; status: string; attempts: number },
+    request: TeamChatSendRequest & { idempotencyKey: string },
+  ) {
+    const lease = await this.reserveDelivery(message.id);
+    if (!lease) return;
+    await this.sendOnce(message.id, request).catch((error) => this.retry(message, error, lease));
   }
 
   /**
@@ -1329,7 +1369,7 @@ export class TeamChatBridge {
     await this.markDelivered(id, sent.handle);
   }
 
-  private async reserveDelivery(id: string): Promise<boolean> {
+  private async reserveDelivery(id: string): Promise<Date | undefined> {
     const now = new Date();
     const leaseUntil = new Date(now.getTime() + DELIVERY_RESERVATION_MS);
     const installed = this.deps.installedSlack;
@@ -1339,7 +1379,7 @@ export class TeamChatBridge {
           select: { createdAt: true },
         })
       : undefined;
-    if (installed && !candidate) return false;
+    if (installed && !candidate) return;
     const claimed = await this.deps.prisma.externalMessage.updateMany({
       where: {
         id,
@@ -1351,11 +1391,15 @@ export class TeamChatBridge {
             externalConversation: {
               messages: {
                 none: {
-                  status: { in: ["running", "delivering"] },
                   createdAt: { gt: installed.acceptAfter },
-                  OR: [
-                    { createdAt: { lt: candidate.createdAt } },
-                    { createdAt: candidate.createdAt, id: { lt: id } },
+                  AND: [
+                    { OR: [{ status: "delivering" }, { status: "running", runId: { not: null } }] },
+                    {
+                      OR: [
+                        { createdAt: { lt: candidate.createdAt } },
+                        { createdAt: candidate.createdAt, id: { lt: id } },
+                      ],
+                    },
                   ],
                 },
               },
@@ -1367,8 +1411,11 @@ export class TeamChatBridge {
         nextAttemptAt: leaseUntil,
       },
     });
-    if (claimed.count === 1) return true;
+    if (claimed.count === 1) return leaseUntil;
+    await this.recoverDelivery(id, now);
+  }
 
+  private async recoverDelivery(id: string, now: Date) {
     // Already posted but status flip was lost — finish without a second send.
     const posted = await this.deps.prisma.externalMessage.findFirst({
       where: { id, status: "delivering", providerReplyHandle: { not: null } },
@@ -1376,7 +1423,7 @@ export class TeamChatBridge {
     });
     if (posted?.providerReplyHandle) {
       await this.markDelivered(id, posted.providerReplyHandle);
-      return false;
+      return;
     }
 
     // Expired lease with no handle: the prior attempt may have reached the
@@ -1396,7 +1443,6 @@ export class TeamChatBridge {
         lastError: "Delivery confirmation lost; skipped retry to avoid duplicates",
       },
     });
-    return false;
   }
 
   private async markDelivered(id: string, handle: string): Promise<void> {
@@ -1412,12 +1458,27 @@ export class TeamChatBridge {
     });
   }
 
-  private async retry(message: { id: string; status: string; attempts: number }, error: unknown) {
+  private async retry(
+    message: { id: string; status: string; attempts: number },
+    error: unknown,
+    lease?: Date,
+  ) {
     const current = await this.deps.prisma.externalMessage.findUnique({
       where: { id: message.id },
       select: { status: true, providerReplyHandle: true, attempts: true, nextAttemptAt: true },
     });
     if (!current) return;
+    if (this.deps.installedSlack) {
+      if (lease) {
+        if (current.status !== "delivering" || current.nextAttemptAt?.getTime() !== lease.getTime())
+          return;
+      } else if (
+        current.status === "delivering" ||
+        (current.nextAttemptAt && current.nextAttemptAt.getTime() > Date.now())
+      ) {
+        return;
+      }
+    }
     const attempts =
       (this.deps.installedSlack ? (current.attempts ?? message.attempts) : message.attempts) + 1;
     const delay = Math.min(60_000, 1_000 * 2 ** Math.min(attempts, 6));

@@ -18,9 +18,14 @@ describe("team chat bridge", () => {
       const updateMany = vi.fn(
         async (_input: { data: { status: string; nextAttemptAt: Date } }) => ({ count: 1 }),
       );
+      const lease = new Date(Date.now() + 120_000);
       const prisma = {
         externalMessage: {
-          findUnique: vi.fn(async () => ({ status: "delivering", providerReplyHandle: null })),
+          findUnique: vi.fn(async () => ({
+            status: "delivering",
+            providerReplyHandle: null,
+            nextAttemptAt: lease,
+          })),
           updateMany,
         },
       } as unknown as PrismaClient;
@@ -38,15 +43,21 @@ describe("team chat bridge", () => {
         retry(
           message: { id: string; status: string; attempts: number },
           error: unknown,
+          lease?: Date,
         ): Promise<void>;
       };
+      const message = { id: "message", status: "running", attempts: 0 };
+      await retry.retry(message, new Error("preflight failed"));
+      await retry.retry(message, new Error("stale lease"), new Date(0));
+      expect(updateMany).not.toHaveBeenCalled();
       await retry.retry(
-        { id: "message", status: "running", attempts: 0 },
+        message,
         new MessagingSendError(
           disposition,
           disposition === "retryable" ? "rate_limited" : "outcome_unknown",
           30_000,
         ),
+        lease,
       );
       const { data } = updateMany.mock.calls[0]![0];
       expect(data.status).toBe(disposition === "retryable" ? "running" : "delivering");

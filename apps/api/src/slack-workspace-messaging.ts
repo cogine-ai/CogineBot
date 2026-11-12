@@ -134,8 +134,7 @@ export class SlackWorkspaceMessaging {
 
   private async current(row: WorkspaceInstallation) {
     if (this.stopped) return false;
-    const active = await this.installations.activeById(row.id);
-    return active?.revision === row.revision && active.ciphertext === row.ciphertext;
+    return this.installations.isCurrent(row);
   }
 
   private async use<T>(row: WorkspaceInstallation, task: (entry: Workspace) => Promise<T>) {
@@ -158,26 +157,23 @@ export class SlackWorkspaceMessaging {
         this.workspaces.delete(idle[0]);
         retired.push(idle[1]);
       }
-      const surface = provider.surface(credential, async (error) => {
+      const current = () => this.current(row);
+      const surface = provider.surface(credential, current, async (error) => {
         if (provider.credentialWasRejected(error))
           await this.installations.revokeRejectedCredential(row);
       });
-      const send = createMessagingTeamChatSender(surface, () => this.current(row));
+      const send = createMessagingTeamChatSender(surface, current);
       const bridge = new TeamChatBridge({
         prisma: this.deps.prisma,
         jobs: this.deps.jobs,
         events: this.deps.events,
         botId: row.botId,
         providerId: `slack~${row.id}`,
-        installedSlack: { acceptAfter: row.acceptAfter, isAvailable: () => this.current(row) },
+        installedSlack: { acceptAfter: row.acceptAfter, isAvailable: current },
         reconcileIntervalMs: 0,
         send: async (request) => {
-          if (!(await this.current(row))) throw new Error("Slack connection changed");
           try {
-            return await provider.withSendFence(
-              () => this.current(row),
-              () => send(request),
-            );
+            return await send(request);
           } catch (error) {
             if (provider.credentialWasRejected(error))
               await this.installations.revokeRejectedCredential(row);

@@ -473,6 +473,24 @@ export class MessagingInstallations {
     });
   }
 
+  isCurrent(row: WorkspaceInstallation) {
+    return runAsSystem("verify current Slack installation", async () => {
+      const [result] = await this.db.$queryRaw<Array<{ active: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1
+          FROM public.messaging_installations i
+          JOIN public.bots b ON b.id = i."botId"
+          JOIN public.space_members m ON m."spaceId" = i."spaceId" AND m."userId" = i."userId"
+          WHERE i.id = ${row.id} AND i.status = 'active'
+            AND i.revision = ${row.revision} AND i.ciphertext = ${row.ciphertext}
+            AND i."clientId" = ${this.provider?.clientId ?? null}
+            AND b."spaceId" = i."spaceId" AND b."userId" = i."userId" AND b."archivedAt" IS NULL
+        ) AS active
+      `;
+      return result?.active === true;
+    });
+  }
+
   private async owned(tx: Db, actor: Actor, input: Revision) {
     const row = await tx.messagingInstallation.findFirst({
       where: {
