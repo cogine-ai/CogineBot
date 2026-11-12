@@ -19,7 +19,10 @@ export type WorkspaceInstallation = NonNullable<
   Awaited<ReturnType<PrismaClient["messagingInstallation"]["findUnique"]>>
 >;
 type Db = Prisma.TransactionClient;
-type Provider = Pick<SlackInstallProvider, "authorizeUrl" | "exchange">;
+type Provider = Pick<
+  SlackInstallProvider,
+  "authorizeUrl" | "exchange" | "clientId" | "verifyGrant"
+>;
 
 export class MessagingInstallations {
   constructor(
@@ -47,6 +50,7 @@ export class MessagingInstallations {
         data: {
           id,
           provider: PROVIDER,
+          clientId: provider.clientId,
           ...scope,
           expiresAt,
           installationId: target?.id,
@@ -77,7 +81,12 @@ export class MessagingInstallations {
     return runAsSystem("complete Slack workspace authorization", async () => {
       const id = credentialDigest(state);
       const session = await this.db.messagingInstallSession.findUnique({ where: { id } });
-      if (!session || session.provider !== PROVIDER || session.userId !== userId)
+      if (
+        !session ||
+        session.provider !== PROVIDER ||
+        session.clientId !== provider.clientId ||
+        session.userId !== userId
+      )
         throw new Error("Invalid Slack authorization");
       const claimedAt = new Date();
       const claimed = await this.db.messagingInstallSession.updateMany({
@@ -133,6 +142,8 @@ export class MessagingInstallations {
             const at = new Date();
             const data = {
               provider: PROVIDER,
+              appId: external.appId,
+              clientId: provider.clientId,
               workspaceId: external.workspaceId,
               workspaceName: external.workspaceName,
               installerId: external.installerId,
@@ -235,21 +246,24 @@ export class MessagingInstallations {
           botId: true,
           workspaceName: true,
           installerName: true,
+          clientId: true,
           revision: true,
           status: true,
         },
         orderBy: { createdAt: "asc" },
       });
       return Promise.all(
-        rows.map(async (row) => ({
+        rows.map(async ({ clientId, ...row }) => ({
           ...row,
-          status: (await this.hasOwner(this.db, {
+          status: !(await this.hasOwner(this.db, {
             userId: actor.userId,
             spaceId: actor.spaceId,
             botId: row.botId,
           }))
-            ? row.status
-            : "unavailable",
+            ? "unavailable"
+            : this.provider && this.provider.clientId !== clientId
+              ? "revoked"
+              : row.status,
         })),
       );
     });
@@ -283,22 +297,40 @@ export class MessagingInstallations {
     );
   }
 
-  revoke(workspaceId: string, eventAt: Date, revokedBots?: string[], preciseEventTime = true) {
-    return runAsSystem("revoke Slack installation from a verified event", () =>
-      this.db.$transaction(async (tx) => {
-        const row = await tx.messagingInstallation.findUnique({
-          where: { provider_workspaceId: { provider: PROVIDER, workspaceId } },
-        });
-        if (
-          row?.ciphertext &&
-          (preciseEventTime
-            ? eventAt >= row.authorizedAt
-            : eventAt.getTime() >= Math.floor(row.authorizedAt.getTime() / 1000) * 1000) &&
-          (!revokedBots || revokedBots.includes(row.providerBotId))
-        )
-          await this.disconnect(tx, row, "revoked");
-      }),
-    );
+  revoke(event: {
+    workspaceId: string;
+    appId: string;
+    at: Date;
+    precise: boolean;
+    botUsers?: string[];
+  }) {
+    const provider = this.provider;
+    if (!provider) return Promise.resolve();
+    return runAsSystem("revoke Slack installation from a verified event", async () => {
+      const row = await this.db.messagingInstallation.findUnique({
+        where: { provider_workspaceId: { provider: PROVIDER, workspaceId: event.workspaceId } },
+      });
+      if (
+        !row?.ciphertext ||
+        row.appId !== event.appId ||
+        row.clientId !== provider.clientId ||
+        (event.botUsers && !event.botUsers.includes(row.providerBotId))
+      )
+        return;
+      const cutoff = event.precise
+        ? row.authorizedAt.getTime()
+        : Math.floor(row.authorizedAt.getTime() / 1000) * 1000;
+      if (event.at.getTime() < cutoff) return;
+      // Uninstall and revoke can carry only whole seconds. Verify the current
+      // grant when the signed event could belong to either of two grants.
+      if (
+        !event.precise &&
+        event.at.getTime() === cutoff &&
+        (await provider.verifyGrant(await this.credential(row), row.workspaceId, row.providerBotId))
+      )
+        return;
+      await this.db.$transaction((tx) => this.disconnect(tx, row, "revoked"));
+    });
   }
 
   revokeRejectedCredential(installation: WorkspaceInstallation) {
@@ -336,6 +368,19 @@ export class MessagingInstallations {
     return this.secrets.load(row.ciphertext, {
       recordId: row.credentialId,
       signal: AbortSignal.timeout(10_000),
+    });
+  }
+
+  async retryExhaustedCleanup(dryRun: boolean) {
+    const where = { attempts: { gte: MAX_CLEANUP_ATTEMPTS } };
+    return runAsSystem("rearm exhausted Slack credential cleanup", async () => {
+      if (dryRun) return this.db.messagingCredentialCleanup.count({ where });
+      const { count } = await this.db.messagingCredentialCleanup.updateMany({
+        where,
+        data: { attempts: 0, nextAttemptAt: new Date() },
+      });
+      await this.cleanup();
+      return count;
     });
   }
 
@@ -422,7 +467,8 @@ export class MessagingInstallations {
   private async active(where: Prisma.MessagingInstallationWhereUniqueInput) {
     return runAsSystem("resolve an active Slack installation", async () => {
       const row = await this.db.messagingInstallation.findUnique({ where });
-      if (row?.status !== "active" || !row.ciphertext) return null;
+      if (row?.status !== "active" || !row.ciphertext || row.clientId !== this.provider?.clientId)
+        return null;
       return (await this.hasOwner(this.db, row)) ? row : null;
     });
   }

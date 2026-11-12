@@ -24,6 +24,7 @@ const row = {
   userId: "owner",
   botId: "bot",
   workspaceId: "TFIXTURE",
+  appId: "AFIXTURE",
   installerId: "UOWNER",
   providerBotId: "UBOT",
   ciphertext: "sealed",
@@ -62,6 +63,7 @@ function harness() {
   const verified = {
     request,
     workspaceId: row.workspaceId,
+    appId: row.appId,
     eventAt: new Date("2026-01-02"),
     preciseEventTime: true,
   };
@@ -133,12 +135,13 @@ describe("Slack installed workspace routing", () => {
       uninstalled: true,
     } as typeof verified);
     await runtime.webhook(request);
-    expect(store.revoke).toHaveBeenCalledWith(
-      row.workspaceId,
-      verified.eventAt,
-      undefined,
-      verified.preciseEventTime,
-    );
+    expect(store.revoke).toHaveBeenCalledWith({
+      workspaceId: row.workspaceId,
+      appId: row.appId,
+      at: verified.eventAt,
+      precise: verified.preciseEventTime,
+      botUsers: undefined,
+    });
     provider.parseWebhook.mockRejectedValueOnce(new Error("bad signature"));
     expect((await runtime.webhook(request)).status).toBe(401);
     await runtime.stop();

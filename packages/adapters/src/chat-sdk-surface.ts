@@ -617,6 +617,9 @@ export class MessagingSendError extends Error {
 }
 
 function classifySendError(platform: MessagingPlatform, error: unknown): MessagingSendError {
+  if (error instanceof MessagingSendError) return error;
+  const original = (error as { original?: unknown } | null)?.original;
+  if (original instanceof MessagingSendError) return original;
   const failure = error as {
     retryAfter?: unknown;
     status?: unknown;

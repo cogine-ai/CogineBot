@@ -108,3 +108,9 @@ can inspect orphaned confirmed writes with
 without `--dry-run` to retire eligible writes. This separate mode uses the current store, supports
 encrypted-only deployments and does not start a migration. Accepted credentials, restore-fenced
 evidence and unknown reservations are retained. See [credential transfer recovery](deployment-transfer.md#deployment-requirements-and-recovery).
+
+If Slack credential cleanup has reached its automatic retry limit, restore
+access to the configured store and run
+`pnpm --filter @rakazo/api secrets:infisical --retry-slack-cleanup --dry-run`.
+Run it without `--dry-run` to rearm eligible rows. Unverified writes remain
+recorded for reconciliation.

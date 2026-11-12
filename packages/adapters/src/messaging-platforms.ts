@@ -1,4 +1,4 @@
-import type { SlackBotToken } from "@chat-adapter/slack";
+import type { SlackAdapterConfig, SlackBotToken } from "@chat-adapter/slack";
 import { SlackAdapter } from "@chat-adapter/slack";
 import { escapeMarkdownV2, TelegramAdapter, TelegramFormatConverter } from "@chat-adapter/telegram";
 import { splitMessage, WhatsAppAdapter, WhatsAppApiError } from "@chat-adapter/whatsapp";
@@ -111,6 +111,8 @@ export function messagingPlatformsFromEnv(
   options: {
     pollInboundMessages?: boolean;
     onSlackAuthFailure?: (error: unknown) => Promise<void>;
+    beforeSlackRequest?: () => Promise<void>;
+    slackTransport?: NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"];
     sendblueTransport?: Pick<SendblueClientOptions, "baseURL" | "fetch">;
     larkTransport?: HttpInstance;
   } = {},
@@ -175,6 +177,13 @@ export function messagingPlatformsFromEnv(
         retryConfig: { retries: 0 },
         rejectRateLimitedCalls: true,
         timeout: MESSAGING_SEND_TIMEOUT_MS,
+        ...(options.slackTransport && { adapter: options.slackTransport }),
+        ...(options.beforeSlackRequest && {
+          requestInterceptor: async (request) => {
+            await options.beforeSlackRequest!();
+            return request;
+          },
+        }),
       },
     });
     let ownWorkspace: Promise<string> | undefined;

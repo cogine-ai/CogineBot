@@ -2,13 +2,14 @@ import {
   ComposedSecretStore,
   EncryptedSecretStore,
   InfisicalSecretStore,
+  MessagingInstallations,
   migrateSecrets,
   PostgresRealtimeFanout,
   secretStoreOptionsFromEnv,
 } from "@rakazo/adapters";
 import { resolveEncryptionKey } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import { createDb } from "@rakazo/db";
+import { createDb, runAsSystem } from "@rakazo/db";
 import { cleanupOrphanedTransfers } from "../deployment-transfer-cleanup.js";
 import {
   createSecretMigrationRepository,
@@ -20,13 +21,14 @@ loadRootEnv();
 
 const args = process.argv.slice(2);
 const command = parseSecretMigrationOptions(args);
+const maintenance = command.cleanupOrphanedTransfers || command.retrySlackCleanup;
 const options = secretStoreOptionsFromEnv({
   ...process.env,
-  ...(!command.cleanupOrphanedTransfers ? { SECRET_STORE: "infisical" } : {}),
+  ...(!maintenance ? { SECRET_STORE: "infisical" } : {}),
 });
-if (!process.env.DATABASE_URL || (!command.cleanupOrphanedTransfers && !options))
+if (!process.env.DATABASE_URL || (!maintenance && !options))
   throw new Error("Secret storage and database configuration are required");
-const { prisma, pool } = createDb(process.env.DATABASE_URL);
+const { prisma, pool } = createDb(process.env.DATABASE_URL, { rowSecurity: true });
 const encryptionKey = resolveEncryptionKey(process.env);
 const realtime = new PostgresRealtimeFanout({
   connectionString: process.env.REALTIME_DATABASE_URL ?? process.env.DATABASE_URL,
@@ -49,7 +51,14 @@ const repository = createSecretMigrationRepository(prisma);
 try {
   await encrypted.start();
   await infisical.start();
-  if (command.cleanupOrphanedTransfers) {
+  if (command.retrySlackCleanup) {
+    const count = await new MessagingInstallations(prisma, infisical).retryExhaustedCleanup(
+      command.dryRun,
+    );
+    process.stdout.write(
+      `Slack cleanup retries ${command.dryRun ? "eligible" : "rearmed"}: ${count}\n`,
+    );
+  } else if (command.cleanupOrphanedTransfers) {
     const result = await cleanupOrphanedTransfers({
       prisma,
       secrets: infisical,
@@ -59,29 +68,35 @@ try {
     process.stdout.write(`Transfer cleanup: ${JSON.stringify(result)}\n`);
     if (result.uncertain || controller.signal.aborted) process.exitCode = 1;
   } else {
-    const result = await migrateSecrets(
-      repository,
-      encrypted,
-      infisical,
-      {
-        operationId: "secret-migration",
-        traceId: "secret-migration",
-        userId: "migration",
-        spaceId: "migration",
-        signal: controller.signal,
-      },
-      {
-        direction: command.reverse ? "reverse" : "forward",
-        dryRun: command.dryRun,
-        report: (row, status) =>
-          process.stdout.write(`${secretMigrationReportIdentity(row)}: ${status}\n`),
-      },
+    const result = await runAsSystem("migrate stored credentials", () =>
+      migrateSecrets(
+        repository,
+        encrypted,
+        infisical,
+        {
+          operationId: "secret-migration",
+          traceId: "secret-migration",
+          userId: "migration",
+          spaceId: "migration",
+          signal: controller.signal,
+        },
+        {
+          direction: command.reverse ? "reverse" : "forward",
+          dryRun: command.dryRun,
+          report: (row, status) =>
+            process.stdout.write(`${secretMigrationReportIdentity(row)}: ${status}\n`),
+        },
+      ),
     );
     if (result.failed || controller.signal.aborted) process.exitCode = 1;
   }
 } catch {
   process.stderr.write(
-    command.cleanupOrphanedTransfers ? "Transfer cleanup failed\n" : "Secret migration failed\n",
+    command.retrySlackCleanup
+      ? "Slack credential cleanup failed\n"
+      : command.cleanupOrphanedTransfers
+        ? "Transfer cleanup failed\n"
+        : "Secret migration failed\n",
   );
   process.exitCode = 1;
 } finally {

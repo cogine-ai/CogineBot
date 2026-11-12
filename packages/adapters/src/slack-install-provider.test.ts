@@ -11,6 +11,7 @@ const config = {
 const access = {
   ok: true,
   token_type: "bot",
+  app_id: "AFIXTURE",
   access_token: "synthetic-bot-token",
   scope: SLACK_INSTALL_SCOPES.join(","),
   team: { id: "TFIXTURE", name: "Fixture Workspace" },
@@ -48,6 +49,7 @@ describe("Slack workspace OAuth and event verification", () => {
     expect(url.searchParams.get("redirect_uri")).toBe(config.redirectUri);
     await expect(provider.exchange("fixture-code")).resolves.toEqual({
       workspaceId: "TFIXTURE",
+      appId: "AFIXTURE",
       workspaceName: "Fixture Workspace",
       installerId: "UFIXTURE",
       installerName: "Fixture Installer",
@@ -90,6 +92,7 @@ describe("Slack workspace OAuth and event verification", () => {
       request({
         type: "event_callback",
         team_id: "TFIXTURE",
+        api_app_id: "AFIXTURE",
         event_time: eventTime,
         event: { type: "tokens_revoked", tokens: { bot: ["UBOTFIXTURE"], oauth: ["UFIXTURE"] } },
       }),

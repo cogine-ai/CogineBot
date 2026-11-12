@@ -1,7 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   ChatSdkMessagingSurface,
   MESSAGING_WEBHOOK_MAX_BODY_BYTES,
+  MessagingSendError,
   readBoundedText,
 } from "./chat-sdk-surface.js";
 import { messagingPlatformsFromEnv } from "./messaging-platforms.js";
@@ -26,6 +28,16 @@ export const SLACK_INSTALL_SCOPES = [
 
 export class SlackInstallProvider {
   readonly provider = "slack";
+  private readonly sendFence = new AsyncLocalStorage<() => Promise<boolean>>();
+
+  withSendFence<T>(current: () => Promise<boolean>, send: () => Promise<T>) {
+    return this.sendFence.run(current, send);
+  }
+
+  private async assertSendFence() {
+    const current = this.sendFence.getStore();
+    if (current && !(await current())) throw new MessagingSendError("permanent", "rejected");
+  }
   constructor(
     private readonly config: {
       clientId: string;
@@ -35,6 +47,26 @@ export class SlackInstallProvider {
     },
     private readonly fetcher: typeof fetch = fetch,
   ) {}
+
+  get clientId() {
+    return this.config.clientId;
+  }
+
+  async verifyGrant(credential: string, workspaceId: string, botUserId: string) {
+    const response = await this.fetcher("https://slack.com/api/auth.test", {
+      method: "POST",
+      headers: { authorization: `Bearer ${credential}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    });
+    const body = response.ok && (await readBoundedText(response, 65_536));
+    const result = body
+      ? (JSON.parse(body) as { ok?: boolean; error?: unknown; team_id?: string; user_id?: string })
+      : null;
+    if (result?.ok === true) return result.team_id === workspaceId && result.user_id === botUserId;
+    if (isInvalidSlackCredential(result?.error)) return false;
+    throw new Error("Slack grant could not be verified");
+  }
 
   authorizeUrl(state: string): string {
     const url = new URL("https://slack.com/oauth/v2/authorize");
@@ -65,6 +97,7 @@ export class SlackInstallProvider {
       ok?: boolean;
       access_token?: string;
       token_type?: string;
+      app_id?: string;
       scope?: string;
       authed_user?: { id?: string };
       bot_user_id?: string;
@@ -77,6 +110,7 @@ export class SlackInstallProvider {
       !response.ok ||
       result?.ok !== true ||
       result.token_type !== "bot" ||
+      !slackId(result.app_id, "A") ||
       typeof result.access_token !== "string" ||
       !result.access_token ||
       !slackId(result.team?.id, "T") ||
@@ -91,6 +125,7 @@ export class SlackInstallProvider {
     const installerName = await this.installerName(result.authed_user!.id!, result.access_token);
     return {
       workspaceId: result.team!.id!,
+      appId: result.app_id,
       workspaceName:
         typeof result.team?.name === "string"
           ? result.team.name.trim().slice(0, 160) || "Slack"
@@ -131,7 +166,7 @@ export class SlackInstallProvider {
           slackBotToken: credential,
           slackSigningSecret: this.config.signingSecret,
         },
-        { onSlackAuthFailure },
+        { onSlackAuthFailure, beforeSlackRequest: () => this.assertSendFence() },
       ),
     );
   }
@@ -142,12 +177,13 @@ export class SlackInstallProvider {
       cause?: { data?: { error?: unknown } };
     } | null;
     const code = failure?.data?.error ?? failure?.cause?.data?.error;
-    return code === "invalid_auth" || code === "token_revoked" || code === "account_inactive";
+    return isInvalidSlackCredential(code);
   }
 
   async parseWebhook(request: Request): Promise<{
     request: Request;
     workspaceId?: string;
+    appId?: string;
     challenge?: string;
     eventAt?: Date;
     preciseEventTime: boolean;
@@ -170,6 +206,7 @@ export class SlackInstallProvider {
       type?: string;
       challenge?: string;
       team_id?: string;
+      api_app_id?: string;
       event_time?: number;
       event?: { type?: string; event_ts?: string; ts?: string; tokens?: { bot?: unknown[] } };
     };
@@ -183,6 +220,7 @@ export class SlackInstallProvider {
     return {
       request: new Request(request.url, { method: request.method, headers: request.headers, body }),
       workspaceId: slackId(payload?.team_id, "T") ? payload.team_id : undefined,
+      appId: slackId(payload?.api_app_id, "A") ? payload.api_app_id : undefined,
       challenge:
         payload?.type === "url_verification" && typeof payload.challenge === "string"
           ? payload.challenge
@@ -206,4 +244,8 @@ export class SlackInstallProvider {
 
 function slackId(value: unknown, prefixes: string): value is string {
   return typeof value === "string" && new RegExp(`^[${prefixes}][A-Z0-9]{1,40}$`).test(value);
+}
+
+function isInvalidSlackCredential(code: unknown) {
+  return code === "invalid_auth" || code === "token_revoked" || code === "account_inactive";
 }

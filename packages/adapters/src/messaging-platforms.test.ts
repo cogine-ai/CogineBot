@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import type { SlackAdapter, SlackAdapterConfig } from "@chat-adapter/slack";
 import { TelegramFormatConverter } from "@chat-adapter/telegram";
 import { convertEmojiPlaceholders, markdownToPlainText } from "chat";
 import { describe, expect, it, vi } from "vitest";
@@ -40,6 +41,35 @@ function providers(env: MessagingEnvironmentValues): string[] {
 }
 
 describe("messagingPlatformsFromEnv", () => {
+  it("stops the SDK request at its transport fence before sending bytes", async () => {
+    const fence = vi.fn(async (): Promise<void> => {
+      throw new Error("Workspace paused");
+    });
+    type Transport = NonNullable<NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"]>;
+    const transport = vi.fn<Transport>(async (config) => ({
+      config,
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      request: { path: "/api/chat.postMessage" },
+      data: { ok: true, ts: "123.4" },
+    }));
+    const [platform] = messagingPlatformsFromEnv(
+      { slackBotToken: "fixture", slackSigningSecret: "fixture-signing" },
+      { beforeSlackRequest: fence, slackTransport: transport },
+    );
+    const slack = platform!.adapter as SlackAdapter;
+    await expect(
+      slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
+    ).rejects.toThrow("Workspace paused");
+    expect(transport).not.toHaveBeenCalled();
+    fence.mockResolvedValueOnce(undefined);
+    await expect(
+      slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
+    ).resolves.toMatchObject({ ts: "123.4" });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it("mounts nothing without credentials and everything with full credentials", () => {
     expect(providers({})).toEqual([]);
     expect(providers(fullEnv)).toEqual(["sendblue", "slack", "whatsapp", "telegram", "lark"]);

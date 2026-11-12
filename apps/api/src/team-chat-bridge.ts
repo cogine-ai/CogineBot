@@ -1332,8 +1332,36 @@ export class TeamChatBridge {
   private async reserveDelivery(id: string): Promise<boolean> {
     const now = new Date();
     const leaseUntil = new Date(now.getTime() + DELIVERY_RESERVATION_MS);
+    const installed = this.deps.installedSlack;
+    const candidate = installed
+      ? await this.deps.prisma.externalMessage.findUnique({
+          where: { id },
+          select: { createdAt: true },
+        })
+      : undefined;
+    if (installed && !candidate) return false;
     const claimed = await this.deps.prisma.externalMessage.updateMany({
-      where: { id, status: "running", providerReplyHandle: null },
+      where: {
+        id,
+        status: "running",
+        providerReplyHandle: null,
+        ...(installed &&
+          candidate && {
+            OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+            externalConversation: {
+              messages: {
+                none: {
+                  status: { in: ["running", "delivering"] },
+                  createdAt: { gt: installed.acceptAfter },
+                  OR: [
+                    { createdAt: { lt: candidate.createdAt } },
+                    { createdAt: candidate.createdAt, id: { lt: id } },
+                  ],
+                },
+              },
+            },
+          }),
+      },
       data: {
         status: "delivering",
         nextAttemptAt: leaseUntil,
@@ -1385,13 +1413,14 @@ export class TeamChatBridge {
   }
 
   private async retry(message: { id: string; status: string; attempts: number }, error: unknown) {
-    const attempts = message.attempts + 1;
-    const delay = Math.min(60_000, 1_000 * 2 ** Math.min(attempts, 6));
     const current = await this.deps.prisma.externalMessage.findUnique({
       where: { id: message.id },
-      select: { status: true, providerReplyHandle: true },
+      select: { status: true, providerReplyHandle: true, attempts: true, nextAttemptAt: true },
     });
     if (!current) return;
+    const attempts =
+      (this.deps.installedSlack ? (current.attempts ?? message.attempts) : message.attempts) + 1;
+    const delay = Math.min(60_000, 1_000 * 2 ** Math.min(attempts, 6));
     // A concurrent reserveDelivery may have finalized with "unconfirmed". Do not
     // clear that lost-confirmation metadata via markDelivered.
     if (current.providerReplyHandle) {
@@ -1427,9 +1456,7 @@ export class TeamChatBridge {
             ? "failed"
             : current.status;
     const retryAfter = installedFailure?.retryAfterMs;
-    const nextAttemptAt = failed
-      ? null
-      : new Date(Date.now() + Math.max(delay, Math.min(retryAfter ?? 0, 60 * 60_000)));
+    const nextAttemptAt = failed ? null : new Date(Date.now() + Math.max(delay, retryAfter ?? 0));
     // Conditional write: if reserveDelivery finalized between the read and this
     // update, leave the delivered/unconfirmed row alone.
     await this.deps.prisma.externalMessage.updateMany({
@@ -1437,11 +1464,12 @@ export class TeamChatBridge {
         id: message.id,
         providerReplyHandle: null,
         status: current.status,
+        ...(this.deps.installedSlack && { nextAttemptAt: current.nextAttemptAt }),
       },
       data: {
         status,
         ...(current.status === "queueing" ? { engagementReason: null } : {}),
-        attempts,
+        attempts: this.deps.installedSlack ? { increment: 1 } : attempts,
         lastError: error instanceof Error ? error.message.slice(0, 500) : "Unknown bridge error",
         nextAttemptAt,
       },

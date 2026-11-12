@@ -9,6 +9,7 @@ import {
 import { createDb, createThreadEvents, createThreadMessage } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { SlackWorkspaceMessaging } from "./slack-workspace-messaging.js";
+import { TeamChatBridge } from "./team-chat-bridge.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgres = process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe : describe.skip;
@@ -35,6 +36,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
           : Response.json({
               ok: true,
               token_type: "bot",
+              app_id: "AFIXTURE",
               access_token: "synthetic-slack-token",
               scope: SLACK_INSTALL_SCOPES.join(","),
               team: { id: workspaceId, name: "Fixture Workspace" },
@@ -78,12 +80,13 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       new EncryptedSecretStore("synthetic-install-key"),
       provider,
     );
-    const runtime = new SlackWorkspaceMessaging(installs, provider, {
+    const deps = {
       prisma: db.prisma,
       artifacts: {} as ArtifactStore,
       events: createThreadEvents(db.prisma),
       jobs: { enqueue: vi.fn(async () => undefined) },
-    });
+    };
+    let runtime = new SlackWorkspaceMessaging(installs, provider, deps);
     try {
       await db.prisma.user.create({ data: { id: userId, email, name: "Fixture" } });
       await db.prisma.organization.create({
@@ -124,6 +127,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       const providerTime = (at / 1000).toFixed(3);
       const body = JSON.stringify({
         type: "event_callback",
+        api_app_id: "AFIXTURE",
         team_id: workspaceId,
         event_time: Math.floor(at / 1000),
         event: { type: "message", event_ts: providerTime, ts: providerTime, text: "Hello fixture" },
@@ -164,6 +168,8 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         where: { id: run.id },
         data: { status: "completed", completedAt: new Date() },
       });
+      await runtime.stop();
+      runtime = new SlackWorkspaceMessaging(installs, provider, deps);
       await (runtime as unknown as { maintain(): Promise<void> }).maintain();
       expect(sendToThread).toHaveBeenCalledOnce();
       expect(sendToThread).toHaveBeenCalledWith(
@@ -176,6 +182,51 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         status: "delivered",
         providerReplyHandle: "accepted-fixture",
       });
+      // A stale reader cannot claim the retry or let another reply pass it.
+      const bridge = new TeamChatBridge({
+        ...deps,
+        providerId: `slack~${installed.id}`,
+        botId: bot.id,
+        send: vi.fn(),
+        installedSlack: { acceptAfter: installed.acceptAfter, isAvailable: async () => true },
+      });
+      const reserve = bridge as unknown as { reserveDelivery(id: string): Promise<boolean> };
+      const older = await db.prisma.externalMessage.create({
+        data: {
+          externalConversationId: inbound.externalConversationId,
+          providerEventId: "fixture-retry",
+          senderId: "UOWNER",
+          senderName: "Fixture",
+          content: "Older",
+          status: "running",
+          createdAt: new Date(at + 1),
+          nextAttemptAt: new Date(Date.now() + 60_000),
+        },
+      });
+      const newer = await db.prisma.externalMessage.create({
+        data: {
+          externalConversationId: inbound.externalConversationId,
+          providerEventId: "fixture-newer",
+          senderId: "UOWNER",
+          senderName: "Fixture",
+          content: "Newer",
+          status: "running",
+          createdAt: new Date(at + 2),
+        },
+      });
+      await expect(reserve.reserveDelivery(older.id)).resolves.toBe(false);
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(false);
+      await db.prisma.externalMessage.update({
+        where: { id: older.id },
+        data: { nextAttemptAt: new Date(0) },
+      });
+      await expect(reserve.reserveDelivery(older.id)).resolves.toBe(true);
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(false);
+      await db.prisma.externalMessage.update({
+        where: { id: older.id },
+        data: { status: "delivered" },
+      });
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBe(true);
     } finally {
       await runtime.stop();
       await db.prisma.messagingInstallSession.deleteMany({ where: { userId } });

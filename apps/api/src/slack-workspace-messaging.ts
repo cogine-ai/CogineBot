@@ -59,18 +59,21 @@ export class SlackWorkspaceMessaging {
       return new Response("Invalid webhook", { status: 401 });
     }
     if (event.challenge !== undefined) return Response.json({ challenge: event.challenge });
-    if (!event.workspaceId || !event.eventAt) return new Response(null, { status: 200 });
+    if (!event.workspaceId || !event.appId || !event.eventAt)
+      return new Response(null, { status: 200 });
     if (event.uninstalled || event.revokedBots) {
-      await this.installations.revoke(
-        event.workspaceId,
-        event.eventAt,
-        event.revokedBots,
-        event.preciseEventTime,
-      );
+      await this.installations.revoke({
+        workspaceId: event.workspaceId,
+        appId: event.appId,
+        at: event.eventAt,
+        precise: event.preciseEventTime,
+        botUsers: event.revokedBots,
+      });
       return new Response(null, { status: 200 });
     }
     const row = await this.installations.activeByWorkspace(event.workspaceId);
-    if (!row || event.eventAt <= row.acceptAfter) return new Response(null, { status: 200 });
+    if (!row || event.appId !== row.appId || event.eventAt <= row.acceptAfter)
+      return new Response(null, { status: 200 });
     const eventAt = event.eventAt;
     return this.use(row, async (entry) => {
       if (!(await this.current(row))) return new Response(null, { status: 200 });
@@ -171,7 +174,10 @@ export class SlackWorkspaceMessaging {
         send: async (request) => {
           if (!(await this.current(row))) throw new Error("Slack connection changed");
           try {
-            return await send(request);
+            return await provider.withSendFence(
+              () => this.current(row),
+              () => send(request),
+            );
           } catch (error) {
             if (provider.credentialWasRejected(error))
               await this.installations.revokeRejectedCredential(row);

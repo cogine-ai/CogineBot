@@ -23,11 +23,14 @@ integration("Slack workspace installation lifecycle", () => {
   const authorizeUrl = (state: string) => `https://slack.com/oauth/v2/authorize?state=${state}`;
   const exchange = vi.fn(async (code: string) => ({
     workspaceId,
+    appId: "AFIXTURE",
     workspaceName: "Fixture Workspace",
     installerId: "UOWNER",
     providerBotId: "UBOT",
     credential: `fixture-secret-${code}`,
   }));
+  const verifyGrant = vi.fn(async () => false);
+  const provider = { authorizeUrl, exchange, clientId: "fixture-client", verifyGrant };
   let service: MessagingInstallations;
 
   async function createOwner() {
@@ -63,7 +66,7 @@ integration("Slack workspace installation lifecycle", () => {
     });
     ({ actor: owner, botId } = await createOwner());
     ({ actor: other, botId: otherBotId } = await createOwner());
-    service = new MessagingInstallations(db.prisma, store, { authorizeUrl, exchange });
+    service = new MessagingInstallations(db.prisma, store, provider);
   });
 
   afterAll(async () => {
@@ -126,6 +129,12 @@ integration("Slack workspace installation lifecycle", () => {
     expect(row).toMatchObject({ botId, userId: owner.userId, installerId: "UOWNER" });
     expect(row?.ciphertext).not.toContain("fixture-secret");
     expect(await service.list(other)).toEqual([]);
+    const changedApp = new MessagingInstallations(db.prisma, store, {
+      ...provider,
+      clientId: "replacement-app",
+    });
+    expect(await changedApp.activeByWorkspace(workspaceId)).toBeNull();
+    expect((await changedApp.list(owner))[0]?.status).toBe("revoked");
   });
 
   it("rejects cancelled and expired callbacks before the provider exchange", async () => {
@@ -171,6 +180,7 @@ integration("Slack workspace installation lifecycle", () => {
       return {
         workspaceId,
         workspaceName: "Fixture",
+        appId: "AFIXTURE",
         installerId: "UOWNER",
         providerBotId: "UBOT",
         credential: "fixture-archived",
@@ -186,11 +196,20 @@ integration("Slack workspace installation lifecycle", () => {
 
   it("revokes only the current bot grant and removes access before cleanup", async () => {
     const before = (await service.activeByWorkspace(workspaceId))!;
-    await service.revoke(workspaceId, new Date(0), [before.providerBotId]);
-    await service.revoke(workspaceId, new Date(), ["UOTHER"]);
+    const baseEvent = {
+      workspaceId,
+      appId: before.appId,
+      botUsers: [before.providerBotId],
+      precise: true,
+    };
+    await service.revoke({ ...baseEvent, at: new Date(0) });
+    await service.revoke({ ...baseEvent, at: new Date(), botUsers: ["UOTHER"] });
     expect(await service.activeById(before.id)).not.toBeNull();
     const sameSecond = new Date(Math.floor(before.authorizedAt.getTime() / 1000) * 1000);
-    await service.revoke(workspaceId, sameSecond, [before.providerBotId], false);
+    verifyGrant.mockResolvedValueOnce(true);
+    await service.revoke({ ...baseEvent, at: sameSecond, precise: false });
+    expect(await service.activeById(before.id)).not.toBeNull();
+    await service.revoke({ ...baseEvent, at: sameSecond, precise: false });
     expect(await service.activeById(before.id)).toBeNull();
     const revoked = (await service.list(owner))[0]!;
     expect(revoked.status).toBe("revoked");

@@ -1532,6 +1532,7 @@ model BotMcpServer {
 
 model MessagingInstallSession {
   id               String    @id
+  clientId String
   provider         String
   userId           String
   spaceId          String
@@ -1551,6 +1552,8 @@ model MessagingInstallSession {
 
 model MessagingInstallation {
   id            String   @id
+  appId String
+  clientId String
   provider      String
   workspaceId   String
   workspaceName String

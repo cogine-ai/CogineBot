@@ -4,6 +4,7 @@ SET LOCAL lock_timeout = '10s';
 CREATE TABLE public.messaging_install_sessions (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
+  "clientId" TEXT NOT NULL,
   "userId" TEXT NOT NULL,
   "spaceId" TEXT NOT NULL,
   "botId" TEXT NOT NULL,
@@ -20,6 +21,8 @@ CREATE INDEX messaging_install_sessions_owner_idx ON public.messaging_install_se
 CREATE TABLE public.messaging_installations (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
+  "appId" TEXT NOT NULL,
+  "clientId" TEXT NOT NULL,
   "workspaceId" TEXT NOT NULL,
   "workspaceName" TEXT NOT NULL,
   "installerId" TEXT NOT NULL,
