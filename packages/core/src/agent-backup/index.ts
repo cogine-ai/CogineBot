@@ -81,17 +81,16 @@ export function encodeAgentBackup(data: Uint8Array): string {
   const workspaces = new Set(
     relative.flatMap(([, path]) => {
       const [folder = "", ...rest] = path.split("/");
-      return /^workspace(?:-[^/]+)?$/.test(folder) && isBackupTextFile(source, rest.join("/"))
+      const file = rest.join("/");
+      return /^workspace(?:-[^/]+)?$/.test(folder) &&
+        isBackupTextFile(source, file) &&
+        !openClawRuntimeFiles.has(file)
         ? [folder]
         : [];
     }),
   );
-  const workspace = workspaces.has("workspace")
-    ? "workspace"
-    : workspaces.size === 1
-      ? [...workspaces][0]
-      : undefined;
-  if (source === "openclaw" && !workspace && workspaces.size)
+  const [workspace] = workspaces;
+  if (source === "openclaw" && (workspaces.size > 1 || (archive.declaredWorkspace && !workspace)))
     throw new AgentImportArchiveError("unreadable");
   const files = new Map<string, string>();
   const add = (path: string, name: string) => {

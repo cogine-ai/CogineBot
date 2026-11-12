@@ -84,6 +84,7 @@ it("rejects a selected ZIP entry with a checksum or local path mismatch", () => 
 it("refuses ambiguous homes, unsafe paths, excessive expansion, and oversized text", () => {
   for (const files of [
     { ".openclaw/SOUL.md": "One", ".hermes/SOUL.md": "Two" },
+    { ".openclaw/workspace/SOUL.md": "One", ".openclaw/workspace-other/SOUL.md": "Two" },
     { "HERMES.md": "One", "../escape.md": "Two" },
     { "HERMES.md": "One", "ignored.bin": "x".repeat(4 * 1024 * 1024) },
     { "HERMES.md": "x".repeat(100_001) },
@@ -163,7 +164,7 @@ it("uses the one declared internal workspace before an old default directory", (
   ]);
 });
 
-it("rejects an empty declared workspace instead of importing an old default", () => {
+it("rejects a declared workspace without supported text even when other content exists", () => {
   const backup = tar({
     "backup/manifest.json": JSON.stringify({
       schemaVersion: 1,
@@ -171,10 +172,62 @@ it("rejects an empty declared workspace instead of importing an old default", ()
       paths: { workspaceDirs: ["/state/custom-main"] },
       assets: [{ kind: "state", archivePath: "state", sourcePath: "/state" }],
     }),
-    "backup/state/workspace/SOUL.md": "Stale instructions",
+    "backup/state/workspace-old/SOUL.md": "Stale instructions",
+    "backup/state/custom-main/backup.zip": "Skipped nested archive",
+    "backup/state/skills/review/SKILL.md": "Home Skill",
   });
   expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
 });
+
+it("uses an explicitly declared external workspace even if old workspace folders remain", () => {
+  const backup = tar({
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: { workspaceDirs: ["/current"] },
+      assets: [
+        { kind: "state", archivePath: "state", sourcePath: "/state" },
+        { kind: "workspace", archivePath: "external", sourcePath: "/current" },
+      ],
+    }),
+    "backup/state/workspace-other/SOUL.md": "Old instructions",
+    "backup/external/SOUL.md": "Current instructions",
+  });
+  expect(JSON.parse(encodeAgentBackup(backup)).files).toEqual([
+    { path: "SOUL.md", content: "Current instructions" },
+  ]);
+});
+
+it.each(["missing", "mismatched", "runtime-only"])(
+  "refuses %s declared external workspace",
+  (variant) => {
+    const backup = tar({
+      "backup/manifest.json": JSON.stringify({
+        schemaVersion: 1,
+        archiveRoot: "backup",
+        paths: { workspaceDirs: ["/current"] },
+        assets: [
+          { kind: "state", archivePath: "state", sourcePath: "/state" },
+          ...(variant === "missing"
+            ? []
+            : [
+                {
+                  kind: "workspace",
+                  archivePath: "external",
+                  sourcePath: variant === "mismatched" ? "/old" : "/current",
+                },
+              ]),
+        ],
+      }),
+      "backup/state/workspace-old/SOUL.md": "Old instructions",
+      "backup/state/skills/review/SKILL.md": "Home Skill",
+      ...(variant === "mismatched"
+        ? { "backup/external/SOUL.md": "Wrong instructions" }
+        : { "backup/external/TOOLS.md": "Runtime-only instructions" }),
+    });
+    expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+  },
+);
 
 it.each(["\n", "\r\n"])("renames quoted and multiline Skills with valid YAML (%j)", (newline) => {
   const name = 'Reader\'s "quoted" \\notes-2';

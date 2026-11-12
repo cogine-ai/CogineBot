@@ -49,6 +49,7 @@ type Entry = { path: string; data?: Uint8Array; skipped?: true };
 export function openAgentImportArchive(data: Uint8Array): {
   paths: string[];
   skippedPaths: string[];
+  declaredWorkspace: boolean;
   read: (path: string) => string;
 } {
   const limits = AGENT_IMPORT_ARCHIVE_LIMITS;
@@ -63,7 +64,7 @@ export function openAgentImportArchive(data: Uint8Array): {
   const skippedPaths: string[] = [];
   const byVirtual = new Map<string, Entry>();
   for (const entry of entries) {
-    const path = layout(entry.path);
+    const path = layout.map(entry.path);
     if (!path) continue;
     // Two entries for one file (repeated, or equal after normalising) are ambiguous.
     if (byVirtual.has(path)) throw unreadable();
@@ -77,6 +78,7 @@ export function openAgentImportArchive(data: Uint8Array): {
   return {
     paths,
     skippedPaths,
+    declaredWorkspace: layout.declaredWorkspace,
     read: (path) => {
       const cached = texts.get(path);
       if (cached !== undefined) return cached;
@@ -487,7 +489,11 @@ function ascii(bytes: Uint8Array): string {
  * the `state` asset is the home, and a `workspace` asset outside it its workspace. Only tar
  * keeps manifest data while streaming; Hermes zips hold the home at the archive root.
  */
-function archiveLayout(entries: Entry[]): (path: string) => string | null {
+function archiveLayout(entries: Entry[]): {
+  map: (path: string) => string | null;
+  declaredWorkspace: boolean;
+} {
+  const fallback = (map: (path: string) => string | null) => ({ map, declaredWorkspace: false });
   const manifests = entries.filter((entry) => /^[^/]+\/manifest\.json$/.test(entry.path));
   if (manifests.length > 1) throw unreadable();
   const manifest = manifests[0];
@@ -497,37 +503,44 @@ function archiveLayout(entries: Entry[]): (path: string) => string | null {
       entries.map((entry) => entry.path),
     );
     if (roots) {
-      return (path) => {
-        if (roots.workspace && path.startsWith(`${roots.workspace}/`)) {
-          return `.openclaw/workspace/${path.slice(roots.workspace.length + 1)}`;
-        }
-        if (roots.workspace && path.startsWith(`${roots.home}/workspace/`)) return null;
-        if (path.startsWith(`${roots.home}/`))
-          return `.openclaw/${path.slice(roots.home.length + 1)}`;
-        return null;
+      return {
+        declaredWorkspace: Boolean(roots.workspace),
+        map: (path) => {
+          if (roots.workspace && path.startsWith(`${roots.workspace}/`)) {
+            return `.openclaw/workspace/${path.slice(roots.workspace.length + 1)}`;
+          }
+          if (path.startsWith(`${roots.home}/`)) {
+            const relative = path.slice(roots.home.length + 1);
+            if (roots.workspace && /^workspace(?:-[^/]+)?\//.test(relative)) return null;
+            return `.openclaw/${relative}`;
+          }
+          return null;
+        },
       };
     }
   }
   const paths = entries.map((entry) => entry.path);
   // Explicit homes are checked for ambiguity by the reader.
-  if (paths.some((path) => /(?:^|\/)\.(?:openclaw|hermes)\//.test(path))) return (path) => path;
+  if (paths.some((path) => /(?:^|\/)\.(?:openclaw|hermes)\//.test(path)))
+    return fallback((path) => path);
   const configs = paths.filter((path) => /^(?:[^/]+\/)?openclaw\.json$/.test(path));
   if (configs.length > 1) throw unreadable();
   const config = configs[0];
   if (config !== undefined) {
     const home = config.slice(0, -"openclaw.json".length).replace(/\/$/, "");
-    return (path) =>
+    return fallback((path) =>
       home === ""
         ? `.openclaw/${path}`
         : path.startsWith(`${home}/`)
           ? `.openclaw/${path.slice(home.length + 1)}`
-          : null;
+          : null,
+    );
   }
   const hermes = paths.some(
     (path) => path === "config.yaml" || path === "HERMES.md" || path.startsWith("memories/"),
   );
-  if (hermes) return (path) => `.hermes/${path}`;
-  return (path) => path;
+  if (hermes) return fallback((path) => `.hermes/${path}`);
+  return fallback((path) => path);
 }
 
 function openClawRoots(
@@ -566,35 +579,59 @@ function openClawRoots(
       )
         throw unreadable();
     }
-    const workspaces = parsed.assets
-      .filter((asset) => asset.kind === "workspace" && asset.archivePath)
-      .map((asset) => inArchive(asset.archivePath!))
-      .filter((path) => path && !path.startsWith(`${home}/`));
+    const workspaces = parsed.assets.flatMap((asset) => {
+      if (asset.kind !== "workspace" || !asset.archivePath) return [];
+      const root = inArchive(asset.archivePath);
+      return root ? [{ root, sourcePath: asset.sourcePath }] : [];
+    });
     const [workspace] = workspaces;
     const declaredWorkspaceDirs = parsed.paths?.workspaceDirs;
-    if (Array.isArray(declaredWorkspaceDirs) && new Set(declaredWorkspaceDirs).size > 1)
-      throw unreadable();
-    const hasInternalWorkspace = paths.some((path) => {
-      if (!path.startsWith(`${home}/`)) return false;
-      return /^workspace(?:-[^/]+)?\//.test(path.slice(home.length + 1));
-    });
-    if (workspaces.length > 1 || (workspace && hasInternalWorkspace)) throw unreadable();
-    const declared = Array.isArray(declaredWorkspaceDirs) ? declaredWorkspaceDirs[0] : undefined;
-    const sourcePath = state?.sourcePath ?? parsed.paths?.stateDir;
-    if (typeof declared === "string" && typeof sourcePath === "string") {
-      const statePath = sourcePath.replaceAll("\\", "/").replace(/\/+$/, "");
-      const declaredPath = declared.replaceAll("\\", "/").replace(/\/+$/, "");
-      if (declaredPath.startsWith(`${statePath}/`)) {
+    if (workspaces.length > 1) throw unreadable();
+    if (declaredWorkspaceDirs !== undefined) {
+      if (
+        !Array.isArray(declaredWorkspaceDirs) ||
+        declaredWorkspaceDirs.some((path) => typeof path !== "string" || !path)
+      )
+        throw unreadable();
+      const declaredPaths = new Set(declaredWorkspaceDirs.map(normalizeSourcePath));
+      if (declaredPaths.size > 1) throw unreadable();
+      const [declaredPath] = declaredPaths;
+      const sourcePath = state?.sourcePath ?? parsed.paths?.stateDir;
+      const statePath =
+        typeof sourcePath === "string" ? normalizeSourcePath(sourcePath) : undefined;
+      if (declaredPath && statePath && declaredPath.startsWith(`${statePath}/`)) {
         const internal = safeArchivePath(declaredPath.slice(statePath.length + 1));
-        if (workspace || !internal) throw unreadable();
-        return { home, workspace: `${home}/${internal}` };
+        const internalRoot = `${home}/${internal}`;
+        if (!internal || (workspace && workspace.root !== internalRoot)) throw unreadable();
+        return { home, workspace: internalRoot };
       }
+      if (
+        declaredPath &&
+        workspace &&
+        typeof workspace.sourcePath === "string" &&
+        normalizeSourcePath(workspace.sourcePath) === declaredPath
+      )
+        return { home, workspace: workspace.root };
+      if (declaredPaths.size || workspace) throw unreadable();
+    } else if (
+      workspace &&
+      paths.some((path) => {
+        return (
+          path.startsWith(`${home}/`) && /^workspace(?:-[^/]+)?\//.test(path.slice(home.length + 1))
+        );
+      })
+    ) {
+      throw unreadable();
     }
-    return workspace ? { home, workspace } : { home };
+    return workspace ? { home, workspace: workspace.root } : { home };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;
     return null;
   }
+}
+
+function normalizeSourcePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/\/+$/, "");
 }
 
 /** Pushes data in small chunks, so a cap is noticed before much is inflated. */
