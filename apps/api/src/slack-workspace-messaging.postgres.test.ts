@@ -15,7 +15,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const postgres = process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe : describe.skip;
 
 postgres("installed Slack through the durable TeamChat bridge", () => {
-  it("routes one verified DM into a run and posts its reply to the same workspace", async () => {
+  it("routes verified DMs, recovers their replies, and orders each conversation independently", async () => {
     const db = createDb(databaseUrl!);
     const org = randomUUID();
     const spaceId = randomUUID();
@@ -202,6 +202,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         installedSlack: { acceptAfter: installed.acceptAfter, isAvailable: async () => true },
       });
       const reserve = bridge as unknown as {
+        dueSlackReplies(botId: string, acceptAfter: Date, now: Date): Promise<string[]>;
         reserveDelivery(id: string): Promise<Date | undefined>;
       };
       await db.prisma.externalMessage.update({
@@ -233,6 +234,31 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         },
       });
       await expect(reserve.reserveDelivery(older.id)).resolves.toBeUndefined();
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
+      await db.prisma.externalMessage.update({
+        where: { id: older.id },
+        data: { nextAttemptAt: new Date(0) },
+      });
+      await expect(reserve.reserveDelivery(older.id)).resolves.toBeInstanceOf(Date);
+      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
+      await db.prisma.externalMessage.update({
+        where: { id: older.id },
+        data: { status: "delivered", runId: null },
+      });
+      await db.prisma.externalMessage.update({
+        where: { id: newer.id },
+        data: { runId: run.id },
+      });
+      const dueReplies = () => reserve.dueSlackReplies(bot.id, installed.acceptAfter, new Date());
+      // Select B before a predecessor enters the pending lane. The reservation
+      // must recheck the predecessor instead of trusting this stale selection.
+      expect(await dueReplies()).toContain(newer.id);
+      const nextAttemptAt = new Date(Date.now() + 60_000);
+      await db.prisma.externalMessage.update({
+        where: { id: older.id },
+        data: { status: "received", nextAttemptAt },
+      });
+      expect(await dueReplies()).not.toContain(newer.id);
       await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
       await db.prisma.externalMessage.createMany({
         data: Array.from({ length: 21 }, (_, index) => ({
@@ -272,21 +298,28 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       );
       expect(await db.prisma.externalMessage.findUnique({ where: { id: older.id } })).toMatchObject(
         {
-          status: "running",
-          nextAttemptAt: older.nextAttemptAt,
+          status: "received",
+          nextAttemptAt,
         },
       );
       await db.prisma.externalMessage.update({
         where: { id: older.id },
-        data: { nextAttemptAt: new Date(0) },
+        data: { status: "queueing" },
       });
-      await expect(reserve.reserveDelivery(older.id)).resolves.toBeInstanceOf(Date);
+      expect(await dueReplies()).not.toContain(newer.id);
       await expect(reserve.reserveDelivery(newer.id)).resolves.toBeUndefined();
+      await (runtime as unknown as { maintain(): Promise<void> }).maintain();
+      expect(sendToThread).toHaveBeenCalledTimes(2);
       await db.prisma.externalMessage.update({
         where: { id: older.id },
-        data: { status: "delivered" },
+        data: { status: "ignored", nextAttemptAt: null },
       });
-      await expect(reserve.reserveDelivery(newer.id)).resolves.toBeInstanceOf(Date);
+      await (runtime as unknown as { maintain(): Promise<void> }).maintain();
+      expect(sendToThread).toHaveBeenCalledTimes(3);
+      expect(sendToThread).toHaveBeenLastCalledWith(
+        expect.objectContaining({ threadId: "slack:DFIXTURE:123", body: "Fixture reply" }),
+        expect.anything(),
+      );
     } finally {
       await runtime.stop();
       await db.prisma.messagingInstallSession.deleteMany({ where: { userId } });
