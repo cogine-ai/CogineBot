@@ -372,7 +372,8 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
   let selectedBot: string | undefined;
   let attemptStatus = "pending";
   let reconnect: { id: string; expectedRevision: number } | undefined;
-  let failNextList = false;
+  let failLists = false;
+  let pauseCalls = 0;
   await page.addInitScript(() => {
     window.open = () => null;
   });
@@ -382,8 +383,7 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
     }),
   );
   await page.route("**/rpc/messaging/installations/list", (route) => {
-    if (failNextList) {
-      failNextList = false;
+    if (failLists) {
       return route.fulfill({ status: 503, json: { message: "Fixture unavailable" } });
     }
     return route.fulfill({
@@ -413,6 +413,7 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
     return route.fulfill({ json: { json: { ok: true } } });
   });
   await page.route("**/rpc/messaging/installations/pause", (route) => {
+    pauseCalls += 1;
     const input = route.request().postDataJSON().json;
     expect(input).toEqual({
       id: "slack-fixture",
@@ -425,6 +426,9 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
         revision: workspace.revision + 1,
         status: input.paused ? "paused" : "active",
       };
+    // Fail every read after the pause is committed. An earlier polling read
+    // must not consume the error meant for this readback.
+    if (input.paused) failLists = true;
     return route.fulfill({ json: { json: { ok: true } } });
   });
   await page.route("**/rpc/messaging/installations/remove", (route) => {
@@ -480,12 +484,13 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
   attemptStatus = "connected";
   await expect(slack.getByText("Waiting for Slack authorization")).toHaveCount(0);
   await captureScreenshot(page, testInfo, "slack-workspace-settings");
-  failNextList = true;
   await slack.getByRole("button", { name: "Pause" }).click();
   await expect(slack.getByRole("button", { name: "Pause" })).toBeDisabled();
   await expect(slack.getByRole("alert")).toContainText("Couldn't load messaging settings");
+  failLists = false;
   await slack.getByRole("button", { name: "Retry" }).click();
   await expect(slack.getByText("Paused", { exact: true })).toBeVisible();
+  expect(pauseCalls).toBe(1);
   await slack.getByRole("button", { name: "Resume" }).click();
   await expect(slack.getByText("Connected", { exact: true })).toBeVisible();
   await slack.getByRole("button", { name: "Disconnect" }).click();
