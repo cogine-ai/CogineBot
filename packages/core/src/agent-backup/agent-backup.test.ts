@@ -144,3 +144,32 @@ it("lists linked Skill dependencies without reading their target or runtime file
   expect(source).not.toContain("private.md");
   expect(JSON.parse(source)).toMatchObject({ incompleteSkills: [path] });
 });
+
+it("uses the one declared internal workspace before an old default directory", () => {
+  const backup = tar({
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: { workspaceDirs: ["/state/custom-main"] },
+      assets: [{ kind: "state", archivePath: "state", sourcePath: "/state" }],
+    }),
+    "backup/state/workspace/SOUL.md": "Stale instructions",
+    "backup/state/custom-main/SOUL.md": "Current instructions",
+  });
+  expect(JSON.parse(encodeAgentBackup(backup)).files).toEqual([
+    { path: "SOUL.md", content: "Current instructions" },
+  ]);
+});
+
+it("rejects an empty declared workspace instead of importing an old default", () => {
+  const backup = tar({
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: { workspaceDirs: ["/state/custom-main"] },
+      assets: [{ kind: "state", archivePath: "state", sourcePath: "/state" }],
+    }),
+    "backup/state/workspace/SOUL.md": "Stale instructions",
+  });
+  expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+});

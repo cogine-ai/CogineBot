@@ -158,7 +158,7 @@ export function renameBackupSkill(content: string, name: string): string {
   if (!line) return content;
   const start = line.index + line[0].indexOf(":") + 1;
   let end = line.index + line[0].length - line[2]!.length;
-  let replacement = ` '${name}'`;
+  let replacement = name.includes("'") ? ` "${name}"` : ` '${name}'`;
   if (/^[|>]/.test(line[1]!)) {
     const rest = body.slice(line.index + line[0].length);
     const continuation = /^(?:\r?\n(?:[ \t]+.*|[ \t]*)(?=\r?\n|$))*/.exec(rest)?.[0] ?? "";

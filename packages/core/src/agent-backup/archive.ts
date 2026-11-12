@@ -498,11 +498,12 @@ function archiveLayout(entries: Entry[]): (path: string) => string | null {
     );
     if (roots) {
       return (path) => {
-        if (path.startsWith(`${roots.home}/`))
-          return `.openclaw/${path.slice(roots.home.length + 1)}`;
         if (roots.workspace && path.startsWith(`${roots.workspace}/`)) {
           return `.openclaw/workspace/${path.slice(roots.workspace.length + 1)}`;
         }
+        if (roots.workspace && path.startsWith(`${roots.home}/workspace/`)) return null;
+        if (path.startsWith(`${roots.home}/`))
+          return `.openclaw/${path.slice(roots.home.length + 1)}`;
         return null;
       };
     }
@@ -537,8 +538,8 @@ function openClawRoots(
     const parsed = JSON.parse(new TextDecoder().decode(manifest.data)) as {
       schemaVersion?: number;
       archiveRoot?: string;
-      paths?: { workspaceDirs?: unknown };
-      assets?: { kind?: string; archivePath?: string }[];
+      paths?: { workspaceDirs?: unknown; stateDir?: unknown };
+      assets?: { kind?: string; archivePath?: string; sourcePath?: string }[];
     };
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
     const folder = manifest.path.slice(0, -"/manifest.json".length);
@@ -578,6 +579,17 @@ function openClawRoots(
       return /^workspace(?:-[^/]+)?\//.test(path.slice(home.length + 1));
     });
     if (workspaces.length > 1 || (workspace && hasInternalWorkspace)) throw unreadable();
+    const declared = Array.isArray(declaredWorkspaceDirs) ? declaredWorkspaceDirs[0] : undefined;
+    const sourcePath = state?.sourcePath ?? parsed.paths?.stateDir;
+    if (typeof declared === "string" && typeof sourcePath === "string") {
+      const statePath = sourcePath.replaceAll("\\", "/").replace(/\/+$/, "");
+      const declaredPath = declared.replaceAll("\\", "/").replace(/\/+$/, "");
+      if (declaredPath.startsWith(`${statePath}/`)) {
+        const internal = safeArchivePath(declaredPath.slice(statePath.length + 1));
+        if (workspace || !internal) throw unreadable();
+        return { home, workspace: `${home}/${internal}` };
+      }
+    }
     return workspace ? { home, workspace } : { home };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;

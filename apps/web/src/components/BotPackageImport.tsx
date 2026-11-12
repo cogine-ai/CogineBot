@@ -99,7 +99,7 @@ export function BotPackageImport({
       if (version === fileGeneration.current && current.current())
         manager.current?.edit({
           source,
-          ...(isAgentBackupUpload(source) ? { includeMemory: false } : {}),
+          includeMemory: false,
         });
     } catch {
       if (version === fileGeneration.current && current.current())

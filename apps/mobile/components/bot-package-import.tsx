@@ -107,7 +107,7 @@ export function NativeBotPackageImport({
       if (valid() && source !== null) {
         manager.current?.edit({
           source,
-          ...(isAgentBackupUpload(source) ? { includeMemory: false } : {}),
+          includeMemory: false,
         });
       }
     } catch {
