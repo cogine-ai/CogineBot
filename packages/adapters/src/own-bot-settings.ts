@@ -6,20 +6,26 @@ import {
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
 import { containsSecret } from "@rakazo/core";
-import type { BotSettingsRow, Prisma, PrismaClient } from "@rakazo/db";
+import type { BotSettingsValuesRow, Prisma, PrismaClient } from "@rakazo/db";
 import {
-  botSettingsSelect,
+  botSettingsValueSelect,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   prepareBotSettingsVersion,
 } from "@rakazo/db";
 import { z } from "zod";
+import { modelCredentialDto } from "./model-connect.js";
 import {
   compatibleThinkingLevels,
-  listHelperModelConnections,
+  defaultCatalogModelId,
+  findConnectedModelCredential,
+  listOwnedModelConnections,
   loadStoredModelSecret,
 } from "./model-selection.js";
+import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
+import { codexLiveModel } from "./pi-codex-catalog.js";
 import { listPiCatalog } from "./pi-models.js";
+import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
 import { createVoiceProvider, isVoiceProviderId, voiceCatalogEntry } from "./voice-factory.js";
 
@@ -78,6 +84,7 @@ const settingsRequestSchema = z.strictObject({
   before: BotSettingsValuesSchema,
   after: BotSettingsValuesSchema,
   modelConnection: modelBinding.optional(),
+  previousModelConnection: z.string().optional(),
   voiceConnection: voiceBinding.optional(),
   voiceLabel: z.string().optional(),
 });
@@ -87,7 +94,11 @@ export const readOwnSettingsRequest = (request: unknown) =>
   settingsRequestSchema.safeParse(request).data;
 
 type Scope = { userId: string; spaceId: string; botId: string; runId: string };
-type SettingsDeps = { prisma: PrismaClient; secretStore: Pick<SecretStore, "load"> };
+type SettingsDeps = {
+  prisma: PrismaClient;
+  secretStore: Pick<SecretStore, "load">;
+  codexCatalog?: CodexLiveCatalog;
+};
 type DefaultModel = { provider?: string | null; id?: string | null; thinkingLevel?: string | null };
 type ModelCredential = NonNullable<Awaited<ReturnType<typeof findDefaultModelCredential>>>;
 
@@ -106,26 +117,25 @@ function matchByName<T>(choices: T[], query: string, keys: (choice: T) => string
 }
 
 async function modelChoices(deps: SettingsDeps, scope: Scope) {
-  const [connections, labels] = await Promise.all([
-    listHelperModelConnections(deps.prisma, deps.secretStore, scope),
-    deps.prisma.userModelCredential.findMany({
-      where: { userId: scope.userId },
-      select: { id: true, label: true, connectionRevision: true },
-    }),
-  ]);
-  const byId = new Map(labels.map((row) => [row.id, row]));
+  const connections = await listOwnedModelConnections(
+    deps.prisma,
+    deps.secretStore,
+    scope,
+    deps.codexCatalog,
+  );
   const catalog = new Map(listPiCatalog().map((row) => [`${row.provider}/${row.id}`, row.label]));
-  return connections.flatMap((connection) => {
-    const row = byId.get(connection.modelCredentialId);
-    return row
-      ? connection.modelIds.map((id) => ({
-          id,
-          provider: connection.provider,
-          name: catalog.get(`${connection.provider}/${id}`) ?? id,
-          connection: row,
-        }))
-      : [];
-  });
+  return connections.flatMap((connection) =>
+    connection.modelIds.map((id) => ({
+      id,
+      provider: connection.provider,
+      name: catalog.get(`${connection.provider}/${id}`) ?? id,
+      connection: {
+        id: connection.modelCredentialId,
+        label: connection.label,
+        connectionRevision: connection.connectionRevision,
+      },
+    })),
+  );
 }
 
 type Choice = Awaited<ReturnType<typeof modelChoices>>[number];
@@ -162,7 +172,7 @@ async function spaceVoices(deps: SettingsDeps, scope: Scope, context: AdapterCon
   const provider = createVoiceProvider(credential.provider);
   const voices = await provider.listVoices(
     await deps.secretStore.load(secret.ciphertext, secret.id),
-    context,
+    { ...context, signal: AbortSignal.any([context.signal, AbortSignal.timeout(8_000)]) },
   );
   return { credential, voices };
 }
@@ -174,64 +184,81 @@ export function resolveOwnVoice(voices: VoiceInfo[], query: string) {
 async function effectiveModel(
   deps: SettingsDeps,
   scope: Scope,
-  bot: BotSettingsRow,
+  bot: BotSettingsValuesRow,
   fallback: DefaultModel,
 ) {
   const overridden = Boolean(bot.modelProvider && bot.modelId);
   const credential = overridden
-    ? await deps.prisma.userModelCredential.findFirst({
-        where: {
-          id: bot.modelCredentialId ?? "",
-          userId: scope.userId,
-          provider: bot.modelProvider!,
-        },
-      })
+    ? await findConnectedModelCredential(
+        deps.prisma,
+        scope,
+        bot.modelProvider!,
+        bot.modelId,
+        bot.modelCredentialId,
+      )
     : await findDefaultModelCredential(deps.prisma, scope);
+  const id = overridden
+    ? bot.modelId
+    : (credential?.defaultModel ??
+      (credential && defaultCatalogModelId(credential.provider)) ??
+      fallback.id);
+  const inherited = credential?.defaultModel === id ? credential?.thinkingLevel : undefined;
   return {
     provider: overridden ? bot.modelProvider : (credential?.provider ?? fallback.provider),
-    id: overridden
-      ? bot.modelId
-      : ((credential as ModelCredential | null)?.defaultModel ?? fallback.id),
+    id,
     credential,
     source: overridden ? "bot" : credential ? "space" : "system",
-    thinkingLevel:
-      bot.thinkingLevel ??
-      (overridden
-        ? null
-        : ((credential as ModelCredential | null)?.thinkingLevel ?? fallback.thinkingLevel)),
+    thinkingLevel: bot.thinkingLevel ?? inherited ?? (overridden ? null : fallback.thinkingLevel),
   };
 }
 
-async function allowedThinking(
+async function thinkingSettings(
   deps: SettingsDeps,
   scope: Scope,
   provider: string | null | undefined,
   model: string | null | undefined,
-  credential: {
-    id: string;
-    secretId: string;
-    provider: string;
-    label: string;
-    connectionRevision: number;
-  } | null,
+  credential: ModelCredential | null,
 ) {
-  if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID || !model)
-    return (
-      listPiCatalog().find((row) => row.provider === provider && row.id === model)
-        ?.thinkingLevels ?? ["off"]
-    );
-  if (!credential) return ["off"];
+  const catalogLevels = listPiCatalog().find(
+    (row) => row.provider === provider && row.id === model,
+  )?.thinkingLevels;
+  if (
+    !model ||
+    !credential ||
+    (provider !== OPENAI_COMPATIBLE_PROVIDER_ID && provider !== CHATGPT_OAUTH_PROVIDER)
+  )
+    return { allowed: catalogLevels ?? ["off"], connectionDefault: undefined };
   const stored = await loadStoredModelSecret(
     deps.prisma,
     deps.secretStore,
     scope.userId,
     credential.secretId,
   );
-  return compatibleThinkingLevels(
-    { ...credential, defaultModel: model, isDefault: false },
-    stored.status === "loaded" ? stored.plaintext : undefined,
-    model,
-  ).allowed;
+  if (provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+    const plaintext = stored.status === "loaded" ? stored.plaintext : undefined;
+    return {
+      allowed: compatibleThinkingLevels(credential, plaintext, model).allowed,
+      connectionDefault: plaintext
+        ? modelCredentialDto(credential, plaintext).thinkingLevel
+        : undefined,
+    };
+  }
+  const live =
+    stored.status === "loaded"
+      ? await codexLiveModel(
+          deps.codexCatalog,
+          scope.userId,
+          parseModelSecret(stored.plaintext),
+          model,
+        )
+      : undefined;
+  const levels = live?.reasoningEfforts.filter(
+    (level) => ThinkingLevelSchema.safeParse(level).success,
+  );
+  return {
+    allowed: levels?.length ? levels : (catalogLevels ?? ["off"]),
+    connectionDefault: undefined,
+  };
 }
 
 export async function readOwnBotSettings(
@@ -245,7 +272,7 @@ export async function readOwnBotSettings(
   const bot = await deps.prisma.bot.findFirst({
     where: { id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null },
     select: {
-      ...botSettingsSelect,
+      ...botSettingsValueSelect,
       title: true,
       description: true,
       color: true,
@@ -256,12 +283,23 @@ export async function readOwnBotSettings(
   const [active, choices, voice] = await Promise.all([
     effectiveModel(deps, scope, bot, fallback),
     modelChoices(deps, scope),
-    spaceVoices(deps, scope, context).catch(() => null),
+    query || connection
+      ? Promise.resolve(null)
+      : spaceVoices(deps, scope, context).catch(() => null),
   ]);
   const selection = connection
     ? choices.filter((choice) => choice.connection.label.toLowerCase() === connection.toLowerCase())
     : choices;
   const id = bot.voiceId ?? voice?.credential.voiceId ?? null;
+  const models = limitedModelChoices(query ? matchByName(selection, query, modelKeys) : selection);
+  if (query || connection) return { models };
+  const thinking = await thinkingSettings(
+    deps,
+    scope,
+    active.provider,
+    active.id,
+    active.credential,
+  );
   return {
     name: bot.name,
     title: bot.title,
@@ -275,14 +313,22 @@ export async function readOwnBotSettings(
       id: active.id,
       connection: active.credential?.label,
       source: active.source,
-      available: active.source === "system" ? Boolean(active.id) : Boolean(active.credential),
+      available:
+        active.source === "system"
+          ? Boolean(active.id)
+          : choices.some(
+              (choice) =>
+                choice.id === active.id &&
+                choice.provider === active.provider &&
+                choice.connection.id === active.credential?.id,
+            ),
     },
     thinkingLevel: {
-      value: active.thinkingLevel ?? "default",
+      value: active.thinkingLevel ?? thinking.connectionDefault ?? "default",
       source: bot.thinkingLevel === null ? (active.source === "space" ? "space" : "model") : "bot",
-      allowed: await allowedThinking(deps, scope, active.provider, active.id, active.credential),
+      allowed: thinking.allowed,
     },
-    models: limitedModelChoices(query ? matchByName(selection, query, modelKeys) : selection),
+    models,
     voice: {
       id,
       label: voice?.voices.find((option) => option.id === id)?.label,
@@ -291,7 +337,11 @@ export async function readOwnBotSettings(
       available: Boolean(id && voice?.voices.some((option) => option.id === id)),
       choices: voice?.voices.slice(0, 10).map(({ id, label }) => ({ id, label })) ?? [],
     },
-    readAloud: { value: bot.autoSpeak, source: "bot" },
+    readAloud: {
+      value: bot.autoSpeak,
+      source: "bot",
+      playback: voice ? "provider_or_device" : "device_if_enabled",
+    },
   };
 }
 
@@ -306,7 +356,7 @@ export async function prepareOwnBotSettings(
 ) {
   const bot = await deps.prisma.bot.findFirst({
     where: { id: scope.botId, userId: scope.userId, spaceId: scope.spaceId, archivedAt: null },
-    select: botSettingsSelect,
+    select: botSettingsValueSelect,
   });
   if (!bot) return { error: "This Bot is unavailable." };
   if (args.instructions !== undefined) {
@@ -319,10 +369,12 @@ export async function prepareOwnBotSettings(
   }
   const patch: BotSettingsValues = { instructions: args.instructions, autoSpeak: args.readAloud };
   let modelConnection: OwnSettingsRequest["modelConnection"];
+  let previousModelConnection: string | undefined;
   let voiceConnection: OwnSettingsRequest["voiceConnection"];
   let voiceLabel: string | undefined;
   if (args.model !== undefined || args.thinkingLevel !== undefined) {
     let active = await effectiveModel(deps, scope, bot, fallback);
+    previousModelConnection = active.credential?.label;
     if (args.model?.toLowerCase() === "default") {
       Object.assign(patch, { modelProvider: null, modelId: null, modelCredentialId: null });
       active = await effectiveModel(
@@ -374,7 +426,7 @@ export async function prepareOwnBotSettings(
         usesSpaceDefault: active.source === "space",
         model: active.id,
       };
-    const allowed = await allowedThinking(
+    const { allowed } = await thinkingSettings(
       deps,
       scope,
       active.provider,
@@ -394,24 +446,19 @@ export async function prepareOwnBotSettings(
       patch.thinkingLevel = null;
   }
   if (args.voice?.toLowerCase() === "default") patch.voiceId = null;
-  if ((args.voice && patch.voiceId !== null) || args.readAloud === true) {
+  if (args.voice && patch.voiceId !== null) {
     const loaded = await spaceVoices(deps, scope, context).catch(() => null);
     if (!loaded) return { error: "Connect an available voice provider in Voice settings first." };
     const { credential, voices } = loaded;
-    if (args.voice && patch.voiceId !== null) {
-      const matches = resolveOwnVoice(voices, args.voice);
-      const [voice] = matches;
-      if (!voice || matches.length !== 1)
-        return {
-          error: voice ? "Several voices match. Ask which voice to use." : "No voice matches.",
-          voices: (voice ? matches : voices).slice(0, 10).map(({ id, label }) => ({ id, label })),
-        };
-      patch.voiceId = voice.id;
-      voiceLabel = voice.label;
-    }
-    const active = patch.voiceId === undefined ? bot.voiceId : patch.voiceId;
-    if (args.readAloud && !voices.some((voice) => voice.id === (active ?? credential.voiceId)))
-      return { error: "Pick an available voice in Voice settings first." };
+    const matches = resolveOwnVoice(voices, args.voice);
+    const [voice] = matches;
+    if (!voice || matches.length !== 1)
+      return {
+        error: voice ? "Several voices match. Ask which voice to use." : "No voice matches.",
+        voices: (voice ? matches : voices).slice(0, 10).map(({ id, label }) => ({ id, label })),
+      };
+    patch.voiceId = voice.id;
+    voiceLabel = voice.label;
     voiceConnection = {
       id: credential.id,
       provider: credential.provider,
@@ -431,6 +478,7 @@ export async function prepareOwnBotSettings(
       before: version.before,
       after: version.after,
       ...(modelConnection && { modelConnection }),
+      ...(previousModelConnection && { previousModelConnection }),
       ...(voiceConnection && { voiceConnection }),
       ...(voiceLabel && { voiceLabel }),
     }),

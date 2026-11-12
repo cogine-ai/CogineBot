@@ -1,5 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { BotSettingsChangeSchema, BotSettingsRevisionSchema } from "@rakazo/contracts";
+import { BotSettingsChangeSchema } from "@rakazo/contracts";
 import { escapeApprovalBidi, redactSecrets } from "@rakazo/core";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { Prisma, PrismaClient, RunLease } from "@rakazo/db";
@@ -15,7 +15,6 @@ import {
   writeBotSettingsVersion,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { z } from "zod";
 import { completeExternalEffect } from "./approval-effect.js";
 import type { OwnSettingsRequest } from "./own-bot-settings.js";
 import {
@@ -25,15 +24,6 @@ import {
 } from "./own-bot-settings.js";
 import { persistMessageInTransaction } from "./run-messages.js";
 
-export const BotSettingsRunSnapshot = z.object({
-  instructions: z.string(),
-  revision: BotSettingsRevisionSchema,
-  modelProvider: z.string(),
-  modelId: z.string(),
-  modelCredentialId: z.string().nullable(),
-  thinkingLevel: z.string().nullable(),
-});
-
 export function ownSettingsApprovalBlock(
   effectId: string,
   request: OwnSettingsRequest,
@@ -42,7 +32,11 @@ export function ownSettingsApprovalBlock(
   const clean = (value: string) => escapeApprovalBidi(redactSecrets(value, secrets));
   const changes = describeBotSettingsChange(request.before, request.after).map((change) => ({
     ...change,
-    before: clean(change.before),
+    before: clean(
+      change.field === "model" && request.before.modelId && request.previousModelConnection
+        ? `${change.before} · ${request.previousModelConnection}`
+        : change.before,
+    ),
     after: clean(
       change.field === "model" && request.after.modelId && request.modelConnection
         ? `${change.after} · ${request.modelConnection.label}`
@@ -57,6 +51,18 @@ export function ownSettingsApprovalBlock(
     reviewMode: "screen",
     status: "pending",
     approvalEffectId: effectId,
+    detail: [
+      `This Bot · ${clean(request.botName)}`,
+      ...changes.map(
+        ({ field, before, after }) => `${field}\nBefore: ${before || "—"}\nAfter: ${after || "—"}`,
+      ),
+      ...(changes.some(({ field }) => field !== "voice" && field !== "readAloud")
+        ? ["Applies to new runs."]
+        : []),
+      ...(changes.some(({ field }) => field === "voice" || field === "readAloud")
+        ? ["Applies to new playback."]
+        : []),
+    ].join("\n\n"),
     botSettings: {
       botId: request.botId,
       botName: clean(request.botName),
@@ -165,6 +171,13 @@ export async function commitOwnBotSettings(input: {
 
       const settle = async (result: unknown) => {
         signal.throwIfAborted();
+        if (
+          !(await tx.run.findFirst({
+            where: { id: run.id, leaseExpiresAt: { gt: new Date() } },
+            select: { id: true },
+          }))
+        )
+          throw new Error("Bot settings lease expired during commit");
         if (!(await completeExternalEffect(tx, effectId, "approved", result)))
           throw new Error("Bot settings approval changed during commit");
         return result;
@@ -210,8 +223,11 @@ export async function commitOwnBotSettings(input: {
         );
         return { message, result: await settle(failure) };
       }
-      const written = await writeBotSettingsVersion(tx, row, version);
       const display = ownSettingsApprovalBlock(effectId, request, secrets).botSettings;
+      const written = await writeBotSettingsVersion(tx, row, {
+        ...version,
+        changes: display.changes.filter(({ field }) => field !== "instructions"),
+      });
       const message = await persistMessageInTransaction(
         tx,
         run,

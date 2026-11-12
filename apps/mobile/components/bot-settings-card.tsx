@@ -97,6 +97,12 @@ export function BotSettingsCard({
     voice: t("Voice"),
     readAloud: t("Read aloud"),
   };
+  const sources = {
+    bot: t("This Bot"),
+    space: t("This Space"),
+    model: t("Model default"),
+    system: t("System default"),
+  };
   async function answer(choice: "allow" | "deny") {
     if (activeAnswer.current) return;
     activeAnswer.current = true;
@@ -221,7 +227,7 @@ export function BotSettingsCard({
           <Text style={{ color: tokens.foreground, fontWeight: "600" }}>
             {t("Current settings")}
           </Text>
-          {history.current.map(({ field, after }) =>
+          {history.current.map(({ field, after, source }) =>
             field === "instructions" ? (
               <SettingsChange
                 key={field}
@@ -231,7 +237,7 @@ export function BotSettingsCard({
               />
             ) : (
               <Text key={field} style={{ color: tokens.foreground }}>
-                {labels[field]} · {after}
+                {labels[field]} · {after} · {sources[source]}
               </Text>
             ),
           )}

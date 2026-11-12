@@ -426,11 +426,19 @@ export async function codexLiveModel(
   modelId: string,
   opts?: CodexLiveReadOptions,
 ): Promise<CodexCatalogModel | undefined> {
+  const models = await readCodexLiveModels(catalog, userId, secret, opts);
+  return models?.find((model) => model.slug === modelId);
+}
+
+export async function readCodexLiveModels(
+  catalog: CodexLiveCatalog | undefined,
+  userId: string,
+  secret: StoredModelSecret,
+  opts?: CodexLiveReadOptions,
+) {
   if (!catalog || secret.kind !== "oauth") return undefined;
   const account = codexAccountHandle(secret.credential, opts?.onExpiredToken);
-  if (!account) return undefined;
-  const models = await catalog.read(userId, account, opts).catch(() => undefined);
-  return models?.find((model) => model.slug === modelId);
+  return account ? catalog.read(userId, account, opts).catch(() => undefined) : undefined;
 }
 
 export async function codexLiveListsModel(

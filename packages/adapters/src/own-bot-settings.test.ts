@@ -9,7 +9,7 @@ import {
 const mocked = vi.hoisted(() => ({ voices: vi.fn(), connections: vi.fn() }));
 vi.mock("./model-selection.js", async (load) => ({
   ...(await load<typeof import("./model-selection.js")>()),
-  listHelperModelConnections: mocked.connections,
+  listOwnedModelConnections: mocked.connections,
 }));
 vi.mock("./voice-factory.js", async (load) => ({
   ...(await load<typeof import("./voice-factory.js")>()),
@@ -53,7 +53,13 @@ const bot = {
   voiceId: null,
   autoSpeak: false,
 };
-const connection = { id: "one", label: "Personal", provider: "fixture", connectionRevision: 2 };
+const connection = {
+  id: "one",
+  label: "Personal",
+  provider: "fixture",
+  connectionRevision: 2,
+  preferences: [],
+};
 const other = { ...connection, id: "two", label: "Team" };
 
 function fixture() {
@@ -61,9 +67,17 @@ function fixture() {
     {
       provider: "fixture",
       modelCredentialId: connection.id,
+      connectionRevision: connection.connectionRevision,
+      label: connection.label,
       modelIds: ["checklist", ...Array.from({ length: 16 }, (_, i) => `extra-${i}`)],
     },
-    { provider: "fixture", modelCredentialId: other.id, modelIds: ["checklist"] },
+    {
+      provider: "fixture",
+      modelCredentialId: other.id,
+      connectionRevision: other.connectionRevision,
+      label: other.label,
+      modelIds: ["checklist"],
+    },
   ]);
   mocked.voices.mockResolvedValue([
     { id: "one", label: "Alex" },

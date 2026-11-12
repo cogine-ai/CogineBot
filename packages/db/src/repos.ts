@@ -655,6 +655,7 @@ export function createRepos(prisma: PrismaClient) {
           userId: actor.userId,
           archivedAt: options.archived ? { not: null } : null,
         },
+        omit: { settingsHistory: true },
         include: {
           thread: {
             include: {

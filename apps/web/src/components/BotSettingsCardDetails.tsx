@@ -94,6 +94,12 @@ export function BotSettingsCardDetails({
     voice: t`Voice`,
     readAloud: t`Read aloud`,
   };
+  const sources = {
+    bot: t`This Bot`,
+    space: t`This Space`,
+    model: t`Model default`,
+    system: t`System default`,
+  };
   return (
     <div className="mt-2 space-y-2" data-testid="bot-settings-card-details">
       <p className="text-sm text-muted-foreground">
@@ -162,17 +168,20 @@ export function BotSettingsCardDetails({
           <h3 className="font-medium">
             <Trans>Current settings</Trans>
           </h3>
-          {history.current.map(({ field, after }) =>
+          {history.current.map(({ field, after, source }) =>
             field === "instructions" ? (
               <details key={field}>
-                <summary className="cursor-pointer">{labels[field]}</summary>
+                <summary className="cursor-pointer">
+                  {labels[field]} · {sources[source]}
+                </summary>
                 <p className="max-h-44 overflow-auto whitespace-pre-wrap break-words" dir="auto">
                   {after || "—"}
                 </p>
               </details>
             ) : (
               <p key={field}>
-                {labels[field]} · <bdi>{after}</bdi>
+                {labels[field]} · <bdi>{after}</bdi>{" "}
+                <span className="text-muted-foreground">· {sources[source]}</span>
               </p>
             ),
           )}

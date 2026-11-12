@@ -2405,25 +2405,86 @@ export function createRouter(deps: RouterDeps) {
         await repos.reorderBots(context.actor, input.botIds);
         return { ok: true as const };
       }),
-      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) =>
-        botSettingsHistory(await repos.getBot(context.actor, input.botId)),
-      ),
+      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) => {
+        const actor = context.actor;
+        const bot = await repos.getBot(actor, input.botId);
+        const [setup, voice, bound] = await Promise.all([
+          modelSetup(deps, actor),
+          findDefaultVoiceCredential(deps.prisma, actor),
+          bot.modelProvider && bot.modelId && bot.modelCredentialId
+            ? findBoundModelCredential(deps.prisma, actor, {
+                provider: bot.modelProvider,
+                modelId: bot.modelId,
+                modelCredentialId: bot.modelCredentialId,
+              })
+            : null,
+        ]);
+        const defaultProvider =
+          setup.credential?.provider ??
+          (setup.platformAllowed || setup.hasLocal
+            ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
+            : null);
+        const defaultModel =
+          setup.credential?.defaultModel ??
+          (setup.credential
+            ? defaultCatalogModelId(setup.credential.provider)
+            : setup.platformAllowed || setup.hasLocal
+              ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
+              : null);
+        const provider = bot.modelProvider ?? defaultProvider;
+        const modelId = bot.modelId ?? defaultModel;
+        const label = (bot.modelId ? bound : setup.credential)?.label;
+        const inherited = bound ?? setup.credential;
+        return botSettingsHistory(bot, {
+          model: {
+            after:
+              provider && modelId
+                ? `${provider}/${modelId}${label ? ` · ${label}` : ""}`
+                : "Unavailable",
+            source: bot.modelId ? "bot" : setup.credential ? "space" : "system",
+          },
+          thinkingLevel: {
+            after:
+              bot.thinkingLevel ??
+              (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
+              "Model default",
+            source: bot.thinkingLevel
+              ? "bot"
+              : inherited?.defaultModel === modelId && inherited?.thinkingLevel
+                ? "space"
+                : "model",
+          },
+          voice: {
+            after: bot.voiceId ?? voice?.voiceId ?? "Unavailable",
+            source: bot.voiceId ? "bot" : voice ? "space" : "system",
+          },
+        });
+      }),
       undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
         const actor = context.actor;
         const bot = await repos.getBot(actor, input.botId);
         if (!bot.thread) throw new IsolationError();
-        const version = botSettingsVersions(bot).find(({ id }) => id === input.versionId);
+        const versions = botSettingsVersions(bot);
+        const replay = versions.some((version) => version.undo?.clientNonce === input.clientNonce);
+        const version = replay ? undefined : versions.find(({ id }) => id === input.versionId);
         const previous = version?.before;
-        const model = previous?.modelProvider
-          ? await prepareExistingModelAuth(deps, actor, previous, codexCatalog).catch((error) => {
-              if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE") return null;
-              throw error;
-            })
-          : undefined;
-        const voice =
-          previous?.voiceId || previous?.autoSpeak === true
-            ? await loadDefaultVoiceCredential(deps, actor)
+        const target = previous && {
+          modelProvider:
+            previous.modelProvider === undefined ? bot.modelProvider : previous.modelProvider,
+          modelId: previous.modelId === undefined ? bot.modelId : previous.modelId,
+          modelCredentialId:
+            previous.modelCredentialId === undefined
+              ? bot.modelCredentialId
+              : previous.modelCredentialId,
+        };
+        const model =
+          target?.modelProvider && (previous?.modelProvider || previous?.thinkingLevel)
+            ? await prepareExistingModelAuth(deps, actor, target, codexCatalog).catch((error) => {
+                if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE") return null;
+                throw error;
+              })
             : undefined;
+        const voice = previous?.voiceId ? await loadDefaultVoiceCredential(deps, actor) : undefined;
         const restoreVoiceId = previous?.voiceId === undefined ? bot.voiceId : previous.voiceId;
         const availableVoice =
           voice &&
@@ -2440,13 +2501,13 @@ export function createRouter(deps: RouterDeps) {
           request: input,
           notify: (threadId, seq) => deps.events.notify(threadId, seq),
           validate: async (tx, patch) => {
-            if (patch.modelProvider) {
-              if (!model || !patch.modelCredentialId) return false;
+            if (target?.modelProvider && (patch.modelProvider || patch.thinkingLevel)) {
+              if (!model || !target.modelCredentialId) return false;
               const checked = await validateModelBinding(
                 tx,
                 deps.secrets,
                 actor,
-                patch,
+                { ...target, expectedRevision: model.connectionRevision },
                 model,
               ).catch((error) => {
                 if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE")
@@ -2454,8 +2515,46 @@ export function createRouter(deps: RouterDeps) {
                 throw error;
               });
               if (!checked) return false;
+              if (patch.thinkingLevel && target.modelId) {
+                const allowed =
+                  checked.credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+                    ? compatibleThinkingLevels(
+                        checked.credential,
+                        checked.plaintext,
+                        target.modelId,
+                      ).allowed
+                    : (listPiCatalog().find(
+                        ({ provider, id }) =>
+                          provider === target.modelProvider && id === target.modelId,
+                      )?.thinkingLevels ?? ["off"]);
+                if (!allowed.includes(patch.thinkingLevel)) return false;
+              }
+            } else if (patch.thinkingLevel) {
+              const defaultConnection = await findDefaultModelCredential(tx, actor);
+              const provider = defaultConnection?.provider ?? deps.env.defaultProvider;
+              const id = defaultConnection?.defaultModel ?? deps.env.defaultModel;
+              const allowed = listPiCatalog().find(
+                (entry) => entry.provider === provider && entry.id === id,
+              )?.thinkingLevels ?? ["off"];
+              if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && defaultConnection && id) {
+                const loaded = await loadStoredModelSecret(
+                  tx,
+                  deps.secrets,
+                  actor.userId,
+                  defaultConnection.secretId,
+                );
+                if (
+                  loaded.status !== "loaded" ||
+                  !compatibleThinkingLevels(
+                    defaultConnection,
+                    loaded.plaintext,
+                    id,
+                  ).allowed.includes(patch.thinkingLevel)
+                )
+                  return false;
+              } else if (!allowed.includes(patch.thinkingLevel)) return false;
             }
-            if (patch.voiceId || patch.autoSpeak === true) {
+            if (patch.voiceId) {
               const currentVoice = await findDefaultVoiceCredential(tx, actor);
               if (
                 !voice ||
@@ -8924,6 +9023,7 @@ async function prepareBoundModelAuth(
       throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
     return {
       modelCredentialId: credential.id,
+      connectionRevision: credential.connectionRevision,
       secretId: credential.secretId,
       ciphertext: prepared.ref,
       plaintext,

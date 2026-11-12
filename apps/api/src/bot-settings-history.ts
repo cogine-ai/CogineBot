@@ -1,4 +1,9 @@
-import type { Actor, BotSettingsValues, UndoBotSettingsInput } from "@rakazo/contracts";
+import type {
+  Actor,
+  BotSettingsHistorySchema,
+  BotSettingsValues,
+  UndoBotSettingsInput,
+} from "@rakazo/contracts";
 import type { BotSettingsRow, Prisma, PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
@@ -14,18 +19,35 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
-export function botSettingsHistory(row: BotSettingsRow) {
+type History = ReturnType<typeof BotSettingsHistorySchema.parse>;
+type Setting = History["current"][number];
+
+export function botSettingsHistory(
+  row: BotSettingsRow,
+  effective: Partial<Record<Setting["field"], Pick<Setting, "after" | "source">>> = {},
+): History {
+  const sources = {
+    instructions: "bot",
+    model: row.modelId ? "bot" : "space",
+    thinkingLevel: row.thinkingLevel ? "bot" : "model",
+    voice: row.voiceId ? "bot" : "space",
+    readAloud: "bot",
+  } as const;
   return {
     revision: row.settingsRevision,
     current: describeBotSettingsChange({}, botSettingsValues(row)).map(({ field, after }) => ({
       field,
       after,
+      source: sources[field],
+      ...effective[field],
     })),
     versions: botSettingsVersions(row).map((version) => ({
       id: version.id,
       revision: version.revision,
       createdAt: version.createdAt,
-      changes: describeBotSettingsChange(version.before, version.after),
+      changes: describeBotSettingsChange(version.before, version.after).map(
+        (change) => version.changes?.find(({ field }) => field === change.field) ?? change,
+      ),
       canUndo: version.revision === row.settingsRevision,
     })),
   };
@@ -70,7 +92,15 @@ export async function undoBotSettings(input: {
         if (!(await validate(tx, latest.before))) return conflict("connection");
         const next = prepareBotSettingsVersion(row, latest.before, { versionId, clientNonce });
         if (!next) return conflict("changed");
-        const written = await writeBotSettingsVersion(tx, row, next);
+        const changes = latest.changes?.map(({ field, before, after }) => ({
+          field,
+          before: after,
+          after: before,
+        }));
+        const written = await writeBotSettingsVersion(tx, row, {
+          ...next,
+          ...(changes && { changes }),
+        });
         const event = await appendEventInTransaction(tx, {
           spaceId: actor.spaceId,
           threadId,

@@ -83,6 +83,7 @@ import {
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   BotSecretName,
+  BotSettingsRunSnapshot,
   botSecretSubmissionSchema,
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
@@ -464,7 +465,6 @@ import {
   readOwnSettingsRequest,
 } from "./own-bot-settings.js";
 import {
-  BotSettingsRunSnapshot,
   commitOwnBotSettings,
   lockOwnSettingsRun,
   ownSettingsApprovalBlock,
@@ -4377,6 +4377,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           deps.prisma.bot.findUniqueOrThrow({
             where: { id: run.botId },
             include: { computer: true },
+            omit: { settingsHistory: true },
           }),
           deps.prisma.thread.findUniqueOrThrow({ where: { id: run.threadId } }),
           loadRunHistoryMessages(deps.prisma, run, LEGACY_HISTORY_WINDOW_SIZE, channelId),
@@ -4831,6 +4832,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
           return;
         }
+        if (
+          !quotaTarget &&
+          settingsSnapshot?.connectionRevision != null &&
+          overrideCredential?.connectionRevision !== settingsSnapshot.connectionRevision
+        ) {
+          await failRunBeforeModel("The model connection for this run changed. Start a new run.");
+          return;
+        }
         if (pinError) {
           await failRunBeforeModel(pinError);
           return;
@@ -4891,16 +4900,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             Boolean(thread.externalConversationId || messagingChannelRun || channelId),
           );
         const initialSettingsSnapshot =
-          !settingsSnapshot &&
-          fence === 1 &&
-          ownsDirectSettings &&
-          typeof bot.settingsRevision === "number"
+          !settingsSnapshot && fence === 1 && typeof bot.settingsRevision === "number"
             ? {
                 instructions: bot.instructions,
                 revision: bot.settingsRevision,
                 modelProvider: runModelProvider,
                 modelId: runModelId,
                 modelCredentialId: resolved.modelCredentialId,
+                connectionRevision: credential?.connectionRevision ?? null,
                 thinkingLevel: thinkingLevel ?? null,
               }
             : undefined;
@@ -6476,6 +6483,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   error: "Bot settings are available from the owner's direct chat.",
                   unchanged: true,
                 };
+              if (!(await canReadMyChats()))
+                return { error: "This Bot's settings are unavailable.", unchanged: true };
               const options = ownBotSettingsArgs.safeParse(args);
               if (!options.success || args.bot_id !== undefined)
                 return {
@@ -6515,7 +6524,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   runSecrets,
                 );
-                if (!("request" in prepared)) return prepared;
+                if (!("request" in prepared)) {
+                  if ("voices" in prepared && prepared.voices?.length) trust.state.tainted = true;
+                  return prepared;
+                }
                 ownSettings = prepared.request;
               } else {
                 if (Object.keys(args).some((key) => key !== "modelQuery" && key !== "connection"))
@@ -6532,6 +6544,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   options.data.modelQuery,
                   options.data.connection,
                 );
+                if ("voice" in result && result.voice?.choices.length) trust.state.tainted = true;
                 return redactConnectorPayload(result, runSecrets);
               }
               if (ownSettings) effectRequest = ownSettings;
@@ -10547,6 +10560,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().warn("Backup models could not be loaded", { runId, error });
           }
         }
+        const fallbackConnectionRevisions = new Map<string, number | null>();
         const fallbackModelKeys = new Set(
           fallbackModels
             .filter(
@@ -10694,7 +10708,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     const key = JSON.stringify([provider, modelId, modelCredentialId ?? null]);
                     if (!fallbackModelKeys.has(key))
                       throw new Error("Backup model is not selected");
-                    return resolveConnectedModel(
+                    const resolvedFallback = await resolveConnectedModel(
                       { userId: run.userId, spaceId: run.spaceId },
                       provider,
                       modelId,
@@ -10702,6 +10716,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       true,
                       modelCredentialId ?? null,
                     );
+                    fallbackConnectionRevisions.set(
+                      key,
+                      resolvedFallback.quotaConnectionRevision ?? null,
+                    );
+                    return resolvedFallback;
                   }
                 : undefined,
               onModelChange: async (provider, modelId, modelCredentialId) => {
@@ -10728,6 +10747,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                             modelProvider: provider,
                             modelId,
                             modelCredentialId: modelCredentialId ?? null,
+                            connectionRevision:
+                              fallbackConnectionRevisions.get(
+                                JSON.stringify([provider, modelId, modelCredentialId ?? null]),
+                              ) ?? null,
                           },
                         }
                       : {}),
@@ -12333,7 +12356,7 @@ export function userTurnInstructions(parts: {
     offeredBuiltinClause(
       parts.disabledBuiltinTools,
       "update_bot",
-      "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message. Call update_bot with no fields for this bot's settings and choices. Ask which connection to use when a model name is ambiguous. For instructions, model, thinking, voice, or read-aloud, call update_bot separately from profile changes and wait for the owner's confirmation.",
+      "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message. Call update_bot with no fields for this bot's settings and choices. Ask which connection to use when a model name is ambiguous. For instructions, model, thinking, voice, or read-aloud, call update_bot separately from profile changes and wait for the owner's confirmation. These instructions belong to this Bot. If asked for personal instructions across Bots, explain the scope and point to the instructions editor in each Bot's settings.",
     ),
     offeredBuiltinClause(
       parts.disabledBuiltinTools,

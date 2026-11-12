@@ -5,7 +5,7 @@ import type { Bot, Prisma } from "./client.js";
 
 type SettingsVersion = ReturnType<typeof BotSettingsStoredVersionSchema.parse>;
 
-export const botSettingsSelect = {
+export const botSettingsValueSelect = {
   id: true,
   name: true,
   instructions: true,
@@ -16,12 +16,13 @@ export const botSettingsSelect = {
   voiceId: true,
   autoSpeak: true,
   settingsRevision: true,
-  settingsHistory: true,
 } as const satisfies Prisma.BotSelect;
+export const botSettingsSelect = { ...botSettingsValueSelect, settingsHistory: true } as const;
 
-export type BotSettingsRow = Pick<Bot, keyof typeof botSettingsSelect>;
+export type BotSettingsValuesRow = Pick<Bot, keyof typeof botSettingsValueSelect>;
+export type BotSettingsRow = BotSettingsValuesRow & Pick<Bot, "settingsHistory">;
 
-export function botSettingsValues(row: BotSettingsRow): BotSettingsValues {
+export function botSettingsValues(row: BotSettingsValuesRow): BotSettingsValues {
   return BotSettingsValuesSchema.parse({
     instructions: row.instructions,
     modelProvider: row.modelProvider,
@@ -96,7 +97,7 @@ export async function lockOwnedBotSettings(
 }
 
 export function prepareBotSettingsVersion(
-  row: BotSettingsRow,
+  row: BotSettingsValuesRow,
   patch: BotSettingsValues,
   undo?: SettingsVersion["undo"],
 ): SettingsVersion | undefined {

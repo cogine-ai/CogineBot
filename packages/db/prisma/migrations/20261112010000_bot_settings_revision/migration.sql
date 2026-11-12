@@ -22,3 +22,18 @@ BEFORE UPDATE OF instructions, "modelProvider", "modelId", "modelCredentialId",
 FOR EACH ROW EXECUTE FUNCTION advance_bot_settings_revision();
 
 ALTER TABLE "runs" ADD COLUMN "botSettingsSnapshot" JSONB;
+
+-- Completed and cancelled Runs cannot resume. Drop the live prompt copy.
+CREATE FUNCTION clear_ended_bot_settings_snapshot() RETURNS trigger
+LANGUAGE plpgsql AS $settings_snapshot$
+BEGIN
+  IF NEW.status IN ('completed', 'cancelled') THEN
+    NEW."botSettingsSnapshot" := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$settings_snapshot$;
+
+CREATE TRIGGER clear_ended_bot_settings_snapshot
+BEFORE UPDATE OF status ON "runs"
+FOR EACH ROW EXECUTE FUNCTION clear_ended_bot_settings_snapshot();

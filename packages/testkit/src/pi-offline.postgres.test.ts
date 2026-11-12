@@ -207,6 +207,225 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     }
   }, 30_000);
 
+  it("keeps the approved Pi Run on its model and instructions until the next Run", async () => {
+    const before = "Use the existing checklist.";
+    const after = "Use the approved three-item checklist.";
+    const key = "synthetic-bot-settings-key";
+    const replacement = await startModelEmulator({
+      modelId: "replacement-fixture",
+      apiKey: key,
+      steps: [
+        {
+          expect(request) {
+            expect(request.messages.find(({ role }) => role === "system")?.content).toContain(
+              after,
+            );
+          },
+          response: { type: "text", text: "The new settings are active." },
+        },
+      ],
+    });
+    const initial = await startModelEmulator({
+      modelId: "initial-fixture",
+      apiKey: key,
+      steps: [
+        {
+          expect(request) {
+            expect(request.messages.find(({ role }) => role === "system")?.content).toContain(
+              before,
+            );
+          },
+          response: {
+            type: "tool",
+            id: "read-timezone",
+            name: "update_preferences",
+            arguments: {},
+          },
+        },
+        {
+          expect(request) {
+            const tool = request.messages.findLast(({ role }) => role === "tool");
+            expect(tool?.tool_call_id).toBe("read-timezone");
+            expect(JSON.parse(String(tool?.content))).toMatchObject({ timezone: null });
+          },
+          response: {
+            type: "tool",
+            id: "write-timezone",
+            name: "update_preferences",
+            arguments: { timezone: "Pacific/Auckland" },
+          },
+        },
+        {
+          expect(request) {
+            const tool = request.messages.findLast(({ role }) => role === "tool");
+            expect(tool?.tool_call_id).toBe("write-timezone");
+            expect(JSON.parse(String(tool?.content))).toMatchObject({
+              timezone: "Pacific/Auckland",
+            });
+          },
+          response: { type: "tool", id: "read-settings", name: "update_bot", arguments: {} },
+        },
+        {
+          expect(request) {
+            const tool = request.messages.findLast(({ role }) => role === "tool");
+            expect(tool?.tool_call_id).toBe("read-settings");
+            expect(JSON.parse(String(tool?.content))).toMatchObject({
+              instructions: { source: "bot", value: before },
+              model: { id: "initial-fixture", source: "bot" },
+            });
+          },
+          response: {
+            type: "tool",
+            id: "approve-settings",
+            name: "update_bot",
+            arguments: { instructions: after, model: replacement.model.id },
+          },
+        },
+        {
+          expect(request) {
+            const prompt = String(request.messages.find(({ role }) => role === "system")?.content);
+            expect(prompt).toContain(before);
+            expect(prompt).not.toContain(after);
+            const tool = request.messages.findLast(({ role }) => role === "tool");
+            expect(tool?.tool_call_id).toBe("approve-settings");
+            expect(JSON.parse(String(tool?.content))).toMatchObject({ ok: true });
+          },
+          response: { type: "text", text: "Saved for the next run." },
+        },
+      ],
+    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bot-settings-product-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        realtimeDatabaseUrl: process.env.DATABASE_URL!,
+        authUrl: fixtureOrigin,
+        webOrigin: fixtureOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "pi",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        encryptionKey: "offline-settings-fixture-encryption-key",
+      });
+      stop = handles.stop;
+      const signup = await handles.app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: fixtureOrigin },
+        body: JSON.stringify({
+          email: `settings-${randomUUID()}@example.test`,
+          password: "password12",
+          name: "Settings owner",
+        }),
+      });
+      expect(signup.status).toBeLessThan(400);
+      const cookie = sessionCookieHeader(signup);
+      async function connect(model: typeof initial) {
+        return rpc<ModelCredential>(handles.app, cookie, "models/connect", {
+          provider: model.model.provider,
+          modelId: model.model.id,
+          baseUrl: model.baseUrl,
+          apiKey: key,
+          enabledModelIds: [model.model.id],
+        });
+      }
+      const oldModel = await connect(initial);
+      const newModel = await connect(replacement);
+      const bot = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
+        name: "Checklist",
+        title: "",
+        description: "",
+        instructions: before,
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, bot.id);
+      const botId = bot.id;
+      await rpc(handles.app, cookie, "bots/update", {
+        botId,
+        modelProvider: initial.model.provider,
+        modelId: initial.model.id,
+        modelCredentialId: oldModel.id,
+        expectedRevision: oldModel.connectionRevision,
+      });
+      async function send(text: string) {
+        return (await rpc<{ runId: string }>(handles.app, cookie, "threads/send", { botId, text }))
+          .runId;
+      }
+      async function wait(runId: string, status: string) {
+        await expect
+          .poll(
+            async () => (await handles.prisma.run.findUnique({ where: { id: runId } }))?.status,
+            { timeout: 15_000, interval: 80 },
+          )
+          .toBe(status);
+      }
+      const runId = await send("Change the checklist and model for later runs.");
+      await wait(runId, "waiting_input");
+      const card = await handles.prisma.message.findFirstOrThrow({
+        where: { runId, role: "bot" },
+        orderBy: { seq: "desc" },
+      });
+      const approval = MessageBlockSchema.array()
+        .parse(card.blocks)
+        .find((block) => block.kind === "ask");
+      expect(approval).toMatchObject({
+        reviewMode: "screen",
+        detail: expect.stringContaining(`Before: ${before}\nAfter: ${after}`),
+        botSettings: {
+          botId,
+          changes: expect.arrayContaining([{ field: "instructions", before, after }]),
+        },
+      });
+      await rpc(handles.app, cookie, "threads/answer", {
+        botId,
+        runId,
+        messageId: card.id,
+        answer: "allow",
+      });
+      await wait(runId, "completed");
+      initial.assertComplete();
+      const nextId = await send("Check the active settings.");
+      await wait(nextId, "completed");
+      replacement.assertComplete();
+      const current = await handles.prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+      expect(current).toMatchObject({ modelCredentialId: newModel.id, instructions: after });
+      const history = await rpc<{ revision: number; versions: Array<{ id: string }> }>(
+        handles.app,
+        cookie,
+        "bots/settingsHistory",
+        { botId },
+      );
+      const request = {
+        botId,
+        versionId: history.versions[0]!.id,
+        expectedRevision: history.revision,
+        clientNonce: randomUUID(),
+      };
+      const undo = () => rpc(handles.app, cookie, "bots/undoSettings", request);
+      const replies = await Promise.all([undo(), undo()]);
+      expect(replies).toEqual(
+        Array.from({ length: 2 }, () => ({
+          status: "updated",
+          revision: history.revision + 1,
+        })),
+      );
+      expect(await handles.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+        instructions: before,
+        modelCredentialId: oldModel.id,
+        settingsRevision: history.revision + 1,
+      });
+    } finally {
+      try {
+        await stop?.();
+      } finally {
+        await Promise.all([initial.close(), replacement.close()]);
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    }
+  }, 35_000);
+
   it.each([
     {
       reason: "done" as const,

@@ -17,7 +17,11 @@ import {
   selectConfiguredModel,
 } from "@rakazo/adapters";
 import type { Actor, ImageInputStatus } from "@rakazo/contracts";
-import { runAttemptModelSchema, runQuotaWaitStateSchema } from "@rakazo/contracts";
+import {
+  BotSettingsRunSnapshot,
+  runAttemptModelSchema,
+  runQuotaWaitStateSchema,
+} from "@rakazo/contracts";
 import { MODEL_IMAGE_INPUT_ERROR, MODEL_IMAGE_INPUT_UNKNOWN } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import { findDefaultModelCredential, runAsSystem } from "@rakazo/db";
@@ -29,6 +33,7 @@ export type ImageAdmissionRun = ModelChoice & {
   modelPinned?: boolean;
   leaseFence?: number;
   attemptModel?: unknown;
+  botSettingsSnapshot?: unknown;
   quotaWait?: unknown;
   sourceMessage?: { blocks: unknown } | null;
 };
@@ -58,6 +63,9 @@ export async function resolveThreadImageInput(
   const attempt =
     run?.status === "running" ? runAttemptModelSchema.safeParse(run.attemptModel).data : undefined;
   const activeAttempt = attempt?.leaseFence === run?.leaseFence ? attempt : undefined;
+  const snapshot = quota
+    ? undefined
+    : BotSettingsRunSnapshot.safeParse(run?.botSettingsSnapshot).data;
   // An unpinned Run in setup can still carry the last lease's model columns.
   if (
     run?.status === "running" &&
@@ -120,6 +128,13 @@ export async function resolveThreadImageInput(
     selected = await readSelection();
     if (selected.credential?.id !== id) return { status: "unknown" as const };
   }
+  if (
+    snapshot &&
+    snapshot.modelCredentialId === selected.credential?.id &&
+    snapshot.connectionRevision !== selected.credential.connectionRevision
+  )
+    return { status: "unknown" as const };
+  if (snapshot?.modelCredentialId && !selected.credential) return { status: "unknown" as const };
   const provider = selected.provider;
   const id = selected.id;
   if (!provider || !id) {

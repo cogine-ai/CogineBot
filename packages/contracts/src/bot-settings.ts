@@ -44,7 +44,11 @@ export const BotSettingsCardSchema = z.object({
 
 export const BotSettingsHistorySchema = z.object({
   revision: BotSettingsRevisionSchema,
-  current: z.array(BotSettingsChangeSchema.pick({ field: true, after: true })),
+  current: z.array(
+    BotSettingsChangeSchema.pick({ field: true, after: true }).extend({
+      source: z.enum(["bot", "space", "system", "model"]),
+    }),
+  ),
   versions: z.array(
     z.object({
       id: Id,
@@ -69,6 +73,7 @@ export const BotSettingsStoredVersionSchema = z.object({
   createdAt: z.string(),
   before: BotSettingsValuesSchema,
   after: BotSettingsValuesSchema,
+  changes: z.array(BotSettingsChangeSchema).optional(),
   undo: z.object({ versionId: Id, clientNonce: z.string() }).optional(),
 });
 
@@ -80,3 +85,14 @@ export const UndoBotSettingsResult = z.discriminatedUnion("status", [
     history: BotSettingsHistorySchema,
   }),
 ]);
+
+/** The non-secret model binding and instructions already supplied to the Run. */
+export const BotSettingsRunSnapshot = z.object({
+  instructions: z.string(),
+  revision: BotSettingsRevisionSchema,
+  modelProvider: z.string(),
+  modelId: z.string(),
+  modelCredentialId: Id.nullable(),
+  connectionRevision: z.number().int().nullable(),
+  thinkingLevel: ThinkingLevelSchema.nullable(),
+});

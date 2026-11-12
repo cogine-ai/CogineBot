@@ -1,7 +1,7 @@
 import type { AgentRunRequest, SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
-import { usableModelId } from "@rakazo/contracts";
+import { BotSettingsRunSnapshot, usableModelId } from "@rakazo/contracts";
 import {
   chooseModelCredential,
   findBoundModelCredential,
@@ -21,7 +21,11 @@ import {
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
 } from "./pi-catalog-availability.js";
 import type { CodexLiveCatalog, CodexLiveReadOptions } from "./pi-codex-catalog.js";
-import { codexLiveListsModel } from "./pi-codex-catalog.js";
+import {
+  applyCodexLiveCatalog,
+  codexLiveListsModel,
+  readCodexLiveModels,
+} from "./pi-codex-catalog.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
@@ -407,6 +411,18 @@ export async function listHelperModelConnections(
   secretStore: Pick<SecretStore, "load">,
   actor: Pick<Actor, "userId" | "spaceId">,
 ) {
+  return (await listOwnedModelConnections(prisma, secretStore, actor)).map(
+    ({ label: _label, connectionRevision: _revision, ...choice }) => choice,
+  );
+}
+
+/** The eligible models and the revision they were read from. */
+export async function listOwnedModelConnections(
+  prisma: ModelSelectionClient,
+  secretStore: Pick<SecretStore, "load">,
+  actor: Pick<Actor, "userId" | "spaceId">,
+  catalog?: CodexLiveCatalog,
+) {
   const rows = await prisma.userModelCredential.findMany({
     where: { userId: actor.userId },
     include: {
@@ -438,31 +454,48 @@ export async function listHelperModelConnections(
       }),
     ),
   );
-  return rows.flatMap((row) => {
-    const parsed = parsedById.get(row.secretId);
-    if (!parsed) return [];
-    const modelIds =
-      row.provider === CHATGPT_PLAN_PROVIDER_ID
-        ? parsed.kind === "oauth" && readChatGPTPlanCredential(parsed.credential)
-          ? readChatGPTPlanModels(parsed.credential).map((entry) => entry.id)
-          : []
-        : row.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-          ? parsed.kind === "openai_compatible"
-            ? enabledOpenAiCompatibleModelIds(parsed, row.preferences[0]?.modelId)
+  const choices = await Promise.all(
+    rows.map(async (row) => {
+      const parsed = parsedById.get(row.secretId);
+      if (!parsed) return undefined;
+      let modelIds =
+        row.provider === CHATGPT_PLAN_PROVIDER_ID
+          ? parsed.kind === "oauth" && readChatGPTPlanCredential(parsed.credential)
+            ? readChatGPTPlanModels(parsed.credential).map((entry) => entry.id)
             : []
-          : listAvailablePiCatalog({ [row.provider]: modelCredentialAuthKind(parsed) })
-              .filter((entry) => entry.provider === row.provider)
-              .map((entry) => entry.id);
-    if (modelIds.length === 0) return [];
-    return [
-      {
+          : row.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+            ? parsed.kind === "openai_compatible"
+              ? enabledOpenAiCompatibleModelIds(parsed, row.preferences[0]?.modelId)
+              : []
+            : listAvailablePiCatalog({ [row.provider]: modelCredentialAuthKind(parsed) })
+                .filter((entry) => entry.provider === row.provider)
+                .map((entry) => entry.id);
+      if (catalog && row.provider === CHATGPT_OAUTH_PROVIDER && parsed.kind === "oauth") {
+        const live = await readCodexLiveModels(catalog, actor.userId, parsed);
+        if (live) {
+          const byProvider = { [row.provider]: "oauth" as const };
+          const available = listAvailablePiCatalog(byProvider).filter(
+            (item) => item.provider === row.provider,
+          );
+          modelIds = applyCodexLiveCatalog(
+            available,
+            { byProvider, byModel: {}, secretIdByProvider: { [row.provider]: row.secretId } },
+            new Map([[row.secretId, live]]),
+          ).map(({ id }) => id);
+        }
+      }
+      if (modelIds.length === 0) return undefined;
+      return {
         modelCredentialId: row.id,
+        connectionRevision: row.connectionRevision,
+        label: row.label,
         provider: row.provider,
         modelIds,
         baseUrl: parsed.kind === "openai_compatible" ? parsed.baseUrl : undefined,
-      },
-    ];
-  });
+      };
+    }),
+  );
+  return choices.filter((choice) => choice !== undefined);
 }
 
 /** Bound optional helper hints without truncating the recipient inventory or changing authorization. */
@@ -591,9 +624,14 @@ export type ModelChoice = {
  * routine that follows its bot still follows the bot after a resume.
  */
 export function runModelChoice(
-  run: ModelChoice & { modelPinned?: boolean },
+  run: ModelChoice & { modelPinned?: boolean; botSettingsSnapshot?: unknown },
   bot: ModelChoice,
 ): ModelChoice {
+  const snapshot = BotSettingsRunSnapshot.safeParse(run.botSettingsSnapshot).data;
+  if (snapshot) {
+    const { modelProvider, modelId, modelCredentialId, thinkingLevel } = snapshot;
+    return { modelProvider, modelId, modelCredentialId, thinkingLevel };
+  }
   if (run.modelPinned && run.modelProvider && usableModelId(run.modelId)) {
     return {
       modelProvider: run.modelProvider,
