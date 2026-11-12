@@ -1,5 +1,18 @@
+import type { BotSettingsValues } from "@rakazo/contracts";
+import { BotSettingsValuesSchema } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { appendEventInTransaction, withTransactionRetry } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  IsolationError,
+  lockBotModelSetting,
+  lockOwnedBotSettings,
+  prepareBotSettingsVersion,
+  withTransactionRetry,
+  writeBotSettingsVersion,
+} from "@rakazo/db";
+
+export { lockBotModelSetting } from "@rakazo/db";
+
 import { getLogger } from "@rakazo/logging";
 
 type AppendEvent = typeof appendEventInTransaction;
@@ -9,11 +22,6 @@ export class BotInstructionsConflictError extends Error {
     super("Instructions changed; review the current instructions first.");
     this.name = "BotInstructionsConflictError";
   }
-}
-
-/** Serialize model changes with image admission without locking the Bot row during send. */
-export async function lockBotModelSetting(tx: Prisma.TransactionClient, botId: string) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`bot-model:${botId}`}, 2))::text`;
 }
 
 /**
@@ -31,6 +39,7 @@ export async function commitBotUpdate(
     data: Prisma.BotUncheckedUpdateInput;
     emitBotUpdated: boolean;
     expectedInstructions?: string;
+    settingsOwnerId?: string;
     validate?: (tx: Prisma.TransactionClient) => Promise<void>;
   },
   appendEvent: AppendEvent = appendEventInTransaction,
@@ -66,28 +75,63 @@ export async function commitBotUpdate(
     options.data.modelId !== undefined ||
     options.data.modelCredentialId !== undefined ||
     options.data.thinkingLevel !== undefined;
-  if (!options.emitBotUpdated && !options.validate && !changesModel) return update(options.prisma);
+  const tracked: BotSettingsValues | undefined = options.settingsOwnerId
+    ? BotSettingsValuesSchema.parse({
+        instructions: options.data.instructions,
+        modelProvider: options.data.modelProvider,
+        modelId: options.data.modelId,
+        modelCredentialId: options.data.modelCredentialId,
+        thinkingLevel: options.data.thinkingLevel,
+        voiceId: options.data.voiceId,
+        autoSpeak: options.data.autoSpeak,
+      })
+    : undefined;
+  const tracksChange = tracked && Object.values(tracked).some((value) => value !== undefined);
+  if (!options.emitBotUpdated && !options.validate && !changesModel && !tracksChange)
+    return update(options.prisma);
 
   const save = () =>
     options.prisma.$transaction(
       async (tx) => {
         if (changesModel) await lockBotModelSetting(tx, options.botId);
+        if (options.emitBotUpdated || tracksChange)
+          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${options.threadId} FOR NO KEY UPDATE`;
         await options.validate?.(tx);
-        const updated = await update(tx);
-        const event = options.emitBotUpdated
-          ? await appendEvent(tx, {
-              spaceId: options.spaceId,
-              threadId: options.threadId,
-              botId: options.botId,
-              type: "bot.updated",
-              payload: {
-                botId: updated.id,
-                name: updated.name,
-                title: updated.title,
-                description: updated.description,
-              },
-            })
-          : undefined;
+        const row =
+          tracksChange && options.settingsOwnerId
+            ? await lockOwnedBotSettings(
+                tx,
+                { spaceId: options.spaceId, userId: options.settingsOwnerId },
+                options.botId,
+              )
+            : undefined;
+        if (row === null) throw new IsolationError();
+        if (
+          row &&
+          options.expectedInstructions !== undefined &&
+          row.instructions !== options.expectedInstructions
+        )
+          throw new BotInstructionsConflictError();
+        const version = row && tracked && prepareBotSettingsVersion(row, tracked);
+        const updated =
+          row && version
+            ? await writeBotSettingsVersion(tx, row, version, options.data)
+            : await update(tx);
+        const event =
+          options.emitBotUpdated || version
+            ? await appendEvent(tx, {
+                spaceId: options.spaceId,
+                threadId: options.threadId,
+                botId: options.botId,
+                type: "bot.updated",
+                payload: {
+                  botId: updated.id,
+                  name: updated.name,
+                  title: updated.title,
+                  description: updated.description,
+                },
+              })
+            : undefined;
         return { updated, seq: event?.seq };
       },
       options.validate ? { isolationLevel: "Serializable" } : undefined,

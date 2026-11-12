@@ -113,6 +113,7 @@ import { AskActions } from "../components/AskActions";
 import { ApprovalDetails } from "../components/approval-details";
 import { AttachmentLabel } from "../components/attachment-label";
 import { BotAvatar } from "../components/bot-avatar";
+import { BotSettingsCard } from "../components/bot-settings-card";
 import { ChoiceCard } from "../components/ChoiceCard";
 import { ComputerCard } from "../components/ComputerCard";
 import { ComposerReplyPreview } from "../components/composer-reply-preview";
@@ -4206,6 +4207,18 @@ const MessageBubble = memo(function MessageBubble({
     (block): block is Extract<MessageBlock, { kind: "mcp_approval" }> =>
       block.kind === "mcp_approval",
   );
+  const botSettingsAsk = message.blocks.find(
+    (block): block is Extract<MessageBlock, { kind: "ask" }> =>
+      block.kind === "ask" && block.botSettings !== undefined,
+  );
+  if (botSettingsAsk)
+    return (
+      <BotSettingsCard
+        block={botSettingsAsk}
+        canAnswer={canAnswer}
+        onAnswer={(answer) => onAnswer(message, answer)}
+      />
+    );
   const ask = message.blocks.find(
     (block): block is Extract<MessageBlock, { kind: "ask" }> =>
       block.kind === "ask" && !isApprovalAskBlock(block) && !block.actions?.length,

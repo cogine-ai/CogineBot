@@ -1167,7 +1167,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "update_bot",
     description:
-      "Update this bot's own name (header and list label), title, description, avatar (profile picture or color/shape), or notifyOnFinish. Call this when the user asks you to rename yourself, change your title/description, change your profile picture, or turn finish notifications on or off. Do not claim you updated the profile without calling this tool.",
+      "Update this bot's own name (header and list label), title, description, avatar (profile picture or color/shape), or notifyOnFinish. Call this when the user asks you to rename yourself, change your title/description, change your profile picture, or turn finish notifications on or off. Do not claim you updated the profile without calling this tool. Call with no fields to read settings and available choices. Change instructions, model, thinking, voice, or read-aloud in a separate call from profile edits. The owner confirms these changes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1202,7 +1202,43 @@ export const builtinAgentTools: ConnectorTool[] = [
           type: "boolean",
           description: "true notifies the user when this bot finishes a run; false silences that.",
         },
+        instructions: {
+          type: "string",
+          description: "Replacement task instructions for this bot.",
+        },
+        model: {
+          type: "string",
+          description: "Connected model name or ID, or default for the Space model.",
+        },
+        connection: {
+          type: "string",
+          description: "Exact connection name when several connections offer the model.",
+        },
+        modelQuery: {
+          type: "string",
+          description: "Search connected models by name without changing settings.",
+        },
+        thinkingLevel: {
+          type: "string",
+          description: "A supported thinking level from the settings read, or default.",
+        },
+        voice: {
+          type: "string",
+          description: "Voice name or ID on the Space voice provider, or default.",
+        },
+        readAloud: { type: "boolean", description: "Whether to read new replies aloud." },
       },
+    },
+  },
+  {
+    name: "update_preferences",
+    description: "Read your owner's timezone or update it in their direct chat.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timezone: { type: "string", description: "An IANA timezone such as Pacific/Auckland." },
+      },
+      additionalProperties: false,
     },
   },
   {

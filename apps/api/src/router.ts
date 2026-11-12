@@ -221,6 +221,7 @@ import {
   assertManagedPluginActive,
   BotSectionNameConflictError,
   bindWaitingTakeoverControl,
+  botSettingsVersions,
   CannotChangeCollaborationError,
   CannotDeleteDefaultSpaceError,
   CannotDeleteLastSpaceError,
@@ -305,6 +306,7 @@ import {
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
 import { createBotPackagesService } from "./bot-packages.js";
+import { botSettingsHistory, undoBotSettings } from "./bot-settings-history.js";
 import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   applyChatGPTPlanCatalog,
@@ -2403,6 +2405,71 @@ export function createRouter(deps: RouterDeps) {
         await repos.reorderBots(context.actor, input.botIds);
         return { ok: true as const };
       }),
+      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) =>
+        botSettingsHistory(await repos.getBot(context.actor, input.botId)),
+      ),
+      undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
+        const actor = context.actor;
+        const bot = await repos.getBot(actor, input.botId);
+        if (!bot.thread) throw new IsolationError();
+        const version = botSettingsVersions(bot).find(({ id }) => id === input.versionId);
+        const previous = version?.before;
+        const model = previous?.modelProvider
+          ? await prepareExistingModelAuth(deps, actor, previous, codexCatalog).catch((error) => {
+              if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE") return null;
+              throw error;
+            })
+          : undefined;
+        const voice =
+          previous?.voiceId || previous?.autoSpeak === true
+            ? await loadDefaultVoiceCredential(deps, actor)
+            : undefined;
+        const restoreVoiceId = previous?.voiceId === undefined ? bot.voiceId : previous.voiceId;
+        const availableVoice =
+          voice &&
+          (await createVoiceProvider(voice.cred.provider)
+            .listVoices(voice.apiKey, voiceContext(actor, context.signal))
+            .then((choices) =>
+              choices.some(({ id }) => id === (restoreVoiceId ?? voice.cred.voiceId)),
+            )
+            .catch(() => false));
+        return undoBotSettings({
+          prisma: deps.prisma,
+          actor,
+          threadId: bot.thread.id,
+          request: input,
+          notify: (threadId, seq) => deps.events.notify(threadId, seq),
+          validate: async (tx, patch) => {
+            if (patch.modelProvider) {
+              if (!model || !patch.modelCredentialId) return false;
+              const checked = await validateModelBinding(
+                tx,
+                deps.secrets,
+                actor,
+                patch,
+                model,
+              ).catch((error) => {
+                if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE")
+                  return undefined;
+                throw error;
+              });
+              if (!checked) return false;
+            }
+            if (patch.voiceId || patch.autoSpeak === true) {
+              const currentVoice = await findDefaultVoiceCredential(tx, actor);
+              if (
+                !voice ||
+                !availableVoice ||
+                currentVoice?.id !== voice.cred.id ||
+                currentVoice.updatedAt.getTime() !== voice.cred.updatedAt.getTime() ||
+                currentVoice.voiceId !== voice.cred.voiceId
+              )
+                return false;
+            }
+            return true;
+          },
+        });
+      }),
       update: authed.bots.update.handler(async ({ context, input }) => {
         const existing = await repos.getBot(context.actor, input.botId);
         if (input.sectionId) {
@@ -2532,6 +2599,7 @@ export function createRouter(deps: RouterDeps) {
           threadId: existing.thread.id,
           botId: input.botId,
           expectedInstructions: input.expectedInstructions,
+          settingsOwnerId: context.actor.userId,
           emitBotUpdated: botProfileChanged(input),
           validate,
           data: {

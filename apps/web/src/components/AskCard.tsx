@@ -17,6 +17,7 @@ import {
 import { Button, Input, Switch } from "@rakazo/ui-web";
 import { useId, useState } from "react";
 import { errorText } from "../lib/user-error";
+import { BotSettingsCardDetails } from "./BotSettingsCardDetails";
 
 export type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
 
@@ -248,8 +249,10 @@ export function AskCard({
 
   return (
     <div
-      data-testid={secretInput ? "secret-ask-card" : undefined}
-      className={`rounded-2xl border border-border bg-card px-5 py-4 ${namedFields ? "w-80 max-w-full" : "max-w-[74%]"}`}
+      data-testid={
+        block.botSettings ? "bot-settings-card" : secretInput ? "secret-ask-card" : undefined
+      }
+      className={`rounded-2xl border border-border bg-card px-5 py-4 ${block.botSettings ? "w-[420px] max-w-[94%]" : namedFields ? "w-80 max-w-full" : "max-w-[74%]"}`}
     >
       <div className="text-[15.5px] leading-[1.5] text-foreground">
         {namedFields && block.loginBotName ? (
@@ -261,6 +264,13 @@ export function AskCard({
           <ChatMarkdown>{block.text}</ChatMarkdown>
         )}
       </div>
+      {block.botSettings ? (
+        <BotSettingsCardDetails
+          settings={block.botSettings}
+          answered={block.status === "answered"}
+          proposal={Boolean(block.approvalEffectId)}
+        />
+      ) : null}
       {secretInput && block.credential ? (
         <div
           data-testid="secret-ask-destination"
@@ -293,17 +303,25 @@ export function AskCard({
         </details>
       ) : null}
       {block.status === "answered" || loginProvided ? (
-        <div className="mt-3.5 text-[13.5px] font-medium text-success">
-          {namedFields
-            ? t`Information provided`
-            : formatAnsweredState(
-                block.answer,
-                Boolean(approvalActions),
-                secretInput,
-                approvalActions?.find((action) => action.id === block.answer)?.outcome,
-                askActions,
-              )}
-        </div>
+        block.botSettings ? (
+          block.approvalEffectId ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              {block.answer === "allow" ? t`Confirmed` : t`Cancelled`}
+            </p>
+          ) : null
+        ) : (
+          <div className="mt-3.5 text-[13.5px] font-medium text-success">
+            {namedFields
+              ? t`Information provided`
+              : formatAnsweredState(
+                  block.answer,
+                  Boolean(approvalActions),
+                  secretInput,
+                  approvalActions?.find((action) => action.id === block.answer)?.outcome,
+                  askActions,
+                )}
+          </div>
+        )
       ) : !canAnswer ? (
         <div className="mt-3.5 text-[13.5px] font-medium text-muted-foreground">
           <Trans>No longer active</Trans>
@@ -320,6 +338,12 @@ export function AskCard({
             >
               {pendingAction === action.id ? (
                 <Trans>Sending…</Trans>
+              ) : block.botSettings ? (
+                action.id === "allow" ? (
+                  t`Confirm`
+                ) : (
+                  t`Cancel`
+                )
               ) : approvalActions ? (
                 approvalActionLabel(
                   action.id,

@@ -1020,6 +1020,20 @@ async function commitAnswerRunInput(
           if (pendingAsk.reviewMode !== "screen" || !detail || pendingAsk.detail !== detail)
             return null;
         }
+      } else if (pendingAsk.botSettings) {
+        if (
+          approvalEffect.kind !== "update_bot" ||
+          !request ||
+          typeof request !== "object" ||
+          Array.isArray(request) ||
+          request.kind !== "own-bot-settings" ||
+          request.botId !== pendingAsk.botSettings.botId ||
+          request.botId !== run.botId ||
+          request.userId !== run.userId ||
+          request.spaceId !== input.spaceId ||
+          request.runId !== input.runId
+        )
+          return null;
       } else {
         const bound = SharedPageUpdateRequestSchema.safeParse(request);
         if (

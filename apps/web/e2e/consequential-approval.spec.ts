@@ -242,3 +242,80 @@ async function waitForRunIdle(page: Page) {
     )
     .toBeNull();
 }
+
+test("Bot settings confirm, record history, undo, and refuse a stale change", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `bot-settings-${Date.now()}@example.test`, "password12", "Settings Tester");
+  await completeOnboarding(page);
+  await waitForRunIdle(page);
+  const botId = activeBotId(page);
+  await rpc(page, "bots/update", { botId, instructions: "Use the project checklist." });
+  await rpc(page, "approvalRules/set", {
+    effect: "always_allow",
+    matchKind: "tool",
+    matchValue: "update_bot",
+  });
+  async function captureCard(name: string) {
+    const path = testInfo.outputPath(`${name}.png`);
+    await page.getByTestId("bot-settings-card").last().screenshot({
+      animations: "disabled",
+      caret: "hide",
+      path,
+    });
+    await testInfo.attach(name, { path, contentType: "image/png" });
+  }
+  const current = async () =>
+    (await rpc<{ instructions: string }>(page, "bots/get", { botId })).instructions;
+  async function propose(instructions: string) {
+    await sendDestinationWrite(
+      page,
+      `call update_bot with ${JSON.stringify({
+        instructions,
+        previousInstructions: "fabricated",
+        reason: "fabricated",
+      })}`,
+    );
+    await expect(page.getByRole("button", { name: "Confirm", exact: true })).toBeVisible({
+      timeout: 20_000,
+    });
+  }
+
+  await propose("Use a three-item checklist.");
+  await expect(page.getByText("Review Bot settings", { exact: true })).toBeVisible();
+  await expect(page.getByText("Applies to new runs.", { exact: true })).toBeVisible();
+  const details = page.getByTestId("bot-settings-card-details").last();
+  await details.getByText("Instructions", { exact: true }).click();
+  await expect(details).toContainText("Use the project checklist.");
+  await expect(details).toContainText("Use a three-item checklist.");
+  await expect(details).not.toContainText("fabricated");
+  expect(await current()).toBe("Use the project checklist.");
+  await captureCard("bot-settings-confirmation");
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(page.getByText("Bot settings updated", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await waitForRunIdle(page);
+  expect(await current()).toBe("Use a three-item checklist.");
+  await page.getByRole("button", { name: "View settings", exact: true }).last().click();
+  await expect(page.getByText("Current settings", { exact: true })).toBeVisible();
+  await captureCard("bot-settings-history");
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(page.getByText("Change undone", { exact: true })).toBeVisible();
+  expect(await current()).toBe("Use the project checklist.");
+
+  await propose("This proposal should be cancelled.");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await waitForRunIdle(page);
+  expect(await current()).toBe("Use the project checklist.");
+
+  await propose("This proposal should conflict.");
+  await rpc(page, "bots/update", { botId, instructions: "Edited on a second device." });
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(page.getByText(/Settings changed elsewhere/).first()).toBeVisible({
+    timeout: 20_000,
+  });
+  await waitForRunIdle(page);
+  expect(await current()).toBe("Edited on a second device.");
+  await captureCard("bot-settings-conflict");
+});

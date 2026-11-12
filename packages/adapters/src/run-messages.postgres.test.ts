@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { createDb, createThreadEvents, RunHistoryWriteError } from "@rakazo/db";
+import {
+  botSettingsVersions,
+  createDb,
+  createThreadEvents,
+  createThreadMessage,
+  RunHistoryWriteError,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ExecutorDeps } from "./executor.js";
 import { appendToolCompletionAudit } from "./executor.js";
+import { OWN_BOT_SETTINGS_CHANGED } from "./own-bot-settings.js";
+import { commitOwnBotSettings } from "./own-bot-settings-write.js";
 import { persistMessageInTransaction, publishMessage, withRunLease } from "./run-messages.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
@@ -23,7 +31,20 @@ describe.skipIf(!enabled)("attempt history isolation (PostgreSQL)", () => {
     await db.prisma.organization.create({
       data: { id: organizationId, name: "Fixture", slug: organizationId, createdAt: new Date() },
     });
+    await db.prisma.member.create({
+      data: { id: randomUUID(), organizationId, userId, role: "owner", createdAt: new Date() },
+    });
     await db.prisma.space.create({ data: { id: spaceId, organizationId, name: "Fixture" } });
+    await db.prisma.spaceMember.create({
+      data: {
+        id: randomUUID(),
+        organizationId,
+        spaceId,
+        userId,
+        role: "owner",
+        createdAt: new Date(),
+      },
+    });
     const bot = await db.prisma.bot.create({
       data: {
         spaceId,
@@ -198,5 +219,123 @@ describe.skipIf(!enabled)("attempt history isolation (PostgreSQL)", () => {
       publishMessage(deps, run, "bot", [{ kind: "text", text: "late" }]),
     ).rejects.toBeInstanceOf(RunHistoryWriteError);
     expect(await db.prisma.message.count({ where: { runId: run.id } })).toBe(0);
+  });
+  async function approvedSettings() {
+    const run = await createRun();
+    const source = await createThreadMessage(db.prisma, {
+      threadId: run.threadId,
+      role: "user",
+      authorUserId: run.userId,
+      blocks: [{ kind: "text", text: "Use a short checklist." }],
+    });
+    const scoped = await db.prisma.run.update({
+      where: { id: run.id },
+      data: { sourceMessageId: source.id },
+    });
+    const bot = await db.prisma.bot.findUniqueOrThrow({ where: { id: run.botId } });
+    const request = {
+      kind: "own-bot-settings" as const,
+      runId: run.id,
+      userId: run.userId,
+      spaceId: run.spaceId,
+      botId: run.botId,
+      botName: bot.name,
+      revision: bot.settingsRevision,
+      before: { instructions: bot.instructions },
+      after: { instructions: `Instructions ${run.id}` },
+    };
+    const effect = await db.prisma.externalEffect.create({
+      data: {
+        runId: run.id,
+        spaceId: run.spaceId,
+        kind: "update_bot",
+        idempotencyKey: randomUUID(),
+        status: "approved",
+        request,
+      },
+    });
+    return { bot, effect, run: scoped, request };
+  }
+
+  it("commits settings, history, card and approval receipt once across concurrent replay", async () => {
+    const { bot, effect, run, request } = await approvedSettings();
+    const commit = () =>
+      commitOwnBotSettings({
+        prisma: db.prisma,
+        run,
+        effectId: effect.id,
+        request,
+        secrets: [],
+        lease: { owner: "worker-a", fence: 1 },
+        signal: new AbortController().signal,
+        rulesBlock: async () => false,
+        notify: async () => {},
+      });
+    const results = await Promise.all([commit(), commit()]);
+    expect(results[0]).toEqual(results[1]);
+    expect(results[0]).toMatchObject({ ok: true, revision: bot.settingsRevision + 1 });
+    const saved = await db.prisma.bot.findUniqueOrThrow({ where: { id: run.botId } });
+    expect(saved.instructions).toBe(request.after.instructions);
+    expect(botSettingsVersions(saved)[0]).toMatchObject({
+      before: request.before,
+      after: request.after,
+    });
+    expect(await db.prisma.message.count({ where: { runId: run.id, role: "bot" } })).toBe(1);
+    expect(await db.prisma.externalEffect.findUnique({ where: { id: effect.id } })).toMatchObject({
+      status: "completed",
+      result: results[0],
+    });
+  });
+
+  it("rejects an ABA edit between the displayed proposal and commit", async () => {
+    const { bot, effect, run, request } = await approvedSettings();
+    await db.prisma.bot.update({ where: { id: bot.id }, data: { instructions: "Other device" } });
+    await db.prisma.bot.update({ where: { id: bot.id }, data: { instructions: bot.instructions } });
+    await expect(
+      commitOwnBotSettings({
+        prisma: db.prisma,
+        run,
+        effectId: effect.id,
+        request,
+        secrets: [],
+        lease: { owner: "worker-a", fence: 1 },
+        signal: new AbortController().signal,
+        rulesBlock: async () => false,
+        notify: async () => {},
+      }),
+    ).resolves.toMatchObject({ error: OWN_BOT_SETTINGS_CHANGED, unchanged: true });
+    expect(await db.prisma.bot.findUnique({ where: { id: bot.id } })).toMatchObject({
+      instructions: bot.instructions,
+      settingsRevision: bot.settingsRevision + 2,
+    });
+  });
+
+  it.each([
+    ["stopped", { status: "cancelled" }],
+    ["expired lease", { leaseExpiresAt: new Date(0) }],
+    ["superseded lease", { leaseFence: 2 }],
+    ["outside steering", { receivedOutsideMessage: true }],
+    ["peer origin", { origin: "bot_peer" }],
+  ] as const)("rejects %s before a settings write", async (_case, patch) => {
+    const { bot, effect, run, request } = await approvedSettings();
+    await db.prisma.run.update({ where: { id: run.id }, data: patch });
+    await expect(
+      commitOwnBotSettings({
+        prisma: db.prisma,
+        run,
+        effectId: effect.id,
+        request,
+        secrets: [],
+        lease: { owner: "worker-a", fence: 1 },
+        signal: new AbortController().signal,
+        rulesBlock: async () => false,
+        notify: async () => {},
+      }),
+    ).resolves.toMatchObject({ unchanged: true });
+    expect(await db.prisma.bot.findUnique({ where: { id: bot.id } })).toMatchObject({
+      instructions: bot.instructions,
+      settingsRevision: bot.settingsRevision,
+    });
+    expect(await db.prisma.message.count({ where: { runId: run.id, role: "bot" } })).toBe(0);
   });
 });

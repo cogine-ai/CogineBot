@@ -1796,6 +1796,19 @@ function toAgentTool(
             ? { use_attached_image: raw.use_attached_image }
             : {}),
           ...(notifyRaw !== undefined ? { notifyOnFinish: notifyRaw } : {}),
+          ...Object.fromEntries(
+            [
+              "instructions",
+              "model",
+              "connection",
+              "modelQuery",
+              "thinkingLevel",
+              "voice",
+              "readAloud",
+            ]
+              .filter((key) => raw[key] !== undefined)
+              .map((key) => [key, raw[key]]),
+          ),
         };
       }
       if (tool.name === "create_space") {
@@ -2662,6 +2675,13 @@ function builtinParameters(tool: ConnectorTool) {
       artifact_id: Type.Optional(Type.String()),
       use_attached_image: Type.Optional(Type.Boolean()),
       notifyOnFinish: Type.Optional(Type.Boolean()),
+      instructions: Type.Optional(Type.String()),
+      model: Type.Optional(Type.String()),
+      connection: Type.Optional(Type.String()),
+      modelQuery: Type.Optional(Type.String()),
+      thinkingLevel: Type.Optional(Type.String()),
+      voice: Type.Optional(Type.String()),
+      readAloud: Type.Optional(Type.Boolean()),
     });
   }
   if (tool.name === "create_space") {

@@ -458,6 +458,8 @@ model Bot {
   title             String            @default("")
   description       String            @default("")
   instructions      String            @default("")
+  settingsRevision  Int               @default(0)
+  settingsHistory   Json              @default("[]")
   color             String
   notifyOnFinish    Boolean           @default(true)
   pinned            Boolean           @default(false)
@@ -805,6 +807,8 @@ model Run {
   modelPinned          Boolean          @default(false)
   /// A pinned Run can temporarily use a backup. The attempt fence scopes this evidence.
   attemptModel         Json?
+  /// Model and instructions already shown to a direct chat Run.
+  botSettingsSnapshot  Json?
   error                String?
   leaseOwner           String?
   leaseFence           Int              @default(0)

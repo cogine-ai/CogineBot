@@ -51,6 +51,7 @@ describe("built-in tool bridge", () => {
       "shell",
       "skill_read",
       "update_bot",
+      "update_preferences",
       "use_tool",
       "web_fetch",
       "web_search",

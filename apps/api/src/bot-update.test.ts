@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@rakazo/db", () => ({
   appendEventInTransaction: vi.fn(),
+  lockBotModelSetting: async (tx: { $queryRaw: (...args: unknown[]) => unknown }) => {
+    await tx.$queryRaw("model settings lock");
+  },
   withTransactionRetry: async (operation: () => Promise<unknown>) => operation(),
 }));
 
@@ -27,7 +30,7 @@ describe("commitBotUpdate", () => {
     let committed = false;
     const updated = { id: "bot-1", name: "Chief", title: "", description: "" };
     const update = vi.fn().mockResolvedValue(updated);
-    const tx = { bot: { update } };
+    const tx = { bot: { update }, $queryRaw: vi.fn() };
     const transaction = vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
       const result = await operation(tx);
       committed = true;
@@ -126,7 +129,7 @@ describe("commitBotUpdate", () => {
       description: "Helps with keyword research",
     };
     const botUpdate = vi.fn().mockResolvedValue(updated);
-    const tx = { bot: { update: botUpdate } };
+    const tx = { bot: { update: botUpdate }, $queryRaw: vi.fn() };
     const transaction = vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx));
     const notify = vi.fn().mockResolvedValue(undefined);
     const appendEvent = vi.fn().mockResolvedValue({ seq: 9 });
@@ -172,6 +175,7 @@ describe("commitBotUpdate", () => {
     const appendEvent = vi.fn().mockRejectedValue(new Error("event store unavailable"));
     const transaction = vi.fn(async (run: (client: unknown) => Promise<unknown>) =>
       run({
+        $queryRaw: vi.fn(),
         bot: {
           update: vi.fn().mockResolvedValue({
             id: "bot-1",
@@ -245,7 +249,7 @@ describe("commitBotUpdate", () => {
 describe("instruction update boundary", () => {
   const updated = { id: "bot-1", name: "Chief", title: "", description: "Public role" };
   function options(update = vi.fn().mockResolvedValue(updated)) {
-    const tx = { bot: { update } };
+    const tx = { bot: { update }, $queryRaw: vi.fn() };
     return {
       tx,
       value: {

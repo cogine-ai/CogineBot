@@ -66,7 +66,7 @@ function withVoicePreference<
 }
 
 export async function findDefaultVoiceCredential(
-  prisma: PrismaClient,
+  prisma: Pick<PrismaClient, "spaceVoicePreference">,
   scope: VoiceCredentialScope,
 ) {
   const preference = await prisma.spaceVoicePreference.findFirst({
