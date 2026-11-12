@@ -1,6 +1,7 @@
 import type { AdapterContext, MessagingSurface } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { MessagingSendError } from "./chat-sdk-surface.js";
 import {
   applyMessagingOutboundStatus,
   deliverMessagingOutbound,
@@ -9,6 +10,7 @@ import {
   type MessagingDeliveryDeps,
   mirrorMessagingOutbound,
 } from "./messaging-delivery.js";
+import { messagingOutboxFixture } from "./messaging-outbound-fixture.js";
 
 const context: AdapterContext = {
   operationId: "op-1",
@@ -82,6 +84,7 @@ function createDeps(overrides: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     message: {
+      findUnique: vi.fn(async () => null),
       findMany: vi.fn(
         async () =>
           overrides.messages ?? [
@@ -112,62 +115,7 @@ function createDeps(overrides: {
         ? []
         : [{ status: overrides.connectionStatus ?? "pending" }],
     ),
-    messagingOutbound: {
-      findUnique: vi.fn(async ({ where }: { where?: { id?: string } } = {}) => {
-        if (overrides.existingOutbox) return overrides.existingOutbox;
-        if (where?.id) return rows.find((row) => row.id === where.id) ?? null;
-        return null;
-      }),
-      findMany: vi.fn(async ({ where }: { where?: { status?: string; OR?: unknown[] } } = {}) => {
-        const now = Date.now();
-        return rows.filter((row) => {
-          if (where?.status && row.status !== where.status) return false;
-          if (!where?.OR) return row.status === "pending";
-          const next = row.nextAttemptAt;
-          if (next == null) return true;
-          const nextMs = next instanceof Date ? next.getTime() : new Date(String(next)).getTime();
-          return nextMs <= now;
-        });
-      }),
-      createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
-        let count = 0;
-        for (const item of data) {
-          // Simulates skipDuplicates against the idempotencyKey unique key.
-          const duplicate =
-            rows.some((row) => row.idempotencyKey === item.idempotencyKey) ||
-            (overrides.existingOutbox as { idempotencyKey?: string } | null)?.idempotencyKey ===
-              item.idempotencyKey;
-          if (duplicate) continue;
-          rows.push({ id: `out-${rows.length + 1}`, status: "pending", ...item });
-          count += 1;
-        }
-        return { count };
-      }),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: unknown }) => {
-        const row = rows.find((candidate) => candidate.id === where.id);
-        if (row) Object.assign(row, data);
-        return row;
-      }),
-      updateMany: vi.fn(
-        async ({
-          where,
-          data,
-        }: {
-          where: { id?: string; providerHandle?: string; status?: string };
-          data: Record<string, unknown>;
-        }) => {
-          let count = 0;
-          for (const row of rows) {
-            if (where.id && row.id !== where.id) continue;
-            if (where.providerHandle && row.providerHandle !== where.providerHandle) continue;
-            if (where.status && row.status !== where.status) continue;
-            Object.assign(row, data);
-            count += 1;
-          }
-          return { count };
-        },
-      ),
-    },
+    messagingOutbound: messagingOutboxFixture(rows, overrides.existingOutbox),
   };
   (prisma as { $transaction?: unknown }).$transaction = vi.fn(
     async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
@@ -244,7 +192,7 @@ describe("deliverMessagingOutbound", () => {
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
 
     expect(deps.sendToThread).toHaveBeenCalledWith(
-      { threadId: "sendblue:dm-1", body: "Hello from your bot" },
+      expect.objectContaining({ threadId: "sendblue:dm-1", body: "Hello from your bot" }),
       context,
     );
     expect(deps.rows).toEqual([
@@ -284,12 +232,12 @@ describe("deliverMessagingOutbound", () => {
     });
     expect(deps.sendToThread).toHaveBeenNthCalledWith(
       1,
-      { threadId: "sendblue:opened:+15551234567", body: "first" },
+      expect.objectContaining({ threadId: "sendblue:opened:+15551234567", body: "first" }),
       context,
     );
     expect(deps.sendToThread).toHaveBeenNthCalledWith(
       2,
-      { threadId: "sendblue:opened:+15551234567", body: "second" },
+      expect.objectContaining({ threadId: "sendblue:opened:+15551234567", body: "second" }),
       context,
     );
   });
@@ -318,7 +266,7 @@ describe("deliverMessagingOutbound", () => {
     const deps = createDeps({ run: { ...messagingRun, trigger: "bot_message" } });
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
     expect(deps.sendToThread).toHaveBeenCalledWith(
-      { threadId: "sendblue:dm-1", body: "Hello from your bot" },
+      expect.objectContaining({ threadId: "sendblue:dm-1", body: "Hello from your bot" }),
       context,
     );
   });
@@ -371,6 +319,7 @@ describe("deliverMessagingOutbound", () => {
     const deps = createDeps({
       identity: {
         provider: "slack",
+        dmThreadId: "slack:dm-1",
         address: "U123",
         outboundSinceInbound: MESSAGING_DM_OUTBOUND_CAP,
       },
@@ -384,7 +333,9 @@ describe("deliverMessagingOutbound", () => {
   });
 
   it("returns a transient send failure to pending and schedules a delayed retry", async () => {
-    const deps = createDeps({ sendError: new Error("messaging provider 500") });
+    const deps = createDeps({
+      sendError: new MessagingSendError("retryable", "rate_limited", 3_000),
+    });
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
 
     expect(deps.rows).toEqual([
@@ -442,7 +393,7 @@ describe("deliverMessagingOutbound", () => {
     await deliverMessagingOutbound(deps, {}, context);
 
     expect(deps.sendToThread).toHaveBeenCalledWith(
-      { threadId: "sendblue:dm-1", body: "pending earlier" },
+      expect.objectContaining({ threadId: "sendblue:dm-1", body: "pending earlier" }),
       context,
     );
     expect(deps.rows[0]).toEqual(expect.objectContaining({ status: "sent" }));
@@ -452,10 +403,8 @@ describe("deliverMessagingOutbound", () => {
     const deps = createDeps({});
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
 
-    const calls = deps.prisma.messagingOutbound.updateMany.mock.calls as Array<
-      [{ where?: { status?: string } }]
-    >;
-    const claimIndex = calls.findIndex(([args]) => args.where?.status === "pending");
+    const calls = deps.prisma.messagingOutbound.updateMany.mock.calls;
+    const claimIndex = calls.findIndex(([args]) => args.data.deliveryState === "sending");
     expect(claimIndex).toBeGreaterThanOrEqual(0);
     expect(
       deps.prisma.messagingOutbound.updateMany.mock.invocationCallOrder[claimIndex]!,
@@ -533,7 +482,10 @@ describe("deliverMessagingOutbound", () => {
       ],
     });
     // After claim, revoke deletes the row before the locked gate runs.
-    deps.prisma.messagingOutbound.findUnique = vi.fn(async () => null) as never;
+    const findFirst = deps.prisma.messagingOutbound.findFirst;
+    deps.prisma.messagingOutbound.findFirst = vi.fn(async (args) =>
+      args?.where?.deliveryState === "sending" ? null : findFirst(args),
+    ) as never;
     await deliverMessagingOutbound(deps, {}, context);
 
     expect(deps.sendToThread).not.toHaveBeenCalled();
@@ -625,37 +577,43 @@ describe("deliverMessagingOutbound", () => {
 });
 
 describe("applyMessagingOutboundStatus", () => {
-  it("maps terminal statuses onto outbox rows by handle", async () => {
-    const deps = createDeps({});
+  it("keeps delivery monotonic and only applies a receipt for the matching provider", async () => {
+    const deps = createDeps({
+      outboundRows: [
+        {
+          id: "blue",
+          provider: "sendblue",
+          providerHandle: "h",
+          status: "sent",
+          deliveryState: "accepted",
+        },
+        {
+          id: "wa",
+          provider: "whatsapp",
+          providerHandle: "h",
+          status: "sent",
+          deliveryState: "accepted",
+        },
+      ],
+    });
+    const event = { type: "status" as const, provider: "sendblue", handle: "h" };
+    await applyMessagingOutboundStatus(deps.prisma, { ...event, status: "DELIVERED" });
+    await applyMessagingOutboundStatus(deps.prisma, { ...event, status: "ERROR" });
+    await applyMessagingOutboundStatus(deps.prisma, { ...event, status: "SENT" });
+    expect(deps.rows).toMatchObject([
+      { id: "blue", deliveryState: "delivered", deliveredAt: expect.any(Date) },
+      { id: "wa", deliveryState: "accepted" },
+    ]);
     await applyMessagingOutboundStatus(deps.prisma, {
-      type: "status",
-      provider: "sendblue",
-      handle: "h-1",
-      status: "ERROR",
+      ...event,
+      provider: "whatsapp",
+      status: "FAILED",
+      reason: "reply_window_closed",
     });
-    expect(deps.prisma.messagingOutbound.updateMany).toHaveBeenCalledWith({
-      where: { providerHandle: "h-1" },
-      data: { status: "failed" },
+    expect(deps.rows[1]).toMatchObject({
+      deliveryState: "failed",
+      lastErrorClass: "reply_window_closed",
     });
-
-    await applyMessagingOutboundStatus(deps.prisma, {
-      type: "status",
-      provider: "sendblue",
-      handle: "h-2",
-      status: "DELIVERED",
-    });
-    expect(deps.prisma.messagingOutbound.updateMany).toHaveBeenCalledWith({
-      where: { providerHandle: "h-2" },
-      data: { status: "sent" },
-    });
-
-    await applyMessagingOutboundStatus(deps.prisma, {
-      type: "status",
-      provider: "sendblue",
-      handle: "h-3",
-      status: "QUEUED",
-    });
-    expect(deps.prisma.messagingOutbound.updateMany).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -772,41 +730,8 @@ function createChannelDeps(
         },
       ]),
     },
-    messagingOutbound: {
-      findMany: vi.fn(async ({ where }: { where?: { status?: string; OR?: unknown[] } } = {}) => {
-        const now = Date.now();
-        return rows.filter((row) => {
-          if (where?.status && row.status !== where.status) return false;
-          if (!where?.OR) return row.status === "pending";
-          const next = row.nextAttemptAt;
-          if (next == null) return true;
-          const nextMs = next instanceof Date ? next.getTime() : new Date(String(next)).getTime();
-          return nextMs <= now;
-        });
-      }),
-      createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
-        for (const item of data)
-          rows.push({ id: `out-${rows.length + 1}`, status: "pending", ...item });
-        return { count: data.length };
-      }),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: unknown }) => {
-        const row = rows.find((candidate) => candidate.id === where.id);
-        if (row) Object.assign(row, data);
-        return row;
-      }),
-      updateMany: vi.fn(
-        async ({ where, data }: { where: { id?: string; status?: string }; data: unknown }) => {
-          let count = 0;
-          for (const row of rows) {
-            if (where.id && row.id !== where.id) continue;
-            if (where.status && row.status !== where.status) continue;
-            Object.assign(row, data);
-            count += 1;
-          }
-          return { count };
-        },
-      ),
-    },
+    messagingOutbound: messagingOutboxFixture(rows),
+    $queryRaw: vi.fn(async () => []),
     user: { findUnique: vi.fn(async () => ({ id: "user-1", name: "Alice Owner" })) },
     bot: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
@@ -818,7 +743,9 @@ function createChannelDeps(
       ),
     },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-2" })) },
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ ...prisma, ...txMock, message: { ...prisma.message, ...txMock.message } }),
+    ),
   };
   return {
     prisma: prisma as unknown as PrismaClient & typeof prisma,
@@ -888,7 +815,7 @@ describe("deliverMessagingOutbound channel runs", () => {
     });
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
     expect(deps.sendToThread).toHaveBeenCalledWith(
-      { threadId: "sendblue:grp-1", body: "Alice's agent: Public update" },
+      expect.objectContaining({ threadId: "sendblue:grp-1", body: "Alice's agent: Public update" }),
       context,
     );
   });
@@ -898,7 +825,7 @@ describe("deliverMessagingOutbound channel runs", () => {
     await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
 
     expect(deps.sendToThread).toHaveBeenCalledWith(
-      { threadId: "sendblue:grp-1", body: "Alice's agent: found it" },
+      expect.objectContaining({ threadId: "sendblue:grp-1", body: "Alice's agent: found it" }),
       context,
     );
     expect(deps.rows).toEqual([
@@ -1014,7 +941,7 @@ describe("deliverMessagingOutbound transient failure retry", () => {
   it("marks the row failed only once the attempt budget is exhausted", async () => {
     const deps = createDeps({
       run: null,
-      sendError: new Error("messaging provider 500"),
+      sendError: new MessagingSendError("retryable", "rate_limited", 3_000),
       outboundRows: [
         {
           id: "out-9",
@@ -1040,7 +967,9 @@ describe("deliverMessagingOutbound transient failure retry", () => {
 describe("deliverMessagingOutbound retry enqueue failure", () => {
   it("propagates the enqueue failure so the job queue retries the drain", async () => {
     const deps = createDeps({});
-    deps.sendToThread.mockRejectedValueOnce(new Error("messaging provider 500"));
+    deps.sendToThread.mockRejectedValueOnce(
+      new MessagingSendError("retryable", "rate_limited", 3_000),
+    );
     deps.jobs.enqueue.mockRejectedValueOnce(new Error("queue down"));
 
     // A swallowed enqueue failure would strand the row in pending forever:

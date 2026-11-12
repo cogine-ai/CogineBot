@@ -303,6 +303,31 @@ describe("ChatSdkMessagingSurface webhook plumbing", () => {
   });
 });
 
+describe("provider acceptance boundary", () => {
+  it("honors a structured rate limit and keeps a generic service error uncertain", async () => {
+    const { surface, adapter } = createSurface();
+    const send = { threadId: "mock:Duser:1", body: "Synthetic reply" };
+    vi.mocked(adapter.postMessage).mockRejectedValueOnce(
+      Object.assign(new Error("rate limit"), { status: 429, retryAfter: 12 }),
+    );
+    await expect(surface.sendToThread(send, context)).rejects.toMatchObject({
+      disposition: "retryable",
+      reason: "rate_limited",
+      retryAfterMs: 12_000,
+    });
+    vi.mocked(adapter.postMessage).mockRejectedValueOnce(
+      Object.assign(new Error("service unavailable"), {
+        status: 503,
+        headers: new Headers({ "retry-after": "12" }),
+      }),
+    );
+    await expect(surface.sendToThread(send, context)).rejects.toMatchObject({
+      disposition: "unknown",
+      reason: "outcome_unknown",
+    });
+  });
+});
+
 describe("ChatSdkMessagingSurface outbound", () => {
   it("posts to a thread through the platform adapter and returns the handle", async () => {
     const { surface, adapter } = createSurface();
@@ -334,7 +359,7 @@ describe("ChatSdkMessagingSurface outbound", () => {
   it("throws when the platform cannot open direct conversations", async () => {
     const { surface } = createSurface({}, { openDM: undefined });
     await expect(surface.openDirectThread("mock", "+15551234567", context)).rejects.toThrow(
-      /cannot open direct/,
+      /rejected/,
     );
   });
 

@@ -129,6 +129,7 @@ describe("reaction messages", () => {
       run: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const actor = { spaceId: "space-1", userId: "user-1" } as Actor;
@@ -206,6 +207,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: botRunFindFirst([]), findMany: vi.fn().mockResolvedValue([]) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const direct = await threadSnapshot({ prisma }, {
@@ -265,6 +267,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: botRunFindFirst([run]), findMany: vi.fn().mockResolvedValue([]) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const target = {
@@ -336,6 +339,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun, findMany: vi.fn().mockResolvedValue([]) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const target = {
@@ -539,6 +543,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun, findMany: vi.fn().mockResolvedValue([]) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const target = {
@@ -575,6 +580,7 @@ describe("threadSnapshot", () => {
       run: { findFirst: findFirstRun, findMany: vi.fn().mockResolvedValue([]) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
     const target = {
@@ -1268,6 +1274,7 @@ describe("sendThreadMessage", () => {
         },
       };
       const prisma = {
+        messagingOutbound: { findMany: vi.fn(async () => []) },
         message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
@@ -1390,6 +1397,7 @@ describe("sendThreadMessage", () => {
       task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -1510,6 +1518,7 @@ describe("sendThreadMessage", () => {
       task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -1603,6 +1612,7 @@ describe("sendThreadMessage", () => {
   it("replays every answered waiting run from a free-text send receipt", async () => {
     const enqueue = vi.fn().mockResolvedValue(undefined);
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: {
         findUnique: vi.fn().mockResolvedValue({
           id: "msg-1",
@@ -1756,6 +1766,7 @@ describe("sendThreadMessage", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -1910,6 +1921,7 @@ describe("sendThreadMessage", () => {
       task: { create: vi.fn().mockResolvedValue({ id: "task-new" }), updateMany: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2008,6 +2020,7 @@ describe("sendThreadMessage", () => {
       event: { create: vi.fn().mockResolvedValue({ seq: 2, threadId: "thread-1" }) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2149,6 +2162,7 @@ describe("sendThreadMessage", () => {
         $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
       };
       const prisma = {
+        messagingOutbound: { findMany: vi.fn(async () => []) },
         message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
@@ -2282,6 +2296,7 @@ describe("sendThreadMessage", () => {
       task: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2375,6 +2390,7 @@ describe("sendThreadMessage", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2489,6 +2505,7 @@ describe("sendThreadMessage", () => {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2580,6 +2597,7 @@ describe("sendThreadMessage", () => {
       task: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2683,6 +2701,7 @@ describe("sendThreadMessage", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2795,6 +2814,7 @@ describe("sendThreadMessage", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2934,6 +2954,7 @@ describe("sendThreadMessage", () => {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -2995,6 +3016,7 @@ describe("sendThreadMessage", () => {
   });
   it("rejects a quote excerpt without a reply target", async () => {
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(),
     } as unknown as PrismaClient;
@@ -3057,6 +3079,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3134,6 +3157,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3200,6 +3224,7 @@ describe("sendThreadMessage", () => {
         steeringMessage: { create: vi.fn() },
       };
       const prisma = {
+        messagingOutbound: { findMany: vi.fn(async () => []) },
         message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
@@ -3276,6 +3301,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3355,6 +3381,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3461,6 +3488,7 @@ describe("sendThreadMessage", () => {
         steeringMessage: { create: vi.fn() },
       };
       const prisma = {
+        messagingOutbound: { findMany: vi.fn(async () => []) },
         message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
@@ -3566,6 +3594,7 @@ describe("sendThreadMessage", () => {
         steeringMessage: { create: vi.fn() },
       };
       const prisma = {
+        messagingOutbound: { findMany: vi.fn(async () => []) },
         message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
@@ -3656,6 +3685,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3739,6 +3769,7 @@ describe("sendThreadMessage", () => {
       steeringMessage: { create: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3822,6 +3853,7 @@ describe("sendThreadMessage", () => {
       $queryRaw: vi.fn().mockResolvedValue([{ id: "group-1" }]),
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
@@ -3922,6 +3954,7 @@ describe("stopThreadRuns", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof transaction) => unknown) =>
         callback(transaction),
       ),
@@ -4059,6 +4092,7 @@ describe("stopThreadRuns", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof transaction) => unknown) =>
         callback(transaction),
       ),
@@ -4161,6 +4195,7 @@ describe("stopThreadRuns", () => {
       },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof transaction) => unknown) =>
         callback(transaction),
       ),
@@ -4238,6 +4273,7 @@ describe("stopThreadRuns", () => {
       event: { create: vi.fn(), deleteMany: vi.fn() },
     };
     const prisma = {
+      messagingOutbound: { findMany: vi.fn(async () => []) },
       $transaction: vi.fn(async (callback: (client: typeof transaction) => unknown) =>
         callback(transaction),
       ),

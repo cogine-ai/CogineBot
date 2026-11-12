@@ -924,10 +924,20 @@ export interface TransactionalEmail {
   html?: string;
 }
 
+export type MessagingReceipt = "typing" | "reaction";
+export type MessagingFailureReason =
+  | "rate_limited"
+  | "reply_window_closed"
+  | "rejected"
+  | "attachment_unavailable"
+  | "outcome_unknown";
+
 export interface MessagingCapabilities {
   direct: boolean;
   groups: boolean;
   typing: boolean;
+  receipt?: MessagingReceipt;
+  files?: boolean;
 }
 
 /** One messaging platform behind the chat surface (sendblue, slack, …). */
@@ -937,9 +947,23 @@ export interface MessagingPlatformDescriptor {
 }
 
 /** Send into an existing conversation, addressed by its opaque thread id. */
+export interface MessagingOutboundAttachment {
+  name: string;
+  mimeType: string;
+  data: Uint8Array;
+}
+
+export interface MessagingInboundAttachment {
+  name: string;
+  mimeType: string;
+  size?: number;
+  fetch(): Promise<Uint8Array>;
+}
+
 export interface MessagingSendRequest {
   threadId: string;
   body: string;
+  attachment?: MessagingOutboundAttachment;
   /** Stable key so retries of the same logical send can be deduped upstream. */
   idempotencyKey?: string;
 }
@@ -972,6 +996,7 @@ export interface MessagingInboundMessage {
   participants: string[];
   content: string;
   mediaUrl: string | null;
+  attachments?: MessagingInboundAttachment[];
   /** Team-room workspace/team id when the platform reports one (Slack team_id, …). */
   workspaceId?: string;
   /** Stable conversation key within the workspace (channel id, DM key, …). */
@@ -1021,6 +1046,7 @@ export interface MessagingOutboundStatus {
   provider: string;
   handle: string;
   status: string;
+  reason?: MessagingFailureReason;
 }
 
 export type MessagingInboundEvent = MessagingInboundMessage | MessagingOutboundStatus;

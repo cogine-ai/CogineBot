@@ -7526,3 +7526,27 @@ msgstr "This history source is no longer available."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "Could not load history sources."
+
+msgid "Sending to channel"
+msgstr "Sending to channel"
+
+msgid "Accepted by channel"
+msgstr "Accepted by channel"
+
+msgid "Delivered to channel"
+msgstr "Delivered to channel"
+
+msgid "Partially sent to channel"
+msgstr "Partially sent to channel"
+
+msgid "Could not send to channel"
+msgstr "Could not send to channel"
+
+msgid "Channel delivery unconfirmed"
+msgstr "Channel delivery unconfirmed"
+
+msgid "Ask the recipient to send a new WhatsApp message before replying."
+msgstr "Ask the recipient to send a new WhatsApp message before replying."
+
+msgid "An attachment could not be sent."
+msgstr "An attachment could not be sent."

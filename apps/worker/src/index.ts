@@ -309,6 +309,7 @@ async function main() {
     deploymentModelKey,
     deploymentModelConfigured,
     messaging,
+    artifacts,
     cloudAgent,
   });
   const reconciler = createJobReconciler({

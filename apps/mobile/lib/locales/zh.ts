@@ -1,4 +1,13 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Ask the recipient to send a new WhatsApp message before replying.":
+    "请让收件人先发一条新的 WhatsApp 消息，再回复。",
+  "An attachment could not be sent.": "有一个附件发送失败。",
+  "Sending to channel": "正在发送到消息渠道",
+  "Accepted by channel": "消息渠道已接受",
+  "Delivered to channel": "已送达消息渠道",
+  "Partially sent to channel": "部分内容发送失败",
+  "Could not send to channel": "未能发送到消息渠道",
+  "Channel delivery unconfirmed": "消息送达待核实",
   After: "更改后",
   "Applies to new playback.": "适用于新的语音播放。",
   "Applies to new runs.": "适用于新的运行。",

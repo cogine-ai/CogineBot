@@ -8,7 +8,12 @@ import type {
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { computerStateRequiresRecovery, IsoDate, RUN_TRIGGERS } from "@rakazo/contracts";
+import {
+  computerStateRequiresRecovery,
+  IsoDate,
+  MessagingDeliverySchema,
+  RUN_TRIGGERS,
+} from "@rakazo/contracts";
 import {
   isActive,
   isBackgroundRunTrigger,
@@ -305,6 +310,7 @@ export function isThreadSnapshotEvent(event: ProductEvent): boolean {
     event.type === "agent.tool.completed" ||
     event.type === "thread.message.created" ||
     event.type === "thread.message.updated" ||
+    event.type === "thread.message.delivery" ||
     event.type === "thread.message.reaction" ||
     event.type === "run.started" ||
     event.type === "run.waiting_input" ||
@@ -577,6 +583,7 @@ export function reduceThreadSnapshot(
       seq: event.seq,
       role: "bot",
       blocks,
+      messagingDelivery: known?.messagingDelivery,
       botId: event.botId,
       runId: event.runId,
       createdAt: event.createdAt,
@@ -635,6 +642,20 @@ export function reduceThreadSnapshot(
       ...prev,
       cursor,
       messages: updateCloudAgentMessages(prev.messages, event.payload ?? {}),
+    };
+  }
+  if (event.type === "thread.message.delivery") {
+    const delivery = MessagingDeliverySchema.safeParse(event.payload.delivery);
+    return {
+      ...prev,
+      cursor,
+      messages: delivery.success
+        ? prev.messages.map((message) =>
+            message.id === event.payload.messageId && message.role === "bot"
+              ? { ...message, messagingDelivery: delivery.data, observedEventSeq: event.seq }
+              : message,
+          )
+        : prev.messages,
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {

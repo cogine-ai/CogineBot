@@ -126,6 +126,7 @@ function createDeps(
     },
     messagingLinkCode,
     bot: { findUnique: vi.fn(async () => ({ name: "Chief" })) },
+    spaceMember: { findUnique: vi.fn(async () => ({ id: "member-fixture" })) },
     routine: {
       findMany: vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
         (overrides.routines ?? []).map((row) =>
@@ -211,6 +212,10 @@ function createDeps(
       ),
     },
     messagingOutbound: {
+      findUnique: vi.fn(
+        async ({ where }: { where: { idempotencyKey: string } }) =>
+          outboundRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
+      ),
       createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
         let count = 0;
         for (const item of data) {
@@ -245,6 +250,8 @@ function createDeps(
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         ...txMock,
+        bot: prisma.bot,
+        spaceMember: prisma.spaceMember,
         agentConnection: prisma.agentConnection,
         messagingChannelMember: prisma.messagingChannelMember,
         messagingOutbound: prisma.messagingOutbound,
@@ -264,7 +271,9 @@ function createDeps(
     sendUserMessage,
     notify,
     enqueue,
-    outboundRows,
+    get outboundRows() {
+      return outboundRows.filter((row) => row.kind !== "inbound_command");
+    },
     members,
     txMock,
     createdIdentities,
@@ -306,6 +315,38 @@ const groupEvent = {
 };
 
 describe("createMessagingInboundHandler DM routing", () => {
+  it("does not fetch attachments or start a Run for a bot or an inactive linked sender", async () => {
+    const deps = createDeps();
+    const fetch = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const handle = createMessagingInboundHandler(deps);
+    const attached = {
+      ...dmEvent,
+      attachments: [{ name: "fixture.txt", mimeType: "text/plain", size: 3, fetch }],
+    };
+    await handle({ ...attached, senderIsBot: true });
+    vi.mocked(deps.prisma.spaceMember.findUnique).mockResolvedValueOnce(null);
+    await handle(attached);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+    expect(deps.prisma.messagingIdentity.update).not.toHaveBeenCalled();
+  });
+
+  it("treats a replay of a consumed approval as the same event", async () => {
+    const deps = createDeps({
+      invitedMember: {
+        id: "approved-member",
+        status: "invited",
+        updatedAt: new Date(),
+      },
+    });
+    const event = { ...dmEvent, content: "YES" };
+    const handle = createMessagingInboundHandler(deps);
+    await Promise.all([handle(event), handle(event)]);
+    await handle(event);
+    expect(deps.outboundRows).toHaveLength(1);
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("delivers a known sender's message into their bot's existing thread", async () => {
     const deps = createDeps();
     const handle = createMessagingInboundHandler(deps);
@@ -323,7 +364,7 @@ describe("createMessagingInboundHandler DM routing", () => {
       botId: "bot-1",
       userId: "user-1",
       blocks: [{ kind: "text", text: "hello bot" }],
-      prompt: "hello bot",
+      prompt: expect.stringContaining('"text": "hello bot"'),
       trigger: "messaging",
       clientNonce: "messaging:sendblue:handle-1",
     });
@@ -592,7 +633,9 @@ describe("createMessagingInboundHandler DM routing", () => {
     await handle({ ...dmEvent, content: "", mediaUrl: "https://cdn.example.com/pic.jpg" });
 
     expect(deps.sendUserMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: "https://cdn.example.com/pic.jpg" }),
+      expect.objectContaining({
+        prompt: expect.stringContaining("https://cdn.example.com/pic.jpg"),
+      }),
     );
   });
 

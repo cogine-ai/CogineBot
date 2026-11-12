@@ -1,15 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { BackgroundJob, JobPublisher, MessagingSurface } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  BackgroundJob,
+  JobPublisher,
+  MessagingSurface,
+} from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { createDb, createThreadMessage, finalizeRun, Prisma } from "@rakazo/db";
+import {
+  createDb,
+  createThreadMessage,
+  finalizeRun,
+  Prisma,
+  readMessagingDelivery,
+} from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBackgroundJobHandlers } from "./background-job-handlers.js";
+import { MessagingSendError } from "./chat-sdk-surface.js";
 import { createRunExecutor } from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 import { FakeWebProvider } from "./fake-web.js";
 import { createJobReconciler } from "./job-reconciler.js";
-import { mirrorMessagingOutbound } from "./messaging-delivery.js";
+import {
+  applyMessagingOutboundStatus,
+  deliverMessagingOutbound,
+  mirrorMessagingOutbound,
+} from "./messaging-delivery.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -70,7 +86,7 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
     try {
       if (messageIds.size) {
         await prisma.messagingOutbound.deleteMany({
-          where: { idempotencyKey: { in: [...messageIds].map((id) => `msg:${id}`) } },
+          where: { sourceMessageId: { in: [...messageIds] } },
         });
         messageIds.clear();
       }
@@ -236,6 +252,182 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
       reconciler: createJobReconciler({ prisma, jobs }),
     };
   }
+
+  function outboundDeps(sendToThread: MessagingSurface["sendToThread"], client = prisma) {
+    const fixture = recovery();
+    return {
+      prisma: client,
+      jobs: fixture.jobs,
+      events: fixture.events,
+      messaging: {
+        sendToThread,
+        platforms: () => [
+          {
+            provider: "telegram",
+            capabilities: { direct: true, groups: false, typing: false, files: true },
+          },
+        ],
+      } as MessagingSurface,
+    };
+  }
+
+  function deliveryContext(): AdapterContext {
+    return {
+      operationId: "fixture-delivery",
+      traceId: "fixture-delivery",
+      spaceId: scope.spaceId,
+      userId: scope.userId,
+      botId: scope.botId,
+      signal: new AbortController().signal,
+    };
+  }
+
+  it("keeps parts ordered under competing drains and lets another conversation pass a rate limit", async () => {
+    const saved = (await terminalRun("completed", "messaging", "Saved reply")).message!;
+    const other = (await terminalRun("completed", "messaging", "Other reply")).message!;
+    const make = (sourceMessageId: string, partIndex: number, body: string, threadId: string) => ({
+      sourceMessageId,
+      partIndex,
+      body,
+      threadId,
+      kind: "group",
+      provider: "sendblue",
+      idempotencyKey: `fixture:${sourceMessageId}:${partIndex}`,
+      createdAt: new Date(0),
+    });
+    await prisma.messagingOutbound.createMany({
+      data: [
+        make(saved.id, 0, "first", "sendblue:fixture-lane-1"),
+        make(saved.id, 2, "second", "sendblue:fixture-lane-1"),
+        make(other.id, 0, "other", "sendblue:fixture-lane-2"),
+      ],
+    });
+    let rateLimited = true;
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => {
+      if (body === "first" && rateLimited)
+        throw new MessagingSendError("retryable", "rate_limited", 60_000);
+      return { handle: `fixture-${body}` };
+    });
+    const deps = outboundDeps(send);
+    const drain = () => deliverMessagingOutbound(deps, {}, deliveryContext());
+    await Promise.all([drain(), drain()]);
+    expect(send.mock.calls.map(([request]) => request.body).sort()).toEqual(["first", "other"]);
+    const waiting = await prisma.messagingOutbound.findFirstOrThrow({
+      where: { body: "first", sourceMessageId: saved.id },
+    });
+    expect(waiting).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      lastErrorClass: "rate_limited",
+    });
+    expect(waiting.nextAttemptAt!.getTime() - Date.now()).toBeGreaterThan(55_000);
+
+    rateLimited = false;
+    await prisma.messagingOutbound.update({
+      where: { id: waiting.id },
+      data: { nextAttemptAt: new Date(0) },
+    });
+    await Promise.all([drain(), drain()]);
+    expect(send.mock.calls.slice(2).map(([request]) => request.body)).toEqual(["first", "second"]);
+  });
+
+  it("joins an early signed-provider receipt to the eventual handle and leaves late weaker receipts unchanged", async () => {
+    const saved = await terminalRun("completed", "messaging", "Saved reply");
+    const handle = `receipt-${saved.message!.id}`;
+    const event = { type: "status" as const, provider: "slack", handle };
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async () => {
+      await applyMessagingOutboundStatus(prisma, { ...event, status: "DELIVERED" });
+      return { handle };
+    });
+    const deps = outboundDeps(send);
+    await deliverMessagingOutbound(deps, { runId: saved.run.id }, deliveryContext());
+    await applyMessagingOutboundStatus(prisma, { ...event, status: "SENT" });
+    await applyMessagingOutboundStatus(prisma, { ...event, status: "ERROR" });
+    const id = saved.message!.id;
+    expect(
+      await prisma.messagingOutbound.findFirstOrThrow({ where: { sourceMessageId: id } }),
+    ).toMatchObject({
+      providerHandle: handle,
+      deliveryState: "delivered",
+      deliveredAt: expect.any(Date),
+    });
+    expect((await readMessagingDelivery(prisma, [id])).get(id)).toEqual({ state: "delivered" });
+    expect(await prisma.messagingOutbound.count({ where: { status: "receipt" } })).toBe(0);
+    expect(
+      await prisma.event.findMany({
+        where: { threadId: scope.threadId, type: "thread.message.delivery" },
+        orderBy: { seq: "asc" },
+        select: { payload: true },
+      }),
+    ).toMatchObject([
+      { payload: { messageId: id, delivery: { state: "sending" } } },
+      { payload: { messageId: id, delivery: { state: "delivered" } } },
+    ]);
+  });
+
+  it("does not dispatch again after a provider accepts and the status write fails", async () => {
+    const saved = await terminalRun("completed", "messaging", "Saved reply");
+    let fail = true;
+    const faulty = prisma.$extends({
+      query: {
+        messagingOutbound: {
+          async updateMany({ args, query }) {
+            if (fail && args.data.deliveryState === "accepted") {
+              fail = false;
+              throw new Error("Synthetic acceptance write interruption");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async () => ({
+      handle: "fixture-accepted",
+    }));
+    await deliverMessagingOutbound(
+      outboundDeps(send, faulty),
+      { runId: saved.run.id },
+      deliveryContext(),
+    );
+    await deliverMessagingOutbound(outboundDeps(send), { runId: saved.run.id }, deliveryContext());
+    expect(fail).toBe(false);
+    expect(send).toHaveBeenCalledOnce();
+    expect(
+      (await readMessagingDelivery(prisma, [saved.message!.id])).get(saved.message!.id),
+    ).toEqual({ state: "unknown" });
+  });
+
+  it("retains successful text and sends one notice in the original conversation on file rejection", async () => {
+    const saved = await terminalRun("completed", "messaging", "Text survived");
+    const id = saved.message!.id;
+    await prisma.message.update({
+      where: { id },
+      data: {
+        blocks: [
+          { kind: "text", text: "Text survived" },
+          {
+            kind: "file",
+            artifactId: "missing-fixture-artifact",
+            name: "fixture.pdf",
+            mimeType: "application/pdf",
+            size: 1,
+          },
+        ],
+      },
+    });
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => ({ handle: body }));
+    const deps = outboundDeps(send);
+    await deliverMessagingOutbound(deps, { runId: saved.run.id }, deliveryContext());
+    await deliverMessagingOutbound(deps, { runId: saved.run.id }, deliveryContext());
+    expect(send.mock.calls.map(([request]) => [request.threadId, request.body])).toEqual([
+      ["slack:synthetic-recovery", "Text survived"],
+      ["slack:synthetic-recovery", "An attachment could not be sent."],
+    ]);
+    expect((await readMessagingDelivery(prisma, [id])).get(id)).toEqual({
+      state: "partial_failure",
+      reason: "attachment_unavailable",
+    });
+  });
 
   it("recovers a persisted failed reply with one outbox row and no Run or attempt replay", async () => {
     const failed = await terminalRun("failed", "messaging", "Persisted before failure");

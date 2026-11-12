@@ -7550,3 +7550,27 @@ msgstr "这条来源已不可用。"
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "暂时无法加载历史来源。"
+
+msgid "Sending to channel"
+msgstr "正在发送到消息渠道"
+
+msgid "Accepted by channel"
+msgstr "消息渠道已接受"
+
+msgid "Delivered to channel"
+msgstr "已送达消息渠道"
+
+msgid "Partially sent to channel"
+msgstr "部分内容发送失败"
+
+msgid "Could not send to channel"
+msgstr "未能发送到消息渠道"
+
+msgid "Channel delivery unconfirmed"
+msgstr "消息送达待核实"
+
+msgid "Ask the recipient to send a new WhatsApp message before replying."
+msgstr "请让收件人先发一条新的 WhatsApp 消息，再回复。"
+
+msgid "An attachment could not be sent."
+msgstr "有一个附件发送失败。"

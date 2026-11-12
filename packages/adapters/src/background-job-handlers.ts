@@ -1,6 +1,7 @@
 import type {
   AgentHomeStore,
   AgentRuntime,
+  ArtifactStore,
   BackgroundJobExecution,
   BackgroundJobHandlers,
   JobPublisher,
@@ -61,6 +62,7 @@ export function createBackgroundJobHandlers(deps: {
   deploymentModelKey?: string;
   deploymentModelConfigured?: boolean;
   messaging?: MessagingSurface;
+  artifacts?: Pick<ArtifactStore, "get">;
   cloudAgent?: CloudAgentConnection | null;
   nativeEvents?: Pick<NativeRoutineEventService, "poll" | "notionSignal"> &
     Partial<Pick<NativeRoutineEventService, "slackSignal" | "slackLifecycle" | "discordSignal">>;
@@ -94,7 +96,13 @@ export function createBackgroundJobHandlers(deps: {
     runAsSystem("drain the messaging outbox across Spaces", async () => {
       if (!deps.messaging) return;
       await deliverMessagingOutbound(
-        { prisma: deps.prisma, messaging: deps.messaging, events: deps.events, jobs: deps.jobs },
+        {
+          prisma: deps.prisma,
+          messaging: deps.messaging,
+          events: deps.events,
+          jobs: deps.jobs,
+          artifacts: deps.artifacts,
+        },
         { runId },
         {
           operationId: `messaging.deliver:${runId ?? "drain"}`,
@@ -147,7 +155,13 @@ export function createBackgroundJobHandlers(deps: {
       // copy them into the outbox. Never let mirror failures fail the run.
       if (deps.messaging) {
         await mirrorMessagingOutbound(
-          { prisma: deps.prisma, messaging: deps.messaging, events: deps.events, jobs: deps.jobs },
+          {
+            prisma: deps.prisma,
+            messaging: deps.messaging,
+            events: deps.events,
+            jobs: deps.jobs,
+            artifacts: deps.artifacts,
+          },
           payload.runId,
         );
         await deps.jobs.enqueue(messagingDeliverJob()).catch(async (error) => {

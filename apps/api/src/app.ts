@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { ORPCError, onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
@@ -131,6 +130,7 @@ import {
   teamChatSenderCanWakeMessageRoutines,
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
+import { createMessagingReceipts } from "./messaging-receipts.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
 import { registerNativeEnterpriseWebhooks } from "./native-enterprise-webhooks.js";
 import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
@@ -608,6 +608,7 @@ async function buildApp(
     deploymentModelKey: env.deploymentModelKey,
     deploymentModelConfigured: env.deploymentModelConfigured,
     messaging,
+    artifacts,
     cloudAgent,
   });
   if (inMemoryJobs) {
@@ -904,6 +905,7 @@ async function buildApp(
   /** Constructed even before start() succeeds so stop() can cancel in-flight startup. */
   let teamChatBridgeInstance: TeamChatBridge | undefined;
   const pendingTeamChatInbound = new PendingTeamChatInbound();
+  const messagingReceipts = messaging ? createMessagingReceipts(messaging) : undefined;
   if (messaging) {
     const inboundDeps = {
       prisma,
@@ -915,21 +917,29 @@ async function buildApp(
         signupsEnabled: env.signupsEnabled,
         signupAllowlist: env.signupAllowlist,
       },
-      typing: (threadId) => {
-        // Keep conversation addresses out of trace ids — those reach logs
-        // and telemetry, a different trust boundary than the database.
-        const operationId = `messaging.typing:${randomUUID()}`;
-        return messaging.sendTyping(threadId, {
-          operationId,
-          traceId: operationId,
-          spaceId: "",
-          userId: "",
-          // Cosmetic side call: the wait is bounded so a stalled vendor
-          // response never holds our callback chain (the Chat SDK adapter
-          // API cannot cancel the underlying request itself).
-          signal: AbortSignal.timeout(2000),
-        });
-      },
+      artifacts,
+      acknowledge: (event, runId) =>
+        messagingReceipts?.acknowledge(event.threadId, event.handle, () =>
+          runAsSystem("check for a channel reply before acknowledging", async () => {
+            const messages = await prisma.message.findMany({
+              where: { runId, role: "bot" },
+              select: { id: true },
+            });
+            if (!messages.length) return false;
+            return Boolean(
+              await prisma.messagingOutbound.findFirst({
+                where: {
+                  sourceMessageId: { in: messages.map(({ id }) => id) },
+                  OR: [
+                    { deliveryState: { in: ["accepted", "delivered"] } },
+                    { deliveryState: null, status: "sent", providerHandle: { not: null } },
+                  ],
+                },
+                select: { id: true },
+              }),
+            );
+          }),
+        ),
     } satisfies Parameters<typeof createMessagingInboundHandler>[0];
     const inbound = createMessagingInboundHandler(inboundDeps);
     const handleTeamChatInbound = async (
@@ -1098,7 +1108,7 @@ async function buildApp(
     }
     const handleInbound = async (event: MessagingInboundEvent) => {
       if (event.type !== "message") {
-        await applyMessagingOutboundStatus(prisma, event);
+        await applyMessagingOutboundStatus(prisma, event, events);
         return;
       }
       if (prefersTeamChatSurface(event, env.teamChatBotId)) {
@@ -1212,6 +1222,7 @@ async function buildApp(
         await readiness?.close().catch(() => undefined);
         oauthLogins.abortAll();
         messagingStopped = true;
+        messagingReceipts?.stop();
         clearMessagingRetryDelay?.();
         clearTeamChatRetryDelay?.();
         pendingTeamChatInbound.reject(new Error("Team chat bridge stopped before startup"));

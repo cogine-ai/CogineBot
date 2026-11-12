@@ -17,6 +17,7 @@ import type { PoolClient } from "pg";
 import { returnBotMessageOutcome } from "./bot-messages.js";
 import { settlePeerDelivery } from "./collaboration-policy.js";
 import { scheduleComputerControlExpiry } from "./computer-control.js";
+import { MESSAGING_CLAIM_TTL_MS, MESSAGING_PENDING_STATUSES } from "./messaging-delivery.js";
 import { findRunRecoveryBlockers } from "./run-recovery.js";
 import { reconcileStuckWork } from "./stuck-work.js";
 import { isUserProgressClientNonce } from "./user-progress.js";
@@ -285,8 +286,17 @@ export function createJobReconciler(
         }),
         deps.prisma.messagingOutbound.findFirst({
           where: {
-            status: "pending",
-            OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+            OR: [
+              {
+                status: { in: MESSAGING_PENDING_STATUSES },
+                OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+              },
+              {
+                status: "sent",
+                deliveryState: "sending",
+                claimStartedAt: { lte: new Date(now.getTime() - MESSAGING_CLAIM_TTL_MS) },
+              },
+            ],
           },
           select: { id: true },
         }),

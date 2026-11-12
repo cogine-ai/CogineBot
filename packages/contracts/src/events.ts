@@ -10,6 +10,7 @@ export const ProductEventType = z.enum([
   "thread.message.created",
   "thread.cleared",
   "thread.message.updated",
+  "thread.message.delivery",
   "thread.message.reaction",
   "thread.progress",
   "thread.artifact",
@@ -423,12 +424,19 @@ export const ReplyPreviewSchema = z.object({
 });
 export type ReplyPreview = z.infer<typeof ReplyPreviewSchema>;
 
+export const MessagingDeliverySchema = z.object({
+  state: z.enum(["sending", "accepted", "delivered", "partial_failure", "failed", "unknown"]),
+  reason: z.enum(["reply_window_closed", "attachment_unavailable", "rejected"]).optional(),
+});
+export type MessagingDelivery = z.infer<typeof MessagingDeliverySchema>;
+
 export const ThreadMessageSchema = z.object({
   id: Id,
   threadId: Id,
   seq: z.number().int().nonnegative(),
   role: MessageRole,
   blocks: z.array(MessageBlock),
+  messagingDelivery: MessagingDeliverySchema.optional(),
   botId: Id.optional(),
   replyToMessageId: Id.optional(),
   replyQuote: z.string().optional(),

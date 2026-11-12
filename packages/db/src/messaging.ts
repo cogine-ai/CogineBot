@@ -240,6 +240,7 @@ export interface RedeemedMessagingLink {
 export async function redeemMessagingLinkCode(
   prisma: PrismaClient,
   request: { code: string; provider: string; address: string; dmThreadId: string | null },
+  onRedeemed?: (tx: Prisma.TransactionClient, link: RedeemedMessagingLink) => Promise<void>,
 ): Promise<RedeemedMessagingLink | null> {
   const row = await prisma.messagingLinkCode.findUnique({ where: { code: request.code } });
   if (!row || row.expiresAt.getTime() < Date.now()) return null;
@@ -251,39 +252,32 @@ export async function redeemMessagingLinkCode(
       const existing = await tx.messagingIdentity.findUnique({
         where: { provider_address: { provider: request.provider, address: request.address } },
       });
-      if (existing) {
-        if (existing.userId !== row.userId) return null;
-        await tx.messagingIdentity.update({
-          where: { id: existing.id },
-          // The identity must follow the bot's space: runs resolve
-          // credentials, memory, and approval rules from run.spaceId.
-          data: { botId: row.botId, spaceId: row.spaceId, dmThreadId: request.dmThreadId },
-        });
-        return {
-          identityId: existing.id,
-          userId: row.userId,
-          spaceId: row.spaceId,
-          botId: row.botId,
-          confirmationKey: `link:${row.id}`,
-        };
-      }
-      const identity = await tx.messagingIdentity.create({
-        data: {
-          provider: request.provider,
-          address: request.address,
-          dmThreadId: request.dmThreadId,
-          userId: row.userId,
-          spaceId: row.spaceId,
-          botId: row.botId,
-        },
-      });
-      return {
+      if (existing && existing.userId !== row.userId) return null;
+      const identity = existing
+        ? await tx.messagingIdentity.update({
+            where: { id: existing.id },
+            // The identity follows its Bot's Space on relink.
+            data: { botId: row.botId, spaceId: row.spaceId, dmThreadId: request.dmThreadId },
+          })
+        : await tx.messagingIdentity.create({
+            data: {
+              provider: request.provider,
+              address: request.address,
+              dmThreadId: request.dmThreadId,
+              userId: row.userId,
+              spaceId: row.spaceId,
+              botId: row.botId,
+            },
+          });
+      const link = {
         identityId: identity.id,
         userId: row.userId,
         spaceId: row.spaceId,
         botId: row.botId,
         confirmationKey: `link:${row.id}`,
       };
+      await onRedeemed?.(tx, link);
+      return link;
     });
   } catch (error) {
     // botId is unique (one chat app per bot) and (provider, address) can race

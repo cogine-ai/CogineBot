@@ -292,3 +292,59 @@ test("team conversation settings open from messaging overlay", async ({ page }, 
   await expect(conversationSettings.getByText("GitHub")).toBeVisible();
   await captureScreenshot(page, testInfo, "messaging-team-conversation-settings");
 });
+
+test("shows channel acceptance and delivery uncertainty beside bot replies", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `channel-delivery-${stamp}@example.test`, "password12", "Channel Delivery");
+  await completeOnboarding(page);
+  await page.goto("/app");
+  await page.waitForURL(/\/app\/[^/]+$/);
+
+  const addDeliveryFixture = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    const snapshot = payload.json?.thread ?? payload.json;
+    if (Array.isArray(snapshot?.messages)) {
+      const previous = Math.max(
+        0,
+        ...snapshot.messages.map((message: { seq: number }) => message.seq),
+      );
+      for (const [index, [state, text]] of [
+        ["accepted", "I saved your meeting notes."],
+        ["delivered", "The summary is ready."],
+        ["partial_failure", "The text was sent. The attachment is missing."],
+        ["unknown", "I prepared a follow-up."],
+      ].entries()) {
+        snapshot.messages.push({
+          id: `delivery-fixture-${index}`,
+          threadId: snapshot.threadId,
+          botId: snapshot.botId,
+          role: "bot",
+          seq: previous + index + 1,
+          blocks: [{ kind: "text", text }],
+          messagingDelivery: {
+            state,
+            ...(state === "partial_failure" && { reason: "attachment_unavailable" }),
+          },
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    await route.fulfill({ response, json: payload });
+  };
+  await page.route("**/rpc/bootstrap", addDeliveryFixture);
+  await page.route("**/rpc/threads/get", addDeliveryFixture);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const labels = page.getByTestId("message-channel-delivery");
+  await expect(labels).toHaveCount(4);
+  await expect(labels.nth(0)).toHaveText("Accepted by channel");
+  await expect(labels.nth(1)).toHaveText("Delivered to channel");
+  await expect(labels.nth(3)).toHaveText("Channel delivery unconfirmed");
+  const partial = labels.nth(2);
+  await expect(partial.getByText("An attachment could not be sent.")).toBeHidden();
+  await partial.getByText("Partially sent to channel").click();
+  await expect(partial.getByText("An attachment could not be sent.")).toBeVisible();
+  await captureScreenshot(page, testInfo, "messaging-channel-delivery");
+});
