@@ -809,6 +809,7 @@ const imageAdmissionRunSelect = {
   modelPinned: true,
   leaseFence: true,
   attemptModel: true,
+  botSettingsSnapshot: true,
   quotaWait: true,
   sourceMessage: { select: { blocks: true } },
 } as const;

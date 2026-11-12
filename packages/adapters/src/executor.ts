@@ -83,6 +83,7 @@ import {
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   BotSecretName,
+  BotSettingsRunSnapshot,
   botSecretSubmissionSchema,
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
@@ -106,6 +107,7 @@ import {
   runQuotaWaitStateSchema,
   SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
+  TimeZoneSchema,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
 import {
@@ -452,6 +454,22 @@ import {
 } from "./model-vision.js";
 import { nativeCheckpointRecovery } from "./native-connectors/effect.js";
 import { verifyRoutineRetryNativeSource } from "./native-connectors/events/store.js";
+import type { OwnSettingsRequest } from "./own-bot-settings.js";
+import {
+  hasOwnSettingsWrite,
+  OWN_INSTRUCTIONS_BASELINE_UNKNOWN,
+  ownBotSettingsArgs,
+  prepareOwnBotSettings,
+  profileFields,
+  readOwnBotSettings,
+  readOwnSettingsRequest,
+} from "./own-bot-settings.js";
+import {
+  commitOwnBotSettings,
+  lockOwnSettingsRun,
+  ownSettingsApprovalBlock,
+  settingsRequestBelongsToRun,
+} from "./own-bot-settings-write.js";
 import { prepareSharedPageUpdate, sharedPageUpdateRequest } from "./page-share-update.js";
 import {
   preparePageToolRequest,
@@ -4461,7 +4479,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ...initialBotCommandEnvironment,
         });
         // modelPinned distinguishes the captured choice from an attempt's recorded model.
-        const preferredModel = runModelChoice(run, bot);
+        const settingsSnapshot = BotSettingsRunSnapshot.safeParse(run.botSettingsSnapshot).data;
+        const preferredModel = settingsSnapshot ?? runModelChoice(run, bot);
+        const settingsSystemModel = Boolean(
+          settingsSnapshot && !settingsSnapshot.modelCredentialId,
+        );
         const quotaTarget = quotaWait?.target;
         const modelChoice = quotaTarget
           ? {
@@ -4478,7 +4500,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           : preferredModel;
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);
         const overrideCredential =
-          hasModelOverride && modelChoice.modelProvider && quotaTarget?.modelCredentialId !== null
+          hasModelOverride &&
+          modelChoice.modelProvider &&
+          quotaTarget?.modelCredentialId !== null &&
+          !(settingsSystemModel && !quotaTarget)
             ? await findConnectedModelCredential(
                 deps.prisma,
                 run,
@@ -4739,7 +4764,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const runDeployment = deps.deploymentModelConfigured ? resolveDeploymentModel() : null;
         const runtimeFallback = runtimeFallbackModel(deps.runtime);
         const pinError =
-          hasModelOverride && quotaTarget?.modelCredentialId !== null
+          hasModelOverride &&
+          quotaTarget?.modelCredentialId !== null &&
+          !(settingsSystemModel && !quotaTarget)
             ? pinnedModelCredentialError(modelChoice, overrideCredential)
             : undefined;
         const selected = selectConfiguredModel({
@@ -4804,12 +4831,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
           return;
         }
+        if (
+          !quotaTarget &&
+          settingsSnapshot?.connectionRevision != null &&
+          overrideCredential?.connectionRevision !== settingsSnapshot.connectionRevision
+        ) {
+          await failRunBeforeModel("The model connection for this run changed. Start a new run.");
+          return;
+        }
         if (pinError) {
           await failRunBeforeModel(pinError);
           return;
         }
         if (
-          (run.modelPinned || quotaTarget) &&
+          (run.modelPinned || settingsSnapshot || quotaTarget) &&
           (selected.provider !== modelChoice.modelProvider || selected.id !== modelChoice.modelId)
         ) {
           await failRunBeforeModel("Connect that model provider first");
@@ -4831,7 +4866,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             runModelProvider,
             runModelId,
             (values) => runSecrets.push(...values),
-            quotaTarget ? quotaTarget.modelCredentialId !== null : hasModelOverride,
+            quotaTarget
+              ? quotaTarget.modelCredentialId !== null
+              : hasModelOverride && !settingsSystemModel,
           );
         } catch (error) {
           // A dead or account-switched credential is already deleted. Retrying
@@ -4851,11 +4888,48 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MODEL_LIMIT_RECOVERY_UNAVAILABLE);
           return;
         }
+        const ownsDirectSettings =
+          !thread.groupId &&
+          thread.botId === bot.id &&
+          thread.userId === run.userId &&
+          bot.userId === run.userId &&
+          historyMyChatsAllowed(
+            run,
+            sourceMessage,
+            Boolean(thread.externalConversationId || messagingChannelRun || channelId),
+          );
+        const firstSettingsModelAttempt =
+          fence === 1 ||
+          (run.attemptModel === null &&
+            run.firstResponseAt === null &&
+            run.checkpoint === null &&
+            run.scriptedState === null);
+        const initialSettingsSnapshot =
+          !settingsSnapshot && firstSettingsModelAttempt && typeof bot.settingsRevision === "number"
+            ? {
+                instructions: bot.instructions,
+                revision: bot.settingsRevision,
+                modelProvider: runModelProvider,
+                modelId: runModelId,
+                modelCredentialId: resolved.modelCredentialId,
+                connectionRevision: credential?.connectionRevision ?? null,
+                thinkingLevel: thinkingLevel ?? null,
+              }
+            : undefined;
+        const settingsBaseline = settingsSnapshot ?? initialSettingsSnapshot;
+        const settingsDefaultModel = selectConfiguredModel({
+          override: null,
+          overrideCredential: null,
+          defaultCredential,
+          settings,
+          deployment: runDeployment,
+        });
         // Selection belongs to this lease; the previous attempt may have used a backup.
         // Keep the existing record on unpinned Runs and never overwrite a captured pin.
         await deps.prisma.run.updateMany({
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
           data: {
+            ...(initialSettingsSnapshot ? { botSettingsSnapshot: initialSettingsSnapshot } : {}),
             attemptModel: {
               leaseFence: fence,
               provider: runModelProvider,
@@ -5460,7 +5534,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             blob: turnCheckpoint,
             model: { provider: runModelProvider ?? "", id: runModelId ?? "" },
             tools,
-            instructionsBaseline: bot.instructions,
+            instructionsBaseline: settingsBaseline?.instructions ?? bot.instructions,
             counts: mutatingEffectOccurrences,
           });
           if (!turnState.blob && turnState.sharedPageApproval) {
@@ -6181,8 +6255,60 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (restoredLoginEffect.status === "approved" && queuedApprovalKey !== key)
               return { error: "The protected login request could not be restored." };
           }
+          const restoredSettingsOccurrence =
+            name === "update_bot" && turnState.pendingExecutionId === executionId
+              ? turnState.restoredPending
+              : undefined;
+          const scriptedSettingsReceipt =
+            name === "update_bot" &&
+            savedScript?.pendingEffect?.kind === name &&
+            savedCursor?.phase === "tool" &&
+            executionId === `${runId}:${name}:${savedCursor.ordinal}`
+              ? savedScript.pendingEffect
+              : undefined;
+          const legacyScriptedSettingsKey =
+            scripted &&
+            !isSteeringContinuation &&
+            name === "update_bot" &&
+            approvedEffectReplays.nextToolName() === name &&
+            readOwnSettingsRequest(approvedEffectReplays.nextRequest())
+              ? queuedApprovalKey
+              : undefined;
+          const restoredSettingsKey =
+            scriptedSettingsReceipt?.idempotencyKey ??
+            legacyScriptedSettingsKey ??
+            (restoredSettingsOccurrence
+              ? `${restoredSettingsOccurrence.fingerprint}${restoredSettingsOccurrence.occurrence ? `:${restoredSettingsOccurrence.occurrence}` : ""}`
+              : undefined);
+          const restoredSettingsEffect = restoredSettingsKey
+            ? await deps.prisma.externalEffect.findUnique({
+                where: {
+                  idempotencyKey: restoredSettingsKey,
+                  runId,
+                  spaceId: run.spaceId,
+                  kind: name,
+                },
+              })
+            : null;
+          const restoredSettings = readOwnSettingsRequest(restoredSettingsEffect?.request);
+          if (
+            restoredSettingsEffect &&
+            restoredSettings &&
+            (!settingsRequestBelongsToRun(restoredSettings, run) ||
+              (scriptedSettingsReceipt &&
+                (scriptedSettingsReceipt.id !== restoredSettingsEffect.id ||
+                  scriptedSettingsReceipt.requestDigest !==
+                    scriptedStateDigest(restoredSettingsEffect.request))) ||
+              (restoredSettingsEffect.status === "approved" &&
+                queuedApprovalKey !== restoredSettingsKey))
+          )
+            return { error: "The settings approval could not be restored.", unchanged: true };
+          const boundSettingsEffect = restoredSettings ? restoredSettingsEffect : null;
           const restoredApprovalEffect =
-            restoredConnectionEffect ?? restoredPageEffect ?? restoredLoginEffect;
+            restoredConnectionEffect ??
+            restoredPageEffect ??
+            restoredLoginEffect ??
+            boundSettingsEffect;
           const useApprovedQueue =
             !restoredApprovalEffect || queuedApprovalKey === restoredApprovalEffect.idempotencyKey;
           const nextApprovedTool = useApprovedQueue
@@ -6289,7 +6415,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? routine.args
                 : authenticated
                   ? authenticated.args
-                  : restoredPageEffect
+                  : restoredPageEffect || boundSettingsEffect
                     ? args
                     : approvedReplayArgs(approvedRequest, args, CATALOG_APPROVAL_TOOL);
             }
@@ -6331,6 +6457,124 @@ export function createRunExecutor(deps: ExecutorDeps) {
               args = pending;
             }
             effectRequest = args;
+          }
+          let ownSettings: OwnSettingsRequest | undefined;
+          if (name === "update_bot") {
+            const { previousInstructions: _previous, reason: _reason, ...publicArgs } = args;
+            args = publicArgs;
+            if (args.bot_id !== undefined)
+              return { error: "This tool only changes the current Bot.", unchanged: true };
+            const changesProfile = profileFields.some((key) => args[key] !== undefined);
+            const changesSettings = hasOwnSettingsWrite(args);
+            const ownerTool =
+              !executionId.startsWith('["pi-tool",') ||
+              executionId.startsWith('["pi-tool","main",');
+            const directOwner = ownerTool && ownsDirectSettings;
+            const continuingSettings = Boolean(boundSettingsEffect && restoredSettings);
+            if (
+              nextApprovedTool === name &&
+              readOwnSettingsRequest(nextApprovedRequest) &&
+              !continuingSettings
+            )
+              return { error: "The settings approval could not be restored.", unchanged: true };
+            if (continuingSettings || changesSettings || !changesProfile) {
+              if (
+                !directOwner ||
+                trust.state.pageInput ||
+                (await trust.receivedOutsideMessage()) ||
+                (changesSettings &&
+                  !continuingSettings &&
+                  (await trust.isOwnSettingsTainted(Boolean(initialSettingsSnapshot))))
+              )
+                return {
+                  error: "Bot settings are available from the owner's direct chat.",
+                  unchanged: true,
+                };
+              if (!(await canReadMyChats()))
+                return { error: "This Bot's settings are unavailable.", unchanged: true };
+              const options = ownBotSettingsArgs.safeParse(args);
+              if (!options.success || args.bot_id !== undefined)
+                return {
+                  error: "Invalid Bot settings. Use the fields listed by update_bot.",
+                  unchanged: true,
+                };
+              if (continuingSettings) {
+                ownSettings = restoredSettings;
+                if (
+                  ownSettings?.after.instructions !== undefined &&
+                  (turnState.ownInstructionsBaseline === undefined ||
+                    !settingsBaseline ||
+                    turnState.ownInstructionsBaseline !== ownSettings.before.instructions ||
+                    settingsBaseline.revision !== ownSettings.revision)
+                )
+                  return { error: OWN_INSTRUCTIONS_BASELINE_UNKNOWN, unchanged: true };
+              } else if (changesSettings) {
+                if (changesProfile || options.data.modelQuery)
+                  return {
+                    error:
+                      "Change advanced settings separately from profile edits or model searches.",
+                    unchanged: true,
+                  };
+                const prepared = await prepareOwnBotSettings(
+                  deps,
+                  { runId, spaceId: run.spaceId, userId: run.userId, botId: bot.id },
+                  context,
+                  options.data,
+                  {
+                    instructions: turnState.ownInstructionsBaseline,
+                    revision: settingsBaseline?.revision,
+                  },
+                  {
+                    ...settingsDefaultModel,
+                    id: settingsDefaultModel.id ?? runtimeFallback?.id,
+                    provider: settingsDefaultModel.provider ?? runtimeFallback?.provider,
+                  },
+                  runSecrets,
+                );
+                if (!("request" in prepared)) {
+                  if ("voices" in prepared && prepared.voices?.length)
+                    trust.recordSettingsCatalogRead();
+                  return prepared;
+                }
+                ownSettings = prepared.request;
+              } else {
+                if (Object.keys(args).some((key) => key !== "modelQuery" && key !== "connection"))
+                  return { error: "Invalid Bot settings. Use the fields listed by update_bot." };
+                const result = await readOwnBotSettings(
+                  deps,
+                  { runId, spaceId: run.spaceId, userId: run.userId, botId: bot.id },
+                  context,
+                  {
+                    ...settingsDefaultModel,
+                    id: settingsDefaultModel.id ?? runtimeFallback?.id,
+                    provider: settingsDefaultModel.provider ?? runtimeFallback?.provider,
+                  },
+                  options.data.modelQuery,
+                  options.data.connection,
+                );
+                if ("voice" in result && result.voice?.choices.length)
+                  trust.recordSettingsCatalogRead();
+                return redactConnectorPayload(result, runSecrets);
+              }
+              if (ownSettings) effectRequest = ownSettings;
+            } else if (
+              !ownerTool ||
+              messagingChannelRun ||
+              thread.groupId ||
+              thread.externalConversationId ||
+              !(
+                (directOwner &&
+                  !trust.state.pageInput &&
+                  !(await trust.receivedOutsideMessage()) &&
+                  (nextApprovedTool === name || !(await trust.isTainted()))) ||
+                (run.trigger === "created" && run.origin === "human")
+              )
+            ) {
+              return {
+                error: "Only the owner can change this Bot's profile from its direct chat.",
+                unchanged: true,
+              };
+            }
           }
           let pageMode: "help" | "read" | "write" | undefined;
           if (name === SAVE_PAGE_TOOL) {
@@ -6564,6 +6808,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const requiresMandatoryApproval =
             requiresUnattendedApproval ||
             generationNeedsApproval ||
+            Boolean(ownSettings) ||
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             historyActionNeedsApproval ||
@@ -7344,6 +7589,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
             await flushConnectionNarration(executionId);
+            if (ownSettings) {
+              const block = ownSettingsApprovalBlock(applied!.effect.id, ownSettings, runSecrets);
+              const pause = await requestPause(
+                () => showApprovalCard(block),
+                observer?.beforeInputPause,
+              );
+              return pause.owned ? pause.result : pauseForApproval();
+            }
             const request = applied!.effect.request;
             const connectorApproval = connectorApprovalFromEffect(request);
             const storedRoute = connectorApproval?.route;
@@ -7534,7 +7787,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else if (gate.action === "execute") {
               if (applied.effect.requiresPeerApprovalRecheck && viaConnector && deps.connector) {
                 pendingPeerConnectorClaim = true;
-              } else if (name !== "request_takeover") {
+              } else if (name !== "request_takeover" && !ownSettings) {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
                 if (name === "schedule_create" && claimedEffect) {
@@ -7573,6 +7826,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
             trust.invalidateDestinationTrust();
             return result;
           };
+          if (ownSettings && applied) {
+            if (!boundSettingsEffect || applied.effect.status !== "approved")
+              return {
+                error: "This settings change needs the owner's confirmation.",
+                unchanged: true,
+              };
+            return commitOwnBotSettings({
+              prisma: deps.prisma,
+              run,
+              effectId: applied.effect.id,
+              request: ownSettings,
+              lease: { owner: workerId, fence },
+              signal: context.signal,
+              secrets: runSecrets,
+              rulesBlock: rulesBlockDispatch,
+              notify: (...args) => deps.events.notify(...args),
+            });
+          }
           if (!pendingPeerConnectorClaim && (await rulesBlockDispatch()))
             return finishPolicyBlock();
           if (historyActionNeedsApproval && !(await canReadMyChats())) {
@@ -9576,6 +9847,39 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             return spawned;
           }
+          if (name === "update_preferences") {
+            const permitted =
+              ownsDirectSettings &&
+              (!executionId.startsWith('["pi-tool",') ||
+                executionId.startsWith('["pi-tool","main",')) &&
+              !trust.state.pageInput &&
+              !(await trust.receivedOutsideMessage());
+            if (!permitted || (args.timezone !== undefined && (await trust.isTainted())))
+              return finish({
+                error: "Account preferences are available from the owner's direct chat.",
+              });
+            if (Object.keys(args).some((key) => key !== "timezone"))
+              return finish({ error: "Only timezone can change here." });
+            if (args.timezone === undefined)
+              return finish(
+                await deps.prisma.user.findUnique({
+                  where: { id: run.userId },
+                  select: { timezone: true },
+                }),
+              );
+            const timezone = TimeZoneSchema.safeParse(args.timezone);
+            if (!timezone.success) return finish({ error: "Specify a valid IANA timezone." });
+            const result = await deps.prisma.$transaction(async (tx) => {
+              if (!(await lockOwnSettingsRun(tx, run, { owner: workerId, fence }, context.signal)))
+                return { error: "This run can no longer change preferences." };
+              return tx.user.update({
+                where: { id: run.userId },
+                data: { timezone: timezone.data },
+                select: { timezone: true },
+              });
+            });
+            return finish(result);
+          }
           if (name === "update_bot") {
             const parsed = parseUpdateBotPatch(args, bot.name);
             if ("error" in parsed) return finish(parsed);
@@ -10268,6 +10572,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().warn("Backup models could not be loaded", { runId, error });
           }
         }
+        const fallbackBindings = new Map<
+          string,
+          Pick<AgentRunRequest["model"], "quotaConnectionRevision" | "thinkingLevel">
+        >();
         const fallbackModelKeys = new Set(
           fallbackModels
             .filter(
@@ -10316,7 +10624,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               // cache-aware context for connections declaring a cache window.
               contextStrategy: deps.contextStrategy,
               instructions: userTurnInstructions({
-                botInstructions: runIdentityInstruction(bot, run.trigger),
+                botInstructions: runIdentityInstruction(
+                  { ...bot, instructions: settingsBaseline?.instructions ?? bot.instructions },
+                  run.trigger,
+                ),
                 groupContext,
                 messagingContext,
                 redactedMemoryContext: memoryContext
@@ -10412,7 +10723,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     const key = JSON.stringify([provider, modelId, modelCredentialId ?? null]);
                     if (!fallbackModelKeys.has(key))
                       throw new Error("Backup model is not selected");
-                    return resolveConnectedModel(
+                    const resolvedFallback = await resolveConnectedModel(
                       { userId: run.userId, spaceId: run.spaceId },
                       provider,
                       modelId,
@@ -10420,6 +10731,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       true,
                       modelCredentialId ?? null,
                     );
+                    fallbackBindings.set(key, resolvedFallback);
+                    return resolvedFallback;
                   }
                 : undefined,
               onModelChange: async (provider, modelId, modelCredentialId) => {
@@ -10430,6 +10743,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ) {
                   throw new Error("Backup model is not selected");
                 }
+                const binding = fallbackBindings.get(
+                  JSON.stringify([provider, modelId, modelCredentialId ?? null]),
+                );
                 const updated = await deps.prisma.run.updateMany({
                   where: {
                     id: runId,
@@ -10439,6 +10755,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   // A backup is an attempt choice, not a replacement for a captured pin.
                   data: {
+                    ...(settingsBaseline
+                      ? {
+                          botSettingsSnapshot: {
+                            ...settingsBaseline,
+                            modelProvider: provider,
+                            modelId,
+                            modelCredentialId: modelCredentialId ?? null,
+                            connectionRevision: binding?.quotaConnectionRevision ?? null,
+                            thinkingLevel: binding?.thinkingLevel ?? null,
+                          },
+                        }
+                      : {}),
                     attemptModel: {
                       leaseFence: fence,
                       provider,
@@ -10459,6 +10787,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               },
               resumeFromCheckpoint: takeoverResume?.checkpoint,
+              ...(scripted &&
+              !isSteeringContinuation &&
+              approvedEffects[0]?.kind === "update_bot" &&
+              readOwnSettingsRequest(approvedEffects[0].request)
+                ? { script: [{ toolCalls: [{ name: "update_bot", args: {} }], complete: true }] }
+                : {}),
               ...(scripted
                 ? {}
                 : {
@@ -12035,7 +12369,7 @@ export function userTurnInstructions(parts: {
     offeredBuiltinClause(
       parts.disabledBuiltinTools,
       "update_bot",
-      "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
+      "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message. Call update_bot with no fields for this bot's settings and choices. If several model connections or voices match, ask which to use in a normal reply and wait for the next message. For instructions, model, thinking, voice, or read-aloud, call update_bot separately from profile changes and wait for the owner's confirmation. These instructions belong to this Bot. If asked for personal instructions across Bots, explain the scope and point to the instructions editor in each Bot's settings.",
     ),
     offeredBuiltinClause(
       parts.disabledBuiltinTools,

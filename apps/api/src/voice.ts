@@ -238,6 +238,9 @@ export async function disconnectVoiceCredential(
   await withSerializableRetry(() =>
     deps.prisma.$transaction(
       async (tx) => {
+        await tx.$queryRaw`SELECT id FROM user_voice_credentials
+          WHERE "userId" = ${actor.userId} AND provider = ${provider}
+          ORDER BY id FOR UPDATE`;
         const existing = await tx.userVoiceCredential.findMany({
           where: { userId: actor.userId, provider },
         });

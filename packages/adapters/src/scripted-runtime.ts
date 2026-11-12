@@ -464,6 +464,11 @@ export function inferScript(
       },
     ];
   }
+  const settings = /^call update_bot with (\{[\s\S]*\})$/i.exec(pageWords.trim());
+  if (settings) {
+    const args = jsonObject(settings[1]!);
+    if (args) return [{ toolCalls: [{ name: "update_bot", args }], complete: true }];
+  }
   // Before every content-based intent so payload text cannot steal the branch.
   const shellCommand = /run the shell command\s+([\s\S]+)$/i.exec(prompt)?.[1]?.trim();
   if (shellCommand) {

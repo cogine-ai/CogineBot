@@ -109,6 +109,68 @@ function fixture(group = false) {
 }
 
 describe("current image send admission", () => {
+  it.each([
+    [false, false, "unsupported"],
+    [true, false, "supported"],
+    [true, true, "unknown"],
+  ] as const)(
+    "uses the waiting Run model (vision %s, retired revision %s)",
+    async (vision, changed, expected) => {
+      const { tx } = fixture();
+      const botModel = vision ? "text" : "vision";
+      const runModel = vision ? "vision" : "text";
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
+        modelProvider: "openai-compatible",
+        modelId: botModel,
+        modelCredentialId: "credential-1",
+        thinkingLevel: null,
+      });
+      tx.userModelCredential.findFirst.mockResolvedValue({
+        id: "credential-1",
+        provider: "openai-compatible",
+        secretId: "secret-1",
+        preferences: [],
+        connectionRevision: 2,
+      });
+      const status = await threadModelImageInput(
+        tx as never,
+        { userId: "user-1", spaceId: "space-1" } as Actor,
+        "bot-1",
+        {
+          id: "run-1",
+          status: "waiting_input",
+          trigger: "user",
+          modelProvider: null,
+          modelId: null,
+          thinkingLevel: null,
+          botSettingsSnapshot: {
+            instructions: "",
+            revision: 1,
+            modelProvider: "openai-compatible",
+            modelId: runModel,
+            modelCredentialId: "credential-1",
+            connectionRevision: changed ? 1 : 2,
+            thinkingLevel: null,
+          },
+        },
+        {
+          deployment: null,
+          secrets: {
+            load: async () =>
+              JSON.stringify({
+                kind: "openai_compatible",
+                baseUrl: "https://model.example.test/v1",
+                enabledModelIds: ["vision", "text"],
+                visionModelIds: ["vision"],
+              }),
+          },
+        },
+      );
+      expect(status).toBe(expected);
+    },
+  );
+
   it("admits legacy image sends even when the client omits the new field", async () => {
     const { tx, send } = fixture();
     await expect(send(undefined, null)).rejects.toMatchObject({ code: "CONFLICT" });

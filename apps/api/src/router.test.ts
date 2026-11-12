@@ -421,6 +421,44 @@ describe("model setup gate", () => {
     });
   });
 
+  it.each([
+    [false, "Unavailable"],
+    [true, "openrouter/test-model"],
+  ])(
+    "shows the system model in Bot history only when available (%s)",
+    async (configured, label) => {
+      const { actor, deps, handler } = modelGateDeps({
+        agentRuntime: "pi",
+        deploymentModelConfigured: configured,
+      });
+      Object.assign(deps.prisma, {
+        bot: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "bot-1",
+            name: "Bot",
+            instructions: "",
+            modelProvider: null,
+            modelId: null,
+            modelCredentialId: null,
+            thinkingLevel: null,
+            voiceId: null,
+            autoSpeak: false,
+            settingsRevision: 0,
+            settingsHistory: [],
+          }),
+        },
+        spaceVoicePreference: { findFirst: vi.fn().mockResolvedValue(null) },
+      });
+      const response = await call(handler, actor, "bots/settingsHistory", { botId: "bot-1" });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        json: {
+          current: expect.arrayContaining([{ field: "model", source: "system", after: label }]),
+        },
+      });
+    },
+  );
+
   it("names the provider the deployment default runs on with host credentials", async () => {
     const hostCredentials = modelGateDeps({
       agentRuntime: "pi",
@@ -4204,6 +4242,8 @@ describe("bot model auth on save", () => {
       title: "",
       description: "",
       instructions: "",
+      settingsRevision: 0,
+      settingsHistory: [],
       color: "ink",
       notifyOnFinish: true,
       pinned: false,
@@ -4218,6 +4258,7 @@ describe("bot model auth on save", () => {
       autoSpeak: false,
       modelProvider: "openai-codex",
       modelId,
+      modelCredentialId: null,
       thinkingLevel: null,
       teamChatAmbientEnabled: false,
       teamChatRules: "",
@@ -4281,6 +4322,7 @@ describe("bot model auth on save", () => {
       userModelCredential: { findFirst: credentialFindFirst },
       secret: { findFirst: secretFindFirst },
       bot: { findFirst: vi.fn(async () => bot), update: botUpdate },
+      botSettingsJournal: { upsert: vi.fn() },
       thread: { update: vi.fn(async () => ({ nextEventSeq: 2 })) },
       event: { create: vi.fn(async () => ({ seq: 1 })) },
     };

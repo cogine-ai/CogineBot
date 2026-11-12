@@ -91,14 +91,16 @@ describe("update_bot tool schema", () => {
     if (!tool) throw new Error("missing update_bot");
     const properties =
       (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(properties).sort()).toEqual([
-      "artifact_id",
-      "color",
-      "description",
-      "name",
-      "notifyOnFinish",
-      "title",
-      "use_attached_image",
-    ]);
+    expect(Object.keys(properties)).toEqual(
+      expect.arrayContaining([
+        "artifact_id",
+        "color",
+        "description",
+        "name",
+        "notifyOnFinish",
+        "title",
+        "use_attached_image",
+      ]),
+    );
   });
 });

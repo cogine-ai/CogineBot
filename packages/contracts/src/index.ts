@@ -5,6 +5,7 @@ export * from "./board.js";
 export * from "./bot-avatar.js";
 export * from "./bot-package.js";
 export * from "./bot-secrets.js";
+export * from "./bot-settings.js";
 export * from "./bot-templates.js";
 export * from "./builtin-tools.js";
 export * from "./cloudflare-ai-gateway.js";

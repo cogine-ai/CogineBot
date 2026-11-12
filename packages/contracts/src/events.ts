@@ -1,5 +1,6 @@
 import * as z from "zod";
 import { botSecretDestinationSchema, LoginFieldLabels } from "./bot-secrets.js";
+import { BotSettingsCardSchema } from "./bot-settings.js";
 import { HistorySourceReferencesSchema } from "./history.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
@@ -105,6 +106,7 @@ const AskMessageBlock = z.object({
   kind: z.literal("ask"),
   text: z.string(),
   approvalEffectId: Id.optional(),
+  botSettings: BotSettingsCardSchema.optional(),
   /** The pending card presents an exact list of connector actions. */
   approvalScope: z.literal("connector_batch").optional(),
   detail: z.string().optional(),

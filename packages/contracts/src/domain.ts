@@ -1,6 +1,7 @@
 import * as z from "zod";
 import { AGENT_SECRET_NAME_PATTERN } from "./agent-secret-name.js";
 import { BotAvatarValueSchema } from "./bot-avatar.js";
+import { BOT_INSTRUCTIONS_MAX_LENGTH, ThinkingLevelSchema } from "./bot-settings.js";
 import { DisabledBuiltinToolsSchema } from "./builtin-tools.js";
 import {
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
@@ -41,17 +42,8 @@ export const TimeZoneSchema = z
   .max(64)
   .refine(isValidTimeZone, { message: "Unknown timezone" });
 
-export const ThinkingLevelSchema = z.enum([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-]);
-export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>;
-
+export type { ThinkingLevel } from "./bot-settings.js";
+export { BOT_INSTRUCTIONS_MAX_LENGTH, ThinkingLevelSchema } from "./bot-settings.js";
 export { AGENT_SECRET_NAME_PATTERN };
 
 export const AgentSecretSchema = z.object({
@@ -384,7 +376,6 @@ export type SpaceNavigation = z.infer<typeof SpaceNavigationSchema>;
 export const BOT_NAME_MAX_LENGTH = 80;
 export const BOT_TITLE_MAX_LENGTH = 500;
 export const BOT_DESCRIPTION_MAX_LENGTH = 4000;
-export const BOT_INSTRUCTIONS_MAX_LENGTH = 20000;
 
 export const BOT_CREATION_NOT_WRITTEN_REASON = "bot_create_not_written";
 

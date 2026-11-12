@@ -45,6 +45,11 @@ import {
   WebsiteLoginAnswer,
 } from "./bot-secrets.js";
 import {
+  BotSettingsHistorySchema,
+  UndoBotSettingsInput,
+  UndoBotSettingsResult,
+} from "./bot-settings.js";
+import {
   DeploymentTransferApproveInput,
   DeploymentTransferCancelInput,
   DeploymentTransferCommitInput,
@@ -510,6 +515,8 @@ export const appContract = {
     duplicate: oc.input(botId).output(BotSchema),
     reorder: oc.input(ReorderBotsInput).output(z.object({ ok: z.literal(true) })),
     update: oc.input(UpdateBotInput).output(BotSchema),
+    settingsHistory: oc.input(botId).output(BotSettingsHistorySchema),
+    undoSettings: oc.input(UndoBotSettingsInput).output(UndoBotSettingsResult),
     setComputer: oc.input(z.object({ botId: Id, mode: ComputerModeSchema })).output(BotSchema),
     archive: oc.input(botId).output(z.object({ ok: z.literal(true) })),
     restore: oc.input(botId).output(z.object({ ok: z.literal(true) })),

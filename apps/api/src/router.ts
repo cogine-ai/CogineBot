@@ -215,12 +215,19 @@ import {
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
 } from "@rakazo/core";
-import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type {
+  BoardEvents,
+  Board as BoardRow,
+  BotSettingsRow,
+  PrismaClient,
+  ThreadEvents,
+} from "@rakazo/db";
 import {
   appendEventInTransaction,
   assertManagedPluginActive,
   BotSectionNameConflictError,
   bindWaitingTakeoverControl,
+  botSettingsVersions,
   CannotChangeCollaborationError,
   CannotDeleteDefaultSpaceError,
   CannotDeleteLastSpaceError,
@@ -258,6 +265,7 @@ import {
   listTicketComments,
   loadDelegatedApprovals,
   lockBotCreationIntro,
+  lockDefaultVoiceCredential,
   lockOwnedGroup,
   lockPluginInstall,
   lockSpaceModelSelection,
@@ -305,6 +313,11 @@ import {
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
 import { createBotPackagesService } from "./bot-packages.js";
+import {
+  botSettingsHistory,
+  getOwnedBotSettings,
+  undoBotSettings,
+} from "./bot-settings-history.js";
 import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   applyChatGPTPlanCatalog,
@@ -2403,6 +2416,145 @@ export function createRouter(deps: RouterDeps) {
         await repos.reorderBots(context.actor, input.botIds);
         return { ok: true as const };
       }),
+      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) =>
+        effectiveBotSettingsHistory(
+          deps,
+          context.actor,
+          await getOwnedBotSettings(deps.prisma, context.actor, input.botId),
+        ),
+      ),
+      undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
+        const actor = context.actor;
+        const bot = await getOwnedBotSettings(deps.prisma, actor, input.botId);
+        if (!bot.thread) throw new IsolationError();
+        const versions = botSettingsVersions(bot);
+        const replay = versions.some((version) => version.undo?.clientNonce === input.clientNonce);
+        const version = replay ? undefined : versions.find(({ id }) => id === input.versionId);
+        const previous = version?.before;
+        const target = previous && {
+          modelProvider:
+            previous.modelProvider === undefined ? bot.modelProvider : previous.modelProvider,
+          modelId: previous.modelId === undefined ? bot.modelId : previous.modelId,
+          modelCredentialId:
+            previous.modelCredentialId === undefined
+              ? bot.modelCredentialId
+              : previous.modelCredentialId,
+        };
+        const model =
+          target?.modelProvider && (previous?.modelProvider || previous?.thinkingLevel)
+            ? await prepareExistingModelAuth(deps, actor, target, codexCatalog).catch((error) => {
+                if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE") return null;
+                throw error;
+              })
+            : undefined;
+        const voice = previous?.voiceId ? await loadDefaultVoiceCredential(deps, actor) : undefined;
+        const restoreVoiceId = previous?.voiceId === undefined ? bot.voiceId : previous.voiceId;
+        const availableVoice =
+          voice &&
+          (await createVoiceProvider(voice.cred.provider)
+            .listVoices(voice.apiKey, voiceContext(actor, context.signal))
+            .then((choices) =>
+              choices.some(({ id }) => id === (restoreVoiceId ?? voice.cred.voiceId)),
+            )
+            .catch(() => false));
+        const result = await undoBotSettings({
+          prisma: deps.prisma,
+          actor,
+          threadId: bot.thread.id,
+          request: input,
+          notify: (threadId, seq) => deps.events.notify(threadId, seq),
+          validate: async (tx, patch) => {
+            if (target?.modelProvider && (patch.modelProvider || patch.thinkingLevel)) {
+              if (!model || !target.modelCredentialId) return false;
+              await tx.$queryRaw`SELECT id FROM user_model_credentials
+                WHERE id = ${target.modelCredentialId} AND "userId" = ${actor.userId} FOR SHARE`;
+              const checked = await validateModelBinding(
+                tx,
+                deps.secrets,
+                actor,
+                { ...target, expectedRevision: model.connectionRevision },
+                model,
+              ).catch((error) => {
+                if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE")
+                  return undefined;
+                throw error;
+              });
+              if (!checked) return false;
+              if (patch.thinkingLevel && target.modelId) {
+                const allowed =
+                  checked.credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+                    ? compatibleThinkingLevels(
+                        checked.credential,
+                        checked.plaintext,
+                        target.modelId,
+                      ).allowed
+                    : (listPiCatalog().find(
+                        ({ provider, id }) =>
+                          provider === target.modelProvider && id === target.modelId,
+                      )?.thinkingLevels ?? ["off"]);
+                if (!allowed.includes(patch.thinkingLevel)) return false;
+              }
+            } else if (patch.thinkingLevel) {
+              const defaultConnection = await findDefaultModelCredential(tx, actor);
+              if (defaultConnection) {
+                const [locked] = await tx.$queryRaw<{ id: string }[]>`
+                  SELECT id FROM user_model_credentials WHERE id = ${defaultConnection.id}
+                    AND "userId" = ${actor.userId}
+                    AND "connectionRevision" = ${defaultConnection.connectionRevision} FOR SHARE`;
+                if (!locked) return false;
+              }
+              const provider = defaultConnection?.provider ?? deps.env.defaultProvider;
+              const id = defaultConnection
+                ? (defaultConnection.defaultModel ??
+                  defaultCatalogModelId(defaultConnection.provider))
+                : deps.env.defaultModel;
+              if (!id) return false;
+              const allowed = listPiCatalog().find(
+                (entry) => entry.provider === provider && entry.id === id,
+              )?.thinkingLevels ?? ["off"];
+              if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && defaultConnection && id) {
+                const loaded = await loadStoredModelSecret(
+                  tx,
+                  deps.secrets,
+                  actor.userId,
+                  defaultConnection.secretId,
+                );
+                if (
+                  loaded.status !== "loaded" ||
+                  !compatibleThinkingLevels(
+                    defaultConnection,
+                    loaded.plaintext,
+                    id,
+                  ).allowed.includes(patch.thinkingLevel)
+                )
+                  return false;
+              } else if (!allowed.includes(patch.thinkingLevel)) return false;
+            }
+            if (patch.voiceId) {
+              const currentVoice =
+                voice && (await lockDefaultVoiceCredential(tx, actor, voice.cred.id));
+              if (
+                !voice ||
+                !availableVoice ||
+                currentVoice?.id !== voice.cred.id ||
+                currentVoice.updatedAt.getTime() !== voice.cred.updatedAt.getTime() ||
+                currentVoice.voiceId !== voice.cred.voiceId
+              )
+                return false;
+            }
+            return true;
+          },
+        });
+        if (result.status === "updated") return result;
+        return {
+          ...result,
+          history: await effectiveBotSettingsHistory(
+            deps,
+            actor,
+            await getOwnedBotSettings(deps.prisma, actor, input.botId),
+          ),
+        };
+      }),
       update: authed.bots.update.handler(async ({ context, input }) => {
         const existing = await repos.getBot(context.actor, input.botId);
         if (input.sectionId) {
@@ -2532,6 +2684,7 @@ export function createRouter(deps: RouterDeps) {
           threadId: existing.thread.id,
           botId: input.botId,
           expectedInstructions: input.expectedInstructions,
+          settingsOwnerId: context.actor.userId,
           emitBotUpdated: botProfileChanged(input),
           validate,
           data: {
@@ -8473,18 +8626,71 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
   const hasDeployment = Boolean(deps.env.deploymentModelConfigured) && platformAllowed;
   const hasLocal =
     (settings?.defaultModelProvider ?? deps.env.defaultProvider) === LOCAL_PROVIDER_ID;
+  const hasSystemModel =
+    deps.env.agentRuntime === "scripted" ||
+    hasDeployment ||
+    (hasLocal && Boolean(deps.env.deploymentModelConfigured));
   return {
     credential,
     settings,
     platformAllowed,
     hasDeployment,
     hasLocal,
-    needsModel:
-      deps.env.agentRuntime !== "scripted" &&
-      !credential &&
-      !hasDeployment &&
-      !(hasLocal && deps.env.deploymentModelConfigured),
+    hasSystemModel,
+    needsModel: !credential && !hasSystemModel,
   };
+}
+
+async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: BotSettingsRow) {
+  const [setup, voice, bound] = await Promise.all([
+    modelSetup(deps, actor),
+    findDefaultVoiceCredential(deps.prisma, actor),
+    bot.modelProvider && bot.modelId && bot.modelCredentialId
+      ? findBoundModelCredential(deps.prisma, actor, {
+          provider: bot.modelProvider,
+          modelId: bot.modelId,
+          modelCredentialId: bot.modelCredentialId,
+        })
+      : null,
+  ]);
+  const defaultProvider =
+    setup.credential?.provider ??
+    (setup.hasSystemModel
+      ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
+      : null);
+  const defaultModel =
+    setup.credential?.defaultModel ??
+    (setup.credential
+      ? defaultCatalogModelId(setup.credential.provider)
+      : setup.hasSystemModel
+        ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
+        : null);
+  const provider = bot.modelProvider ?? defaultProvider;
+  const modelId = bot.modelId ?? defaultModel;
+  const label = (bot.modelId ? bound : setup.credential)?.label;
+  const inherited = bot.modelId ? bound : setup.credential;
+  return botSettingsHistory(bot, {
+    model: {
+      after:
+        provider && modelId ? `${provider}/${modelId}${label ? ` · ${label}` : ""}` : "Unavailable",
+      source: bot.modelId ? "bot" : setup.credential ? "space" : "system",
+    },
+    thinkingLevel: {
+      after:
+        bot.thinkingLevel ??
+        (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
+        "Model default",
+      source: bot.thinkingLevel
+        ? "bot"
+        : inherited?.defaultModel === modelId && inherited?.thinkingLevel
+          ? "space"
+          : "model",
+    },
+    voice: {
+      after: bot.voiceId ?? voice?.voiceId ?? "Unavailable",
+      source: bot.voiceId ? "bot" : voice ? "space" : "system",
+    },
+  });
 }
 
 /**
@@ -8856,6 +9062,7 @@ async function prepareBoundModelAuth(
       throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
     return {
       modelCredentialId: credential.id,
+      connectionRevision: credential.connectionRevision,
       secretId: credential.secretId,
       ciphertext: prepared.ref,
       plaintext,
