@@ -60,7 +60,7 @@ export function HistorySourcesCard({
   if (!sources.length && !unavailable && !requestFailed) return null;
   const formatDate = new Intl.DateTimeFormat(i18n.locale, { dateStyle: "medium" });
   return (
-    <div className="mt-2 w-[420px] max-w-full rounded-[18px] border border-border bg-card px-4 py-3">
+    <BuiCard className="mt-2 w-[420px] max-w-full px-4 py-3">
       {sources.map((source) => (
         <div key={source.messageId} className="py-2">
           <div className="truncate text-sm font-medium" dir="auto">
@@ -108,7 +108,7 @@ export function HistorySourcesCard({
           </Button>
         </div>
       ) : null}
-    </div>
+    </BuiCard>
   );
 }
 
