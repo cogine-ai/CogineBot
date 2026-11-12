@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import type { SlackAdapter, SlackAdapterConfig } from "@chat-adapter/slack";
 import { TelegramFormatConverter } from "@chat-adapter/telegram";
 import { convertEmojiPlaceholders, markdownToPlainText } from "chat";
 import { describe, expect, it, vi } from "vitest";
@@ -40,6 +41,54 @@ function providers(env: MessagingEnvironmentValues): string[] {
 }
 
 describe("messagingPlatformsFromEnv", () => {
+  it("checks workspace authorization when a queued SDK request reaches the transport", async () => {
+    const fence = vi.fn(async (): Promise<void> => undefined);
+    let entered!: () => void;
+    let release!: () => void;
+    const transportEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const holdTransport = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    type Transport = NonNullable<NonNullable<SlackAdapterConfig["webClientOptions"]>["adapter"]>;
+    const transport = vi.fn<Transport>(async (config) => {
+      if (config.url?.endsWith("/auth.test")) {
+        entered();
+        await holdTransport;
+      }
+      return {
+        config,
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        request: { path: "/api/chat.postMessage" },
+        data: { ok: true, ts: "123.4" },
+      };
+    });
+    const [platform] = messagingPlatformsFromEnv(
+      { slackBotToken: "fixture", slackSigningSecret: "fixture-signing" },
+      {
+        beforeSlackRequest: fence,
+        slackTransport: { adapter: transport, maxRequestConcurrency: 1 },
+      },
+    );
+    const slack = platform!.adapter as SlackAdapter;
+    const lookup = slack.client.auth.test();
+    await transportEntered;
+    const stopped = expect(
+      slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
+    ).rejects.toThrow("Workspace paused");
+    fence.mockRejectedValueOnce(new Error("Workspace paused"));
+    release();
+    await Promise.all([lookup, stopped]);
+    expect(transport).toHaveBeenCalledOnce();
+    await expect(
+      slack.client.chat.postMessage({ channel: "CFIXTURE", text: "Fixture" }),
+    ).resolves.toMatchObject({ ts: "123.4" });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("mounts nothing without credentials and everything with full credentials", () => {
     expect(providers({})).toEqual([]);
     expect(providers(fullEnv)).toEqual(["sendblue", "slack", "whatsapp", "telegram", "lark"]);

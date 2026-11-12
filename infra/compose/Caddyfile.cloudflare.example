@@ -3,8 +3,8 @@
 	# Caddy can log the original URL even when the upstream never responds.
 	log {
 		format filter {
-			request>uri regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
-			request>headers>Referer regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
+			request>uri regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared|api/+v1/+messaging/+install/+slack/+callback)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
+			request>headers>Referer regexp `(?i)^[^?]*(/+(p|api/+v1/+pages/+shared|api/+v1/+messaging/+install/+slack/+callback)(/|[?]|$)|%[0-9a-f]{2}|\\|/\.\.?(/|[?]|$)).*` [redacted-uri]
 		}
 	}
 }

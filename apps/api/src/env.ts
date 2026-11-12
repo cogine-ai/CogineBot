@@ -79,6 +79,9 @@ export interface AppEnv {
   emailEmulator: boolean;
   slackBotToken: string | undefined;
   slackSigningSecret: string | undefined;
+  slackInstallClientId: string | undefined;
+  slackInstallClientSecret: string | undefined;
+  slackInstallSigningSecret: string | undefined;
   whatsappAccessToken: string | undefined;
   whatsappPhoneNumberId: string | undefined;
   whatsappAppSecret: string | undefined;
@@ -223,6 +226,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     emailEmulator: source.EMAIL_EMULATOR === "true" && source.NODE_ENV !== "production",
     slackBotToken: optional(source.SLACK_BOT_TOKEN),
     slackSigningSecret: optional(source.SLACK_SIGNING_SECRET),
+    slackInstallClientId: optional(source.SLACK_INSTALL_CLIENT_ID),
+    slackInstallClientSecret: optional(source.SLACK_INSTALL_CLIENT_SECRET),
+    slackInstallSigningSecret: optional(source.SLACK_INSTALL_SIGNING_SECRET),
     whatsappAccessToken: optional(source.WHATSAPP_ACCESS_TOKEN),
     whatsappPhoneNumberId: optional(source.WHATSAPP_PHONE_NUMBER_ID),
     whatsappAppSecret: optional(source.WHATSAPP_APP_SECRET),

@@ -966,6 +966,8 @@ export interface MessagingSendRequest {
   attachment?: MessagingOutboundAttachment;
   /** Stable key so retries of the same logical send can be deduped upstream. */
   idempotencyKey?: string;
+  /** Recheck a lifecycle fence after adapter setup and before submitting. */
+  beforeSubmit?: () => Promise<boolean>;
 }
 
 export interface MessagingSendResult {

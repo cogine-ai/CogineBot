@@ -7574,3 +7574,39 @@ msgstr "请让收件人先发一条新的 WhatsApp 消息，再回复。"
 
 msgid "An attachment could not be sent."
 msgstr "有一个附件发送失败。"
+
+msgid "Slack installation is unavailable."
+msgstr "Slack 安装暂不可用。"
+
+msgid "Couldn't update the Slack connection."
+msgstr "无法更新 Slack 连接。"
+
+msgid "Slack authorization expired. Try again."
+msgstr "Slack 授权已过期，请重试。"
+
+msgid "Reconnect required"
+msgstr "需要重新连接"
+
+msgid "Bot unavailable"
+msgstr "Bot 不可用"
+
+msgid "The bot replies to your direct messages and mentions in channels the app has joined. Invite the app to private channels first."
+msgstr "Bot 会回复你的私信，以及你在应用已加入的频道中发出的提及。使用私有频道前请先邀请应用。"
+
+msgid "Bot for Slack"
+msgstr "用于 Slack 的 Bot"
+
+msgid "Connect Slack"
+msgstr "连接 Slack"
+
+msgid "Waiting for Slack authorization"
+msgstr "正在等待 Slack 授权"
+
+msgid "Open Slack"
+msgstr "打开 Slack"
+
+msgid "Disconnect Slack?"
+msgstr "要断开 Slack 连接吗？"
+
+msgid "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot."
+msgstr "Bot 将停止收发此工作区的消息。对话历史仍保留在 CogineBot。"

@@ -8,7 +8,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 /** User-facing name of a messaging provider (falls back to the raw id). */
 export function providerLabel(provider: string): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+  return PROVIDER_LABELS[provider.startsWith("slack~") ? "slack" : provider] ?? provider;
 }
 
 /** Per-message provider label, narrowed to a recognized transport when available. */

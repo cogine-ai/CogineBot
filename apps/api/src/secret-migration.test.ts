@@ -48,6 +48,12 @@ function fixture() {
       ciphertext: string | null;
       secretRecordId: string | null;
     }>,
+    messagingInstallation: [] as Array<{
+      id: string;
+      ciphertext: string | null;
+      credentialId: string | null;
+    }>,
+    messagingCredentialCleanup: [] as Array<{ id: string; ciphertext: null; ref: string }>,
     deploymentTransferItem: [] as Array<{
       id: string;
       ciphertext: string | null;
@@ -89,18 +95,24 @@ function fixture() {
           },
         ),
         count: vi.fn(
-          async (args: { where: { ciphertext?: string; OR?: Array<Record<string, unknown>> } }) =>
+          async (args?: {
+            where: { ciphertext?: string; ref?: string; OR?: Array<Record<string, unknown>> };
+          }) =>
             rows.filter((row) =>
-              args.where.OR
-                ? args.where.OR.some((clause) =>
-                    Object.entries(clause).every(([key, value]) => {
-                      const actual = (row as unknown as Record<string, unknown>)[key];
-                      return typeof value === "object" && value !== null && "not" in value
-                        ? actual != null
-                        : actual === value;
-                    }),
-                  )
-                : row.ciphertext === args.where.ciphertext,
+              !args
+                ? true
+                : args.where.ref !== undefined
+                  ? "ref" in row && row.ref === args.where.ref
+                  : args.where.OR
+                    ? args.where.OR.some((clause) =>
+                        Object.entries(clause).every(([key, value]) => {
+                          const actual = (row as unknown as Record<string, unknown>)[key];
+                          return typeof value === "object" && value !== null && "not" in value
+                            ? actual != null
+                            : actual === value;
+                        }),
+                      )
+                    : row.ciphertext === args.where.ciphertext,
             ).length,
         ),
       },
@@ -171,6 +183,34 @@ describe("migration persistence", () => {
       expect(f.client.secret!.findMany).not.toHaveBeenCalled();
     },
   );
+  it("uses the Slack credential AAD and fences storage changes during cleanup", async () => {
+    const f = fixture();
+    f.tables.messagingInstallation.push({
+      id: "fixture-installation",
+      ciphertext: "sealed-fixture",
+      credentialId: "fixture-aad",
+    });
+    const rows = [];
+    for await (const row of f.repository.rows()) rows.push(row);
+    const row = rows.find((item) => item.label === "messagingInstallation")!;
+    expect(row.recordId).toBe("fixture-aad");
+    expect(await f.repository.referenced("sealed-fixture")).toBe(true);
+    await expect(f.repository.replace(row, "replacement")).resolves.toBe(true);
+    expect(f.client.messagingInstallation!.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "fixture-installation",
+        ciphertext: "sealed-fixture",
+        credentialId: "fixture-aad",
+      },
+      data: { ciphertext: "replacement", revision: { increment: 1 } },
+    });
+    f.tables.messagingCredentialCleanup.push({ id: "staged", ciphertext: null, ref: "pending" });
+    expect(await f.repository.referenced("pending")).toBe(true);
+    await expect(f.repository.rows()[Symbol.asyncIterator]().next()).rejects.toThrow(
+      "Settle pending Slack credential cleanup",
+    );
+  });
+
   it("paginates every credential table, binds config ids, and marks short-lived rows", async () => {
     const f = fixture();
     const rows = [];

@@ -77,6 +77,7 @@ it.each([
   `/transfers/source?targetOrigin=https%3A%2F%2Ftarget.example.test&locator=${"a".repeat(43)}`,
   `/transfers/receive/${"a".repeat(43)}`,
   "/transfers/receive/request/pending-one",
+  "/app?slackInstallation=settings&spaceId=fixture-space",
 ])(
   "retains the same protected destination after SSO cancellation or retry: %s",
   async (kickoff) => {

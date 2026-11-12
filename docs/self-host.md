@@ -10,6 +10,30 @@ For source development in WSL, keep the checkout and `data` directory in the Lin
 
 Compose bot homes mount only their own subdirectory of the application volume using Docker volume semantics. Docker's internal volume paths are never used as host bind mounts.
 
+### Slack workspace messaging
+
+Set `SLACK_INSTALL_CLIENT_ID`, `SLACK_INSTALL_CLIENT_SECRET`, and
+`SLACK_INSTALL_SIGNING_SECRET` on the API service using the OAuth and signing
+values of a Slack app. Its redirect is
+`${API_URL}/api/v1/messaging/install/slack/callback` and its Events API
+request URL is `${API_URL}/api/v1/messaging/install/slack/events`. Use the
+same public HTTPS API URL in both Slack and the deployment. Enable workspace
+installs. In App Home, turn on the Messages tab and its **Allow users to send
+Slash commands and messages from the messages tab** setting. This flow uses non-rotating bot
+tokens and a separate signing secret from the deployment-wide Slack line.
+
+Configure these Bot Token Scopes under OAuth & Permissions:
+`app_mentions:read`, `chat:write`, `channels:read`, `channels:history`,
+`groups:read`, `groups:history`, `im:read`, `im:write`, `im:history`,
+`mpim:read`, `mpim:history`, `users:read`, `reactions:write`,
+`files:read`, and `files:write`. Subscribe to `message.im`, `app_mention`,
+`app_uninstalled`, and `tokens_revoked`.
+The person connecting a workspace selects a Bot in Messaging settings and
+authorizes Slack in a browser signed in to their CogineBot account. They can
+message the app directly or mention it in channels it has joined. Invite the
+app to private channels from Slack. Workspace membership by itself does not
+authorize another Slack user to send messages to this Bot.
+
 ## Database role preparation
 
 The administrative migration command can prepare a restricted runtime login and

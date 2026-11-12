@@ -1,4 +1,5 @@
 import type { TeamChatInboundMessage, TeamChatSendRequest } from "@rakazo/adapter-kit";
+import { MessagingSendError } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +12,139 @@ import {
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
 
 describe("team chat bridge", () => {
+  it.each(["accepted", "rate-limited", "expired"] as const)(
+    "keeps a late Slack result scoped to its own lease (%s)",
+    async (outcome) => {
+      const lease = new Date(Date.now() + (outcome === "expired" ? -1 : 120_000));
+      let resolve!: (result: { handle: string }) => void;
+      let reject!: (error: unknown) => void;
+      const inFlight = new Promise<{ handle: string }>((success, failure) => {
+        resolve = success;
+        reject = failure;
+      });
+      const updateMany = vi.fn(async (_input: unknown) => ({ count: 1 }));
+      const prisma = {
+        externalMessage: {
+          findUnique: vi.fn(async () => ({
+            status: "delivering",
+            providerReplyHandle: null,
+            attempts: 0,
+            nextAttemptAt: lease,
+          })),
+          updateMany,
+        },
+      } as unknown as PrismaClient;
+      const send = vi.fn(async () => {
+        throw new MessagingSendError("unknown", "outcome_unknown", undefined, undefined, inFlight);
+      });
+      const bridge = new TeamChatBridge({
+        prisma,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send,
+        providerId: "slack~fixture",
+        botId: "fixture-bot",
+        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+      }) as unknown as {
+        reserveDelivery(id: string): Promise<Date>;
+        sendReserved(
+          message: { id: string; status: string; attempts: number },
+          request: TeamChatSendRequest,
+        ): Promise<void>;
+      };
+      vi.spyOn(bridge, "reserveDelivery").mockResolvedValue(lease);
+      await bridge.sendReserved(
+        { id: "message", status: "running", attempts: 0 },
+        {
+          conversationId: "conversation",
+          replyThreadId: null,
+          content: "reply",
+          idempotencyKey: "reply",
+        },
+      );
+      expect(updateMany).not.toHaveBeenCalled();
+      if (outcome === "rate-limited") {
+        reject(new MessagingSendError("retryable", "rate_limited", 30_000));
+      } else {
+        resolve({ handle: "late-slack-handle" });
+      }
+      await new Promise<void>((done) => setImmediate(done));
+      if (outcome === "expired") {
+        expect(updateMany).not.toHaveBeenCalled();
+      } else {
+        expect(updateMany).toHaveBeenCalledOnce();
+        expect(updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              id: "message",
+              status: "delivering",
+              nextAttemptAt: lease,
+            }),
+            data: expect.objectContaining(
+              outcome === "accepted"
+                ? { status: "delivered", providerReplyHandle: "late-slack-handle" }
+                : { status: "running", nextAttemptAt: expect.any(Date) },
+            ),
+          }),
+        );
+      }
+      expect(send).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["retryable", "unknown"] as const)(
+    "only retries a known installed Slack rejection (%s)",
+    async (disposition) => {
+      const updateMany = vi.fn(
+        async (_input: { data: { status: string; nextAttemptAt: Date } }) => ({ count: 1 }),
+      );
+      const lease = new Date(Date.now() + 120_000);
+      const prisma = {
+        externalMessage: {
+          findUnique: vi.fn(async () => ({
+            status: "delivering",
+            providerReplyHandle: null,
+            nextAttemptAt: lease,
+          })),
+          updateMany,
+        },
+      } as unknown as PrismaClient;
+      const bridge = new TeamChatBridge({
+        prisma,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send: vi.fn(),
+        providerId: "slack~fixture",
+        botId: "fixture-bot",
+        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+      });
+      const at = Date.now();
+      const retry = bridge as unknown as {
+        retry(
+          message: { id: string; status: string; attempts: number },
+          error: unknown,
+          lease?: Date,
+        ): Promise<void>;
+      };
+      const message = { id: "message", status: "running", attempts: 0 };
+      await retry.retry(message, new Error("preflight failed"));
+      await retry.retry(message, new Error("stale lease"), new Date(0));
+      expect(updateMany).not.toHaveBeenCalled();
+      await retry.retry(
+        message,
+        new MessagingSendError(
+          disposition,
+          disposition === "retryable" ? "rate_limited" : "outcome_unknown",
+          30_000,
+        ),
+        lease,
+      );
+      const { data } = updateMany.mock.calls[0]![0];
+      expect(data.status).toBe(disposition === "retryable" ? "running" : "delivering");
+      expect(data.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(at + 30_000);
+    },
+  );
+
   it("attributes an external speaker without changing their message", () => {
     expect(teamChatPrompt("slack", "Ada Lovelace", "Review the launch plan")).toBe(
       "Slack message from Ada Lovelace:\n\nReview the launch plan",

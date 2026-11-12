@@ -114,6 +114,12 @@ export default function Integrations() {
   const [query, setQuery] = useState("");
   const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
   const [notice, setNotice] = useState<string | null>(null);
+  const [messagingLink, setMessagingLink] = useState<{
+    url: string;
+    scope: ReturnType<typeof captureMobileScope>;
+  } | null>(null);
+  const [messagingLinkError, setMessagingLinkError] = useState(false);
+  const messagingRequest = useRef<AbortController | null>(null);
   const [unconfirmedRemovalId, setUnconfirmedRemovalId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(CONNECTION_CATALOG_PAGE_SIZE);
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
@@ -172,6 +178,9 @@ export default function Integrations() {
     () =>
       subscribeMobileScope(() => {
         invalidateSourceReview();
+        messagingRequest.current?.abort();
+        setMessagingLink(null);
+        setMessagingLinkError(false);
         setCredential("");
         setSourceKind(null);
         setSourceError(null);
@@ -285,6 +294,37 @@ export default function Integrations() {
     connectionAttempt.current?.abort();
   }
 
+  async function refreshSlack(owner: IntegrationsCacheScope) {
+    if (!mounted.current || !isIntegrationsScopeCurrent(owner)) return;
+    messagingRequest.current?.abort();
+    const controller = new AbortController();
+    messagingRequest.current = controller;
+    const scope = captureMobileScope();
+    const current = () =>
+      mounted.current &&
+      !controller.signal.aborted &&
+      isMobileScopeCurrent(scope) &&
+      isIntegrationsScopeCurrent(owner);
+    setMessagingLinkError(false);
+    try {
+      const { available, managementUrl, workspaces } = await rpc<{
+        available: boolean;
+        managementUrl?: string;
+        workspaces: unknown[];
+      }>("messaging/installations/list", {}, { signal: controller.signal });
+      if (current()) {
+        setMessagingLink(
+          managementUrl && (available || workspaces?.length) ? { url: managementUrl, scope } : null,
+        );
+      }
+    } catch {
+      if (current()) {
+        setMessagingLink(null);
+        setMessagingLinkError(true);
+      }
+    }
+  }
+
   async function refresh() {
     const focus = focusGeneration.current;
     clearStaleScope();
@@ -322,6 +362,7 @@ export default function Integrations() {
       setUnconfirmedRemovalId(null);
     }
     cacheScope.current = scope;
+    void refreshSlack(scope);
     if (!previous || previous.userId !== scope.userId || previous.spaceId !== scope.spaceId) {
       const cached = readIntegrationsCache(scope);
       if (cached) applySnapshot(cached);
@@ -428,6 +469,7 @@ export default function Integrations() {
         focusGeneration.current += 1;
         refreshGeneration.current += 1;
         sourcesGeneration.current += 1;
+        messagingRequest.current?.abort();
         connectionAttempt.current?.abort();
         cancelNativeAttempt(false);
         setNativeAccount(null);
@@ -1310,6 +1352,31 @@ export default function Integrations() {
             returnKeyType="search"
             style={styles.input}
           />
+        ) : null}
+
+        {!detailItem && messagingLink && isMobileScopeCurrent(messagingLink.scope) ? (
+          <NativeActionButton
+            label={t("Manage Slack messaging in browser")}
+            fill={false}
+            prominence="secondary"
+            onPress={() => {
+              if (isMobileScopeCurrent(messagingLink.scope))
+                void Linking.openURL(messagingLink.url);
+            }}
+          />
+        ) : null}
+        {!detailItem && messagingLinkError ? (
+          <View style={styles.catalogStack}>
+            <Text style={styles.error}>{t("Couldn't load messaging settings")}</Text>
+            <NativeActionButton
+              label={t("Retry")}
+              fill={false}
+              prominence="secondary"
+              onPress={() => {
+                if (cacheScope.current) void refreshSlack(cacheScope.current);
+              }}
+            />
+          </View>
         ) : null}
 
         {catalogError ? (

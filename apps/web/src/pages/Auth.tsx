@@ -10,6 +10,7 @@ import { fetchAuthCapabilities } from "../lib/auth-capabilities";
 import {
   authDestination,
   isNativeAuthDestination,
+  isSlackAuthDestination,
   isTransferAuthDestination,
 } from "../lib/auth-destination";
 import { clearSpaceSelection } from "../lib/rpc";
@@ -136,7 +137,9 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     try {
       const destination = authDestination(searchParams.get("next"));
       const errorDestination =
-        isNativeAuthDestination(destination) || isTransferAuthDestination(destination)
+        isNativeAuthDestination(destination) ||
+        isSlackAuthDestination(destination) ||
+        isTransferAuthDestination(destination)
           ? `/sign-in?next=${encodeURIComponent(destination)}`
           : "/sign-in";
       const result = await runSsoFlow(

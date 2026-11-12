@@ -200,6 +200,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   OpenAPI: "OpenAPI",
   "Copy diagnostics": "复制诊断",
   "Could not check the connection.": "无法检查连接。",
+  "Couldn't load messaging settings": "无法加载消息设置",
+  "Manage Slack messaging in browser": "在浏览器中管理 Slack 消息",
   "Could not load chats": "无法加载聊天列表",
   "Could not load run history": "无法加载运行历史记录",
   Details: "详情",

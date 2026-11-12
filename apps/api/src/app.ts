@@ -61,6 +61,7 @@ import {
   LocalArtifactStore,
   McpConnector,
   McpOAuthBroker,
+  MessagingInstallations,
   messagingPlatformsFromEnv,
   NativeConnectorProvider,
   NativeRoutineEventService,
@@ -76,6 +77,7 @@ import {
   reconcileComputerUpdates,
   removePiUserSessions,
   ScriptedAgentRuntime,
+  SlackInstallProvider,
   SmtpEmailProvider,
   SpaceMemoryProviderResolver,
   StripeBillingProvider,
@@ -140,6 +142,11 @@ import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
 import { mountSharedPages, sharedPageLogRoute } from "./shared-pages.js";
+import {
+  SLACK_INSTALL_CALLBACK,
+  SLACK_INSTALL_EVENTS,
+  SlackWorkspaceMessaging,
+} from "./slack-workspace-messaging.js";
 import { isDeferredReservationLost, TeamChatBridge } from "./team-chat-bridge.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -383,6 +390,29 @@ async function buildApp(
     logger.warn("workspace staging cleanup", { error });
   });
   const artifacts = new LocalArtifactStore(env.dataDir);
+  const slackRedirect = URL.parse(SLACK_INSTALL_CALLBACK, env.apiUrl);
+  const slackProvider =
+    env.slackInstallClientId &&
+    env.slackInstallClientSecret &&
+    env.slackInstallSigningSecret &&
+    slackRedirect?.protocol === "https:" &&
+    !slackRedirect.username &&
+    !slackRedirect.password &&
+    secrets.prepareWrite
+      ? new SlackInstallProvider({
+          clientId: env.slackInstallClientId,
+          clientSecret: env.slackInstallClientSecret,
+          signingSecret: env.slackInstallSigningSecret,
+          redirectUri: slackRedirect.toString(),
+        })
+      : undefined;
+  const messagingInstallations = new MessagingInstallations(prisma, secrets, slackProvider);
+  const slackMessaging = new SlackWorkspaceMessaging(messagingInstallations, slackProvider, {
+    prisma,
+    artifacts,
+    events,
+    jobs,
+  });
   const memory = new MarkdownMemoryStore(prisma);
   const mcp = new McpConnector(
     prisma,
@@ -668,8 +698,9 @@ async function buildApp(
     artifacts,
     dataDir: env.dataDir,
     billing,
+    messagingInstallations,
     messaging: {
-      enabled: Boolean(messaging),
+      enabled: Boolean(messaging || slackProvider),
       providers: messaging?.platforms().map((platform) => platform.provider) ?? [],
       openSignup: env.messagingOpenSignup,
     },
@@ -739,6 +770,31 @@ async function buildApp(
     ["/api/v1/phone/*", "messaging webhook"],
   ] as const) {
     app.use(path, (_c, next) => runAsSystem(reason, next));
+  }
+  slackMessaging.start();
+  if (slackProvider) {
+    app.post(SLACK_INSTALL_EVENTS, (c) => slackMessaging.webhook(c.req.raw));
+    app.get(SLACK_INSTALL_CALLBACK, async (c) => {
+      c.header("cache-control", "no-store");
+      c.header("referrer-policy", "no-referrer");
+      const returnUrl = new URL("/app", env.webOrigin);
+      let outcome = "failed";
+      try {
+        const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
+        if (session?.user.id) {
+          const completed = await slackMessaging.installations.complete(
+            session.user.id,
+            c.req.query("state") ?? "",
+            c.req.query("error") ? undefined : c.req.query("code"),
+          );
+          outcome = completed ? "connected" : "cancelled";
+        }
+      } catch {
+        // Slack authorization codes, state and provider payloads never enter logs.
+      }
+      returnUrl.searchParams.set("slackInstallation", outcome);
+      return c.redirect(returnUrl.toString(), 303);
+    });
   }
   registerNativeEventWebhooks(app, nativeEvents);
   registerNativeEnterpriseWebhooks(app, native.enterpriseHooks);
@@ -1230,6 +1286,7 @@ async function buildApp(
         await readiness?.close().catch(() => undefined);
         oauthLogins.abortAll();
         messagingStopped = true;
+        await slackMessaging.stop();
         messagingReceipts?.stop();
         clearMessagingRetryDelay?.();
         clearTeamChatRetryDelay?.();

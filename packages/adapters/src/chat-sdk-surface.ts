@@ -184,9 +184,12 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     try {
       signal.throwIfAborted();
       await raceWithSignal(this.ensureInitialized(), signal);
+      if (request.beforeSubmit && !(await raceWithSignal(request.beforeSubmit(), signal)))
+        throw new MessagingSendError("permanent", "rejected");
       signal.throwIfAborted();
     } catch (cause) {
-      // Initializing does not submit a message. An outbox retry is safe here.
+      if (cause instanceof MessagingSendError) throw cause;
+      // Setup and authorization checks happen before submission.
       throw new MessagingSendError("retryable", "rejected", undefined, cause);
     }
     const message = attachment
@@ -566,7 +569,10 @@ function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
  * trustworthy Content-Length) is cut off at the cap instead of being
  * buffered whole. Returns null once the cap is exceeded.
  */
-async function readBoundedText(request: Request, maxBytes: number): Promise<string | null> {
+export async function readBoundedText(
+  request: Pick<Request, "body">,
+  maxBytes: number,
+): Promise<string | null> {
   const reader = request.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
@@ -611,6 +617,9 @@ export class MessagingSendError extends Error {
 }
 
 function classifySendError(platform: MessagingPlatform, error: unknown): MessagingSendError {
+  if (error instanceof MessagingSendError) return error;
+  const original = (error as { original?: unknown } | null)?.original;
+  if (original instanceof MessagingSendError) return original;
   const failure = error as {
     retryAfter?: unknown;
     status?: unknown;

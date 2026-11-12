@@ -11,6 +11,7 @@ import type {
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import {
+  BOT_MESSAGE_MAX_HOPS,
   botMessageHopExhausted,
   nextBotMessageHop,
   projectExternalPageMessages,
@@ -87,11 +88,24 @@ export async function mirrorMessagingOutbound(
 ): Promise<void> {
   const run = await deps.prisma.run.findUnique({
     where: { id: runId },
-    include: { sourceMessage: true },
+    include: {
+      sourceMessage: true,
+      thread: { select: { externalConversation: { select: { provider: true } } } },
+    },
   });
   if (!run) return;
   const terminal = run.status === "completed" || run.status === "failed";
-  await mirrorRun(deps, run);
+  // Installed Slack conversations reply through their own workspace adapter.
+  // Mark the legacy mirror as considered so recovery cannot queue it forever.
+  if (
+    !run.thread?.externalConversation?.provider.startsWith("slack~") &&
+    !(
+      run.trigger === "bot_message" &&
+      !(await delegatedRouteAllowsLegacyMirror(deps.prisma, run.parentRunId))
+    )
+  ) {
+    await mirrorRun(deps, run);
+  }
   // A running snapshot can precede the final reply even if the Run settles
   // before this write. Only a snapshot already terminal acknowledges its mirror.
   if (run.trigger === "messaging" && terminal) {
@@ -100,6 +114,21 @@ export async function mirrorMessagingOutbound(
       data: { messagingMirroredAt: new Date() },
     });
   }
+}
+
+async function delegatedRouteAllowsLegacyMirror(prisma: PrismaClient, parentId: string | null) {
+  for (let hop = 0; parentId && hop <= BOT_MESSAGE_MAX_HOPS; hop++) {
+    const parent = await prisma.run.findUnique({
+      where: { id: parentId },
+      select: {
+        parentRunId: true,
+        thread: { select: { externalConversation: { select: { provider: true } } } },
+      },
+    });
+    if (!parent || parent.thread?.externalConversation?.provider.startsWith("slack~")) return false;
+    parentId = parent.parentRunId;
+  }
+  return !parentId;
 }
 
 async function mirrorRun(

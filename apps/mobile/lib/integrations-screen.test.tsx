@@ -580,6 +580,26 @@ it("paints persisted cached rows while identity is pending or offline", async ()
   expect(container.textContent).toContain("Retry");
 });
 
+it("retries the Slack management link in the verified Space", async () => {
+  let reads = 0;
+  state.rpc.mockImplementation(async (proc: string) => {
+    if (proc !== "messaging/installations/list") return [];
+    if (++reads === 1) throw new Error("temporary fixture failure");
+    return {
+      available: true,
+      managementUrl: "https://example.test/sign-in?next=fixture",
+      workspaces: [],
+    };
+  });
+  await render();
+  expect(container.textContent).toContain("Couldn't load messaging settings");
+  expect(container.textContent).not.toContain("Manage Slack messaging in browser");
+  await press("Retry");
+  expect(reads).toBe(2);
+  expect(container.textContent).toContain("Manage Slack messaging in browser");
+  expect(container.textContent).not.toContain("Couldn't load messaging settings");
+});
+
 it("rebuilds a stale space and continues refreshing while the screen stays open", async () => {
   state.read.mockReturnValue({ catalog: [item], connections: [account] });
   await render();

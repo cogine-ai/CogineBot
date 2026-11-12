@@ -328,6 +328,21 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         tenantPredicate: local(),
       },
       {
+        model: "MessagingInstallSession",
+        table: "messaging_install_sessions",
+        scope: "explicit-system",
+      },
+      {
+        model: "MessagingInstallation",
+        table: "messaging_installations",
+        scope: "explicit-system",
+      },
+      {
+        model: "MessagingCredentialCleanup",
+        table: "messaging_credential_cleanups",
+        scope: "explicit-system",
+      },
+      {
         model: "MessagingIdentity",
         table: "messaging_identities",
         scope: "tenant",

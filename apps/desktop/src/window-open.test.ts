@@ -61,3 +61,15 @@ it("allows only the named SSO blank popup before provider navigation", () => {
     expect(shouldOpenInAppPopup(appOrigin, "about:blank", name)).toBe(false);
   expect(shouldOpenInAppPopup(appOrigin, "about:blank#unsafe", "rakazo-sso-oauth")).toBe(false);
 });
+
+it("allows the Slack OAuth popup to open before asynchronous authorization", () => {
+  const frame = "coginebot-slack-oauth";
+  expect(shouldOpenInAppPopup(appOrigin, "about:blank", frame)).toBe(true);
+  expect(
+    shouldOpenInAppPopup(appOrigin, "https://slack.com/oauth/v2/authorize?state=x", frame),
+  ).toBe(true);
+  expect(shouldOpenInAppPopup(appOrigin, "https://slack.com/apps", frame)).toBe(false);
+  expect(
+    shouldOpenInAppPopup(appOrigin, "https://outside.example.test/oauth/v2/authorize", frame),
+  ).toBe(false);
+});

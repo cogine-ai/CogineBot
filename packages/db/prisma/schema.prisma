@@ -1530,6 +1530,66 @@ model BotMcpServer {
   @@schema("public")
 }
 
+model MessagingInstallSession {
+  id               String    @id
+  clientId String
+  provider         String
+  userId           String
+  spaceId          String
+  botId            String
+  installationId   String?
+  expectedRevision Int?
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  outcome          String?
+  createdAt        DateTime  @default(now())
+
+  @@index([expiresAt], map: "messaging_install_sessions_expires_idx")
+  @@index([userId, spaceId, botId], map: "messaging_install_sessions_owner_idx")
+  @@map("messaging_install_sessions")
+  @@schema("public")
+}
+
+model MessagingInstallation {
+  id            String   @id
+  appId String
+  clientId String
+  provider      String
+  workspaceId   String
+  workspaceName String
+  installerId   String
+  installerName String?
+  providerBotId String
+  spaceId       String
+  userId        String
+  botId         String
+  ciphertext    String?
+  credentialId  String?
+  revision      Int      @default(1)
+  status        String   @default("active")
+  acceptAfter   DateTime
+  authorizedAt  DateTime
+  createdAt     DateTime @default(now())
+
+  @@unique([provider, workspaceId], map: "messaging_installations_workspace_key")
+  @@index([spaceId, userId], map: "messaging_installations_owner_idx")
+  @@map("messaging_installations")
+  @@schema("public")
+}
+
+model MessagingCredentialCleanup {
+  id            String   @id
+  ref           String
+  pendingWrite  Boolean
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([nextAttemptAt], map: "messaging_credential_cleanups_due_idx")
+  @@map("messaging_credential_cleanups")
+  @@schema("public")
+}
+
 model MessagingIdentity {
   id                   String    @id @default(cuid())
   provider             String

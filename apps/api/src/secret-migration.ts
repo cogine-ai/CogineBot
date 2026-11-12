@@ -10,6 +10,7 @@ const tables = [
   "nativeSlackHook",
   "deploymentIdentity",
   "deploymentTransferSession",
+  "messagingInstallation",
 ] as const;
 const separateAadTables: ReadonlySet<string> = new Set([
   "nativeAppConfig",
@@ -29,6 +30,8 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
         })
       )
         throw new Error("Settle pending credential transfers before changing secret storage");
+      if (await prisma.messagingCredentialCleanup.count())
+        throw new Error("Settle pending Slack credential cleanup before changing secret storage");
       for (const label of tables) {
         let cursor: string | undefined;
         while (true) {
@@ -44,9 +47,12 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
             ciphertext: string | null;
             kind?: string;
             secretRecordId?: string | null;
+            credentialId?: string | null;
           }>;
           for (const row of batch) {
             if (!row.ciphertext) continue;
+            if (label === "messagingInstallation" && !row.credentialId)
+              throw new Error("Slack credential has no SecretStore identity");
             if (separateAadTables.has(label) && !row.secretRecordId)
               throw new Error(
                 label === "nativeNotionHook" || label === "nativeSlackHook"
@@ -62,9 +68,11 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
               recordId:
                 label === "integrationProviderConfig"
                   ? `integration-provider:${row.id}`
-                  : separateAadTables.has(label)
-                    ? row.secretRecordId!
-                    : row.id,
+                  : label === "messagingInstallation"
+                    ? row.credentialId!
+                    : separateAadTables.has(label)
+                      ? row.secretRecordId!
+                      : row.id,
               ephemeral:
                 label === "deploymentIdentity" ||
                 label === "deploymentTransferSession" ||
@@ -84,8 +92,12 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
             id: row.id,
             ciphertext: row.ref,
             ...(separateAadTables.has(row.label) ? { secretRecordId: row.recordId } : {}),
+            ...(row.label === "messagingInstallation" ? { credentialId: row.recordId } : {}),
           },
-          data: { ciphertext: ref },
+          data: {
+            ciphertext: ref,
+            ...(row.label === "messagingInstallation" ? { revision: { increment: 1 } } : {}),
+          },
         },
       ])) as { count: number };
       return result.count === 1;
@@ -104,6 +116,8 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
           (await prisma.nativeSlackHook.count({ where: { ciphertext: ref } })) ||
           (await prisma.deploymentIdentity.count({ where: { ciphertext: ref } })) ||
           (await prisma.deploymentTransferSession.count({ where: { ciphertext: ref } })) ||
+          (await prisma.messagingInstallation.count({ where: { ciphertext: ref } })) ||
+          (await prisma.messagingCredentialCleanup.count({ where: { ref } })) ||
           (await prisma.deploymentTransferItem.count({
             where: { OR: [{ ciphertext: ref }, { recoveryRef: ref }] },
           })),
@@ -116,5 +130,5 @@ export function createSecretMigrationRepository(prisma: PrismaClient): SecretMig
 export function secretMigrationReportIdentity(
   row: Pick<SecretMigrationRow, "id" | "label">,
 ): string {
-  return `${row.label} ${["nativeNotionHook", "nativeSlackHook", "deploymentIdentity", "deploymentTransferSession"].includes(row.label) ? "[redacted]" : row.id}`;
+  return `${row.label} ${["nativeNotionHook", "nativeSlackHook", "deploymentIdentity", "deploymentTransferSession", "messagingInstallation"].includes(row.label) ? "[redacted]" : row.id}`;
 }
