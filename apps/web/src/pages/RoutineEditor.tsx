@@ -325,7 +325,7 @@ export function RoutineEditor({
       : installedSlack === "error"
         ? t`Could not check Slack connection`
         : t`Slack not enabled`;
-  const slackDisabledReasonId = `${fieldId}-slack-disabled-reason`;
+  const slackStatusId = `${fieldId}-slack-status`;
   const hasTriggers =
     draft.schedules.length > 0 ||
     draft.webhookEnabled ||
@@ -572,7 +572,7 @@ export function RoutineEditor({
             <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
               <DropdownMenuItem
                 disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
-                aria-describedby={slackAvailable ? undefined : slackDisabledReasonId}
+                aria-describedby={slackAvailable ? undefined : slackStatusId}
                 onClick={retrySlack ?? (() => addMessageProvider("slack"))}
               >
                 <MessageSquare />
@@ -582,11 +582,6 @@ export function RoutineEditor({
                   <Trans>Slack message</Trans>
                 )}
               </DropdownMenuItem>
-              {!slackAvailable ? (
-                <span id={slackDisabledReasonId} className="sr-only">
-                  {slackUnavailableReason}
-                </span>
-              ) : null}
             </span>
 
             {COMING_SOON.map((item) => (
@@ -617,6 +612,10 @@ export function RoutineEditor({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Explicit aria-live keeps the region exposed while the menu is open. */}
+        <span id={slackStatusId} className="sr-only" role="status" aria-live="polite">
+          {slackAvailable ? t`Slack message trigger is available.` : slackUnavailableReason}
+        </span>
 
         {!hasTriggers ? (
           <p className="mt-2 text-xs text-muted-foreground/70">

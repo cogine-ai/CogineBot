@@ -57,9 +57,11 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
   const botId = activeBotId(page);
   let paused = true;
   let failNextLookup = false;
-  await page.route("**/rpc/messaging/installations/list", (route) => {
+  const releaseFailedLookup = Promise.withResolvers<void>();
+  await page.route("**/rpc/messaging/installations/list", async (route) => {
     if (failNextLookup) {
       failNextLookup = false;
+      await releaseFailedLookup.promise;
       return route.fulfill({ status: 503 });
     }
     return route.fulfill({
@@ -108,8 +110,17 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
 
   paused = false;
   failNextLookup = true;
-  await openEditor(503);
-  await page.getByRole("button", { name: "Add trigger" }).click();
+  const openedWithFailure = openEditor(503);
+  const slackStatus = panel.getByRole("status");
+  try {
+    await page.getByRole("button", { name: "Add trigger" }).click();
+    await expect(slackStatus).toHaveAttribute("aria-live", "polite");
+    await expect(slackStatus).toHaveText("Checking Slack connection…");
+  } finally {
+    releaseFailedLookup.resolve();
+  }
+  await openedWithFailure;
+  await expect(slackStatus).toHaveText("Could not check Slack connection");
   const retry = page.getByRole("menuitem", { name: "Retry Slack connection check" });
   await expect(retry).toHaveAccessibleDescription("Could not check Slack connection");
   const reloaded = page.waitForResponse(
@@ -117,6 +128,7 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
   );
   await retry.click();
   await reloaded;
+  await expect(slackStatus).toHaveText("Slack message trigger is available.");
   await page.getByPlaceholder("Name this routine").fill("Triage Slack updates");
   await page
     .getByPlaceholder("What should this routine do each time it runs?")
