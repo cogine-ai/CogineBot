@@ -1,4 +1,4 @@
-import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { TransactionalEmailProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import type { BetterAuthPlugin } from "better-auth";
@@ -65,9 +65,19 @@ export async function identityConfirmationExpiry(
   return expiry > Date.now() ? expiry : null;
 }
 
-const hashCode = (code: string) => createHash("sha256").update(code).digest("hex");
+function emailCodeVerifier(
+  secret: string,
+  sessionId: string,
+  userId: string,
+  version: string,
+  code: string,
+) {
+  return createHmac("sha256", secret)
+    .update(JSON.stringify(["identity-email-code/v1", sessionId, userId, version, code]))
+    .digest("hex");
+}
 
-function sameHash(stored: string, candidate: string): boolean {
+function matchesVerifier(stored: string, candidate: string): boolean {
   const left = Buffer.from(stored, "hex");
   const right = Buffer.from(candidate, "hex");
   return left.length === right.length && timingSafeEqual(left, right);
@@ -78,8 +88,12 @@ const invalidPassword = () =>
 const expiredCode = () =>
   new APIError("BAD_REQUEST", { message: "Request a new code", code: "OTP_EXPIRED" });
 
-type EmailCode = { hash: string; version: string; expiresAt: number; failures: number };
+type EmailCode = { verifier: string; version: string; expiresAt: number; failures: number };
 type EmailCodeState = { userId: string; active?: EmailCode; pending?: EmailCode };
+
+function isLiveEmailCode(entry: EmailCode | undefined, now: number): entry is EmailCode {
+  return typeof entry?.verifier === "string" && entry.expiresAt > now;
+}
 
 /** Code attempts and delivery receipts only change the exact state they read. */
 async function changeEmailCode(
@@ -113,19 +127,21 @@ async function changeEmailCode(
 async function sendIdentityCode(
   prisma: PrismaClient,
   email: TransactionalEmailProvider,
+  secret: string,
   sessionId: string,
   user: { id: string; email: string },
 ) {
   const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const version = randomUUID();
   const pending = {
-    hash: hashCode(code),
-    version: randomUUID(),
+    verifier: emailCodeVerifier(secret, sessionId, user.id, version, code),
+    version,
     expiresAt: Date.now() + CODE_EXPIRES_MS,
     failures: 0,
   };
   const id = codeKey(sessionId);
   await changeEmailCode(prisma, id, user.id, (state) => {
-    if (state.pending && state.pending.expiresAt > Date.now())
+    if (isLiveEmailCode(state.pending, Date.now()))
       throw new APIError("TOO_MANY_REQUESTS", {
         message: "A code is already being sent. Try again later.",
       });
@@ -158,23 +174,26 @@ async function sendIdentityCode(
 
 async function verifyIdentityCode(
   prisma: PrismaClient,
+  secret: string,
   sessionId: string,
   userId: string,
   code: string,
 ) {
   if (!/^[0-9]{6}$/.test(code)) throw expiredCode();
-  const candidate = hashCode(code);
   const outcome: { state: "expired" | "verified" | "incorrect" | "exhausted"; expiry?: number } = {
     state: "expired",
   };
   let attempted: { versions: string[]; matchedVersion?: string } | undefined;
   await changeEmailCode(prisma, codeKey(sessionId), userId, (state) => {
     const now = Date.now();
-    const codes = [state.pending, state.active].filter((entry): entry is EmailCode =>
-      Boolean(entry && entry.expiresAt > now),
-    );
+    const codes = [state.pending, state.active].filter((entry) => isLiveEmailCode(entry, now));
     const versions = codes.map((entry) => entry.version);
-    const matchedVersion = codes.find((entry) => sameHash(entry.hash, candidate))?.version;
+    const matchedVersion = codes.find((entry) =>
+      matchesVerifier(
+        entry.verifier,
+        emailCodeVerifier(secret, sessionId, userId, entry.version, code),
+      ),
+    )?.version;
     if (!attempted) attempted = { versions, matchedVersion };
     // Promotion can retire the old code while the exact matched candidate remains valid.
     const expectedVersion = attempted.matchedVersion;
@@ -196,7 +215,7 @@ async function verifyIdentityCode(
       return { userId, active: preserveNew(state.active), pending: preserveNew(state.pending) };
     }
     const recordFailure = (entry: EmailCode | undefined) =>
-      entry && entry.expiresAt > now && entry.failures + 1 < CODE_ATTEMPTS
+      isLiveEmailCode(entry, now) && entry.failures + 1 < CODE_ATTEMPTS
         ? { ...entry, failures: entry.failures + 1 }
         : undefined;
     const active = recordFailure(state.active);
@@ -256,7 +275,13 @@ export function identityConfirmation(
               message: "Wait before requesting another code.",
               code: "TOO_MANY_REQUESTS",
             });
-          const promoted = await sendIdentityCode(prisma, email, session.id, user);
+          const promoted = await sendIdentityCode(
+            prisma,
+            email,
+            ctx.context.secret,
+            session.id,
+            user,
+          );
           if (!promoted) ctx.context.logger.warn("Identity code activation could not be confirmed");
           return ctx.json({ success: true });
         },
@@ -286,7 +311,7 @@ export function identityConfirmation(
               await adapter.deleteVerificationByIdentifier(attemptKey(user.id, slot));
           } else {
             const code = typeof body.code === "string" ? body.code.trim() : "";
-            await verifyIdentityCode(prisma, session.id, user.id, code);
+            await verifyIdentityCode(prisma, ctx.context.secret, session.id, user.id, code);
           }
           await adapter.deleteVerificationByIdentifier(confirmationKey(session.id));
           await adapter.createVerificationValue({

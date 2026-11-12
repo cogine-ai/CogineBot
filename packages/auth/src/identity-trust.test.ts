@@ -1,7 +1,10 @@
+import { createHmac } from "node:crypto";
 import type { TransactionalEmail } from "@rakazo/adapter-kit";
 import { bootstrapUserSpace } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuth } from "./index.js";
+
+const AUTH_FIXTURE_SECRET = "offline-auth-secret-at-least-32-characters";
 
 // Exercise Better Auth's real routing, password hashing, verification and
 // session hooks with its official offline adapter. Only persistence is faked.
@@ -167,7 +170,7 @@ function fixture({
     return { spaceId: "space-1" };
   });
   const auth = createAuth(prisma as never, {
-    secret: "offline-auth-secret-at-least-32-characters",
+    secret: AUTH_FIXTURE_SECRET,
     baseURL,
     webOrigin,
     signupsEnabled: "true",
@@ -608,10 +611,56 @@ describe("confirmation for protected reads", () => {
     expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
     const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
     expect(code).toMatch(/^\d{6}$/);
+    const current = await f.auth.api.getSession({
+      headers: new Headers({ authorization: `Bearer ${token}` }),
+    });
+    const challenge = f.data.verification!.find(
+      (row) => row.identifier === `identity-code-${current?.session.id}`,
+    );
+    const { active } = JSON.parse(String(challenge?.value));
+    const expectedVerifier = createHmac("sha256", AUTH_FIXTURE_SECRET)
+      .update(
+        JSON.stringify([
+          "identity-email-code/v1",
+          current?.session.id,
+          current?.user.id,
+          active.version,
+          code,
+        ]),
+      )
+      .digest("hex");
+    expect(active).toMatchObject({ verifier: expectedVerifier });
+    expect(active).not.toHaveProperty("hash");
     const wrongCode = code === "000000" ? "111111" : "000000";
     expect((await f.request("/confirm-identity", { code: wrongCode }, token)).status).toBe(400);
     expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
     expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+  });
+
+  it("expires old verifier records and lets the user request a fresh code", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const oldCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    const challenge = f.data.verification!.find((row) =>
+      String(row.identifier).startsWith("identity-code-"),
+    )!;
+    const { active, userId } = JSON.parse(String(challenge.value));
+    const legacy = {
+      hash: "0".repeat(64),
+      version: active.version,
+      expiresAt: active.expiresAt,
+      failures: 0,
+    };
+    challenge.value = JSON.stringify({ userId, active: legacy, pending: legacy });
+    const rejected = await f.request("/confirm-identity", { code: oldCode }, token);
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toMatchObject({ code: "OTP_EXPIRED" });
+    endDeliveryCooldown(f);
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
   });
   it("keeps the new emailed challenge when a previous attempt returns after resending", async () => {
     const f = fixture();
