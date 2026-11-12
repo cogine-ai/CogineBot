@@ -22,6 +22,7 @@ export type WebhookEvents = {
       prompt: string;
       trigger: "webhook";
       clientNonce?: string;
+      messagingReceiptKey?: string;
       allowParallelRun?: boolean;
       modelPin?: {
         routineIds: string[];
@@ -287,6 +288,7 @@ export async function deliverWebhookEvent(
     source: "webhook" | "github" | "messaging";
     messageProvider?: string;
     idempotencyKey?: string;
+    messagingReceiptKey?: string;
     /** Messaging wakes share the live chat thread; keep a separate webhook run. */
     allowParallelRun?: boolean;
   },
@@ -321,6 +323,7 @@ export async function deliverWebhookEvent(
     prompt: promptText,
     trigger: "webhook",
     clientNonce,
+    ...(input.messagingReceiptKey && { messagingReceiptKey: input.messagingReceiptKey }),
     ...(input.routines.length
       ? {
           routineSources: {

@@ -26,6 +26,7 @@ import type {
 } from "@rakazo/db";
 import {
   createThreadMessage,
+  MessagingRouteAlreadyChosen,
   normalizeMessagingLinkCode,
   redeemMessagingLinkCode,
 } from "@rakazo/db";
@@ -122,23 +123,11 @@ async function bindInboundTarget(
     select: { status: true, threadId: true, identityId: true },
   });
   return (
-    prior &&
+    prior !== null &&
     ["inbound", "inbound_routine", "inbound_message"].includes(prior.status) &&
     prior.threadId === target.threadId &&
     prior.identityId === target.identityId
   );
-}
-
-async function claimInboundRoute(
-  prisma: PrismaClient,
-  key: string,
-  status: "inbound_routine" | "inbound_message",
-) {
-  const claim = await prisma.messagingOutbound.updateMany({
-    where: { idempotencyKey: key, status: { in: ["inbound", status] } },
-    data: { status },
-  });
-  return claim.count === 1;
 }
 
 function routineDeliveryKey(event: MessagingInboundMessage) {
@@ -163,6 +152,8 @@ function matchesLegacySlackRoutine(
       from?: string;
       kind?: string;
       channelName?: string | null;
+      content?: string;
+      mediaUrl?: string | null;
     };
     const escapePayloadText = (value: string) =>
       value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -170,8 +161,11 @@ function matchesLegacySlackRoutine(
       data.from === escapePayloadText(event.from) &&
       data.kind === (event.isDirect ? "direct" : "channel") &&
       (event.isDirect ||
-        data.channelName ===
-          (event.channelName === null ? null : escapePayloadText(event.channelName)))
+        (data.channelName ===
+          (event.channelName === null ? null : escapePayloadText(event.channelName)) &&
+          data.content === escapePayloadText(event.content) &&
+          (data.mediaUrl ?? null) ===
+            (event.mediaUrl === null ? null : escapePayloadText(event.mediaUrl))))
     );
   } catch {
     return false;
@@ -436,9 +430,8 @@ async function handleDirectEvent(
   const content = await inboundContent(deps, ids, event);
   const receiptKey = owner ? deliveryKey : undefined;
   if (await wakeMessageRoutines(deps, ids, event, { content, receiptKey })) return;
-  if (receiptKey && !(await claimInboundRoute(deps.prisma, receiptKey, "inbound_message"))) return;
   const { blocks, prompt } = content;
-  const sent = await deps.events.sendUserMessage({
+  const sent = await sendInboundMessage(deps.events, {
     spaceId: ids.spaceId,
     threadId: ids.threadId,
     botId: ids.botId,
@@ -447,8 +440,9 @@ async function handleDirectEvent(
     prompt: externalMessagePrompt(event, prompt),
     trigger: "messaging",
     clientNonce: messagingInboundNonce(event),
+    ...(receiptKey && { messagingReceiptKey: receiptKey }),
   });
-  if (sent.runId) {
+  if (sent?.runId) {
     // Typing bubbles only make sense once a reply is actually coming. Fire
     // before the enqueue so they land ahead of a fast reply, and never await:
     // a stalled vendor typing call must not hold the webhook open. The bubbles
@@ -463,6 +457,16 @@ async function handleDirectEvent(
       getLogger().error("messaging inbound run enqueue error", error);
     });
   }
+}
+
+async function sendInboundMessage(
+  events: MessagingInboundDeps["events"],
+  input: Parameters<MessagingInboundDeps["events"]["sendUserMessage"]>[0],
+) {
+  return events.sendUserMessage(input).catch((error: unknown) => {
+    if (error instanceof MessagingRouteAlreadyChosen) return null;
+    throw error;
+  });
 }
 
 /** Wake provider-neutral message routines through the same approval boundary as webhooks. */
@@ -507,11 +511,6 @@ export async function wakeMessageRoutines(
     orderBy: { updatedAt: "desc" },
   });
   if (routines.length === 0) return false;
-  if (
-    options?.receiptKey &&
-    !(await claimInboundRoute(deps.prisma, options.receiptKey, "inbound_routine"))
-  )
-    return false;
 
   if (options?.externalMessageId) {
     // CAS: only deliver when agent ownership has not claimed the row. Holding
@@ -565,7 +564,7 @@ export async function wakeMessageRoutines(
       })),
     }),
   });
-  await deliverWebhookEvent(
+  const result = await deliverWebhookEvent(
     { events: deps.events, jobs: deps.jobs },
     {
       bot: { id: target.botId, spaceId: target.spaceId, userId: target.userId },
@@ -577,6 +576,7 @@ export async function wakeMessageRoutines(
       source: "messaging",
       messageProvider: event.provider,
       ...(attachments?.length && { attachments }),
+      ...(options?.receiptKey && { messagingReceiptKey: options.receiptKey }),
       idempotencyKey:
         options?.deliveryProvider || options?.externalMessageId
           ? messagingWakeIdempotencyKey(options.deliveryProvider ?? event.provider, event.handle)
@@ -584,8 +584,11 @@ export async function wakeMessageRoutines(
       // TeamChat channel wakes may share a live thread with an active chat run.
       allowParallelRun: true,
     },
-  );
-  return true;
+  ).catch((error: unknown) => {
+    if (error instanceof MessagingRouteAlreadyChosen) return null;
+    throw error;
+  });
+  return result !== null;
 }
 
 /**
@@ -609,10 +612,21 @@ export async function teamChatSenderCanWakeMessageRoutines(
 
   if (event.isDirect) return true;
 
-  const channel = await deps.prisma.messagingChannel.findUnique({
-    where: { threadId: event.threadId },
-    select: { id: true },
-  });
+  const room =
+    event.provider === "slack" && event.conversationKey ? `slack:${event.conversationKey}` : null;
+  const channel = room
+    ? await deps.prisma.messagingChannel.findFirst({
+        where: {
+          provider: "slack",
+          OR: [{ threadId: room }, { threadId: { startsWith: `${room}:` } }],
+        },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true },
+      })
+    : await deps.prisma.messagingChannel.findUnique({
+        where: { threadId: event.threadId },
+        select: { id: true },
+      });
   if (channel) {
     const member = await deps.prisma.messagingChannelMember.findUnique({
       where: { channelId_address: { channelId: channel.id, address: event.from } },
@@ -1028,9 +1042,8 @@ async function handleChannelEvent(
       continue;
     const content = await inboundContent(deps, target, event, readAttachment);
     if (await wakeMessageRoutines(deps, target, event, { content, receiptKey })) continue;
-    if (!(await claimInboundRoute(deps.prisma, receiptKey, "inbound_message"))) continue;
     const { blocks, caption, prompt } = content;
-    const sent = await deps.events.sendUserMessage({
+    const sent = await sendInboundMessage(deps.events, {
       spaceId: identity.spaceId,
       threadId: thread.id,
       botId: identity.botId,
@@ -1039,8 +1052,9 @@ async function handleChannelEvent(
       prompt: externalMessagePrompt(event, prompt, channel.name ?? "group"),
       trigger: "messaging",
       clientNonce: messagingInboundNonce(event),
+      messagingReceiptKey: receiptKey,
     });
-    if (sent.runId) {
+    if (sent?.runId) {
       await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
         getLogger().error("messaging channel fan-out enqueue error", error);
       });

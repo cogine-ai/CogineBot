@@ -11,8 +11,10 @@ import {
   createDb,
   createThreadMessage,
   finalizeRun,
+  MessagingRouteAlreadyChosen,
   Prisma,
   readMessagingDelivery,
+  sendUserMessage,
 } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBackgroundJobHandlers } from "./background-job-handlers.js";
@@ -541,6 +543,62 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
       state: "partial_failure",
       reason: "attachment_unavailable",
     });
+  });
+
+  it("commits the inbound route with its message and releases a failed write for recovery", async () => {
+    const idempotencyKey = `fixture-inbound:${scope.botId}`;
+    await prisma.messagingOutbound.create({
+      data: {
+        idempotencyKey,
+        kind: "inbound",
+        status: "inbound",
+        threadId: scope.threadId,
+        body: "",
+      },
+    });
+    try {
+      const input = {
+        ...scope,
+        blocks: [{ kind: "text" as const, text: "Synthetic inbound" }],
+        prompt: "Synthetic inbound",
+        messagingReceiptKey: idempotencyKey,
+        createRun: false,
+      };
+      const routine = {
+        ...input,
+        trigger: "webhook" as const,
+        clientNonce: "fixture-routine",
+        routineSources: { trigger: "messaging" as const, routines: [] },
+      };
+      const broken = prisma.$extends({
+        query: {
+          message: {
+            async create() {
+              throw new Error("Synthetic message write interruption");
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      await expect(sendUserMessage(broken, routine)).rejects.toThrow(
+        "Synthetic message write interruption",
+      );
+      expect(
+        await prisma.messagingOutbound.findUniqueOrThrow({ where: { idempotencyKey } }),
+      ).toMatchObject({ status: "inbound" });
+      await sendUserMessage(prisma, {
+        ...input,
+        trigger: "messaging",
+        clientNonce: "fixture-normal",
+      });
+      await expect(sendUserMessage(prisma, routine)).rejects.toBeInstanceOf(
+        MessagingRouteAlreadyChosen,
+      );
+      expect(
+        await prisma.message.count({ where: { threadId: scope.threadId, role: "user" } }),
+      ).toBe(1);
+    } finally {
+      await prisma.messagingOutbound.deleteMany({ where: { idempotencyKey } });
+    }
   });
 
   it("retains one atomic version of a mirrored message even if its text later grows into more parts", async () => {

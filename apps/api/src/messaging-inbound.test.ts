@@ -1,3 +1,5 @@
+import type { SendUserMessageInput } from "@rakazo/db";
+import { MessagingRouteAlreadyChosen } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMessagingInboundHandler,
@@ -50,7 +52,8 @@ function createDeps(
           updatedAt: new Date(),
         });
   const sendUserMessage = vi.fn(
-    async () => overrides.sendResult ?? { messageId: "msg-1", runId: "run-1", seq: 3 },
+    async (_input?: Omit<SendUserMessageInput, "messagingReceiptKey">) =>
+      overrides.sendResult ?? { messageId: "msg-1", runId: "run-1", seq: 3 },
   );
   const notify = vi.fn(async () => undefined);
   const enqueue = vi.fn(async () => undefined);
@@ -146,6 +149,7 @@ function createDeps(
     },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
+      findFirst: vi.fn(async () => null),
       upsert: vi.fn(async () => channel),
       update: vi.fn(async () => ({ ...channel, introPostedAt: new Date() })),
     },
@@ -234,24 +238,6 @@ function createDeps(
         async ({ where }: { where: { idempotencyKey: string } }) =>
           outboundRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
       ),
-      updateMany: vi.fn(
-        async ({
-          where,
-          data,
-        }: {
-          where: { idempotencyKey: string; status: { in: string[] } };
-          data: Record<string, unknown>;
-        }) => {
-          const row = outboundRows.find(
-            (item) =>
-              item.idempotencyKey === where.idempotencyKey &&
-              where.status.in.includes(String(item.status)),
-          );
-          if (!row) return { count: 0 };
-          Object.assign(row, data);
-          return { count: 1 };
-        },
-      ),
       createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
         let count = 0;
         for (const item of data) {
@@ -298,7 +284,20 @@ function createDeps(
   };
   return {
     prisma,
-    events: { sendUserMessage, notify },
+    events: {
+      sendUserMessage: async ({ messagingReceiptKey, ...input }: SendUserMessageInput) => {
+        const receipt = outboundRows.find(
+          ({ idempotencyKey }) => idempotencyKey === messagingReceiptKey,
+        );
+        const status = input.trigger === "webhook" ? "inbound_routine" : "inbound_message";
+        if (receipt && receipt.status !== "inbound" && receipt.status !== status)
+          throw new MessagingRouteAlreadyChosen();
+        const sent = await sendUserMessage(input);
+        if (receipt) receipt.status = status;
+        return sent;
+      },
+      notify,
+    },
     jobs: { enqueue },
     provision,
     openSignup: true,
@@ -1130,6 +1129,7 @@ describe("createMessagingInboundHandler channel routing", () => {
       ...groupEvent,
       provider: "slack",
       threadId: "slack:fixture-channel",
+      channelName: null,
       participants: [],
     };
     const legacyNonce = inboundDeliveryClientNonce(
@@ -1148,8 +1148,8 @@ describe("createMessagingInboundHandler channel routing", () => {
                   kind: "channel",
                   handle: event.handle,
                   from: event.from,
-                  channelName: "Other Channel",
-                  content: event.content,
+                  channelName: null,
+                  content: "Different channel payload",
                 }),
               },
             ],
@@ -1851,6 +1851,50 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
         isDirect: true,
       }),
     ).resolves.toBe(false);
+  });
+
+  it("uses a stable Slack room when the incoming post has a different thread timestamp", async () => {
+    const deps = createDeps({
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: groupEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "invited",
+        },
+      ],
+    });
+    vi.mocked(deps.prisma.messagingChannel.findFirst).mockResolvedValueOnce({
+      id: "ch-1",
+    } as never);
+    await expect(
+      teamChatSenderCanWakeMessageRoutines(deps, {
+        ...groupEvent,
+        provider: "slack",
+        threadId: "slack:fixture-room:later",
+        conversationKey: "fixture-room",
+      }),
+    ).resolves.toBe(false);
+    expect(deps.prisma.messagingChannel.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          provider: "slack",
+          OR: [
+            { threadId: "slack:fixture-room" },
+            { threadId: { startsWith: "slack:fixture-room:" } },
+          ],
+        },
+      }),
+    );
   });
 
   it("requires approved membership or a linked identity for channel wakes", async () => {
