@@ -5,6 +5,7 @@ import {
   prepareOwnBotSettings,
   readOwnBotSettings,
 } from "./own-bot-settings.js";
+import { ownSettingsApprovalBlock } from "./own-bot-settings-write.js";
 
 const mocked = vi.hoisted(() => ({ voices: vi.fn(), connections: vi.fn() }));
 vi.mock("./model-selection.js", async (load) => ({
@@ -45,11 +46,10 @@ const bot = {
   notifyOnFinish: true,
   instructions: "Original",
   settingsRevision: 2,
-  settingsHistory: [],
-  modelProvider: null,
-  modelId: null,
-  modelCredentialId: null,
-  thinkingLevel: "high",
+  modelProvider: null as string | null,
+  modelId: null as string | null,
+  modelCredentialId: null as string | null,
+  thinkingLevel: "high" as string | null,
   voiceId: null,
   autoSpeak: false,
 };
@@ -62,7 +62,14 @@ const connection = {
 };
 const other = { ...connection, id: "two", label: "Team" };
 
-function fixture() {
+function fixture(
+  row: Partial<typeof bot> = {},
+  modelPreference: {
+    credential: typeof connection;
+    modelId: string | null;
+    thinkingLevel: string | null;
+  } | null = null,
+) {
   mocked.connections.mockResolvedValue([
     {
       provider: "fixture",
@@ -83,16 +90,22 @@ function fixture() {
     { id: "one", label: "Alex" },
     { id: "two", label: "Alex" },
   ]);
+  const credentials = [
+    modelPreference?.credential.id === connection.id
+      ? { ...connection, preferences: [modelPreference] }
+      : connection,
+    other,
+  ];
   const deps = {
     prisma: {
-      bot: { findFirst: vi.fn().mockResolvedValue(bot) },
+      bot: { findFirst: vi.fn().mockResolvedValue({ ...bot, ...row }) },
       userModelCredential: {
-        findMany: vi.fn().mockResolvedValue([connection, other]),
+        findMany: vi.fn().mockResolvedValue(credentials),
         findFirst: vi.fn(({ where }) =>
-          Promise.resolve([connection, other].find((row) => row.id === where.id)),
+          Promise.resolve(credentials.find((row) => row.id === where.id)),
         ),
       },
-      spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
+      spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(modelPreference) },
       spaceVoicePreference: {
         findFirst: vi.fn().mockResolvedValue({
           credential: {
@@ -144,6 +157,40 @@ describe("owner Bot settings", () => {
     expect(JSON.stringify(searched)).not.toContain("test-voice-secret");
   });
 
+  it("does not borrow a system model for a connection with no usable default", async () => {
+    const { deps, prepare } = fixture(
+      { thinkingLevel: null },
+      {
+        credential: { ...connection, provider: "chatgpt-plan" },
+        modelId: null,
+        thinkingLevel: null,
+      },
+    );
+    await expect(readOwnBotSettings(deps, scope, context, fallback)).resolves.toMatchObject({
+      model: { source: "space", provider: "chatgpt-plan", id: null, available: false },
+      thinkingLevel: { value: "default", source: "model" },
+    });
+    await expect(prepare({ thinkingLevel: "off" })).resolves.toMatchObject({
+      error: expect.stringContaining("available model"),
+    });
+  });
+
+  it("identifies the connection as the source of an inherited thinking level for a pinned model", async () => {
+    const { deps } = fixture(
+      {
+        modelProvider: "fixture",
+        modelId: "checklist",
+        modelCredentialId: "one",
+        thinkingLevel: null,
+      },
+      { credential: connection, modelId: "checklist", thinkingLevel: "low" },
+    );
+    await expect(readOwnBotSettings(deps, scope, context, fallback)).resolves.toMatchObject({
+      model: { source: "bot", id: "checklist", available: true },
+      thinkingLevel: { value: "low", source: "space" },
+    });
+  });
+
   it("does not guess between connections and binds the chosen revision", async () => {
     const { prepare } = fixture();
     await expect(prepare({ model: "Checklist 3" })).resolves.toMatchObject({
@@ -180,12 +227,17 @@ describe("owner Bot settings", () => {
     await expect(prepare({ voice: "Alex" })).resolves.toMatchObject({
       error: expect.stringContaining("Several voices"),
     });
-    await expect(prepare({ voice: "two", readAloud: true })).resolves.toMatchObject({
+    const prepared = await prepare({ voice: "two", readAloud: true });
+    expect(prepared).toMatchObject({
       request: {
         after: { voiceId: "two", autoSpeak: true },
         voiceConnection: { id: "voice", provider: "openai" },
       },
     });
+    if (!prepared.request) throw new Error("Expected a voice change request");
+    expect(
+      ownSettingsApprovalBlock("effect", prepared.request, []).botSettings.changes,
+    ).toContainEqual(expect.objectContaining({ field: "voice", after: "Alex · two" }));
     await expect(prepare({ voice: "default" })).resolves.toEqual({ unchanged: true });
   });
 });

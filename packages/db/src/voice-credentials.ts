@@ -1,4 +1,4 @@
-import type { PrismaClient } from "./client.js";
+import type { Prisma, PrismaClient } from "./client.js";
 import { newestCredentialOrder } from "./model-credentials.js";
 
 export const newestVoiceCredentialOrder = newestCredentialOrder;
@@ -75,6 +75,21 @@ export async function findDefaultVoiceCredential(
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
   });
   return preference ? withVoicePreference(preference) : null;
+}
+
+/** Hold the exact active Space connection through a dependent settings write. */
+export async function lockDefaultVoiceCredential(
+  tx: Prisma.TransactionClient,
+  scope: VoiceCredentialScope,
+  credentialId: string,
+) {
+  await tx.$queryRaw`SELECT id FROM user_voice_credentials
+    WHERE id = ${credentialId} AND "userId" = ${scope.userId} FOR SHARE`;
+  const [preference] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM space_voice_preferences
+    WHERE "spaceId" = ${scope.spaceId} AND "userId" = ${scope.userId}
+      AND "credentialId" = ${credentialId} AND "isDefault" FOR SHARE`;
+  return preference ? findDefaultVoiceCredential(tx, scope) : null;
 }
 
 export function findNewestUserVoiceCredential(

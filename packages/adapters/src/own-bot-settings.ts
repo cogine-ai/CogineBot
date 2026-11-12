@@ -11,6 +11,7 @@ import {
   botSettingsValueSelect,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
+  lockDefaultVoiceCredential,
   prepareBotSettingsVersion,
 } from "@rakazo/db";
 import { z } from "zod";
@@ -43,6 +44,7 @@ export const profileFields = [
   "artifact_id",
   "use_attached_image",
   "notifyOnFinish",
+  "notify_on_finish",
 ] as const;
 export const ownBotSettingsArgs = z.object({
   instructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
@@ -64,6 +66,7 @@ const modelBinding = z.object({
   label: z.string(),
   usesSpaceDefault: z.boolean(),
   spaceDefaultModel: z.string().nullable().optional(),
+  requiredSpacePreferenceModel: z.string().optional(),
 });
 
 const voiceBinding = z.object({
@@ -84,6 +87,7 @@ const settingsRequestSchema = z.strictObject({
   before: BotSettingsValuesSchema,
   after: BotSettingsValuesSchema,
   modelConnection: modelBinding.optional(),
+  expectsNoSpaceModel: z.literal(true).optional(),
   previousModelConnection: z.string().optional(),
   voiceConnection: voiceBinding.optional(),
   voiceLabel: z.string().optional(),
@@ -200,16 +204,14 @@ async function effectiveModel(
     : await findDefaultModelCredential(deps.prisma, scope);
   const id = overridden
     ? bot.modelId
-    : (credential?.defaultModel ??
-      (credential && defaultCatalogModelId(credential.provider)) ??
-      fallback.id);
-  const inherited = credential?.defaultModel === id ? credential?.thinkingLevel : undefined;
+    : credential
+      ? (credential.defaultModel ?? defaultCatalogModelId(credential.provider))
+      : fallback.id;
   return {
     provider: overridden ? bot.modelProvider : (credential?.provider ?? fallback.provider),
     id,
     credential,
     source: overridden ? "bot" : credential ? "space" : "system",
-    thinkingLevel: bot.thinkingLevel ?? inherited ?? (overridden ? null : fallback.thinkingLevel),
   };
 }
 
@@ -237,11 +239,14 @@ async function thinkingSettings(
   );
   if (provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
     const plaintext = stored.status === "loaded" ? stored.plaintext : undefined;
+    const compatible = compatibleThinkingLevels(credential, plaintext, model);
     return {
-      allowed: compatibleThinkingLevels(credential, plaintext, model).allowed,
+      allowed: compatible.allowed,
       connectionDefault: plaintext
         ? modelCredentialDto(credential, plaintext).thinkingLevel
         : undefined,
+      compatibleAvailable: Boolean(plaintext && compatible.enabledModelIds.includes(model)),
+      requiresSpacePreference: !compatible.storedEnabledModelIds?.includes(model),
     };
   }
   const live =
@@ -301,6 +306,10 @@ export async function readOwnBotSettings(
     active.id,
     active.credential,
   );
+  const connectionThinking =
+    (active.id && active.credential?.defaultModel === active.id
+      ? active.credential.thinkingLevel
+      : null) ?? thinking.connectionDefault;
   return {
     name: bot.name,
     title: bot.title,
@@ -325,8 +334,12 @@ export async function readOwnBotSettings(
             ),
     },
     thinkingLevel: {
-      value: active.thinkingLevel ?? thinking.connectionDefault ?? "default",
-      source: bot.thinkingLevel === null ? (active.source === "space" ? "space" : "model") : "bot",
+      value:
+        bot.thinkingLevel ??
+        connectionThinking ??
+        (active.source === "system" ? fallback.thinkingLevel : null) ??
+        "default",
+      source: bot.thinkingLevel !== null ? "bot" : connectionThinking ? "space" : "model",
       allowed: thinking.allowed,
     },
     models,
@@ -371,6 +384,7 @@ export async function prepareOwnBotSettings(
   const patch: BotSettingsValues = { instructions: args.instructions, autoSpeak: args.readAloud };
   let modelConnection: OwnSettingsRequest["modelConnection"];
   let previousModelConnection: string | undefined;
+  let expectsNoSpaceModel = false;
   let voiceConnection: OwnSettingsRequest["voiceConnection"];
   let voiceLabel: string | undefined;
   if (args.model !== undefined || args.thinkingLevel !== undefined) {
@@ -419,22 +433,37 @@ export async function prepareOwnBotSettings(
       if (active.credential?.connectionRevision !== choice.connection.connectionRevision)
         return { error: "The model connection changed. Read the available choices again." };
     }
-    if (active.credential && active.id)
-      modelConnection = {
-        id: active.credential.id,
-        revision: active.credential.connectionRevision,
-        label: active.credential.label,
-        usesSpaceDefault: active.source === "space",
-        ...(active.source === "space" && { spaceDefaultModel: active.credential.defaultModel }),
-      };
-    const { allowed } = await thinkingSettings(
+    expectsNoSpaceModel = active.source === "system";
+    const { allowed, compatibleAvailable, requiresSpacePreference } = await thinkingSettings(
       deps,
       scope,
       active.provider,
       active.id,
       active.credential,
     );
+    if (
+      compatibleAvailable === false &&
+      ((args.model && patch.modelId) || (args.thinkingLevel && args.thinkingLevel !== "default"))
+    )
+      return {
+        error: "That model is not enabled for this connection. Read the available choices again.",
+      };
+    if (active.credential)
+      modelConnection = {
+        id: active.credential.id,
+        revision: active.credential.connectionRevision,
+        label: active.credential.label,
+        usesSpaceDefault: active.source === "space",
+        ...(active.source === "space" && { spaceDefaultModel: active.credential.defaultModel }),
+        ...(active.source === "bot" &&
+          requiresSpacePreference &&
+          active.id && { requiredSpacePreferenceModel: active.id }),
+      };
     if (args.thinkingLevel && args.thinkingLevel !== "default") {
+      if (!active.id || (active.source === "bot" && !active.credential))
+        return {
+          error: "Connect or select an available model before changing its thinking level.",
+        };
       if (!allowed.includes(args.thinkingLevel))
         return { error: `This model supports these thinking levels: ${allowed.join(", ")}.` };
       patch.thinkingLevel = args.thinkingLevel;
@@ -493,6 +522,7 @@ export async function prepareOwnBotSettings(
       before: version.before,
       after: version.after,
       ...(modelConnection && { modelConnection }),
+      ...(expectsNoSpaceModel && { expectsNoSpaceModel }),
       ...(previousModelConnection && { previousModelConnection }),
       ...(voiceConnection && { voiceConnection }),
       ...(voiceLabel && { voiceLabel }),
@@ -507,18 +537,30 @@ export async function ownSettingsBindingsCurrent(
   request: OwnSettingsRequest,
 ) {
   const { modelConnection, voiceConnection } = request;
+  if (request.expectsNoSpaceModel && (await findDefaultModelCredential(tx, request))) return false;
   if (modelConnection) {
     await tx.$queryRaw`SELECT id FROM user_model_credentials
       WHERE id = ${modelConnection.id} AND "userId" = ${request.userId} FOR SHARE`;
     const model = modelConnection.usesSpaceDefault
       ? await findDefaultModelCredential(tx, request)
-      : await tx.userModelCredential.findFirst({
-          where: { id: modelConnection.id, userId: request.userId },
-        });
+      : modelConnection.requiredSpacePreferenceModel
+        ? await findConnectedModelCredential(
+            tx,
+            request,
+            OPENAI_COMPATIBLE_PROVIDER_ID,
+            modelConnection.requiredSpacePreferenceModel,
+            modelConnection.id,
+          )
+        : await tx.userModelCredential.findFirst({
+            where: { id: modelConnection.id, userId: request.userId },
+          });
     if (
       model?.id !== modelConnection.id ||
       model.connectionRevision !== modelConnection.revision ||
       model.label !== modelConnection.label ||
+      (modelConnection.requiredSpacePreferenceModel &&
+        (!("defaultModel" in model) ||
+          model.defaultModel !== modelConnection.requiredSpacePreferenceModel)) ||
       (modelConnection.usesSpaceDefault &&
         "defaultModel" in model &&
         model.defaultModel !== modelConnection.spaceDefaultModel)
@@ -526,9 +568,7 @@ export async function ownSettingsBindingsCurrent(
       return false;
   }
   if (voiceConnection) {
-    await tx.$queryRaw`SELECT id FROM user_voice_credentials
-      WHERE id = ${voiceConnection.id} AND "userId" = ${request.userId} FOR SHARE`;
-    const voice = await findDefaultVoiceCredential(tx, request);
+    const voice = await lockDefaultVoiceCredential(tx, request, voiceConnection.id);
     if (
       voice?.id !== voiceConnection.id ||
       voice.provider !== voiceConnection.provider ||

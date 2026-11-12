@@ -4377,7 +4377,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           deps.prisma.bot.findUniqueOrThrow({
             where: { id: run.botId },
             include: { computer: true },
-            omit: { settingsHistory: true },
           }),
           deps.prisma.thread.findUniqueOrThrow({ where: { id: run.threadId } }),
           loadRunHistoryMessages(deps.prisma, run, LEGACY_HISTORY_WINDOW_SIZE, channelId),

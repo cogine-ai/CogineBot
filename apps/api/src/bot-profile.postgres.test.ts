@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Bot, ModelCredential } from "@rakazo/contracts";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import { BOT_INSTRUCTIONS_CONFLICT_REASON } from "@rakazo/contracts";
+import type { PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
@@ -28,24 +29,24 @@ describePostgres("independent bot profile HTTP acceptance", () => {
   let handles: Awaited<ReturnType<typeof createApp>>;
   let database: ReturnType<typeof createDb>;
   let dataDir: string;
-  let beforeBotUpdate: ((args: Prisma.BotUpdateArgs) => Promise<void>) | undefined;
+  let afterModelLock: ((key: unknown) => Promise<void>) | undefined;
   let failEventForBot: string | undefined;
-  const updateFailures: unknown[] = [];
+  const transactionFailures: unknown[] = [];
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "bot-profile-acceptance-"));
     database = createDb(process.env.DATABASE_URL!);
     const instrumented = database.prisma.$extends({
       query: {
-        bot: {
-          async update({ args, query }) {
-            await beforeBotUpdate?.(args);
-            try {
-              return await query(args);
-            } catch (error) {
-              updateFailures.push(error);
-              throw error;
-            }
-          },
+        async $queryRaw({ args, query }) {
+          try {
+            const result = await query(args);
+            const statement = args as unknown as { values?: unknown[] };
+            await afterModelLock?.(statement.values?.[0]);
+            return result;
+          } catch (error) {
+            transactionFailures.push(error);
+            throw error;
+          }
         },
         event: {
           async create({ args, query }) {
@@ -72,9 +73,9 @@ describePostgres("independent bot profile HTTP acceptance", () => {
     });
   });
   afterEach(() => {
-    beforeBotUpdate = undefined;
+    afterModelLock = undefined;
     failEventForBot = undefined;
-    updateFailures.length = 0;
+    transactionFailures.length = 0;
   });
   afterAll(async () => {
     await handles?.stop();
@@ -379,11 +380,12 @@ describePostgres("independent bot profile HTTP acceptance", () => {
     const count = (await profileEvents(target.id)).length;
     const entered = deferred();
     const resume = deferred();
-    const expectations: unknown[] = [];
-    beforeBotUpdate = async (args) => {
-      if (args.where.id !== target.id || args.data.name !== "Losing mixed save") return;
-      expectations.push(args.where.instructions);
-      if (expectations.length === 1) {
+    let attempts = 0;
+    afterModelLock = async (key) => {
+      if (key !== `bot-model:${target.id}`) return;
+      attempts++;
+      // Pause after taking the serializable snapshot, before locking the thread.
+      if (attempts === 1) {
         entered.resolve();
         await resume.promise;
       }
@@ -413,10 +415,14 @@ describePostgres("independent bot profile HTTP acceptance", () => {
     } finally {
       resume.resolve();
     }
-    expect((await losing).status).toBe(409);
-    expect(expectations).toEqual(["Original rules", "Original rules"]);
+    const conflict = await losing;
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({
+      json: { code: "CONFLICT", data: { reason: BOT_INSTRUCTIONS_CONFLICT_REASON } },
+    });
+    expect(attempts).toBe(2);
     expect(
-      updateFailures.some((error) => {
+      transactionFailures.some((error) => {
         const failure = error as {
           code?: unknown;
           meta?: { driverAdapterError?: { cause?: { originalCode?: unknown } } };

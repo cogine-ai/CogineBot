@@ -14,7 +14,7 @@ describe("run result provenance", () => {
     for (const name of SITE_SENDING_TOOLS) expect(isBuiltinToolName(name)).toBe(true);
   });
   it("keeps confirmations and saved conversation state separate from outside results", () => {
-    for (const name of ["remember", "request_secret", "generate_secret"]) {
+    for (const name of ["remember", "request_secret", "generate_secret", "update_preferences"]) {
       expect(isBuiltinToolName(name)).toBe(true);
       expect(toolResultTaintsRun(name)).toBe(false);
     }
@@ -31,13 +31,7 @@ describe("run result provenance", () => {
   });
 
   it("does not exempt external names that are not tools in this product", () => {
-    for (const name of [
-      "connect_app",
-      "feedback",
-      "list_fleet",
-      "schedule_update",
-      "update_preferences",
-    ])
+    for (const name of ["connect_app", "feedback", "list_fleet", "schedule_update"])
       expect(toolResultTaintsRun(name)).toBe(true);
   });
 

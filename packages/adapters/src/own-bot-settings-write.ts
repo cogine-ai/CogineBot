@@ -10,6 +10,7 @@ import {
   lockBotModelSetting,
   lockOwnedBotSettings,
   lockRunHistoryGrant,
+  lockSpaceModelSelection,
   prepareBotSettingsVersion,
   withTransactionRetry,
   writeBotSettingsVersion,
@@ -41,7 +42,7 @@ export function ownSettingsApprovalBlock(
       change.field === "model" && request.after.modelId && request.modelConnection
         ? `${change.after} · ${request.modelConnection.label}`
         : change.field === "voice" && request.voiceLabel
-          ? request.voiceLabel
+          ? `${request.voiceLabel} · ${change.after}`
           : change.after,
     ),
   }));
@@ -158,6 +159,12 @@ export async function commitOwnBotSettings(input: {
     prisma.$transaction(async (tx) => {
       if (request.after.modelId !== undefined || request.after.thinkingLevel !== undefined)
         await lockBotModelSetting(tx, run.botId);
+      if (
+        request.modelConnection?.usesSpaceDefault ||
+        request.modelConnection?.requiredSpacePreferenceModel ||
+        request.expectsNoSpaceModel
+      )
+        await lockSpaceModelSelection(tx, run, "read");
       if (!(await lockOwnSettingsRun(tx, run, lease, signal))) return { result: inactive };
 
       const effect = await tx.externalEffect.findFirst({

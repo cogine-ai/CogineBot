@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  botSettingsSelect,
   botSettingsVersions,
   createDb,
   createThreadEvents,
   createThreadMessage,
+  lockSpaceModelSelection,
   RunHistoryWriteError,
+  selectSpaceModelPreference,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ExecutorDeps } from "./executor.js";
@@ -274,7 +277,18 @@ describe.skipIf(!enabled)("attempt history isolation (PostgreSQL)", () => {
     const results = await Promise.all([commit(), commit()]);
     expect(results[0]).toEqual(results[1]);
     expect(results[0]).toMatchObject({ ok: true, revision: bot.settingsRevision + 1 });
-    const saved = await db.prisma.bot.findUniqueOrThrow({ where: { id: run.botId } });
+    const ordinary = await db.prisma.bot.findUniqueOrThrow({ where: { id: run.botId } });
+    expect(ordinary).not.toHaveProperty("settingsHistory");
+    const thread = await db.prisma.thread.findUniqueOrThrow({
+      where: { id: run.threadId },
+      include: { bot: true },
+    });
+    expect(thread.bot).toMatchObject({ id: run.botId });
+    expect(thread.bot).not.toHaveProperty("settingsHistory");
+    const saved = await db.prisma.bot.findUniqueOrThrow({
+      where: { id: run.botId },
+      select: botSettingsSelect,
+    });
     expect(saved.instructions).toBe(request.after.instructions);
     expect(botSettingsVersions(saved)[0]).toMatchObject({
       before: request.before,
@@ -286,6 +300,158 @@ describe.skipIf(!enabled)("attempt history isolation (PostgreSQL)", () => {
       result: results[0],
     });
   });
+
+  it("rolls back an interrupted settlement and commits the same approved request once on retry", async () => {
+    const { bot, effect, run, request } = await approvedSettings();
+    const { settingsHistory } = await db.prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      select: { settingsHistory: true },
+    });
+    const interrupted = db.prisma.$extends({
+      query: {
+        externalEffect: {
+          async updateMany({ args, query }) {
+            if (args.where?.id === effect.id && args.data.status === "completed")
+              throw new Error("fixture interruption before approval receipt");
+            return query(args);
+          },
+        },
+      },
+    });
+    const commit = (prisma = db.prisma) =>
+      commitOwnBotSettings({
+        prisma,
+        run,
+        effectId: effect.id,
+        request,
+        secrets: [],
+        lease: { owner: "worker-a", fence: 1 },
+        signal: new AbortController().signal,
+        rulesBlock: async () => false,
+        notify: async () => {},
+      });
+    await expect(commit(interrupted as unknown as typeof db.prisma)).rejects.toThrow(
+      "fixture interruption before approval receipt",
+    );
+    const unchanged = await db.prisma.bot.findUniqueOrThrow({
+      where: { id: bot.id },
+      select: botSettingsSelect,
+    });
+    expect(unchanged).toMatchObject({
+      instructions: bot.instructions,
+      settingsRevision: bot.settingsRevision,
+      settingsHistory,
+    });
+    expect(await db.prisma.message.count({ where: { runId: run.id, role: "bot" } })).toBe(0);
+    expect(await db.prisma.event.count({ where: { runId: run.id } })).toBe(0);
+    expect(await db.prisma.externalEffect.findUnique({ where: { id: effect.id } })).toMatchObject({
+      status: "approved",
+    });
+
+    const saved = await commit();
+    expect(saved).toMatchObject({ ok: true, revision: bot.settingsRevision + 1 });
+    await expect(commit()).resolves.toEqual(saved);
+    expect(await db.prisma.message.count({ where: { runId: run.id, role: "bot" } })).toBe(1);
+    expect(await db.prisma.bot.findUnique({ where: { id: bot.id } })).toMatchObject({
+      instructions: request.after.instructions,
+      settingsRevision: bot.settingsRevision + 1,
+    });
+  });
+
+  it.each(["inherited", "preference-only"] as const)(
+    "rechecks the %s Space model after a concurrent default selection",
+    async (selection) => {
+      const { effect, run, request: seed } = await approvedSettings();
+      const secret = await db.prisma.secret.create({
+        data: { userId, kind: "model", ciphertext: "synthetic-settings-binding" },
+      });
+      const credential = await db.prisma.userModelCredential.create({
+        data: { userId, provider: "openai-compatible", label: "Fixture", secretId: secret.id },
+      });
+      const before = {
+        modelProvider: credential.provider,
+        modelId: "explicit",
+        modelCredentialId: credential.id,
+      };
+      const bot = await db.prisma.bot.update({ where: { id: run.botId }, data: before });
+      await selectSpaceModelPreference(db.prisma, run, credential.id, "shown-default");
+      const request = {
+        ...seed,
+        revision: bot.settingsRevision,
+        before,
+        after:
+          selection === "inherited"
+            ? { modelProvider: null, modelId: null, modelCredentialId: null }
+            : { ...before, modelId: "shown-default" },
+        modelConnection: {
+          id: credential.id,
+          label: credential.label,
+          revision: credential.connectionRevision,
+          usesSpaceDefault: selection === "inherited",
+          ...(selection === "inherited"
+            ? { spaceDefaultModel: "shown-default" }
+            : { requiredSpacePreferenceModel: "shown-default" }),
+        },
+      };
+      await db.prisma.externalEffect.update({ where: { id: effect.id }, data: { request } });
+      let release = () => {};
+      let writing: (pid: number) => void = () => {};
+      const hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const changing = new Promise<number>((resolve) => {
+        writing = resolve;
+      });
+      const change = db.prisma.$transaction(async (tx) => {
+        await lockSpaceModelSelection(tx, run, "write");
+        await selectSpaceModelPreference(tx, run, credential.id, "different-default");
+        const [backend] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        writing(backend!.pid);
+        await hold;
+      });
+      const blocker = await changing;
+      const commit = commitOwnBotSettings({
+        prisma: db.prisma,
+        run,
+        effectId: effect.id,
+        request,
+        secrets: [],
+        lease: { owner: "worker-a", fence: 1 },
+        signal: new AbortController().signal,
+        rulesBlock: async () => false,
+        notify: async () => {},
+      });
+      try {
+        await expect
+          .poll(
+            async () => {
+              const result = await db.pool.query<{ waiting: boolean }>(
+                `SELECT EXISTS (
+                SELECT 1 FROM pg_locks
+                WHERE locktype = 'advisory' AND NOT granted AND $1 = ANY(pg_blocking_pids(pid))
+              ) AS waiting`,
+                [blocker],
+              );
+              return result.rows[0]?.waiting;
+            },
+            { timeout: 3_000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await change;
+        await commit;
+      }
+      await expect(commit).resolves.toMatchObject({
+        error: expect.stringContaining("connection changed"),
+        unchanged: true,
+      });
+      expect(await db.prisma.bot.findUnique({ where: { id: bot.id } })).toMatchObject({
+        ...before,
+        settingsRevision: bot.settingsRevision,
+      });
+    },
+  );
 
   it("rejects an ABA edit between the displayed proposal and commit", async () => {
     const { bot, effect, run, request } = await approvedSettings();

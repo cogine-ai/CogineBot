@@ -7,12 +7,14 @@ import type {
 import type { BotSettingsRow, Prisma, PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  botSettingsSelect,
   botSettingsValues,
   botSettingsVersions,
   describeBotSettingsChange,
   IsolationError,
   lockBotModelSetting,
   lockOwnedBotSettings,
+  lockSpaceModelSelection,
   prepareBotSettingsVersion,
   withTransactionRetry,
   writeBotSettingsVersion,
@@ -21,6 +23,15 @@ import { getLogger } from "@rakazo/logging";
 
 type History = ReturnType<typeof BotSettingsHistorySchema.parse>;
 type Setting = History["current"][number];
+
+export async function getOwnedBotSettings(prisma: PrismaClient, actor: Actor, botId: string) {
+  const bot = await prisma.bot.findFirst({
+    where: { id: botId, userId: actor.userId, spaceId: actor.spaceId, archivedAt: null },
+    select: { ...botSettingsSelect, thread: { select: { id: true } } },
+  });
+  if (!bot) throw new IsolationError();
+  return bot;
+}
 
 export function botSettingsHistory(
   row: BotSettingsRow,
@@ -67,6 +78,7 @@ export async function undoBotSettings(input: {
     prisma.$transaction(
       async (tx) => {
         await lockBotModelSetting(tx, botId);
+        await lockSpaceModelSelection(tx, actor, "read");
         await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR NO KEY UPDATE`;
         const [member] = await tx.$queryRaw<{ id: string }[]>`
       SELECT id FROM space_members
@@ -118,7 +130,8 @@ export async function undoBotSettings(input: {
           result: { status: "updated" as const, revision: written.settingsRevision },
         };
       },
-      { isolationLevel: "Serializable" },
+      // Validate against the committed selection after the shared lock is granted.
+      { isolationLevel: "ReadCommitted" },
     ),
   );
   if ("seq" in committed && committed.seq !== undefined)

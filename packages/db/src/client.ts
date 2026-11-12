@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { PrismaPg } from "@prisma/adapter-pg";
 import type { PoolClient } from "pg";
 import { Pool } from "pg";
+import type { Prisma } from "./generated/prisma/client.js";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { installDbContext, withRowLevelSecurity, withTransactionContext } from "./row-security.js";
 
@@ -54,7 +55,11 @@ export function createDb(
 ): { prisma: PrismaClient; pool: Pool } {
   const pool = createPool(connectionString, options);
   const adapter = new PrismaPg(pool);
-  const prisma = new PrismaClient({ adapter });
+  // History is read explicitly by the owner's settings routes and writers.
+  const prisma = new PrismaClient<Prisma.PrismaClientOptions>({
+    adapter,
+    omit: { bot: { settingsHistory: true } },
+  });
   return {
     prisma: options.rowSecurity
       ? withRowLevelSecurity(prisma, installDbContext(pool))

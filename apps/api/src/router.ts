@@ -265,6 +265,7 @@ import {
   listTicketComments,
   loadDelegatedApprovals,
   lockBotCreationIntro,
+  lockDefaultVoiceCredential,
   lockOwnedGroup,
   lockPluginInstall,
   lockSpaceModelSelection,
@@ -312,7 +313,11 @@ import {
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
 import { createBotPackagesService } from "./bot-packages.js";
-import { botSettingsHistory, undoBotSettings } from "./bot-settings-history.js";
+import {
+  botSettingsHistory,
+  getOwnedBotSettings,
+  undoBotSettings,
+} from "./bot-settings-history.js";
 import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
 import {
   applyChatGPTPlanCatalog,
@@ -2415,12 +2420,12 @@ export function createRouter(deps: RouterDeps) {
         effectiveBotSettingsHistory(
           deps,
           context.actor,
-          await repos.getBot(context.actor, input.botId),
+          await getOwnedBotSettings(deps.prisma, context.actor, input.botId),
         ),
       ),
       undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
         const actor = context.actor;
-        const bot = await repos.getBot(actor, input.botId);
+        const bot = await getOwnedBotSettings(deps.prisma, actor, input.botId);
         if (!bot.thread) throw new IsolationError();
         const versions = botSettingsVersions(bot);
         const replay = versions.some((version) => version.undo?.clientNonce === input.clientNonce);
@@ -2461,6 +2466,8 @@ export function createRouter(deps: RouterDeps) {
           validate: async (tx, patch) => {
             if (target?.modelProvider && (patch.modelProvider || patch.thinkingLevel)) {
               if (!model || !target.modelCredentialId) return false;
+              await tx.$queryRaw`SELECT id FROM user_model_credentials
+                WHERE id = ${target.modelCredentialId} AND "userId" = ${actor.userId} FOR SHARE`;
               const checked = await validateModelBinding(
                 tx,
                 deps.secrets,
@@ -2489,8 +2496,19 @@ export function createRouter(deps: RouterDeps) {
               }
             } else if (patch.thinkingLevel) {
               const defaultConnection = await findDefaultModelCredential(tx, actor);
+              if (defaultConnection) {
+                const [locked] = await tx.$queryRaw<{ id: string }[]>`
+                  SELECT id FROM user_model_credentials WHERE id = ${defaultConnection.id}
+                    AND "userId" = ${actor.userId}
+                    AND "connectionRevision" = ${defaultConnection.connectionRevision} FOR SHARE`;
+                if (!locked) return false;
+              }
               const provider = defaultConnection?.provider ?? deps.env.defaultProvider;
-              const id = defaultConnection?.defaultModel ?? deps.env.defaultModel;
+              const id = defaultConnection
+                ? (defaultConnection.defaultModel ??
+                  defaultCatalogModelId(defaultConnection.provider))
+                : deps.env.defaultModel;
+              if (!id) return false;
               const allowed = listPiCatalog().find(
                 (entry) => entry.provider === provider && entry.id === id,
               )?.thinkingLevels ?? ["off"];
@@ -2513,7 +2531,8 @@ export function createRouter(deps: RouterDeps) {
               } else if (!allowed.includes(patch.thinkingLevel)) return false;
             }
             if (patch.voiceId) {
-              const currentVoice = await findDefaultVoiceCredential(tx, actor);
+              const currentVoice =
+                voice && (await lockDefaultVoiceCredential(tx, actor, voice.cred.id));
               if (
                 !voice ||
                 !availableVoice ||
@@ -2532,7 +2551,7 @@ export function createRouter(deps: RouterDeps) {
           history: await effectiveBotSettingsHistory(
             deps,
             actor,
-            await repos.getBot(actor, input.botId),
+            await getOwnedBotSettings(deps.prisma, actor, input.botId),
           ),
         };
       }),
@@ -8607,17 +8626,18 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
   const hasDeployment = Boolean(deps.env.deploymentModelConfigured) && platformAllowed;
   const hasLocal =
     (settings?.defaultModelProvider ?? deps.env.defaultProvider) === LOCAL_PROVIDER_ID;
+  const hasSystemModel =
+    deps.env.agentRuntime === "scripted" ||
+    hasDeployment ||
+    (hasLocal && Boolean(deps.env.deploymentModelConfigured));
   return {
     credential,
     settings,
     platformAllowed,
     hasDeployment,
     hasLocal,
-    needsModel:
-      deps.env.agentRuntime !== "scripted" &&
-      !credential &&
-      !hasDeployment &&
-      !(hasLocal && deps.env.deploymentModelConfigured),
+    hasSystemModel,
+    needsModel: !credential && !hasSystemModel,
   };
 }
 
@@ -8635,20 +8655,20 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
   ]);
   const defaultProvider =
     setup.credential?.provider ??
-    (setup.platformAllowed || setup.hasLocal
+    (setup.hasSystemModel
       ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
       : null);
   const defaultModel =
     setup.credential?.defaultModel ??
     (setup.credential
       ? defaultCatalogModelId(setup.credential.provider)
-      : setup.platformAllowed || setup.hasLocal
+      : setup.hasSystemModel
         ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
         : null);
   const provider = bot.modelProvider ?? defaultProvider;
   const modelId = bot.modelId ?? defaultModel;
   const label = (bot.modelId ? bound : setup.credential)?.label;
-  const inherited = bound ?? setup.credential;
+  const inherited = bot.modelId ? bound : setup.credential;
   return botSettingsHistory(bot, {
     model: {
       after:
