@@ -457,7 +457,9 @@ function slackFileUrl(url: string | undefined): boolean {
       !target.password &&
       (target.hostname === "files.slack.com" ||
         target.hostname === "slack-files.com" ||
-        target.hostname.endsWith(".slack-files.com"))
+        target.hostname.endsWith(".slack-files.com") ||
+        target.origin === "https://files.slack-gov.com" ||
+        target.origin === "https://slack-files-gov.com")
     );
   } catch {
     return false;

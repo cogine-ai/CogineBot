@@ -182,6 +182,44 @@ describe("ChatSdkMessagingSurface inbound", () => {
     ]);
   });
 
+  it.each(["files.slack-gov.com", "slack-files-gov.com"])(
+    "ingests attachment-only messages from %s",
+    async (host) => {
+      const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+      await surface.handleWebhook(
+        "slack",
+        webhookRequest({
+          threadId: "slack:Dfixture:1",
+          id: "m-gov-file",
+          text: "",
+          fileUrl: `https://${host}/files-pri/fixture`,
+        }),
+      );
+
+      expect(events).toMatchObject([{ mediaUrl: null, attachments: [{ name: "fixture.txt" }] }]);
+      const event = events[0];
+      if (event?.type !== "message") throw new Error("Missing inbound message");
+      await expect(event.attachments?.[0]?.fetch(Date.now() + 1_000)).resolves.toEqual(
+        new Uint8Array(Buffer.from("fixture")),
+      );
+    },
+  );
+
+  it.each([
+    "https://downloads.example.test/fixture",
+    "http://files.slack-gov.com/files-pri/fixture",
+    "https://files.slack-gov.com:8443/files-pri/fixture",
+  ])("preserves %s as a link without admitting a download", async (fileUrl) => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    await surface.handleWebhook(
+      "slack",
+      webhookRequest({ threadId: "slack:Dfixture:1", id: "m-link", text: "", fileUrl }),
+    );
+
+    expect(events).toMatchObject([{ mediaUrl: fileUrl }]);
+    expect(events[0]).not.toHaveProperty("attachments");
+  });
+
   it("never surfaces the bot's own messages", async () => {
     const { surface, events } = createSurface();
     const response = await surface.handleWebhook(
