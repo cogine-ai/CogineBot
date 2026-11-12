@@ -55,6 +55,30 @@ describe("emulated sendblue platform inbound", () => {
     expect((events[0] as { threadId: string }).threadId).toBe(dmThreadId);
   });
 
+  it("stores in-envelope media bytes and preserves remote media as a link", async () => {
+    const { emulator, surface, events } = createHarness();
+    for (const [handle, mediaUrl] of [
+      ["inline", "data:text/plain;base64,aGk="],
+      ["remote", "https://example.test/picture.png"],
+    ]) {
+      await surface.handleWebhook(
+        "sendblue",
+        emulator.buildInboundRequest({
+          fromNumber: "+15551234567",
+          content: "Attachment",
+          handle,
+          mediaUrl,
+        }),
+      );
+    }
+    expect(events[0]).toMatchObject({
+      mediaUrl: null,
+      attachments: [{ size: 2, mimeType: "text/plain" }],
+    });
+    expect(events[1]).toMatchObject({ mediaUrl: "https://example.test/picture.png" });
+    expect(events[1]).not.toHaveProperty("attachments");
+  });
+
   it("normalizes a group webhook with roster and display name", async () => {
     const { emulator, surface, events } = createHarness();
     const response = await surface.handleWebhook(

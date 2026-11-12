@@ -12,7 +12,11 @@ import {
 import type { PrismaClient } from "@rakazo/db";
 import { IsolationError, Prisma, withResolvedArtifactVersion } from "@rakazo/db";
 
-function adapterContext(actor: Actor, botId: string, operationId: string) {
+function adapterContext(
+  actor: Pick<Actor, "spaceId" | "userId">,
+  botId: string,
+  operationId: string,
+) {
   return {
     operationId,
     traceId: operationId,
@@ -28,7 +32,7 @@ export async function createOwnedArtifact(
     prisma: PrismaClient;
     artifacts: ArtifactStore;
   },
-  actor: Actor,
+  actor: Pick<Actor, "spaceId" | "userId">,
   input: {
     botId: string;
     groupId?: string;
@@ -90,7 +94,7 @@ export async function createOwnedArtifact(
 /** The artifact an earlier upload with this nonce created; a nonce reused for another chat is refused. */
 async function findReplayedArtifact(
   db: Pick<Prisma.TransactionClient, "artifact">,
-  actor: Actor,
+  actor: Pick<Actor, "spaceId" | "userId">,
   input: { botId: string; groupId?: string; clientNonce?: string },
 ) {
   if (!input.clientNonce) return null;

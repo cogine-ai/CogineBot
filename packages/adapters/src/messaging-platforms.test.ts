@@ -1,5 +1,10 @@
-import { Domain } from "chat-adapter-lark";
+import { createHmac } from "node:crypto";
+import { TelegramFormatConverter } from "@chat-adapter/telegram";
+import { convertEmojiPlaceholders, markdownToPlainText } from "chat";
 import { describe, expect, it, vi } from "vitest";
+import { ChatSdkMessagingSurface } from "./chat-sdk-surface.js";
+import { LazyLarkAdapter } from "./lark/lazy-adapter.js";
+import { Domain } from "./lark/thread-id.js";
 import {
   enrichSlackTeamRoom,
   isMessagingEnabled,
@@ -8,6 +13,7 @@ import {
   messagingEnvFromProcess,
   messagingPlatformsFromEnv,
   parseSendblueStatus,
+  splitOutboundBody,
 } from "./messaging-platforms.js";
 
 // Fake credentials: adapters are constructed offline, never called.
@@ -99,12 +105,11 @@ describe("messagingPlatformsFromEnv", () => {
       larkAppSecret: "lark-secret",
       larkVerificationToken: "lark-verify",
     })[0]!;
-    const incoming = lark.adapter as unknown as {
-      incomingConfig: { events: string; callbacks: string };
-      shouldStartWsClient: () => boolean;
-    };
-    expect(incoming.incomingConfig).toEqual({ events: "webhook", callbacks: "webhook" });
-    expect(incoming.shouldStartWsClient()).toBe(false);
+    expect(lark.adapter).toBeInstanceOf(LazyLarkAdapter);
+    expect((lark.adapter as LazyLarkAdapter).incomingConfig).toEqual({
+      events: "webhook",
+      callbacks: "webhook",
+    });
   });
 
   it("maps LARK_* process env and accepts the international domain switch", () => {
@@ -161,10 +166,25 @@ describe("messagingPlatformsFromEnv", () => {
     const capabilities = Object.fromEntries(
       platforms.map((platform) => [platform.provider, platform.capabilities]),
     );
-    expect(capabilities.sendblue).toEqual({ direct: true, groups: true, typing: true });
-    expect(capabilities.slack).toEqual({ direct: true, groups: true, typing: false });
+    expect(capabilities.sendblue).toEqual({
+      direct: true,
+      groups: true,
+      typing: true,
+      receipt: "typing",
+    });
+    expect(capabilities.slack).toEqual({
+      direct: true,
+      groups: true,
+      typing: false,
+      receipt: "reaction",
+    });
     expect(capabilities.whatsapp).toEqual({ direct: true, groups: false, typing: false });
-    expect(capabilities.telegram).toEqual({ direct: true, groups: false, typing: false });
+    expect(capabilities.telegram).toEqual({
+      direct: true,
+      groups: false,
+      typing: false,
+      files: true,
+    });
     expect(capabilities.lark).toEqual({ direct: true, groups: false, typing: false });
   });
 });
@@ -334,5 +354,117 @@ describe("enrichSlackTeamRoom", () => {
       base,
     );
     expect(enrichment.kind).toBe("mention");
+  });
+});
+
+describe("provider delivery limits and authenticated receipts", () => {
+  it("keeps both Telegram encodings bounded without splitting surrogate pairs", () => {
+    const converter = new TelegramFormatConverter();
+    const body = `**Summary**\n\n${"😀".repeat(2050)}\n\n${"a_b[c]!".repeat(800)}`;
+    const parts = splitOutboundBody("telegram", body);
+    expect(parts.length).toBeGreaterThan(2);
+    for (const part of parts) {
+      const plain = markdownToPlainText(part);
+      expect(
+        convertEmojiPlaceholders(converter.fromMarkdown(part), "gchat").length,
+      ).toBeLessThanOrEqual(4096);
+      expect(
+        convertEmojiPlaceholders(plain.trim() ? plain : part, "gchat").length,
+      ).toBeLessThanOrEqual(4096);
+      expect(part).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
+    }
+    expect(parts.join("").match(/😀/g)).toHaveLength(2050);
+  });
+
+  it("retries a structured WhatsApp rate rejection with its response delay", async () => {
+    const [platform] = messagingPlatformsFromEnv({
+      whatsappAccessToken: "fixture-token",
+      whatsappPhoneNumberId: "number-one",
+      whatsappAppSecret: "fixture-signing-secret",
+      whatsappVerifyToken: "fixture-verify",
+    });
+    const surface = new ChatSdkMessagingSurface([platform!]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, options?: RequestInit) =>
+        options?.method === "POST"
+          ? Response.json(
+              { error: { code: 130429, message: "Fixture rate limit" } },
+              {
+                status: 400,
+                headers: { "Retry-After": "37" },
+              },
+            )
+          : Response.json({ verified_name: "Fixture" }),
+      ),
+    );
+    try {
+      await expect(
+        surface.sendToThread(
+          {
+            threadId: "whatsapp:number-one:fixture-contact",
+            body: "Reply",
+          },
+          {
+            operationId: "fixture",
+            traceId: "fixture",
+            spaceId: "fixture",
+            userId: "fixture",
+            signal: new AbortController().signal,
+          },
+        ),
+      ).rejects.toMatchObject({
+        disposition: "retryable",
+        reason: "rate_limited",
+        retryAfterMs: 37_000,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("applies only signed WhatsApp statuses addressed to the configured number", async () => {
+    const [platform] = messagingPlatformsFromEnv({
+      whatsappAccessToken: "fixture-token",
+      whatsappPhoneNumberId: "number-one",
+      whatsappAppSecret: "fixture-signing-secret",
+      whatsappVerifyToken: "fixture-verify",
+    });
+    const surface = new ChatSdkMessagingSurface([platform!]);
+    const sink = vi.fn(async () => undefined);
+    surface.onInbound(sink);
+    const payload = JSON.stringify({
+      entry: [
+        {
+          changes: ["number-one", "number-two"].map((number) => ({
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: number },
+              statuses: [{ id: `fixture-${number}`, status: "failed", errors: [{ code: 131047 }] }],
+            },
+          })),
+        },
+      ],
+    });
+    const signature = createHmac("sha256", "fixture-signing-secret").update(payload).digest("hex");
+    const post = (sign: string) =>
+      surface.handleWebhook(
+        "whatsapp",
+        new Request("https://example.test/webhook", {
+          method: "POST",
+          body: payload,
+          headers: { "x-hub-signature-256": sign },
+        }),
+      );
+    expect((await post("sha256=invalid"))?.status).toBe(401);
+    expect(sink).not.toHaveBeenCalled();
+    expect((await post(`sha256=${signature}`))?.status).toBe(200);
+    expect(sink).toHaveBeenCalledExactlyOnceWith({
+      type: "status",
+      provider: "whatsapp",
+      handle: "fixture-number-one",
+      status: "FAILED",
+      reason: "reply_window_closed",
+    });
   });
 });

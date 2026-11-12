@@ -17,6 +17,7 @@ import {
   type ReconciliationLeadership,
 } from "./job-reconciler.js";
 import { deliverMessagingOutbound } from "./messaging-delivery.js";
+import { messagingOutboxFixture } from "./messaging-outbound-fixture.js";
 import { loopGuardStopText } from "./tool-loop.js";
 
 vi.mock("./bot-messages.js", () => ({ returnBotMessageOutcome: vi.fn() }));
@@ -629,8 +630,18 @@ describe("createJobReconciler", () => {
 
     expect(prisma.messagingOutbound.findFirst).toHaveBeenCalledWith({
       where: {
-        status: "pending",
-        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: expect.any(Date) } }],
+        OR: [
+          {
+            status: { in: ["pending", "file_pending"] },
+            OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: expect.any(Date) } }],
+          },
+          {
+            status: "sent",
+            deliveryState: { in: ["sending", "unknown"] },
+            claimStartedAt: { not: null },
+            updatedAt: { lte: expect.any(Date) },
+          },
+        ],
       },
       select: { id: true },
     });
@@ -1404,6 +1415,7 @@ function messagingRecoveryFixture(
     },
     thread: { update: vi.fn(async () => ({ nextMessageSeq: ++nextMessageSeq })) },
     message: {
+      findUnique: vi.fn(async () => null),
       create: vi.fn(async ({ data }: { data: Omit<(typeof messages)[number], "id"> }) => {
         const row = { id: `durable-reply-${messages.length + 1}`, ...data };
         messages.push(row);
@@ -1425,54 +1437,8 @@ function messagingRecoveryFixture(
       findUnique: vi.fn(async () => ({ id: "channel-recovery", threadId: "slack:recovery-group" })),
     },
     messagingChannelMember: { findMany: vi.fn(async () => []) },
-    messagingOutbound: {
-      findFirst: vi.fn(async () => outbox.find((row) => row.status === "pending") ?? null),
-      findMany: vi.fn(async ({ where }: { where: { status: string } }) =>
-        outbox.filter((row) => row.status === where.status),
-      ),
-      createMany: vi.fn(
-        async ({ data }: { data: Array<Omit<(typeof outbox)[number], "id" | "status">> }) => {
-          let count = 0;
-          for (const item of data) {
-            if (outbox.some((row) => row.idempotencyKey === item.idempotencyKey)) continue;
-            outbox.push({ id: `outbound-${outbox.length + 1}`, status: "pending", ...item });
-            count += 1;
-          }
-          return { count };
-        },
-      ),
-      update: vi.fn(
-        async ({
-          where,
-          data,
-        }: {
-          where: { id: string };
-          data: Partial<(typeof outbox)[number]>;
-        }) => {
-          const row = outbox.find((entry) => entry.id === where.id);
-          if (row) Object.assign(row, data);
-          return row;
-        },
-      ),
-      updateMany: vi.fn(
-        async ({
-          where,
-          data,
-        }: {
-          where: { id: string; status?: string };
-          data: Partial<(typeof outbox)[number]>;
-        }) => {
-          const row = outbox.find(
-            (entry) =>
-              entry.id === where.id &&
-              (where.status === undefined || entry.status === where.status),
-          );
-          if (!row) return { count: 0 };
-          Object.assign(row, data);
-          return { count: 1 };
-        },
-      ),
-    },
+    messagingOutbound: messagingOutboxFixture(outbox),
+    $queryRaw: vi.fn(async () => []),
   };
   const prisma = {
     ...client,
@@ -1560,7 +1526,11 @@ describe("terminal messaging recovery", () => {
       }),
     ]);
     expect(fixture.sendToThread).toHaveBeenCalledExactlyOnceWith(
-      { threadId: "slack:recovery-dm", body: "The saved reply" },
+      {
+        threadId: "slack:recovery-dm",
+        body: "The saved reply",
+        idempotencyKey: "msg:durable-reply-1",
+      },
       expect.anything(),
     );
     expect(fixture.run).toEqual({ ...terminal, messagingMirroredAt: expect.any(Date) });

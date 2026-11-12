@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentRuntime, JobPublisher } from "@rakazo/adapter-kit";
 import { runJobKey } from "@rakazo/adapter-kit";
-import { MessagingTeamChatEmulator } from "@rakazo/adapters";
+import { MessagingTeamChatEmulator, messagingInboundNonce } from "@rakazo/adapters";
 import type { ModelConnectInput, ModelCredential, RunStatus } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES, isTerminal } from "@rakazo/core";
 import type { createDb } from "@rakazo/db";
@@ -361,7 +361,7 @@ export async function runTrial(
                   botId,
                   sourceMessage: {
                     is: {
-                      clientNonce: `messaging:${inbound.provider}:${inbound.handle}`,
+                      clientNonce: messagingInboundNonce(inbound),
                     },
                   },
                 },

@@ -11,6 +11,7 @@ import {
 } from "@rakazo/core";
 import { messageReplyPreview } from "@rakazo/core/message-quote";
 import type { Prisma, PrismaClient } from "@rakazo/db";
+import { readMessagingDelivery } from "@rakazo/db";
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
 
@@ -127,7 +128,7 @@ export async function loadMessagePage(
       const messages = includePeerRuns ? rows : await withoutPeerRunMessages(prisma, rows);
       return {
         threadId,
-        messages: messages.map(toThreadMessage),
+        messages: await projectMessagingDelivery(prisma, messages.map(toThreadMessage)),
         olderCursor: hasOlder ? (first?.seq ?? null) : null,
         coveredThroughSeq,
       };
@@ -156,7 +157,7 @@ export async function loadMessagePage(
     if (hasSubstantive || includePeerReceipts || !hasOlder || includePeerRuns) {
       return {
         threadId,
-        messages: visibleRows.map(toThreadMessage),
+        messages: await projectMessagingDelivery(prisma, visibleRows.map(toThreadMessage)),
         olderCursor: hasOlder ? (pageRows[0]?.seq ?? null) : null,
       };
     }
@@ -164,6 +165,17 @@ export async function loadMessagePage(
     // long peer-only histories make this path hot.
     cursor = pageRows[0]?.seq;
   }
+}
+
+async function projectMessagingDelivery(prisma: MessageDb, messages: ThreadMessage[]) {
+  const status = await readMessagingDelivery(
+    prisma,
+    messages.flatMap((message) => (message.role === "bot" ? [message.id] : [])),
+  );
+  return messages.map((message) => {
+    const messagingDelivery = status.get(message.id);
+    return messagingDelivery ? { ...message, messagingDelivery } : message;
+  });
 }
 
 export async function loadAllMessages(

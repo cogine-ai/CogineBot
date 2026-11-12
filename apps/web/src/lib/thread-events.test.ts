@@ -25,6 +25,40 @@ import {
 } from "./thread-events.js";
 
 describe("thread event reduction", () => {
+  it("updates delivery without replacing message text or reviving a cleared message", () => {
+    const reply = {
+      ...message("saved", [{ kind: "text", text: "Saved reply" }], 1),
+      role: "bot" as const,
+    };
+    const before = { ...snapshot([reply]), cursor: 1 };
+    const receipt = event({
+      seq: 2,
+      type: "thread.message.delivery",
+      payload: { messageId: "saved", delivery: { state: "delivered" } },
+    });
+    const delivered = reduceThreadSnapshot(before, receipt);
+    expect(delivered?.messages).toMatchObject([
+      { id: "saved", blocks: reply.blocks, messagingDelivery: { state: "delivered" } },
+    ]);
+    const blocks = [{ kind: "text", text: "Edited reply" }];
+    const updated = reduceThreadSnapshot(
+      delivered,
+      event({
+        seq: 3,
+        type: "thread.message.updated",
+        payload: { messageId: "saved", messageSeq: 1, role: "bot", blocks },
+      }),
+    );
+    expect(updated?.messages).toMatchObject([
+      { id: "saved", blocks, messagingDelivery: { state: "delivered" } },
+    ]);
+    const cleared = reduceThreadSnapshot(
+      before,
+      event({ seq: 3, type: "thread.cleared", payload: {} }),
+    );
+    expect(reduceThreadSnapshot(cleared, receipt)?.messages).toEqual([]);
+  });
+
   it("does not substitute an event position for missing durable message metadata", () => {
     const initial = snapshot([message("existing", [{ kind: "text", text: "Earlier" }], 0)]);
     const malformed = event({

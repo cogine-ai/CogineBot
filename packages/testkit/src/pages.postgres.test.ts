@@ -2,8 +2,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MessagingInboundMessage } from "@rakazo/adapter-kit";
 import { routineWakeupJob } from "@rakazo/adapter-kit";
-import { ComposioEmulator } from "@rakazo/adapters";
+import { ComposioEmulator, LocalArtifactStore, toTeamChatInbound } from "@rakazo/adapters";
 import type { Actor, ModelCredential } from "@rakazo/contracts";
 import { callClientNonce } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
@@ -23,6 +24,7 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.js";
+import { prepareTeamChatInboundContent } from "../../../apps/api/src/messaging-inbound.js";
 import {
   getPage,
   listPages,
@@ -377,6 +379,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
                 }),
               );
               if (routine) expect(JSON.stringify(request.messages)).toContain(prompt);
+              if (teamChat) expect(JSON.stringify(request.messages)).toContain("inventory.txt");
             },
             response: {
               type: "tool",
@@ -524,9 +527,10 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           expect(run).toMatchObject({ botId: bot.id, userId, trigger: "routine" });
           runId = run.id;
         } else if (teamChat) {
+          const events = createThreadEvents(handles.prisma);
           const chat = new TeamChatBridge({
             prisma: handles.prisma,
-            events: createThreadEvents(handles.prisma),
+            events,
             jobs: handles.jobs,
             providerId: "slack",
             botId: bot.id,
@@ -534,20 +538,43 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           });
           bridge = chat;
           const eventId = randomUUID();
+          const fetch = vi
+            .fn(async (): Promise<Uint8Array> => {
+              throw new Error("Fixture file link expired");
+            })
+            .mockResolvedValueOnce(new TextEncoder().encode("Fixture inventory"));
+          const event: MessagingInboundMessage = {
+            type: "message",
+            provider: "slack",
+            handle: eventId,
+            threadId: "slack:fixture-channel:1",
+            conversationKey: "fixture-channel",
+            workspaceId: "fixture-workspace",
+            isDirect: true,
+            from: "fixture-sender",
+            fromLabel: "Fixture sender",
+            channelName: null,
+            participants: [],
+            content: prompt,
+            mediaUrl: null,
+            attachments: [{ name: "inventory.txt", mimeType: "text/plain", fetch }],
+          };
+          const mapped = toTeamChatInbound(event)!;
+          const artifacts = new LocalArtifactStore(dataDir);
           const target = await runAsTenant({ spaceId, userId }, async () => {
             await chat.start();
-            return chat.receive({
-              eventId,
-              workspaceId: "fixture-workspace",
-              kind: "direct",
-              conversationType: "channel",
-              conversationKey: "fixture-channel",
-              conversationId: "fixture-channel",
-              senderId: "fixture-sender",
-              senderName: "Fixture sender",
-              content: prompt,
-              replyThreadId: null,
-            });
+            const send = vi.spyOn(events, "sendUserMessage");
+            const options = {
+              prepareTranscript: (target: { spaceId: string; userId: string; botId: string }) =>
+                prepareTeamChatInboundContent({ prisma: handles.prisma, artifacts }, target, event),
+            };
+            send.mockRejectedValueOnce(new Error("Transcript write interrupted"));
+            await expect(chat.receive(mapped, options)).rejects.toThrow(
+              "Transcript write interrupted",
+            );
+            const first = await chat.receive(mapped, options);
+            await expect(chat.receive(mapped, options)).resolves.toEqual(first);
+            return first;
           });
           const inbound = await db.externalMessage.findFirstOrThrow({
             where: {
@@ -557,6 +584,21 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           });
           if (!inbound.runId) throw new Error("Expected the TeamChat bridge to queue a Run");
           runId = inbound.runId;
+          expect(fetch).toHaveBeenCalledOnce();
+          const stored = await db.artifact.findFirstOrThrow({
+            where: { botId: bot.id, name: "inventory.txt" },
+          });
+          expect(stored).toMatchObject({ spaceId, userId, botId: bot.id, size: 17 });
+          const file = expect.objectContaining({ kind: "file", artifactId: stored.id });
+          const transcript = await db.message.findUniqueOrThrow({
+            where: { id: inbound.threadMessageId! },
+          });
+          expect(transcript.blocks).toEqual(expect.arrayContaining([file]));
+          const queued = await db.run.findUniqueOrThrow({
+            where: { id: runId },
+            select: { sourceMessage: { select: { blocks: true } } },
+          });
+          expect(queued.sourceMessage?.blocks).toEqual(expect.arrayContaining([file]));
         } else {
           ({ runId } = await rpc<{ runId: string }>("threads/send", {
             botId: bot.id,

@@ -1,7 +1,21 @@
-import type { JobPublisher, MessagingInboundMessage } from "@rakazo/adapter-kit";
+import { createHash } from "node:crypto";
+import type {
+  ArtifactStore,
+  JobPublisher,
+  MessagingInboundAttachment,
+  MessagingInboundMessage,
+} from "@rakazo/adapter-kit";
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
+import { messagingInboundNonce } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
-import { parseMessagingCommand, sanitizeMessagingLabel } from "@rakazo/core";
+import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
+import {
+  inferAttachmentMimeType,
+  messageBlockForArtifact,
+  parseMessagingCommand,
+  promptTextForAttachments,
+  sanitizeMessagingLabel,
+} from "@rakazo/core";
 import type {
   MessagingIdentityRequest,
   Prisma,
@@ -12,10 +26,12 @@ import type {
 } from "@rakazo/db";
 import {
   createThreadMessage,
+  MessagingRouteAlreadyChosen,
   normalizeMessagingLinkCode,
   redeemMessagingLinkCode,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { createOwnedArtifact } from "./artifacts.js";
 import {
   MESSAGE_ROUTING_REARMED_REASON,
   MESSAGE_ROUTING_REASON,
@@ -24,6 +40,7 @@ import {
 import {
   deliverWebhookEvent,
   formatUntrustedDeliveryPayload,
+  inboundDeliveryClientNonce,
   inboundEventName,
   messagingWakeIdempotencyKey,
 } from "./webhook-inbound.js";
@@ -47,6 +64,8 @@ export interface MessagingInboundDeps {
    * Cosmetic only — callers must catch failures; groups never get it.
    */
   typing?: (threadId: string) => Promise<void>;
+  acknowledge?: (event: MessagingInboundMessage, runId: string) => void;
+  artifacts?: ArtifactStore;
 }
 
 type IdentityRow = {
@@ -67,6 +86,7 @@ type IdentityRow = {
  */
 export function createMessagingInboundHandler(deps: MessagingInboundDeps) {
   return async (event: MessagingInboundMessage): Promise<void> => {
+    if (event.senderIsBot || !event.handle || !event.from) return;
     if (!event.isDirect) {
       await handleChannelEvent(deps, event);
       return;
@@ -75,45 +95,322 @@ export function createMessagingInboundHandler(deps: MessagingInboundDeps) {
   };
 }
 
+function inboundReceiptKey(event: MessagingInboundMessage, memberId?: string): string {
+  const key = JSON.stringify([
+    event.provider,
+    event.workspaceId,
+    event.threadId,
+    event.from,
+    event.handle,
+    memberId,
+  ]);
+  return `inbound:${createHash("sha256").update(key).digest("hex")}`;
+}
+
+/** Keep a redelivery pinned to the original local thread across relinking. */
+async function bindInboundTarget(
+  prisma: PrismaClient,
+  key: string,
+  target: { identityId: string; threadId: string; provider: string },
+): Promise<boolean> {
+  const { count } = await prisma.messagingOutbound.createMany({
+    data: [{ idempotencyKey: key, kind: "inbound", status: "inbound", body: "", ...target }],
+    skipDuplicates: true,
+  });
+  if (count === 1) return true;
+  const prior = await prisma.messagingOutbound.findUnique({
+    where: { idempotencyKey: key },
+    select: { status: true, threadId: true, identityId: true },
+  });
+  return (
+    prior !== null &&
+    ["inbound", "inbound_routine", "inbound_message"].includes(prior.status) &&
+    prior.threadId === target.threadId &&
+    prior.identityId === target.identityId
+  );
+}
+
+function routineDeliveryKey(event: MessagingInboundMessage) {
+  return messagingWakeIdempotencyKey(
+    event.provider,
+    event.provider === "slack" ? messagingInboundNonce(event) : event.handle,
+  );
+}
+
+function matchesLegacySlackRoutine(
+  blocks: Prisma.JsonValue,
+  event: MessagingInboundMessage,
+): boolean {
+  const text = (blocks as MessageBlock[]).find((block) => block.kind === "text")?.text;
+  if (!text) return false;
+  const start = "<untrusted_delivery_payload>\n";
+  const offset = text.lastIndexOf(start);
+  const end = text.lastIndexOf("\n</untrusted_delivery_payload>");
+  if (offset < 0 || end <= offset) return false;
+  try {
+    const data = JSON.parse(text.slice(offset + start.length, end)) as {
+      from?: string;
+      kind?: string;
+      channelName?: string | null;
+      content?: string;
+      mediaUrl?: string | null;
+    };
+    const escapePayloadText = (value: string) =>
+      value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const legacy = event.legacySlackContent ?? { text: event.content, mediaUrl: event.mediaUrl };
+    return (
+      data.from === escapePayloadText(event.from) &&
+      data.kind === (event.isDirect ? "direct" : "channel") &&
+      (event.isDirect ||
+        (data.channelName ===
+          (event.channelName === null ? null : escapePayloadText(event.channelName)) &&
+          data.content === escapePayloadText(legacy.text) &&
+          (data.mediaUrl ?? null) ===
+            (legacy.mediaUrl === null ? null : escapePayloadText(legacy.mediaUrl))))
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function activeIdentity(
+  prisma: Pick<Prisma.TransactionClient, "bot" | "spaceMember">,
+  identity: Pick<IdentityRow, "spaceId" | "userId" | "botId">,
+): Promise<boolean> {
+  const { spaceId, userId, botId } = identity;
+  const [member, bot] = await Promise.all([
+    prisma.spaceMember.findUnique({
+      where: { spaceId_userId: { spaceId, userId } },
+      select: { id: true },
+    }),
+    prisma.bot.findUnique({
+      where: { id: botId, spaceId, userId, archivedAt: null },
+      select: { id: true },
+    }),
+  ]);
+  return Boolean(member && bot);
+}
+
+function attachmentReader() {
+  const deadlineAt = Date.now() + 10_000;
+  const reads = new Map<MessagingInboundAttachment, Promise<Uint8Array>>();
+  return (attachment: MessagingInboundAttachment) => {
+    const cached = reads.get(attachment);
+    if (cached) return cached;
+    if (Date.now() >= deadlineAt) throw new Error("Attachment download deadline exceeded");
+    const pending = attachment.fetch(deadlineAt);
+    reads.set(attachment, pending);
+    return pending;
+  };
+}
+
+async function inboundContent(
+  deps: Pick<MessagingInboundDeps, "prisma" | "artifacts">,
+  target: Pick<IdentityRow, "spaceId" | "userId" | "botId">,
+  event: MessagingInboundMessage,
+  readAttachment = attachmentReader(),
+) {
+  const text = [event.content, event.mediaUrl].filter(Boolean).join("\n");
+  const attachments = event.attachments ?? [];
+  const artifacts: Array<{ id: string; name: string; mimeType: string; size: number }> = [];
+  if (deps.artifacts && attachments.length) {
+    const nonce = `${messagingInboundNonce(event)}:${target.botId}:attachment:`;
+    const selected = attachments.slice(0, ATTACHMENT_MAX_COUNT);
+    const stored = await deps.prisma.artifact.findMany({
+      where: {
+        spaceId: target.spaceId,
+        userId: target.userId,
+        botId: target.botId,
+        groupId: null,
+        clientNonce: { in: selected.map((_, index) => `${nonce}${index}`) },
+      },
+      select: { id: true, name: true, mimeType: true, size: true, clientNonce: true },
+    });
+    const byNonce = new Map(stored.map((file) => [file.clientNonce, file]));
+    for (const [index, attachment] of selected.entries()) {
+      const clientNonce = `${nonce}${index}`;
+      // A delivery can stop after the artifact commits but before its message.
+      const recovered = byNonce.get(clientNonce);
+      if (recovered) {
+        artifacts.push(recovered);
+        continue;
+      }
+      const name = attachment.name.trim().slice(0, 255) || "Attachment";
+      const mimeType = inferAttachmentMimeType(name, attachment.mimeType);
+      if (!mimeType || (attachment.size !== undefined && attachment.size > ATTACHMENT_MAX_BYTES))
+        continue;
+      let bytes: Uint8Array;
+      try {
+        bytes = await readAttachment(attachment);
+      } catch {
+        continue;
+      }
+      if (!bytes.byteLength || bytes.byteLength > ATTACHMENT_MAX_BYTES) continue;
+      try {
+        artifacts.push(
+          await createOwnedArtifact({ prisma: deps.prisma, artifacts: deps.artifacts }, target, {
+            botId: target.botId,
+            name,
+            mimeType,
+            contentBase64: Buffer.from(bytes).toString("base64"),
+            clientNonce,
+          }),
+        );
+      } catch {
+        getLogger().warn("messaging inbound attachment could not be stored");
+      }
+    }
+  }
+  const unavailable = attachments.length > artifacts.length;
+  const caption = [text, unavailable ? "An attachment could not be received." : ""]
+    .filter(Boolean)
+    .join("\n");
+  const blocks: MessageBlock[] = [
+    ...(caption ? [{ kind: "text" as const, text: caption }] : []),
+    ...artifacts.map(messageBlockForArtifact),
+  ];
+  return { blocks, caption, prompt: promptTextForAttachments(caption, artifacts) };
+}
+
+export async function prepareTeamChatInboundContent(
+  deps: Pick<MessagingInboundDeps, "prisma" | "artifacts">,
+  target: Pick<IdentityRow, "spaceId" | "userId" | "botId">,
+  event: MessagingInboundMessage,
+) {
+  if (await activeIdentity(deps.prisma, target)) return inboundContent(deps, target, event);
+}
+
+function externalMessagePrompt(event: MessagingInboundMessage, text: string, channelName?: string) {
+  return formatUntrustedDeliveryPayload(
+    channelName
+      ? "Reply to this external group message as appropriate."
+      : "Reply to this linked messaging conversation as appropriate.",
+    { provider: event.provider, ...(channelName && { channel: channelName }), text },
+  );
+}
+
+async function markInboundCommand(tx: Prisma.TransactionClient, key: string, provider: string) {
+  const { count } = await tx.messagingOutbound.createMany({
+    data: [
+      {
+        idempotencyKey: key,
+        kind: "inbound_command",
+        status: "inbound_command",
+        provider,
+        body: "",
+      },
+    ],
+    skipDuplicates: true,
+  });
+  return count === 1;
+}
+
+async function alreadyReceived(
+  prisma: PrismaClient,
+  event: MessagingInboundMessage,
+  identity: Pick<IdentityRow, "id" | "botId">,
+  threadId: string,
+  channelId?: string,
+): Promise<boolean> {
+  const legacyRoutineKey = messagingWakeIdempotencyKey(event.provider, event.handle);
+  const routineKey = routineDeliveryKey(event);
+  const clientNonce = `messaging:${event.provider}:${event.handle}`;
+  const sameConversation = (message: { blocks: Prisma.JsonValue }) => {
+    const channel = (message.blocks as MessageBlock[]).find(
+      (block) => block.kind === "channel_message",
+    );
+    return channel?.channelId === channelId;
+  };
+  const current = await prisma.message.findUnique({
+    where: { threadId_clientNonce: { threadId, clientNonce } },
+    select: { blocks: true },
+  });
+  if (current && sameConversation(current)) return true;
+
+  const prior = await prisma.messagingOutbound.findMany({
+    where: { identityId: identity.id, status: "inbound_binding", provider: event.provider },
+    select: { threadId: true, idempotencyKey: true },
+  });
+  const threadIds = prior.flatMap((binding) => (binding.threadId ? [binding.threadId] : []));
+  if (threadIds.length) {
+    const deliveries = await prisma.message.findMany({
+      where: { clientNonce, threadId: { in: threadIds } },
+      select: { blocks: true },
+    });
+    if (deliveries.some(sameConversation)) return true;
+  }
+  const targets = [
+    { threadId, botId: identity.botId },
+    ...prior.flatMap((binding) => {
+      const botId = binding.idempotencyKey.split(":").at(-1);
+      return binding.threadId && botId ? [{ threadId: binding.threadId, botId }] : [];
+    }),
+  ];
+  for (const target of targets) {
+    for (const key of new Set([routineKey, legacyRoutineKey])) {
+      const recorded = await prisma.message.findUnique({
+        where: {
+          threadId_clientNonce: {
+            threadId: target.threadId,
+            clientNonce: inboundDeliveryClientNonce("messaging", target.botId, key),
+          },
+        },
+        select: { blocks: true },
+      });
+      if (recorded && (key === routineKey || matchesLegacySlackRoutine(recorded.blocks, event)))
+        return true;
+    }
+  }
+  return false;
+}
+
 async function handleDirectEvent(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
 ): Promise<void> {
-  // Inbound media arrives as a CDN URL (often expiring); no artifact
-  // ingestion in v1, so it rides along as text.
-  const text = [event.content, event.mediaUrl].filter(Boolean).join("\n");
-
+  const hasContent = Boolean(event.content || event.mediaUrl || event.attachments?.length);
+  const deliveryKey = inboundReceiptKey(event);
+  const prior = await deps.prisma.messagingOutbound.findUnique({
+    where: { idempotencyKey: deliveryKey },
+    select: { identityId: true, status: true, threadId: true },
+  });
+  if (prior?.status === "inbound_command") return;
+  const command = prior ? null : parseMessagingCommand(event.content);
+  const code = prior ? null : normalizeMessagingLinkCode(event.content);
   const where = { provider_address: { provider: event.provider, address: event.from } } as const;
   const existing = await deps.prisma.messagingIdentity.findUnique({ where });
-  if (existing) {
-    // Any reply — even a content-free reaction — ends the consecutive-
-    // outbound streak, but only real text wakes the bot. The conversation
-    // id is refreshed from the webhook so outbound always has a thread.
-    await deps.prisma.messagingIdentity.update({
-      where: { id: existing.id },
-      data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
-    });
-    if (!text) return;
-    // Owner commands are only parsed in the verified 1:1 conversation.
-    const command = parseMessagingCommand(event.content);
-    if (command && (await applyOwnerCommand(deps, existing, command))) return;
-    // A linked sender pasting a fresh code re-points this address at another
-    // of their bots (only their own codes apply).
-    if (await tryRedeemLinkCode(deps, event)) return;
-  } else {
-    // Unlinked senders: a valid link code binds this address to its issuer's
-    // account and bot; otherwise the line is silent unless the deployment
-    // explicitly runs as an open Poke-style signup line.
-    if (await tryRedeemLinkCode(deps, event)) return;
-    if (!deps.openSignup) return;
-    // Never provision a full account for a reaction or empty payload.
-    if (!text) return;
-  }
-
+  if (prior && prior.identityId !== existing?.id) return;
   let ids: ProvisionedMessagingIdentity;
   if (existing) {
-    const thread = await deps.prisma.thread.findFirst({ where: { botId: existing.botId } });
-    if (!thread) throw new Error(`messaging identity ${existing.id} has no thread`);
+    const thread = await deps.prisma.thread.findFirst({
+      where: { botId: existing.botId, spaceId: existing.spaceId, userId: existing.userId },
+    });
+    if (prior && prior.threadId !== thread?.id) return;
+    if (thread && (await alreadyReceived(deps.prisma, event, existing, thread.id))) return;
+    const active = thread && (await activeIdentity(deps.prisma, existing));
+    // A fresh reply ends the consecutive-outbound streak, including when
+    // there is no text to wake a Run.
+    if (active && !prior) {
+      await deps.prisma.messagingIdentity.update({
+        where: { id: existing.id },
+        data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
+      });
+    }
+    if (
+      code &&
+      (await tryRedeemLinkCode(
+        deps,
+        event,
+        code,
+        deliveryKey,
+        thread
+          ? { identityId: existing.id, botId: existing.botId, threadId: thread.id }
+          : undefined,
+      ))
+    )
+      return;
+    if (!active || !thread || !hasContent) return;
+    if (command && (await applyOwnerCommand(deps, existing, command, deliveryKey))) return;
     ids = {
       provider: existing.provider,
       address: existing.address,
@@ -124,6 +421,8 @@ async function handleDirectEvent(
       created: false,
     };
   } else {
+    if (code && (await tryRedeemLinkCode(deps, event, code, deliveryKey))) return;
+    if (!deps.openSignup || !hasContent) return;
     ids = await deps.provision(
       {
         provider: event.provider,
@@ -135,38 +434,73 @@ async function handleDirectEvent(
     );
   }
 
+  const owner = existing ?? (await deps.prisma.messagingIdentity.findUnique({ where }));
+  if (
+    owner &&
+    !(await bindInboundTarget(deps.prisma, deliveryKey, {
+      identityId: owner.id,
+      threadId: ids.threadId,
+      provider: event.provider,
+    }))
+  )
+    return;
+  if (
+    await deps.prisma.message.findUnique({
+      where: {
+        threadId_clientNonce: { threadId: ids.threadId, clientNonce: messagingInboundNonce(event) },
+      },
+      select: { id: true },
+    })
+  )
+    return;
+
   // Message-trigger routines own the delivery when configured. Do not also
   // start a normal messaging continue for the same inbound handle.
-  if (await wakeMessageRoutines(deps, ids, event)) return;
-
-  const sent = await deps.events.sendUserMessage({
+  const content = await inboundContent(deps, ids, event);
+  const receiptKey = owner ? deliveryKey : undefined;
+  if (await wakeMessageRoutines(deps, ids, event, { content, receiptKey })) return;
+  const { blocks, prompt } = content;
+  const sent = await sendInboundMessage(deps.events, {
     spaceId: ids.spaceId,
     threadId: ids.threadId,
     botId: ids.botId,
     userId: ids.userId,
-    blocks: [{ kind: "text", text }],
-    prompt: text,
+    blocks,
+    prompt: externalMessagePrompt(event, prompt),
     trigger: "messaging",
-    clientNonce: `messaging:${event.provider}:${event.handle}`,
+    clientNonce: messagingInboundNonce(event),
+    ...(receiptKey && { messagingReceiptKey: receiptKey }),
   });
-  if (sent.runId) {
+  if (sent?.runId) {
     // Typing bubbles only make sense once a reply is actually coming. Fire
     // before the enqueue so they land ahead of a fast reply, and never await:
     // a stalled vendor typing call must not hold the webhook open. The bubbles
     // clear on their own after a short display window or when the reply
     // arrives, so long runs simply outlive them.
-    void deps.typing?.(event.threadId).catch((error) => {
-      getLogger().error("messaging typing indicator error", error);
-    });
+    if (deps.acknowledge) deps.acknowledge(event, sent.runId);
+    else
+      void deps.typing?.(event.threadId).catch((error) => {
+        getLogger().error("messaging typing indicator error", error);
+      });
     await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
       getLogger().error("messaging inbound run enqueue error", error);
     });
   }
 }
 
+async function sendInboundMessage(
+  events: MessagingInboundDeps["events"],
+  input: Parameters<MessagingInboundDeps["events"]["sendUserMessage"]>[0],
+) {
+  return events.sendUserMessage(input).catch((error: unknown) => {
+    if (error instanceof MessagingRouteAlreadyChosen) return null;
+    throw error;
+  });
+}
+
 /** Wake provider-neutral message routines through the same approval boundary as webhooks. */
 export async function wakeMessageRoutines(
-  deps: Pick<MessagingInboundDeps, "prisma" | "events" | "jobs">,
+  deps: Pick<MessagingInboundDeps, "prisma" | "events" | "jobs" | "artifacts">,
   target: Pick<ProvisionedMessagingIdentity, "spaceId" | "userId" | "botId" | "threadId">,
   event: MessagingInboundMessage,
   options?: {
@@ -182,6 +516,8 @@ export async function wakeMessageRoutines(
      * cannot also deliver for the same provider event.
      */
     externalMessageId?: string;
+    content?: Pick<Awaited<ReturnType<typeof inboundContent>>, "blocks" | "caption">;
+    receiptKey?: string;
   },
 ): Promise<boolean> {
   const routines = await deps.prisma.routine.findMany({
@@ -230,6 +566,14 @@ export async function wakeMessageRoutines(
     if (reserved.count !== 1) return false;
   }
 
+  const content =
+    options?.content ??
+    (event.attachments?.length && (await activeIdentity(deps.prisma, target))
+      ? await inboundContent(deps, target, event)
+      : undefined);
+  const attachments = content?.blocks.filter(
+    (block) => block.kind === "image" || block.kind === "file",
+  );
   const provider = inboundEventName(event.provider);
   const prompt = formatUntrustedDeliveryPayload(`[Messaging Event: ${provider}]`, {
     provider: event.provider,
@@ -238,10 +582,18 @@ export async function wakeMessageRoutines(
     from: event.from,
     fromLabel: event.fromLabel,
     channelName: event.channelName,
-    content: event.content,
+    content: content?.caption || event.content,
     mediaUrl: event.mediaUrl,
+    ...(attachments?.length && {
+      attachments: attachments.map((file) => ({
+        artifactId: file.artifactId,
+        name: file.name,
+        mimeType: file.mimeType,
+        ...(file.kind === "file" && { size: file.size }),
+      })),
+    }),
   });
-  await deliverWebhookEvent(
+  const result = await deliverWebhookEvent(
     { events: deps.events, jobs: deps.jobs },
     {
       bot: { id: target.botId, spaceId: target.spaceId, userId: target.userId },
@@ -252,15 +604,20 @@ export async function wakeMessageRoutines(
       routines,
       source: "messaging",
       messageProvider: event.provider,
-      idempotencyKey: messagingWakeIdempotencyKey(
-        options?.deliveryProvider ?? event.provider,
-        event.handle,
-      ),
+      ...(attachments?.length && { attachments }),
+      ...(options?.receiptKey && { messagingReceiptKey: options.receiptKey }),
+      idempotencyKey:
+        options?.deliveryProvider || options?.externalMessageId
+          ? messagingWakeIdempotencyKey(options.deliveryProvider ?? event.provider, event.handle)
+          : routineDeliveryKey(event),
       // TeamChat channel wakes may share a live thread with an active chat run.
       allowParallelRun: true,
     },
-  );
-  return true;
+  ).catch((error: unknown) => {
+    if (error instanceof MessagingRouteAlreadyChosen) return null;
+    throw error;
+  });
+  return result !== null;
 }
 
 /**
@@ -278,11 +635,33 @@ export async function teamChatSenderCanWakeMessageRoutines(
 
   const linkedIdentity = await deps.prisma.messagingIdentity.findUnique({
     where: { provider_address: { provider: event.provider, address: event.from } },
-    select: { id: true },
+    select: { id: true, userId: true, spaceId: true, botId: true },
   });
+  if (!linkedIdentity || !(await activeIdentity(deps.prisma, linkedIdentity))) return false;
 
-  if (event.isDirect) return Boolean(linkedIdentity);
+  if (event.isDirect) return true;
 
+  const room =
+    event.provider === "slack" && event.conversationKey ? `slack:${event.conversationKey}` : null;
+  if (room) {
+    // Older Slack ledgers can have one channel row per message thread.
+    // Channel activity does not determine when a sender's approval changed.
+    const roomWhere = {
+      provider: "slack",
+      OR: [{ threadId: room }, { threadId: { startsWith: `${room}:` } }],
+    };
+    const member = await deps.prisma.messagingChannelMember.findFirst({
+      where: { address: event.from, channel: roomWhere },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { status: true, identityId: true },
+    });
+    if (member) return member.status === "approved" && member.identityId === linkedIdentity.id;
+    const ledger = await deps.prisma.messagingChannel.findFirst({
+      where: roomWhere,
+      select: { id: true },
+    });
+    return !ledger;
+  }
   const channel = await deps.prisma.messagingChannel.findUnique({
     where: { threadId: event.threadId },
     select: { id: true },
@@ -290,14 +669,14 @@ export async function teamChatSenderCanWakeMessageRoutines(
   if (channel) {
     const member = await deps.prisma.messagingChannelMember.findUnique({
       where: { channelId_address: { channelId: channel.id, address: event.from } },
-      select: { status: true },
+      select: { status: true, identityId: true },
     });
-    return member?.status === "approved";
+    return member?.status === "approved" && member.identityId === linkedIdentity.id;
   }
 
   // Pure TeamChat workspace rooms have no personal membership ledger.
   // Still require a linked sender before waking message routines.
-  return Boolean(linkedIdentity);
+  return true;
 }
 
 /**
@@ -307,29 +686,66 @@ export async function teamChatSenderCanWakeMessageRoutines(
  * for linked senders it reads as a normal message, for strangers nothing
  * happens (no oracle, no reply spam).
  */
+class InactiveMessagingIdentity extends Error {}
+class InboundAlreadyClaimed extends Error {}
+
 async function tryRedeemLinkCode(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
+  code: string,
+  commandKey: string,
+  previous?: { identityId: string; botId: string; threadId: string },
 ): Promise<boolean> {
-  const code = normalizeMessagingLinkCode(event.content);
-  if (!code) return false;
-  const redeemed = await redeemMessagingLinkCode(deps.prisma, {
-    code,
-    provider: event.provider,
-    address: event.from,
-    dmThreadId: event.threadId,
+  const redeemed = await redeemMessagingLinkCode(
+    deps.prisma,
+    {
+      code,
+      provider: event.provider,
+      address: event.from,
+      dmThreadId: event.threadId,
+    },
+    async (tx, link) => {
+      if (!(await activeIdentity(tx, link))) throw new InactiveMessagingIdentity();
+      if (!(await markInboundCommand(tx, commandKey, event.provider)))
+        throw new InboundAlreadyClaimed();
+      if (previous && link.botId !== previous.botId) {
+        await tx.messagingOutbound.createMany({
+          data: [
+            {
+              idempotencyKey: `inbound-binding:${previous.identityId}:${previous.threadId}:${previous.botId}`,
+              kind: "inbound_binding",
+              status: "inbound_binding",
+              body: "",
+              provider: event.provider,
+              identityId: previous.identityId,
+              threadId: previous.threadId,
+            },
+          ],
+          skipDuplicates: true,
+        });
+      }
+      const bot = await tx.bot.findUnique({ where: { id: link.botId }, select: { name: true } });
+      await writeConfirmation(
+        tx,
+        { id: link.identityId },
+        link.confirmationKey,
+        `Linked. Messages here now reach "${bot?.name ?? "your agent"}".`,
+      );
+    },
+  ).catch((error: unknown) => {
+    if (error instanceof InactiveMessagingIdentity || error instanceof InboundAlreadyClaimed)
+      return null;
+    throw error;
   });
-  if (!redeemed) return false;
-  const bot = await deps.prisma.bot.findUnique({
-    where: { id: redeemed.botId },
-    select: { name: true },
-  });
-  await enqueueConfirmation(
-    deps,
-    { id: redeemed.identityId },
-    redeemed.confirmationKey,
-    `Linked. Messages here now reach "${bot?.name ?? "your agent"}".`,
-  );
+  if (!redeemed) {
+    return Boolean(
+      await deps.prisma.messagingOutbound.findUnique({
+        where: { idempotencyKey: commandKey },
+        select: { id: true },
+      }),
+    );
+  }
+  await enqueueDeliverJob(deps);
   return true;
 }
 
@@ -338,6 +754,7 @@ async function applyOwnerCommand(
   deps: MessagingInboundDeps,
   identity: IdentityRow,
   command: "approve" | "decline" | "leave",
+  commandKey: string,
 ): Promise<boolean> {
   if (command === "leave") {
     const membership = await deps.prisma.messagingChannelMember.findFirst({
@@ -345,19 +762,28 @@ async function applyOwnerCommand(
       orderBy: { updatedAt: "desc" },
     });
     if (!membership) return false;
-    const { count } = await deps.prisma.messagingChannelMember.updateMany({
-      where: { id: membership.id, status: "approved" },
-      data: { status: "left" },
+    const processed = await deps.prisma.$transaction(async (tx) => {
+      if (!(await markInboundCommand(tx, commandKey, identity.provider))) return true;
+      const { count } = await tx.messagingChannelMember.updateMany({
+        where: { id: membership.id, status: "approved" },
+        data: { status: "left" },
+      });
+      if (!count) {
+        await tx.messagingOutbound.deleteMany({
+          where: { idempotencyKey: commandKey, status: "inbound_command" },
+        });
+        return false;
+      }
+      await writeConfirmation(
+        tx,
+        identity,
+        `command:leave:${membership.id}`,
+        "You've left the channel. Your agent will no longer post there. The group chat itself is unchanged.",
+      );
+      return true;
     });
-    // State changed under us (e.g. swept out and re-invited): treat the
-    // text as a normal message rather than overwriting the newer state.
-    if (count === 0) return false;
-    await enqueueConfirmation(
-      deps,
-      identity,
-      `command:leave:${membership.id}`,
-      "You've left the channel. Your agent will no longer post there. The group chat itself is unchanged.",
-    );
+    if (!processed) return false;
+    await enqueueDeliverJob(deps);
     return true;
   }
 
@@ -383,6 +809,7 @@ async function applyOwnerCommand(
   if (target.kind === "channel") {
     const key = `command:${command}:${target.membership.id}`;
     const claimed = await deps.prisma.$transaction(async (tx) => {
+      if (!(await markInboundCommand(tx, commandKey, identity.provider))) return true;
       // The claim holds the membership row lock through commit, so the
       // participant sweep can never interleave with the confirmation write.
       const { count } = await tx.messagingChannelMember.updateMany({
@@ -390,7 +817,12 @@ async function applyOwnerCommand(
         data: { status: approved ? "approved" : "declined" },
       });
       // Swept out or answered elsewhere since the read: not ours to write.
-      if (count === 0) return false;
+      if (count === 0) {
+        await tx.messagingOutbound.deleteMany({
+          where: { idempotencyKey: commandKey, status: "inbound_command" },
+        });
+        return false;
+      }
       await writeConfirmation(
         tx,
         identity,
@@ -414,6 +846,7 @@ async function applyOwnerCommand(
     : null;
   const key = `command:${command}:${target.connection.id}`;
   const claimed = await deps.prisma.$transaction(async (tx) => {
+    if (!(await markInboundCommand(tx, commandKey, identity.provider))) return true;
     // The claim holds the connection row lock through commit, so a revoke
     // can never interleave with the confirmation writes.
     const { count } = await tx.agentConnection.updateMany({
@@ -429,7 +862,12 @@ async function applyOwnerCommand(
       },
     });
     // The observed request was answered, revoked, or reopened.
-    if (count === 0) return false;
+    if (count === 0) {
+      await tx.messagingOutbound.deleteMany({
+        where: { idempotencyKey: commandKey, status: "inbound_command" },
+      });
+      return false;
+    }
     await writeConfirmation(
       tx,
       identity,
@@ -469,24 +907,6 @@ async function writeConfirmation(
 }
 
 async function enqueueDeliverJob(deps: MessagingInboundDeps): Promise<void> {
-  await deps.jobs.enqueue(messagingDeliverJob()).catch((error) => {
-    getLogger().error("messaging confirmation enqueue error", error);
-  });
-}
-
-async function enqueueConfirmation(
-  deps: MessagingInboundDeps,
-  identity: { id: string },
-  key: string,
-  body: string,
-): Promise<void> {
-  // Keys are stable per membership/connection across approval cycles; clear
-  // the prior cycle's row or skipDuplicates would swallow the new text.
-  await deps.prisma.messagingOutbound.deleteMany({ where: { idempotencyKey: key } });
-  await deps.prisma.messagingOutbound.createMany({
-    data: [{ idempotencyKey: key, kind: "dm", identityId: identity.id, body }],
-    skipDuplicates: true,
-  });
   await deps.jobs.enqueue(messagingDeliverJob()).catch((error) => {
     getLogger().error("messaging confirmation enqueue error", error);
   });
@@ -596,9 +1016,14 @@ async function handleChannelEvent(
   const senderIdentity = senderMember.identityId
     ? await deps.prisma.messagingIdentity.findUnique({ where: { id: senderMember.identityId } })
     : null;
-  const fromLabel = senderIdentity
-    ? await ownerFirstName(deps.prisma, senderIdentity.userId, event.from)
-    : event.from;
+  if (
+    !senderIdentity ||
+    senderIdentity.address !== event.from ||
+    senderIdentity.provider !== event.provider ||
+    !(await activeIdentity(deps.prisma, senderIdentity))
+  )
+    return;
+  const fromLabel = await ownerFirstName(deps.prisma, senderIdentity.userId, event.from);
 
   const approved = await deps.prisma.messagingChannelMember.findMany({
     where: { channelId: channel.id, status: "approved", identityId: { not: null } },
@@ -613,13 +1038,21 @@ async function handleChannelEvent(
     text: event.content,
     hop: 0,
   };
-  const prompt = `[Group "${channel.name ?? "group"}", ${fromLabel}]: ${event.content}`;
+  const readAttachment = attachmentReader();
   for (const member of approved) {
     const identity = await deps.prisma.messagingIdentity.findUnique({
       where: { id: member.identityId! },
     });
-    if (!identity) continue;
-    const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+    if (
+      !identity ||
+      identity.provider !== event.provider ||
+      identity.address !== member.address ||
+      !(await activeIdentity(deps.prisma, identity))
+    )
+      continue;
+    const thread = await deps.prisma.thread.findFirst({
+      where: { botId: identity.botId, spaceId: identity.spaceId, userId: identity.userId },
+    });
     if (!thread) continue;
     const target = {
       spaceId: identity.spaceId,
@@ -627,19 +1060,40 @@ async function handleChannelEvent(
       botId: identity.botId,
       threadId: thread.id,
     };
-    if (await wakeMessageRoutines(deps, target, event)) continue;
-
-    const sent = await deps.events.sendUserMessage({
+    if (await alreadyReceived(deps.prisma, event, identity, thread.id, channel.id)) continue;
+    const receiptKey = inboundReceiptKey(event, member.id);
+    if (
+      !(await bindInboundTarget(deps.prisma, receiptKey, {
+        identityId: identity.id,
+        threadId: thread.id,
+        provider: event.provider,
+      }))
+    )
+      continue;
+    if (
+      await deps.prisma.message.findUnique({
+        where: {
+          threadId_clientNonce: { threadId: thread.id, clientNonce: messagingInboundNonce(event) },
+        },
+        select: { id: true },
+      })
+    )
+      continue;
+    const content = await inboundContent(deps, target, event, readAttachment);
+    if (await wakeMessageRoutines(deps, target, event, { content, receiptKey })) continue;
+    const { blocks, caption, prompt } = content;
+    const sent = await sendInboundMessage(deps.events, {
       spaceId: identity.spaceId,
       threadId: thread.id,
       botId: identity.botId,
       userId: identity.userId,
-      blocks: [block],
-      prompt,
+      blocks: [{ ...block, text: caption }, ...blocks.filter((item) => item.kind !== "text")],
+      prompt: externalMessagePrompt(event, prompt, channel.name ?? "group"),
       trigger: "messaging",
-      clientNonce: `messaging:${event.provider}:${event.handle}`,
+      clientNonce: messagingInboundNonce(event),
+      messagingReceiptKey: receiptKey,
     });
-    if (sent.runId) {
+    if (sent?.runId) {
       await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
         getLogger().error("messaging channel fan-out enqueue error", error);
       });

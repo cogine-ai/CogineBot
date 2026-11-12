@@ -448,6 +448,7 @@ export interface MessagingSurface {
    * message delivery, and silently no-ops on platforms without support.
    */
   sendTyping(threadId: string, context: AdapterContext): Promise<void>;
+  acknowledge?(threadId: string, handle: string, context: AdapterContext): Promise<void>;
   /**
    * Start the surface eagerly instead of waiting for the first inbound
    * webhook or outbound send to touch it. Needed for adapters that pull

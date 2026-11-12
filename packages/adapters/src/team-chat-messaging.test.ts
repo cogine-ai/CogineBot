@@ -24,6 +24,30 @@ function baseEvent(overrides: Partial<MessagingInboundMessage> = {}): MessagingI
 }
 
 describe("toTeamChatInbound", () => {
+  it("keeps a file-only message in the TeamChat route", () => {
+    const message = toTeamChatInbound({
+      type: "message",
+      provider: "slack",
+      handle: "123.0001",
+      threadId: "slack:fixture",
+      workspaceId: "workspace-fixture",
+      from: "sender-fixture",
+      fromLabel: "Sender",
+      content: "",
+      mediaUrl: null,
+      channelName: null,
+      participants: [],
+      isDirect: true,
+      attachments: [
+        { name: "notes.txt", mimeType: "text/plain", fetch: async () => new Uint8Array(1) },
+      ],
+    });
+    expect(message).toMatchObject({
+      kind: "direct",
+      content: "An attachment was shared in the channel.",
+    });
+  });
+
   it("returns null when content and media are empty", () => {
     expect(toTeamChatInbound(baseEvent({ content: "  ", mediaUrl: null }))).toBeNull();
   });

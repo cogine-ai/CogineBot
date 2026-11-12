@@ -170,7 +170,9 @@ describe("team chat bridge", () => {
         upsert,
         update: vi.fn(async () => ({})),
         updateMany,
+        findUnique: vi.fn(),
       },
+      message: { findUnique: vi.fn() },
     } as unknown as PrismaClient;
     const bridge = new TeamChatBridge({
       prisma,
@@ -193,19 +195,18 @@ describe("team chat bridge", () => {
       }
     ).target = { id: "bot-1", spaceId: "space-1", userId: "owner-1", name: "Chief" };
 
-    await bridge.receive(
-      {
-        eventId: "Ev-deferred",
-        workspaceId: "T-1",
-        kind: "mention",
-        conversationKey: "channel:C-1:100.1",
-        conversationId: "C-1",
-        senderId: "U-1",
-        senderName: "Ada",
-        content: "Run the release routine",
-      },
-      { queueAgent: false },
-    );
+    const inbound = {
+      eventId: "Ev-deferred",
+      workspaceId: "T-1",
+      kind: "mention",
+      conversationKey: "channel:C-1:100.1",
+      conversationId: "C-1",
+      replyThreadId: "100.1",
+      senderId: "U-1",
+      senderName: "Ada",
+      content: "Run the release routine",
+    } satisfies TeamChatInboundMessage;
+    await bridge.receive(inbound, { queueAgent: false });
 
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ status: "deferred" }) }),
@@ -232,6 +233,33 @@ describe("team chat bridge", () => {
         data: { status: "observed", engagementReason: null, nextAttemptAt: null },
       }),
     );
+
+    const file = {
+      kind: "file" as const,
+      artifactId: "saved-file",
+      name: "release.txt",
+      mimeType: "text/plain",
+      size: 5,
+    };
+    vi.mocked(prisma.externalMessage.findUnique).mockResolvedValueOnce({
+      id: "external-deferred",
+      status: "deferred",
+      threadMessageId: "saved-transcript",
+      nextAttemptAt: new Date(0),
+      content: inbound.content,
+    } as never);
+    vi.mocked(prisma.message.findUnique).mockResolvedValueOnce({
+      threadId: "thread-1",
+      blocks: [file],
+    } as never);
+    const prepareTranscript = vi.fn();
+    await expect(
+      bridge.receive(inbound, { queueAgent: false, prepareTranscript }),
+    ).resolves.toMatchObject({
+      deferred: true,
+      content: { blocks: [file], caption: inbound.content },
+    });
+    expect(prepareTranscript).not.toHaveBeenCalled();
   });
 
   it("recovers expired deferred reservations before normal reconciliation", async () => {
@@ -1650,13 +1678,33 @@ describe("team chat bridge", () => {
     expect(sendUserMessage).not.toHaveBeenCalled();
   });
 
-  it("creates one isolated run and one reply for duplicate provider events", async () => {
+  it.each(["text", "file", "retry", "race"])("queues one %s delivery", async (mode) => {
+    const withFile = mode !== "text";
+    const caption =
+      mode === "retry" ? "Saved file caption" : mode === "race" ? "First delivery's caption" : "";
     const records: Array<Record<string, unknown>> = [];
-    const sendUserMessage = vi.fn(async (input: { createRun?: boolean }) =>
-      input.createRun === false
-        ? { messageId: "message-visible", seq: 1, taskId: null, runId: null }
-        : { messageId: "message-prompt", seq: 2, taskId: "task-1", runId: "run-1" },
+    const file = {
+      kind: "file" as const,
+      artifactId: "artifact-fixture",
+      name: "plan.txt",
+      mimeType: "text/plain",
+      size: 12,
+    };
+    const sendUserMessage = vi.fn(
+      async (input: { createRun?: boolean; threadId: string; blocks: unknown }) =>
+        input.createRun === false
+          ? { messageId: "message-visible", seq: 1, taskId: null, runId: null }
+          : { messageId: "message-prompt", seq: 2, taskId: "task-1", runId: "run-1" },
     );
+    const persistedTranscript = () => {
+      const input = sendUserMessage.mock.calls.find(([item]) => item.createRun === false)?.[0];
+      if (!input) return null;
+      return {
+        id: "message-visible",
+        threadId: input.threadId,
+        blocks: mode === "race" ? [{ kind: "text", text: caption }, file] : input.blocks,
+      };
+    };
     const enqueue = vi.fn(async () => undefined);
     const sent: TeamChatSendRequest[] = [];
     const send = vi.fn(async (request: TeamChatSendRequest) => {
@@ -1704,7 +1752,7 @@ describe("team chat bridge", () => {
             status: create.status ?? "received",
             attempts: 0,
             runId: null,
-            threadMessageId: null,
+            threadMessageId: create.threadMessageId ?? null,
             replyThreadId: create.replyThreadId ?? null,
             kind: create.kind ?? "mention",
             senderId: create.senderId,
@@ -1730,7 +1778,11 @@ describe("team chat bridge", () => {
           if (where.status === "received") {
             return records
               .filter((r) => r.status === "received")
-              .map((r) => ({ ...r, externalConversation: conversation }));
+              .map((r) => ({
+                ...r,
+                externalConversation: conversation,
+                threadMessage: persistedTranscript(),
+              }));
           }
           if (
             typeof where.status === "object" &&
@@ -1789,9 +1841,25 @@ describe("team chat bridge", () => {
             return { count };
           },
         ),
-        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-          return records.find((record) => record.id === where.id) ?? null;
-        }),
+        findUnique: vi.fn(
+          async ({
+            where,
+          }: {
+            where: {
+              id?: string;
+              externalConversationId_providerEventId?: { providerEventId: string };
+            };
+          }) => {
+            return (
+              records.find((record) =>
+                where.id
+                  ? record.id === where.id
+                  : record.providerEventId ===
+                    where.externalConversationId_providerEventId?.providerEventId,
+              ) ?? null
+            );
+          },
+        ),
         findFirst: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) => {
           if (!where) return null;
           return (
@@ -1812,7 +1880,14 @@ describe("team chat bridge", () => {
       },
       run: { findMany: vi.fn(async () => []) },
       message: {
-        findUnique: vi.fn(async () => null),
+        findUnique: vi.fn(
+          async ({ where }: { where: { threadId_clientNonce?: { clientNonce: string } } }) => {
+            if (!where.threadId_clientNonce?.clientNonce.startsWith("teamchat-transcript:"))
+              return null;
+            return persistedTranscript();
+          },
+        ),
+        findUniqueOrThrow: vi.fn(async () => persistedTranscript()),
         findFirst: vi.fn(async () => ({
           blocks: [{ kind: "text", text: "The launch plan is ready (private-launch)." }],
         })),
@@ -1848,17 +1923,36 @@ describe("team chat bridge", () => {
       senderName: "Ada",
       conversationName: "Leadership",
       participantNames: ["Ada", "Grace", "Arthur"],
-      content: "Review the launch plan",
+      content: withFile ? "An attachment was shared in the channel." : "Review the launch plan",
     };
 
+    const preparedCaption = mode === "race" ? "An attachment could not be received." : caption;
+    const preparedBlocks: MessageBlock[] = [
+      ...(preparedCaption ? [{ kind: "text" as const, text: preparedCaption }] : []),
+      ...(mode === "race" ? [] : [file]),
+    ];
+    const prepareTranscript = vi.fn(async () => ({
+      blocks: preparedBlocks,
+      caption: preparedCaption,
+      prompt: 'User attached file "plan.txt" (text/plain, 12 bytes).',
+    }));
+    const options = withFile ? { prepareTranscript } : undefined;
     await bridge.start();
-    await expect(bridge.receive(inbound)).resolves.toEqual({
+    if (mode === "retry") {
+      vi.mocked(prisma.externalMessage.upsert).mockRejectedValueOnce(
+        new Error("external message write interrupted"),
+      );
+      await expect(bridge.receive(inbound, options)).rejects.toThrow("write interrupted");
+      expect(records).toHaveLength(0);
+      expect(sendUserMessage).toHaveBeenCalledTimes(1);
+    }
+    await expect(bridge.receive(inbound, options)).resolves.toEqual({
       spaceId: "space-1",
       userId: "owner-1",
       botId: "bot-1",
       threadId: "thread-1",
     });
-    await bridge.receive(inbound);
+    await bridge.receive(inbound, options);
     await bridge.stop();
 
     expect(prisma.externalConversation.upsert).toHaveBeenCalledWith(
@@ -1874,7 +1968,7 @@ describe("team chat bridge", () => {
     expect(sendUserMessage).toHaveBeenCalledTimes(2);
     expect(sendUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        blocks: [{ kind: "text", text: "Review the launch plan" }],
+        blocks: withFile ? preparedBlocks : [{ kind: "text", text: inbound.content }],
         createRun: false,
         clientNonce: "teamchat-transcript:slack:Ev-1",
       }),
@@ -1885,11 +1979,31 @@ describe("team chat bridge", () => {
         threadId: "thread-1",
         botId: "bot-1",
         userId: "owner-1",
-        prompt: "Slack message from Ada:\n\nReview the launch plan",
+        prompt: `Slack message from Ada:\n\n${caption || inbound.content}${
+          withFile ? '\n\nUser attached file "plan.txt" (text/plain, 12 bytes).' : ""
+        }`,
+        ...(withFile && { blocks: [expect.objectContaining({ kind: "text" }), file] }),
         trigger: "messaging",
         clientNonce: "teamchat:slack:Ev-1",
       }),
     );
+    if (withFile) {
+      expect(prepareTranscript).toHaveBeenCalledExactlyOnceWith({
+        spaceId: "space-1",
+        userId: "owner-1",
+        botId: "bot-1",
+        threadId: "thread-1",
+      });
+      expect(prisma.externalMessage.upsert).toHaveBeenCalledTimes(mode === "retry" ? 2 : 1);
+      expect(prisma.externalMessage.upsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            threadMessageId: "message-visible",
+            content: caption || inbound.content,
+          }),
+        }),
+      );
+    }
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(sent).toEqual([
       expect.objectContaining({

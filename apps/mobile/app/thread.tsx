@@ -3979,6 +3979,25 @@ const MessageRow = memo(function MessageRow({
       },
     };
   }, [message, actions, readOnly, onCall, canSpeak, colorScheme, t, locale, menuVersion]);
+  const delivery = message.messagingDelivery;
+  const deliveryLabel =
+    delivery &&
+    t(
+      {
+        sending: "Sending to channel",
+        accepted: "Accepted by channel",
+        delivered: "Delivered to channel",
+        partial_failure: "Partially sent to channel",
+        failed: "Could not send to channel",
+        unknown: "Channel delivery unconfirmed",
+      }[delivery.state],
+    );
+  const deliveryDetail =
+    delivery?.reason === "reply_window_closed"
+      ? t("Ask the recipient to send a new WhatsApp message before replying.")
+      : delivery?.reason === "attachment_unavailable"
+        ? t("An attachment could not be sent.")
+        : undefined;
   return (
     <View
       key={message.id}
@@ -4069,6 +4088,18 @@ const MessageRow = memo(function MessageRow({
               </NewestPageCards.Provider>
             </ThreadReadOnlyContext.Provider>
           </MessageContextMenu>
+          {deliveryLabel ? (
+            <Text
+              testID="message-channel-delivery"
+              accessibilityRole={deliveryDetail ? "button" : undefined}
+              onPress={
+                deliveryDetail ? () => Alert.alert(deliveryLabel, deliveryDetail) : undefined
+              }
+              style={{ color: tokens.mutedForeground, fontSize: 12, marginTop: 4 }}
+            >
+              {deliveryLabel}
+            </Text>
+          ) : null}
           {delegatedApprovals?.map((approval) => (
             <View
               key={approval.effectId}

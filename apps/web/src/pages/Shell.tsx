@@ -7946,6 +7946,9 @@ const Transcript = memo(function Transcript({
                           )
                         }
                       />
+                      {message.messagingDelivery ? (
+                        <MessagingDeliveryLabel delivery={message.messagingDelivery} />
+                      ) : null}
                       {delegatedApprovals.get(message.id)?.map((approval) => (
                         <DelegatedApprovalCard
                           key={approval.effectId}
@@ -9314,6 +9317,40 @@ function ComputerReleaseActions({
       <Button type="button" size="sm" disabled={releasing} onClick={() => void release("done")}>
         <Trans>I’m done</Trans>
       </Button>
+    </div>
+  );
+}
+
+function MessagingDeliveryLabel({
+  delivery,
+}: {
+  delivery: NonNullable<ThreadMessage["messagingDelivery"]>;
+}) {
+  const { t } = useLingui();
+  const labels = {
+    sending: t`Sending to channel`,
+    accepted: t`Accepted by channel`,
+    delivered: t`Delivered to channel`,
+    partial_failure: t`Partially sent to channel`,
+    failed: t`Could not send to channel`,
+    unknown: t`Channel delivery unconfirmed`,
+  };
+  const detail =
+    delivery.reason === "reply_window_closed"
+      ? t`Ask the recipient to send a new WhatsApp message before replying.`
+      : delivery.reason === "attachment_unavailable"
+        ? t`An attachment could not be sent.`
+        : undefined;
+  return (
+    <div data-testid="message-channel-delivery" className="ms-8 mt-1 text-xs text-muted-foreground">
+      {detail ? (
+        <details>
+          <summary className="cursor-pointer">{labels[delivery.state]}</summary>
+          <div>{detail}</div>
+        </details>
+      ) : (
+        labels[delivery.state]
+      )}
     </div>
   );
 }

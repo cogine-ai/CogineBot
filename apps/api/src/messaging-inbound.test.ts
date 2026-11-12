@@ -1,3 +1,5 @@
+import type { SendUserMessageInput } from "@rakazo/db";
+import { MessagingRouteAlreadyChosen } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMessagingInboundHandler,
@@ -5,7 +7,11 @@ import {
   teamChatSenderCanWakeMessageRoutines,
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
-import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
+import {
+  formatUntrustedDeliveryPayload,
+  inboundDeliveryClientNonce,
+  messagingWakeIdempotencyKey,
+} from "./webhook-inbound.js";
 
 const signupPolicy = { signupsEnabled: undefined, signupAllowlist: undefined };
 
@@ -46,7 +52,8 @@ function createDeps(
           updatedAt: new Date(),
         });
   const sendUserMessage = vi.fn(
-    async () => overrides.sendResult ?? { messageId: "msg-1", runId: "run-1", seq: 3 },
+    async (_input?: Omit<SendUserMessageInput, "messagingReceiptKey">) =>
+      overrides.sendResult ?? { messageId: "msg-1", runId: "run-1", seq: 3 },
   );
   const notify = vi.fn(async () => undefined);
   const enqueue = vi.fn(async () => undefined);
@@ -126,6 +133,7 @@ function createDeps(
     },
     messagingLinkCode,
     bot: { findUnique: vi.fn(async () => ({ name: "Chief" })) },
+    spaceMember: { findUnique: vi.fn(async () => ({ id: "member-fixture" })) },
     routine: {
       findMany: vi.fn(async ({ select }: { select: Record<string, boolean> }) =>
         (overrides.routines ?? []).map((row) =>
@@ -134,8 +142,14 @@ function createDeps(
       ),
     },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
+    message: {
+      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async () => null),
+    },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
+      findFirst: vi.fn(async () => null),
       upsert: vi.fn(async () => channel),
       update: vi.fn(async () => ({ ...channel, introPostedAt: new Date() })),
     },
@@ -211,6 +225,19 @@ function createDeps(
       ),
     },
     messagingOutbound: {
+      findMany: vi.fn(
+        async ({ where }: { where: { identityId: string; status: string; provider: string } }) =>
+          outboundRows.filter(
+            (row) =>
+              row.identityId === where.identityId &&
+              row.status === where.status &&
+              row.provider === where.provider,
+          ),
+      ),
+      findUnique: vi.fn(
+        async ({ where }: { where: { idempotencyKey: string } }) =>
+          outboundRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
+      ),
       createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
         let count = 0;
         for (const item of data) {
@@ -245,6 +272,8 @@ function createDeps(
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         ...txMock,
+        bot: prisma.bot,
+        spaceMember: prisma.spaceMember,
         agentConnection: prisma.agentConnection,
         messagingChannelMember: prisma.messagingChannelMember,
         messagingOutbound: prisma.messagingOutbound,
@@ -255,7 +284,20 @@ function createDeps(
   };
   return {
     prisma,
-    events: { sendUserMessage, notify },
+    events: {
+      sendUserMessage: async ({ messagingReceiptKey, ...input }: SendUserMessageInput) => {
+        const receipt = outboundRows.find(
+          ({ idempotencyKey }) => idempotencyKey === messagingReceiptKey,
+        );
+        const status = input.trigger === "webhook" ? "inbound_routine" : "inbound_message";
+        if (receipt && receipt.status !== "inbound" && receipt.status !== status)
+          throw new MessagingRouteAlreadyChosen();
+        const sent = await sendUserMessage(input);
+        if (receipt) receipt.status = status;
+        return sent;
+      },
+      notify,
+    },
     jobs: { enqueue },
     provision,
     openSignup: true,
@@ -264,7 +306,11 @@ function createDeps(
     sendUserMessage,
     notify,
     enqueue,
-    outboundRows,
+    get outboundRows() {
+      return outboundRows.filter(
+        (row) => !["inbound_command", "inbound", "inbound_binding"].includes(String(row.kind)),
+      );
+    },
     members,
     txMock,
     createdIdentities,
@@ -306,6 +352,175 @@ const groupEvent = {
 };
 
 describe("createMessagingInboundHandler DM routing", () => {
+  it("does not fetch attachments or start a Run for a bot or an inactive linked sender", async () => {
+    const deps = createDeps();
+    const fetch = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const handle = createMessagingInboundHandler(deps);
+    const attached = {
+      ...dmEvent,
+      attachments: [{ name: "fixture.txt", mimeType: "text/plain", size: 3, fetch }],
+    };
+    await handle({ ...attached, senderIsBot: true });
+    vi.mocked(deps.prisma.spaceMember.findUnique).mockResolvedValueOnce(null);
+    await handle(attached);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+    expect(deps.prisma.messagingIdentity.update).not.toHaveBeenCalled();
+  });
+
+  it("treats a replay of a consumed approval as the same event", async () => {
+    const deps = createDeps({
+      invitedMember: {
+        id: "approved-member",
+        status: "invited",
+        updatedAt: new Date(),
+      },
+    });
+    const event = { ...dmEvent, content: "YES" };
+    const handle = createMessagingInboundHandler(deps);
+    await Promise.all([handle(event), handle(event)]);
+    await handle(event);
+    expect(deps.outboundRows).toHaveLength(1);
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a duplicate approval after the first command consumed the pending target", async () => {
+    const deps = createDeps();
+    vi.mocked(deps.prisma.messagingChannelMember.findFirst).mockImplementationOnce(async () => {
+      const lookup = vi.mocked(deps.prisma.messagingOutbound.findUnique).mock.calls[0]![0]!;
+      await deps.prisma.messagingOutbound.createMany({
+        data: [
+          {
+            idempotencyKey: lookup.where.idempotencyKey!,
+            kind: "inbound_command",
+            status: "inbound_command",
+            body: "",
+          },
+        ],
+      });
+      return null;
+    });
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "YES" });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a provider redelivery of a pre-upgrade Slack message in the original Run", async () => {
+    const deps = createDeps({
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: dmEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+    });
+    vi.mocked(deps.prisma.message.findUnique).mockResolvedValueOnce({
+      blocks: [{ kind: "text", text: dmEvent.content }],
+    } as never);
+    await createMessagingInboundHandler(deps)({
+      ...dmEvent,
+      provider: "slack",
+      threadId: "slack:fixture",
+      handle: "13",
+    });
+    expect(deps.prisma.message.findUnique).toHaveBeenCalledWith({
+      where: {
+        threadId_clientNonce: { threadId: "thread-1", clientNonce: "messaging:slack:13" },
+      },
+      select: { blocks: true },
+    });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("checks legacy delivery on the earlier linked thread before routing a replay", async () => {
+    const deps = createDeps({
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: dmEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+      linkCode: {
+        id: "link-fixture",
+        code: "ABCD2345",
+        userId: "user-1",
+        spaceId: "ws-2",
+        botId: "bot-2",
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+    const handle = createMessagingInboundHandler(deps);
+    const slack = { ...dmEvent, provider: "slack", threadId: "slack:fixture" };
+    await handle({ ...slack, handle: "relink", content: "ABCD2345" });
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "link:link-fixture" }),
+    ]);
+    vi.mocked(deps.prisma.thread.findFirst).mockResolvedValueOnce({ id: "thread-2" } as never);
+    vi.mocked(deps.prisma.message.findMany).mockResolvedValueOnce([
+      { blocks: [{ kind: "text", text: "YES" }] },
+    ] as never);
+    await handle({ ...slack, handle: "old-approval-like-text", content: "YES" });
+    expect(deps.prisma.message.findMany).toHaveBeenCalledWith({
+      where: {
+        clientNonce: "messaging:slack:old-approval-like-text",
+        threadId: { in: ["thread-1"] },
+      },
+      select: { blocks: true },
+    });
+    expect(deps.prisma.messagingChannelMember.findFirst).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not interpret an existing routine delivery as a new approval", async () => {
+    const deps = createDeps({ invitedMember: { id: "pending", status: "invited" } });
+    const routineNonce = inboundDeliveryClientNonce(
+      "messaging",
+      "bot-1",
+      messagingWakeIdempotencyKey(dmEvent.provider, dmEvent.handle),
+    );
+    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+      where.threadId_clientNonce?.clientNonce === routineNonce
+        ? ({ id: "prior-routine" } as never)
+        : null,
+    );
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "YES" });
+    expect(deps.prisma.messagingChannelMember.findFirst).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("can replace an archived linked Bot using a valid code for an active Bot", async () => {
+    const deps = createDeps({
+      linkCode: {
+        id: "replacement-code",
+        code: "ABCD2345",
+        userId: "user-1",
+        spaceId: "ws-2",
+        botId: "bot-2",
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+    vi.mocked(deps.prisma.bot.findUnique).mockResolvedValueOnce(null);
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "ABCD2345" });
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "link:replacement-code" }),
+    ]);
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not replay an event into a different Bot after the same identity relinks", async () => {
+    const deps = createDeps();
+    const handle = createMessagingInboundHandler(deps);
+    await handle(dmEvent);
+    vi.mocked(deps.prisma.thread.findFirst).mockResolvedValueOnce({
+      id: "relinked-thread",
+    } as never);
+    await handle(dmEvent);
+    expect(deps.sendUserMessage).toHaveBeenCalledOnce();
+  });
+
   it("delivers a known sender's message into their bot's existing thread", async () => {
     const deps = createDeps();
     const handle = createMessagingInboundHandler(deps);
@@ -323,7 +538,7 @@ describe("createMessagingInboundHandler DM routing", () => {
       botId: "bot-1",
       userId: "user-1",
       blocks: [{ kind: "text", text: "hello bot" }],
-      prompt: "hello bot",
+      prompt: expect.stringContaining('"text": "hello bot"'),
       trigger: "messaging",
       clientNonce: "messaging:sendblue:handle-1",
     });
@@ -457,6 +672,52 @@ describe("createMessagingInboundHandler DM routing", () => {
       );
     },
   );
+
+  it("passes an attachment-only delivery or its receipt failure to the existing routine", async () => {
+    const deps = createDeps({
+      routines: [{ id: "routine-fixture", name: "Save notes", prompt: "Summarize notes" }],
+    });
+    const file = {
+      kind: "file" as const,
+      artifactId: "fixture-artifact",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      size: 4,
+    };
+    const target = { spaceId: "ws-1", userId: "user-1", botId: "bot-1", threadId: "thread-1" };
+    await wakeMessageRoutines(
+      deps,
+      target,
+      { ...dmEvent, content: "" },
+      {
+        content: { caption: "", blocks: [file] },
+      },
+    );
+    expect(deps.sendUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trigger: "webhook",
+        blocks: [
+          expect.objectContaining({
+            kind: "text",
+            text: expect.stringContaining("fixture-artifact"),
+          }),
+          file,
+        ],
+      }),
+    );
+    deps.sendUserMessage.mockClear();
+    await createMessagingInboundHandler(deps)({
+      ...dmEvent,
+      content: "",
+      attachments: [{ name: "notes.txt", mimeType: "text/plain", size: 4, fetch: vi.fn() }],
+    });
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        trigger: "webhook",
+        prompt: expect.stringContaining("An attachment could not be received."),
+      }),
+    );
+  });
 
   it("does not double-wake a DM when message routines match", async () => {
     const deps = createDeps({
@@ -592,7 +853,9 @@ describe("createMessagingInboundHandler DM routing", () => {
     await handle({ ...dmEvent, content: "", mediaUrl: "https://cdn.example.com/pic.jpg" });
 
     expect(deps.sendUserMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: "https://cdn.example.com/pic.jpg" }),
+      expect.objectContaining({
+        prompt: expect.stringContaining("https://cdn.example.com/pic.jpg"),
+      }),
     );
   });
 
@@ -819,6 +1082,164 @@ describe("createMessagingInboundHandler owner commands", () => {
 });
 
 describe("createMessagingInboundHandler channel routing", () => {
+  it("keeps the routine route selected even if a replay sees no active routine", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+      routines: [{ id: "routine-1", name: "Record update", prompt: "Record the update" }],
+    });
+    const handle = createMessagingInboundHandler(deps);
+    const event = { ...groupEvent, participants: [] };
+    await handle(event);
+    vi.mocked(deps.prisma.routine.findMany).mockResolvedValueOnce([]);
+    await handle(event);
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ trigger: "webhook" }),
+    );
+  });
+
+  it.each([
+    { recordedContent: "Different channel payload", expectedRun: true },
+    { recordedContent: "Report & notes", expectedRun: false },
+  ])(
+    "distinguishes legacy Slack deliveries after link and file normalization ($expectedRun)",
+    async ({ recordedContent, expectedRun }) => {
+      const deps = createDeps({
+        members: [
+          {
+            id: "cm-1",
+            channelId: "ch-1",
+            identityId: "mi-1",
+            address: groupEvent.from,
+            status: "approved",
+          },
+        ],
+        identity: {
+          id: "mi-1",
+          provider: "slack",
+          address: groupEvent.from,
+          userId: "user-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
+        },
+      });
+      const event = {
+        ...groupEvent,
+        provider: "slack",
+        threadId: "slack:fixture-channel",
+        channelName: null,
+        participants: [],
+        content: "Report & notes (https://example.test/report)",
+        legacySlackContent: {
+          text: "Report & notes",
+          mediaUrl: "https://files.slack.com/files-pri/fixture",
+        },
+      };
+      const legacyNonce = inboundDeliveryClientNonce(
+        "messaging",
+        "bot-1",
+        messagingWakeIdempotencyKey(event.provider, event.handle),
+      );
+      vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+        where.threadId_clientNonce?.clientNonce === legacyNonce
+          ? ({
+              blocks: [
+                {
+                  kind: "text",
+                  text: formatUntrustedDeliveryPayload("[Messaging Event: slack]", {
+                    provider: "slack",
+                    kind: "channel",
+                    handle: event.handle,
+                    from: event.from,
+                    channelName: null,
+                    content: recordedContent,
+                    mediaUrl: event.legacySlackContent.mediaUrl,
+                  }),
+                },
+              ],
+            } as never)
+          : null,
+      );
+      await createMessagingInboundHandler(deps)(event);
+      if (expectedRun) {
+        expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ trigger: "messaging" }),
+        );
+      } else {
+        expect(deps.sendUserMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("does not start a normal group Run after a routine already consumed the event", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+    });
+    const routineNonce = inboundDeliveryClientNonce(
+      "messaging",
+      "bot-1",
+      messagingWakeIdempotencyKey(groupEvent.provider, groupEvent.handle),
+    );
+    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+      where.threadId_clientNonce?.clientNonce === routineNonce
+        ? ({ id: "routine-delivery" } as never)
+        : null,
+    );
+    await createMessagingInboundHandler(deps)({ ...groupEvent, participants: [] });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not redeliver an older group event to the new Bot of an approved identity", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+    });
+    await deps.prisma.messagingOutbound.createMany({
+      data: [
+        {
+          idempotencyKey: "fixture-binding",
+          kind: "inbound_binding",
+          status: "inbound_binding",
+          identityId: "mi-1",
+          provider: "sendblue",
+          threadId: "old-thread",
+          body: "",
+        },
+      ],
+    });
+    vi.mocked(deps.prisma.message.findMany).mockResolvedValueOnce([
+      { blocks: [{ kind: "channel_message", channelId: "ch-1" }] },
+    ] as never);
+    await createMessagingInboundHandler(deps)({ ...groupEvent, participants: [] });
+    expect(deps.prisma.message.findMany).toHaveBeenCalledWith({
+      where: { clientNonce: "messaging:sendblue:handle-1", threadId: { in: ["old-thread"] } },
+      select: { blocks: true },
+    });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("discovers the channel, invites linked members, and posts one intro for unlinked ones", async () => {
     const deps = createDeps();
     const handle = createMessagingInboundHandler(deps);
@@ -1447,6 +1868,60 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
       }),
     ).resolves.toBe(false);
   });
+
+  it.each([
+    { member: { status: "approved", identityId: "mi-1" }, hasLedger: true, allowed: true },
+    { member: { status: "left", identityId: "mi-1" }, hasLedger: true, allowed: false },
+    { member: { status: "approved", identityId: "old-identity" }, hasLedger: true, allowed: false },
+    { member: null, hasLedger: true, allowed: false },
+    { member: null, hasLedger: false, allowed: true },
+  ])(
+    "uses the latest sender membership across Slack room threads ($member, $hasLedger)",
+    async ({ member, hasLedger, allowed }) => {
+      const deps = createDeps({
+        identity: {
+          id: "mi-1",
+          provider: "slack",
+          address: groupEvent.from,
+          userId: "user-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
+        },
+      });
+      vi.mocked(deps.prisma.messagingChannelMember.findFirst).mockResolvedValueOnce(
+        member as never,
+      );
+      vi.mocked(deps.prisma.messagingChannel.findFirst).mockResolvedValueOnce(
+        hasLedger ? ({ id: "ch-1" } as never) : null,
+      );
+      await expect(
+        teamChatSenderCanWakeMessageRoutines(deps, {
+          ...groupEvent,
+          provider: "slack",
+          threadId: "slack:fixture-room:later",
+          conversationKey: "fixture-room",
+        }),
+      ).resolves.toBe(allowed);
+      const roomWhere = {
+        provider: "slack",
+        OR: [
+          { threadId: "slack:fixture-room" },
+          { threadId: { startsWith: "slack:fixture-room:" } },
+        ],
+      };
+      expect(deps.prisma.messagingChannelMember.findFirst).toHaveBeenCalledWith({
+        where: { address: groupEvent.from, channel: roomWhere },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: { status: true, identityId: true },
+      });
+      if (!member) {
+        expect(deps.prisma.messagingChannel.findFirst).toHaveBeenCalledWith({
+          where: roomWhere,
+          select: { id: true },
+        });
+      }
+    },
+  );
 
   it("requires approved membership or a linked identity for channel wakes", async () => {
     const approved = createDeps({

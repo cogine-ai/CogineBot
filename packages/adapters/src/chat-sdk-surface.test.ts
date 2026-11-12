@@ -1,6 +1,7 @@
 import { createMockAdapter, createTestMessage } from "@chat-adapter/tests";
 import type { AdapterContext, MessagingInboundEvent } from "@rakazo/adapter-kit";
-import type { Adapter, ChatInstance } from "chat";
+import type { Adapter, ChatInstance, Message } from "chat";
+import { parseMarkdown } from "chat";
 import { describe, expect, it, vi } from "vitest";
 import {
   ChatSdkMessagingSurface,
@@ -39,6 +40,8 @@ function createPlatform(
           id: string;
           text: string;
           isMe?: boolean;
+          markdown?: string;
+          fileUrl?: string;
         };
         // Fire-and-forget: matches Chat SDK adapters that return 200 before
         // processMessage settles, relying on waitUntil for background work.
@@ -48,6 +51,19 @@ function createPlatform(
           createTestMessage(payload.id, payload.text, {
             threadId: payload.threadId,
             raw: { roster: ["+15551111111", "+15552222222"] },
+            ...(payload.markdown ? { formatted: parseMarkdown(payload.markdown) } : {}),
+            ...(payload.fileUrl
+              ? {
+                  attachments: [
+                    {
+                      type: "file",
+                      name: "fixture.txt",
+                      url: payload.fileUrl,
+                      fetchData: async () => Buffer.from("fixture"),
+                    },
+                  ] satisfies Message["attachments"],
+                }
+              : {}),
             author: {
               userId: "U123",
               userName: "testuser",
@@ -119,6 +135,89 @@ describe("ChatSdkMessagingSurface inbound", () => {
         mediaUrl: null,
       },
     ]);
+  });
+
+  it("keeps Slack messages with equal timestamps in separate conversations", async () => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    for (const [threadId, text] of [
+      ["slack:Dfirst:1", "First"],
+      ["slack:Dsecond:1", "Second"],
+    ]) {
+      expect(
+        (
+          await surface.handleWebhook(
+            "slack",
+            webhookRequest({
+              threadId,
+              id: "1700000000.000100",
+              text,
+            }),
+          )
+        )?.status,
+      ).toBe(200);
+    }
+    expect(events).toMatchObject([{ content: "First" }, { content: "Second" }]);
+  });
+
+  it("retains the historical Slack group projection beside normalized links and files", async () => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    const fileUrl = "https://files.slack.com/files-pri/fixture";
+    await surface.handleWebhook(
+      "slack",
+      webhookRequest({
+        threadId: "slack:Cfixture:1",
+        id: "1700000000.000100",
+        text: "Report",
+        markdown: "[Report](https://example.test/report)",
+        fileUrl,
+      }),
+    );
+    expect(events).toMatchObject([
+      {
+        content: "Report (https://example.test/report)",
+        mediaUrl: null,
+        attachments: [{ name: "fixture.txt" }],
+        legacySlackContent: { text: "Report", mediaUrl: fileUrl },
+      },
+    ]);
+  });
+
+  it.each(["files.slack-gov.com", "slack-files-gov.com"])(
+    "ingests attachment-only messages from %s",
+    async (host) => {
+      const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+      await surface.handleWebhook(
+        "slack",
+        webhookRequest({
+          threadId: "slack:Dfixture:1",
+          id: "m-gov-file",
+          text: "",
+          fileUrl: `https://${host}/files-pri/fixture`,
+        }),
+      );
+
+      expect(events).toMatchObject([{ mediaUrl: null, attachments: [{ name: "fixture.txt" }] }]);
+      const event = events[0];
+      if (event?.type !== "message") throw new Error("Missing inbound message");
+      await expect(event.attachments?.[0]?.fetch(Date.now() + 1_000)).resolves.toEqual(
+        new Uint8Array(Buffer.from("fixture")),
+      );
+    },
+  );
+
+  it.each([
+    "https://downloads.example.test/fixture",
+    "http://files.slack-gov.com/files-pri/fixture",
+    "https://files.slack-gov.com:8443/files-pri/fixture",
+  ])("preserves %s as a link without admitting a download", async (fileUrl) => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    await surface.handleWebhook(
+      "slack",
+      webhookRequest({ threadId: "slack:Dfixture:1", id: "m-link", text: "", fileUrl }),
+    );
+
+    expect(events).toMatchObject([{ mediaUrl: fileUrl }]);
+    expect(events[0]).not.toHaveProperty("attachments");
   });
 
   it("never surfaces the bot's own messages", async () => {
@@ -303,6 +402,31 @@ describe("ChatSdkMessagingSurface webhook plumbing", () => {
   });
 });
 
+describe("provider acceptance boundary", () => {
+  it("honors a structured rate limit and keeps a generic service error uncertain", async () => {
+    const { surface, adapter } = createSurface();
+    const send = { threadId: "mock:Duser:1", body: "Synthetic reply" };
+    vi.mocked(adapter.postMessage).mockRejectedValueOnce(
+      Object.assign(new Error("rate limit"), { status: 429, retryAfter: 12 }),
+    );
+    await expect(surface.sendToThread(send, context)).rejects.toMatchObject({
+      disposition: "retryable",
+      reason: "rate_limited",
+      retryAfterMs: 12_000,
+    });
+    vi.mocked(adapter.postMessage).mockRejectedValueOnce(
+      Object.assign(new Error("service unavailable"), {
+        status: 503,
+        headers: new Headers({ "retry-after": "12" }),
+      }),
+    );
+    await expect(surface.sendToThread(send, context)).rejects.toMatchObject({
+      disposition: "unknown",
+      reason: "outcome_unknown",
+    });
+  });
+});
+
 describe("ChatSdkMessagingSurface outbound", () => {
   it("posts to a thread through the platform adapter and returns the handle", async () => {
     const { surface, adapter } = createSurface();
@@ -334,7 +458,7 @@ describe("ChatSdkMessagingSurface outbound", () => {
   it("throws when the platform cannot open direct conversations", async () => {
     const { surface } = createSurface({}, { openDM: undefined });
     await expect(surface.openDirectThread("mock", "+15551234567", context)).rejects.toThrow(
-      /cannot open direct/,
+      /rejected/,
     );
   });
 

@@ -260,6 +260,13 @@ jobs:
           path: apps/web/test-results/bot-templates-*/**/a6-*.png
           if-no-files-found: error
           retention-days: 7
+      - name: Retain channel delivery acceptance screenshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: messaging-channel-delivery-screenshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/web/test-results/messaging-settings-*/**/messaging-channel-delivery.png
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain failure recovery acceptance screenshots
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

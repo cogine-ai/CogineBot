@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import type { JobPublisher, SecretStore } from "@rakazo/adapter-kit";
 import { runContinueJob, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { inboundRoutineModelPin } from "@rakazo/adapters";
+import type { MessageBlock } from "@rakazo/contracts";
 import type { PrismaClient, SendUserMessageInput } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
 export const WEBHOOK_SECRET_KIND = "webhook";
+
+type InboundAttachmentBlock = Extract<MessageBlock, { kind: "image" | "file" }>;
 
 export type WebhookEvents = {
   sendUserMessage(
@@ -15,10 +18,11 @@ export type WebhookEvents = {
       threadId: string;
       botId: string;
       userId: string;
-      blocks: Array<{ kind: "text"; text: string }>;
+      blocks: Array<{ kind: "text"; text: string } | InboundAttachmentBlock>;
       prompt: string;
       trigger: "webhook";
       clientNonce?: string;
+      messagingReceiptKey?: string;
       allowParallelRun?: boolean;
       modelPin?: {
         routineIds: string[];
@@ -271,6 +275,7 @@ export async function deliverWebhookEvent(
   target: InboundTarget,
   input: {
     prompt: string;
+    attachments?: InboundAttachmentBlock[];
     routines: Array<{
       id: string;
       name: string;
@@ -283,6 +288,7 @@ export async function deliverWebhookEvent(
     source: "webhook" | "github" | "messaging";
     messageProvider?: string;
     idempotencyKey?: string;
+    messagingReceiptKey?: string;
     /** Messaging wakes share the live chat thread; keep a separate webhook run. */
     allowParallelRun?: boolean;
   },
@@ -313,10 +319,11 @@ export async function deliverWebhookEvent(
     threadId: target.threadId,
     botId: target.bot.id,
     userId: target.bot.userId,
-    blocks: [{ kind: "text", text: promptText }],
+    blocks: [{ kind: "text", text: promptText }, ...(input.attachments ?? [])],
     prompt: promptText,
     trigger: "webhook",
     clientNonce,
+    ...(input.messagingReceiptKey && { messagingReceiptKey: input.messagingReceiptKey }),
     ...(input.routines.length
       ? {
           routineSources: {

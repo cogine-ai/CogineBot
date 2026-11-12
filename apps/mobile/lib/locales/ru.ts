@@ -1,4 +1,13 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Sending to channel": "Отправляется в канал",
+  "Accepted by channel": "Принято каналом",
+  "Delivered to channel": "Доставлено в канал",
+  "Partially sent to channel": "Частично отправлено в канал",
+  "Could not send to channel": "Не удалось отправить в канал",
+  "Channel delivery unconfirmed": "Доставка в канал не подтверждена",
+  "An attachment could not be sent.": "Не удалось отправить вложение.",
+  "Ask the recipient to send a new WhatsApp message before replying.":
+    "Перед ответом попросите получателя отправить новое сообщение в WhatsApp.",
   After: "После",
   "Applies to new playback.": "Применяется к новому воспроизведению.",
   "Applies to new runs.": "Применяется к новым запускам.",

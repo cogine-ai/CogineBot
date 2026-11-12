@@ -1,4 +1,13 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Sending to channel": "Wird an den Kanal gesendet",
+  "Accepted by channel": "Vom Kanal angenommen",
+  "Delivered to channel": "Im Kanal zugestellt",
+  "Partially sent to channel": "Teilweise an den Kanal gesendet",
+  "Could not send to channel": "Senden an den Kanal fehlgeschlagen",
+  "Channel delivery unconfirmed": "Zustellung im Kanal unbestätigt",
+  "An attachment could not be sent.": "Ein Anhang konnte nicht gesendet werden.",
+  "Ask the recipient to send a new WhatsApp message before replying.":
+    "Bitte den Empfänger vor deiner Antwort um eine neue WhatsApp-Nachricht.",
   After: "Danach",
   "Applies to new playback.": "Gilt für die nächste Wiedergabe.",
   "Applies to new runs.": "Gilt für neue Ausführungen.",

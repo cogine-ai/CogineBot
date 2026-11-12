@@ -8,6 +8,7 @@ import type {
   Group,
   Me,
   MessageBlock,
+  MessagingDelivery,
   ModelCatalogEntry,
   ModelCredential,
   ReplyPreview,
@@ -21,6 +22,7 @@ import {
   IsoDate,
   legacyAccountSecurity,
   legacyAuthCapabilitiesSchema,
+  MessagingDeliverySchema,
   WEBSITE_LOGIN_CARD_HEADER,
 } from "@rakazo/contracts";
 import type { ThreadHistory } from "@rakazo/core";
@@ -1316,6 +1318,7 @@ export type MobileMessage = {
   seq?: number;
   /** Last durable event applied, independent of the message's history position. */
   observedEventSeq?: number;
+  messagingDelivery?: MessagingDelivery;
   runId?: string;
   role: "user" | "bot" | "system";
   /** Set when the message was sent from a live voice call; groups one call's transcript. */
@@ -1951,6 +1954,20 @@ export function applyMobileThreadEvent(
       messages: updateCloudAgentMessages(prev.messages, event.payload ?? {}),
     };
   }
+  if (event.type === "thread.message.delivery") {
+    const delivery = MessagingDeliverySchema.safeParse(event.payload?.delivery);
+    return {
+      ...prev,
+      cursor,
+      messages: delivery.success
+        ? prev.messages.map((message) =>
+            message.id === event.payload?.messageId && message.role === "bot"
+              ? { ...message, messagingDelivery: delivery.data, observedEventSeq: event.seq }
+              : message,
+          )
+        : prev.messages,
+    };
+  }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const { remaining } = takeLiveMessage(prev.messages, progressMessageId(event));
     const id = String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`);
@@ -1960,6 +1977,7 @@ export function applyMobileThreadEvent(
       threadId: event.threadId ?? known?.threadId ?? prev.threadId,
       seq: typeof event.payload?.messageSeq === "number" ? event.payload.messageSeq : known?.seq,
       observedEventSeq: event.seq ?? known?.observedEventSeq,
+      messagingDelivery: known?.messagingDelivery,
       createdAt: known?.createdAt ?? event.createdAt,
       runId: event.runId ?? known?.runId,
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",

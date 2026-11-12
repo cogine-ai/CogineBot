@@ -1,11 +1,20 @@
-import { createSlackAdapter } from "@chat-adapter/slack";
-import { createTelegramAdapter } from "@chat-adapter/telegram";
-import { createWhatsAppAdapter } from "@chat-adapter/whatsapp";
+import type { SlackBotToken } from "@chat-adapter/slack";
+import { SlackAdapter } from "@chat-adapter/slack";
+import { escapeMarkdownV2, TelegramAdapter, TelegramFormatConverter } from "@chat-adapter/telegram";
+import { splitMessage, WhatsAppAdapter, WhatsAppApiError } from "@chat-adapter/whatsapp";
+import type { HttpInstance } from "@larksuiteoapi/node-sdk";
 import type { MessagingInboundMessage, MessagingOutboundStatus } from "@rakazo/adapter-kit";
 import type { Adapter } from "chat";
-import { createLarkAdapter, Domain } from "chat-adapter-lark";
+import { ConsoleLogger, convertEmojiPlaceholders, markdownToPlainText } from "chat";
 import { createSendblueAdapter } from "chat-adapter-sendblue";
+import type { ClientOptions as SendblueClientOptions } from "sendblue";
 import type { MessagingPlatform } from "./chat-sdk-surface.js";
+import { LazyLarkAdapter } from "./lark/lazy-adapter.js";
+import { Domain } from "./lark/thread-id.js";
+import {
+  downloadMessagingAttachment,
+  messagingAttachmentTimeRemaining,
+} from "./messaging-attachment-download.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
 /**
@@ -13,6 +22,7 @@ import { isVitestRuntime } from "./test-runtime.js";
  * roots. A platform mounts when its full credential set is present.
  */
 export interface MessagingEnvironmentValues {
+  apiUrl?: string | undefined;
   sendblueApiKeyId?: string | undefined;
   sendblueApiSecret?: string | undefined;
   sendblueSigningSecret?: string | undefined;
@@ -39,6 +49,7 @@ export function messagingEnvFromProcess(
   // so a credential with stray whitespace behaves identically in both roles.
   const clean = (value: string | undefined) => value?.trim() || undefined;
   return {
+    apiUrl: clean(env.API_URL),
     sendblueApiKeyId: clean(env.SENDBLUE_API_KEY_ID),
     sendblueApiSecret: clean(env.SENDBLUE_API_SECRET),
     sendblueSigningSecret: clean(env.SENDBLUE_SIGNING_SECRET),
@@ -58,6 +69,22 @@ export function messagingEnvFromProcess(
     larkDomain: clean(env.LARK_DOMAIN),
   };
 }
+
+/** Bounds one vendor send so a hung request cannot stall the sequential outbox drain. */
+const MESSAGING_SEND_TIMEOUT_MS = 10_000;
+
+/** Slack errors a retry cannot fix: the bot cannot reach the channel or its token is dead. */
+const SLACK_PERMANENT_ERRORS = new Set([
+  "channel_not_found",
+  "not_in_channel",
+  "is_archived",
+  "invalid_auth",
+  "account_inactive",
+  "token_revoked",
+]);
+
+/** Meta 131047: outside the 24-hour window only a template can reach the user. */
+const WHATSAPP_REENGAGEMENT_REQUIRED = 131047;
 
 /**
  * Build the platform list for every fully configured provider. Group
@@ -81,7 +108,11 @@ export function messagingEnvFromProcess(
  */
 export function messagingPlatformsFromEnv(
   env: MessagingEnvironmentValues,
-  options: { pollInboundMessages?: boolean } = {},
+  options: {
+    pollInboundMessages?: boolean;
+    sendblueTransport?: Pick<SendblueClientOptions, "baseURL" | "fetch">;
+    larkTransport?: HttpInstance;
+  } = {},
 ): MessagingPlatform[] {
   const platforms: MessagingPlatform[] = [];
 
@@ -98,6 +129,9 @@ export function messagingPlatformsFromEnv(
       defaultFromNumber: lineNumber,
       webhookSecret: env.sendblueSigningSecret,
       allowedServices: ["iMessage", "SMS", "RCS"],
+      ...(env.apiUrl?.startsWith("https://")
+        ? { statusCallbackUrl: new URL("/api/v1/messaging/webhook/sendblue", env.apiUrl).href }
+        : {}),
     });
     // chat@4.39 derives thread.isDM solely from the optional Adapter.isDM
     // hook, and chat-adapter-sendblue@0.2.0 omits it — without this every
@@ -105,13 +139,27 @@ export function messagingPlatformsFromEnv(
     Object.assign(adapter, {
       isDM: (threadId: string) => !adapter.decodeThreadId(threadId).groupId,
     } satisfies Pick<Adapter, "isDM">);
+    Object.assign(adapter, {
+      sdk: adapter.getSdk().withOptions({
+        maxRetries: 0,
+        timeout: MESSAGING_SEND_TIMEOUT_MS,
+        ...options.sendblueTransport,
+      }),
+    });
     platforms.push({
       provider: "sendblue",
-      capabilities: { direct: true, groups: true, typing: true },
+      capabilities: { direct: true, groups: true, typing: true, receipt: "typing" },
       adapter,
       directThreadId: (address) =>
         adapter.encodeThreadId({ fromNumber: lineNumber, contactNumber: address }),
-      peekStatus: (payload) => parseSendblueStatus(payload),
+      acceptsThread: (threadId) => adapter.decodeThreadId(threadId).fromNumber === lineNumber,
+      peekStatus: (payload) => parseSendblueStatus(payload, lineNumber),
+      classifyRejection: (error) => {
+        const status = asRecord(error)?.status;
+        return typeof status === "number" && [400, 401, 403, 404, 422].includes(status)
+          ? "rejected"
+          : undefined;
+      },
       participants: (raw) => sendblueParticipants(raw, lineNumber),
       channelName: (raw) => sendblueGroupName(raw),
       transport: (raw) => sendblueTransport(raw),
@@ -119,14 +167,55 @@ export function messagingPlatformsFromEnv(
   }
 
   if (env.slackBotToken && env.slackSigningSecret) {
+    const adapter = new SlackDeliveryAdapter({
+      botToken: env.slackBotToken,
+      signingSecret: env.slackSigningSecret,
+      webClientOptions: {
+        retryConfig: { retries: 0 },
+        rejectRateLimitedCalls: true,
+        timeout: MESSAGING_SEND_TIMEOUT_MS,
+      },
+    });
+    let ownWorkspace: Promise<string> | undefined;
+    const addReaction = adapter.addReaction.bind(adapter);
+    Object.assign(adapter, {
+      addReaction: (threadId, messageId, emoji) =>
+        addReaction(threadId, messageId, emoji).catch((error: unknown) => {
+          if (slackPlatformError(error) !== "already_reacted") throw error;
+        }),
+    } satisfies Pick<Adapter, "addReaction">);
     platforms.push({
       provider: "slack",
-      capabilities: { direct: true, groups: true, typing: false },
-      adapter: createSlackAdapter({
-        botToken: env.slackBotToken,
-        signingSecret: env.slackSigningSecret,
-      }),
+      capabilities: { direct: true, groups: true, typing: false, receipt: "reaction" },
+      adapter,
       enrichTeamRoom: enrichSlackTeamRoom,
+      acceptsInbound: async (raw, payload) => {
+        const envelope = asRecord(payload) ?? {};
+        const authorizedTeams = arrayField(envelope, "authorizations").flatMap((authorization) => {
+          const team = stringField(asRecord(authorization) ?? {}, "team_id");
+          return team ? [team] : [];
+        });
+        const team =
+          stringField(envelope, "team_id") ??
+          stringField(asRecord(raw) ?? {}, "team_id") ??
+          stringField(asRecord(raw) ?? {}, "team");
+        if (!authorizedTeams.length && !team) return false;
+        ownWorkspace ??= adapter.client.auth
+          .test({ token: env.slackBotToken })
+          .then((result) => {
+            if (!result.team_id) throw new Error("Slack workspace could not be verified");
+            return result.team_id;
+          })
+          .catch((error: unknown) => {
+            ownWorkspace = undefined;
+            throw error;
+          });
+        const ownTeam = await ownWorkspace;
+        return authorizedTeams.length ? authorizedTeams.includes(ownTeam) : team === ownTeam;
+      },
+      redeliveryKeys: slackRedeliveryKeys,
+      classifyRejection: (error) =>
+        SLACK_PERMANENT_ERRORS.has(slackPlatformError(error) ?? "") ? "rejected" : undefined,
     });
   }
 
@@ -136,15 +225,27 @@ export function messagingPlatformsFromEnv(
     env.whatsappAppSecret &&
     env.whatsappVerifyToken
   ) {
+    const adapter = new WhatsAppDeliveryAdapter({
+      accessToken: env.whatsappAccessToken,
+      phoneNumberId: env.whatsappPhoneNumberId,
+      appSecret: env.whatsappAppSecret,
+      verifyToken: env.whatsappVerifyToken,
+      apiUrl: process.env.WHATSAPP_API_URL,
+      userName: process.env.WHATSAPP_BOT_USERNAME ?? "whatsapp-bot",
+      logger: new ConsoleLogger("info").child("whatsapp"),
+    });
     platforms.push({
       provider: "whatsapp",
       capabilities: { direct: true, groups: false, typing: false },
-      adapter: createWhatsAppAdapter({
-        accessToken: env.whatsappAccessToken,
-        phoneNumberId: env.whatsappPhoneNumberId,
-        appSecret: env.whatsappAppSecret,
-        verifyToken: env.whatsappVerifyToken,
-      }),
+      adapter,
+      acceptsThread: (threadId) =>
+        adapter.decodeThreadId(threadId).phoneNumberId === env.whatsappPhoneNumberId,
+      peekStatuses: (payload) => parseWhatsAppStatuses(payload, env.whatsappPhoneNumberId),
+      classifyRejection: (error) => {
+        if (!(error instanceof WhatsAppApiError)) return;
+        if (error.errorCode === WHATSAPP_REENGAGEMENT_REQUIRED) return "reply_window_closed";
+        if ([400, 401, 403, 404, 422].includes(error.status)) return "rejected";
+      },
     });
   }
 
@@ -153,7 +254,7 @@ export function messagingPlatformsFromEnv(
   if (env.telegramBotToken && env.telegramWebhookSecret) {
     platforms.push({
       provider: "telegram",
-      capabilities: { direct: true, groups: false, typing: false },
+      capabilities: { direct: true, groups: false, typing: false, files: true },
       // Auto mode: uses the webhook route when Telegram has one registered
       // (checked via getWebhookInfo), and otherwise falls back to
       // long-polling getUpdates. Self-hosted/local deployments typically
@@ -165,11 +266,15 @@ export function messagingPlatformsFromEnv(
       // and Telegram allows only one live getUpdates connection per bot —
       // a second poller elsewhere would just steal that slot and drop
       // every message into the void.
-      adapter: createTelegramAdapter({
+      adapter: new TelegramDeliveryAdapter({
         botToken: env.telegramBotToken,
         secretToken: env.telegramWebhookSecret,
         mode: options.pollInboundMessages ? "auto" : "webhook",
       }),
+      classifyRejection: (error) =>
+        error instanceof Error && TELEGRAM_PERMANENT_ERRORS.has(error.name)
+          ? "rejected"
+          : undefined,
     });
   }
 
@@ -182,15 +287,20 @@ export function messagingPlatformsFromEnv(
       capabilities: { direct: true, groups: false, typing: false },
       // Webhook-only: ws/long-connection incoming would consume events so
       // the HTTP webhook at /api/v1/messaging/webhook/lark never sees them.
-      adapter: createLarkAdapter({
+      adapter: new LazyLarkAdapter({
+        ...(options.larkTransport ? { httpInstance: options.larkTransport } : {}),
         appId: env.larkAppId,
         appSecret: env.larkAppSecret,
         verificationToken: env.larkVerificationToken,
-        incoming: { events: "webhook", callbacks: "webhook" },
         // Explicit defaults prevent the adapter from rereading untrimmed process.env values.
         encryptKey: env.larkEncryptKey ?? "",
         domain: env.larkDomain?.toLowerCase() === "lark" ? Domain.Lark : Domain.Feishu,
       }),
+      classifyRejection: (error) => {
+        const code = asRecord(error)?.providerCode;
+        if (typeof code === "number" && [230001, 230002, 230013, 99991403, 99992355].includes(code))
+          return "rejected";
+      },
     });
   }
 
@@ -216,11 +326,216 @@ export function isMessagingSurfaceEnabled(
   return options.openSignup ? options.deploymentModelConfigured : true;
 }
 
+const slackFileAuthOrigins = new Set([
+  "https://files.slack.com",
+  "https://files.slack-gov.com",
+  "https://slack-files.com",
+  "https://slack-files-gov.com",
+  "https://slack.com",
+  "https://slack-gov.com",
+]);
+
+class SlackDeliveryAdapter extends SlackAdapter {
+  protected override async fetchSlackFile(url: string, token: SlackBotToken): Promise<Buffer> {
+    const apiOrigin = this.slackApiUrl ? new URL(this.slackApiUrl).origin : null;
+    const authenticated = (target: URL) =>
+      slackFileAuthOrigins.has(target.origin) || target.origin === apiOrigin;
+    const credential = authenticated(new URL(url))
+      ? await (typeof token === "function" ? token() : token)
+      : null;
+    return downloadMessagingAttachment(url, {
+      adapter: "slack",
+      headers: (target) =>
+        credential && authenticated(target) ? { authorization: `Bearer ${credential}` } : undefined,
+      onResponse: (response) => {
+        if (response.headers["content-type"]?.includes("text/html"))
+          throw new Error("Slack file is unavailable");
+      },
+    });
+  }
+}
+
+class TelegramDeliveryAdapter extends TelegramAdapter {
+  protected override telegramFetch<T>(
+    method: string,
+    payload?: Record<string, unknown> | FormData,
+    request?: { signal?: AbortSignal },
+  ): Promise<T> {
+    if (!method.startsWith("send")) return super.telegramFetch<T>(method, payload, request);
+    const timeout = AbortSignal.timeout(MESSAGING_SEND_TIMEOUT_MS);
+    const signal = request?.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    return super.telegramFetch<T>(method, payload, { signal });
+  }
+
+  protected override async downloadFile(fileId: string): Promise<Buffer> {
+    const file = await this.telegramFetch<{ file_path?: string }>(
+      "getFile",
+      { file_id: fileId },
+      { signal: AbortSignal.timeout(messagingAttachmentTimeRemaining()) },
+    );
+    if (!file.file_path) throw new Error("Telegram did not provide a file path");
+    const token = this.staticBotToken ?? (await this.resolveBotToken());
+    return downloadMessagingAttachment(`${this.apiBaseUrl}/file/bot${token}/${file.file_path}`, {
+      adapter: "telegram",
+      hosts: [new URL(this.apiBaseUrl).hostname],
+    });
+  }
+}
+
+class WhatsAppDeliveryAdapter extends WhatsAppAdapter {
+  protected override async graphApiRequest<T = unknown>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.graphApiUrl}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(MESSAGING_SEND_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // Preserve the SDK's typed rejection and the response's retry hint.
+      const error = new WhatsAppApiError(
+        "WhatsApp API error",
+        response.status,
+        await response.text(),
+      );
+      throw Object.assign(error, { headers: response.headers });
+    }
+    return (await response.json()) as T;
+  }
+
+  override async downloadMedia(mediaId: string): Promise<Buffer> {
+    const authorization = `Bearer ${this.accessToken}`;
+    const response = await fetch(`${this.graphApiUrl}/${encodeURIComponent(mediaId)}`, {
+      headers: { authorization },
+      redirect: "error",
+      signal: AbortSignal.timeout(messagingAttachmentTimeRemaining()),
+    });
+    if (!response.ok) throw new Error("WhatsApp media metadata is unavailable");
+    const media = (await response.json()) as { url?: string };
+    if (!media.url) throw new Error("WhatsApp did not provide a media URL");
+    const graph = new URL(this.graphApiUrl);
+    const mediaHosts = ["fbcdn.net", "fbsbx.com"];
+    return downloadMessagingAttachment(media.url, {
+      adapter: "whatsapp",
+      hosts: [graph.hostname, ...mediaHosts],
+      headers: (target) => {
+        if (
+          target.origin !== graph.origin &&
+          (target.port ||
+            !mediaHosts.some(
+              (host) => target.hostname === host || target.hostname.endsWith(`.${host}`),
+            ))
+        ) {
+          throw new Error("WhatsApp media URL is outside the provider origin");
+        }
+        return { authorization };
+      },
+    });
+  }
+}
+
+const TELEGRAM_PERMANENT_ERRORS = new Set([
+  "AuthenticationError",
+  "PermissionError",
+  "ResourceNotFoundError",
+  "ValidationError",
+]);
+
+/** WhatsApp and Telegram both cap a text message at 4096 UTF-16 units. */
+const MESSAGE_PART_LIMIT = 4096;
+
+/** Split before enqueueing so retries only resend the parts that failed. */
+export function splitOutboundBody(provider: string, body: string): string[] {
+  if (provider === "whatsapp") return splitWhatsAppPart(body);
+  if (provider !== "telegram") return [body];
+
+  return splitTelegramPart(body);
+}
+
+/** Split like the SDK, which counts UTF-16 units, but never end a part on half an emoji. */
+function splitKeepingPairs(body: string): string[] {
+  const parts: string[] = [];
+  let rest = body;
+  while (rest.length > MESSAGE_PART_LIMIT) {
+    // The SDK's first part only depends on the first MESSAGE_PART_LIMIT units.
+    const [first = ""] = splitMessage(rest.slice(0, MESSAGE_PART_LIMIT + 1));
+    const part = first.length > 1 && /[\uD800-\uDBFF]$/.test(first) ? first.slice(0, -1) : first;
+    parts.push(part);
+    rest = rest.slice(part.length).trimStart();
+  }
+  return rest || parts.length === 0 ? [...parts, rest] : parts;
+}
+
+const telegramFormat = new TelegramFormatConverter();
+
+function splitTelegramPart(body: string, literal = false): string[] {
+  const markdown = literal ? escapeMarkdownV2(body) : body;
+  const plainText = literal ? body : markdownToPlainText(body);
+  // The adapter truncates *after* rendering and emoji conversion, including
+  // its plain-text fallback. Measure both payloads in UTF-16 units as it does.
+  const payloads = [telegramFormat.fromMarkdown(markdown), plainText.trim() ? plainText : markdown];
+  if (
+    markdown.length <= MESSAGE_PART_LIMIT &&
+    payloads.every((text) => convertEmojiPlaceholders(text, "gchat").length <= MESSAGE_PART_LIMIT)
+  ) {
+    return [markdown];
+  }
+
+  // Parse before splitting: cutting Markdown can turn code into prose and
+  // consume literal backslashes. Oversized formatted replies use escaped text.
+  if (!literal && plainText !== body) return splitTelegramPart(plainText, true);
+
+  const parts = splitKeepingPairs(body);
+  if (parts.length > 1) return parts.flatMap((part) => splitTelegramPart(part, literal));
+
+  return halve(body).flatMap((half) => splitTelegramPart(half, literal));
+}
+
+/** Exposes the adapter's Markdown rendering, which the package does not export. */
+class WhatsAppRenderer extends WhatsAppAdapter {
+  render(markdown: string): string {
+    return convertEmojiPlaceholders(this.formatConverter.renderPostable({ markdown }), "whatsapp");
+  }
+}
+
+let whatsappRenderer: WhatsAppRenderer | undefined;
+
+function splitWhatsAppPart(body: string): string[] {
+  whatsappRenderer ??= new WhatsAppRenderer({
+    accessToken: "",
+    appSecret: "",
+    logger: new ConsoleLogger("silent"),
+    phoneNumberId: "",
+    userName: "",
+    verifyToken: "",
+  });
+  // The adapter re-splits anything that renders past the limit, outside the
+  // queue's per-part retries and without keeping UTF-16 pairs together.
+  if (whatsappRenderer.render(body).length <= MESSAGE_PART_LIMIT) return [body];
+
+  const parts = splitKeepingPairs(body);
+  return (parts.length > 1 ? parts : halve(body)).flatMap(splitWhatsAppPart);
+}
+
+/** Refines chunks that only grow beyond the limit during rendering. */
+function halve(body: string): string[] {
+  const midpoint = Math.floor(body.length / 2);
+  const prefix = body.slice(0, midpoint);
+  let boundary = Math.max(prefix.lastIndexOf("\n"), prefix.lastIndexOf(" "));
+  if (boundary < midpoint / 2) boundary = midpoint;
+  if (/[\uD800-\uDBFF]/.test(body[boundary - 1]!)) boundary--;
+  return [body.slice(0, boundary), body.slice(boundary)];
+}
+
 /** Sendblue reports outbound delivery as webhooks the Chat SDK ignores. */
-export function parseSendblueStatus(payload: unknown): MessagingOutboundStatus | null {
+export function parseSendblueStatus(
+  payload: unknown,
+  lineNumber?: string,
+): MessagingOutboundStatus | null {
   if (typeof payload !== "object" || payload === null) return null;
   const body = payload as Record<string, unknown>;
   if (body.is_outbound !== true) return null;
+  if (lineNumber && (body.sendblue_number ?? body.from_number) !== lineNumber) return null;
   if (typeof body.message_handle !== "string" || !body.message_handle) return null;
   return {
     type: "status",
@@ -231,6 +546,42 @@ export function parseSendblueStatus(payload: unknown): MessagingOutboundStatus |
 }
 
 /** Pull Slack team-room fields the Chat SDK does not expose on Message. */
+export function parseWhatsAppStatuses(
+  payload: unknown,
+  phoneNumberId?: string,
+): MessagingOutboundStatus[] {
+  const statuses: MessagingOutboundStatus[] = [];
+  for (const entry of arrayField(asRecord(payload), "entry")) {
+    for (const change of arrayField(asRecord(entry), "changes")) {
+      const value = asRecord(asRecord(change)?.value);
+      const reportedNumber = stringField(asRecord(value?.metadata) ?? {}, "phone_number_id");
+      if (phoneNumberId && reportedNumber !== phoneNumberId) continue;
+      for (const item of arrayField(value, "statuses")) {
+        const record = asRecord(item) ?? {};
+        const handle = stringField(record, "id");
+        const status = stringField(record, "status");
+        if (!handle || !status) continue;
+        statuses.push({
+          type: "status",
+          provider: "whatsapp",
+          handle,
+          status: status.toUpperCase(),
+          ...(arrayField(record, "errors").some(
+            (error) => asRecord(error)?.code === WHATSAPP_REENGAGEMENT_REQUIRED,
+          ) && { reason: "reply_window_closed" as const }),
+        });
+      }
+    }
+  }
+  return statuses;
+}
+
+/** Slack's marker for a dispatched event; it turns Slack's retries into no-ops. */
+function slackRedeliveryKeys(payload: unknown): string[] {
+  const eventId = stringField(asRecord(payload) ?? {}, "event_id");
+  return eventId ? [`slack:event-delivered:${eventId}`] : [];
+}
+
 export function enrichSlackTeamRoom(
   raw: unknown,
   base: MessagingInboundMessage,
@@ -271,7 +622,7 @@ function slackAuthorizedBotUserId(root: Record<string, unknown>): string | undef
   if (!Array.isArray(authorizations)) return undefined;
   for (const entry of authorizations) {
     const record = asRecord(entry);
-    if (!record || record.is_bot !== true) continue;
+    if (record?.is_bot !== true) continue;
     const userId = stringField(record, "user_id");
     if (userId) return userId;
   }
@@ -285,6 +636,17 @@ function mentionsSlackBot(text: string, botUserId: string | undefined): boolean 
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function slackPlatformError(error: unknown): string | undefined {
+  const record = asRecord(error);
+  if (record?.code !== "slack_webapi_platform_error") return undefined;
+  return stringField(asRecord(record.data) ?? {}, "error");
+}
+
+function arrayField(record: Record<string, unknown> | null, key: string): unknown[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : [];
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

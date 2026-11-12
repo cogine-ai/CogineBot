@@ -12,7 +12,9 @@ import type {
 /** Map a Chat SDK inbound message into a team-chat event, or null if empty. */
 export function toTeamChatInbound(event: MessagingInboundMessage): TeamChatInboundMessage | null {
   const mediaLine = event.mediaUrl?.trim() ? `\n${event.mediaUrl.trim()}` : "";
-  const content = `${event.content}${mediaLine}`.trim();
+  const content =
+    `${event.content}${mediaLine}`.trim() ||
+    (event.attachments?.length ? "An attachment was shared in the channel." : "");
   if (!content) return null;
 
   const kind: TeamChatMessageKind = event.isDirect

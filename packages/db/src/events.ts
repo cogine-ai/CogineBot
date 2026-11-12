@@ -288,6 +288,8 @@ export interface AnswerRunInput {
   login?: WebsiteLoginAnswer;
 }
 
+export class MessagingRouteAlreadyChosen extends Error {}
+
 export interface SendUserMessageInput {
   spaceId: string;
   threadId: string;
@@ -297,6 +299,8 @@ export interface SendUserMessageInput {
   prompt: string;
   trigger: "user" | "follow_up" | "webhook" | "messaging";
   clientNonce?: string;
+  /** Server-owned receipt for a verified messaging delivery. */
+  messagingReceiptKey?: string;
   linkMessageToRun?: boolean;
   /** When false, persist the user message without starting a run (team-chat transcript). */
   createRun?: boolean;
@@ -598,6 +602,25 @@ export async function sendUserMessage(
     prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Keep the selected model and authorized Routine snapshot consistent with enqueue.
       const routineProvenance = await lockInboundRoutines(tx, input);
+      if (input.messagingReceiptKey) {
+        if (
+          input.trigger !== "messaging" &&
+          (input.trigger !== "webhook" || input.routineSources?.trigger !== "messaging")
+        ) {
+          throw new IsolationError("Messaging receipt is unavailable.");
+        }
+        const status = input.trigger === "messaging" ? "inbound_message" : "inbound_routine";
+        const claim = await tx.messagingOutbound.updateMany({
+          where: {
+            idempotencyKey: input.messagingReceiptKey,
+            threadId: input.threadId,
+            kind: "inbound",
+            status: { in: ["inbound", status] },
+          },
+          data: { status },
+        });
+        if (claim.count !== 1) throw new MessagingRouteAlreadyChosen();
+      }
       // Message first: its thread-row lock serializes the whole send against clearThread, so a
       // concurrent clear either sees the committed run and cancels it, or strictly precedes this
       // transaction. Created in separate transactions, the run could land inside the clear's

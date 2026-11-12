@@ -1611,12 +1611,23 @@ model MessagingOutbound {
   status          String    @default("pending")
   attempts        Int       @default(0)
   nextAttemptAt   DateTime?
+  provider        String?
   providerHandle  String?
+  deliveryState   String?
+  claimStartedAt  DateTime?
+  deliveredAt     DateTime?
+  partIndex       Int       @default(0)
+  artifactId      String?
+  lastErrorClass  String?
   sourceMessageId String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@index([status, nextAttemptAt])
+  @@index([identityId, status, createdAt, sourceMessageId, partIndex, id], map: "messaging_outbound_identity_lane_idx")
+  @@index([threadId, status, createdAt, sourceMessageId, partIndex, id], map: "messaging_outbound_thread_lane_idx")
+  @@index([sourceMessageId], map: "messaging_outbound_source_msg_idx")
+  @@index([provider, providerHandle], map: "messaging_outbound_provider_handle_idx")
   @@map("messaging_outbound")
   @@schema("public")
 }
