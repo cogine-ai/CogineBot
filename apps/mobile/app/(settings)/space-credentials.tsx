@@ -196,6 +196,8 @@ function Credentials({ spaceId, defaultBotId }: { spaceId?: string; defaultBotId
             ) ?? null,
         );
         setError("");
+        // Supersede reads started while removal was still pending.
+        void refresh();
       }
     } catch {
       await refresh();

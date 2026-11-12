@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { act, useEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
+import { Alert } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Screen from "../app/(settings)/space-credentials";
 import { confirmIdentity, fetchAccountSecurity, requestIdentityCode } from "./api";
@@ -106,6 +107,9 @@ vi.mock("../components/menu-picker", () => ({
       <button type="button" onClick={() => onChange("edit")}>
         Replace value
       </button>
+      <button type="button" onClick={() => onChange("remove")}>
+        Remove
+      </button>
     </div>
   ),
 }));
@@ -206,6 +210,86 @@ it("keeps a mobile replacement draft when saving fails and clears it on dismissa
     for (const listener of host.listeners) listener("background");
   });
   expect(container.querySelector('input[aria-label="Value"]')).toBeNull();
+});
+
+it("keeps a removed row hidden when an earlier save refresh returns after removal", async () => {
+  await act(async () => root.render(<Screen />));
+  const first = container.querySelector("[data-credential]")!;
+  const second = container.querySelectorAll("[data-credential]")[1]!;
+  const button = (parent: ParentNode, label: string) =>
+    [...parent.querySelectorAll("button")].find((entry) => entry.textContent === label)!;
+  await act(async () => button(first, "Replace value").click());
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="Value"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "replacement-fixture-value",
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const saved = { ...credential, revision: "revision-3" };
+  const firstBot = { botId: "bot-a", botName: "First Bot", credentials: [saved] };
+  const secondBot = {
+    botId: "bot-b",
+    botName: "Second Bot",
+    credentials: [{ ...credential, revision: "revision-2" }],
+  };
+  let finishSave!: (entry: typeof saved) => void;
+  let finishRemove!: () => void;
+  let finishOldRead!: (rows: (typeof firstBot)[]) => void;
+  let finishNewRead!: (rows: (typeof firstBot)[]) => void;
+  host.rpc
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRemove = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOldRead = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishNewRead = resolve;
+        }),
+    );
+  await act(async () => button(container, "Save").click());
+  await act(async () => {
+    for (const listener of host.listeners) listener("background");
+    for (const listener of host.listeners) listener("active");
+  });
+  await act(async () => button(second, "Remove").click());
+  const actions = vi.mocked(Alert.alert).mock.lastCall?.[2];
+  await act(async () => actions?.find((action) => action.style === "destructive")?.onPress?.());
+  expect(host.rpc).toHaveBeenLastCalledWith("botSecrets/removeForEdit", {
+    botId: "bot-b",
+    name: "portal",
+    expectedRevision: "revision-2",
+  });
+
+  await act(async () => finishSave(saved));
+  await act(async () => finishRemove());
+  expect(container.textContent).not.toContain("Second Bot");
+  await act(async () => finishOldRead([firstBot, secondBot]));
+  expect(container.textContent).not.toContain("Second Bot");
+  await act(async () => finishNewRead([firstBot, { ...secondBot, credentials: [] }]));
+  await act(async () => button(first, "Show value").click());
+  expect(host.rpc).toHaveBeenLastCalledWith("botSecrets/reveal", {
+    botId: "bot-a",
+    name: "portal",
+    expectedRevision: "revision-3",
+  });
 });
 
 it("offers a password confirmation when the optional account flag is omitted", async () => {
