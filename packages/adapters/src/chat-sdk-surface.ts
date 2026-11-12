@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import type {
   AdapterContext,
@@ -18,6 +19,7 @@ import type {
 import type { Adapter, Message, PostableMarkdown, Thread } from "chat";
 import { Chat, isLinkNode, parseMarkdown, text, toPlainText, walkAst } from "chat";
 import { getLarkTextParts } from "./lark/text-parts.js";
+import { withinMessagingAttachmentDeadline } from "./messaging-attachment-download.js";
 
 /** Per-webhook drain of Chat SDK waitUntil work + inbound sink failures. */
 const webhookDrain = new AsyncLocalStorage<{
@@ -412,9 +414,10 @@ function inboundAttachments(message: Message, provider: string): MessagingInboun
         name: attachment.name || attachment.type,
         mimeType: attachment.mimeType ?? "",
         ...(size !== undefined ? { size } : {}),
-        fetch: async () => {
+        fetch: async (deadlineAt) => {
           if (Buffer.isBuffer(data)) return new Uint8Array(data);
-          return new Uint8Array(data ? await data.arrayBuffer() : await fetchData!());
+          if (data) return new Uint8Array(await data.arrayBuffer());
+          return new Uint8Array(await withinMessagingAttachmentDeadline(deadlineAt, fetchData!));
         },
       },
     ];
@@ -512,6 +515,14 @@ function renderLinks(formatted: Message["formatted"]): {
   return { ast, addedTarget };
 }
 
+export function messagingInboundNonce(event: MessagingInboundMessage): string {
+  // The Telegram SDK already includes the chat in its handle. Slack
+  // timestamps need the conversation added here.
+  if (event.provider !== "slack") return `messaging:${event.provider}:${event.handle}`;
+  const scoped = JSON.stringify([event.workspaceId, event.threadId, event.handle]);
+  return `messaging:${event.provider}:${createHash("sha256").update(scoped).digest("hex")}`;
+}
+
 export function providerOfThreadId(threadId: string): string {
   return threadId.split(":", 1)[0] ?? "";
 }
@@ -587,13 +598,19 @@ function classifySendError(platform: MessagingPlatform, error: unknown): Messagi
     status?: unknown;
     code?: unknown;
     headers?: Headers;
+    response?: { status?: number; headers?: Headers };
   } | null;
   if (
     failure?.status === 429 ||
+    failure?.response?.status === 429 ||
     failure?.code === "RATE_LIMITED" ||
     failure?.code === "slack_webapi_rate_limited_error"
   ) {
-    const rawRetry = failure?.retryAfter ?? failure?.headers?.get?.("retry-after");
+    const headers = failure?.headers ?? failure?.response?.headers;
+    const rawRetry =
+      failure?.retryAfter ??
+      headers?.get?.("retry-after") ??
+      (platform.provider === "lark" ? headers?.get?.("x-ogw-ratelimit-reset") : undefined);
     const seconds = Number(rawRetry);
     const delay = Number.isFinite(seconds)
       ? seconds * 1000

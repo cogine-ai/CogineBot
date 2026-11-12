@@ -470,6 +470,25 @@ describe("createMessagingInboundHandler DM routing", () => {
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
   });
 
+  it("can replace an archived linked Bot using a valid code for an active Bot", async () => {
+    const deps = createDeps({
+      linkCode: {
+        id: "replacement-code",
+        code: "ABCD2345",
+        userId: "user-1",
+        spaceId: "ws-2",
+        botId: "bot-2",
+        expiresAt: new Date(Date.now() + 30_000),
+      },
+    });
+    vi.mocked(deps.prisma.bot.findUnique).mockResolvedValueOnce(null);
+    await createMessagingInboundHandler(deps)({ ...dmEvent, content: "ABCD2345" });
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "link:replacement-code" }),
+    ]);
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("does not replay an event into a different Bot after the same identity relinks", async () => {
     const deps = createDeps();
     const handle = createMessagingInboundHandler(deps);
@@ -632,6 +651,52 @@ describe("createMessagingInboundHandler DM routing", () => {
       );
     },
   );
+
+  it("passes an attachment-only delivery or its receipt failure to the existing routine", async () => {
+    const deps = createDeps({
+      routines: [{ id: "routine-fixture", name: "Save notes", prompt: "Summarize notes" }],
+    });
+    const file = {
+      kind: "file" as const,
+      artifactId: "fixture-artifact",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      size: 4,
+    };
+    const target = { spaceId: "ws-1", userId: "user-1", botId: "bot-1", threadId: "thread-1" };
+    await wakeMessageRoutines(
+      deps,
+      target,
+      { ...dmEvent, content: "" },
+      {
+        content: { caption: "", prompt: "See attached files.", blocks: [file] },
+      },
+    );
+    expect(deps.sendUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trigger: "webhook",
+        blocks: [
+          expect.objectContaining({
+            kind: "text",
+            text: expect.stringContaining("fixture-artifact"),
+          }),
+          file,
+        ],
+      }),
+    );
+    deps.sendUserMessage.mockClear();
+    await createMessagingInboundHandler(deps)({
+      ...dmEvent,
+      content: "",
+      attachments: [{ name: "notes.txt", mimeType: "text/plain", size: 4, fetch: vi.fn() }],
+    });
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        trigger: "webhook",
+        prompt: expect.stringContaining("An attachment could not be received."),
+      }),
+    );
+  });
 
   it("does not double-wake a DM when message routines match", async () => {
     const deps = createDeps({
@@ -996,6 +1061,32 @@ describe("createMessagingInboundHandler owner commands", () => {
 });
 
 describe("createMessagingInboundHandler channel routing", () => {
+  it("does not start a normal group Run after a routine already consumed the event", async () => {
+    const deps = createDeps({
+      members: [
+        {
+          id: "cm-1",
+          channelId: "ch-1",
+          identityId: "mi-1",
+          address: groupEvent.from,
+          status: "approved",
+        },
+      ],
+    });
+    const routineNonce = inboundDeliveryClientNonce(
+      "messaging",
+      "bot-1",
+      messagingWakeIdempotencyKey(groupEvent.provider, groupEvent.handle),
+    );
+    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+      where.threadId_clientNonce?.clientNonce === routineNonce
+        ? ({ id: "routine-delivery" } as never)
+        : null,
+    );
+    await createMessagingInboundHandler(deps)({ ...groupEvent, participants: [] });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("does not redeliver an older group event to the new Bot of an approved identity", async () => {
     const deps = createDeps({
       members: [

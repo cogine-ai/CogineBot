@@ -957,7 +957,7 @@ export interface MessagingInboundAttachment {
   name: string;
   mimeType: string;
   size?: number;
-  fetch(): Promise<Uint8Array>;
+  fetch(deadlineAt: number): Promise<Uint8Array>;
 }
 
 export interface MessagingSendRequest {

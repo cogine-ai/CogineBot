@@ -1,4 +1,5 @@
-import { createSlackAdapter } from "@chat-adapter/slack";
+import type { SlackBotToken } from "@chat-adapter/slack";
+import { SlackAdapter } from "@chat-adapter/slack";
 import { escapeMarkdownV2, TelegramAdapter, TelegramFormatConverter } from "@chat-adapter/telegram";
 import { splitMessage, WhatsAppAdapter, WhatsAppApiError } from "@chat-adapter/whatsapp";
 import type { HttpInstance } from "@larksuiteoapi/node-sdk";
@@ -10,6 +11,10 @@ import type { ClientOptions as SendblueClientOptions } from "sendblue";
 import type { MessagingPlatform } from "./chat-sdk-surface.js";
 import { LazyLarkAdapter } from "./lark/lazy-adapter.js";
 import { Domain } from "./lark/thread-id.js";
+import {
+  downloadMessagingAttachment,
+  messagingAttachmentTimeRemaining,
+} from "./messaging-attachment-download.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
 /**
@@ -162,7 +167,7 @@ export function messagingPlatformsFromEnv(
   }
 
   if (env.slackBotToken && env.slackSigningSecret) {
-    const adapter = createSlackAdapter({
+    const adapter = new SlackDeliveryAdapter({
       botToken: env.slackBotToken,
       signingSecret: env.slackSigningSecret,
       webClientOptions: {
@@ -291,6 +296,11 @@ export function messagingPlatformsFromEnv(
         encryptKey: env.larkEncryptKey ?? "",
         domain: env.larkDomain?.toLowerCase() === "lark" ? Domain.Lark : Domain.Feishu,
       }),
+      classifyRejection: (error) => {
+        const code = asRecord(error)?.providerCode;
+        if (typeof code === "number" && [230001, 230002, 230013, 99991403, 99992355].includes(code))
+          return "rejected";
+      },
     });
   }
 
@@ -316,6 +326,35 @@ export function isMessagingSurfaceEnabled(
   return options.openSignup ? options.deploymentModelConfigured : true;
 }
 
+const slackFileAuthOrigins = new Set([
+  "https://files.slack.com",
+  "https://files.slack-gov.com",
+  "https://slack-files.com",
+  "https://slack-files-gov.com",
+  "https://slack.com",
+  "https://slack-gov.com",
+]);
+
+class SlackDeliveryAdapter extends SlackAdapter {
+  protected override async fetchSlackFile(url: string, token: SlackBotToken): Promise<Buffer> {
+    const apiOrigin = this.slackApiUrl ? new URL(this.slackApiUrl).origin : null;
+    const authenticated = (target: URL) =>
+      slackFileAuthOrigins.has(target.origin) || target.origin === apiOrigin;
+    const credential = authenticated(new URL(url))
+      ? await (typeof token === "function" ? token() : token)
+      : null;
+    return downloadMessagingAttachment(url, {
+      adapter: "slack",
+      headers: (target) =>
+        credential && authenticated(target) ? { authorization: `Bearer ${credential}` } : undefined,
+      onResponse: (response) => {
+        if (response.headers["content-type"]?.includes("text/html"))
+          throw new Error("Slack file is unavailable");
+      },
+    });
+  }
+}
+
 class TelegramDeliveryAdapter extends TelegramAdapter {
   protected override telegramFetch<T>(
     method: string,
@@ -326,6 +365,20 @@ class TelegramDeliveryAdapter extends TelegramAdapter {
     const timeout = AbortSignal.timeout(MESSAGING_SEND_TIMEOUT_MS);
     const signal = request?.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     return super.telegramFetch<T>(method, payload, { signal });
+  }
+
+  protected override async downloadFile(fileId: string): Promise<Buffer> {
+    const file = await this.telegramFetch<{ file_path?: string }>(
+      "getFile",
+      { file_id: fileId },
+      { signal: AbortSignal.timeout(messagingAttachmentTimeRemaining()) },
+    );
+    if (!file.file_path) throw new Error("Telegram did not provide a file path");
+    const token = this.staticBotToken ?? (await this.resolveBotToken());
+    return downloadMessagingAttachment(`${this.apiBaseUrl}/file/bot${token}/${file.file_path}`, {
+      adapter: "telegram",
+      hosts: [new URL(this.apiBaseUrl).hostname],
+    });
   }
 }
 
@@ -348,6 +401,36 @@ class WhatsAppDeliveryAdapter extends WhatsAppAdapter {
       throw Object.assign(error, { headers: response.headers });
     }
     return (await response.json()) as T;
+  }
+
+  override async downloadMedia(mediaId: string): Promise<Buffer> {
+    const authorization = `Bearer ${this.accessToken}`;
+    const response = await fetch(`${this.graphApiUrl}/${encodeURIComponent(mediaId)}`, {
+      headers: { authorization },
+      redirect: "error",
+      signal: AbortSignal.timeout(messagingAttachmentTimeRemaining()),
+    });
+    if (!response.ok) throw new Error("WhatsApp media metadata is unavailable");
+    const media = (await response.json()) as { url?: string };
+    if (!media.url) throw new Error("WhatsApp did not provide a media URL");
+    const graph = new URL(this.graphApiUrl);
+    const mediaHosts = ["fbcdn.net", "fbsbx.com"];
+    return downloadMessagingAttachment(media.url, {
+      adapter: "whatsapp",
+      hosts: [graph.hostname, ...mediaHosts],
+      headers: (target) => {
+        if (
+          target.origin !== graph.origin &&
+          (target.port ||
+            !mediaHosts.some(
+              (host) => target.hostname === host || target.hostname.endsWith(`.${host}`),
+            ))
+        ) {
+          throw new Error("WhatsApp media URL is outside the provider origin");
+        }
+        return { authorization };
+      },
+    });
   }
 }
 

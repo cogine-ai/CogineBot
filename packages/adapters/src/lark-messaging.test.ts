@@ -326,6 +326,7 @@ describe("Lark messaging conformance", () => {
       expect.objectContaining({
         method: "POST",
         url: expect.stringMatching(/\/im\/v1\/messages$/),
+        timeout: 10_000,
         params: { receive_id_type: "chat_id" },
         data: {
           receive_id: "oc-test",
@@ -334,7 +335,6 @@ describe("Lark messaging conformance", () => {
         },
       }),
     );
-    expect(request.mock.calls.some(([options]) => options.timeout === 10_000)).toBe(true);
   });
 
   it("rejects an empty postable before sending a message", async () => {
@@ -352,6 +352,36 @@ describe("Lark messaging conformance", () => {
     await expect(
       adapter.postMessage(encodeThreadId({ chatId: "oc-test" }), "reply"),
     ).rejects.toThrow("230001");
+  });
+
+  it("preserves Markdown elements in rich-text inbound posts", async () => {
+    const { surface, events } = createSurface();
+    const payload = message();
+    payload.event.message.message_type = "post";
+    payload.event.message.content = JSON.stringify({
+      en_us: { content: [[{ tag: "md", text: "**Markdown reply**" }]] },
+    });
+    expect((await surface.handleWebhook("lark", webhook(payload)))?.status).toBe(200);
+    expect(events).toMatchObject([{ type: "message", content: "**Markdown reply**" }]);
+  });
+
+  it.each([
+    [230020, "retryable", "rate_limited"],
+    [230013, "permanent", "rejected"],
+    [230099, "unknown", "outcome_unknown"],
+  ])("preserves Lark send error %d through the surface", async (code, disposition, reason) => {
+    const { surface } = createSurface();
+    await surface.handleWebhook("lark", webhook(message()));
+    request.mockResolvedValueOnce({ code, msg: "Synthetic provider response" });
+    await expect(
+      surface.sendToThread(
+        {
+          threadId: encodeThreadId({ chatId: "oc-test" }),
+          body: "Reply",
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ disposition, reason });
   });
 
   it("renders post content and links", async () => {

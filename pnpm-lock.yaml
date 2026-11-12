@@ -563,6 +563,9 @@ importers:
       '@asciidev/box-sdk':
         specifier: 0.0.34
         version: 0.0.34
+      '@chat-adapter/shared':
+        specifier: 4.40.0
+        version: 4.40.0(zod@4.6.2)
       '@chat-adapter/slack':
         specifier: 4.40.0
         version: 4.40.0(zod@4.6.2)

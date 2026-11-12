@@ -543,6 +543,28 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
     });
   });
 
+  it("retains one atomic version of a mirrored message even if its text later grows into more parts", async () => {
+    const saved = await terminalRun("completed", "messaging", "Original reply");
+    const id = saved.message!.id;
+    await prisma.messagingIdentity.update({
+      where: { botId: scope.botId },
+      data: { provider: "telegram", dmThreadId: "telegram:fixture" },
+    });
+    const fixture = recovery();
+    await fixture.mirror(saved.run.id);
+    await prisma.message.update({
+      where: { id },
+      data: { blocks: [{ kind: "text", text: "Revised reply ".repeat(500) }] },
+    });
+    await Promise.all([fixture.mirror(saved.run.id), fixture.mirror(saved.run.id)]);
+    expect(
+      await prisma.messagingOutbound.findMany({
+        where: { sourceMessageId: id },
+        select: { body: true, partIndex: true },
+      }),
+    ).toEqual([{ body: "Original reply", partIndex: 0 }]);
+  });
+
   it("recovers a persisted failed reply with one outbox row and no Run or attempt replay", async () => {
     const failed = await terminalRun("failed", "messaging", "Persisted before failure");
     expect(failed.message).toMatchObject({

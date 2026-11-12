@@ -150,59 +150,40 @@ async function enqueueReplyParts(
   }>,
   route: Route,
 ) {
-  const batches = replies.map(({ message, text }) => {
+  for (const { message, text } of replies) {
     const bodies = text ? splitOutboundBody(route.provider, text) : [];
     const artifacts = replyArtifacts(message.blocks);
-    const common = {
-      ...route,
-      sourceMessageId: message.id,
-      createdAt: message.createdAt,
-    };
-    return {
-      id: message.id,
-      rows: [
-        ...bodies.map((body, partIndex) => ({
-          ...common,
-          idempotencyKey:
-            partIndex === 0 ? `msg:${message.id}` : `msg:${message.id}:part:${partIndex}`,
-          body,
-          partIndex: 2 * partIndex,
-        })),
-        ...artifacts.map((artifactId, index) => ({
-          ...common,
-          idempotencyKey: `msg:${message.id}:file:${artifactId}`,
-          body: "",
-          // A previous worker can keep serving text after a rollback without
-          // draining file rows it cannot interpret.
-          status: "file_pending",
-          artifactId,
-          partIndex: 2 * (bodies.length + index),
-        })),
-      ],
-    };
-  });
-  const split = batches.filter(
-    ({ rows }) => rows.length > 1 || (rows[0] && "artifactId" in rows[0]),
-  );
-  const legacy = split.length
-    ? await deps.prisma.messagingOutbound.findMany({
-        where: { sourceMessageId: { in: split.map(({ id }) => id) }, provider: null },
-        select: { sourceMessageId: true },
-      })
-    : [];
-  const legacyMessages = new Set(legacy.map(({ sourceMessageId }) => sourceMessageId));
-  const rows = batches.flatMap(({ id, rows }) => (legacyMessages.has(id) ? [] : rows));
-  if (!rows.length) return;
-  const inserted = await deps.prisma.messagingOutbound.createMany({
-    data: rows,
-    skipDuplicates: true,
-  });
-  if (inserted.count) {
-    await publishMessagingDelivery(
-      deps.prisma,
-      deps.events,
-      rows.map((row) => row.sourceMessageId),
-    );
+    const common = { ...route, sourceMessageId: message.id, createdAt: message.createdAt };
+    const primaryKey = `msg:${message.id}`;
+    const parts = [
+      ...bodies.map((body, partIndex) => ({
+        ...common,
+        idempotencyKey: partIndex === 0 ? primaryKey : `${primaryKey}:part:${partIndex}`,
+        body,
+        partIndex: 2 * partIndex,
+      })),
+      ...artifacts.map((artifactId, index) => ({
+        ...common,
+        idempotencyKey:
+          bodies.length === 0 && index === 0 ? primaryKey : `${primaryKey}:file:${artifactId}`,
+        body: "",
+        // Previous workers keep handling text after a rollback.
+        status: "file_pending",
+        artifactId,
+        partIndex: 2 * (bodies.length + index),
+      })),
+    ];
+    const [first, ...rest] = parts;
+    if (!first) continue;
+    // The primary part claims an immutable snapshot. All parts commit together,
+    // including when a different mirror observes revised blocks concurrently.
+    const inserted = await deps.prisma.$transaction(async (tx) => {
+      const claim = await tx.messagingOutbound.createMany({ data: [first], skipDuplicates: true });
+      if (!claim.count) return false;
+      if (rest.length) await tx.messagingOutbound.createMany({ data: rest });
+      return true;
+    });
+    if (inserted) await publishMessagingDelivery(deps.prisma, deps.events, [message.id]);
   }
 }
 

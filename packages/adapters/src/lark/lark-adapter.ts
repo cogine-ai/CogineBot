@@ -271,8 +271,13 @@ export class LarkAdapter extends LarkAdapterBase implements Adapter {
 }
 
 function checked<T extends { code?: number; msg?: string }>(result: T): T {
-  if (result.code)
-    throw new Error(`Lark API error ${result.code}: ${result.msg ?? "Request failed"}`);
+  if (result.code) {
+    const failure = new Error(`Lark API error ${result.code}: ${result.msg ?? "Request failed"}`);
+    const code = [230020, 11232, 11233, 99991400].includes(result.code)
+      ? "RATE_LIMITED"
+      : "LARK_API_ERROR";
+    throw Object.assign(failure, { code, providerCode: result.code });
+  }
   return result;
 }
 function equal(a: string, b: string) {
@@ -312,7 +317,7 @@ function inboundText(
         ? `[${item.text ?? ""}](${item.href ?? ""})`
         : item.tag === "at"
           ? `@${item.user_name ?? "unknown"}`
-          : item.tag === "text" || item.tag === "code_block"
+          : item.tag === "text" || item.tag === "code_block" || item.tag === "md"
             ? (item.text ?? "")
             : "";
     if ((rich.content ?? []).some((row) => row.some((item) => item.tag === "code_block"))) {
