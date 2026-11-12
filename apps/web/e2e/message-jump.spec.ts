@@ -84,15 +84,28 @@ test("history sources open the original chat and clear an archived source", asyn
   ).toBeVisible();
   await captureHistoryScreenshot("history-source-card");
   const sourceRequest = "**/rpc/threads/historySources";
-  await page.route(sourceRequest, (route) => route.abort("failed"));
-  await open.click();
+  const stalledCheck = Promise.withResolvers<void>();
+  await page.route(
+    sourceRequest,
+    async (route) => {
+      await stalledCheck.promise;
+      await route.abort("timedout").catch(() => undefined);
+    },
+    { times: 1 },
+  );
   const loadError = transcript.getByText("Could not load history sources.");
-  await expect(loadError).toBeVisible();
+  try {
+    await open.click();
+    await expect(open).toBeDisabled();
+    await captureHistoryScreenshot("history-source-checking");
+    await expect(loadError).toBeVisible();
+  } finally {
+    stalledCheck.resolve();
+  }
   await expect(
     transcript.getByText("The rollout starts with 37 units.", { exact: true }),
   ).toBeVisible();
   await captureHistoryScreenshot("history-source-retry");
-  await page.unroute(sourceRequest);
   await transcript.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(loadError).toHaveCount(0);
   await open.click();

@@ -69,6 +69,17 @@ const block: Extract<MessageBlock, { kind: "history_sources" }> = {
   kind: "history_sources",
   references: [reference],
 };
+
+function pendingSourceCheck() {
+  let resolve!: (rows: HistorySource[]) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<HistorySource[]>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
@@ -158,6 +169,57 @@ it("clears the previews when the current Space denies access", async () => {
   expect(fixture.push).not.toHaveBeenCalled();
 });
 
+it.each([undefined, 401, 403])(
+  "settles the first source check before another source can be opened (status %s)",
+  async (status) => {
+    const other: HistorySource = {
+      ...source,
+      threadId: "other-thread",
+      messageId: "other-message",
+      groupId: "other-group",
+      chatName: "Other group",
+      text: "Another decision.",
+    };
+    fixture.rpc.mockResolvedValueOnce([source, other]);
+    await act(async () =>
+      root.render(
+        <HistorySourcesCard block={{ kind: "history_sources", references: [source, other] }} />,
+      ),
+    );
+
+    const check = pendingSourceCheck();
+    fixture.rpc.mockReturnValueOnce(check.promise);
+    const [first, second] = container.querySelectorAll("button");
+    await act(async () => {
+      first!.click();
+      second!.click();
+    });
+    const secondWasDisabled = second!.disabled;
+    await act(async () => {
+      if (status) check.reject(Object.assign(new Error("Access denied"), { status }));
+      else check.resolve([]);
+    });
+    expect(container.textContent).not.toContain(source.chatName);
+    expect(container.textContent).not.toContain(source.text);
+    expect(container.textContent).toContain("This history source is no longer available.");
+    expect(fixture.push).not.toHaveBeenCalled();
+    expect(fixture.rpc).toHaveBeenCalledTimes(2);
+    expect(secondWasDisabled).toBe(true);
+
+    if (status) {
+      expect(container.textContent).not.toContain(other.chatName);
+      return;
+    }
+    expect(second!.disabled).toBe(false);
+    fixture.rpc.mockResolvedValueOnce([other]);
+    await act(async () => second!.click());
+    expect(fixture.push).toHaveBeenCalledWith({
+      pathname: "/group-thread",
+      params: { groupId: "other-group", name: "Other group", messageId: "other-message" },
+    });
+  },
+);
+
 it("reloads the reference on return and hides the old preview while blurred", async () => {
   await act(async () => root.render(<HistorySourcesCard block={block} />));
   fixture.focused = false;
@@ -181,19 +243,28 @@ it("reloads in place when the signed-in scope changes", async () => {
   expect(fixture.rpc).toHaveBeenCalledTimes(2);
 });
 
-it("does not navigate when a source check returns after switching identity", async () => {
-  await act(async () => root.render(<HistorySourcesCard block={block} />));
-  let resolve!: (rows: HistorySource[]) => void;
-  fixture.rpc.mockImplementationOnce(
-    () =>
-      new Promise((complete) => {
-        resolve = complete;
-      }),
-  );
-  await act(async () => container.querySelector("button")!.click());
-  await act(async () => {
-    fixture.scope = "changed";
-    resolve([source]);
-  });
-  expect(fixture.push).not.toHaveBeenCalled();
-});
+it.each(["available", "denied"])(
+  "ignores a late %s source check after switching scope",
+  async (result) => {
+    await act(async () => root.render(<HistorySourcesCard block={block} />));
+    const check = pendingSourceCheck();
+    fixture.rpc.mockReturnValueOnce(check.promise);
+    await act(async () => container.querySelector("button")!.click());
+    const signal = fixture.rpc.mock.lastCall?.[2].signal as AbortSignal;
+    fixture.rpc.mockResolvedValueOnce([{ ...source, text: "Current scope preview." }]);
+    await act(async () => {
+      fixture.scope = "changed";
+      for (const listener of fixture.scopeListeners) listener();
+    });
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      if (result === "denied")
+        check.reject(Object.assign(new Error("Access denied"), { status: 403 }));
+      else check.resolve([source]);
+    });
+    expect(container.textContent).toContain("Current scope preview.");
+    expect(container.textContent).not.toContain("This history source is no longer available.");
+    expect(container.querySelector("button")!.disabled).toBe(false);
+    expect(fixture.push).not.toHaveBeenCalled();
+  },
+);

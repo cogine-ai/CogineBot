@@ -33,7 +33,10 @@ const historySourceClient = {
   scopeKey: rpcRecoveryScopeKey,
   subscribeScope: subscribeRpcRecoveryScope,
   load: (references: HistorySourceReference[], signal: AbortSignal) =>
-    rpc.threads.historySources({ references }, { signal }),
+    rpc.threads.historySources(
+      { references },
+      { signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]) },
+    ),
 };
 
 export function HistorySourcesCard({
