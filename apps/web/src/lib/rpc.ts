@@ -1,4 +1,4 @@
-import { createORPCClient } from "@orpc/client";
+import { createORPCClient, ORPCError } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import type { AppContract } from "@rakazo/contracts";
@@ -198,7 +198,7 @@ const link = new RPCLink<RpcClientContext>({
     typeof window === "undefined"
       ? "http://127.0.0.1:5173/rpc"
       : `${window.location.origin}${window.location.pathname === LOCAL_SETTINGS_PAGE ? LOCAL_SETTINGS_RPC : "/rpc"}`,
-  fetch: async (input, init, options) => {
+  fetch: async (input, init, options, path) => {
     const assertCurrent = () => {
       if (
         options.context.isCurrent?.() === false ||
@@ -233,6 +233,14 @@ const link = new RPCLink<RpcClientContext>({
       credentials: "include",
       signal: options.signal,
     });
+    if (path[0] === "threads" && path[1] === "historySources") {
+      const { status } = response;
+      if (status === 401 || status === 403) {
+        // Access is already denied even if reading the error body would time out.
+        void response.body?.cancel().catch(() => undefined);
+        throw new ORPCError(status === 401 ? "UNAUTHORIZED" : "FORBIDDEN");
+      }
+    }
     if (response.status === 402) {
       noteSubscriptionRequired(
         scope,
