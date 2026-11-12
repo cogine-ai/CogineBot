@@ -475,7 +475,7 @@ it("preserves both colliding Skills and leaves oversized multibyte memory out", 
   const preview = parseBotPackageSource(source, { includeMemory: true });
   expect(preview.document.skills.map(({ name }) => name)).toEqual(["sample", "Sample-2"]);
   expect(preview.document.skills[1]?.content).toBe(
-    unusual.replace("name: sample", "name: 'Sample-2'"),
+    unusual.replace("name: sample", "name: |2-\r\n  Sample-2"),
   );
   expect(preview.document.memory).toEqual([]);
   expect(preview.leftOut).toContainEqual(

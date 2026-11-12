@@ -156,14 +156,18 @@ export function renameBackupSkill(content: string, name: string): string {
   const body = match[2]!;
   const line = [...body.matchAll(/^name[ \t]*:[ \t]*(.*?)[ \t]*(\r?)$/gm)].at(-1);
   if (!line) return content;
+  const newline = head.endsWith("\r\n") ? "\r\n" : "\n";
   const start = line.index + line[0].indexOf(":") + 1;
   let end = line.index + line[0].length - line[2]!.length;
-  let replacement = name.includes("'") ? ` "${name}"` : ` '${name}'`;
+  const scalar = name
+    .split("\n")
+    .map((part) => `  ${part}`)
+    .join(newline);
+  const replacement = ` |2-${newline}${scalar}`;
   if (/^[|>]/.test(line[1]!)) {
-    const rest = body.slice(line.index + line[0].length);
-    const continuation = /^(?:\r?\n(?:[ \t]+.*|[ \t]*)(?=\r?\n|$))*/.exec(rest)?.[0] ?? "";
-    end = line.index + line[0].length + continuation.length;
-    replacement += line[2] ?? "";
+    const continuation =
+      /^(?:\r?\n(?:[ \t][^\r\n]*|(?=\r?\n|$)))*/.exec(body.slice(end))?.[0] ?? "";
+    end += continuation.length;
   }
   return `${head}${body.slice(0, start)}${replacement}${body.slice(end)}${content.slice(head.length + body.length)}`;
 }

@@ -1,6 +1,8 @@
 import { gzipSync, strToU8, zipSync } from "fflate";
 import { expect, it } from "vitest";
-import { encodeAgentBackup, readBotImportBytes } from "./index.js";
+import { parse as parseYaml } from "yaml";
+import { parseSkillMd } from "../agent-skill.js";
+import { encodeAgentBackup, readBotImportBytes, renameBackupSkill } from "./index.js";
 
 function tar(files: Record<string, string>, links: Record<string, string> = {}): Uint8Array {
   const chunks: Uint8Array[] = [];
@@ -172,4 +174,20 @@ it("rejects an empty declared workspace instead of importing an old default", ()
     "backup/state/workspace/SOUL.md": "Stale instructions",
   });
   expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+});
+
+it.each(["\n", "\r\n"])("renames quoted and multiline Skills with valid YAML (%j)", (newline) => {
+  const name = 'Reader\'s "quoted" \\notes-2';
+  const description = "description: 'Keep #tags and \"quotes\".'";
+  for (const original of [
+    "name: Reader",
+    `name: |2-${newline}  First${newline}${newline}  Second`,
+    `name: >2-${newline}  First${newline}${newline}  Second`,
+  ]) {
+    const source = ["---", original, description, "---", "Body", ""].join(newline);
+    const renamed = renameBackupSkill(source, name);
+    expect(parseSkillMd(renamed)).toMatchObject({ name, description: 'Keep #tags and "quotes".' });
+    expect(parseYaml(renamed.split("---")[1]!)).toMatchObject({ name });
+    expect(renamed.endsWith([description, "---", "Body", ""].join(newline))).toBe(true);
+  }
 });
