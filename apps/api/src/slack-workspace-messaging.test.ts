@@ -10,6 +10,7 @@ import { SlackWorkspaceMessaging } from "./slack-workspace-messaging.js";
 const { receive } = vi.hoisted(() => ({ receive: vi.fn() }));
 vi.mock("./team-chat-bridge.js", () => ({
   TeamChatBridge: class {
+    scope = { spaceId: "space", userId: "owner", botId: "bot" };
     receive = receive;
     start = vi.fn(async () => undefined);
     stop = vi.fn(async () => undefined);
@@ -100,7 +101,10 @@ function harness() {
   };
 }
 
-beforeEach(() => receive.mockReset());
+beforeEach(() => {
+  receive.mockReset();
+  receive.mockResolvedValue({ deferred: false });
+});
 
 describe("Slack installed workspace routing", () => {
   it("reconciles overflow workspaces without evicting the established cache", async () => {
@@ -122,7 +126,7 @@ describe("Slack installed workspace routing", () => {
   });
 
   it("accepts a signed installer DM and refuses strangers, other workspaces, and app messages", async () => {
-    const { runtime, provider, setInbound } = harness();
+    const { runtime, provider, setInbound, verified } = harness();
     for (const candidate of [
       { ...message, from: "UOTHER", participants: [] },
       { ...message, workspaceId: "TOTHER", participants: [] },
@@ -138,7 +142,7 @@ describe("Slack installed workspace routing", () => {
     expect(receive).toHaveBeenCalledOnce();
     expect(receive).toHaveBeenCalledWith(
       expect.objectContaining({ senderId: "UOWNER", kind: "direct" }),
-      expect.anything(),
+      expect.objectContaining({ eventAt: verified.eventAt, queueAgent: false }),
     );
     expect(provider.surface).toHaveBeenCalledTimes(1);
     await runtime.stop();
