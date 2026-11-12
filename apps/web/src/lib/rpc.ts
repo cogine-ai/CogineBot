@@ -13,6 +13,7 @@ import type { SessionGate } from "./session-gate";
 const SPACE_STORAGE_KEY = "rakazo:space-id";
 let spaceSelectionGeneration = 0;
 const spaceSelectionListeners = new Set<() => void>();
+const rpcSessionListeners = new Set<() => void>();
 const subscriptionListeners = new Set<() => void>();
 let rpcSessionOwner: string | null = null;
 let rpcSessionGeneration = 0;
@@ -32,6 +33,7 @@ export function synchronizeRpcSession(
   rpcSessionOwner = next;
   rpcSessionGeneration += 1;
   implicitSpace = null;
+  for (const listener of rpcSessionListeners) listener();
 }
 
 export function currentRpcSessionGeneration(): number {
@@ -65,6 +67,19 @@ export function captureRpcRecoveryScope(
     spaceId,
     sessionGeneration: rpcSessionGeneration,
     selectionGeneration: spaceSelectionGeneration,
+  };
+}
+
+export function rpcRecoveryScopeKey(): string {
+  return JSON.stringify(captureRpcRecoveryScope());
+}
+
+export function subscribeRpcRecoveryScope(listener: () => void): () => void {
+  const unsubscribeSpace = subscribeSelectedSpace(listener);
+  rpcSessionListeners.add(listener);
+  return () => {
+    rpcSessionListeners.delete(listener);
+    unsubscribeSpace();
   };
 }
 

@@ -7439,3 +7439,19 @@ msgstr "Değeri göster"
 
 msgid "Give each field a different label"
 msgstr "Her alana farklı bir etiket ver"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "Sohbet geçmişinde aranıyor"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "Orijinal mesajı görüntüle"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "Bu geçmiş kaynağı artık kullanılamıyor."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "Sohbet geçmişi kaynakları yüklenemedi."

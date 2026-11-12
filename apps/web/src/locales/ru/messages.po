@@ -7495,3 +7495,19 @@ msgstr "Показать значение"
 
 msgid "Give each field a different label"
 msgstr "Задайте уникальное название для каждого поля"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "Поиск в истории чатов"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "Открыть исходное сообщение"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "Этот источник больше недоступен."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "Не удалось загрузить источники из истории."

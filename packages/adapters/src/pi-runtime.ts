@@ -1699,6 +1699,8 @@ function toAgentTool(
     // including reads that must see a preceding memory or schedule write.
     ...(SCHEDULE_TOOL_NAMES.has(tool.name) ||
     tool.name === "remember" ||
+    tool.name === "search_history" ||
+    tool.name === "read_history" ||
     tool.name === "request_takeover"
       ? { executionMode: "sequential" as const }
       : {}),

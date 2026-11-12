@@ -34,6 +34,7 @@ import {
   computerStateRequiresRecovery,
   currentComputerStatus,
   DelegatedApprovalAction,
+  HISTORY_LOOKUP_STATUS,
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
@@ -350,6 +351,7 @@ import {
   ArtifactImage,
   ChartBlockView,
   ChoiceCard,
+  HistorySourcesCard,
   McpApprovalCard,
 } from "./shell/message-cards";
 import { SidebarSectionHeader } from "./shell/sidebar-section-header";
@@ -3239,10 +3241,12 @@ export function ShellPage() {
       refreshDelegatedApprovals.current();
     }
   }, []);
-  const workingNarrationStatus = liveNarrationStatusLine(
+  const narrationStatus = liveNarrationStatusLine(
     transcriptMessages,
     workingRuns.filter((run) => run.status === "running").map((run) => run.id),
   );
+  const workingNarrationStatus =
+    narrationStatus === HISTORY_LOOKUP_STATUS ? t`Searching chat history` : narrationStatus;
   const pageProjection = useMemo(() => projectPageCards(transcriptMessages), [transcriptMessages]);
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
@@ -9505,6 +9509,7 @@ const MessageView = memo(function MessageView({
           message.blocks,
           Boolean("botId" in artifactTarget ? artifactTarget.botId : message.botId),
         ).map((block, i) => {
+          if (block.kind === "history_sources") return <HistorySourcesCard key={i} block={block} />;
           if (block.kind === "page")
             return <PageBlockCard key={i} block={block} updated={pageUpdated?.(block)} />;
           if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {

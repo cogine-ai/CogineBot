@@ -7534,3 +7534,19 @@ msgstr "显示值"
 
 msgid "Give each field a different label"
 msgstr "请为每个字段使用不同的标签"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "正在查找过往记录"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "查看原消息"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "这条来源已不可用。"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "暂时无法加载历史来源。"

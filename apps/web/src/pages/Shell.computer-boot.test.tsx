@@ -34,6 +34,7 @@ const boundary = vi.hoisted(() => ({
   },
   space: "space-1" as string | null,
   generation: 0,
+  scopeListeners: new Set<() => void>(),
 }));
 vi.mock("../lib/rpc", () => {
   const client = (path: string[] = []): unknown =>
@@ -47,6 +48,11 @@ vi.mock("../lib/rpc", () => {
     selectedSpaceId: () => boundary.space,
     currentSpaceSelectionGeneration: () => boundary.generation,
     currentRpcSessionGeneration: () => 0,
+    rpcRecoveryScopeKey: () => JSON.stringify([boundary.space, boundary.generation]),
+    subscribeRpcRecoveryScope: (listener: () => void) => {
+      boundary.scopeListeners.add(listener);
+      return () => boundary.scopeListeners.delete(listener);
+    },
     captureRpcRecoveryScope: (spaceId = boundary.space) => ({
       spaceId,
       sessionGeneration: 0,
@@ -64,11 +70,13 @@ vi.mock("../lib/rpc", () => {
     selectSpace: (id: string) => {
       boundary.space = id;
       boundary.generation += 1;
+      for (const listener of boundary.scopeListeners) listener();
       return true;
     },
     clearSpaceSelection: () => {
       boundary.space = null;
       boundary.generation += 1;
+      for (const listener of boundary.scopeListeners) listener();
     },
   };
 });

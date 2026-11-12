@@ -150,6 +150,7 @@ import {
   DelegatedApprovalSchema,
   ProductEventSchema,
 } from "./events.js";
+import { HistorySourceReferencesSchema, HistorySourceSchema } from "./history.js";
 import { Id, IsoDate } from "./ids.js";
 import {
   IntegrationProviderConfigSchema,
@@ -568,6 +569,9 @@ export const appContract = {
         }),
       )
       .output(ThreadMessagePageSchema),
+    historySources: oc
+      .input(z.object({ references: HistorySourceReferencesSchema }))
+      .output(z.array(HistorySourceSchema)),
     subscribe: oc
       .input(threadTarget.safeExtend({ cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),

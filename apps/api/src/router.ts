@@ -253,6 +253,7 @@ import {
   IsolationError,
   issueMessagingLinkCode,
   listBoards,
+  listHistorySources,
   listSpaceBackupModels,
   listTicketComments,
   loadDelegatedApprovals,
@@ -2989,6 +2990,9 @@ export function createRouter(deps: RouterDeps) {
           context.supportsWebsiteLoginCard,
         );
       }),
+      historySources: authed.threads.historySources.handler(({ context, input }) =>
+        listHistorySources(deps.prisma, context.actor, input.references),
+      ),
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const peerRunCache = new Map<string, Promise<boolean>>();

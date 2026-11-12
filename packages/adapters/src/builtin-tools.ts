@@ -4,8 +4,10 @@ import {
   BotSecretName,
   botSecretDestinationSchema,
   GenerateSecretInput,
+  HISTORY_QUERIES_MAX_BYTES,
   LoginFieldLabel,
   LoginFieldLabels,
+  MAX_HISTORY_SEARCH_OFFSET,
   SecretAskPurpose,
   SecretHttpRequest,
   TICKET_PRIORITIES,
@@ -682,11 +684,27 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "search_history",
     description:
-      "Search literal keywords in earlier messages in this chat; every query word must match the same message. For paraphrased recollection, start with one distinctive project or topic keyword. Returns at most five matches, newest first. When nextSearch is present, call search_history with those arguments to continue. Coverage applies only to the requested literal query and range; an empty narrower query does not exhaust an unfinished broader query. Use read_history to check surrounding messages and corrections.",
+      "Search literal keywords in earlier messages, default this_chat. Provide query or queries. Every word of a query must match the same message. For another conversation, use my_chats in a direct human app Run, with one distinctive keyword or a few variants. Returns up to five matches, newest first. matchedQueryIndexes refer to the returned queries. Continue with nextSearch, then read_history using the match's messageId and threadId to check original statements and corrections.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", minLength: 1, maxLength: 500 },
+        queries: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 500 },
+          minItems: 1,
+          maxItems: 5,
+          description: `Keyword variants instead of query. Combined JSON is limited to ${HISTORY_QUERIES_MAX_BYTES} UTF-8 bytes.`,
+        },
+        scope: { type: "string", enum: ["this_chat", "my_chats"] },
+        botId: { type: "string" },
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["bot_messages", "user_messages", "bot_replies"] },
+          minItems: 1,
+          maxItems: 3,
+        },
+        offset: { type: "integer", minimum: 0, maximum: MAX_HISTORY_SEARCH_OFFSET },
         before: {
           type: "string",
           description: "Exclusive ISO date upper bound; date-only values mean UTC midnight.",
@@ -702,7 +720,7 @@ export const builtinAgentTools: ConnectorTool[] = [
         },
         limit: { type: "integer", minimum: 1, maximum: 5 },
       },
-      required: ["query"],
+      oneOf: [{ required: ["query"] }, { required: ["queries"] }],
     },
   },
   {
@@ -713,6 +731,10 @@ export const builtinAgentTools: ConnectorTool[] = [
       type: "object",
       properties: {
         messageId: { type: "string" },
+        threadId: {
+          type: "string",
+          description: "Chat from a search hit. Access is checked again.",
+        },
         toolResultId: {
           type: "string",
           description:

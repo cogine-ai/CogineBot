@@ -7439,3 +7439,19 @@ msgstr "값 표시"
 
 msgid "Give each field a different label"
 msgstr "각 필드에 다른 이름을 지정하세요"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "채팅 기록 검색 중"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "원본 메시지 보기"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "이 기록의 출처는 더 이상 사용할 수 없습니다."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "채팅 기록의 출처를 불러오지 못했습니다."

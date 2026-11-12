@@ -1,4 +1,8 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Searching chat history": "Chatverlauf wird durchsucht",
+  "View original message": "Originalnachricht öffnen",
+  "This history source is no longer available.": "Diese Quelle ist nicht mehr verfügbar.",
+  "Could not load history sources.": "Die Quellen aus dem Verlauf konnten nicht geladen werden.",
   "Give each field a different label": "Gib jedem Feld eine andere Bezeichnung",
   "{bot} will no longer be able to use this credential.":
     "{bot} kann diese Zugangsdaten künftig nicht mehr verwenden.",

@@ -224,6 +224,7 @@ export function createRunTrust(
   };
   if (input.sourcePage || input.waitingAnswer?.includesPage) recordPageInput();
   let earlierAttempt: Promise<boolean> | undefined;
+  let outsideMessageReceived = false;
   const receivedOutsideSteering = async (
     store: Pick<Prisma.TransactionClient, "steeringMessage">,
   ) =>
@@ -234,6 +235,8 @@ export function createRunTrust(
           claimedAt: { not: null },
           OR: [
             { originTrigger: { not: null } },
+            { userId: { not: run.userId } },
+            { message: { role: { not: "user" } } },
             { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
             { message: { clientNonce: { startsWith: "messaging:" } } },
             { message: { authorUserId: null } },
@@ -243,6 +246,8 @@ export function createRunTrust(
         select: { id: true },
       }),
     );
+  const receivedOutsideMessage = async () =>
+    (outsideMessageReceived ||= await receivedOutsideSteering(prisma));
   const isTainted = async (tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">) => {
     if (state.tainted) return true;
     const store = tx ?? prisma;
@@ -277,6 +282,7 @@ export function createRunTrust(
     for (const item of steering) {
       if (pageInputContext(item.blocks)) recordPageInput();
       if (!item.ownerInput) {
+        outsideMessageReceived = true;
         state.tainted = true;
         continue;
       }
@@ -378,6 +384,7 @@ export function createRunTrust(
   return {
     state,
     isTainted,
+    receivedOutsideMessage,
     recordPageInput,
     recordSteering,
     loadOwnerWords,

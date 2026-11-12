@@ -1,5 +1,6 @@
 import type { Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
+import type { ThreadSnapshot } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -8,6 +9,109 @@ import {
   rpc,
   signup,
 } from "./helpers";
+
+test("history sources open the original chat and clear an archived source", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    process.env.VERIFY_DATABASE !== "1" ||
+      !process.env.DATABASE_URL ||
+      !process.env.VERIFY_ISOLATED_DATABASE,
+    "Requires the isolated verification database",
+  );
+  await signup(page, `history-source-${Date.now()}@example.test`, "password12", "History Tester");
+  await completeOnboarding(page);
+  const activeBot = activeBotId(page);
+  const pastBot = await createNamedBot(page, "Project planning");
+  const original = await rpc<ThreadSnapshot>(page, "threads/get", { botId: pastBot });
+  const current = await rpc<ThreadSnapshot>(page, "threads/get", { botId: activeBot });
+  const connection = new URL(process.env.DATABASE_URL!);
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(connection.hostname);
+  expect(Number(connection.port)).toBeGreaterThan(1024);
+  expect(connection.port).not.toBe("5432");
+  expect(connection.pathname).toBe(`/${process.env.VERIFY_ISOLATED_DATABASE}`);
+  expect(connection.search).toBe("");
+  const { createDb, createThreadMessageInTransaction } = await import(
+    "../../../packages/db/src/index"
+  );
+  const db = createDb(connection.toString(), {
+    poolMax: 1,
+    applicationName: "history-browser-fixture",
+  });
+  let originalId: string;
+  try {
+    const [identity] = await db.prisma.$queryRaw<
+      Array<{ name: string }>
+    >`SELECT current_database() AS name`;
+    expect(identity?.name).toBe(process.env.VERIFY_ISOLATED_DATABASE);
+    originalId = await db.prisma.$transaction(async (tx) => {
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: original.threadId,
+        role: "user",
+        blocks: [{ kind: "text", text: "The rollout starts with 37 units." }],
+      });
+      await createThreadMessageInTransaction(tx, {
+        threadId: current.threadId,
+        botId: activeBot,
+        role: "bot",
+        blocks: [
+          { kind: "text", text: "I found the rollout decision." },
+          {
+            kind: "history_sources",
+            references: [{ threadId: original.threadId, messageId: message.id }],
+          },
+        ],
+      });
+      return message.id;
+    });
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+
+  await page.goto(`/app/${activeBot}`);
+  const transcript = page.getByTestId("transcript");
+  const captureHistoryScreenshot = async (name: string) => {
+    const path = testInfo.outputPath(`${name}.png`);
+    await transcript.screenshot({ animations: "disabled", caret: "hide", path });
+    await testInfo.attach(name, { contentType: "image/png", path });
+  };
+  const open = transcript.getByRole("button", { name: "View original message" });
+  await expect(open).toBeVisible();
+  await expect(
+    transcript.getByText("The rollout starts with 37 units.", { exact: true }),
+  ).toBeVisible();
+  await captureHistoryScreenshot("history-source-card");
+  const sourceRequest = "**/rpc/threads/historySources";
+  await page.route(sourceRequest, (route) => route.abort("failed"));
+  await open.click();
+  const loadError = transcript.getByText("Could not load history sources.");
+  await expect(loadError).toBeVisible();
+  await expect(
+    transcript.getByText("The rollout starts with 37 units.", { exact: true }),
+  ).toBeVisible();
+  await captureHistoryScreenshot("history-source-retry");
+  await page.unroute(sourceRequest);
+  await transcript.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(loadError).toHaveCount(0);
+  await open.click();
+  await expect(page).toHaveURL(new RegExp(`/app/${pastBot}(?:[?]|$)`));
+  await expect(transcript.locator(`[data-message-id="${originalId}"]`)).toContainText("37 units");
+
+  await page.goto(`/app/${activeBot}`);
+  await expect(open).toBeVisible();
+  await rpc(page, "bots/archive", { botId: pastBot });
+  await open.click();
+  await expect(transcript.getByText("This history source is no longer available.")).toBeVisible();
+  await expect(
+    transcript.getByText("The rollout starts with 37 units.", { exact: true }),
+  ).toHaveCount(0);
+  await expect(transcript.getByText(/^Project planning ·/)).toHaveCount(0);
+  await page.reload();
+  await expect(transcript.getByText("This history source is no longer available.")).toBeVisible();
+  await captureHistoryScreenshot("history-source-unavailable");
+});
 
 test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => {
   const stamp = Date.now();

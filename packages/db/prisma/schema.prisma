@@ -784,6 +784,10 @@ model Run {
   trigger              String
   /// Trusted dispatch classification, independent of user-visible trigger names.
   origin               String           @default("human")
+  /// Whether this Run has claimed outside steering. Null predates this provenance.
+  receivedOutsideMessage Boolean?       @default(false)
+  /// Validated history references, without copied titles or message text.
+  historySourceReferences Json?
   parentRunId          String?
   collaborationSourceSpaceId String?
   collaborationSourceBotId String?
