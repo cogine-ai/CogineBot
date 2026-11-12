@@ -2,7 +2,8 @@ import { BOT_PACKAGE_MAX_BYTES, isAgentBackupPath } from "@rakazo/contracts";
 import { Gunzip, Inflate } from "fflate";
 
 /**
- * Reads an agent backup in the browser, so the upload is reduced before anything is sent.
+ * Modified for bounded text-only Bot package import.
+ * Reads an agent backup in the client before anything is sent.
  * OpenClaw backups are `.tar.gz` with a manifest; zips (Hermes) are mapped by layout. Only
  * files an import might use are decompressed; others are listed by name only.
  */
@@ -39,7 +40,7 @@ export class AgentImportArchiveError extends Error {
 const unreadable = () => new AgentImportArchiveError("unreadable");
 const tooLarge = () => new AgentImportArchiveError("too_large");
 
-type Entry = { path: string; data?: Uint8Array };
+type Entry = { path: string; data?: Uint8Array; skipped?: true };
 
 /**
  * Paths are mapped under `.openclaw/` or `.hermes/` when the layout is known. Files outside
@@ -47,6 +48,7 @@ type Entry = { path: string; data?: Uint8Array };
  */
 export function openAgentImportArchive(data: Uint8Array): {
   paths: string[];
+  skippedPaths: string[];
   read: (path: string) => string;
 } {
   const limits = AGENT_IMPORT_ARCHIVE_LIMITS;
@@ -58,13 +60,14 @@ export function openAgentImportArchive(data: Uint8Array): {
   const entries = zip ? zip.entries : tarEntries(data, limits);
   const layout = archiveLayout(entries);
   const paths: string[] = [];
+  const skippedPaths: string[] = [];
   const byVirtual = new Map<string, Entry>();
   for (const entry of entries) {
     const path = layout(entry.path);
     if (!path) continue;
     // Two entries for one file (repeated, or equal after normalising) are ambiguous.
     if (byVirtual.has(path)) throw unreadable();
-    paths.push(path);
+    (entry.skipped ? skippedPaths : paths).push(path);
     byVirtual.set(path, entry);
   }
   let read = 0;
@@ -73,11 +76,12 @@ export function openAgentImportArchive(data: Uint8Array): {
   const texts = new Map<string, string>();
   return {
     paths,
+    skippedPaths,
     read: (path) => {
       const cached = texts.get(path);
       if (cached !== undefined) return cached;
       const entry = byVirtual.get(path);
-      if (!entry || !mayBeRead(entry.path)) throw unreadable();
+      if (!entry || entry.skipped || !mayBeRead(entry.path)) throw unreadable();
       const bytes = entry.data ?? zip?.read(entry.path);
       if (!bytes) throw tooLarge();
       read += bytes.length;
@@ -164,7 +168,8 @@ function zipEntries(data: Uint8Array, limits: AgentImportArchiveLimits) {
     crc: number;
     rawName: Uint8Array;
   };
-  const entries: ZipEntry[] = [];
+  const entries: Entry[] = [];
+  const readable = new Map<string, ZipEntry>();
   let at = offset;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let declaredBytes = 0;
@@ -193,15 +198,23 @@ function zipEntries(data: Uint8Array, limits: AgentImportArchiveLimits) {
       if (declaredBytes > limits.inflatedBytes) throw tooLarge();
     }
     // Directories, links, devices, encrypted entries and archives inside are never read.
-    if (!path || (type !== 0 && type !== 0o100000) || flags & 1 || NESTED_ARCHIVE.test(path)) {
+    if (!path || type === 0o040000) continue;
+    if (
+      (type !== 0 && type !== 0o100000) ||
+      flags & 1 ||
+      NESTED_ARCHIVE.test(path) ||
+      (method !== 0 && method !== 8)
+    ) {
+      entries.push({ path, skipped: true });
       continue;
     }
-    if (method !== 0 && method !== 8) continue;
-    entries.push({ path, method, compressed, size: uncompressed, local, crc, rawName });
+    const entry = { path, method, compressed, size: uncompressed, local, crc, rawName };
+    readable.set(path, entry);
+    entries.push(entry);
   }
   if (at !== directoryEnd) throw unreadable();
   const read = (path: string): Uint8Array | undefined => {
-    const entry = entries.find((candidate) => candidate.path === path);
+    const entry = readable.get(path);
     if (!entry) return undefined;
     if (entry.size > limits.fileBytes) return undefined;
     if (entry.size > 1024 * 1024 && entry.size > entry.compressed * limits.ratio) throw tooLarge();
@@ -223,7 +236,7 @@ function zipEntries(data: Uint8Array, limits: AgentImportArchiveLimits) {
     if (bytes.length !== entry.size || crc32(bytes) !== entry.crc) throw unreadable();
     return bytes;
   };
-  return { entries: entries as Entry[], read };
+  return { entries, read };
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -384,11 +397,13 @@ class TarStream {
         this.retained += size;
         if (this.retained > this.limits.retainedBytes) throw tooLarge();
       }
-      if (path) this.entries.push({ path });
+      if (path)
+        this.entries.push({ path, ...(NESTED_ARCHIVE.test(path) ? { skipped: true } : {}) });
     } else {
       // Directories, links, devices, FIFOs, global headers and anything unknown.
       this.nextName = null;
-      safeArchivePath(name);
+      const path = safeArchivePath(name);
+      if (type !== "5" && path) this.entries.push({ path, skipped: true });
       this.current = { path: null, kind: "skip" };
     }
     if (size === 0) this.endData();
@@ -549,10 +564,16 @@ function openClawRoots(
       )
         throw unreadable();
     }
-    const workspace = parsed.assets
+    const workspaces = parsed.assets
       .filter((asset) => asset.kind === "workspace" && asset.archivePath)
       .map((asset) => inArchive(asset.archivePath!))
-      .find((path) => path && !path.startsWith(`${home}/`));
+      .filter((path) => path && !path.startsWith(`${home}/`));
+    const [workspace] = workspaces;
+    const hasInternalWorkspace = paths.some((path) => {
+      if (!path.startsWith(`${home}/`)) return false;
+      return /^workspace(?:-[^/]+)?\//.test(path.slice(home.length + 1));
+    });
+    if (workspaces.length > 1 || (workspace && hasInternalWorkspace)) throw unreadable();
     return workspace ? { home, workspace } : { home };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;

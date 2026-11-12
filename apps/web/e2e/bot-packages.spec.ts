@@ -224,11 +224,13 @@ test("agent backup import previews supported text and saves only the selected co
   await expect(document.getByText(instructions, { exact: true })).toBeVisible();
   await expect(document.getByText(note, { exact: true })).toHaveCount(0);
   expect(uploaded).not.toContain("IGNORE_THIS_FIXTURE_VALUE");
+  expect(uploaded).not.toContain(note);
   await memory.click();
   await previewButton.click();
   await document.getByText("Memory · 1", { exact: true }).click();
   await document.getByText("MEMORY.md", { exact: true }).click();
   await expect(document.getByText(note, { exact: true })).toBeVisible();
+  expect(uploaded).toContain(note);
   await captureScreenshot(page, testInfo, "agent-backup-import");
   await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
   await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();

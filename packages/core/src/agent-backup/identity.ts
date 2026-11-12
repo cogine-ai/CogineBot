@@ -1,4 +1,4 @@
-/** In OpenClaw's order of preference. */
+/** Adapted for bounded Bot identity fields, in OpenClaw's order of preference. */
 const DESCRIPTION_LABELS = ["theme", "creature", "vibe"] as const;
 const UNUSED_LABELS = { emoji: "Emoji", avatar: "Avatar" } as const;
 /** The hints OpenClaw's template leaves in place of a value. */
@@ -41,6 +41,7 @@ export function parseOpenClawIdentity(content: string): {
 
 function identityValue(raw: string): string {
   let value = raw.trim();
+  if (value.length > 2_000) return "";
   for (;;) {
     const paired = /^(\*{1,2}|_{1,2}|`+)([\s\S]+)\1$/.exec(value);
     if (!paired) break;

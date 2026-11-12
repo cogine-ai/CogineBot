@@ -461,6 +461,25 @@ it("previews supported agent backup text as an ordinary new Bot package", () => 
   ]);
 });
 
+it("preserves both colliding Skills and leaves oversized multibyte memory out", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [
+      { path: "skills/one/SKILL.md", content: skill },
+      { path: "skills/two/SKILL.md", content: skill.replace("sample", "Sample") },
+      { path: "MEMORY.md", content: "记".repeat(90_000) },
+    ],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: true });
+  expect(preview.document.skills.map(({ name }) => name)).toEqual(["sample", "Sample-2"]);
+  expect(preview.document.skills[1]?.content).toContain("Original body.");
+  expect(preview.document.memory).toEqual([]);
+  expect(preview.leftOut).toContainEqual(
+    expect.objectContaining({ kind: "memory", name: "MEMORY.md" }),
+  );
+});
+
 it("rejects unsupported paths sent directly to the preview endpoint", () => {
   const source = JSON.stringify({
     format: "agent-backup/v1",

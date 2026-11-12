@@ -1,10 +1,11 @@
 /**
+ * Adapted for the Bot package preview.
  * Untouched templates OpenClaw and Hermes seed, so they are not imported as if the user
  * wrote them (a bot would otherwise follow OpenClaw's first-run ritual, or say it is Hermes).
  *
  * A file is a default only when its whole text, whitespace collapsed (and, for OpenClaw,
  * front matter removed as OpenClaw does when seeding), exactly matches a published version;
- * any edit makes it the user's own. `scripts/agent-import-defaults.mjs` rebuilds the tables.
+ * any edit makes it the user's own.
  */
 
 const versions = (keys: readonly string[]): ReadonlySet<string> => new Set(keys);

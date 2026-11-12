@@ -104,7 +104,12 @@ export function NativeBotPackageImport({
     setFileError(false);
     try {
       const source = await pickBotPackageFile(valid);
-      if (valid() && source !== null) manager.current?.edit({ source });
+      if (valid() && source !== null) {
+        manager.current?.edit({
+          source,
+          ...(isAgentBackupUpload(source) ? { includeMemory: false } : {}),
+        });
+      }
     } catch {
       if (valid()) setFileError(true);
     } finally {

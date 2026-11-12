@@ -6,6 +6,7 @@ import type {
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES, botPackageUtf8Bytes } from "@rakazo/contracts";
+import { agentBackupPreviewSource } from "./agent-backup/index.js";
 
 export type BotPackageImportState = {
   source: string;
@@ -179,14 +180,14 @@ export function createBotPackageImport(deps: Deps) {
         });
         return;
       }
-      const input = {
-        source: state.source,
-        ...(state.name.trim() ? { name: state.name } : {}),
-        includeMemory: state.includeMemory,
-      };
       const { controller, version } = begin("previewing");
       if (!current(version)) return;
       try {
+        const input = {
+          source: agentBackupPreviewSource(state.source, state.includeMemory),
+          ...(state.name.trim() ? { name: state.name } : {}),
+          includeMemory: state.includeMemory,
+        };
         const preview = await deps.preview(input, controller.signal);
         if (!current(version)) return;
         if (preview.includeMemory !== input.includeMemory)

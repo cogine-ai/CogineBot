@@ -113,11 +113,16 @@ export function encodeAgentBackup(data: Uint8Array): string {
   const backup: AgentBackupDocument = {
     format: AGENT_BACKUP_FORMAT,
     source,
-    files: [...files].map(([path, archivePath]) => ({ path, content: archive.read(archivePath) })),
+    files: [...files].map(([path, archivePath]) => ({
+      path,
+      content:
+        source === "openclaw" && openClawRuntimeFiles.has(path) ? "" : archive.read(archivePath),
+    })),
+    excludedMemoryCount: 0,
     incompleteSkills: [...files].flatMap(([path, archivePath]) => {
       if (!isBackupSkill(path)) return [];
       const folder = archivePath.slice(0, -"SKILL.md".length);
-      return archive.paths.some(
+      return [...archive.paths, ...archive.skippedPaths].some(
         (candidate) => candidate !== archivePath && candidate.startsWith(folder),
       )
         ? [path]
@@ -145,4 +150,18 @@ export { AgentImportArchiveError };
 
 export function isAgentBackupUpload(source: string): boolean {
   return source.startsWith(`{"format":"${AGENT_BACKUP_FORMAT}","`);
+}
+
+export function agentBackupPreviewSource(source: string, includeMemory: boolean): string {
+  if (includeMemory || !isAgentBackupUpload(source)) return source;
+  const parsed = AgentBackupDocumentSchema.safeParse(JSON.parse(source));
+  if (!parsed.success) return source;
+  const backup = parsed.data;
+  const files = backup.files.filter(({ path }) => !isBackupMemory(backup.source, path));
+  if (files.length === backup.files.length) return source;
+  return JSON.stringify({
+    ...backup,
+    files,
+    excludedMemoryCount: backup.files.length - files.length,
+  });
 }

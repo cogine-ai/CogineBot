@@ -19,6 +19,7 @@ import {
   BOT_PACKAGE_MEMORY_MAX_BYTES,
   BotAvatarValueSchema,
   BotPackageDocumentSchema,
+  BotPackageMemorySchema,
   BotPackageRoutineSchema,
   BotPackageSkillSchema,
   botPackageUtf8Bytes,
@@ -593,16 +594,20 @@ function backupPackage(
       } else if (backupSkillRequiresReview(parsed.frontmatter)) {
         addNote("skill", path, "This Skill declares requirements that need review.");
       } else {
+        let name = parsed.name;
+        for (let number = 2; skillNames.has(name.toLowerCase()); number++) {
+          const suffix = `-${number}`;
+          name = `${parsed.name.slice(0, 80 - suffix.length)}${suffix}`;
+        }
         const candidate = BotPackageSkillSchema.safeParse({
-          name: parsed.name,
+          name,
           description: parsed.description,
-          content,
+          content: name === parsed.name ? content : buildSkillMd({ ...parsed, name }),
         });
-        const name = parsed.name.toLowerCase();
-        if (!candidate.success || skills.length >= BOT_PACKAGE_MAX_SKILLS || skillNames.has(name)) {
-          addNote("skill", path, "This Skill is duplicated or exceeds the Bot limits.");
+        if (!candidate.success || skills.length >= BOT_PACKAGE_MAX_SKILLS) {
+          addNote("skill", path, "This Skill exceeds the Bot limits.");
         } else {
-          skillNames.add(name);
+          skillNames.add(name.toLowerCase());
           skills.push(candidate.data);
         }
       }
@@ -622,9 +627,10 @@ function backupPackage(
           : content;
       if (!note) continue;
       const target = source === "hermes" ? path.slice("memories/".length) : path;
+      const candidate = BotPackageMemorySchema.safeParse({ path: target, content: note });
       const bytes = botPackageUtf8Bytes(note);
       if (
-        target.length > 200 ||
+        !candidate.success ||
         memory.length >= BOT_PACKAGE_MAX_MEMORY_FILES ||
         memoryBytes + bytes > BOT_PACKAGE_MEMORY_MAX_BYTES
       ) {
@@ -632,10 +638,11 @@ function backupPackage(
         continue;
       }
       memoryBytes += bytes;
-      memory.push({ path: target, content: note });
+      memory.push(candidate.data);
     }
   }
-  const availableMemoryCount = memory.length;
+  const availableMemoryCount =
+    memory.length + (options.includeMemory ? 0 : backup.excludedMemoryCount);
   if (!options.includeMemory && availableMemoryCount)
     addNote("memory", "memory", `Memory notes not selected: ${availableMemoryCount}.`);
   if (!instructions.length && !skills.length && !availableMemoryCount && !identity?.name)

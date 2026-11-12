@@ -89,6 +89,23 @@ describe("bot package import review", () => {
     },
   );
 
+  it("sends backup memory only after the user selects it", async () => {
+    const f = fixture();
+    const source = JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [{ path: "memories/MEMORY.md", content: "private note" }],
+    });
+    await review(f, source);
+    expect(JSON.parse(f.deps.preview.mock.calls[0]![0].source)).toMatchObject({
+      files: [],
+      excludedMemoryCount: 1,
+    });
+    f.manager.edit({ includeMemory: true });
+    await f.manager.preview();
+    expect(f.deps.preview.mock.calls[1]![0]).toEqual({ source, includeMemory: true });
+  });
+
   it("measures UTF-8 bytes before RPC rather than string characters", async () => {
     const f = fixture();
     f.manager.edit({ source: "界".repeat(Math.floor(BOT_PACKAGE_MAX_BYTES / 3) + 1) });
