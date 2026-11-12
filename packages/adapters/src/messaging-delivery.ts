@@ -11,6 +11,7 @@ import type {
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import {
+  BOT_MESSAGE_MAX_HOPS,
   botMessageHopExhausted,
   nextBotMessageHop,
   projectExternalPageMessages,
@@ -96,7 +97,13 @@ export async function mirrorMessagingOutbound(
   const terminal = run.status === "completed" || run.status === "failed";
   // Installed Slack conversations reply through their own workspace adapter.
   // Mark the legacy mirror as considered so recovery cannot queue it forever.
-  if (!run.thread?.externalConversation?.provider.startsWith("slack~")) {
+  if (
+    !run.thread?.externalConversation?.provider.startsWith("slack~") &&
+    !(
+      run.trigger === "bot_message" &&
+      (await delegatedFromInstalledSlack(deps.prisma, run.parentRunId))
+    )
+  ) {
     await mirrorRun(deps, run);
   }
   // A running snapshot can precede the final reply even if the Run settles
@@ -107,6 +114,21 @@ export async function mirrorMessagingOutbound(
       data: { messagingMirroredAt: new Date() },
     });
   }
+}
+
+async function delegatedFromInstalledSlack(prisma: PrismaClient, parentId: string | null) {
+  for (let hop = 0; parentId && hop <= BOT_MESSAGE_MAX_HOPS; hop++) {
+    const parent = await prisma.run.findUnique({
+      where: { id: parentId },
+      select: {
+        parentRunId: true,
+        thread: { select: { externalConversation: { select: { provider: true } } } },
+      },
+    });
+    if (parent?.thread?.externalConversation?.provider.startsWith("slack~")) return true;
+    parentId = parent?.parentRunId ?? null;
+  }
+  return false;
 }
 
 async function mirrorRun(

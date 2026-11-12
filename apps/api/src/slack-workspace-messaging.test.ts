@@ -13,6 +13,7 @@ vi.mock("./team-chat-bridge.js", () => ({
     receive = receive;
     start = vi.fn(async () => undefined);
     stop = vi.fn(async () => undefined);
+    reconcileOnce = vi.fn(async () => undefined);
   },
 }));
 
@@ -76,6 +77,8 @@ function harness() {
     activeById: vi.fn(async () => active),
     isCurrent: vi.fn(async () => Boolean(active)),
     credential: vi.fn(async () => "fixture-credential"),
+    cleanup: vi.fn(async () => undefined),
+    activeTargets: vi.fn<() => Promise<Array<{ id: string }>>>(async () => []),
     revoke: vi.fn(async () => undefined),
   };
   const runtime = new SlackWorkspaceMessaging(
@@ -100,6 +103,24 @@ function harness() {
 beforeEach(() => receive.mockReset());
 
 describe("Slack installed workspace routing", () => {
+  it("reconciles overflow workspaces without evicting the established cache", async () => {
+    const { runtime, store, provider } = harness();
+    const rows = new Map(
+      Array.from({ length: 129 }, (_, index) => {
+        const id = `install-${index}`;
+        return [id, { ...row, id }] as const;
+      }),
+    );
+    store.activeTargets.mockResolvedValue([...rows.keys()].map((id) => ({ id })));
+    store.activeById.mockImplementation(async (id?: string) => rows.get(id ?? "") ?? null);
+    const maintain = (runtime as unknown as { maintain(): Promise<void> }).maintain.bind(runtime);
+    await maintain();
+    expect(provider.surface).toHaveBeenCalledTimes(129);
+    await maintain();
+    expect(provider.surface).toHaveBeenCalledTimes(130);
+    await runtime.stop();
+  });
+
   it("accepts a signed installer DM and refuses strangers, other workspaces, and app messages", async () => {
     const { runtime, provider, setInbound } = harness();
     for (const candidate of [

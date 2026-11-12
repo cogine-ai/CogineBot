@@ -162,7 +162,10 @@ export class SlackInstallProvider {
         {
           onSlackAuthFailure,
           beforeSlackRequest: async () => {
-            if (!(await current())) throw new MessagingSendError("permanent", "rejected");
+            const active = await current().catch((cause: unknown) => {
+              throw new MessagingSendError("retryable", "rejected", undefined, cause);
+            });
+            if (!active) throw new MessagingSendError("permanent", "rejected");
           },
         },
       ),

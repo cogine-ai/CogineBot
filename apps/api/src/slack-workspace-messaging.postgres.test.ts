@@ -33,16 +33,18 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       async (url) =>
         String(url).includes("/users.info")
           ? Response.json({ user: { real_name: "Fixture Installer" } })
-          : Response.json({
-              ok: true,
-              token_type: "bot",
-              app_id: "AFIXTURE",
-              access_token: "synthetic-slack-token",
-              scope: SLACK_INSTALL_SCOPES.join(","),
-              team: { id: workspaceId, name: "Fixture Workspace" },
-              authed_user: { id: "UOWNER" },
-              bot_user_id: "UBOT",
-            }),
+          : String(url).includes("/auth.test")
+            ? Response.json({ ok: true, team_id: workspaceId, user_id: "UBOT" })
+            : Response.json({
+                ok: true,
+                token_type: "bot",
+                app_id: "AFIXTURE",
+                access_token: "synthetic-slack-token",
+                scope: SLACK_INSTALL_SCOPES.join(","),
+                team: { id: workspaceId, name: "Fixture Workspace" },
+                authed_user: { id: "UOWNER" },
+                bot_user_id: "UBOT",
+              }),
     );
     let sink: (event: MessagingInboundEvent) => Promise<void>;
     const sendToThread = vi.fn<MessagingSurface["sendToThread"]>(async (outbound) => {

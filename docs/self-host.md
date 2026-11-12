@@ -18,11 +18,16 @@ values of a Slack app. Its redirect is
 `${API_URL}/api/v1/messaging/install/slack/callback` and its Events API
 request URL is `${API_URL}/api/v1/messaging/install/slack/events`. Use the
 same public HTTPS API URL in both Slack and the deployment. Enable workspace
-installs and the app's Messages tab. This flow uses non-rotating bot
+installs. In App Home, turn on the Messages tab and its **Allow users to send
+Slash commands and messages from the messages tab** setting. This flow uses non-rotating bot
 tokens and a separate signing secret from the deployment-wide Slack line.
 
-Use the bot scopes requested in the Slack authorization screen. Subscribe to
-`message.im`, `app_mention`, `app_uninstalled`, and `tokens_revoked`.
+Configure these Bot Token Scopes under OAuth & Permissions:
+`app_mentions:read`, `chat:write`, `channels:read`, `channels:history`,
+`groups:read`, `groups:history`, `im:read`, `im:write`, `im:history`,
+`mpim:read`, `mpim:history`, `users:read`, `reactions:write`,
+`files:read`, and `files:write`. Subscribe to `message.im`, `app_mention`,
+`app_uninstalled`, and `tokens_revoked`.
 The person connecting a workspace selects a Bot in Messaging settings and
 authorizes Slack in a browser signed in to their CogineBot account. They can
 message the app directly or mention it in channels it has joined. Invite the

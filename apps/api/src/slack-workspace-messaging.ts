@@ -125,7 +125,11 @@ export class SlackWorkspaceMessaging {
       const row = await this.installations.activeById(id);
       if (!row) continue;
       try {
-        await this.use(row, (entry) => entry.bridge.reconcileOnce());
+        await this.use(
+          row,
+          (entry) => entry.bridge.reconcileOnce(),
+          this.workspaces.size < MAX_CACHED_WORKSPACES,
+        );
       } catch {
         getLogger().error("Slack workspace recovery failed");
       }
@@ -137,7 +141,11 @@ export class SlackWorkspaceMessaging {
     return this.installations.isCurrent(row);
   }
 
-  private async use<T>(row: WorkspaceInstallation, task: (entry: Workspace) => Promise<T>) {
+  private async use<T>(
+    row: WorkspaceInstallation,
+    task: (entry: Workspace) => Promise<T>,
+    cache = true,
+  ) {
     const provider = this.provider;
     if (!provider) throw new Error("Slack installation is unavailable");
     const credential = await this.installations.credential(row);
@@ -151,7 +159,7 @@ export class SlackWorkspaceMessaging {
       entry = undefined;
     }
     if (!entry) {
-      if (this.workspaces.size >= MAX_CACHED_WORKSPACES) {
+      if (cache && this.workspaces.size >= MAX_CACHED_WORKSPACES) {
         const idle = [...this.workspaces].find(([, candidate]) => candidate.users === 0);
         if (!idle) throw new Error("Slack messaging is busy");
         this.workspaces.delete(idle[0]);
@@ -210,9 +218,9 @@ export class SlackWorkspaceMessaging {
         bridge,
         started: bridge.start(),
         users: 0,
-        retired: false,
+        retired: !cache,
       };
-      this.workspaces.set(row.id, entry);
+      if (cache) this.workspaces.set(row.id, entry);
     }
     entry.users++;
     try {

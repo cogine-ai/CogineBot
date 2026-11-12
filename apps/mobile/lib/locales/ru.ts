@@ -215,6 +215,8 @@ export const RU_MESSAGES: Record<string, string> = {
   OpenAPI: "OpenAPI",
   "Copy diagnostics": "Копировать диагностику",
   "Could not check the connection.": "Не удалось проверить подключение.",
+  "Couldn't load messaging settings": "Не удалось загрузить настройки сообщений",
+  "Manage Slack messaging in browser": "Управлять сообщениями Slack в браузере",
   "Could not load chats": "Не удалось загрузить чаты",
   "Could not load run history": "Не удалось загрузить историю запусков",
   Details: "Подробности",

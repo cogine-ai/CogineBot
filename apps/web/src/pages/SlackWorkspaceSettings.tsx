@@ -20,6 +20,7 @@ type Api = ReturnType<typeof createSpaceRpc>["messaging"]["installations"];
 type List = Awaited<ReturnType<Api["list"]>>;
 type Workspace = List["workspaces"][number];
 type Attempt = Awaited<ReturnType<Api["start"]>>;
+const SLACK_POPUP = "coginebot-slack-oauth";
 
 export function SlackWorkspaceSettings({
   api,
@@ -37,7 +38,9 @@ export function SlackWorkspaceSettings({
   const [botId, setBotId] = useState("");
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [confirm, setConfirm] = useState<Workspace | null>(null);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState(outcome === "failed");
+  const [readFailed, setReadFailed] = useState(false);
+  const [readRevision, setReadRevision] = useState(0);
   const [expired, setExpired] = useState(false);
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
@@ -57,13 +60,15 @@ export function SlackWorkspaceSettings({
         if (controller.signal.aborted || !currentRef.current() || request !== generation.current)
           return;
         setLoaded(list);
+        setReadFailed(false);
         if (result && result.status !== "pending") {
           setAttempt(null);
           if (result.status === "failed") setError(true);
           if (result.status === "expired") setExpired(true);
         }
       } catch {
-        if (!controller.signal.aborted && currentRef.current()) setError(true);
+        if (!controller.signal.aborted && currentRef.current() && request === generation.current)
+          setReadFailed(true);
       }
     }
     void refresh();
@@ -82,7 +87,7 @@ export function SlackWorkspaceSettings({
       window.clearInterval(interval);
       window.clearTimeout(deadline);
     };
-  }, [api, attempt]);
+  }, [api, attempt, readRevision]);
 
   async function perform(work: () => Promise<void>) {
     if (!current() || busy) return;
@@ -99,24 +104,52 @@ export function SlackWorkspaceSettings({
   }
 
   async function start(selected: string, workspace?: Workspace) {
-    const issued = await api.start({
-      botId: selected,
-      ...(workspace && { reconnect: { id: workspace.id, expectedRevision: workspace.revision } }),
-    });
-    if (!current()) return;
-    const url = new URL(issued.url);
-    if (url.origin !== "https://slack.com" || url.pathname !== "/oauth/v2/authorize")
-      throw new Error("Invalid Slack authorization URL");
-    setAttempt(issued);
-    window.open(url.href, "rakazo-app-connect", "popup,noopener,noreferrer,width=560,height=720");
+    const popup = window.open("about:blank", SLACK_POPUP, "popup,width=560,height=720");
+    let opened = false;
+    try {
+      if (popup) popup.opener = null;
+      const issued = await api.start({
+        botId: selected,
+        ...(workspace && { reconnect: { id: workspace.id, expectedRevision: workspace.revision } }),
+      });
+      if (!current()) return;
+      const url = new URL(issued.url);
+      if (
+        url.origin !== "https://slack.com" ||
+        url.pathname !== "/oauth/v2/authorize" ||
+        url.username ||
+        url.password
+      )
+        throw new Error("Invalid Slack authorization URL");
+      setAttempt(issued);
+      if (popup && !popup.closed) {
+        popup.location.replace(url.href);
+        opened = true;
+      }
+    } finally {
+      if (!opened) popup?.close();
+    }
   }
 
   async function update(work: () => Promise<unknown>) {
-    await work();
-    if (!current()) return;
-    const request = ++generation.current;
-    const list = await api.list();
-    if (current() && request === generation.current) setLoaded(list);
+    try {
+      await work();
+    } finally {
+      if (current()) {
+        const request = ++generation.current;
+        try {
+          const list = await api.list();
+          if (current() && request === generation.current) {
+            setLoaded(list);
+            setReadFailed(false);
+          }
+        } catch {
+          // A write can commit even when its response is lost. Disable stale
+          // revision actions until a fresh read establishes the actual state.
+          if (current() && request === generation.current) setReadFailed(true);
+        }
+      }
+    }
   }
 
   if (!api) return null;
@@ -128,10 +161,18 @@ export function SlackWorkspaceSettings({
           <Trans>Slack installation is unavailable.</Trans>
         </p>
       ) : null}
-      {error || outcome === "failed" ? (
+      {error ? (
         <p role="alert" className="text-sm text-destructive">
           <Trans>Couldn't update the Slack connection.</Trans>
         </p>
+      ) : null}
+      {readFailed ? (
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+          <Trans>Couldn't load messaging settings</Trans>
+          <Button variant="ghost" size="xs" onClick={() => setReadRevision((value) => value + 1)}>
+            <Trans>Retry</Trans>
+          </Button>
+        </div>
       ) : null}
       {expired ? (
         <p role="status" className="text-sm text-muted-foreground">
@@ -171,7 +212,11 @@ export function SlackWorkspaceSettings({
               size="sm"
               variant="outline"
               disabled={
-                busy || Boolean(attempt) || !loaded.available || row.status === "unavailable"
+                busy ||
+                readFailed ||
+                Boolean(attempt) ||
+                !loaded.available ||
+                row.status === "unavailable"
               }
               onClick={() => void perform(() => start(row.botId, row))}
             >
@@ -181,7 +226,7 @@ export function SlackWorkspaceSettings({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={busy || Boolean(attempt)}
+                disabled={busy || readFailed || Boolean(attempt)}
                 onClick={() =>
                   void perform(() =>
                     update(() =>
@@ -200,7 +245,7 @@ export function SlackWorkspaceSettings({
             <Button
               size="sm"
               variant="ghost"
-              disabled={busy || Boolean(attempt)}
+              disabled={busy || readFailed || Boolean(attempt)}
               onClick={() => setConfirm(row)}
             >
               <Trans>Disconnect</Trans>
@@ -222,7 +267,10 @@ export function SlackWorkspaceSettings({
               </NativeSelectOption>
             ))}
           </NativeSelect>
-          <Button disabled={!botId || busy} onClick={() => void perform(() => start(botId))}>
+          <Button
+            disabled={!botId || busy || readFailed}
+            onClick={() => void perform(() => start(botId))}
+          >
             <Trans>Connect Slack</Trans>
           </Button>
         </div>
@@ -232,12 +280,7 @@ export function SlackWorkspaceSettings({
           <span className="text-sm text-muted-foreground">
             <Trans>Waiting for Slack authorization</Trans>
           </span>
-          <a
-            className="text-sm underline"
-            href={attempt.url}
-            target="rakazo-app-connect"
-            rel="noreferrer"
-          >
+          <a className="text-sm underline" href={attempt.url} target={SLACK_POPUP} rel="noreferrer">
             <Trans>Open Slack</Trans>
           </a>
           <Button

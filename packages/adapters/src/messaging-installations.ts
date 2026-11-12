@@ -103,6 +103,7 @@ export class MessagingInstallations {
       }
       try {
         await this.requireOwner(this.db, session);
+        const authorizedAt = new Date();
         const external = await provider.exchange(code);
         const credentialId = randomUUID();
         const recoveryRef = this.secrets.prepareWrite?.(credentialId);
@@ -126,6 +127,14 @@ export class MessagingInstallations {
           },
           { recordId: credentialId, recoveryRef },
         );
+        if (
+          !(await provider.verifyGrant(
+            external.credential,
+            external.workspaceId,
+            external.providerBotId,
+          ))
+        )
+          throw new Error("Slack authorization is no longer active");
         await this.db.$transaction(
           async (tx) => {
             const consume = await tx.messagingInstallSession.updateMany({
@@ -154,7 +163,7 @@ export class MessagingInstallations {
               botId: session.botId,
               ciphertext: sealed.ciphertext,
               credentialId,
-              authorizedAt: at,
+              authorizedAt,
               acceptAfter: at,
               status: "active",
             };
@@ -321,11 +330,10 @@ export class MessagingInstallations {
         ? row.authorizedAt.getTime()
         : Math.floor(row.authorizedAt.getTime() / 1000) * 1000;
       if (event.at.getTime() < cutoff) return;
-      // Uninstall and revoke can carry only whole seconds. Verify the current
-      // grant when the signed event could belong to either of two grants.
+      // Events can occur during token exchange or storage. Whole-second events
+      // can also overlap the previous grant during a reconnect.
       if (
-        !event.precise &&
-        event.at.getTime() === cutoff &&
+        event.at <= row.acceptAfter &&
         (await provider.verifyGrant(await this.credential(row), row.workspaceId, row.providerBotId))
       )
         return;

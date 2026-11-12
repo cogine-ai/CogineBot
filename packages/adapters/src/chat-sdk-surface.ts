@@ -184,14 +184,14 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     try {
       signal.throwIfAborted();
       await raceWithSignal(this.ensureInitialized(), signal);
+      if (request.beforeSubmit && !(await raceWithSignal(request.beforeSubmit(), signal)))
+        throw new MessagingSendError("permanent", "rejected");
       signal.throwIfAborted();
     } catch (cause) {
-      // Initializing does not submit a message. An outbox retry is safe here.
+      if (cause instanceof MessagingSendError) throw cause;
+      // Setup and authorization checks happen before submission.
       throw new MessagingSendError("retryable", "rejected", undefined, cause);
     }
-    if (request.beforeSubmit && !(await raceWithSignal(request.beforeSubmit(), signal)))
-      throw new MessagingSendError("permanent", "rejected");
-    signal.throwIfAborted();
     const message = attachment
       ? attachmentMessage(telegram, request.body, attachment)
       : markdown

@@ -84,6 +84,38 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
   const verify = (allowPrePages = false) =>
     verifyRuntimeDatabase(runtime!.prisma, { allowPrePages });
 
+  async function withPagesPredecessorCatalog<T>(work: () => Promise<T>): Promise<T> {
+    // The fixture is cloned from the latest schema. Move the later Slack
+    // tables out of the frozen public catalog only while replaying the old SQL.
+    const held = identifier(`pages_fixture_later_tables_${suffix}`);
+    const tables = [
+      "messaging_install_sessions",
+      "messaging_installations",
+      "messaging_credential_cleanups",
+    ];
+    const pool = owner!.pool;
+    await pool.query(
+      [
+        "BEGIN",
+        `CREATE SCHEMA ${held}`,
+        ...tables.map((table) => `ALTER TABLE public.${table} SET SCHEMA ${held}`),
+        "COMMIT",
+      ].join(";"),
+    );
+    try {
+      return await work();
+    } finally {
+      await pool.query(
+        [
+          "BEGIN",
+          ...tables.map((table) => `ALTER TABLE ${held}.${table} SET SCHEMA public`),
+          `DROP SCHEMA ${held}`,
+          "COMMIT",
+        ].join(";"),
+      );
+    }
+  }
+
   async function predecessor() {
     expect(await db().page.count()).toBe(0);
     await owner!.pool.query("DROP SCHEMA cogine_pages CASCADE");
@@ -95,8 +127,10 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     expect(await namespace()).toBe(false);
   }
 
-  async function deploy() {
-    const result = await prismaCommand("deploy");
+  async function deploy(prePages = false) {
+    const result = prePages
+      ? await withPagesPredecessorCatalog(() => prismaCommand("deploy"))
+      : await prismaCommand("deploy");
     expect(result.code, result.output).toBe(0);
   }
 
@@ -115,7 +149,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
         } finally {
           await fresh.pool.end();
         }
-        await deploy();
+        await deploy(true);
       } finally {
         await admin.query(`ALTER DATABASE ${database} RESET quote_all_identifiers`);
       }
@@ -125,14 +159,16 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
   }
 
   async function runMigrationSql() {
-    const client = await owner!.pool.connect();
-    try {
-      await client.query(migrationSql);
-    } finally {
-      // A failed multi-statement migration leaves this connection inside an aborted transaction.
-      await client.query("ROLLBACK");
-      client.release();
-    }
+    await withPagesPredecessorCatalog(async () => {
+      const client = await owner!.pool.connect();
+      try {
+        await client.query(migrationSql);
+      } finally {
+        // A failed multi-statement migration leaves this connection inside an aborted transaction.
+        await client.query("ROLLBACK");
+        client.release();
+      }
+    });
   }
 
   async function prepareRuntime(name: string, password = randomBytes(24).toString("hex")) {
@@ -229,7 +265,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
       guardValid: true,
     });
 
-    await deploy();
+    await deploy(true);
     expect(await catalog("public")).toEqual(publicBefore);
     expect(await catalog("cogine_pages")).toMatchObject([
       { name: "page_versions", enabled: false, policy: null },
@@ -319,7 +355,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     let failure: Awaited<ReturnType<typeof prismaCommand>> | undefined;
     try {
       await observer.query("SELECT pg_advisory_lock($1::bigint)", [gate]);
-      const installing = prismaCommand("deploy");
+      const installing = withPagesPredecessorCatalog(() => prismaCommand("deploy"));
       try {
         await vi.waitFor(
           async () => {

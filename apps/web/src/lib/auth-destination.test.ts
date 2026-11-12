@@ -17,6 +17,10 @@ describe("post-sign-in destinations", () => {
     expect(authDestination("/app?slackInstallation=settings&next=https://example.test")).toBe(
       "/app",
     );
+    const scoped = "/app?slackInstallation=settings&spaceId=fixture-space";
+    expect(authDestination(scoped)).toBe(scoped);
+    expect(authDestination(`${scoped}&spaceId=another`)).toBe("/app");
+    expect(authDestination("/app?slackInstallation=settings&spaceId=%2F%2Fevil.test")).toBe("/app");
   });
   it("retains an exact transfer invitation or owned status page after login", () => {
     const invitation = `/transfers/source?targetOrigin=https%3A%2F%2Ftarget.example.test&locator=${state}`;

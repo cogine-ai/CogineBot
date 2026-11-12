@@ -678,14 +678,22 @@ export function ShellPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [settingsSpaceId, setSettingsSpaceId] = useState<string | null>(null);
-  const [slackOutcome] = useState(() => searchParams.get("slackInstallation") ?? undefined);
-  const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(Boolean(slackOutcome));
+  const [slackOutcome, setSlackOutcome] = useState(
+    () => searchParams.get("slackInstallation") ?? undefined,
+  );
+  const [slackEntrySpaceId, setSlackEntrySpaceId] = useState(() =>
+    slackOutcome === "settings" ? searchParams.get("spaceId") : null,
+  );
+  const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(
+    Boolean(slackOutcome && !slackEntrySpaceId),
+  );
   useEffect(() => {
-    if (!slackOutcome) return;
-    const url = new URL(window.location.href);
-    url.searchParams.delete("slackInstallation");
-    window.history.replaceState(window.history.state, "", url);
-  }, [slackOutcome]);
+    if (!searchParams.has("slackInstallation")) return;
+    const cleaned = new URLSearchParams(searchParams);
+    if (cleaned.get("slackInstallation") === "settings") cleaned.delete("spaceId");
+    cleaned.delete("slackInstallation");
+    setSearchParams(cleaned, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [messagingSurfaceEnabled, setMessagingSurfaceEnabled] = useState(false);
   const [messagingProviders, setMessagingProviders] = useState<string[]>([]);
   const [memoryProviderConfig, setMemoryProviderConfig] = useState<
@@ -1060,6 +1068,21 @@ export function ShellPage() {
     JSON.stringify([settingsOwnerKey, bootstrapMe?.spaceId, currentSpaceSelectionGeneration()]),
   );
   const creationSpaceId = userId && bootstrapMe?.userId === userId ? bootstrapMe.spaceId : null;
+  useEffect(() => {
+    if (!slackEntrySpaceId || !creationSpaceId || !initialBotsLoaded) return;
+    setSlackEntrySpaceId(null);
+    if (!spaces.some(({ id }) => id === slackEntrySpaceId)) {
+      setSidebarError(t`This Space is unavailable`);
+      setMobileSidebarOpen(true);
+    } else if (slackEntrySpaceId === creationSpaceId) {
+      setMessagingSettingsOpen(true);
+    } else if (selectSpace(slackEntrySpaceId)) {
+      window.location.replace("/app?slackInstallation=settings");
+    } else {
+      setSidebarError(t`This Space is unavailable`);
+      setMobileSidebarOpen(true);
+    }
+  }, [slackEntrySpaceId, creationSpaceId, initialBotsLoaded, spaces, t]);
   const creationScope = useBotCreation({
     ownerKey: creationSpaceId ? settingsOwnerKey : null,
     spaceId: creationSpaceId,
@@ -7210,7 +7233,10 @@ export function ShellPage() {
             key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
             ownerKey={userId ? settingsOwnerKey : null}
             spaceId={creationSpaceId}
-            onClose={() => setMessagingSettingsOpen(false)}
+            onClose={() => {
+              setSlackOutcome(undefined);
+              setMessagingSettingsOpen(false);
+            }}
           />
         ) : null}
       </Suspense>

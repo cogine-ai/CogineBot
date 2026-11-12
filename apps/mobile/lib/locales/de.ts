@@ -220,6 +220,8 @@ export const DE_MESSAGES: Record<string, string> = {
   OpenAPI: "OpenAPI",
   "Copy diagnostics": "Diagnose kopieren",
   "Could not check the connection.": "Die Verbindung konnte nicht geprüft werden.",
+  "Couldn't load messaging settings": "Die Nachrichteneinstellungen konnten nicht geladen werden",
+  "Manage Slack messaging in browser": "Slack-Nachrichten im Browser verwalten",
   "Could not load chats": "Chats konnten nicht geladen werden",
   "Could not load run history": "Ausführungsverlauf konnte nicht geladen werden",
   Details: "Details",

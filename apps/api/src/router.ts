@@ -7418,7 +7418,12 @@ export function createRouter(deps: RouterDeps) {
           available: deps.messagingInstallations?.available ?? false,
           ...(deps.messagingInstallations && {
             managementUrl: new URL(
-              "/sign-in?next=%2Fapp%3FslackInstallation%3Dsettings",
+              `/sign-in?${new URLSearchParams({
+                next: `/app?${new URLSearchParams({
+                  slackInstallation: "settings",
+                  spaceId: context.actor.spaceId,
+                })}`,
+              })}`,
               deps.env.webOrigin,
             ).toString(),
           }),

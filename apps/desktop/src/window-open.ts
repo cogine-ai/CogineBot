@@ -21,6 +21,14 @@ export function shouldOpenInAppPopup(
   }
 
   if (childUrl === "about:blank" && frameName === "rakazo-sso-oauth") return true;
+  if (frameName === "coginebot-slack-oauth")
+    return (
+      childUrl === "about:blank" ||
+      (target.origin === "https://slack.com" &&
+        target.pathname === "/oauth/v2/authorize" &&
+        !target.username &&
+        !target.password)
+    );
 
   const isHttp = target.protocol === "http:" || target.protocol === "https:";
   if (appOrigin !== null && target.origin === appOrigin)

@@ -12,6 +12,86 @@ import {
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
 
 describe("team chat bridge", () => {
+  it.each(["accepted", "rate-limited", "expired"] as const)(
+    "keeps a late Slack result scoped to its own lease (%s)",
+    async (outcome) => {
+      const lease = new Date(Date.now() + (outcome === "expired" ? -1 : 120_000));
+      let resolve!: (result: { handle: string }) => void;
+      let reject!: (error: unknown) => void;
+      const inFlight = new Promise<{ handle: string }>((success, failure) => {
+        resolve = success;
+        reject = failure;
+      });
+      const updateMany = vi.fn(async (_input: unknown) => ({ count: 1 }));
+      const prisma = {
+        externalMessage: {
+          findUnique: vi.fn(async () => ({
+            status: "delivering",
+            providerReplyHandle: null,
+            attempts: 0,
+            nextAttemptAt: lease,
+          })),
+          updateMany,
+        },
+      } as unknown as PrismaClient;
+      const send = vi.fn(async () => {
+        throw new MessagingSendError("unknown", "outcome_unknown", undefined, undefined, inFlight);
+      });
+      const bridge = new TeamChatBridge({
+        prisma,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send,
+        providerId: "slack~fixture",
+        botId: "fixture-bot",
+        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+      }) as unknown as {
+        reserveDelivery(id: string): Promise<Date>;
+        sendReserved(
+          message: { id: string; status: string; attempts: number },
+          request: TeamChatSendRequest,
+        ): Promise<void>;
+      };
+      vi.spyOn(bridge, "reserveDelivery").mockResolvedValue(lease);
+      await bridge.sendReserved(
+        { id: "message", status: "running", attempts: 0 },
+        {
+          conversationId: "conversation",
+          replyThreadId: null,
+          content: "reply",
+          idempotencyKey: "reply",
+        },
+      );
+      expect(updateMany).not.toHaveBeenCalled();
+      if (outcome === "rate-limited") {
+        reject(new MessagingSendError("retryable", "rate_limited", 30_000));
+      } else {
+        resolve({ handle: "late-slack-handle" });
+      }
+      await new Promise<void>((done) => setImmediate(done));
+      if (outcome === "expired") {
+        expect(updateMany).not.toHaveBeenCalled();
+      } else {
+        expect(updateMany).toHaveBeenCalledOnce();
+        expect(updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              id: "message",
+              status: "delivering",
+              nextAttemptAt: lease,
+            }),
+            data: expect.objectContaining(
+              outcome === "accepted"
+                ? { status: "delivered", providerReplyHandle: "late-slack-handle" }
+                : { status: "running", nextAttemptAt: expect.any(Date) },
+            ),
+          }),
+        );
+      }
+      expect(send).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(["retryable", "unknown"] as const)(
     "only retries a known installed Slack rejection (%s)",
     async (disposition) => {

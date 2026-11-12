@@ -135,6 +135,29 @@ function createDeps(overrides: {
 }
 
 describe("messaging mirror settlement", () => {
+  it.each(["slack~installed", "slack"])(
+    "keeps delegated replies in their authorized route from %s",
+    async (provider) => {
+      const deps = createDeps({
+        run: { ...messagingRun, trigger: "bot_message", parentRunId: "delegate-1" },
+      });
+      deps.prisma.run.findUnique
+        .mockImplementationOnce(async () => ({
+          ...messagingRun,
+          trigger: "bot_message",
+          parentRunId: "delegate-1",
+        }))
+        .mockImplementationOnce(async () => ({ parentRunId: "origin-1" }))
+        .mockImplementationOnce(async () => ({
+          parentRunId: null,
+          thread: { externalConversation: { provider } },
+        }));
+      await mirrorMessagingOutbound(deps, "run-1");
+      if (provider === "slack~installed") expect(deps.rows).toEqual([]);
+      else expect(deps.rows).toEqual([expect.objectContaining({ body: "Hello from your bot" })]);
+      expect(deps.prisma.run.findUnique).toHaveBeenCalledTimes(3);
+    },
+  );
   it.each(["queued", "leased", "running", "waiting_input", "waiting_takeover"])(
     "mirrors %s progress without acknowledging a terminal response",
     async (status) => {

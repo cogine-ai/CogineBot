@@ -20,6 +20,7 @@ integration("Slack workspace installation lifecycle", () => {
   const scope = { id: randomUUID() };
   const workspaceId = `T${scope.id.replaceAll("-", "").toUpperCase()}`;
   const store = new EncryptedSecretStore("synthetic-workspace-key");
+  const stagedCredentials = new Set<string>();
   const authorizeUrl = (state: string) => `https://slack.com/oauth/v2/authorize?state=${state}`;
   const exchange = vi.fn(async (code: string) => ({
     workspaceId,
@@ -29,7 +30,7 @@ integration("Slack workspace installation lifecycle", () => {
     providerBotId: "UBOT",
     credential: `fixture-secret-${code}`,
   }));
-  const verifyGrant = vi.fn(async () => false);
+  const verifyGrant = vi.fn(async () => true);
   const provider = { authorizeUrl, exchange, clientId: "fixture-client", verifyGrant };
   let service: MessagingInstallations;
 
@@ -59,6 +60,11 @@ integration("Slack workspace installation lifecycle", () => {
   }
 
   beforeAll(async () => {
+    const prepareWrite = store.prepareWrite.bind(store);
+    vi.spyOn(store, "prepareWrite").mockImplementation((id) => {
+      stagedCredentials.add(id);
+      return prepareWrite(id);
+    });
     db = createDb(databaseUrl!);
     org = randomUUID();
     await db.prisma.organization.create({
@@ -75,11 +81,9 @@ integration("Slack workspace installation lifecycle", () => {
       await db.prisma.messagingInstallSession.deleteMany({
         where: { userId: { in: [owner?.userId, other?.userId].filter(Boolean) } },
       });
-      const workspace = await db.prisma.messagingInstallation.findFirst({ where: { workspaceId } });
-      if (workspace?.credentialId)
-        await db.prisma.messagingCredentialCleanup.deleteMany({
-          where: { id: workspace.credentialId },
-        });
+      await db.prisma.messagingCredentialCleanup.deleteMany({
+        where: { id: { in: [...stagedCredentials] } },
+      });
       await db.prisma.messagingInstallation.deleteMany({ where: { workspaceId } });
       if (org) await db.prisma.organization.deleteMany({ where: { id: org } });
       await db.prisma.user.deleteMany({
@@ -194,6 +198,24 @@ integration("Slack workspace installation lifecycle", () => {
     expect((await service.activeById(row.id))?.revision).toBe(row.revision);
   });
 
+  it("does not adopt a grant revoked while its credential was being written", async () => {
+    const before = (await service.activeByWorkspace(workspaceId))!;
+    const attempt = await start(owner, botId, { id: before.id, expectedRevision: before.revision });
+    verifyGrant.mockResolvedValueOnce(false);
+    await expect(
+      service.complete(owner.userId, attempt.state, "revoked-during-write"),
+    ).rejects.toThrow("authorization is no longer active");
+    expect(await service.attempt(owner, attempt.attemptId)).toBe("failed");
+    expect(await service.activeByWorkspace(workspaceId)).toMatchObject({
+      revision: before.revision,
+    });
+    expect(
+      await db.prisma.messagingCredentialCleanup.findFirst({
+        where: { id: [...stagedCredentials].at(-1), pendingWrite: true },
+      }),
+    ).not.toBeNull();
+  });
+
   it("revokes only the current bot grant and removes access before cleanup", async () => {
     const before = (await service.activeByWorkspace(workspaceId))!;
     const baseEvent = {
@@ -209,6 +231,7 @@ integration("Slack workspace installation lifecycle", () => {
     verifyGrant.mockResolvedValueOnce(true);
     await service.revoke({ ...baseEvent, at: sameSecond, precise: false });
     expect(await service.activeById(before.id)).not.toBeNull();
+    verifyGrant.mockResolvedValueOnce(false);
     await service.revoke({ ...baseEvent, at: sameSecond, precise: false });
     expect(await service.activeById(before.id)).toBeNull();
     const revoked = (await service.list(owner))[0]!;

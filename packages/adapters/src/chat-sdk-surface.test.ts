@@ -441,6 +441,11 @@ describe("ChatSdkMessagingSurface outbound", () => {
     ).rejects.toMatchObject({ disposition: "permanent" });
     expect(beforeSubmit).toHaveBeenCalledOnce();
     expect(postMessage).not.toHaveBeenCalled();
+    beforeSubmit.mockRejectedValueOnce(new Error("Database temporarily unavailable"));
+    await expect(
+      surface.sendToThread({ threadId: "mock:C1:9", body: "hi", beforeSubmit }, context),
+    ).rejects.toMatchObject({ disposition: "retryable" });
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it("posts to a thread through the platform adapter and returns the handle", async () => {

@@ -1336,7 +1336,32 @@ export class TeamChatBridge {
   ) {
     const lease = await this.reserveDelivery(message.id);
     if (!lease) return;
-    await this.sendOnce(message.id, request).catch((error) => this.retry(message, error, lease));
+    try {
+      await this.sendOnce(message.id, request, lease);
+    } catch (error) {
+      if (this.deps.installedSlack && error instanceof MessagingSendError && error.inFlight) {
+        // Other conversations can proceed while Slack settles this request.
+        // The callback can act only until this reservation expires.
+        void error.inFlight
+          .then(
+            async (result) => {
+              if (Date.now() < lease.getTime())
+                await this.confirmSlackDelivery(message.id, lease, result.handle);
+            },
+            async (rejection: unknown) => {
+              if (
+                Date.now() < lease.getTime() &&
+                rejection instanceof MessagingSendError &&
+                rejection.disposition !== "unknown"
+              )
+                await this.retry(message, rejection, lease);
+            },
+          )
+          .catch(() => getLogger().error("Slack delivery confirmation could not be recorded"));
+        return;
+      }
+      await this.retry(message, error, lease);
+    }
   }
 
   /**
@@ -1352,6 +1377,7 @@ export class TeamChatBridge {
       content: string;
       idempotencyKey: string;
     },
+    lease: Date,
   ): Promise<void> {
     const existing = await this.deps.prisma.externalMessage.findUnique({
       where: { id },
@@ -1362,11 +1388,29 @@ export class TeamChatBridge {
       return;
     }
     const sent = await this.deps.send(request);
+    if (this.deps.installedSlack) {
+      await this.confirmSlackDelivery(id, lease, sent.handle);
+      return;
+    }
     await this.deps.prisma.externalMessage.update({
       where: { id },
       data: { providerReplyHandle: sent.handle },
     });
     await this.markDelivered(id, sent.handle);
+  }
+
+  private async confirmSlackDelivery(id: string, lease: Date, handle: string) {
+    if (!handle) return;
+    await this.deps.prisma.externalMessage.updateMany({
+      where: { id, status: "delivering", nextAttemptAt: lease, providerReplyHandle: null },
+      data: {
+        status: "delivered",
+        providerReplyHandle: handle,
+        deliveredAt: new Date(),
+        lastError: null,
+        nextAttemptAt: null,
+      },
+    });
   }
 
   private async reserveDelivery(id: string): Promise<Date | undefined> {
@@ -1517,7 +1561,11 @@ export class TeamChatBridge {
             ? "failed"
             : current.status;
     const retryAfter = installedFailure?.retryAfterMs;
-    const nextAttemptAt = failed ? null : new Date(Date.now() + Math.max(delay, retryAfter ?? 0));
+    const nextAttemptAt = failed
+      ? null
+      : lease && this.deps.installedSlack && !canRetry
+        ? lease
+        : new Date(Date.now() + Math.max(delay, retryAfter ?? 0));
     // Conditional write: if reserveDelivery finalized between the read and this
     // update, leave the delivered/unconfirmed row alone.
     await this.deps.prisma.externalMessage.updateMany({
