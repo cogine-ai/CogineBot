@@ -684,6 +684,7 @@ export function ShellPage() {
   const [slackEntrySpaceId, setSlackEntrySpaceId] = useState(() =>
     slackOutcome === "settings" ? searchParams.get("spaceId") : null,
   );
+  const [slackEntryUnavailable, setSlackEntryUnavailable] = useState(false);
   const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(
     Boolean(slackOutcome && !slackEntrySpaceId),
   );
@@ -1081,10 +1082,8 @@ export function ShellPage() {
         return;
       }
     }
-    setSidebarError(t`This Space is unavailable`);
-    if (window.matchMedia("(min-width: 768px)").matches) setBotsSidebarCollapsed(false);
-    else setMobileSidebarOpen(true);
-  }, [slackEntrySpaceId, creationSpaceId, initialBotsLoaded, spaces, t]);
+    setSlackEntryUnavailable(true);
+  }, [slackEntrySpaceId, creationSpaceId, initialBotsLoaded, spaces]);
   const creationScope = useBotCreation({
     ownerKey: creationSpaceId ? settingsOwnerKey : null,
     spaceId: creationSpaceId,
@@ -5836,6 +5835,14 @@ export function ShellPage() {
         inert={mobileSidebarOpen}
         className="@container/conversation relative isolate flex min-w-0 flex-1 flex-col bg-background"
       >
+        {slackEntryUnavailable ? (
+          <p
+            role="alert"
+            className="border-b border-border px-3 py-2 text-sm text-destructive sm:px-5"
+          >
+            <Trans>This Space is unavailable</Trans>
+          </p>
+        ) : null}
         <div
           role="status"
           aria-live="polite"
